@@ -117,7 +117,7 @@ export async function calculateCostEstimate(
 }
 
 export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]> {
-  const { worktreePath, draft, manualFiles, autoFiles, correlationId, contextModel } = opts;
+  const { worktreePath, draft, manualFiles, autoFiles, correlationId, contextModel, routingSession } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   const fileRefResult = await parseFileReferences(draft.initial_prompt, worktreePath, { correlationId });
@@ -141,7 +141,7 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
 
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || draft.initial_prompt, {
     correlationId, useSummaryScoring: !!agent, useLLMKeywords: true, agent,
-    repoName: draft.repository, modelId: contextModel
+    repoName: draft.repository, modelId: contextModel, routingSession
   });
 
   const autoFilePaths = relevanceResult.files.map(f => f.path);

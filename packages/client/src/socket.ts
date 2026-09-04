@@ -20,16 +20,42 @@ export interface ProprSocketConnection {
   options: ProprSocketOptions;
 }
 
-const bearerSocketAuth = (getAccessToken: AccessTokenProvider): SocketOptions['auth'] =>
-  (callback: (data: Record<string, string>) => void): void => {
+type SocketAuthPayload = Record<string, unknown>;
+type SocketAuthCallback = (data: SocketAuthPayload) => void;
+
+const metadataWithoutToken = (value: unknown): SocketAuthPayload => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const { token: _untrustedToken, ...metadata } = value as SocketAuthPayload;
+  return metadata;
+};
+
+const bearerSocketAuth = (
+  getAccessToken: AccessTokenProvider,
+  configuredAuth: SocketOptions['auth'],
+): SocketOptions['auth'] => (callback: SocketAuthCallback): void => {
+  const resolveBearer = (metadataValue: unknown): void => {
+    const metadata = metadataWithoutToken(metadataValue);
     Promise.resolve(getAccessToken()).then(
       token => {
         const normalized = token?.trim();
-        callback(normalized && !/\r|\n/.test(normalized) ? { token: normalized } : {});
+        callback(normalized && !/\r|\n/.test(normalized)
+          ? { ...metadata, token: normalized }
+          : metadata);
       },
-      () => callback({})
+      () => callback(metadata),
     );
   };
+
+  if (typeof configuredAuth === 'function') {
+    try {
+      configuredAuth(resolveBearer);
+    } catch {
+      resolveBearer({});
+    }
+    return;
+  }
+  resolveBearer(configuredAuth);
+};
 
 /** Build the complete, explicit reconnect policy used by every ProPR surface. */
 export const buildSocketConnection = (
@@ -38,7 +64,7 @@ export const buildSocketConnection = (
   overrides: ProprSocketOptions = {}
 ): ProprSocketConnection => {
   const auth = authentication.type === 'bearer'
-    ? bearerSocketAuth(authentication.getAccessToken)
+    ? bearerSocketAuth(authentication.getAccessToken, overrides.auth)
     : undefined;
 
   return {
@@ -55,7 +81,7 @@ export const buildSocketConnection = (
       randomizationFactor: 0.5,
       timeout: 20_000,
       ...overrides,
-      ...(auth && overrides.auth === undefined ? { auth } : {}),
+      ...(auth ? { auth } : {}),
     },
   };
 };

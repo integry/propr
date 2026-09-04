@@ -24,7 +24,7 @@ ARG CURL_VERSION_PREFIX=7.88.1-10+deb12u
 # install falls back to the latest available version when this prefix no longer
 # matches. That trades strict reproducibility for not breaking every build on a
 # gh release; the fallback logs a note to stderr when it triggers.
-ARG GH_VERSION_PREFIX=2.96.
+ARG GH_VERSION_PREFIX=2.99.
 ARG GIT_VERSION_PREFIX=1:2.39.5-0+deb12u
 ARG GOSU_VERSION_PREFIX=1.14-1
 ARG IPTABLES_VERSION_PREFIX=1.8.9-2
@@ -114,7 +114,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.146.0
+ARG CODEX_CLI_VERSION=0.151.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -192,7 +192,7 @@ RUN set -eu; \
 
 FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.220
-ARG CODEX_CLI_VERSION=0.146.0
+ARG CODEX_CLI_VERSION=0.151.0
 ARG ANTIGRAVITY_CLI_VERSION=1.1.13
 ARG OPENCODE_CLI_VERSION=1.18.9
 ARG VIBE_CLI_VERSION=2.23.1

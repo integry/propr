@@ -156,6 +156,8 @@
 .desktop-profile-form label { display: grid; gap: .4rem; margin-top: .8rem; color: #435555; font-size: .76rem; font-weight: 650; }
 .desktop-profile-form input { width: 100%; border: 1px solid #cdd9d9; border-radius: .55rem; padding: .68rem .75rem; color: #192c2c; font-size: .86rem; font-weight: 450; outline: none; }
 .desktop-profile-form input:focus { border-color: #16827c; box-shadow: 0 0 0 3px rgba(22, 130, 124, .15); }
+.desktop-connect-verified { display: flex; align-items: center; gap: .4rem; margin-top: .65rem; color: #0f766e; font-size: .74rem; font-weight: 700; }
+.desktop-connect-verified svg { width: .9rem; height: .9rem; }
 
 .desktop-primary-button,
 .desktop-secondary-button {

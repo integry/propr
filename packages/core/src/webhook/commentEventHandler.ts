@@ -22,6 +22,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -586,6 +587,33 @@ function acceptedCommentDisposition(commentId: number, seatConsumed: boolean): D
     };
 }
 
+function prepareCiFollowupComment(
+    comment: PRComment,
+    commentAuthor: string,
+    configuredBotUsernames: Set<string>,
+): { comment: PRComment; isSystemCiFollowupComment: boolean } {
+    const isSystemCiFollowupComment = configuredBotUsernames.has(commentAuthor)
+        && isCiFailureFollowupComment(comment.body);
+    return {
+        isSystemCiFollowupComment,
+        comment: isSystemCiFollowupComment
+            ? { ...comment, body: stripCiFailureFollowupMarker(comment.body) }
+            : comment,
+    };
+}
+
+function shouldFilterSystemComment(shouldFilter: boolean, isSystemUltrafixComment: boolean, isSystemCiFollowupComment: boolean): boolean {
+    return shouldFilter && !isSystemUltrafixComment && !isSystemCiFollowupComment;
+}
+
+function shouldIgnoreSystemComment(shouldIgnore: boolean, isSystemCiFollowupComment: boolean): boolean {
+    return shouldIgnore && !isSystemCiFollowupComment;
+}
+
+function isMissingCommentTrigger(hasProcessingLabel: boolean, isTriggered: boolean, isSystemCiFollowupComment: boolean): boolean {
+    return !hasProcessingLabel && !isTriggered && !isSystemCiFollowupComment;
+}
+
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -596,10 +624,10 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
     if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
 
-    const { prNumber, comment } = eventDetails;
+    const { prNumber, comment: rawComment } = eventDetails;
 
-    const commentAuthor = comment.user.login;
-    const parsedCommand = parseSlashCommand(comment.body);
+    const commentAuthor = rawComment.user.login;
+    const parsedCommand = parseSlashCommand(rawComment.body);
     const configuredBotUsernames = new Set(
         [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]']
             .filter((value): value is string => typeof value === 'string' && value.length > 0)
@@ -608,14 +636,25 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         && (
             configuredBotUsernames.has(commentAuthor)
         );
+    // The marker authenticates the otherwise-filtered ProPR bot comment at the
+    // intake boundary. It is control metadata and must never reach the agent.
+    const { comment, isSystemCiFollowupComment } = prepareCiFollowupComment(
+        rawComment,
+        commentAuthor,
+        configuredBotUsernames,
+    );
 
     const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);
-    if (filterResult.shouldFilter && !isSystemUltrafixComment) return { status: 'ignored', reason: 'filtered_author' };
+    if (shouldFilterSystemComment(filterResult.shouldFilter, isSystemUltrafixComment, isSystemCiFollowupComment)) {
+        return { status: 'ignored', reason: 'filtered_author' };
+    }
 
     // Check for ignore keywords
     const ignoreKeywords = await loadFollowupIgnoreKeywords();
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
-    if (ignoreResult.shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
+    if (shouldIgnoreSystemComment(ignoreResult.shouldIgnore, isSystemCiFollowupComment)) {
+        return { status: 'ignored', reason: 'ignore_keyword' };
+    }
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
@@ -643,7 +682,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     // Check trigger: PR must have a processing label OR comment must contain trigger keyword
     const triggerResult = checkCommentTrigger(comment.body, correlationId);
-    if (!hasProcessingLabel && !triggerResult.isTriggered) {
+    if (isMissingCommentTrigger(hasProcessingLabel, triggerResult.isTriggered, isSystemCiFollowupComment)) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, commentId: comment.id }, 'PR does not have processing label and comment does not contain trigger keyword, skipping');
         return { status: 'ignored', reason: 'no_comment_trigger' };
     }

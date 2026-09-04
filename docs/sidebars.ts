@@ -67,6 +67,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/pr-followup',
         'features/pr-commands',
+        'features/visual-previews',
       ],
     },
     {
@@ -82,6 +83,7 @@ const sidebars: SidebarsConfig = {
       label: 'Reference',
       items: [
         'features/agents-and-models',
+        'features/synthetic-pools',
         'features/propr-cli',
       ],
     },

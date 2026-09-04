@@ -1,5 +1,10 @@
 import type { GitHubUser } from './authTypes.js';
-import { DEFAULT_PROPR_GH_RELAY_URL } from '@propr/shared';
+import {
+    DEFAULT_PROPR_GH_RELAY_URL,
+    canonicalProprHttpUrlOrigin,
+    isProprLoopbackHostname,
+    normalizeProprApiOrigin,
+} from '@propr/shared';
 
 export const DEFAULT_PROPR_CONNECT_ORIGIN = 'https://connect.propr.dev';
 const CONNECT_REDEEM_TIMEOUT_MS = 20_000;
@@ -35,7 +40,10 @@ export function buildConnectAuthorizationUrl(options: {
     installationId?: string;
 }): string {
     const origin = new URL(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN);
-    if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash) {
+    if (origin.protocol !== 'https:'
+        || origin.search
+        || origin.hash
+        || normalizeProprApiOrigin(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN) !== origin.origin) {
         throw new Error('PROPR_CONNECT_URL must be a bare HTTPS origin');
     }
     const url = new URL('/instance-login', origin);
@@ -54,9 +62,12 @@ export async function redeemConnectAuthorizationCode(options: {
     fetchImpl?: typeof fetch;
 }): Promise<GitHubUser> {
     const fetchImpl = options.fetchImpl ?? fetch;
-    const relayBase = options.relayUrl.trim().replace(/\/+$/, '');
+    const relayRaw = options.relayUrl.trim();
+    const relayBase = relayRaw.replace(/\/+$/, '');
     const endpoint = new URL(`${relayBase}/auth/instance-grants/redeem`);
-    if (endpoint.protocol !== 'https:' && endpoint.hostname !== 'localhost' && endpoint.hostname !== '127.0.0.1') {
+    const canonicalRelayOrigin = canonicalProprHttpUrlOrigin(relayRaw);
+    if (!canonicalRelayOrigin
+        || (endpoint.protocol === 'http:' && !isProprLoopbackHostname(endpoint.hostname))) {
         throw new Error('PROPR_GH_RELAY_URL must use HTTPS');
     }
 
@@ -103,6 +114,12 @@ export async function redeemConnectAuthorizationCode(options: {
         email: null,
         avatarUrl: body.avatar_url,
         accessToken: body.access_token,
+        refreshToken: body.refresh_token,
+        tokenExpiresAt: body.expires_in ? Date.now() + body.expires_in * 1000 : undefined,
+        refreshTokenExpiresAt: body.refresh_token_expires_in
+            ? Date.now() + body.refresh_token_expires_in * 1000
+            : undefined,
+        oauthSource: 'connect',
     };
 }
 
@@ -137,7 +154,9 @@ function isHostedConnectPath(env: NodeJS.ProcessEnv): boolean {
 function normalizeServiceUrl(value: string | undefined): string | undefined {
     try {
         if (!value?.trim()) return undefined;
-        const url = new URL(value.trim());
+        const raw = value.trim();
+        const url = new URL(raw);
+        if (canonicalProprHttpUrlOrigin(raw) !== url.origin) return undefined;
         if (url.username || url.password || url.search || url.hash) return undefined;
         const path = url.pathname.replace(/\/+$/, '');
         return `${url.origin}${path}`;
@@ -149,11 +168,12 @@ function normalizeServiceUrl(value: string | undefined): string | undefined {
 function isSupportedLoopbackCallback(value: string | undefined): boolean {
     try {
         if (!value?.trim()) return false;
-        const url = new URL(value.trim());
-        const hostname = url.hostname.toLowerCase();
+        const raw = value.trim();
+        const url = new URL(raw);
         return (
             url.protocol === 'http:' &&
-            (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') &&
+            canonicalProprHttpUrlOrigin(raw) === url.origin &&
+            isProprLoopbackHostname(url.hostname) &&
             url.username === '' &&
             url.password === '' &&
             url.pathname === '/api/auth/github/callback' &&
@@ -169,6 +189,9 @@ function isRedeemedIdentity(value: unknown): value is {
     username: string;
     avatar_url: string | null;
     access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
 } {
     if (typeof value !== 'object' || value === null) return false;
     const candidate = value as Record<string, unknown>;
@@ -176,6 +199,10 @@ function isRedeemedIdentity(value: unknown): value is {
         isGitHubLogin(candidate.username) &&
         (candidate.avatar_url === null || typeof candidate.avatar_url === 'string') &&
         typeof candidate.access_token === 'string' &&
-        candidate.access_token.length > 0
+        candidate.access_token.length > 0 &&
+        (candidate.refresh_token === undefined || typeof candidate.refresh_token === 'string') &&
+        (candidate.expires_in === undefined || (typeof candidate.expires_in === 'number' && candidate.expires_in > 0)) &&
+        (candidate.refresh_token_expires_in === undefined
+            || (typeof candidate.refresh_token_expires_in === 'number' && candidate.refresh_token_expires_in > 0))
     );
 }

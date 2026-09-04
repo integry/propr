@@ -2,24 +2,30 @@
 
 Packaged desktop clients authenticate to one ProPR instance with an opaque
 instance token. They never receive or persist a GitHub access or refresh token.
-Protocol version 1 is designed for the Electron main process (or another trusted
-native process); renderer code must communicate with it through a narrow IPC
-bridge and must not read the device secret or instance token.
+Desktop authentication protocol version 2 is designed for the Electron main
+process (or another trusted native process); renderer code must communicate with
+it through a narrow IPC bridge and must not read the device secret or instance
+token.
 
 ## Discovery
 
-Before login, call `GET /api/desktop/discovery` (or the existing
-`GET /api/compatibility`). The dedicated response is deliberately limited to
-the product name, release/API/UI compatibility values, and this capability:
+Before login, call `GET /api/desktop/discovery`. The discovery document retains
+schema version 1 and advertises desktop authentication protocol version 2. It is
+deliberately limited to the exact product, release/API/UI compatibility,
+canonical managed endpoint, random public installation identity, and
+authentication capabilities:
 
 ```json
 {
+  "schemaVersion": 1,
   "product": "ProPR",
   "version": "0.8.15",
   "apiCompatibility": "2026-06-27",
   "uiCompatibility": "2026-06-27",
+  "canonicalEndpoint": "https://t-abc123.propr.dev",
+  "publicInstanceIdentity": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "desktopAuthentication": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "browserPairing": true,
     "instanceBearerTokens": true,
     "socketIoBearerAuthentication": true
@@ -27,14 +33,38 @@ the product name, release/API/UI compatibility values, and this capability:
 }
 ```
 
+Consumers must parse the entire schema-v1 document and require desktop
+authentication protocol version 2 before using any field. The version is
+canonical SemVer; both compatibility values are canonical `YYYY-MM-DD` versions;
+the identity is an exact lowercase UUIDv4; and the endpoint is either `null`
+during restart/configuration or the bare canonical
+`https://t-<id>.propr.dev` origin. Every capability key is required and every
+capability value is a JSON boolean. Missing, extra, duplicate, oversized,
+coerced, malformed, or non-canonical fields are incompatible discovery, never
+partial readiness. Native and shared-client consumers use the same bounded wire
+parser.
+
+The public identity is not a credential. It is randomly created in the stack's
+private durable `data/` directory and is shared by the host CLI and root-running
+API container. The directory remains owned by the host caller with mode `0700`.
+The single-link regular identity file may be owned by that host caller or by the
+root API container account; it is never group/world writable, and a root-owned
+file remains host-readable. Creation writes and fsyncs a private same-directory
+temporary, publishes without replacing a concurrent winner, and fsyncs the
+directory. Normal restarts, upgrades, and tunnel rotation preserve the value;
+replacing the durable data directory creates a new identity.
+
 Discovery is rate limited per trusted network address. A `false` capability
-means the deployment (for example, public demo mode) must not be paired.
+means the deployment (for example, public demo mode) must not be paired. The
+legacy `GET /api/compatibility` metadata is not a substitute for the schema-v1
+discovery and identity contract.
 
 ## Pairing sequence
 
-1. The trusted desktop process sends `POST /api/desktop/pairings` with
-   `{"clientName":"Alice's MacBook"}`. `clientName` is printable text from 1
-   through 80 characters.
+1. The trusted desktop process repeats strict unauthenticated discovery at the
+   exact candidate origin. It then sends `POST /api/desktop/pairings` with the
+   client name and its main-owned profile/origin/scope/credential-generation
+   binding. `clientName` is printable text from 1 through 80 characters.
 2. A `201` response contains `pairingId`, `deviceSecret`, `approvalUrl`,
    `expiresAt`, and `interval` (seconds). Both identifiers have at least 128 bits
    of entropy; the device secret has 256 bits. Store the secret only in trusted
@@ -75,7 +105,15 @@ Keychain, Windows Credential Manager, or Linux Secret Service. Never put it in
 `localStorage`, IndexedDB, renderer state, a pairing URL, logs, crash reports, or
 analytics. Keep the instance origin with the credential and refuse to send it to
 another origin. Treat TLS certificate failures as terminal; HTTP is accepted
-only for loopback development.
+only for loopback development. Persist the discovery `publicInstanceIdentity`
+with the encrypted credential and bind it atomically to the profile ID,
+canonical origin, and credential generation. Before a stored token is used
+after launch, reconnect, profile switch, or tunnel rotation, repeat
+unauthenticated strict discovery at that exact origin. An absent, malformed, or
+different identity produces no bearer-, cookie-, or socket-authenticated
+request, durably detaches the old credential, and requires a new pairing
+generation. Legacy credentials without this binding fail closed and are removed
+locally during migration.
 
 The server stores SHA-256 token and device-secret hashes, never plaintext. Token
 rows retain the owner GitHub ID/profile snapshot, creation and last-use times,

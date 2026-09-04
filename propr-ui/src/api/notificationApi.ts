@@ -79,6 +79,12 @@ export function dismissNotification(id: string): Promise<NotificationStateRespon
   });
 }
 
+export function dismissAllNotifications(): Promise<NotificationUnreadCountResponse> {
+  return requestJson('/dismiss-all', notificationUnreadCountResponseSchema, {
+    method: 'POST',
+  });
+}
+
 export function getNotificationPreferences(): Promise<NotificationPreferencesResponse> {
   return requestJson('/preferences', notificationPreferencesResponseSchema);
 }

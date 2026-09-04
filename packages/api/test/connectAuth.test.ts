@@ -32,11 +32,27 @@ test('local relay mode uses Connect without a per-instance OAuth App', () => {
   }), 'connect');
 });
 
-test('off-tunnel relay inference rejects callbacks outside the exact loopback allowlist', () => {
+test('off-tunnel relay inference uses the shared canonical loopback rule', () => {
+  for (const callbackUrl of [
+    'http://api.dev.localhost:4000/api/auth/github/callback',
+    'http://127.0.0.2:4000/api/auth/github/callback',
+    'http://127.42.7.9:4000/api/auth/github/callback',
+    'http://[::1]:4000/api/auth/github/callback',
+  ]) {
+    assert.equal(resolveBrowserAuthMode({
+      PROPR_UI_TUNNEL_ENABLED: 'false',
+      PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
+      PROPR_GH_RELAY_TOKEN: 'prt_secret',
+      GH_OAUTH_CALLBACK_URL: callbackUrl,
+    }), 'connect', callbackUrl);
+  }
+
   for (const callbackUrl of [
     'https://api.example.com/api/auth/github/callback',
     'https://localhost:4000/api/auth/github/callback',
-    'http://127.0.0.2:4000/api/auth/github/callback',
+    'http://127.1:4000/api/auth/github/callback',
+    'http://0177.0.0.1:4000/api/auth/github/callback',
+    'http://localhost.:4000/api/auth/github/callback',
     'http://localhost:4000/not-the-auth-callback',
   ]) {
     assert.equal(resolveBrowserAuthMode({
@@ -93,6 +109,19 @@ test('Connect authorization URL carries the exact callback and CSRF state', () =
   assert.equal(url.searchParams.get('installation_id'), '123');
 });
 
+test('Connect authorization URL rejects configured query strings and fragments', () => {
+  for (const connectOrigin of [
+    'https://connect.propr.dev?tenant=attacker',
+    'https://connect.propr.dev#attacker',
+  ]) {
+    assert.throws(() => buildConnectAuthorizationUrl({
+      connectOrigin,
+      callbackUrl: 'https://t-abc.propr.dev/api/auth/github/callback',
+      state: 'random-state',
+    }), /PROPR_CONNECT_URL must be a bare HTTPS origin/);
+  }
+});
+
 test('redeems a Connect code server-to-server without exposing the relay token in the body', async () => {
   let relayRequest: Request | undefined;
   let githubRequest: Request | undefined;
@@ -144,4 +173,31 @@ test('binds the Connect identity username to the validated token owner', async (
   assert.equal(user.login, 'verified-owner');
   assert.equal(user.username, 'verified-owner');
   assert.equal(user.displayName, 'verified-owner');
+});
+
+test('preserves expiring OAuth grant fields returned by Connect', async () => {
+  const before = Date.now();
+  const user = await redeemConnectAuthorizationCode({
+    code: 'pia_code',
+    relayUrl: 'https://webhook.propr.dev/v1',
+    relayToken: 'prt_relay_secret',
+    fetchImpl: (async (input) => {
+      if (String(input) === 'https://api.github.com/user') {
+        return Response.json({ id: 583231, login: 'octocat' });
+      }
+      return Response.json({
+        username: 'octocat',
+        avatar_url: null,
+        access_token: 'gho_user_secret',
+        refresh_token: 'ghr_refresh_secret',
+        expires_in: 28_800,
+        refresh_token_expires_in: 15_897_600,
+      });
+    }) as typeof fetch,
+  });
+
+  assert.equal(user.oauthSource, 'connect');
+  assert.equal(user.refreshToken, 'ghr_refresh_secret');
+  assert.ok((user.tokenExpiresAt || 0) >= before + 28_800_000);
+  assert.ok((user.refreshTokenExpiresAt || 0) >= before + 15_897_600_000);
 });

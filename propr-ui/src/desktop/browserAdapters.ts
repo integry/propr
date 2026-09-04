@@ -1,4 +1,6 @@
+import { normalizeApiBaseUrl, ProprClientError } from '@propr/client';
 import { evaluateProprApiCompatibility } from '@propr/shared';
+import { createElectronDesktopAdapters } from './electronAdapters';
 import type {
   DesktopAdapters,
   DesktopAuthenticationCompleteEventDetail,
@@ -25,15 +27,14 @@ const fixtureProfile: DesktopProfile = {
 };
 
 const normalizeBaseUrl = (value: string): string => {
-  const url = new URL(value.trim());
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Instance URLs must use http:// or https://.');
+  try {
+    const normalized = normalizeApiBaseUrl(value);
+    if (!normalized) throw new Error('Enter an instance URL.');
+    return normalized;
+  } catch (error) {
+    if (error instanceof ProprClientError) throw new Error(error.message);
+    throw error;
   }
-  if (url.username || url.password) throw new Error('Instance URLs cannot contain credentials.');
-  url.pathname = url.pathname.replace(/\/+$/, '');
-  url.search = '';
-  url.hash = '';
-  return url.toString().replace(/\/+$/, '');
 };
 
 const readProfiles = (): DesktopProfile[] => {
@@ -48,9 +49,17 @@ const readProfiles = (): DesktopProfile[] => {
 const isDesktopProfile = (value: unknown): value is DesktopProfile => {
   if (!value || typeof value !== 'object') return false;
   const profile = value as Partial<DesktopProfile>;
+  if (typeof profile.baseUrl !== 'string') return false;
+  let normalizedBaseUrl: string;
+  try { normalizedBaseUrl = normalizeBaseUrl(profile.baseUrl); } catch { return false; }
   return typeof profile.id === 'string'
+    && profile.id.length > 0
+    && profile.id.length <= 64
     && typeof profile.name === 'string'
+    && profile.name.length > 0
+    && profile.name.length <= 80
     && typeof profile.baseUrl === 'string'
+    && normalizedBaseUrl === profile.baseUrl
     && (profile.kind === 'local' || profile.kind === 'remote');
 };
 
@@ -133,6 +142,7 @@ const authenticateBrowserFixture = (profile: DesktopProfile): Promise<void> => n
 
 const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters => ({
   platform: detectPlatform(),
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     async list() {
       if (fixture === 'first-run') return [];
@@ -158,12 +168,13 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
       else window.localStorage.removeItem(ACTIVE_PROFILE_KEY);
     },
   },
-  discovery: { async discover() { return fixture ? [fixtureProfile] : []; } },
+  discovery: { supported: false, async discover() { return fixture ? [fixtureProfile] : []; } },
   externalBrowser: { async open(url) { window.open(url, '_blank', 'noopener,noreferrer'); } },
   authentication: {
     authenticate: authenticateBrowserFixture,
   },
   localSetup: {
+    supported: true,
     async setup() {
       if (fixture) return fixtureProfile;
       throw new Error('Local setup will be available when the desktop host adapter is connected.');
@@ -182,6 +193,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
 export const resolveDesktopAdapters = (): DesktopAdapters | null => {
   const bridge: ProprDesktopBridge | undefined = window.__PROPR_DESKTOP__;
   if (bridge?.isDesktop) return bridge;
+  if (window.proprDesktop) return createElectronDesktopAdapters(window.proprDesktop);
   const fixture = import.meta.env.DEV ? fixtureFromLocation() : null;
   return fixture ? createBrowserAdapters(fixture) : null;
 };

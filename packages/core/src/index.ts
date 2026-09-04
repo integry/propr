@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- public package exports are intentionally centralized */
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
@@ -75,7 +76,7 @@ export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_C
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
-export { applyDatabaseMigrations, type MigrationDatabase } from './db/migrationGate.js';
+export { applyDatabaseMigrations, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
 
 export { getRepoConfigKey, detectDefaultBranch, listRepositoryBranchConfigurations } from './git/branchConfig.js';
 export type { BranchConfiguration } from './git/branchConfig.js';
@@ -125,9 +126,9 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR } from './webhook/checkRunHelpers.js';
-export type { CheckRunsStatus, ActivePRWork, ActivePRTask, ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export * from './webhook/ciFailureFollowup.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
@@ -174,6 +175,8 @@ export type { IssueLink, ExecutionResult, EpicPRResult, EnsureEpicPROptions } fr
 export { validateAttachmentBaseUrlConfig } from './services/taskExecutionHelpers.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
+export * from './services/visualPreviewService.js';
+export * from './services/visualPreviewOAuthCredentialService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
 export type { Plan, PlanItem, RefinementResponse } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';
@@ -295,7 +298,7 @@ export type {
 export {
     getReposFromEnv,
     getRepos,
-    isMonitoredRepository,
+    isMonitoredRepository, isAutoCiFollowupEnabledForRepository,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,
@@ -312,8 +315,8 @@ export {
 export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 
 // Agent abstraction exports
-export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
-export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export { AgentRegistry, getAgentRegistry, type AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
@@ -412,10 +415,10 @@ export {
     MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER, MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
     MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW, PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
     PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS, PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
-    notificationService, createNotificationEvent, assignNotificationRecipients,
-    listNotifications, getUnreadNotificationCount, markNotificationRead, dismissNotification,
-    getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference,
-    upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
+    notificationService, createNotificationEvent, assignNotificationRecipients, listNotifications,
+    getUnreadNotificationCount, markNotificationRead, dismissNotification, dismissAllNotifications, dismissNotificationReceipts,
+    dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
+    getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
 export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions } from './services/notificationService.js';
@@ -424,8 +427,7 @@ export type { NotificationCursor } from './services/notificationPagination.js';
 
 // Repository migration (rename/move detection)
 export {
-    detectRepositoryRename,
-    migrateRepositoryReferences,
+    detectRepositoryRename, migrateRepositoryReferences,
     checkAndMigrateRepository,
     detectRenameFromResponse,
     scheduleRepositoryRenameCheck

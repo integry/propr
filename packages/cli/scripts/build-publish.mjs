@@ -38,7 +38,6 @@ const sharedDir = join(repoRoot, "packages", "shared");
 const localSetupDir = join(repoRoot, "packages", "local-setup");
 const stageDir = join(repoRoot, "dist-publish", "propr-cli");
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
-
 const run = (cmd, cmdArgs, cwd = repoRoot) =>
   execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
 
@@ -77,6 +76,10 @@ const buildLauncherManifest = (version) => {
 // 1. Build the workspace packages we depend on.
 run("npm", ["run", "build", "-w", "@propr/shared"]);
 run("npm", ["run", "build", "-w", "@propr/local-setup"]);
+// TypeScript does not remove outputs for deleted source files. Start the
+// publishable CLI build from an empty output directory so retired authority
+// implementations cannot survive as stale package-controlled executables or JS.
+rmSync(join(cliDir, "dist"), { recursive: true, force: true });
 run("npm", ["run", "build", "-w", "@propr/cli"]);
 
 // 2. Stage the CLI dist + README.
@@ -91,7 +94,7 @@ for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
 const nativeArtifacts = {
   "darwin-arm64": "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
   "darwin-x64": "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
-  "linux-arm64": "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  "linux-arm64": "916679f413251c4b23c51167987a874bbbdd9d96991882bfac9093e0ea5fa051",
   "linux-x64": "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
@@ -100,7 +103,21 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   if (actual !== expected) throw new Error(`${platformArch} directory-operations artifact failed integrity verification`);
 }
-for (const auditedFile of ["directory-operations.c", "README.md"]) {
+const authorityArtifacts = {
+  "darwin-arm64/connect-authority-broker": "75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0",
+  "darwin-x64/connect-authority-broker": "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
+};
+for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
+  const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);
+  if (!existsSync(artifact)) throw new Error(`Native authority broker is missing: ${artifact}`);
+  const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+  if (actual !== expected) throw new Error(`${relativeArtifact} failed integrity verification`);
+}
+for (const auditedFile of [
+  "directory-operations.c",
+  "darwin-authority-broker.c",
+  "README.md",
+]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);
   if (!existsSync(bundled)) throw new Error(`Audited native helper file is missing: ${bundled}`);
 }

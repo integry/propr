@@ -258,6 +258,7 @@ describe('instance catalog', () => {
                     defaultModel: 'gpt-5.4',
                     envVars: { SECRET_TOKEN: 'secret' }
                 }],
+                loadSyntheticAgents: async () => [],
                 loadRepositories: async () => [
                     { id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'main' },
                     { id: 'repo-2', name: 'integry/private-disabled', enabled: false }
@@ -275,6 +276,8 @@ describe('instance catalog', () => {
         assert.equal(record.status, 200);
         assert.deepEqual(record.body, {
             agents: [{
+                id: 'agent-1',
+                kind: 'direct',
                 alias: 'default',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],

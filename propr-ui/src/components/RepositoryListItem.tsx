@@ -3,6 +3,7 @@ import { Github, RefreshCw, Star, Eye, EyeOff } from 'lucide-react';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
+import { RepositoryVisualPreviewControl, type RepositoryVisualPreviewSettings } from './RepositoryVisualPreviewControl';
 
 type RepoStatusType = 'indexed' | 'indexing' | 'failed' | 'idle';
 
@@ -193,10 +194,41 @@ const RepositoryActionButtons: React.FC<{
   </div>
 );
 
+const AutoCiFollowupControl: React.FC<{
+  repo: MonitoredRepo;
+  onToggle: (repoId: string) => void;
+  isReadOnly: boolean;
+}> = ({ repo, onToggle, isReadOnly }) => {
+  if (isReadOnly) return null;
+
+  return (
+    <label
+      className="mt-2 inline-flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer"
+      title="Automatically create follow-up work when CI fails"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <input
+        type="checkbox"
+        checked={repo.autoFollowupOnFailedCi === true}
+        onChange={() => onToggle(repo.id)}
+        className="sr-only peer"
+        aria-label={`Automatic CI follow-up for ${repo.name}`}
+      />
+      <span className="relative w-7 h-4 bg-slate-200 rounded-full peer-focus:ring-2 peer-focus:ring-teal-500/20 peer-checked:bg-teal-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:h-3 after:w-3 after:rounded-full after:bg-white after:border after:border-slate-300 after:transition-all peer-checked:after:translate-x-full" />
+      <span>Auto CI follow-up</span>
+      <span className={`rounded px-1.5 py-0.5 font-medium ${repo.autoFollowupOnFailedCi ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500'}`}>
+        {repo.autoFollowupOnFailedCi ? 'On' : 'Off'}
+      </span>
+    </label>
+  );
+};
+
 interface RepositoryListItemProps {
   repo: MonitoredRepo;
   indexingStatuses: Record<string, RepositoryIndexingStatus>;
   onToggle: (repoId: string) => void;
+  onToggleAutoCiFollowup: (repoId: string) => void;
+  onUpdateVisualPreview: (repoId: string, settings: RepositoryVisualPreviewSettings) => void;
   onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
@@ -211,6 +243,8 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   repo,
   indexingStatuses,
   onToggle,
+  onToggleAutoCiFollowup,
+  onUpdateVisualPreview,
   onRemove,
   onStopIndexing,
   onReindex,
@@ -323,6 +357,17 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
               </button>
             )}
           </div>
+
+          <AutoCiFollowupControl
+            repo={repo}
+            onToggle={onToggleAutoCiFollowup}
+            isReadOnly={isReadOnly}
+          />
+          <RepositoryVisualPreviewControl
+            repo={repo}
+            onUpdate={onUpdateVisualPreview}
+            isReadOnly={isReadOnly}
+          />
         </div>
 
         {/* Right Action Gutter: Fixed-width area for maintenance tools */}

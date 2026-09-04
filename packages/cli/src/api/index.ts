@@ -38,6 +38,12 @@ export {
   updateAgentRuntimePackages,
   verifyAgentRuntimePackages,
 } from './agentRuntime.js';
+
+export {
+  getVisualPreviewAuthStatus,
+  saveVisualPreviewUploadToken,
+} from './visualPreviewAuth.js';
+export type { VisualPreviewAuthStatus } from './visualPreviewAuth.js';
 export type {
   AgentRuntimeBuildStatus,
   AgentRuntimeImageVerification,
@@ -132,6 +138,7 @@ export {
 
 export type {
   MonitoredRepo,
+  VisualPreviewSettings,
   GetReposResponse,
   AddRepoOptions,
   UpdateRepoOptions,
@@ -156,6 +163,18 @@ export type {
   AddAgentOptions,
   SaveAgentsResponse,
 } from "./agents.js";
+
+// Synthetic agent pools configuration API
+export {
+  listSyntheticAgents,
+  saveSyntheticAgents,
+  deleteSyntheticAgent,
+} from "./syntheticPools.js";
+
+export type {
+  SyntheticAgentsResponse,
+  SaveSyntheticAgentsResponse,
+} from "./syntheticPools.js";
 
 // System Settings API
 export {

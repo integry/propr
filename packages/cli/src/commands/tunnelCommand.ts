@@ -23,6 +23,7 @@ import {
   proprInstanceProxyUrl,
   proprTunnelEndpoints,
   isProprProxyUrl,
+  canonicalProprProxyUrl,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
 } from "@propr/shared";
@@ -418,7 +419,9 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   const token = input.token.trim();
   if (!token) throw new Error("--token is required");
 
-  const explicitUrl = input.url?.trim().replace(/\/+$/, "");
+  // URL authority is exact raw input: do not trim, fold case, or remove slashes
+  // before the shared canonical parser sees it.
+  const explicitUrl = input.url;
   const explicitInstanceId = input.instanceId?.trim();
   if (!explicitUrl && !explicitInstanceId) {
     throw new Error("provide --url https://t-<id>.propr.dev or --instance-id <id>");
@@ -428,17 +431,17 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   if (!candidateUrl) {
     throw new Error(`could not derive a hosted proxy URL from --instance-id (${explicitInstanceId})`);
   }
-  if (!isProprProxyUrl(candidateUrl)) {
+  const canonicalUrl = canonicalProprProxyUrl(candidateUrl);
+  if (!canonicalUrl) {
     throw new Error(`tunnel URL must be a bare hosted proxy URL such as https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX} (no path/query/fragment)`);
   }
 
-  // Canonicalize: URL parsing already lowercases the host, and `.origin` drops
-  // any (validated-absent) path so the persisted value matches what the launcher
-  // resolves. DNS is case-insensitive, so the instance id is lowercased too — a
-  // mixed-case --instance-id would otherwise diverge from the launcher's value.
-  const publicUrl = new URL(candidateUrl).origin;
+  // candidateUrl has already passed the exact raw Connect-origin contract.
+  // Instance-id input remains a derivation input and is lowercased before its
+  // canonical endpoint is generated.
+  const publicUrl = candidateUrl;
   const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
-  const normalizedExplicitInstanceId = explicitInstanceId?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+  const normalizedExplicitInstanceId = explicitInstanceId?.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
     ? explicitInstanceId.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
     : explicitInstanceId;
   const instanceId = (normalizedExplicitInstanceId ?? derivedInstanceId)?.toLowerCase();
@@ -658,7 +661,7 @@ async function runTunnelSetup(options: {
   console.log(`  hosted UI: ${vars.FRONTEND_URL}`);
   console.log(`  OAuth callback: ${vars.GH_OAUTH_CALLBACK_URL}`);
   console.log("  GitHub OAuth: register the callback URL above in your GitHub OAuth App");
-  console.log(`  Hosted UI link: ${vars.FRONTEND_URL}?tunnel=${encodeURIComponent(vars.PROPR_UI_PUBLIC_API_URL)}`);
+  console.log(`  Hosted UI link: ${vars.FRONTEND_URL}?tunnel=${new URL(vars.PROPR_UI_PUBLIC_API_URL).hostname}`);
   console.log("");
 
   if (options.start) {

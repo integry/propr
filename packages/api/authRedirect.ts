@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { canonicalProprHttpUrlOrigin, isProprLoopbackHostname } from '@propr/shared';
 import type { AllowedRedirectHost } from './authTypes.js';
 
 function isValidHostname(hostname: string): boolean {
@@ -59,8 +60,8 @@ function isAllowedRedirectHost(hostname: string): boolean {
 }
 
 function isLocalHttpRedirectHost(hostname: string): boolean {
-    const normalized = normalizeHostname(hostname);
-    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+    const normalized = hostname.includes(':') ? `[${normalizeHostname(hostname)}]` : normalizeHostname(hostname);
+    return isProprLoopbackHostname(normalized);
 }
 
 // HTTPS is required for all non-local redirect targets by default. HTTP is only
@@ -79,6 +80,7 @@ export function getValidatedRedirectTo(redirectTo: string | undefined): string |
     try {
         const url = new URL(redirectTo);
         const hostname = normalizeHostname(url.hostname);
+        if (canonicalProprHttpUrlOrigin(redirectTo, { allowInsecureHttp: allowHttp }) !== url.origin) return undefined;
         if (url.protocol === 'https:' && isAllowedRedirectHost(hostname)) return url.toString();
         if (url.protocol === 'http:' && isAllowedRedirectHost(hostname) && (allowHttp || isLocalHttpRedirectHost(hostname))) return url.toString();
     } catch {

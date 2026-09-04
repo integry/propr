@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@propr/core": "^0.8.15",
+    "@propr/local-setup": "^0.8.15",
     "@propr/shared": "^0.8.15",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.81.3",

@@ -15,6 +15,7 @@ import {
   getIndexingStatus,
   MonitoredRepo,
   RepositoryIndexingStatus,
+  VisualPreviewSettings,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
@@ -24,6 +25,19 @@ import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation
  */
 function formatEnabled(enabled: boolean): string {
   return enabled ? "Enabled" : "Disabled";
+}
+
+function parseVisualPreviewTypes(value: string | undefined): VisualPreviewSettings['types'] {
+  if (!value) return ['image'];
+  const values = [...new Set(value.split(',').map(type => type.trim().toLowerCase()).filter(Boolean))];
+  if (values.length === 0 || values.some(type => type !== 'image' && type !== 'video')) {
+    throw new Error('Preview types must be a comma-separated list containing image and/or video');
+  }
+  return values as VisualPreviewSettings['types'];
+}
+
+function formatVisualPreview(settings: VisualPreviewSettings | undefined): string {
+  return settings?.enabled ? settings.types.join('+') : 'Disabled';
 }
 
 /**
@@ -154,12 +168,22 @@ function displayReposTable(repos: MonitoredRepo[]): void {
     "Status".length,
     ...repos.map((r) => formatEnabled(r.enabled).length)
   );
+  const autoCiFollowupWidth = Math.max(
+    "Auto CI follow-up".length,
+    ...repos.map((r) => formatEnabled(r.autoFollowupOnFailedCi).length)
+  );
+  const visualPreviewWidth = Math.max(
+    "Visual previews".length,
+    ...repos.map((r) => formatVisualPreview(r.visualPreview).length)
+  );
 
   const header = [
     "Repository".padEnd(nameWidth),
     "Alias".padEnd(aliasWidth),
     "Branch".padEnd(branchWidth),
     "Status".padEnd(statusWidth),
+    "Auto CI follow-up".padEnd(autoCiFollowupWidth),
+    "Visual previews".padEnd(visualPreviewWidth),
   ].join("  ");
 
   console.log(header);
@@ -171,6 +195,8 @@ function displayReposTable(repos: MonitoredRepo[]): void {
       (truncate(repo.alias, 20) || "-").padEnd(aliasWidth),
       (truncate(repo.baseBranch, 20) || "-").padEnd(branchWidth),
       formatEnabled(repo.enabled).padEnd(statusWidth),
+      formatEnabled(repo.autoFollowupOnFailedCi).padEnd(autoCiFollowupWidth),
+      formatVisualPreview(repo.visualPreview).padEnd(visualPreviewWidth),
     ].join("  ");
 
     console.log(row);
@@ -242,6 +268,10 @@ Examples:
     .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
+    .option("--auto-ci-followup", "Enable automatic follow-up when CI fails (default: off)")
+    .option("--visual-previews", "Enable visual previews for user-visible changes")
+    .option("--preview-types <types>", "Comma-separated preview types: image,video")
+    .option("--preview-instructions <text>", "Additional visual capture instructions")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -249,11 +279,13 @@ Argument:
 Examples:
   $ propr repo add myorg/myrepo
   $ propr repo add myorg/myrepo -a "My Project" -b develop
+  $ propr repo add myorg/myrepo --auto-ci-followup
+  $ propr repo add myorg/myrepo --visual-previews --preview-types image,video
 `)
     .action(
       async (
         fullName: string,
-        options: { alias?: string; branch?: string }
+        options: { alias?: string; branch?: string; autoCiFollowup?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string }
       ) => {
         try {
           if (!fullName.includes("/")) {
@@ -275,10 +307,18 @@ Examples:
 
           console.log(`Adding repository: ${fullName}...`);
 
+          const previewRequested = options.visualPreviews === true || options.previewTypes !== undefined || options.previewInstructions !== undefined;
+
           const result = await addRepo(fullName, {
             alias: options.alias,
             baseBranch: options.branch,
             enabled: true,
+            autoFollowupOnFailedCi: options.autoCiFollowup ?? false,
+            visualPreview: {
+              enabled: previewRequested,
+              types: parseVisualPreviewTypes(options.previewTypes),
+              ...(options.previewInstructions?.trim() ? { instructions: options.previewInstructions.trim() } : {})
+            },
           });
 
           if (result.success) {
@@ -290,6 +330,13 @@ Examples:
             if (options.branch) {
               console.log(`  Base branch: ${options.branch}`);
             }
+            console.log(
+              `  Automatic CI follow-up: ${formatEnabled(options.autoCiFollowup ?? false)}`
+            );
+            console.log(`  Visual previews: ${formatVisualPreview({
+              enabled: previewRequested,
+              types: parseVisualPreviewTypes(options.previewTypes)
+            })}`);
             console.log("");
             console.log(
               `Total monitored repositories: ${result.repos_to_monitor.length}`
@@ -397,24 +444,33 @@ Example:
   // repo toggle
   repo
     .command("toggle <fullName>")
-    .description("Enable or disable monitoring for a repository")
+    .description("Update monitoring, automatic CI follow-up, or visual previews for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
+    .option("--auto-ci-followup", "Enable automatic follow-up when CI fails")
+    .option("--no-auto-ci-followup", "Disable automatic follow-up when CI fails")
+    .option("--visual-previews", "Enable visual previews")
+    .option("--no-visual-previews", "Disable visual previews")
+    .option("--preview-types <types>", "Comma-separated preview types: image,video")
+    .option("--preview-instructions <text>", "Replace visual capture instructions")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
 
 Note:
-  Exactly one of --enable or --disable must be specified.
+  Specify at least one monitoring, automatic CI follow-up, or visual preview option.
 
 Examples:
   $ propr repo toggle myorg/myrepo --enable
   $ propr repo toggle myorg/myrepo --disable
+  $ propr repo toggle myorg/myrepo --auto-ci-followup
+  $ propr repo toggle myorg/myrepo --no-auto-ci-followup
+  $ propr repo toggle myorg/myrepo --visual-previews --preview-types image,video
 `)
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean }
+        options: { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string }
       ) => {
         try {
           if (options.enable && options.disable) {
@@ -424,14 +480,17 @@ Examples:
             process.exit(1);
           }
 
-          if (!options.enable && !options.disable) {
+          if (!options.enable && !options.disable && options.autoCiFollowup === undefined && options.visualPreviews === undefined && options.previewTypes === undefined && options.previewInstructions === undefined) {
             console.error(
-              "Error: Must specify either --enable or --disable."
+              "Error: Must specify a monitoring, automatic CI follow-up, or visual preview option."
             );
             console.log("");
             console.log("Usage:");
             console.log(`  propr repo toggle ${fullName} --enable`);
             console.log(`  propr repo toggle ${fullName} --disable`);
+            console.log(`  propr repo toggle ${fullName} --auto-ci-followup`);
+            console.log(`  propr repo toggle ${fullName} --no-auto-ci-followup`);
+            console.log(`  propr repo toggle ${fullName} --visual-previews --preview-types image,video`);
             process.exit(1);
           }
 
@@ -444,19 +503,41 @@ Examples:
             process.exit(1);
           }
 
-          const enableState = options.enable ? true : false;
-          const actionWord = enableState ? "Enabling" : "Disabling";
+          const enabled = options.enable ? true : options.disable ? false : undefined;
+          const visualPreviewUpdate = options.visualPreviews !== undefined || options.previewTypes !== undefined || options.previewInstructions !== undefined
+            ? {
+                ...(options.visualPreviews !== undefined && { enabled: options.visualPreviews }),
+                ...(options.previewTypes !== undefined && { types: parseVisualPreviewTypes(options.previewTypes) }),
+                ...(options.previewInstructions !== undefined && { instructions: options.previewInstructions.trim() })
+              }
+            : undefined;
+          console.log(`Updating repository settings: ${fullName}...`);
 
-          console.log(`${actionWord} monitoring for repository: ${fullName}...`);
-
-          const result = await updateRepo(fullName, { enabled: enableState });
+          const result = await updateRepo(fullName, {
+            ...(enabled !== undefined && { enabled }),
+            ...(options.autoCiFollowup !== undefined && {
+              autoFollowupOnFailedCi: options.autoCiFollowup,
+            }),
+            ...(visualPreviewUpdate && { visualPreview: visualPreviewUpdate }),
+          });
 
           if (result.success) {
-            const statusWord = enableState ? "enabled" : "disabled";
             console.log("");
-            console.log(
-              `Successfully ${statusWord} monitoring for repository: ${fullName}`
-            );
+            console.log(`Successfully updated repository: ${fullName}`);
+            if (enabled !== undefined) {
+              console.log(`  Monitoring: ${formatEnabled(enabled)}`);
+            }
+            if (options.autoCiFollowup !== undefined) {
+              console.log(
+                `  Automatic CI follow-up: ${formatEnabled(options.autoCiFollowup)}`
+              );
+            }
+            if (visualPreviewUpdate) {
+              const previewState = options.visualPreviews === false
+                ? 'Disabled'
+                : options.previewTypes ? parseVisualPreviewTypes(options.previewTypes).join('+') : 'Updated';
+              console.log(`  Visual previews: ${previewState}`);
+            }
           } else {
             console.error("Failed to update repository.");
             process.exit(1);

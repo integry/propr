@@ -12,7 +12,7 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { loadPrimaryProcessingLabels } from '@propr/core';
+import { loadPrimaryProcessingLabels, loadRepositoryVisualPreviewSettings } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR, resolvePrReasoningLevelOverride
@@ -355,7 +355,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
     });
 
-    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
+    const visualPreviewSettings = await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`);
+    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings });
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,

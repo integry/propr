@@ -31,6 +31,7 @@ export type NotificationRouteService = Pick<
     | 'getUnreadNotificationCount'
     | 'markNotificationRead'
     | 'dismissNotification'
+    | 'dismissAllNotifications'
     | 'getNotificationPreferences'
     | 'updateNotificationPreferences'
     | 'upsertPushSubscription'
@@ -239,6 +240,19 @@ export function createNotificationRoutes(
         }
     }
 
+    async function dismissAll(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            res.json(parseNotificationUnreadCountResponse(
+                await service.dismissAllNotifications(userId)
+            ));
+        } catch (error) {
+            handleRouteError(res, error, 'dismiss all notifications');
+        }
+    }
+
     async function getConfiguration(req: Request, res: Response): Promise<void> {
         const userId = authenticatedUserId(req, res);
         if (!userId) return;
@@ -351,6 +365,7 @@ export function createNotificationRoutes(
         getUnreadCount,
         markRead,
         dismiss,
+        dismissAll,
         getConfiguration,
         getCapabilities: getConfiguration,
         getPreferences,

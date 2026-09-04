@@ -45,7 +45,7 @@ These records are the heart of ProPR's observability — see [Observability And 
 
 ## Repositories
 
-**Repositories** (`/repositories`) manages the repos ProPR monitors — add, alias, set a base branch, enable/disable, reindex, hide, or delete. The selected repository opens a panel with four tabs:
+**Repositories** (`/repositories`) manages the repos ProPR monitors — add, alias, set a base branch, enable/disable, configure [visual previews](./visual-previews.md), reindex, hide, or delete. Visual preview controls select image/video evidence and optional capture instructions for each repository. The selected repository opens a panel with four tabs:
 
 - **Chat** — converse with the indexed repository;
 - **Improve** — generate categorized improvement suggestions;
@@ -57,6 +57,8 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 ## Coding Agents
 
 **Coding Agents** (`/ai-agents`) is an administrator-only split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. When adding Claude, Codex, Antigravity, or OpenCode, choose a new-account login or reuse an existing config. New-account login creates an isolated ProPR-managed credential directory, so multiple accounts of the same provider can coexist without entering host paths. The login dialog starts the configured agent image, displays the CLI's authorization link and instructions, and accepts requested confirmation codes or terminal menu input without requiring the agent CLI on the host. Existing entries also include **Log in**. The dialog includes Up, Down, and Enter controls for provider and login-method menus; Escape or backdrop dismissal cancels its temporary container. Vibe uses an API key or pre-populated config instead of this interactive flow. See [Agents And Models](./agents-and-models.md).
+
+Administrators can switch the configuration pane to **Synthetic Pools** to combine direct agent/model pairs behind virtual models with strict priority tiers, usage caps, round-robin or usage-based routing, and failover. Synthetic models also appear in the playground, which reports the virtual choice and physical member used. See [Synthetic Pools](./synthetic-pools.md).
 
 ## LLM Log
 

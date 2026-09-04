@@ -143,6 +143,33 @@ Examples:
 `);
 }
 
+async function refreshAgentRegistryForConfigUpdate(subtype: string): Promise<void> {
+    logger.info({ subtype }, 'Refreshing AgentRegistry due to agent configuration update...');
+    try {
+        const registry = AgentRegistry.getInstance();
+        if (subtype === 'agents_update') {
+            await registry.prepareImagesAndRefresh();
+        } else {
+            await registry.refresh();
+        }
+        const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
+        if (imageStatus.status !== 'ready') {
+            throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
+        }
+        const agents = registry.getAllAgents();
+        logger.info({
+            agentCount: agents.length,
+            agents: agents.map(agent => ({
+                alias: agent.config.alias,
+                type: agent.config.type,
+                enabled: agent.config.enabled,
+            })),
+        }, 'AgentRegistry refreshed successfully');
+    } catch (error) {
+        logger.error({ error: (error as Error).message }, 'Failed to refresh AgentRegistry');
+    }
+}
+
 export interface StartedWorker {
     worker: MainWorker;
     runtimeBuildWorker: Worker<AgentRuntimeBuildJobData>;
@@ -193,6 +220,22 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
 
+    // The main worker is the single owner of base/runtime agent image
+    // preparation. Do this before heartbeats and BullMQ workers so the stack
+    // cannot advertise or claim task capacity while an image is still building.
+    logger.info('Preparing agent Docker images and initializing agent registry...');
+    const registry = AgentRegistry.getInstance();
+    await registry.prepareImagesAndRefresh();
+    const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
+    if (imageStatus.status !== 'ready') {
+        throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
+    }
+    const agents = registry.getAllAgents();
+    logger.info({
+        agentCount: agents.length,
+        agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, dockerImage: a.config.dockerImage }))
+    }, 'Agent images prepared and registry initialized successfully');
+
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
@@ -213,21 +256,6 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     await sendHeartbeat();
 
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-
-    // Initialize the AgentRegistry which will ensure all configured agent Docker images exist
-    logger.info('Initializing agent registry and ensuring Docker images...');
-    try {
-        const registry = AgentRegistry.getInstance();
-        await registry.refresh();
-        const agents = registry.getAllAgents();
-        logger.info({
-            agentCount: agents.length,
-            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, dockerImage: a.config.dockerImage }))
-        }, 'Agent registry initialized successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
-    }
 
     setUltrafixDeps(createUltrafixDeps());
     logger.info('Ultrafix dependencies initialized for worker');
@@ -265,20 +293,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
                 logger.info({ event }, 'Received config update event');
 
                 // Handle agent config updates by refreshing the registry
-                if (event.subtype === 'agents_update') {
-                    logger.info('Refreshing AgentRegistry due to agents_update event...');
-                    try {
-                        const registry = AgentRegistry.getInstance();
-                        await registry.refresh();
-                        const agents = registry.getAllAgents();
-                        logger.info({
-                            agentCount: agents.length,
-                            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, enabled: a.config.enabled }))
-                        }, 'AgentRegistry refreshed successfully');
-                    } catch (agentError) {
-                        const err = agentError as Error;
-                        logger.error({ error: err.message }, 'Failed to refresh AgentRegistry');
-                    }
+                if (event.subtype === 'agents_update' || event.subtype === 'synthetic_agents_update') {
+                    await refreshAgentRegistryForConfigUpdate(event.subtype);
                 }
 
                 if (event.subtype === 'settings_update') {

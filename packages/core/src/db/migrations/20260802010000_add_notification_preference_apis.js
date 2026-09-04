@@ -1142,10 +1142,44 @@ async function hasLocalhostPushEndpoints(knex) {
   }
 }
 
+function findIntroducedForeignKeyViolations(before, after) {
+  const remainingBaselineViolations = new Map();
+  for (const violation of before) {
+    const identity = JSON.stringify([
+      violation.table,
+      violation.rowid ?? null,
+      violation.parent,
+      violation.fkid,
+    ]);
+    remainingBaselineViolations.set(
+      identity,
+      (remainingBaselineViolations.get(identity) || 0) + 1
+    );
+  }
+
+  return after.filter((violation) => {
+    const identity = JSON.stringify([
+      violation.table,
+      violation.rowid ?? null,
+      violation.parent,
+      violation.fkid,
+    ]);
+    const baselineCount = remainingBaselineViolations.get(identity) || 0;
+    if (baselineCount === 0) return true;
+    if (baselineCount === 1) remainingBaselineViolations.delete(identity);
+    else remainingBaselineViolations.set(identity, baselineCount - 1);
+    return false;
+  });
+}
+
 async function withForeignKeysDisabled(knex, operation) {
   const connection = await knex.client.acquireConnection();
   const raw = (sql) => knex.raw(sql).connection(connection);
   try {
+    // A legacy database can contain unrelated violations from older schemas.
+    // Preserve that existing state without allowing this rebuild to add any new
+    // violations of its own.
+    const baselineViolations = await raw('PRAGMA foreign_key_check');
     const rows = await raw('PRAGMA foreign_keys');
     const foreignKeysEnabled = rows[0]?.foreign_keys === 1;
     if (foreignKeysEnabled) await raw('PRAGMA foreign_keys = OFF');
@@ -1157,7 +1191,11 @@ async function withForeignKeysDisabled(knex, operation) {
         async (transaction) => {
           await operation(transaction);
           const violations = await transaction.raw('PRAGMA foreign_key_check');
-          if (violations.length > 0) {
+          const introducedViolations = findIntroducedForeignKeyViolations(
+            baselineViolations,
+            violations
+          );
+          if (introducedViolations.length > 0) {
             throw new Error(
               'Foreign-key violations detected after rebuilding push subscriptions'
             );

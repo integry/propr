@@ -1,0 +1,131 @@
+name: Packaged Connect Discovery Guard
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-connect-discovery-guard.yml'
+      - 'apps/desktop/**'
+      - 'packages/cli/**'
+      - 'packages/client/**'
+      - 'packages/shared/**'
+      - 'propr-ui/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-connect-discovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaged-connect-discovery:
+    name: Packaged Connect (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - target: darwin-arm64
+            runner: macos-15
+            platform: darwin
+            arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - target: win32-x64
+            runner: windows-2025
+            platform: win32
+            arch: x64
+          - target: win32-arm64
+            runner: windows-11-arm
+            platform: win32
+            arch: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up target-native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify selected host architecture
+        shell: bash
+        run: |
+          test "$(node -p process.platform)" = "${{ matrix.platform }}"
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install native Linux package and credential tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+
+      - name: Verify encoded Windows PowerShell ACL helper success streams
+        if: matrix.platform == 'win32'
+        run: npm run test:windows-fixture-acl -w @propr/desktop
+
+      - name: Verify Windows packaged launcher authority
+        if: matrix.platform == 'win32'
+        run: node --test apps/desktop/scripts/windows-packaged-connect-staging.test.mjs
+
+      - name: Package the target-native desktop app
+        run: npm run desktop:package
+
+      - name: Inspect the unsigned target-native desktop app
+        run: npm run desktop:smoke:inspect
+
+      - name: Run packaged Linux main-to-renderer discovery
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sandbox="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chown root:root "$sandbox"
+          sudo chmod 4755 "$sandbox"
+          test "$(stat -c '%U:%G:%a' "$sandbox")" = 'root:root:4755'
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+          ' bash "$keyring_root"
+
+      - name: Run packaged Darwin main-to-renderer discovery
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: >-
+          node apps/desktop/scripts/run-bounded-darwin-command.mjs
+          --timeout-ms 480000
+          --termination-grace-ms 90000
+          --max-output-bytes 1048576
+          --forward-output true
+          -- bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh '${{ matrix.arch }}'
+
+      - name: Run packaged Windows main-to-renderer discovery as an ordinary user
+        if: matrix.platform == 'win32'
+        shell: powershell
+        run: >-
+          & apps/desktop/scripts/run-packaged-windows-connect-smoke.ps1
+          -Architecture '${{ matrix.arch }}'

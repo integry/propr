@@ -11,6 +11,7 @@ import { useSettingsState } from './useSettingsState';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
 import NotificationSettingsSection from './NotificationSettingsSection';
+import VisualPreviewAuthSection from './VisualPreviewAuthSection';
 
 const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
@@ -30,6 +31,7 @@ const AdminSettingsPage: React.FC = () => {
     ignoreKeywords,
     newIgnoreKeyword,
     agents,
+    catalogAgents,
     summarizationSettings,
     isReindexing,
     agentTankSettings,
@@ -106,6 +108,7 @@ const AdminSettingsPage: React.FC = () => {
               }}
               summarizationSettings={summarizationSettings}
               agents={agents}
+              catalogAgents={catalogAgents}
               onSettingChange={handleModelSelectionChange}
               onReviewPromptChange={(e) => setSettings(prev => ({ ...prev, pr_review_prompt: e.target.value }))}
               onReviewPromptBlur={triggerSettingsSave}
@@ -142,6 +145,8 @@ const AdminSettingsPage: React.FC = () => {
 
           <div className="space-y-6">
             <NotificationSettingsSection />
+
+            <VisualPreviewAuthSection />
 
             <div className="border-t border-gray-200" />
 

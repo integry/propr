@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { dismissNotification, markNotificationRead } from './notificationApi';
+import { dismissAllNotifications, dismissNotification, markNotificationRead } from './notificationApi';
 
 const event = {
   id: 'event:token-refresh',
@@ -51,6 +51,24 @@ describe('notification mutation API', () => {
       expect.stringContaining('/api/notifications/event%3Atoken-refresh/dismiss'),
     ]);
     for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toMatchObject({ method: 'POST', credentials: 'include' });
+      expect(init?.body).toBeUndefined();
+    }
+  });
+
+  test('replays clear-all after token refresh and validates the unread count', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(tokenRefreshed())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ unreadCount: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    await expect(dismissAllNotifications()).resolves.toEqual({ unreadCount: 0 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(String(url)).toContain('/api/notifications/dismiss-all');
       expect(init).toMatchObject({ method: 'POST', credentials: 'include' });
       expect(init?.body).toBeUndefined();
     }

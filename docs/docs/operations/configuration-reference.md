@@ -22,6 +22,8 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `HOST_GH_PRIVATE_KEY` | Unset | Absolute host path to the `.pem`. The CLI/launcher bind-mounts it read-only into the app containers and overrides `GH_PRIVATE_KEY_PATH`, so the key can live anywhere on the host. No `~`. | App mode via the `propr` CLI or launcher. |
 | `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` | Placeholders | GitHub OAuth App credentials for Web UI login. | Always, for UI login. |
 | `GH_OAUTH_CALLBACK_URL` | Derived: `<API host>/api/auth/github/callback` | OAuth callback served by the API. Leave commented so tunnel-mode derivation wins; an active localhost value is used as-is even in tunnel mode. Register the URL — derived or explicit — in your GitHub OAuth App. | Override only. |
+| `GITHUB_VISUAL_PREVIEW_TOKEN` | Unset | Advanced override for the OAuth App token (`gho_`), classic PAT, or fine-grained PAT used only to upload visual-preview attachments. Administrators can normally paste a PAT in Settings instead, and `propr setup` imports a compatible `gh` CLI token when available. GitHub's uploader rejects GitHub App user (`ghu_`) and installation (`ghs_`) tokens. | Optional override. |
+| `PROPR_CREDENTIAL_ENCRYPTION_KEY` | `SYSTEM_TASK_SECRET`, then `SESSION_SECRET` | Optional dedicated secret used to encrypt the persisted visual-preview OAuth grant. It must be identical in the API and worker containers and remain stable across restarts; changing it requires reconnecting the GitHub login. | Optional security isolation. |
 | `SESSION_SECRET` | Placeholder | Signs browser session cookies. | Always. |
 | `ENABLE_BEARER_AUTH` | `true` (any value except `false` enables it) | Bearer token auth for the CLI. Set `false` to allow session login only. | Optional. |
 | `PROPR_DEMO_MODE` | `false` | `true`/`1` allows read-only access without GitHub OAuth and blocks all mutating API requests. Use a curated config/database for public demos. | Demo deployments. |
@@ -44,7 +46,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `WEB_PUSH_RETRY_BASE_MS` / `WEB_PUSH_RETRY_CAP_MS` | `30000` / `900000` | Base and cap for exponential retry scheduling after throttling, provider errors, or network failures. | Optional Web Push tuning. |
 | `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Requests loopback HTTP Push enrollment for isolated local development. It is honored only outside production when `API_PUBLIC_URL` is unset/local or has a loopback host, and can be changed without migrating the stable schema. | Local browser development only. |
 | `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
-| `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth and session endpoints. | Optional tuning. |
+| `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth initiation and callback endpoints. | Optional tuning. |
 | `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
 | `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. Its broad `uniquelocal` name is accepted only when `API_PORT` is explicitly loopback-bound. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
@@ -88,7 +90,10 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
 | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
-| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `1800000` (30 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
+| `CODEX_STREAM_TRANSPORT` | `websocket` | Codex response transport. `websocket` avoids long-lived HTTP response deadlines, `sse` supports environments that cannot carry WebSockets, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
+| `CODEX_STREAM_IDLE_TIMEOUT_MS` | `1800000` (30 minutes) | Maximum quiet period on a Codex response stream before reconnecting. This is separate from the whole-task `CODEX_TIMEOUT_MS`. | Optional tuning. |
+| `CODEX_STREAM_MAX_RETRIES` | `5` | Number of Codex response-stream reconnect attempts. Zero disables retries. | Optional tuning. |
+| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `3600000` (60 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
@@ -128,7 +133,7 @@ Optional: expose a local stack's API to the hosted control plane at `https://app
 |---|---|---|---|
 | `PROPR_UI_TUNNEL_TOKEN` | Unset | Cloudflare Tunnel token; setting it enables the tunnel on the next `propr start` (unless you ran `propr tunnel off`). This is a **live credential** — anyone with it can route traffic through your tunnel. Keep it in `.env` only; never commit, log, or share it. | Tunnel mode. |
 | `PROPR_UI_TUNNEL_ENABLED` | Unset | `true`/`1` explicitly enables the tunnel. A token is still required — `propr check` fails without one. Redundant when a token is set. | Optional. |
-| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
+| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — letters, digits, and hyphens; 1–61 characters so the full `t-<id>` DNS label remains valid. Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
 | `PROPR_UI_PUBLIC_API_URL` | Derived from `PROPR_INSTANCE_ID` | Explicit public API URL the hosted UI talks to; overrides the derived one. | Override only. |
 | `PROPR_CLOUDFLARED_IMAGE` | `cloudflare/cloudflared:2024.12.2` (pinned) | The cloudflared sidecar image. | Override only. |
 

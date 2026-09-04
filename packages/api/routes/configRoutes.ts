@@ -5,12 +5,13 @@ import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { ConfigRouteError, withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConfigStore } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
-import { createAgentsRoutes } from './configRoutesAgents.js';
+import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
+import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
-import { normalizeRepoConfig } from './configRepoValidation.js';
+import { normalizeRepoConfig, preserveRepoAutoFollowup, preserveRepoVisualPreview, withDefaultRepoOptions } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -137,6 +138,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
+    {
+      redisClient,
+      configStore,
+      publishConfigUpdate,
+      logActivityHelper,
+      refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
+    },
+  );
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -173,15 +183,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const getFollowupIgnoreKeywords = createJsonGetHandler(() => configStore.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
   const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configStore.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }), committedErrorMessage: 'Follow-up ignore keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
 
-  async function getRepos(_req: Request, res: Response): Promise<void> {
-    try {
-      const repos = await configStore.loadMonitoredReposRaw();
-      res.json({ repos_to_monitor: repos });
-    } catch (error) {
-      console.error('Error in /api/config/repos GET:', error);
-      res.status(500).json({ error: 'Failed to load repository configuration' });
-    }
-  }
+  const getRepos = createJsonGetHandler(
+    async () => (await configStore.loadMonitoredReposRaw()).map(withDefaultRepoOptions),
+    repos_to_monitor => ({ repos_to_monitor }),
+    'Failed to load repository configuration',
+    '/api/config/repos GET'
+  );
 
   async function postRepos(req: Request, res: Response): Promise<void> {
     const bodyValidation = validateJsonObjectBody(req.body);
@@ -196,17 +203,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
     // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
-    const processedRepos: RepoToMonitor[] = [];
+    const validatedRepos: RepoToMonitor[] = [];
     for (const repo of repos_to_monitor) {
       const normalized = normalizeRepoConfig(repo);
       if (!normalized.ok) {
         res.status(400).json({ error: normalized.error });
         return;
       }
-      processedRepos.push(normalized.value);
+      validatedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       const previousRepos = await configStore.loadMonitoredReposRaw();
+      const withPreservedAutoFollowup = preserveRepoAutoFollowup(previousRepos, validatedRepos, repos_to_monitor);
+      const processedRepos = preserveRepoVisualPreview(previousRepos, withPreservedAutoFollowup, repos_to_monitor);
       return saveThenPublishConfigUpdate({
         save: async () => {
           await database.transaction(async trx => {
@@ -231,7 +240,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     });
     if (result.status === 200) {
       try {
-        await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
+        await logActivityHelper(`Updated monitored repositories list (${validatedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
       } catch (error) { console.error('Failed to log monitored repositories update activity:', error); }
     }
     res.status(result.status).json(result.body);
@@ -313,10 +322,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return;
       }
     }
+    if (typeof settingsValidation.value.default_agent_alias === 'string') {
+      settingsValidation.value.default_agent_alias = settingsValidation.value.default_agent_alias.trim();
+    }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
-      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock })
-    );
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      await validateDefaultAgentSetting(settingsValidation.value, configStore);
+      return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
+    });
     if (result.status === 200 && result.body.noop !== true) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
@@ -396,7 +409,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   return {
     getFollowupKeywords, postFollowupKeywords, getFollowupIgnoreKeywords, postFollowupIgnoreKeywords, getRepos, postRepos, getSettings, postSettings,
     getPrLabel, postPrLabel, getAiPrimaryTag, postAiPrimaryTag, getPrimaryProcessingLabels, postPrimaryProcessingLabels,
-    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSummarizationSettings,
+    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSyntheticAgents: syntheticAgentRoutes.getSyntheticAgents,
+    postSyntheticAgents: syntheticAgentRoutes.postSyntheticAgents,
+    getSummarizationSettings,
     postSummarizationSettings: indexingRoutes.postSummarizationSettings, getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
     triggerIndexing: indexingRoutes.triggerIndexing, triggerReindexAll: indexingRoutes.triggerReindexAll, stopIndexing: indexingRoutes.stopIndexing,
     getAgentTankSettings: agentTankRoutes.getAgentTankSettings, postAgentTankSettings: agentTankRoutes.postAgentTankSettings,

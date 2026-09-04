@@ -23,12 +23,14 @@ const RepositoriesPage: React.FC = () => {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
+    handleToggleAutoCiFollowup, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
 
   const [newRepo, setNewRepo] = useState<string>('');
   const [newAlias, setNewAlias] = useState<string>('');
   const [newBaseBranch, setNewBaseBranch] = useState<string>('');
+  const [autoFollowupOnFailedCi, setAutoFollowupOnFailedCi] = useState<boolean>(false);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
@@ -54,6 +56,7 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setAutoFollowupOnFailedCi(false);
     setIsModalOpen(true);
   };
 
@@ -62,14 +65,16 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setAutoFollowupOnFailedCi(false);
   };
 
   const handleAddRepoSubmit = () => {
     if (isReadOnly) return;
-    if (handleAddRepo(newRepo, newAlias, newBaseBranch)) {
+    if (handleAddRepo(newRepo, newAlias, newBaseBranch, autoFollowupOnFailedCi)) {
       setNewRepo('');
       setNewAlias('');
       setNewBaseBranch('');
+      setAutoFollowupOnFailedCi(false);
       setIsModalOpen(false);
     }
   };
@@ -121,6 +126,8 @@ const RepositoriesPage: React.FC = () => {
                 indexingStatuses={indexingStatuses}
                 selectedRepoId={selectedRepoId}
                 onToggle={handleToggleRepo}
+                onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
+                onUpdateVisualPreview={handleUpdateVisualPreview}
                 onRemove={handleRemoveRepo}
                 onStopIndexing={handleStopIndexing}
                 onReindex={handleReindexRepo}
@@ -149,6 +156,8 @@ const RepositoriesPage: React.FC = () => {
                   indexingStatuses={indexingStatuses}
                   selectedRepoId={selectedRepoId}
                   onToggle={handleToggleRepo}
+                  onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
+                  onUpdateVisualPreview={handleUpdateVisualPreview}
                   onRemove={handleRemoveRepo}
                   onStopIndexing={handleStopIndexing}
                   onReindex={handleReindexRepo}
@@ -182,10 +191,12 @@ const RepositoriesPage: React.FC = () => {
         newRepo={newRepo}
         newAlias={newAlias}
         newBaseBranch={newBaseBranch}
+        autoFollowupOnFailedCi={autoFollowupOnFailedCi}
         availableRepos={availableRepos}
         onRepoChange={setNewRepo}
         onAliasChange={setNewAlias}
         onBaseBranchChange={setNewBaseBranch}
+        onAutoFollowupOnFailedCiChange={setAutoFollowupOnFailedCi}
         onAdd={handleAddRepoSubmit}
         onClose={handleCloseModal}
         isReadOnly={isReadOnly}

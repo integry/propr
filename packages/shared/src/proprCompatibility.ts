@@ -22,7 +22,7 @@ export interface ProprCompatibilityMetadata {
 }
 
 export interface ProprDesktopAuthenticationCapabilities {
-  protocolVersion: 1;
+  protocolVersion: 2;
   browserPairing: boolean;
   instanceBearerTokens: boolean;
   socketIoBearerAuthentication: boolean;
@@ -53,7 +53,7 @@ export function getProprCompatibilityMetadata(desktopAuthenticationEnabled = tru
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
     desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: desktopAuthenticationEnabled,
       instanceBearerTokens: desktopAuthenticationEnabled,
       socketIoBearerAuthentication: desktopAuthenticationEnabled,

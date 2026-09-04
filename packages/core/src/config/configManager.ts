@@ -17,9 +17,39 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
+    visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
+}
+
+export type VisualPreviewType = 'image' | 'video';
+
+export interface VisualPreviewSettings {
+    enabled: boolean;
+    types: VisualPreviewType[];
+    instructions?: string;
+}
+
+export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPreviewSettings {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return { enabled: false, types: ['image'] };
+    }
+
+    const candidate = value as Partial<VisualPreviewSettings>;
+    const types = Array.isArray(candidate.types)
+        ? [...new Set(candidate.types.filter((type): type is VisualPreviewType => type === 'image' || type === 'video'))]
+        : [];
+    const instructions = typeof candidate.instructions === 'string' && candidate.instructions.trim()
+        ? candidate.instructions.trim()
+        : undefined;
+
+    return {
+        enabled: candidate.enabled === true,
+        types: types.length > 0 ? types : ['image'],
+        ...(instructions ? { instructions } : {})
+    };
 }
 
 interface ConfigSettings {
@@ -117,6 +147,35 @@ export async function loadMonitoredReposRaw(): Promise<RepoToMonitor[]> {
     const rawRepos = await getConfig<RepoToMonitor[]>('repos_to_monitor', []);
     logger.info({ total_repos: rawRepos.length }, 'Successfully loaded all monitored repositories');
     return rawRepos;
+}
+
+/**
+ * Resolve the branch-independent visual-preview policy for a repository.
+ * Multiple branch entries may exist for one repository; an explicitly enabled
+ * entry wins over disabled or legacy entries until the next synchronized save.
+ */
+export function resolveRepositoryVisualPreviewSettings(
+    repos: readonly RepoToMonitor[],
+    repository: string
+): VisualPreviewSettings {
+    const normalizedRepository = repository.trim().toLowerCase();
+    if (!normalizedRepository) return { enabled: false, types: ['image'] };
+
+    const matching = repos.filter(repo => repo.name.trim().toLowerCase() === normalizedRepository);
+    const configured = matching.find(repo => normalizeStoredVisualPreviewSettings(repo.visualPreview).enabled)
+        ?? matching.find(repo => repo.visualPreview !== undefined);
+    return normalizeStoredVisualPreviewSettings(configured?.visualPreview);
+}
+
+export async function loadRepositoryVisualPreviewSettings(repository: string): Promise<VisualPreviewSettings> {
+    try {
+        const settings = resolveRepositoryVisualPreviewSettings(await loadMonitoredReposRaw(), repository);
+        logger.info({ repository, enabled: settings.enabled, types: settings.types }, 'Loaded repository visual-preview settings');
+        return settings;
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load visual-preview settings; treating previews as disabled');
+        return { enabled: false, types: ['image'] };
+    }
 }
 
 export async function saveMonitoredRepos(repos: RepoToMonitor[], client?: Knex | Knex.Transaction): Promise<boolean> {
@@ -254,6 +313,12 @@ export {
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
+
+export {
+    SYNTHETIC_AGENTS_CONFIG_KEY,
+    loadSyntheticAgents,
+    saveSyntheticAgents
+} from './configManagerSyntheticAgents.js';
 
 // --- Auto Resolve Merge Conflicts ---
 

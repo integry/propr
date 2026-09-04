@@ -1,3 +1,6 @@
+import { buildVisualPreviewPrompt } from '../../services/visualPreviewService.js';
+import type { VisualPreviewSettings } from '../../config/configManager.js';
+
 export interface IssueLabel {
     name: string;
 }
@@ -57,6 +60,7 @@ export interface GenerateClaudePromptOptions {
     modelName?: string | null;
     issueDetails?: IssueDetails | null;
     baseBranch?: string | null;
+    visualPreviewSettings?: VisualPreviewSettings;
 }
 
 function buildIssueDetailsSection(issueRef: IssueRef, issueDetails: IssueDetails): string {
@@ -92,12 +96,13 @@ function buildCommentsSection(comments: IssueComment[] | undefined): string {
 }
 
 export function generateClaudePrompt(options: GenerateClaudePromptOptions): string {
-    const { issueRef, branchName = null, modelName = null, issueDetails = null, baseBranch = null } = options;
+    const { issueRef, branchName = null, modelName = null, issueDetails = null, baseBranch = null, visualPreviewSettings } = options;
 
     const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
     const baseBranchInfo = baseBranch ? `\n- **BASE BRANCH**: \`${baseBranch}\` (PRs must target this branch, not main)` : '';
     const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
     const issueDetailsSection = issueDetails ? buildIssueDetailsSection(issueRef, issueDetails) : '';
+    const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
 
     return `Please analyze and implement a solution for GitHub issue #${issueRef.number}.
 
@@ -119,6 +124,7 @@ Follow these steps systematically:
 6. Implement the necessary changes to solve the issue
 7. Test your implementation (if applicable and possible)
 8. Ensure code follows existing patterns and conventions
+${visualPreviewInstructions}
 
 **IMPORTANT NOTES:**
 - **DO NOT** worry about git operations (add, commit, push, PR creation)

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROPR_API_COMPATIBILITY } from '@propr/shared';
+import { PROPR_API_COMPATIBILITY, PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
+  classifyApiBaseUrl,
   ProprClient,
   ProprClientError,
   normalizeApiBaseUrl,
@@ -9,9 +10,17 @@ import {
 } from '../src/index.js';
 
 describe('Propr API base URLs and instance profiles', () => {
+  it('matches the shared canonical origin parity table', () => {
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) assert.throws(() => normalizeApiBaseUrl(input), ProprClientError, name);
+      else assert.equal(normalizeApiBaseUrl(input), expected, name);
+    }
+  });
   it('supports browser same-origin, loopback, and secure remote instances', () => {
     assert.equal(normalizeApiBaseUrl(), '');
-    assert.equal(normalizeApiBaseUrl('  http://localhost:4000///  '), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('  http://localhost:4000/  '), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('http://api.dev.localhost:3000'), 'http://api.dev.localhost:3000');
+    assert.equal(normalizeApiBaseUrl('http://127.42.7.9:3000'), 'http://127.42.7.9:3000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:3000'), 'http://[::1]:3000');
     assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
@@ -34,13 +43,94 @@ describe('Propr API base URLs and instance profiles', () => {
       'https://propr.example.com/api',
       'https://propr.example.com?token=secret',
       'http://propr.example.com',
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev:8443',
+      ' https://t-instance123.propr.dev',
+      'https://t-instance123.propr.dev ',
+      'https://t-instance123.propr.dev/',
+      'https://t-instance123.propr.dev//',
+      'HTTPS://t-instance123.propr.dev',
+      'https://T-instance123.propr.dev',
+      'https://t-%69nstance123.propr.dev',
+      'https://t-instance123.propr%2edev',
+      'https://x.t-instance123.propr.dev',
+      'https://nested.t-instance123.propr.dev',
+      'http://localhost.:3000',
+      'http://127.1:3000',
+      'http://0177.0.0.1:3000',
+      'http://0x7f000001:3000',
+      'http://[::ffff:127.0.0.1]:3000',
     ]) {
       assert.throws(() => normalizeApiBaseUrl(value), ProprClientError);
+    }
+  });
+
+  it('classifies only the canonical hosted ProPR Connect origin as verified', () => {
+    assert.deepEqual(classifyApiBaseUrl('https://t-instance-123.propr.dev'), {
+      baseUrl: 'https://t-instance-123.propr.dev',
+      kind: 'propr-connect',
+      connectInstanceId: 'instance-123',
+    });
+    assert.equal(classifyApiBaseUrl('http://127.0.0.1:4000').kind, 'loopback');
+    assert.equal(classifyApiBaseUrl('https://propr.example.com').kind, 'remote');
+
+    for (const rejectedReserved of [
+      'https://t-instance-123.foo.propr.dev',
+      'https://x.t-instance-123.propr.dev',
+      'https://t-\u0430bc.propr.dev',
+    ]) {
+      assert.throws(() => classifyApiBaseUrl(rejectedReserved), (error: unknown) =>
+        error instanceof ProprClientError
+        && error.code === 'INVALID_API_BASE_URL'
+        && !error.message.includes(rejectedReserved));
+    }
+
+    for (const lookalike of [
+      'https://t-instance-123.propr.dev.example.com',
+      'https://t-abc.pr\u03bfpr.dev',
+    ]) {
+      assert.notEqual(classifyApiBaseUrl(lookalike).kind, 'propr-connect', lookalike);
+    }
+  });
+
+  it('bounds malformed configuration and reports only a fixed safe code and message', () => {
+    const unsafeValues = [
+      'https://user:password-sentinel@t-instance123.propr.dev',
+      'https://t-instance123.propr.dev?token=query-token-sentinel',
+      `https://example.com/${'private-path-sentinel'.repeat(200)}`,
+    ];
+    for (const value of unsafeValues) {
+      assert.throws(() => normalizeApiBaseUrl(value), (error: unknown) => {
+        assert.ok(error instanceof ProprClientError);
+        assert.equal(error.code, 'INVALID_API_BASE_URL');
+        assert.equal(error.message, 'The configured ProPR API URL is invalid.');
+        assert.doesNotMatch(JSON.stringify(error), /password-sentinel|query-token-sentinel|private-path-sentinel/);
+        return true;
+      });
     }
   });
 });
 
 describe('ProprClient REST transport', () => {
+  it('routes Connect status and REST calls directly to the verified origin', async () => {
+    const calls: string[] = [];
+    const client = new ProprClient({
+      baseUrl: 'https://t-instance123.propr.dev',
+      authentication: { type: 'none' },
+      fetch: async input => {
+        calls.push(input.toString());
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+
+    await client.request('/api/status');
+    await client.request('/api/tasks');
+    assert.deepEqual(calls, [
+      'https://t-instance123.propr.dev/api/status',
+      'https://t-instance123.propr.dev/api/tasks',
+    ]);
+  });
+
   it('adds a fresh bearer token without exposing it in the endpoint', async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     const client = new ProprClient({
@@ -52,10 +142,11 @@ describe('ProprClient REST transport', () => {
       },
     });
 
-    await client.request('/api/status');
+    await client.request('/api/status', { credentials: 'include' });
 
     assert.equal(calls[0][0], 'https://propr.example.com/api/status');
     assert.equal(new Headers(calls[0][1]?.headers).get('Authorization'), 'Bearer secret-token');
+    assert.equal(calls[0][1]?.credentials, 'omit');
     assert.doesNotMatch(String(calls[0][0]), /secret-token/);
   });
 
