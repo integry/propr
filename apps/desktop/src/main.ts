@@ -1173,7 +1173,9 @@ if (!hasSingleInstanceLock) {
         : smokeProfileOrigin
           ? [smokeProfileOrigin]
           : [];
-    const rendererPolicyPinnedForSmoke = rendererPolicyOrigins.length > 0 && packagedSmokeTest;
+    const rendererPolicyPinnedForSmoke = transportSmoke !== null
+      || connectSmoke?.journeyEndpoint !== undefined
+      || (packagedSmokeTest && smokeProfileOrigin !== null);
     const reloadCurrentRendererForPolicyChange = createLatestRendererReloader(
       () => mainWindow?.webContents ?? null,
     );

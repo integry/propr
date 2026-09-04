@@ -41,7 +41,7 @@ describe('desktop IPC shutdown gate', () => {
           id: 'profile-a', label: 'A edited', apiBaseUrl: 'http://localhost:4100',
           createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:01:00.000Z',
         }],
-        activeProfileId: 'profile-a',
+        activeProfileId: null,
       }),
     } as unknown as DesktopCredentialService;
     registerIpcHandlers({
@@ -72,7 +72,7 @@ describe('desktop IPC shutdown gate', () => {
     }));
 
     assert.equal(cleanupObservedBeforeSave, true);
-    assert.equal(reconciledOrigin, 'http://localhost:4100');
+    assert.equal(reconciledOrigin, null);
     assert.deepEqual(cleared, [
       {
         origin: 'https://old.example.test',
@@ -83,6 +83,66 @@ describe('desktop IPC shutdown gate', () => {
         storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
       },
     ]);
+  });
+
+  it('clears the renderer policy after re-pairing an active profile at a changed local origin', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const activeProfile = {
+      id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:4000',
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    const pairedProfile = {
+      id: 'profile-a', label: 'A edited', apiBaseUrl: 'http://localhost:4100',
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:01:00.000Z',
+    };
+    let profiles = [activeProfile];
+    let activeProfileId: string | null = activeProfile.id;
+    let listCalls = 0;
+    let pairedInput: { id: string; label: string; apiBaseUrl: string } | undefined;
+    const credentials = {
+      pair: async (input: { id: string; label: string; apiBaseUrl: string }) => {
+        pairedInput = input;
+        profiles = [pairedProfile];
+        activeProfileId = null;
+        return { paired: true as const };
+      },
+      listProfiles: async () => {
+        listCalls += 1;
+        return { profiles, activeProfileId };
+      },
+    } as unknown as DesktopCredentialService;
+    let reconciledOrigin: string | null | undefined;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: {} as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: origin => { reconciledOrigin = origin; },
+    });
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' },
+    } as unknown as IpcMainInvokeEvent;
+
+    const result = await Promise.resolve(handlers.get(IPC_CHANNELS.authenticationPair)!(event, {
+      id: pairedProfile.id, label: pairedProfile.label, apiBaseUrl: pairedProfile.apiBaseUrl,
+    }));
+
+    assert.deepEqual(result, { paired: true });
+    assert.deepEqual(pairedInput, {
+      id: pairedProfile.id, label: pairedProfile.label, apiBaseUrl: pairedProfile.apiBaseUrl,
+    });
+    assert.equal(listCalls, 1);
+    assert.equal(reconciledOrigin, null);
   });
 
   it('reconciles the renderer policy after setting a different active profile', async () => {

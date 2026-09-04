@@ -169,14 +169,34 @@ describe('packaged smoke profile authorization', () => {
     assert.ok(policyInitialization < createWindow);
   });
 
-  it('does not install dynamic profile reconciliation for a pinned packaged smoke policy', () => {
+  it('keeps transport and Connect journey smoke policies pinned without dynamic profile reads', () => {
     const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const pinning = main.indexOf('const rendererPolicyPinnedForSmoke = transportSmoke !== null');
+    const connectJourneyPin = main.indexOf("|| connectSmoke?.journeyEndpoint !== undefined", pinning);
+    const authorizedProfilePin = main.indexOf(
+      '|| (packagedSmokeTest && smokeProfileOrigin !== null);',
+      connectJourneyPin,
+    );
+    const initialization = main.indexOf('const credentialInitialization = await credentials.initialize();');
+    const persistedReadGuard = main.indexOf(
+      'if (app.isPackaged && !rendererPolicyPinnedForSmoke) {',
+      initialization,
+    );
+    const persistedProfileRead = main.indexOf(
+      'const current = await credentials.listProfiles();',
+      persistedReadGuard,
+    );
+    const persistedReadGuardEnd = main.indexOf('\n    }', persistedProfileRead);
     const callbackGuard = main.indexOf('...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {');
     const callback = main.indexOf('onRendererActiveProfileChanged:', callbackGuard);
     const callbackGuardEnd = main.indexOf('} : {}),', callback);
     const registrationEnd = main.indexOf('});', callbackGuardEnd);
 
-    assert.notEqual(callbackGuard, -1);
+    assert.notEqual(pinning, -1);
+    assert.ok(pinning < connectJourneyPin && connectJourneyPin < authorizedProfilePin);
+    assert.ok(authorizedProfilePin < initialization);
+    assert.ok(initialization < persistedReadGuard && persistedReadGuard < persistedProfileRead);
+    assert.ok(persistedProfileRead < persistedReadGuardEnd && persistedReadGuardEnd < callbackGuard);
     assert.ok(callbackGuard < callback && callback < callbackGuardEnd);
     assert.ok(callbackGuardEnd < registrationEnd);
   });

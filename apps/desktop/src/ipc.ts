@@ -165,7 +165,11 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     await options.credentials.setActiveProfile(profileId);
     await reconcileRendererActiveProfile();
   });
-  handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
+  handle(IPC_CHANNELS.authenticationPair, async (_event, profile) => {
+    const paired = await options.credentials.pair(profile);
+    await reconcileRendererActiveProfile();
+    return paired;
+  });
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
   handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
