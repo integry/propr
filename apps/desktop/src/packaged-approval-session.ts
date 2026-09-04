@@ -13,8 +13,10 @@ import type {
 } from 'electron';
 
 const APPROVAL_REJECTED = 'Packaged pairing browser approval was rejected';
+const APPROVAL_CLEANUP_REJECTED = 'Packaged pairing browser approval cleanup failed';
 const APPROVAL_STATUS = 200;
 const APPROVAL_COMPLETION_TIMEOUT_MS = 5_000;
+const APPROVAL_CLEANUP_TIMEOUT_MS = 5_000;
 const claimedSessions = new WeakSet<Session>();
 
 export const packagedApprovalPartition = (nonce: string): string => {
@@ -37,6 +39,32 @@ interface PackagedApprovalNavigationOptions {
 function rejected(): Error {
   return new Error(APPROVAL_REJECTED);
 }
+
+function cleanupRejected(): Error {
+  return new Error(APPROVAL_CLEANUP_REJECTED);
+}
+
+export const clearPackagedApprovalStorage = async (
+  approvalSession: Pick<Session, 'clearStorageData'>,
+  timeoutMs = APPROVAL_CLEANUP_TIMEOUT_MS,
+): Promise<void> => {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > APPROVAL_CLEANUP_TIMEOUT_MS) {
+    throw cleanupRejected();
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      approvalSession.clearStorageData(),
+      new Promise<void>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(cleanupRejected()), timeoutMs);
+      }),
+    ]);
+  } catch {
+    throw cleanupRejected();
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+};
 
 const containsCredentialHeaders = (headers: Record<string, string>): boolean =>
   Object.keys(headers).some(name => {
@@ -122,6 +150,11 @@ export const createPackagedApprovalNavigation = ({
   const onBeforeRequest = (details: OnBeforeRequestListenerDetails, callback: (decision: {
     cancel?: boolean;
   }) => void): void => {
+    if (details.resourceType !== 'mainFrame') {
+      if (details.resourceType === 'subFrame') rejectBoundary();
+      callback({ cancel: true });
+      return;
+    }
     const allowed = active
       && allowedRequestId === null
       && details.url === approvalUrl
@@ -293,7 +326,7 @@ export const createPackagedApprovalNavigation = ({
         approvalSession.webRequest.onHeadersReceived(null);
         approvalSession.webRequest.onBeforeRedirect(null);
         approvalSession.webRequest.onCompleted(null);
-        await approvalSession.clearStorageData();
+        await clearPackagedApprovalStorage(approvalSession);
       })();
       return cleanupPromise;
     },

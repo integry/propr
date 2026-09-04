@@ -621,7 +621,7 @@ try {
         || discoveries.some(request => request.authorization !== null)
         || pairingStarts.length !== 3
         || pairingBrowsers.length !== 3
-        || pairingPolls.length < 3
+        || pairingPolls.length !== 1
         || pairingActivations.length !== 1
         || bootstrap.some(request => request.authorization !== null)
         || authenticatedRest.length < 2

@@ -35,8 +35,12 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwin, /security unlock-keychain -p "\$keychain_password" "\$keychain_path"/u);
     assert.match(darwin, /security list-keychains -d user -s "\$keychain_path"/u);
     assert.match(darwin, /security default-keychain -d user -s "\$keychain_path"/u);
+    assert.match(darwin, /safe_storage_secret="\$\(openssl rand -hex 32\)"/u);
+    assert.match(darwin, /security add-generic-password -a "ProPR Desktop" -s "ProPR Desktop Safe Storage" -w "\$safe_storage_secret" -A "\$keychain_path"/u);
+    assert.match(darwin, /unset safe_storage_secret\n\s+npm run smoke:connect-package/u);
     assert.match(darwin, /security list-keychains -d user -s "\$\{original_keychains\[@\]\}"/u);
     assert.match(darwin, /security delete-keychain "\$keychain_path"/u);
+    assert.doesNotMatch(darwin, /echo[^\n]*safe_storage_secret|printf[^\n]*safe_storage_secret/u);
     assert.doesNotMatch(darwin, /CERTIFICATE|security import|codesign|notari/iu);
   });
 });

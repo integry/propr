@@ -149,6 +149,9 @@ jobs:
           security list-keychains -d user -s "$keychain_path"
           security default-keychain -d user -s "$keychain_path"
           unset keychain_password
+          safe_storage_secret="$(openssl rand -hex 32)"
+          security add-generic-password -a "ProPR Desktop" -s "ProPR Desktop Safe Storage" -w "$safe_storage_secret" -A "$keychain_path"
+          unset safe_storage_secret
           npm run smoke:connect-package -w @propr/desktop
 
       - name: Run packaged Windows main-to-renderer discovery as an ordinary user

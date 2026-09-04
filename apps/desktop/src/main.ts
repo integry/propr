@@ -28,6 +28,7 @@ import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { openApprovedDesktopPairingUrl } from './pairing-browser';
 import {
+  clearPackagedApprovalStorage,
   createPackagedApprovalNavigation,
   packagedApprovalPartition,
 } from './packaged-approval-session';
@@ -589,7 +590,7 @@ const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest
           await navigation.cleanup();
         } else {
           if (approvalWindow && !approvalWindow.isDestroyed()) approvalWindow.destroy();
-          await approvalSession.clearStorageData();
+          await clearPackagedApprovalStorage(approvalSession);
         }
       }
     },

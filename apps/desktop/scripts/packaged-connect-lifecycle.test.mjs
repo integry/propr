@@ -97,6 +97,19 @@ const run = ({ app = new FakeChild(), onApp, onKiller, ...options } = {}) => {
 };
 
 describe('packaged Connect bounded child lifecycle', () => {
+  test('requires exact three starts, three browser approvals, one poll, and one activation', async () => {
+    const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
+    const accounting = harness.slice(
+      harness.indexOf('if (discoveries.length !== 8'),
+      harness.indexOf('|| bootstrap.some(request => request.authorization !== null)'),
+    );
+    assert.match(accounting, /pairingStarts\.length !== 3/u);
+    assert.match(accounting, /pairingBrowsers\.length !== 3/u);
+    assert.match(accounting, /pairingPolls\.length !== 1/u);
+    assert.match(accounting, /pairingActivations\.length !== 1/u);
+    assert.doesNotMatch(accounting, /pairingPolls\.length < 3/u);
+  });
+
   test('accepts an exact ready proof followed by a clean exit', async () => {
     const { result, invocations } = await run({
       onApp: app => {

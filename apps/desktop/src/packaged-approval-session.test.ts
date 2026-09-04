@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 import type { BrowserWindow, Session } from 'electron';
 import {
+  clearPackagedApprovalStorage,
   createPackagedApprovalNavigation,
   packagedApprovalPartition,
 } from './packaged-approval-session';
@@ -203,6 +204,28 @@ describe('packaged pairing approval isolated session', () => {
     await controller.cleanup();
   });
 
+  it('cancels an incidental resource without invalidating the exact main-frame approval', async () => {
+    const value = harness();
+    const originalLoad = value.window.load;
+    value.window.load = async url => {
+      const incidental = await decision(value.approvalSession.webRequest.beforeRequest, {
+        id: 6,
+        url: 'http://127.0.0.1:41731/favicon.ico',
+        method: 'GET',
+        webContentsId: value.window.webContents.id,
+        webContents: value.window.webContents,
+        frame: value.window.webContents.mainFrame,
+        resourceType: 'image',
+      });
+      assert.deepEqual(incidental, { cancel: true });
+      await originalLoad(url);
+    };
+
+    const controller = controllerFor(value);
+    await controller.navigate();
+    await controller.cleanup();
+  });
+
   it('rejects redirects, alternate origins and paths, methods, subframes, and credential headers', async t => {
     for (const scenario of [
       'redirect',
@@ -319,5 +342,23 @@ describe('packaged pairing approval isolated session', () => {
     assert.equal(value.approvalSession.webRequest.headersReceived, null);
     assert.equal(value.approvalSession.webRequest.beforeRedirect, null);
     assert.equal(value.approvalSession.webRequest.completed, null);
+  });
+
+  it('bounds storage cleanup, reports failures, and never makes the session reusable', async () => {
+    const stalled = new FakeSession();
+    stalled.clearStorageData = () => new Promise<void>(() => undefined);
+    await assert.rejects(
+      clearPackagedApprovalStorage(stalled as unknown as Session, 5),
+      { message: 'Packaged pairing browser approval cleanup failed' },
+    );
+
+    const value = harness();
+    value.approvalSession.clearStorageData = async () => { throw new Error('private cleanup detail'); };
+    const controller = controllerFor(value);
+    await controller.navigate();
+    const firstCleanup = controller.cleanup();
+    assert.equal(firstCleanup, controller.cleanup());
+    await assert.rejects(firstCleanup, { message: 'Packaged pairing browser approval cleanup failed' });
+    assert.throws(() => controllerFor(value), { message: 'Packaged pairing browser approval was rejected' });
   });
 });
