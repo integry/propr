@@ -3,6 +3,7 @@ import { isProprLoopbackHostname, parseProprConnectEndpoint } from '@propr/share
 import type { DesktopBridge, DesktopDiscoveryCandidate, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
 import { getDesktopConnectionScope, setDesktopConnectionScope } from '../api/apiClient';
 import type { DesktopAdapters, DesktopPlatform, DesktopProfile } from './types';
+import { reportPackagedAcceptanceRendererLifecycle } from './packagedAcceptanceRendererLifecycle';
 
 const platform = (value: string): DesktopPlatform => {
   const normalized = value.toLowerCase();
@@ -82,6 +83,8 @@ const clearRendererProfileState = (): boolean => {
 };
 
 export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAdapters => {
+  const packagedAcceptance = typeof window.__PROPR_PACKAGED_ACCEPTANCE__ === 'object'
+    && window.__PROPR_PACKAGED_ACCEPTANCE__ !== null;
   let publishedProfile: { id: string; origin: string; identityEpoch: string } | null = null;
   return {
   platform: platform(navigator.platform || navigator.userAgent),
@@ -139,7 +142,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
   },
   externalBrowser: { open: url => bridge.external.open(url) },
   localSetup: {
-    supported: false,
+    supported: packagedAcceptance,
     async setup() {
       throw new Error('Local setup is not available in this desktop build. Connect to a running local instance instead.');
     },
@@ -215,6 +218,10 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         profileId: result.profileId,
         transportScope: result.transportScope,
       }, profile.baseUrl);
+      reportPackagedAcceptanceRendererLifecycle('profile-activation-published', {
+        profileActivationPublished: true,
+        connectionScope: 'available',
+      });
       publishedProfile = {
         id: profile.id,
         origin: normalizeApiBaseUrl(profile.baseUrl),

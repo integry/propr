@@ -13,6 +13,7 @@ npm run desktop:typecheck
 npm run desktop:test
 npm run desktop:package
 npm run desktop:smoke # Run under xvfb-run on a headless Linux host.
+npm run desktop:acceptance # Linux x64 package; run under Xvfb in a D-Bus/keyring session.
 npm run desktop:make
 npm run desktop:audit
 # On Linux hosts with the corresponding native packaging tools installed:
@@ -43,6 +44,30 @@ launch inputs; it never broadly inherits the parent CI environment or `PATH`. `d
 executable and fuse inspection without launching a window. Release CI launches both Linux architectures under Xvfb,
 inspects macOS and Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/MSI packages, and validates
 configured OS signatures.
+
+## Packaged visual and accessibility acceptance
+
+Linux x64 is the canonical visual runtime. `desktop:acceptance` launches the real packaged executable with a fresh
+private Electron profile and drives it over Chromium's debugging protocol with Playwright. A separately authorized
+acceptance mode supplies deterministic local API, Socket.IO, browser-pairing, ProPR Connect, and local-setup fixtures
+while preserving the production main/preload/renderer boundary, renderer sandbox, context isolation, navigation
+policy, and credential service. It requires independent command-line and environment triggers, accepts only a
+packaged Linux binary, and refuses the default Electron profile.
+
+The mandatory artifact contains screenshots for first run, endpoint and Connect confirmation, pairing, local setup
+prerequisites/progress/recovery/completion, dashboard profile management, offline, revoked, and incompatible states.
+Every state is captured at standard, narrow, high-DPI, 200% zoom, and reduced-motion configurations. The manifest
+records fixed locale/time/theme inputs, dimensions, hashes, and native coverage. The 200% variant uses an
+acceptance-only, main-authorized preload bridge to Electron `webFrame` zoom and records its read-back alongside raw
+CDP/renderer viewports, independently measured geometry, DPR, and physical PNG dimensions. Accessibility evidence
+fails for any serious or critical axe finding or missing keyboard order, visible focus, dialog trap/restore,
+accessible name, or live announcement proof. Finalization rejects missing, duplicate, unexpected, incorrectly sized,
+or secret-bearing output. Sentinel coverage includes renderer DOM, process output, URLs, local/session storage,
+persisted profile/config data, screenshots and metadata, and every decompressed Playwright trace entry.
+
+The existing six-target package matrix is unchanged. Linux x64 produces the visual/accessibility runtime evidence.
+Linux arm64, macOS x64/arm64, and Windows x64/arm64 retain native package inspection and platform runtime smoke
+coverage; their acceptance classification is structural/runtime-only.
 
 Darwin packaged Connect acceptance first inspects the normal unsigned package, then generates a one-run self-signed
 CA:false code-signing leaf in an isolated default keychain and signs only that smoke artifact. The signature uses an
