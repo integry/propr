@@ -11,6 +11,8 @@ import {
 const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
 const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
 const CERTIFICATE_LINE = /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/gmu;
+const ADHOC_SIGNATURE_LINE = /^\s*signature\s*=\s*adhoc\s*$/iu;
+const IDENTIFIER_LINE = /^\s*identifier\s*=\s*(.*?)\s*$/iu;
 const DESIGNATED_REQUIREMENT_PREFIX = /^designated\s*=>/iu;
 const DESIGNATED_REQUIREMENT_GRAMMAR = /^designated\s*=>\s*identifier\s+"([^"]+)"\s+and\s+certificate\s+leaf\s*=\s*H\s*"([A-F0-9]{40})"$/iu;
 const VERIFICATION_TIMEOUT_MS = 20_000;
@@ -23,7 +25,8 @@ export const DARWIN_VERIFICATION_DIAGNOSTICS = Object.freeze({
   embeddedRequirementFailure: 'EMBEDDED_REQUIREMENT_FAILURE',
   strictVerifyFailure: 'STRICT_VERIFY_FAILURE',
   keychainEvidenceFailure: 'KEYCHAIN_EVIDENCE_FAILURE',
-  signatureMetadataFailure: 'SIGNATURE_METADATA_FAILURE',
+  adhocSignatureFailure: 'ADHOC_SIGNATURE_FAILURE',
+  identifierMetadataFailure: 'IDENTIFIER_METADATA_FAILURE',
   requirementEvidenceFailure: 'REQUIREMENT_EVIDENCE_FAILURE',
   evidenceAssertionFailure: 'EVIDENCE_ASSERTION_FAILURE',
 });
@@ -83,23 +86,32 @@ const assertExactKeychainCertificate = (certificateDetails, expectedCertificateS
   }
 };
 
-const assertSignatureMetadata = signatureDetails => {
+const assertNotAdhocSignature = signatureDetails => {
   try {
-    const details = normalizeLines(signatureDetails).map(line => line.trim());
-    const identifiers = details.filter(line => line.startsWith('Identifier='));
-    const signatures = details.filter(line => line.startsWith('Signature'));
-    const signatureSize = signatures.length === 1
-      ? signatures[0].match(/^Signature size=([1-9]\d*)$/u)
-      : null;
-    if (signatures.length !== 1
-      || !signatureSize
-      || identifiers.length !== 1
-      || identifiers[0] !== `Identifier=${REQUIRED_IDENTIFIER}`) {
-      throw new Error('invalid-signature-display-evidence');
+    if (normalizeLines(signatureDetails).some(line => ADHOC_SIGNATURE_LINE.test(line))) {
+      throw new Error('ad-hoc-signature-evidence');
     }
   } catch (cause) {
     throw verificationFailure(
-      DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure,
+      DARWIN_VERIFICATION_DIAGNOSTICS.adhocSignatureFailure,
+      cause,
+    );
+  }
+};
+
+const assertIdentifierMetadata = signatureDetails => {
+  try {
+    const identifiers = normalizeLines(signatureDetails)
+      .map(line => line.match(IDENTIFIER_LINE))
+      .filter(match => match !== null)
+      .map(match => match[1]);
+    if (identifiers.length > 1
+      || (identifiers.length === 1 && identifiers[0] !== REQUIRED_IDENTIFIER)) {
+      throw new Error('invalid-identifier-display-evidence');
+    }
+  } catch (cause) {
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure,
       cause,
     );
   }
@@ -144,7 +156,8 @@ export const assertDarwinSigningEvidence = ({
   previousDesignatedRequirement,
 }) => {
   const expected = expectedRequirementsFor(expectedCertificateSha1);
-  assertSignatureMetadata(signatureDetails);
+  assertNotAdhocSignature(signatureDetails);
+  assertIdentifierMetadata(signatureDetails);
   return assertDesignatedRequirement(
     designatedRequirement,
     expected.expectedSha1,

@@ -41,7 +41,7 @@ const createVerifierSimulator = (overrides = {}) => {
   const fixture = {
     signed: true,
     certificateFingerprints: [fingerprint],
-    identifier: REQUIRED_IDENTIFIER,
+    identifierLine: `Identifier=${REQUIRED_IDENTIFIER}`,
     signatureLine: 'Signature size=1024',
     designatedRequirement: `${requirementFor(fingerprint)}\n`,
     strictValid: true,
@@ -66,7 +66,7 @@ const createVerifierSimulator = (overrides = {}) => {
         stdout: '',
         stderr: [
           'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
-          `Identifier=${fixture.identifier}`,
+          fixture.identifierLine,
           'Format=app bundle with Mach-O universal (x86_64 arm64)',
           fixture.signatureLine,
           'Info.plist entries=25',
@@ -183,35 +183,58 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('rejects ad-hoc, zero-size, and missing signature evidence', async () => {
-    for (const signatureLine of ['Signature=adhoc', 'Signature size=0', null]) {
+  test('rejects explicit ad-hoc signature metadata with spacing and case variants', async () => {
+    for (const signatureLine of [
+      'Signature=adhoc',
+      '  sIgNaTuRe  =  AdHoC  ',
+    ]) {
       await withPrivateProofPath(async proofPath => {
         await assert.rejects(
           verifyEstablish(proofPath, { signatureLine }),
-          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
+          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.adhocSignatureFailure),
         );
       });
     }
   });
 
-  test('rejects the wrong signature identifier and embedded requirement leaf distinctly', async () => {
-    for (const [fixture, diagnostic] of [
-      [
-        { identifier: 'dev.other.desktop' },
-        DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure,
-      ],
-      [
-        { designatedRequirement: `${requirementFor(otherFingerprint)}\n` },
-        DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure,
-      ],
+  test('accepts missing signature size and optional valid identifier metadata variants', async () => {
+    for (const fixture of [
+      { signatureLine: null },
+      { signatureLine: 'Signature size=0' },
+      { signatureLine: 'Signature size=01' },
+      { identifierLine: `Identifier=${REQUIRED_IDENTIFIER}` },
+      { identifierLine: `  iDeNtIfIeR  =  ${REQUIRED_IDENTIFIER}  ` },
+      { identifierLine: null, signatureLine: null },
     ]) {
       await withPrivateProofPath(async proofPath => {
-        await assert.rejects(
-          verifyEstablish(proofPath, fixture),
-          isDiagnostic(diagnostic),
-        );
+        await verifyEstablish(proofPath, fixture);
       });
     }
+  });
+
+  test('rejects wrong, duplicate, and conflicting identifier metadata distinctly', async () => {
+    for (const signatureDetails of [
+      'Identifier=dev.other.desktop',
+      'Identifier=DEV.PROPR.DESKTOP',
+      `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nIDENTIFIER = dev.other.desktop`,
+    ]) {
+      assert.throws(
+        () => assertDarwinSigningEvidence(validEvidence({ signatureDetails })),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure),
+      );
+    }
+  });
+
+  test('rejects the wrong embedded requirement leaf distinctly', async () => {
+    await withPrivateProofPath(async proofPath => {
+      await assert.rejects(
+        verifyEstablish(proofPath, {
+          designatedRequirement: `${requirementFor(otherFingerprint)}\n`,
+        }),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure),
+      );
+    });
   });
 
   test('requires byte-exact embedded designated-requirement stability after reprobe', async () => {
@@ -299,18 +322,17 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     });
   });
 
-  test('rejects missing, ambiguous, or non-exact signature metadata distinctly', () => {
-    for (const evidence of [
-      validEvidence({ signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}` }),
-      validEvidence({ signatureDetails: 'Signature size=1024' }),
-      validEvidence({
-        signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}\nSignature size=1024`,
-      }),
-      validEvidence({ signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=01` }),
+  test('accepts realistic verbose metadata with omitted redundant fields', () => {
+    for (const signatureDetails of [
+      '',
+      'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
+      `Identifier=${REQUIRED_IDENTIFIER}`,
+      'Signature size=1024',
+      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\r\n  IDENTIFIER = ${REQUIRED_IDENTIFIER}  \r\nFormat=app bundle with Mach-O thin (arm64)`,
     ]) {
-      assert.throws(
-        () => assertDarwinSigningEvidence(evidence),
-        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
+      assert.equal(
+        assertDarwinSigningEvidence(validEvidence({ signatureDetails })),
+        `${requirementFor(fingerprint)}\n`,
       );
     }
   });
