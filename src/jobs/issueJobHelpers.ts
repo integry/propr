@@ -9,7 +9,11 @@ import {
     buildAgentModelLlmLabel,
     getAgentTypeFromModel,
     isEpicBranch,
-    resolveAgentTerminationReason
+    appendVisualPreviewSection,
+    renderVisualPreviewSection,
+    renderVisualPreviewUploadFailureSection,
+    resolveAgentTerminationReason,
+    type VisualPreviewEvidence
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 export {
@@ -21,6 +25,10 @@ export {
     type GenericErrorOptions
 } from './errorHandlers.js';
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
+import {
+    isVisualPreviewUploadAuthenticationError,
+    publishPullRequestVisualPreviews,
+} from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
 
@@ -53,6 +61,10 @@ interface CreatePROptions {
     PR_LABEL: string;
     correlatedLogger: Logger;
     issueTitle: string;
+    visualPreview?: {
+        evidence: VisualPreviewEvidence;
+        worktreePath: string;
+    };
 }
 
 export function buildIssueReference(
@@ -171,14 +183,14 @@ export async function createPullRequest(
     worktreeInfo: WorktreeInfo,
     options: CreatePROptions
 ): Promise<PostProcessingResult> {
-    const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle } = options;
+    const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle, visualPreview } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
     const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-    const prBody = `## AI Implementation Summary
+    const basePrBody = `## AI Implementation Summary
 
 ${buildIssueReference(issueRef.number, commitResult !== null, claudeResult)}
 
@@ -194,6 +206,13 @@ ${completionComment}
 ### 💡 Need changes?
 
 Comment on this PR to request refinements — the AI agent monitors comments and will update the implementation based on your feedback. Keep iterating until you're satisfied!`;
+    const visualPreviewSection = visualPreview && commitResult
+        ? renderVisualPreviewSection({
+            assets: [],
+            toolSuggestions: visualPreview.evidence.toolSuggestions
+        }, {})
+        : '';
+    const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
 
     try {
         const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
@@ -230,6 +249,36 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             correlatedLogger.info({ prNumber: prResponse.data.number, labels: labelsToAdd }, 'Added PR labels to new PR');
         } catch (labelError) {
             correlatedLogger.warn({ prNumber: prResponse.data.number, labels: labelsToAdd, error: (labelError as Error).message }, 'Failed to add PR labels to new PR after retries');
+        }
+
+        if (visualPreview && commitResult && visualPreview.evidence.assets.length > 0) {
+            try {
+                await publishPullRequestVisualPreviews({
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    pullRequestNumber: prResponse.data.number,
+                    body: basePrBody,
+                    evidence: visualPreview.evidence,
+                    worktreePath: visualPreview.worktreePath,
+                    octokit
+                });
+                correlatedLogger.info({ prNumber: prResponse.data.number, previewCount: visualPreview.evidence.assets.length }, 'Uploaded visual previews to pull request');
+            } catch (previewError) {
+                correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
+                try {
+                    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                        owner: issueRef.repoOwner,
+                        repo: issueRef.repoName,
+                        pull_number: prResponse.data.number,
+                        body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(
+                            visualPreview.evidence,
+                            { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }
+                        ))
+                    });
+                } catch (fallbackError) {
+                    correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not publish the text-only visual preview upload explanation');
+                }
+            }
         }
 
         return {

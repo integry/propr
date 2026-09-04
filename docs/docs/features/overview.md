@@ -41,6 +41,7 @@ Use different coding agents without changing the rest of the workflow.
 ProPR keeps follow-up work where the review already happens: the pull request.
 
 - [PR automation and fine-tuning](./pr-followup.md): create pull requests automatically, then refine them through natural GitHub comments or slash-command workflows.
+- [Visual previews](./visual-previews.md): attach focused image or video evidence when an implementation changes something users can see.
 - [PR slash commands](./pr-commands.md): the command reference for `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix`.
 - [Branch configuration](./branch-config.md): repository-specific branch defaults and resolution rules.
 

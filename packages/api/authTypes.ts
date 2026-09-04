@@ -8,6 +8,8 @@ export interface GitHubUser {
     accessToken?: string;
     refreshToken?: string;
     tokenExpiresAt?: number;
+    refreshTokenExpiresAt?: number;
+    oauthSource?: 'github' | 'connect';
     githubAuthInvalid?: boolean;
 }
 

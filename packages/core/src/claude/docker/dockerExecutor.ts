@@ -426,5 +426,5 @@ function detectContainerId(
 }
 
 // Re-export image builder functions for backward compatibility
-export { buildClaudeDockerImage, ensureAgentBundleImage, ensureAgentDockerImage } from './dockerImageBuilder.js';
+export { agentDockerImageExists, buildClaudeDockerImage, ensureAgentBundleImage, ensureAgentDockerImage } from './dockerImageBuilder.js';
 export type { VersionedImageBuildResult } from './dockerImageBuilder.js';

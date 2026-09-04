@@ -321,6 +321,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     isStackRunning: async () => false,
     startStack: async () => undefined,
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
+    configureVisualPreviewCredential: async () => ({ status: 'already-configured' }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
     openUrl: async () => undefined,

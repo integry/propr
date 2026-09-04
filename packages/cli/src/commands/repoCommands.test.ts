@@ -89,3 +89,25 @@ test("repo toggle accepts positive and negative automatic CI follow-up flags", a
   assert.equal(disabled[0]?.enabled, false);
   assert.equal(disabled[1]?.autoFollowupOnFailedCi, true);
 });
+
+test("repo add and toggle configure visual preview policy", async () => {
+  const added = await runRepoWrite(
+    ["add", "integry/previewed", "--visual-previews", "--preview-types", "image,video", "--preview-instructions", "Show desktop and mobile."],
+    []
+  );
+  assert.deepEqual(added[0]?.visualPreview, {
+    enabled: true,
+    types: ["image", "video"],
+    instructions: "Show desktop and mobile."
+  });
+
+  const disabled = await runRepoWrite(
+    ["toggle", "integry/previewed", "--no-visual-previews"],
+    added
+  );
+  assert.deepEqual(disabled[0]?.visualPreview, {
+    enabled: false,
+    types: ["image", "video"],
+    instructions: "Show desktop and mobile."
+  });
+});

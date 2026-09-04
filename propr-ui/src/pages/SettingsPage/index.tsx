@@ -11,6 +11,7 @@ import { useSettingsState } from './useSettingsState';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
 import NotificationSettingsSection from './NotificationSettingsSection';
+import VisualPreviewAuthSection from './VisualPreviewAuthSection';
 
 const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
@@ -144,6 +145,8 @@ const AdminSettingsPage: React.FC = () => {
 
           <div className="space-y-6">
             <NotificationSettingsSection />
+
+            <VisualPreviewAuthSection />
 
             <div className="border-t border-gray-200" />
 
