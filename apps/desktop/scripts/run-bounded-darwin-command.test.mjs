@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile as nodeExecFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -173,17 +173,90 @@ test('nonzero exit escalates against a TERM-ignoring descendant before releasing
   }
 });
 
-test('command spawn error retains the guard through SIGKILL escalation', async () => {
-  const startedAt = Date.now();
+test('rejects executable substitution before creating a child process', async () => {
+  let spawnCalled = false;
   await assert.rejects(runBoundedProcess({
     executable: join(tmpdir(), 'propr-command-that-does-not-exist'),
     timeoutMs: 2_000,
     terminationGraceMs: 100,
     maxOutputBytes: 1_024,
+    spawn: () => {
+      spawnCalled = true;
+      throw new Error('unexpected-spawn');
+    },
   }), error => error instanceof BoundedProcessError
-    && error.reason === 'spawn-or-io'
-    && error.result.exitCode === 1);
-  assert.ok(Date.now() - startedAt >= 75, 'spawn failure released the process-group guard early');
+    && error.reason === 'invalid-input');
+  assert.equal(spawnCalled, false);
+});
+
+test('passes shell metacharacters as one inert argument', async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-metacharacters-'));
+  const injectedPath = join(fixtureRoot, 'injected.txt');
+  const argument = `; touch ${injectedPath}; $(printf injected) &`;
+  try {
+    const result = await runBoundedProcess({
+      executable: process.execPath,
+      arguments: ['-e', 'process.stdout.write(process.argv[1])', argument],
+      timeoutMs: 2_000,
+      terminationGraceMs: 100,
+      maxOutputBytes: 1_024,
+    });
+    assert.equal(result.stdout, argument);
+    await assert.rejects(readFile(injectedPath, 'utf8'), { code: 'ENOENT' });
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI command selection ignores PATH and rejects non-allowlisted executables', async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-environment-'));
+  const fakeNodePath = join(fixtureRoot, 'node');
+  const maliciousMarker = join(fixtureRoot, 'malicious.txt');
+  const intendedMarker = join(fixtureRoot, 'intended.txt');
+  const substitutedExecutable = join(fixtureRoot, 'substituted');
+  try {
+    await writeFile(fakeNodePath, [
+      `#!${process.execPath}`,
+      `require('node:fs').writeFileSync(${JSON.stringify(maliciousMarker)}, 'MALICIOUS');`,
+    ].join('\n'), { mode: 0o700 });
+    await chmod(fakeNodePath, 0o700);
+
+    await new Promise((resolve, reject) => {
+      nodeExecFile(process.execPath, [
+        helperPath,
+        '--timeout-ms', '2000',
+        '--termination-grace-ms', '100',
+        '--max-output-bytes', '1024',
+        '--forward-output', 'false',
+        '--', 'node', '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(intendedMarker)}, 'INTENDED')`,
+      ], { env: { ...process.env, PATH: fixtureRoot } }, error => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    assert.equal(await readFile(intendedMarker, 'utf8'), 'INTENDED');
+    await assert.rejects(readFile(maliciousMarker, 'utf8'), { code: 'ENOENT' });
+
+    await writeFile(substitutedExecutable, `#!${process.execPath}\n`, { mode: 0o700 });
+    await assert.rejects(new Promise((resolve, reject) => {
+      nodeExecFile(process.execPath, [
+        helperPath,
+        '--timeout-ms', '2000',
+        '--', substitutedExecutable,
+      ], { env: { ...process.env, PATH: fixtureRoot } }, (error, stdout, stderr) => {
+        if (error) reject(Object.assign(error, { stdout, stderr }));
+        else resolve();
+      });
+    }), error => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, '');
+      assert.equal(error.stderr, 'Bounded Darwin operation failed.\n');
+      return true;
+    });
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test('CLI timeout diagnostics never echo command arguments or secret values', async () => {
