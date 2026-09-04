@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash, X509Certificate } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir, mkdtemp, readFile, rm, symlink, writeFile,
+} from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { rootCertificates } from 'node:tls';
 import {
@@ -25,15 +27,19 @@ const requirementExpressionFor = certificateSha1 => (
 const requirementFor = certificateSha1 => (
   `designated => ${requirementExpressionFor(certificateSha1)}`
 );
-
-const selfSignedCertificate = rootCertificates
-  .map(certificate => new X509Certificate(certificate))
-  .find(certificate => certificate.checkIssued(certificate));
-assert.ok(selfSignedCertificate, 'Node must provide a self-signed certificate test fixture');
-const selfSignedFingerprint = createHash('sha1')
-  .update(selfSignedCertificate.raw)
+const fingerprintFor = certificate => createHash('sha1')
+  .update(certificate.raw)
   .digest('hex')
   .toUpperCase();
+
+const parsedRootCertificates = rootCertificates.map(certificate => new X509Certificate(certificate));
+const selfSignedCertificate = parsedRootCertificates
+  .find(certificate => certificate.checkIssued(certificate));
+assert.ok(selfSignedCertificate, 'Node must provide a self-signed certificate test fixture');
+const selfSignedFingerprint = fingerprintFor(selfSignedCertificate);
+const mismatchedCertificate = parsedRootCertificates
+  .find(certificate => fingerprintFor(certificate) !== selfSignedFingerprint);
+assert.ok(mismatchedCertificate, 'Node must provide a mismatched certificate test fixture');
 
 const validEvidence = (overrides = {}) => ({
   expectedCertificateSha1: selfSignedFingerprint,
@@ -42,7 +48,7 @@ const validEvidence = (overrides = {}) => ({
     `Identifier=${REQUIRED_IDENTIFIER}`,
     'Signature size=1024',
   ].join('\n'),
-  designatedRequirement: requirementFor(selfSignedFingerprint),
+  designatedRequirement: `${requirementFor(selfSignedFingerprint)}\n`,
   ...overrides,
 });
 
@@ -51,8 +57,10 @@ const createCodesignSimulator = (overrides = {}) => {
     signed: true,
     adHoc: false,
     identifier: REQUIRED_IDENTIFIER,
-    leaf: selfSignedFingerprint,
-    designatedRequirement: requirementFor(selfSignedFingerprint),
+    certificate: selfSignedCertificate,
+    leafFile: 'regular',
+    additionalCertificate: false,
+    designatedRequirement: `${requirementFor(selfSignedFingerprint)}\n`,
     strictValid: true,
     ...overrides,
   };
@@ -60,7 +68,7 @@ const createCodesignSimulator = (overrides = {}) => {
   const runCommand = async options => {
     calls.push(options);
     const arguments_ = options.arguments;
-    if (arguments_.includes('--verbose=4')) {
+    if (arguments_[0] === '-d' && arguments_[1] === '--verbose=4') {
       if (!fixture.signed) throw new Error(`unsigned secret ${application}`);
       return {
         stdout: '',
@@ -70,21 +78,27 @@ const createCodesignSimulator = (overrides = {}) => {
         ].join('\n'),
       };
     }
-    const requirementArgument = arguments_.find(argument => argument.startsWith('-R='));
-    if (requirementArgument !== undefined) {
-      if (requirementArgument !== `-R=${requirementExpressionFor(selfSignedFingerprint)}`) {
-        throw new Error('unexpected simulated requirement expression');
+    if (arguments_[0] === '-d' && arguments_[1] === '--extract-certificates') {
+      const prefix = arguments_[2];
+      if (fixture.leafFile === 'regular') {
+        await writeFile(`${prefix}0`, fixture.certificate.raw);
+      } else if (fixture.leafFile === 'directory') {
+        await mkdir(`${prefix}0`);
+      } else if (fixture.leafFile === 'symlink') {
+        const target = join(dirname(prefix), 'certificate-target.der');
+        await writeFile(target, fixture.certificate.raw);
+        await symlink(target, `${prefix}0`);
+      } else if (fixture.leafFile === 'malformed') {
+        await writeFile(`${prefix}0`, 'not a certificate');
       }
-      if (!fixture.signed || fixture.adHoc
-        || fixture.identifier !== REQUIRED_IDENTIFIER
-        || fixture.leaf !== selfSignedFingerprint) {
-        throw new Error(`requirement mismatch ${fixture.leaf} ${application}`);
+      if (fixture.additionalCertificate) {
+        await writeFile(`${prefix}1`, fixture.certificate.raw);
       }
       return { stdout: '', stderr: '' };
     }
-    if (arguments_.includes('-r-')) {
+    if (arguments_[0] === '-d' && arguments_[1] === '-r-') {
       if (!fixture.signed) throw new Error(`missing requirement ${application}`);
-      return { stdout: '', stderr: `${fixture.designatedRequirement}\n` };
+      return { stdout: '', stderr: fixture.designatedRequirement };
     }
     if (arguments_.includes('--strict')) {
       if (!fixture.strictValid) throw new Error(`strict failure ${application}`);
@@ -95,10 +109,14 @@ const createCodesignSimulator = (overrides = {}) => {
   return { calls, runCommand };
 };
 
-const withProofPath = async callback => {
-  const directory = await mkdtemp(join(tmpdir(), 'propr-requirement-proof-'));
+const withPrivateEvidencePaths = async callback => {
+  const directory = await mkdtemp(join(tmpdir(), 'propr-signature-evidence-'));
   try {
-    await callback(join(directory, 'designated-requirement.txt'));
+    await callback({
+      proofPath: join(directory, 'designated-requirement.txt'),
+      initialCertificatePrefix: join(directory, 'initial-certificate-'),
+      stableCertificatePrefix: join(directory, 'stable-certificate-'),
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -115,65 +133,67 @@ const isDiagnostic = diagnostic => error => {
 };
 
 describe('Darwin packaged Connect acceptance signature proof', () => {
-  test('uses exact bounded argv for native requirement evaluation and separate evidence checks', async () => {
-    const simulator = createCodesignSimulator();
-    const evidence = await inspectDarwinSigningEvidence({
-      application,
-      expectedCertificateSha1: selfSignedFingerprint,
-      runCommand: simulator.runCommand,
-    });
-
-    assert.equal(
-      assertDarwinSigningEvidence({
-        expectedCertificateSha1: selfSignedFingerprint,
-        ...evidence,
-      }),
-      requirementFor(selfSignedFingerprint),
-    );
-    assert.deepEqual(simulator.calls.map(call => call.arguments), [
-      ['--display', '--verbose=4', application],
-      [
-        '--verify',
-        `-R=${requirementExpressionFor(selfSignedFingerprint)}`,
+  test('uses separate exact bounded argv for display, extraction, requirement, and strict checks', async () => {
+    await withPrivateEvidencePaths(async ({ initialCertificatePrefix }) => {
+      const simulator = createCodesignSimulator();
+      const evidence = await inspectDarwinSigningEvidence({
         application,
-      ],
-      ['-d', '-r-', application],
-      ['--verify', '--deep', '--strict', application],
-    ]);
-    const requirementArguments = simulator.calls[1].arguments;
-    assert.equal(requirementArguments.length, 3);
-    assert.ok(!requirementArguments.includes('--test-requirement'));
-    assert.ok(!requirementArguments.some(argument => argument.startsWith('=')));
-    for (const call of simulator.calls) {
-      assert.equal(call.executable, '/usr/bin/codesign');
-      assert.equal(call.timeoutMs, 20_000);
-      assert.equal(call.terminationGraceMs, 1_000);
-      assert.equal(call.maxOutputBytes, 256 * 1024);
-      assert.equal(call.forwardOutput, false);
-    }
+        expectedCertificateSha1: selfSignedFingerprint,
+        certificatePrefix: initialCertificatePrefix,
+        runCommand: simulator.runCommand,
+      });
+
+      assert.equal(
+        assertDarwinSigningEvidence({
+          expectedCertificateSha1: selfSignedFingerprint,
+          ...evidence,
+        }),
+        `${requirementFor(selfSignedFingerprint)}\n`,
+      );
+      assert.deepEqual(simulator.calls.map(call => call.arguments), [
+        ['-d', '--verbose=4', application],
+        ['-d', '--extract-certificates', initialCertificatePrefix, application],
+        ['-d', '-r-', application],
+        ['--verify', '--deep', '--strict', application],
+      ]);
+      assert.ok(!simulator.calls.some(call => call.arguments.some(
+        argument => argument === '-R' || argument.startsWith('-R='),
+      )));
+      for (const call of simulator.calls) {
+        assert.equal(call.executable, '/usr/bin/codesign');
+        assert.equal(call.timeoutMs, 20_000);
+        assert.equal(call.terminationGraceMs, 1_000);
+        assert.equal(call.maxOutputBytes, 256 * 1024);
+        assert.equal(call.forwardOutput, false);
+      }
+    });
   });
 
-  test('accepts a valid self-signed leaf and the exact stable embedded requirement', async () => {
-    await withProofPath(async proofPath => {
-      const displayedRequirement = requirementFor(selfSignedFingerprint.toLowerCase());
+  test('accepts exactly one parsed self-signed leaf and byte-identical requirements', async () => {
+    await withPrivateEvidencePaths(async ({
+      proofPath, initialCertificatePrefix, stableCertificatePrefix,
+    }) => {
+      const displayedRequirement = `${requirementFor(selfSignedFingerprint.toLowerCase())}\n`;
       await verifyDarwinPackagedConnectSignature({
         mode: 'establish',
         application,
         expectedCertificateSha1: selfSignedFingerprint,
         proofPath,
+        certificatePrefix: initialCertificatePrefix,
         runCommand: createCodesignSimulator({
           designatedRequirement: displayedRequirement,
         }).runCommand,
       });
       assert.equal(
         await readFile(proofPath, 'utf8'),
-        `${displayedRequirement}\n`,
+        displayedRequirement,
       );
       await verifyDarwinPackagedConnectSignature({
         mode: 'stable',
         application,
         expectedCertificateSha1: selfSignedFingerprint,
         proofPath,
+        certificatePrefix: stableCertificatePrefix,
         runCommand: createCodesignSimulator({
           designatedRequirement: displayedRequirement,
         }).runCommand,
@@ -181,64 +201,92 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     });
   });
 
-  test('native expected-requirement evaluation rejects ad-hoc, wrong-leaf, and wrong-identifier code', async () => {
+  test('rejects a mismatched extracted leaf, ad-hoc code, and the wrong identifier', async () => {
     for (const fixture of [
+      { certificate: mismatchedCertificate },
       { adHoc: true },
-      { leaf: otherFingerprint },
       { identifier: 'dev.other.desktop' },
     ]) {
-      await assert.rejects(inspectDarwinSigningEvidence({
-        application,
-        expectedCertificateSha1: selfSignedFingerprint,
-        runCommand: createCodesignSimulator(fixture).runCommand,
-      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.expectedRequirementFailure));
+      await withPrivateEvidencePaths(async ({ proofPath, initialCertificatePrefix }) => {
+        await assert.rejects(verifyDarwinPackagedConnectSignature({
+          mode: 'establish',
+          application,
+          expectedCertificateSha1: selfSignedFingerprint,
+          proofPath,
+          certificatePrefix: initialCertificatePrefix,
+          runCommand: createCodesignSimulator(fixture).runCommand,
+        }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure));
+      });
+    }
+  });
+
+  test('requires exactly prefix0 as a parsed regular file', async () => {
+    for (const fixture of [
+      { leafFile: 'missing' },
+      { additionalCertificate: true },
+      { leafFile: 'directory' },
+      { leafFile: 'symlink' },
+      { leafFile: 'malformed' },
+    ]) {
+      await withPrivateEvidencePaths(async ({ initialCertificatePrefix }) => {
+        await assert.rejects(inspectDarwinSigningEvidence({
+          application,
+          expectedCertificateSha1: selfSignedFingerprint,
+          certificatePrefix: initialCertificatePrefix,
+          runCommand: createCodesignSimulator(fixture).runCommand,
+        }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure));
+      });
     }
   });
 
   test('unsigned code fails at signature display with a fixed secret-safe subcode', async () => {
-    await assert.rejects(inspectDarwinSigningEvidence({
-      application,
-      expectedCertificateSha1: selfSignedFingerprint,
-      runCommand: createCodesignSimulator({ signed: false }).runCommand,
-    }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure));
+    await withPrivateEvidencePaths(async ({ initialCertificatePrefix }) => {
+      await assert.rejects(inspectDarwinSigningEvidence({
+        application,
+        expectedCertificateSha1: selfSignedFingerprint,
+        certificatePrefix: initialCertificatePrefix,
+        runCommand: createCodesignSimulator({ signed: false }).runCommand,
+      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure));
+    });
   });
 
   test('wraps every native verifier operation in its distinct fixed subcode', async () => {
     const diagnostics = [
       DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure,
-      DARWIN_VERIFICATION_DIAGNOSTICS.expectedRequirementFailure,
+      DARWIN_VERIFICATION_DIAGNOSTICS.certificateExtractionFailure,
       DARWIN_VERIFICATION_DIAGNOSTICS.embeddedRequirementFailure,
       DARWIN_VERIFICATION_DIAGNOSTICS.strictVerifyFailure,
     ];
     for (const [failureIndex, diagnostic] of diagnostics.entries()) {
-      let invocation = 0;
-      const simulator = createCodesignSimulator();
-      await assert.rejects(inspectDarwinSigningEvidence({
-        application,
-        expectedCertificateSha1: selfSignedFingerprint,
-        runCommand: async options => {
-          if (invocation++ === failureIndex) {
-            throw new Error(`private failure ${application} ${selfSignedFingerprint}`);
-          }
-          return simulator.runCommand(options);
-        },
-      }), isDiagnostic(diagnostic));
+      await withPrivateEvidencePaths(async ({ initialCertificatePrefix }) => {
+        let invocation = 0;
+        const simulator = createCodesignSimulator();
+        await assert.rejects(inspectDarwinSigningEvidence({
+          application,
+          expectedCertificateSha1: selfSignedFingerprint,
+          certificatePrefix: initialCertificatePrefix,
+          runCommand: async options => {
+            if (invocation++ === failureIndex) {
+              throw new Error(`private failure ${application} ${selfSignedFingerprint}`);
+            }
+            return simulator.runCommand(options);
+          },
+        }), isDiagnostic(diagnostic));
+      });
     }
   });
 
-  test('rejects missing or ambiguous display and embedded-requirement evidence', () => {
+  test('rejects missing or ambiguous display and non-exact requirement evidence', () => {
     for (const evidence of [
+      validEvidence({ signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}` }),
       validEvidence({ signatureDetails: 'Signature size=1024' }),
       validEvidence({
-        signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}`,
+        signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}\nSignature size=1024`,
       }),
       validEvidence({ designatedRequirement: '' }),
-      validEvidence({
-        designatedRequirement: [
-          requirementFor(selfSignedFingerprint),
-          requirementFor(selfSignedFingerprint),
-        ].join('\n'),
-      }),
+      validEvidence({ designatedRequirement: `${requirementFor(selfSignedFingerprint)}\r\n` }),
+      validEvidence({ designatedRequirement: `${requirementFor(selfSignedFingerprint)}\nextra\n` }),
+      validEvidence({ designatedRequirement: `${requirementFor(otherFingerprint)}\n` }),
     ]) {
       assert.throws(
         () => assertDarwinSigningEvidence(evidence),
@@ -247,7 +295,7 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('rejects ad-hoc evidence even if a mocked native evaluator reports success', () => {
+  test('rejects ad-hoc evidence even if the other mocked operations report success', () => {
     assert.throws(
       () => assertDarwinSigningEvidence(validEvidence({
         signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nSignature=adhoc`,
@@ -257,24 +305,40 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
   });
 
   test('requires byte-exact embedded designated-requirement stability after reprobe', async () => {
-    await withProofPath(async proofPath => {
-      await writeFile(proofPath, `${requirementFor(otherFingerprint)}\n`, { mode: 0o600 });
+    await withPrivateEvidencePaths(async ({
+      proofPath, initialCertificatePrefix, stableCertificatePrefix,
+    }) => {
+      await verifyDarwinPackagedConnectSignature({
+        mode: 'establish',
+        application,
+        expectedCertificateSha1: selfSignedFingerprint,
+        proofPath,
+        certificatePrefix: initialCertificatePrefix,
+        runCommand: createCodesignSimulator().runCommand,
+      });
       await assert.rejects(verifyDarwinPackagedConnectSignature({
         mode: 'stable',
         application,
         expectedCertificateSha1: selfSignedFingerprint,
         proofPath,
-        runCommand: createCodesignSimulator().runCommand,
+        certificatePrefix: stableCertificatePrefix,
+        runCommand: createCodesignSimulator({
+          designatedRequirement: `${requirementFor(selfSignedFingerprint.toLowerCase())}\n`,
+        }).runCommand,
       }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure));
     });
   });
 
-  test('rejects a mismatched embedded requirement even after native expected evaluation passes', () => {
-    assert.throws(
-      () => assertDarwinSigningEvidence(validEvidence({
-        designatedRequirement: requirementFor(otherFingerprint),
-      })),
-      isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
-    );
+  test('requires extraction prefixes to share the private proof directory', async () => {
+    await withPrivateEvidencePaths(async ({ proofPath }) => {
+      await assert.rejects(verifyDarwinPackagedConnectSignature({
+        mode: 'establish',
+        application,
+        expectedCertificateSha1: selfSignedFingerprint,
+        proofPath,
+        certificatePrefix: join(tmpdir(), 'outside-certificate-'),
+        runCommand: createCodesignSimulator().runCommand,
+      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure));
+    });
   });
 });

@@ -88,6 +88,8 @@ leaf_certificate=''
 identity_archive=''
 leaf_config=''
 requirement_proof=''
+initial_certificate_prefix=''
+stable_certificate_prefix=''
 identity_sha1=''
 original_default=''
 original_keychains=()
@@ -189,6 +191,9 @@ generate_key_and_certificates() {
   identity_archive="$keychain_root/identity.p12"
   leaf_config="$keychain_root/leaf.cnf"
   requirement_proof="$keychain_root/designated-requirement.txt"
+  # The private-root cleanup removes every file emitted for both extraction prefixes.
+  initial_certificate_prefix="$keychain_root/initial-certificate-"
+  stable_certificate_prefix="$keychain_root/stable-certificate-"
   keychain_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
     /usr/bin/openssl rand -hex 32)" || return $?
   identity_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
@@ -234,7 +239,7 @@ sign_application() {
 
 verify_initial_signature() {
   run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" establish \
-    "$application" "$identity_sha1" "$requirement_proof"
+    "$application" "$identity_sha1" "$requirement_proof" "$initial_certificate_prefix"
 }
 
 run_pair_and_reprobe() {
@@ -243,7 +248,7 @@ run_pair_and_reprobe() {
 
 verify_stable_signature() {
   run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" stable \
-    "$application" "$identity_sha1" "$requirement_proof"
+    "$application" "$identity_sha1" "$requirement_proof" "$stable_certificate_prefix"
 }
 
 run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
