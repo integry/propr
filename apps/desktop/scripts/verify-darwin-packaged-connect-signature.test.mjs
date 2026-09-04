@@ -57,16 +57,19 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     await withCertificateDirectory(async ({ certificateDirectory }) => {
       const calls = [];
       const application = '/private/tmp/propr-desktop.app';
+      const certificatePrefix = join(
+        certificateDirectory,
+        'codesign-establish-certificate-',
+      );
       const evidence = await inspectDarwinSigningEvidence({
         mode: 'establish',
         application,
         certificateDirectory,
         runCommand: async options => {
           calls.push(options);
-          const extractionArgument = options.arguments
-            .find(argument => argument.startsWith('--extract-certificates='));
-          if (extractionArgument) {
-            const certificatePrefix = extractionArgument.slice('--extract-certificates='.length);
+          const extractionArgumentIndex = options.arguments.indexOf('--extract-certificates');
+          if (extractionArgumentIndex !== -1) {
+            assert.equal(options.arguments[extractionArgumentIndex + 1], certificatePrefix);
             await writeFile(`${certificatePrefix}0`, selfSignedCertificate.raw);
             return { stdout: '', stderr: 'Identifier=dev.propr.desktop\n' };
           }
@@ -81,12 +84,10 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
         expectedCertificateSha1: selfSignedFingerprint,
         ...evidence,
       }), requirementFor(selfSignedFingerprint));
-      assert.deepEqual(calls.map(call => call.arguments), [
-        [
-          '--display', '--verbose=4',
-          `--extract-certificates=${join(certificateDirectory, 'codesign-establish-certificate-')}`,
-          application,
-        ],
+      assert.deepEqual(calls[0].arguments, [
+        '--display', '--verbose=4', '--extract-certificates', certificatePrefix, application,
+      ]);
+      assert.deepEqual(calls.slice(1).map(call => call.arguments), [
         ['-d', '-r-', application],
         ['--verify', '--deep', '--strict', application],
       ]);

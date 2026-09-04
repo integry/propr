@@ -78,7 +78,8 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /'--keychain', keychain/u);
     assert.match(darwinSigner, /'--timestamp=none'/u);
     assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
-    assert.match(darwinVerifier, /`--extract-certificates=\$\{certificatePrefix\}`/u);
+    assert.match(darwinVerifier, /'--extract-certificates', certificatePrefix/u);
+    assert.doesNotMatch(darwinVerifier, /--extract-certificates=/u);
     assert.match(darwinVerifier, /new X509Certificate\(certificateBytes\)/u);
     assert.match(darwinVerifier, /leafCertificate\.fingerprint\.replaceAll\(':', ''\)/u);
     assert.doesNotMatch(darwinVerifier, /Authority=/u);

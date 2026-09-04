@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { X509Certificate } from 'node:crypto';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from './run-bounded-darwin-command.mjs';
@@ -39,15 +39,19 @@ export const readExtractedCertificateFingerprints = async ({
 }) => {
   try {
     const prefixName = basename(certificatePrefix);
+    const expectedCertificateName = `${prefixName}0`;
+    const expectedCertificatePath = join(certificateDirectory, expectedCertificateName);
     const entries = (await readdir(certificateDirectory, { withFileTypes: true }))
       .filter(entry => entry.name.startsWith(prefixName));
     if (entries.length !== 1
-      || entries[0].name !== `${prefixName}0`
+      || entries[0].name !== expectedCertificateName
       || !entries[0].isFile()) {
       throw missingCertificateEvidence();
     }
 
-    const certificateBytes = await readFile(join(certificateDirectory, entries[0].name));
+    const certificateFile = await lstat(expectedCertificatePath);
+    if (!certificateFile.isFile()) throw missingCertificateEvidence();
+    const certificateBytes = await readFile(expectedCertificatePath);
     const leafCertificate = new X509Certificate(certificateBytes);
     return [leafCertificate.fingerprint.replaceAll(':', '').toUpperCase()];
   } catch (error) {
@@ -104,7 +108,7 @@ export const inspectDarwinSigningEvidence = async ({
     `codesign-${mode}-certificate-`,
   );
   const signatureResult = await runVerificationCommand(runCommand, '/usr/bin/codesign', [
-    '--display', '--verbose=4', `--extract-certificates=${certificatePrefix}`, application,
+    '--display', '--verbose=4', '--extract-certificates', certificatePrefix, application,
   ]);
   const signatureDetails = `${signatureResult.stdout}\n${signatureResult.stderr}`;
   if (normalizeLines(signatureDetails).some(line => line.trim() === 'Signature=adhoc')) {
