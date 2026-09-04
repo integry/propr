@@ -149,4 +149,55 @@ describe('packaged smoke profile authorization', () => {
       'desktop.app.shutdown',
     ]);
   });
+
+  it('loads the persisted active profile into the packaged policy before creating the first window', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const initialization = main.indexOf('const credentialInitialization = await credentials.initialize();');
+    const persistedProfileRead = main.indexOf('const current = await credentials.listProfiles();', initialization);
+    const policyInitialization = main.indexOf(
+      "rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];",
+      persistedProfileRead,
+    );
+    const createWindow = main.indexOf('mainWindow = await createMainWindow()');
+
+    assert.notEqual(initialization, -1);
+    assert.notEqual(persistedProfileRead, -1);
+    assert.notEqual(policyInitialization, -1);
+    assert.notEqual(createWindow, -1);
+    assert.ok(initialization < persistedProfileRead);
+    assert.ok(persistedProfileRead < policyInitialization);
+    assert.ok(policyInitialization < createWindow);
+  });
+
+  it('keeps transport and Connect journey smoke policies pinned without dynamic profile reads', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const pinning = main.indexOf('const rendererPolicyPinnedForSmoke = transportSmoke !== null');
+    const connectJourneyPin = main.indexOf("|| connectSmoke?.journeyEndpoint !== undefined", pinning);
+    const authorizedProfilePin = main.indexOf(
+      '|| (packagedSmokeTest && smokeProfileOrigin !== null);',
+      connectJourneyPin,
+    );
+    const initialization = main.indexOf('const credentialInitialization = await credentials.initialize();');
+    const persistedReadGuard = main.indexOf(
+      'if (app.isPackaged && !rendererPolicyPinnedForSmoke) {',
+      initialization,
+    );
+    const persistedProfileRead = main.indexOf(
+      'const current = await credentials.listProfiles();',
+      persistedReadGuard,
+    );
+    const persistedReadGuardEnd = main.indexOf('\n    }', persistedProfileRead);
+    const callbackGuard = main.indexOf('...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {');
+    const callback = main.indexOf('onRendererActiveProfileChanged:', callbackGuard);
+    const callbackGuardEnd = main.indexOf('} : {}),', callback);
+    const registrationEnd = main.indexOf('});', callbackGuardEnd);
+
+    assert.notEqual(pinning, -1);
+    assert.ok(pinning < connectJourneyPin && connectJourneyPin < authorizedProfilePin);
+    assert.ok(authorizedProfilePin < initialization);
+    assert.ok(initialization < persistedReadGuard && persistedReadGuard < persistedProfileRead);
+    assert.ok(persistedProfileRead < persistedReadGuardEnd && persistedReadGuardEnd < callbackGuard);
+    assert.ok(callbackGuard < callback && callback < callbackGuardEnd);
+    assert.ok(callbackGuardEnd < registrationEnd);
+  });
 });

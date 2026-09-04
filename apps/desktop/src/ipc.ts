@@ -30,6 +30,7 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
+  onRendererActiveProfileChanged?(origin: string | null): void;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
   /** @internal Fixed, secret-free packaged Connect acceptance evidence. */
@@ -81,6 +82,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   const channels = new Set<string>();
   const active = new Set<Promise<unknown>>();
   let closing = false;
+  let rendererActiveProfileReconciliationGeneration = 0;
   const trusted = (event: IpcMainInvokeEvent): boolean => {
     const senderUrl = event.senderFrame?.url ?? '';
     return isTrustedRendererUrl(senderUrl, options.devServerUrl, options.packagedRendererUrl);
@@ -112,6 +114,24 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       }
     });
   };
+  const reconcileRendererActiveProfile = async (): Promise<void> => {
+    if (!options.onRendererActiveProfileChanged) return;
+    const generation = ++rendererActiveProfileReconciliationGeneration;
+    let current;
+    try {
+      current = await options.credentials.listProfiles();
+    } catch (error) {
+      if (generation === rendererActiveProfileReconciliationGeneration) {
+        options.onRendererActiveProfileChanged(null);
+      }
+      throw error;
+    }
+    const activeOrigin = current.profiles
+      .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl ?? null;
+    if (generation === rendererActiveProfileReconciliationGeneration) {
+      options.onRendererActiveProfileChanged(activeOrigin);
+    }
+  };
 
   handle(IPC_CHANNELS.appMetadata, () => ({
     name: options.app.getName(),
@@ -127,18 +147,23 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   });
   handle(IPC_CHANNELS.storageSecurity, () => options.credentials.storageSecurity());
   handle(IPC_CHANNELS.profilesList, () => options.credentials.listProfiles());
-  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(
-    input,
-    (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
-      options.desktopSession,
-      [previousOrigin, nextOrigin],
-    ),
-  ));
+  handle(IPC_CHANNELS.profilesSave, async (_event, input) => {
+    const profile = await options.credentials.saveProfile(
+      input,
+      (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
+        options.desktopSession,
+        [previousOrigin, nextOrigin],
+      ),
+    );
+    await reconcileRendererActiveProfile();
+    return profile;
+  });
   handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
     await options.credentials.removeProfile(
       profileId,
       origin => clearDesktopInstanceCookies(options.desktopSession, [origin]),
     );
+    await reconcileRendererActiveProfile();
   });
   handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
     const current = await options.credentials.listProfiles();
@@ -150,8 +175,13 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       ...(next ? [next.apiBaseUrl] : []),
     ]);
     await options.credentials.setActiveProfile(profileId);
+    await reconcileRendererActiveProfile();
   });
-  handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
+  handle(IPC_CHANNELS.authenticationPair, async (_event, profile) => {
+    const paired = await options.credentials.pair(profile);
+    await reconcileRendererActiveProfile();
+    return paired;
+  });
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
   handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
@@ -165,16 +195,23 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
         .find(profile => profile.id === after.activeProfileId)?.apiBaseUrl;
       const origins = [previousOrigin, activatedOrigin].filter(origin => origin !== undefined);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
+      if (!activatedOrigin) throw new Error('Desktop activation did not establish a renderer origin');
+      await reconcileRendererActiveProfile();
       return activated;
     } catch (error) {
-      await options.credentials.discardActivation({
+      const discarded = await options.credentials.discardActivation({
         profileId: activated.profileId,
         transportScope: activated.transportScope,
       });
+      if (discarded.discarded) await reconcileRendererActiveProfile();
       throw error;
     }
   });
-  handle(IPC_CHANNELS.connectionDiscard, (_event, value) => options.credentials.discardActivation(value));
+  handle(IPC_CHANNELS.connectionDiscard, async (_event, value) => {
+    const discarded = await options.credentials.discardActivation(value);
+    if (discarded.discarded) await reconcileRendererActiveProfile();
+    return discarded;
+  });
   handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));
   handle(IPC_CHANNELS.connectDiscover, (_event, ...args) => {
     if (args.length) throw new Error('Invalid Connect discovery request');

@@ -193,20 +193,63 @@ export const deepLinkFromArguments = (argv: readonly string[]): string | null =>
   return null;
 };
 
-export const rendererContentSecurityPolicy = (development = false): string => [
+const rendererConnectSources = (
+  development: boolean,
+  apiBaseUrls: readonly string[],
+): string => {
+  const sources = new Set(["'self'", 'https:', 'wss:']);
+  if (development) {
+    sources.add('http:');
+    sources.add('ws:');
+  } else {
+    for (const candidate of apiBaseUrls) {
+      const origin = normalizeApiBaseUrl(candidate);
+      if (!origin || !origin.startsWith('http://')) continue;
+      sources.add(origin);
+      sources.add(`ws://${origin.slice('http://'.length)}`);
+    }
+  }
+  return [...sources].join(' ');
+};
+
+export const rendererContentSecurityPolicy = (
+  development = false,
+  apiBaseUrls: readonly string[] = [],
+): string => [
   "default-src 'self'",
   `script-src 'self'${development ? " 'unsafe-inline'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  // Electron main applies the shared canonical origin rule before any request;
-  // scheme sources are required here because CSP cannot express IPv4 127/8.
-  "connect-src 'self' https: http: ws: wss:",
+  // HTTPS/WSS support remote instances and ProPR Connect. Cleartext sources
+  // are exact, main-validated active profile origins because CSP has no IPv4
+  // CIDR syntax with which to express the normalizer's complete 127/8 range.
+  `connect-src ${rendererConnectSources(development, apiBaseUrls)}`,
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
   "frame-src 'none'",
 ].join('; ');
+
+interface ReloadableRenderer {
+  isDestroyed(): boolean;
+  reload(): void;
+}
+
+export const createLatestRendererReloader = (
+  getCurrentRenderer: () => ReloadableRenderer | null,
+  schedule: (callback: () => void) => void = callback => { setTimeout(callback, 0); },
+): (() => void) => {
+  let generation = 0;
+  return () => {
+    const scheduledGeneration = ++generation;
+    schedule(() => {
+      if (generation !== scheduledGeneration) return;
+      const renderer = getCurrentRenderer();
+      if (renderer && !renderer.isDestroyed()) renderer.reload();
+    });
+  };
+};
 
 export const applyDevelopmentRendererCsp = (html: string): string => {
   const packagedPolicy = rendererContentSecurityPolicy();
