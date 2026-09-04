@@ -98,6 +98,8 @@ const createPackagedJourneyFixture = async () => {
   let active = false;
   let binding;
   let mode = 'success';
+  let modeGeneration = 0;
+  const approvalReadinessDelayMs = process.platform === 'darwin' ? 300 : 0;
   const cors = {
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-ProPR-Desktop-Transport-Scope',
@@ -130,7 +132,11 @@ const createPackagedJourneyFixture = async () => {
       authorization: request.headers.authorization ?? null,
       origin: request.headers.origin ?? null,
       transportScope: request.headers[DESKTOP_TRANSPORT_SCOPE_HEADER.toLowerCase()] ?? null,
+      credentialHeadersPresent: Object.keys(request.headers).some(name =>
+        ['authorization', 'cookie', 'proxy-authorization'].includes(name.toLowerCase())),
       socketIo: false,
+      fixtureMode: mode,
+      fixtureModeGeneration: modeGeneration,
     };
     requests.push(record);
     if (request.method === 'OPTIONS') {
@@ -145,6 +151,7 @@ const createPackagedJourneyFixture = async () => {
           throw new Error('invalid fixture mode');
         }
         mode = requestedMode;
+        modeGeneration += 1;
         approved = false;
         binding = undefined;
         response.writeHead(204, cors);
@@ -208,6 +215,12 @@ const createPackagedJourneyFixture = async () => {
         return;
       }
       if (request.method === 'GET' && request.url === `/api/desktop/pairings/${pairingId}/browser`) {
+        if (approvalReadinessDelayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, approvalReadinessDelayMs));
+          record.approvalReadinessDelayed = true;
+        }
+        record.fixtureModeStable = record.fixtureMode === mode
+          && record.fixtureModeGeneration === modeGeneration;
         approved = true;
         response.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' });
         response.end('<!doctype html><title>Desktop approved</title><p>Approved</p>');
@@ -601,6 +614,10 @@ try {
     });
   outcome = await runPhase('pair');
   if (outcome.ok && journeyFixture) {
+    const pairingRequestCountAtPairTerminal = journeyFixture.requests.filter(request =>
+      request.method !== 'OPTIONS'
+      && (request.url === '/api/desktop/pairings'
+        || /^\/api\/desktop\/pairings\/[^/]+\/(?:browser|poll|activate)$/u.test(request.url ?? ''))).length;
     outcome = await runPhase('reprobe');
     if (outcome.ok) {
       const applicationRequests = journeyFixture.requests.filter(request => request.method !== 'OPTIONS');
@@ -609,10 +626,17 @@ try {
         request.url === '/api/desktop/pairings'
         || /^\/api\/desktop\/pairings\/[^/]+\/(?:poll|activate)$/u.test(request.url ?? '')
         || /\/browser$/u.test(request.url ?? ''));
-      const pairingStarts = bootstrap.filter(request => request.url === '/api/desktop/pairings');
-      const pairingBrowsers = bootstrap.filter(request => /\/browser$/u.test(request.url ?? ''));
-      const pairingPolls = bootstrap.filter(request => /\/poll$/u.test(request.url ?? ''));
-      const pairingActivations = bootstrap.filter(request => /\/activate$/u.test(request.url ?? ''));
+      const pairingStarts = bootstrap.filter(request => request.method === 'POST'
+        && request.url === '/api/desktop/pairings');
+      const pairingBrowsers = bootstrap.filter(request => request.method === 'GET'
+        && /\/browser$/u.test(request.url ?? ''));
+      const pairingPolls = bootstrap.filter(request => request.method === 'POST'
+        && /\/poll$/u.test(request.url ?? ''));
+      const pairingActivations = bootstrap.filter(request => request.method === 'POST'
+        && /\/activate$/u.test(request.url ?? ''));
+      const intendedPairingModes = ['expiry', 'cancel', 'success'];
+      const hasExactModes = requests => requests.length === intendedPairingModes.length
+        && requests.every((request, index) => request.fixtureMode === intendedPairingModes[index]);
       const authenticatedRest = applicationRequests.filter(request =>
         request.socketIo === false
         && request.url === '/api/auth/user'
@@ -632,6 +656,17 @@ try {
         pairingBrowserCount: pairingBrowsers.length,
         pairingPollCount: pairingPolls.length,
         pairingActivationCount: pairingActivations.length,
+        pairingMethodBoundaryValid: bootstrap.length === pairingStarts.length
+          + pairingBrowsers.length + pairingPolls.length + pairingActivations.length,
+        pairingBrowserCredentialPresent: pairingBrowsers.some(request =>
+          request.credentialHeadersPresent === true),
+        pairingIntentSequenceValid: hasExactModes(pairingStarts) && hasExactModes(pairingBrowsers),
+        pairingLifecycleIsolated: pairingBrowsers.every(request => request.fixtureModeStable === true)
+          && pairingPolls.every(request => request.fixtureMode === 'success')
+          && pairingActivations.every(request => request.fixtureMode === 'success'),
+        pairingRequestAfterTerminal: bootstrap.length !== pairingRequestCountAtPairTerminal,
+        delayedApprovalReadinessProven: process.platform !== 'darwin'
+          || pairingBrowsers.every(request => request.approvalReadinessDelayed === true),
         bootstrapAuthorizationPresent: bootstrap.some(request => request.authorization !== null),
         authenticatedRestCount: authenticatedRest.length,
         authenticatedSocketCount: socketEvidence.authenticatedSocketCount,

@@ -109,11 +109,19 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.match(accounting, /pairingActivationCount: pairingActivations\.length/u);
 
     const evaluator = await readFile(new URL('./packaged-connect-evidence.mjs', import.meta.url), 'utf8');
-    assert.match(evaluator, /evidence\.pairingStartCount !== 3/u);
+    assert.match(evaluator, /evidence\.pairingStartCount < 3/u);
+    assert.match(evaluator, /evidence\.pairingStartCount > 3/u);
     assert.match(evaluator, /evidence\.pairingBrowserCount !== 3/u);
     assert.match(evaluator, /evidence\.pairingPollCount !== 1/u);
     assert.match(evaluator, /evidence\.pairingActivationCount !== 1/u);
+    assert.match(harness, /request\.method === 'POST'[\s\S]*?request\.url === '\/api\/desktop\/pairings'/u);
+    assert.match(harness, /request\.method === 'GET'[\s\S]*?\/\\\/browser\$\//u);
+    assert.match(harness, /pairingBrowserCredentialPresent: pairingBrowsers\.some/u);
     assert.doesNotMatch(evaluator, /pairingPollCount < 3/u);
+    assert.match(harness, /const approvalReadinessDelayMs = process\.platform === 'darwin' \? 300 : 0/u);
+    assert.match(harness, /pairingIntentSequenceValid: hasExactModes\(pairingStarts\) && hasExactModes\(pairingBrowsers\)/u);
+    assert.match(harness, /pairingRequestAfterTerminal: bootstrap\.length !== pairingRequestCountAtPairTerminal/u);
+    assert.match(harness, /delayedApprovalReadinessProven: process\.platform !== 'darwin'/u);
   });
 
   test('accepts an exact ready proof followed by a clean exit', async () => {
@@ -423,6 +431,8 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.ok(manual >= 0 && browser >= 0 && credential >= 0 && reprobeReady >= 0
       && activation >= 0 && publication >= 0 && react >= 0);
     assert.match(main, /await stages\.waitFor\('CREDENTIAL_COMMITTED'\)[\s\S]*?await stages\.waitFor\('AUTHENTICATED_REPROBE_READY'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_COMMITTED'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_PUBLISHED'\)[\s\S]*?await stages\.waitFor\('REACT_CONNECTED'\)/u);
+    assert.match(main, /Packaged pairing expiry classification failed[\s\S]*?await waitForApprovalIdle\(\)[\s\S]*?JOURNEY_NEGATIVE_CANCEL[\s\S]*?const approvalReady = waitForNextApproval\(\)[\s\S]*?await approvalReady[\s\S]*?Packaged pairing cancellation classification failed[\s\S]*?await waitForApprovalIdle\(\)/u);
+    assert.match(main, /await waitForApprovalIdle\(\);\s+reportPackagedConnectJourneyStage\(phase === 'pair'\s+\? 'JOURNEY_PAIR_COMPLETE'/u);
     assert.match(main, /if \(packagedSmokeTest && !transportSmoke && !connectJourney\)/u);
     assert.match(main, /if \(packagedSmokeTest && !connectJourney\) \{/u);
     assert.doesNotMatch(main, /JOURNEY_PAIR_RENDERER|JOURNEY_REPROBE_RENDERER/u);

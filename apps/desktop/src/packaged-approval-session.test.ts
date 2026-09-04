@@ -5,6 +5,7 @@ import type { BrowserWindow, Session } from 'electron';
 import {
   clearPackagedApprovalStorage,
   createPackagedApprovalNavigation,
+  createPackagedApprovalTaskTracker,
   packagedApprovalPartition,
 } from './packaged-approval-session';
 
@@ -202,6 +203,36 @@ describe('packaged pairing approval isolated session', () => {
     await navigation;
     assert.equal(settled, true);
     await controller.cleanup();
+  });
+
+  it('reports owned approval readiness and drains delayed work before the next pairing case', async () => {
+    const requested: string[] = [];
+    const releases: Array<() => void> = [];
+    const tracker = createPackagedApprovalTaskTracker<string>(async request => {
+      requested.push(request);
+      await new Promise<void>(resolve => { releases.push(resolve); });
+    });
+
+    for (const request of ['expiry', 'cancel', 'success']) {
+      let ready = false;
+      const readiness = tracker.waitForNextOpen().then(() => { ready = true; });
+      const concurrentReadiness = tracker.waitForNextOpen();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(ready, false);
+      const opened = tracker.open(request);
+      await Promise.all([readiness, concurrentReadiness]);
+      assert.equal(ready, true);
+      let idle = false;
+      const drained = tracker.waitForIdle().then(() => { idle = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(idle, false);
+      assert.equal(requested.filter(value => value === request).length, 1);
+      releases.shift()?.();
+      await Promise.all([opened, drained]);
+      assert.equal(idle, true);
+    }
+
+    assert.deepEqual(requested, ['expiry', 'cancel', 'success']);
   });
 
   it('cancels an incidental resource without invalidating the exact main-frame approval', async () => {

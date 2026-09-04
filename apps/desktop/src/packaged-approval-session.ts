@@ -29,6 +29,12 @@ export interface PackagedApprovalNavigation {
   cleanup(): Promise<void>;
 }
 
+export interface PackagedApprovalTaskTracker<Request> {
+  open(request: Request): Promise<void>;
+  waitForNextOpen(): Promise<void>;
+  waitForIdle(): Promise<void>;
+}
+
 interface PackagedApprovalNavigationOptions {
   approvalUrl: string;
   approvalSession: Session;
@@ -43,6 +49,55 @@ function rejected(): Error {
 function cleanupRejected(): Error {
   return new Error(APPROVAL_CLEANUP_REJECTED);
 }
+
+/**
+ * Keep acceptance-only browser work owned after pairing expiry/cancellation.
+ * The pairing protocol deliberately stops awaiting a browser callback once its
+ * lifetime ends, but a packaged smoke must still observe the one HTTP approval
+ * that it started before advancing the shared fixture or publishing READY.
+ */
+export const createPackagedApprovalTaskTracker = <Request>(
+  open: (request: Request) => Promise<void>,
+): PackagedApprovalTaskTracker<Request> => {
+  const active = new Set<Promise<void>>();
+  const nextOpenWaiters = new Set<{ after: number; resolve(): void }>();
+  let openGeneration = 0;
+  let rejectedTask = false;
+
+  return {
+    open(request) {
+      const task = Promise.resolve().then(() => open(request));
+      active.add(task);
+      openGeneration += 1;
+      for (const waiter of nextOpenWaiters) {
+        if (waiter.after >= openGeneration) continue;
+        nextOpenWaiters.delete(waiter);
+        waiter.resolve();
+      }
+      void task.then(
+        () => active.delete(task),
+        () => {
+          rejectedTask = true;
+          active.delete(task);
+        },
+      );
+      return task;
+    },
+    waitForNextOpen() {
+      const after = openGeneration;
+      return new Promise<void>(resolve => nextOpenWaiters.add({ after, resolve }));
+    },
+    async waitForIdle() {
+      while (active.size > 0) {
+        await Promise.all(Array.from(active, task => task.then(
+          () => undefined,
+          () => undefined,
+        )));
+      }
+      if (rejectedTask) throw rejected();
+    },
+  };
+};
 
 export const clearPackagedApprovalStorage = async (
   approvalSession: Pick<Session, 'clearStorageData'>,

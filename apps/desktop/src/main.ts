@@ -30,6 +30,7 @@ import { openApprovedDesktopPairingUrl } from './pairing-browser';
 import {
   clearPackagedApprovalStorage,
   createPackagedApprovalNavigation,
+  createPackagedApprovalTaskTracker,
   packagedApprovalPartition,
 } from './packaged-approval-session';
 import { createDesktopShutdownCoordinator } from './shutdown';
@@ -604,6 +605,8 @@ const runPackagedConnectJourneySmoke = async (
   window: BrowserWindow,
   profiles: ProfileStore,
   credentials: DesktopCredentialService,
+  waitForNextApproval: () => Promise<void>,
+  waitForApprovalIdle: () => Promise<void>,
   endpoint: string,
   phase: 'pair' | 'reprobe',
   stages: PackagedJourneyStageTracker,
@@ -649,11 +652,14 @@ const runPackagedConnectJourneySmoke = async (
         }
       },
     );
+    await waitForApprovalIdle();
     reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_CANCEL');
     await setMode('cancel');
+    const approvalReady = waitForNextApproval();
     const cancelledPairing = credentials.pair({
       id: 'negative-cancel', label: 'Packaged cancel', apiBaseUrl: endpoint,
     });
+    await approvalReady;
     await new Promise(resolve => setTimeout(resolve, 50));
     credentials.cancelPairing('negative-cancel');
     await cancelledPairing.then(
@@ -664,6 +670,7 @@ const runPackagedConnectJourneySmoke = async (
         }
       },
     );
+    await waitForApprovalIdle();
     reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_STATE');
     const failedProfiles = await profiles.list();
     if (failedProfiles.profiles.some(profile => profile.id.startsWith('negative-'))) {
@@ -774,6 +781,7 @@ const runPackagedConnectJourneySmoke = async (
     || transportEvidence.authenticatedSockets < requiredAuthenticatedRequests) {
     throw new Error('Packaged Connect authenticated transport proof timed out');
   }
+  await waitForApprovalIdle();
   reportPackagedConnectJourneyStage(phase === 'pair'
     ? 'JOURNEY_PAIR_COMPLETE'
     : 'JOURNEY_REPROBE_COMPLETE');
@@ -1192,11 +1200,14 @@ if (!hasSingleInstanceLock) {
         return status;
       },
     });
+    const packagedJourneyApprovals = connectSmoke?.journeyEndpoint
+      ? createPackagedApprovalTaskTracker(openPackagedJourneyApproval)
+      : null;
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openPairingBrowser: connectSmoke?.journeyEndpoint
-        ? openPackagedJourneyApproval
+      openPairingBrowser: packagedJourneyApprovals
+        ? packagedJourneyApprovals.open
         : request => openApprovedDesktopPairingUrl(request, shell),
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
@@ -1275,11 +1286,15 @@ if (!hasSingleInstanceLock) {
       reportPackagedConnectJourneyStage('JOURNEY_DISCOVERY_RENDERER');
       const readyFields = await runPackagedConnectDiscoverySmoke(mainWindow);
       if (connectSmoke.journeyEndpoint && connectSmoke.journeyPhase) {
-        if (!journeyStages) throw new Error('Packaged Connect journey stage tracker was unavailable');
+        if (!journeyStages || !packagedJourneyApprovals) {
+          throw new Error('Packaged Connect journey stage tracker was unavailable');
+        }
         await runPackagedConnectJourneySmoke(
           mainWindow,
           profiles,
           credentials,
+          packagedJourneyApprovals.waitForNextOpen,
+          packagedJourneyApprovals.waitForIdle,
           connectSmoke.journeyEndpoint,
           connectSmoke.journeyPhase,
           journeyStages,
