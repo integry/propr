@@ -6,7 +6,7 @@ import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
@@ -62,17 +62,16 @@ import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { NotificationProjectionService } from './services/notificationProjectionService.js';
 import { WebPushDispatcher } from './services/webPushDispatcher.js';
-import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import { assertInstanceAdministratorConfigured } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import {
   configureApiProxyTrust,
   createApiRequestRateLimiter,
   createDiscoveryRequestRateLimiter,
-  createPairingPollRateLimiter,
-  createPairingStartRateLimiter,
   createWebhookRequestRateLimiter,
 } from './requestRateLimits.js';
 import { desktopAuthService } from './desktopAuthService.js';
+import { prohibitApiResponseCaching } from './apiCacheControl.js';
 import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
@@ -82,6 +81,7 @@ import {
   type RouteEntry
 } from './routeRegistry.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
   type VisualPreviewOAuthRefreshScheduler,
@@ -155,6 +155,11 @@ const HOST = resolveApiListenHost();
 
 configureApiProxyTrust(app);
 
+// This is the earliest `/api` response boundary. Keep it before CORS and every
+// global or route limiter so success, failure, and saturation responses cannot
+// be cached by a browser or intermediary.
+app.use('/api', prohibitApiResponseCaching);
+
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
   process.exit(1);
@@ -180,14 +185,6 @@ app.use(corsRejectionHandler);
 
 app.use('/api', createApiRequestRateLimiter());
 setupWebhookRoute();
-
-// Prevent caching of API responses to avoid stale CORS issues
-app.use('/api', (_req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  next();
-});
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -264,11 +261,15 @@ function setupRoutes(): void {
   // They return only compatibility/capability metadata or pairing state gated by
   // a high-entropy secret; all operational routes below remain authenticated.
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
-  app.get('/api/desktop/discovery', createDiscoveryRequestRateLimiter(), statusRoutes.getDesktopDiscovery);
-  app.post('/api/desktop/pairings', createPairingStartRateLimiter(), desktopAuthRoutes.startPairing);
-  app.post('/api/desktop/pairings/:pairingId/poll', createPairingPollRateLimiter(), desktopAuthRoutes.pollPairing);
-  app.get('/api/desktop/pairings/:pairingId/browser', createPairingStartRateLimiter(), desktopAuthRoutes.openPairingApproval);
-  app.use('/api', ensureAuthenticated, resolveAuthorization);
+  registerDesktopApiBoundary(app, {
+    discovery: statusRoutes.getDesktopDiscovery,
+    startPairing: desktopAuthRoutes.startPairing,
+    pollPairing: desktopAuthRoutes.pollPairing,
+    activatePairing: desktopAuthRoutes.activatePairing,
+    cancelPairing: desktopAuthRoutes.cancelPairing,
+    openPairingApproval: desktopAuthRoutes.openPairingApproval,
+    revokeCurrentToken: desktopAuthRoutes.revokeCurrentToken,
+  });
   app.get('/api/desktop/pairings/:pairingId/approval', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.getPairingApproval);
   app.post('/api/desktop/pairings/:pairingId/approve', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.approvalOriginGuard, desktopAuthRoutes.approvePairing);
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);

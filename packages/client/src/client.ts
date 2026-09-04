@@ -1,5 +1,7 @@
 import {
   evaluateProprApiCompatibility,
+  parseProprDesktopDiscoveryJson,
+  PROPR_CONNECT_DISCOVERY_MAX_BYTES,
   type ProprApiCompatibilityResult,
   type ProprCompatibilityMetadata,
 } from '@propr/shared';
@@ -9,7 +11,10 @@ import {
   type NormalizeApiBaseUrlOptions,
   type ProprApiBaseUrl,
 } from './baseUrl.js';
-import { ProprClientError } from './errors.js';
+import {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
+  ProprClientError,
+} from './errors.js';
 import {
   buildSocketConnection,
   connectProprSocket,
@@ -17,12 +22,29 @@ import {
   type ProprSocketOptions,
   type Socket,
 } from './socket.js';
+import {
+  completeDesktopPairing,
+  parseDesktopDiscovery,
+  parseDesktopPairingStart,
+  parseDesktopPairingActivationReceipt,
+  type ProprDesktopDiscovery,
+  type ProprDesktopPairingComplete,
+  type ProprDesktopPairingActivationReceipt,
+  type ProprDesktopPairingOptions,
+  type ProprDesktopPairingStart,
+} from './desktopPairing.js';
+import {
+  requestPairingProtocol,
+  type PairingProtocolRequestOptions,
+} from './pairingProtocol.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
   authentication?: ProprAuthentication;
   defaultTimeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** @internal Deterministic response-lifecycle proof; production uses fixed protocol defaults. */
+  pairingProtocol?: PairingProtocolRequestOptions;
 }
 
 export interface ProprFetchOptions {
@@ -61,6 +83,45 @@ const isCompatibilityMetadata = (value: unknown): value is Partial<ProprCompatib
   );
 };
 
+const isExactLegacyDiscoveryAuthenticationBody = (contents: string): boolean => {
+  let offset = 0;
+  const whitespace = (): void => {
+    while (offset < contents.length && /[\x20\t\r\n]/.test(contents[offset])) offset += 1;
+  };
+  const stringToken = (): string | null => {
+    if (contents[offset] !== '"') return null;
+    const start = offset;
+    offset += 1;
+    while (offset < contents.length) {
+      const character = contents[offset++];
+      if (character === '"') {
+        try { return JSON.parse(contents.slice(start, offset)) as string; } catch { return null; }
+      }
+      if (character === '\\') {
+        const escape = contents[offset++];
+        if (escape === 'u') {
+          if (!/^[0-9a-fA-F]{4}$/.test(contents.slice(offset, offset + 4))) return null;
+          offset += 4;
+        } else if (!escape || !'"\\/bfnrt'.includes(escape)) return null;
+      } else if (character.charCodeAt(0) < 0x20) return null;
+    }
+    return null;
+  };
+
+  whitespace();
+  if (contents[offset++] !== '{') return false;
+  whitespace();
+  if (stringToken() !== 'error') return false;
+  whitespace();
+  if (contents[offset++] !== ':') return false;
+  whitespace();
+  if (stringToken() !== 'Unauthorized') return false;
+  whitespace();
+  if (contents[offset++] !== '}') return false;
+  whitespace();
+  return offset === contents.length;
+};
+
 const assertTimeout = (timeoutMs: number): void => {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
     throw new ProprClientError('Request timeouts must be finite, non-negative numbers.', {
@@ -69,12 +130,86 @@ const assertTimeout = (timeoutMs: number): void => {
   }
 };
 
+const createDesktopDiscoveryDeadline = (timeoutMs: number, callerSignal?: AbortSignal) => {
+  assertTimeout(timeoutMs);
+  const controller = new AbortController();
+  let rejectDeadline!: (reason: unknown) => void;
+  let timedOut = false;
+  let deadlineSettled = false;
+  let deadlineReason: unknown;
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  // A caller may already be aborted before any operation is raced.
+  void deadline.catch(() => undefined);
+  const timeoutReason = new Error('desktop discovery timed out');
+  const abortReason = new Error('desktop discovery was cancelled');
+  const settleDeadline = (reason: unknown): boolean => {
+    if (deadlineSettled) return false;
+    deadlineSettled = true;
+    deadlineReason = reason;
+    rejectDeadline(reason);
+    return true;
+  };
+  const timeout = setTimeout(() => {
+    if (!settleDeadline(timeoutReason)) return;
+    timedOut = true;
+    controller.abort(timeoutReason);
+  }, Math.max(1, timeoutMs));
+  const onAbort = (): void => {
+    if (!settleDeadline(abortReason)) return;
+    controller.abort(callerSignal?.reason);
+  };
+  if (callerSignal?.aborted) onAbort();
+  else callerSignal?.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    race: <T>(operation: Promise<T>, disposeLateValue?: (value: T) => void): Promise<T> => {
+      const observed = Promise.resolve(operation);
+      if (deadlineSettled) {
+        observed.then(
+          value => { try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ } },
+          () => undefined,
+        );
+        return Promise.reject(deadlineReason);
+      }
+      return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        deadline.catch(error => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+        observed.then(
+          value => {
+            if (settled || deadlineSettled) {
+              try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ }
+              return;
+            }
+            settled = true;
+            resolve(value);
+          },
+          error => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          },
+        );
+      });
+    },
+    timedOut: (): boolean => timedOut,
+    dispose: (): void => {
+      clearTimeout(timeout);
+      callerSignal?.removeEventListener('abort', onAbort);
+    },
+  };
+};
+
 export class ProprClient {
   readonly baseUrl: ProprApiBaseUrl;
   readonly authentication: ProprAuthentication;
   readonly defaultTimeoutMs: number;
 
   private readonly fetchImplementation: typeof globalThis.fetch;
+  private readonly pairingProtocolOptions: PairingProtocolRequestOptions;
 
   constructor(options: ProprClientOptions = {}) {
     this.baseUrl = normalizeApiBaseUrl(options.baseUrl, options);
@@ -82,6 +217,7 @@ export class ProprClient {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 0;
     assertTimeout(this.defaultTimeoutMs);
     this.fetchImplementation = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.pairingProtocolOptions = options.pairingProtocol ?? {};
   }
 
   url(path: string): string {
@@ -213,6 +349,238 @@ export class ProprClient {
     return result;
   }
 
+  async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
+    const deadline = createDesktopDiscoveryDeadline(timeoutMs, signal);
+    if (signal?.aborted) {
+      deadline.dispose();
+      throw new ProprClientError('Desktop discovery was cancelled.', {
+        kind: 'aborted', cause: signal.reason,
+      });
+    }
+    let response: Response;
+    try {
+      response = await deadline.race(
+        this.fetchImplementation(this.resolveRequestTarget(this.url('/api/desktop/discovery')), {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Accept: 'application/json' },
+          redirect: 'manual',
+          signal: deadline.signal,
+        }),
+        lateResponse => {
+          try { void lateResponse.body?.cancel().catch(() => undefined); } catch { /* hostile late response */ }
+        },
+      );
+    } catch (cause) {
+      deadline.dispose();
+      if (deadline.timedOut()) {
+        throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
+      }
+      if (signal?.aborted) {
+        throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      }
+      if (cause instanceof ProprClientError) throw cause;
+      throw new ProprClientError('The ProPR API could not be reached.', { kind: 'network', cause });
+    }
+    try {
+    const discoveryContentType = response.headers.get('content-type')
+      ?.split(';', 1)[0]?.trim().toLowerCase();
+    const legacyAuthenticationCandidate = response.status === 401
+      && !response.redirected
+      && discoveryContentType === 'application/json';
+    if ((!response.ok && !legacyAuthenticationCandidate)
+      || response.redirected
+      || discoveryContentType !== 'application/json') {
+      try { void response.body?.cancel().catch(() => undefined); } catch { /* best-effort response disposal */ }
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response',
+        status: response.status,
+      });
+    }
+    const declaredLength = response.headers.get('content-length');
+    if (declaredLength !== null && (!/^(?:0|[1-9]\d*)$/.test(declaredLength)
+      || Number(declaredLength) > PROPR_CONNECT_DISCOVERY_MAX_BYTES)) {
+      try { void response.body?.cancel().catch(() => undefined); } catch { /* best-effort response disposal */ }
+      throw new ProprClientError('The ProPR instance returned oversized desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    try {
+      if (reader) {
+        while (true) {
+          const part = await deadline.race(reader.read());
+          if (part.done) break;
+          received += part.value.byteLength;
+          if (received > PROPR_CONNECT_DISCOVERY_MAX_BYTES) throw new Error('oversized');
+          chunks.push(part.value);
+        }
+      }
+    } catch (cause) {
+      try { void reader?.cancel().catch(() => undefined); } catch { /* best-effort body cancellation */ }
+      if (deadline.timedOut()) {
+        throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
+      }
+      if (signal?.aborted) {
+        throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      }
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+        ...(legacyAuthenticationCandidate ? {} : { cause }),
+      });
+    } finally { try { reader?.releaseLock(); } catch { /* hostile streams may retain a pending read */ } }
+    const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+    if (declaredLength !== null && (!contentEncoding || contentEncoding === 'identity')
+      && Number(declaredLength) !== received) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const bytes = new Uint8Array(received);
+    let cursor = 0;
+    for (const chunk of chunks) { bytes.set(chunk, cursor); cursor += chunk.byteLength; }
+    let contents: string;
+    try { contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (cause) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+        ...(legacyAuthenticationCandidate ? {} : { cause }),
+      });
+    }
+    if (legacyAuthenticationCandidate) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response',
+        status: response.status,
+        ...(isExactLegacyDiscoveryAuthenticationBody(contents)
+          ? { code: DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED }
+          : {}),
+      });
+    }
+    const metadata = parseProprDesktopDiscoveryJson(contents);
+    if (!metadata) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const compatibility = evaluateProprApiCompatibility(
+      metadata,
+    );
+    return parseDesktopDiscovery(metadata, compatibility);
+    } finally {
+      deadline.dispose();
+    }
+  }
+
+  async startDesktopPairing(
+    clientName: string,
+    options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
+  ): Promise<ProprDesktopPairingStart> {
+    const path = '/api/desktop/pairings';
+    const expectedOrigin = this.resolveRequestOrigin(this.url(path));
+    return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientName, ...options.binding }),
+      redirect: 'manual',
+      signal: options.signal,
+    }), expectedOrigin, options.now);
+  }
+
+  async pairDesktop(
+    clientName: string,
+    options: ProprDesktopPairingOptions,
+  ): Promise<ProprDesktopPairingComplete> {
+    const start = await this.startDesktopPairing(clientName, options);
+    return completeDesktopPairing(this, start, options);
+  }
+
+  async activateDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<ProprDesktopPairingActivationReceipt> {
+    return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/activate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+    ));
+  }
+
+  async cancelDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
+    const value = await this.requestDesktopPairing(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+    );
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    const receipt = value as Record<string, unknown>;
+    if (receipt.status !== 'cancelled' || typeof receipt.cancelledAt !== 'string'
+      || !Number.isFinite(Date.parse(receipt.cancelledAt))
+      || Object.keys(receipt).some(key => !['status', 'cancelledAt'].includes(key))) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    return receipt as unknown as { status: 'cancelled'; cancelledAt: string };
+  }
+
+  /** @internal Pairing keeps transport ownership through the complete body. */
+  async requestDesktopPairing(
+    path: string,
+    init: RequestInit,
+    overallTimeoutMs?: number,
+    overallTimeoutError?: PairingProtocolRequestOptions['overallTimeoutError'],
+  ): Promise<unknown> {
+    const target = this.resolveRequestTarget(this.url(path));
+    const authentication = this.authenticate(init);
+    const authenticatedInit = authentication instanceof Promise
+      ? await authentication
+      : authentication;
+    return requestPairingProtocol(
+      this.fetchImplementation,
+      target,
+      authenticatedInit ?? {},
+      {
+        ...this.pairingProtocolOptions,
+        overallTimeoutMs: overallTimeoutMs ?? this.pairingProtocolOptions.overallTimeoutMs,
+        overallTimeoutError: overallTimeoutError
+          ?? this.pairingProtocolOptions.overallTimeoutError,
+      },
+    );
+  }
+
   connectSocket(options: ProprSocketOptions = {}): Socket {
     return connectProprSocket(buildSocketConnection(this.baseUrl, this.authentication, options));
   }
@@ -246,6 +614,22 @@ export class ProprClient {
     return input;
   }
 
+  private resolveRequestOrigin(input: RequestInfo | URL): string {
+    const raw = input instanceof Request ? input.url : input.toString();
+    const browserOrigin = typeof globalThis.location !== 'undefined'
+      ? globalThis.location.origin
+      : undefined;
+    try {
+      const origin = new URL(raw, browserOrigin).origin;
+      if (origin === 'null') throw new Error();
+      return origin;
+    } catch {
+      throw new ProprClientError('The ProPR instance origin could not be established.', {
+        kind: 'configuration',
+      });
+    }
+  }
+
   private authenticate(init?: RequestInit): RequestInit | undefined | Promise<RequestInit> {
     if (this.authentication.type === 'none') return init;
     if (this.authentication.type === 'session') {
@@ -276,6 +660,8 @@ export class ProprClient {
       }
       headers.set('Authorization', `Bearer ${token}`);
     }
-    return { ...init, headers };
+    // Bearer profiles must never accidentally inherit a browser/Electron cookie
+    // identity from another named profile on the same origin.
+    return { ...init, credentials: 'omit', headers };
   }
 }

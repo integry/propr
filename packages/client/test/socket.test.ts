@@ -37,4 +37,38 @@ describe('Socket.IO connection configuration', () => {
     token = 'refreshed-token';
     assert.deepEqual(await resolveAuth(), { token: 'refreshed-token' });
   });
+
+  it('preserves handshake metadata while only the fresh provider can supply the bearer token', async () => {
+    let token = 'first-token';
+    const connection = buildSocketConnection(
+      normalizeApiBaseUrl('https://propr.example.com'),
+      { type: 'bearer', getAccessToken: () => token },
+      { auth: { proprDesktopTransportScope: 'scope-a', token: 'metadata-token' } }
+    );
+
+    const resolveAuth = (): Promise<unknown> => new Promise(resolve => {
+      (connection.options.auth as (callback: (data: unknown) => void) => void)(resolve);
+    });
+    assert.deepEqual(await resolveAuth(), {
+      proprDesktopTransportScope: 'scope-a',
+      token: 'first-token',
+    });
+    token = 'refreshed-token';
+    assert.deepEqual(await resolveAuth(), {
+      proprDesktopTransportScope: 'scope-a',
+      token: 'refreshed-token',
+    });
+  });
+
+  it('routes Connect Socket.IO to the same origin and fixed proxy path', () => {
+    const connection = buildSocketConnection(
+      normalizeApiBaseUrl('https://t-instance123.propr.dev'),
+      { type: 'none' }
+    );
+
+    assert.equal(connection.url, 'https://t-instance123.propr.dev');
+    assert.equal(connection.options.path, '/socket.io/');
+    assert.equal(connection.options.reconnection, true);
+    assert.equal(connection.options.reconnectionAttempts, Infinity);
+  });
 });

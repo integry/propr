@@ -19,6 +19,20 @@ export const useSerializedMutationQueue = () => {
   }, []);
 };
 
+export const useAttemptFence = (): {
+  begin(): () => boolean;
+  invalidate(): void;
+} => {
+  const generation = useRef(0);
+  const invalidate = useCallback(() => { generation.current += 1; }, []);
+  const begin = useCallback(() => {
+    const attempt = ++generation.current;
+    return () => generation.current === attempt;
+  }, []);
+  useEffect(() => invalidate, [invalidate]);
+  return { begin, invalidate };
+};
+
 export const useDesktopModal = (
   open: boolean,
   setOpen: Dispatch<SetStateAction<boolean>>,

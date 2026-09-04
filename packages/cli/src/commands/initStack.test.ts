@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -58,13 +59,15 @@ test("stack scaffolding does not change the chosen project root mode", async () 
   }
 });
 
-test("stack generation includes detected credentials in the published environment", async () => {
-  const root = mkdtempSync(join(tmpdir(), "propr-private-stack-"));
-  const home = mkdtempSync(join(tmpdir(), "propr-private-home-"));
+test("stack generation remains operational and publishes its environment and identity", async () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "propr-private-stack-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "propr-private-home-")));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
   try {
     mkdirSync(join(home, ".claude"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
 
     const result = await scaffoldStack(
       { root },
@@ -77,11 +80,40 @@ test("stack generation includes detected credentials in the published environmen
     assert.ok(envLines.includes("NODE_ENV=production"));
     assert.ok(!envLines.includes("NODE_ENV=development"));
     assert.ok(envLines.includes(`HOST_CLAUDE_DIR=${join(home, ".claude")}`));
+    assert.match(
+      readFileSync(join(root, "data", "public-instance-identity.json"), "utf-8"),
+      /"publicInstanceIdentity"/,
+    );
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("Windows stack scaffolding does not require discovery authority", async () => {
+  if (process.platform !== "win32") return;
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "propr-windows-stack-")));
+  try {
+    writeFileSync(join(root, ".env"), "SESSION_SECRET=existing\nNODE_ENV=production\n");
+    const result = await scaffoldStack(
+      { root },
+      { persistStackRoot: async () => undefined },
+    );
+
+    assert.equal(result.envSkipped, true);
+    assert.deepEqual(result.dirsCreated.filter((name) => ["data", "logs", "repos"].includes(name)), [
+      "data", "logs", "repos",
+    ]);
+    assert.match(
+      readFileSync(join(root, "data", "public-instance-identity.json"), "utf-8"),
+      /"publicInstanceIdentity"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

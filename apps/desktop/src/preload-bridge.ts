@@ -10,7 +10,13 @@ export interface PreloadIpc {
 const invoke = <T>(ipc: PreloadIpc, channel: string, ...args: unknown[]): Promise<T> =>
   ipc.invoke(channel, ...args) as Promise<T>;
 
-export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
+export const createDesktopBridge = (
+  ipc: PreloadIpc,
+  connectDiscoverySupported = process.platform === 'darwin'
+    || process.platform === 'linux'
+    || process.platform === 'win32',
+  connectJourneyAcceptance = false,
+): DesktopBridge => {
   const deepLinkListeners = new Set<(url: string) => void>();
   const pendingDeepLinks: string[] = [];
   ipc.on(IPC_CHANNELS.deepLink, (_event, value) => {
@@ -45,10 +51,20 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
       remove: (profileId) => invoke(ipc, IPC_CHANNELS.profilesRemove, profileId),
       setActive: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
-    credentials: {
-      read: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRead, profileId),
-      write: (profileId, value) => invoke(ipc, IPC_CHANNELS.credentialsWrite, profileId, value),
-      remove: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRemove, profileId),
+    authentication: {
+      pair: (profile) => invoke(ipc, IPC_CHANNELS.authenticationPair, profile),
+      cancel: (profileId) => invoke(ipc, IPC_CHANNELS.authenticationCancel, profileId),
+    },
+    connection: {
+      probe: (profile) => invoke(ipc, IPC_CHANNELS.connectionProbe, profile),
+      activate: (activationTicket) => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
+      discard: (value) => invoke(ipc, IPC_CHANNELS.connectionDiscard, value),
+      invalidate: (value) => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),
+    },
+    discovery: {
+      supported: connectDiscoverySupported,
+      discover: () => invoke(ipc, IPC_CHANNELS.connectDiscover),
+      rediscover: (profileId) => invoke(ipc, IPC_CHANNELS.connectRediscover, profileId),
     },
     lifecycle: {
       status: () => invoke(ipc, IPC_CHANNELS.lifecycleStatus),
@@ -56,6 +72,11 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
       stop: () => invoke(ipc, IPC_CHANNELS.lifecycleStop),
       restart: () => invoke(ipc, IPC_CHANNELS.lifecycleRestart),
     },
+    ...(connectJourneyAcceptance ? {
+      acceptance: {
+        reportJourneyStage: (stage) => invoke(ipc, IPC_CHANNELS.acceptanceJourneyStage, stage),
+      },
+    } : {}),
   };
 
   Object.values(bridge).forEach(Object.freeze);

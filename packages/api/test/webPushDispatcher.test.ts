@@ -14,9 +14,37 @@ import { WebPushDispatcher } from '../services/webPushDispatcher.js';
 
 const success: SendResult = { statusCode: 201, body: '', headers: {} };
 const HISTORICAL_FIXTURE_TIME = Date.parse('2020-01-01T00:00:00.000Z');
+const DISPATCH_FIXTURE_TIME = HISTORICAL_FIXTURE_TIME + 60_000;
+const ISO_TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%fZ';
+
+interface TestSqliteConnection extends BetterSqliteConnection {
+  function(
+    name: string,
+    options: { varargs: true },
+    callback: (...values: unknown[]) => string | null,
+  ): void;
+}
 
 function historicalFixtureTime(): Date {
   return new Date(HISTORICAL_FIXTURE_TIME);
+}
+
+function dispatchFixtureTime(): Date {
+  return new Date(DISPATCH_FIXTURE_TIME);
+}
+
+function fixtureStrftime(format: unknown, value: unknown, ...modifiers: unknown[]): string | null {
+  if (format !== ISO_TIMESTAMP_FORMAT) return null;
+  let timestamp = value === 'now'
+    ? DISPATCH_FIXTURE_TIME
+    : Date.parse(String(value));
+  if (!Number.isFinite(timestamp)) return null;
+  for (const modifier of modifiers) {
+    const seconds = /^([+-]\d+(?:\.\d+)?) seconds$/.exec(String(modifier));
+    if (!seconds) return null;
+    timestamp += Number(seconds[1]) * 1_000;
+  }
+  return new Date(timestamp).toISOString();
 }
 
 function createDatabase(): Knex {
@@ -26,9 +54,11 @@ function createDatabase(): Knex {
     useNullAsDefault: true,
     pool: {
       afterCreate(
-        connection: BetterSqliteConnection,
-        done: (error: Error | null, connection: BetterSqliteConnection) => void,
+        connection: TestSqliteConnection,
+        done: (error: Error | null, connection: TestSqliteConnection) => void,
       ) {
+        // Keep SQLite claim/lease checks on the dispatcher's fixed fixture clock.
+        connection.function('strftime', { varargs: true }, fixtureStrftime);
         connection.pragma('foreign_keys = ON');
         connection.pragma('recursive_triggers = ON');
         done(null, connection);
@@ -38,7 +68,7 @@ function createDatabase(): Knex {
 }
 
 function vapidConfiguration() {
-  // Keep the fixture exactly 32 bytes; getPrivateKey() can omit leading zeroes.
+  // Keep the fixture full-width because getPrivateKey() can omit leading zero bytes.
   const privateKey = Buffer.alloc(32);
   privateKey[31] = 1;
   const ecdh = createECDH('prime256v1');
@@ -127,6 +157,7 @@ function dispatcher(sender: {
     apiBaseUrl: 'https://api.example.com',
     leaseMs: 5_000,
     requestTimeoutMs: 1_000,
+    now: dispatchFixtureTime,
     ...overrides,
   });
 }
@@ -262,7 +293,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
   });
 
   test('does not claim work during quiet hours', async () => {
-    const now = new Date();
+    const now = dispatchFixtureTime();
     const start = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
     const endDate = new Date(now.getTime() + 60_000);
     const end = `${String(endDate.getUTCHours()).padStart(2, '0')}:${String(endDate.getUTCMinutes()).padStart(2, '0')}`;
@@ -278,7 +309,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
   });
 
   test('paginates past a quiet-hour prefix larger than the scan window', async () => {
-    const fixtureBaseTime = Date.now() - 30_000;
+    const fixtureBaseTime = HISTORICAL_FIXTURE_TIME;
     let fixtureTick = 0;
     const fixtureService = new NotificationService({
       database,
@@ -293,7 +324,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
       quietUsers.push(queued.userId);
     }
     const eligible = await queuedEvent({ service: fixtureService });
-    const dispatchAt = new Date();
+    const dispatchAt = dispatchFixtureTime();
     const currentMinute = dispatchAt.getUTCHours() * 60 + dispatchAt.getUTCMinutes();
     const formatMinute = (minute: number) => {
       const normalized = (minute + 24 * 60) % (24 * 60);
@@ -429,6 +460,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
         apiBaseUrl: 'http://127.0.0.1:4000',
         leaseMs: 5_000,
         requestTimeoutMs: 1_000,
+        now: dispatchFixtureTime,
       });
 
       assert.equal(await worker.runOnce(), 1);
@@ -545,7 +577,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
 
   test('renews the current claim to cover the request timeout and safety margin', async () => {
     await queuedEvent();
-    const baseTime = Date.now() - 4_000;
+    const baseTime = DISPATCH_FIXTURE_TIME - 4_000;
     let nowCalls = 0;
     let lastNow = baseTime;
     const requestTimeoutMs = 4_999;
@@ -571,7 +603,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
 
   test('skips network I/O when the claim expires during delivery preparation', async () => {
     await queuedEvent();
-    const baseTime = Date.now() - 1_000;
+    const baseTime = DISPATCH_FIXTURE_TIME - 1_000;
     const leaseMs = 30_000;
     let nowCalls = 0;
     let sends = 0;
@@ -580,7 +612,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     }, {
       leaseMs,
       requestTimeoutMs: leaseMs - 1,
-      // Keep the initial claim ahead of SQLite's real clock, then expire it before renewal.
+      // Keep the initial claim ahead of SQLite's fixture clock, then expire it before renewal.
       now: () => new Date(baseTime + (nowCalls++ >= 3 ? leaseMs + 1_000 : 0)),
     });
 

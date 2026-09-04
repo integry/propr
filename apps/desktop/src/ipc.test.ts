@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Session } from 'electron';
-import { logoutDesktopSession } from './desktop-session';
+import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
 
 describe('desktop session IPC operations', () => {
   it('logs out through the active Electron session with credentials and without following redirects', async () => {
@@ -33,5 +33,27 @@ describe('desktop session IPC operations', () => {
     await assert.rejects(logoutDesktopSession(desktopSession, 'https://propr.example.com/base'), /Invalid desktop API URL/);
     await assert.rejects(logoutDesktopSession(desktopSession, 'https://user:secret@example.com'), /Invalid desktop API URL/);
     assert.equal(requested, false);
+  });
+
+  it('clears browser identity and origin storage for normalized profile origins when profiles switch', async () => {
+    const calls: Array<Parameters<Session['clearStorageData']>[0]> = [];
+    const desktopSession: Pick<Session, 'clearStorageData'> = {
+      clearStorageData: async options => { calls.push(options ?? {}); },
+    };
+
+    await clearDesktopInstanceCookies(desktopSession, [
+      'https://first.example.test',
+      'https://second.example.test',
+      'https://first.example.test',
+    ]);
+
+    assert.deepEqual(calls, [
+      { origin: 'https://first.example.test', storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'] },
+      { origin: 'https://second.example.test', storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'] },
+    ]);
+    await assert.rejects(
+      clearDesktopInstanceCookies(desktopSession, ['http://remote.example.test']),
+      /Invalid desktop API URL/,
+    );
   });
 });

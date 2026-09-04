@@ -24,19 +24,23 @@ class FakeIpc implements PreloadIpc {
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
-    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'credentials', 'external', 'lifecycle', 'profiles', 'storage']);
+    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'authentication', 'connection', 'discovery', 'external', 'lifecycle', 'profiles', 'storage']);
     assert.equal(Object.isFrozen(bridge), true);
     assert.equal(Object.values(bridge).every(Object.isFrozen), true);
     assert.equal('fs' in bridge, false);
     assert.equal('exec' in bridge, false);
   });
 
-  it('maps profile and credential operations to fixed channels', async () => {
+  it('maps profile and main-process authentication operations to fixed channels', async () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     await bridge.auth.logout('http://localhost:4000');
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
-    await bridge.credentials.write('profile-1', 'secret');
+    await bridge.authentication.pair({ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' });
+    await bridge.connection.activate('activation-ticket');
+    await bridge.connection.discard({ profileId: 'profile-1', transportScope: 'transport-scope' });
+    await bridge.discovery.discover();
+    await bridge.discovery.rediscover('profile-1');
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -44,9 +48,37 @@ describe('desktop preload bridge', () => {
         channel: IPC_CHANNELS.profilesSave,
         args: [{ label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
       },
-      { channel: IPC_CHANNELS.credentialsWrite, args: ['profile-1', 'secret'] },
+      {
+        channel: IPC_CHANNELS.authenticationPair,
+        args: [{ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
+      },
+      { channel: IPC_CHANNELS.connectionActivate, args: ['activation-ticket'] },
+      {
+        channel: IPC_CHANNELS.connectionDiscard,
+        args: [{ profileId: 'profile-1', transportScope: 'transport-scope' }],
+      },
+      { channel: IPC_CHANNELS.connectDiscover, args: [] },
+      { channel: IPC_CHANNELS.connectRediscover, args: ['profile-1'] },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
+    assert.equal(bridge.discovery.supported, true);
+  });
+
+  it('can advertise an unsupported host without exposing a renderer-selected root', () => {
+    const bridge = createDesktopBridge(new FakeIpc(), false);
+    assert.equal(bridge.discovery.supported, false);
+    assert.deepEqual(Object.keys(bridge.discovery).sort(), ['discover', 'rediscover', 'supported']);
+  });
+
+  it('exposes only a fixed stage reporter when packaged Connect acceptance is authorized', async () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopBridge(ipc, true, true);
+    assert.deepEqual(Object.keys(bridge.acceptance ?? {}), ['reportJourneyStage']);
+    await bridge.acceptance?.reportJourneyStage('CREDENTIAL_COMMITTED');
+    assert.deepEqual(ipc.invocations, [{
+      channel: IPC_CHANNELS.acceptanceJourneyStage,
+      args: ['CREDENTIAL_COMMITTED'],
+    }]);
   });
 
   it('does not expose Electron event objects to deep-link listeners', () => {

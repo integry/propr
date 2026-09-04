@@ -5,6 +5,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./desktop-discovery": {
+      "types": "./dist/desktopDiscovery.d.ts",
+      "import": "./dist/desktopDiscovery.js"
+    }
+  },
   "bin": {
     "propr": "./dist/index.js"
   },

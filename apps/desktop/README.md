@@ -22,9 +22,9 @@ npm run make:rpm -w @propr/desktop
 npm run make:dmg -w @propr/desktop -- --arch=arm64
 ```
 
-Desktop development, typecheck, package, and make commands build required renderer workspace dependencies through
-`desktop:prepare`, in dependency order (`@propr/shared` then `@propr/client`). They do not depend on previously
-generated workspace `dist` directories.
+Desktop development, typecheck, package, and make commands build required renderer workspace dependencies through the
+desktop workspace lifecycle, in dependency order (`@propr/shared`, `@propr/local-setup`, `@propr/cli`, then
+`@propr/client`). They do not depend on previously generated workspace `dist` directories.
 
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer from the application ASAR through an app-owned protocol.
@@ -34,14 +34,22 @@ flag. Its preferred window is 1280x820 with an 880x620 minimum, sourced from one
 runtime selects the cursor-relevant display with a primary-display fallback and clamps both sizes to that display's
 work area before native construction. Native evidence requires the actual window to equal that clamped size and
 derives the viewport from the actual native content bounds. The packaged smoke also constructs a hidden 800x560
-reduced-work-area window and verifies its real native bounds and clamped minimums. It retains the real title-bar logo,
-connection-card, control containment, sizing, spacing, and footer checks on smaller responsive work areas. The child
-receives only fixed smoke triggers, private profile/temp paths, and strictly validated platform launch inputs; it never
-inherits the parent CI environment or `PATH`. The smoke
-also rejects main-process uncaught exceptions and requires proof that `window.proprDesktop` is exposed before a clean
-exit. `desktop:smoke:inspect` performs executable and fuse inspection without launching a window. Release CI launches
-both Linux architectures under Xvfb, inspects macOS and Windows packages on their native runners, validates
-DMG/ZIP/DEB/RPM/MSI packages, and validates configured OS signatures.
+reduced-work-area window and verifies its real native bounds and clamped minimums. From the packaged custom-protocol
+renderer it drives preload IPC, activation-scoped REST and Socket.IO upgrades through Electron session interception,
+scope rotation, and same-ID origin editing. It also checks the real welcome-card and connection-control bounds, cookie
+omission, both-origin storage cleanup, stale-scope fencing, renderer/main secret custody, uncaught exceptions, and a
+clean exit. The child receives only fixed smoke triggers, private profile/temp paths, and strictly validated platform
+launch inputs; it never broadly inherits the parent CI environment or `PATH`. `desktop:smoke:inspect` performs
+executable and fuse inspection without launching a window. Release CI launches both Linux architectures under Xvfb,
+inspects macOS and Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/MSI packages, and validates
+configured OS signatures.
+
+Darwin packaged Connect acceptance first inspects the normal unsigned package, then generates a one-run self-signed
+CA:false code-signing leaf in an isolated default keychain and signs only that smoke artifact. The signature uses an
+explicit certificate-bound designated requirement that is verified before the pair process and again after the
+reprobe process. Chromium creates and reopens its real Safe Storage key in the same disposable keychain; the harness
+does not pre-seed or widen access to that item. A signal-aware exit trap restores the runner's original keychain list
+and default, deletes the disposable keychain, and removes all temporary signing material.
 
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
@@ -55,13 +63,25 @@ CI runs both checks directly from the committed lockfile before installing or ex
 ## Security boundary
 
 The renderer has no Node.js integration and receives only the typed `window.proprDesktop` bridge. It exposes metadata,
-validated external-browser opening, profiles, encrypted credentials, lifecycle placeholders, and validated deep-link
-events. It never exposes a shell, command runner, arbitrary IPC call, or filesystem path/API.
+validated profiles, status-only pairing/probe/invalidation operations, lifecycle placeholders, and validated deep-link
+events. Pairing, browser approval, credential persistence, authenticated probes, and revocation run in Electron main.
+The bridge never exposes a credential value, shell, command runner, arbitrary IPC call, or filesystem path/API.
 
 Profile metadata is stored in an app-owned, permission-restricted JSON file. Credential values are encrypted with
 Electron `safeStorage` before they are written separately. If OS encryption is unavailable—or Linux selects the
-`basic_text` backend—the app reports that state and refuses to persist or return credentials; there is no plaintext
+`basic_text` backend—the app reports that state and refuses to persist credentials; there is no plaintext
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
+
+Opaque instance tokens and the strict-discovery public identity are bound to profile ID, normalized origin, and
+credential generation in encrypted main-process storage. The renderer cannot provide or override the identity.
+Launch, profile switch, pairing, revocation, and every Socket.IO reconnect perform credential-free strict discovery;
+an absent, malformed, or changed identity sends no stored bearer and requires a fresh pairing generation. Electron's
+session request boundary strips renderer-supplied Authorization and Cookie headers from every HTTP(S) and WS(S)
+request, including inactive or mismatched profile origins, then injects the active bearer only for matching REST and
+Socket.IO requests. Set-Cookie is stripped from remote responses, so the packaged renderer has no parallel cookie
+identity. Tokens never enter renderer JavaScript, URLs, logs, localStorage, sessionStorage, or profile metadata.
+Switching named profiles clears renderer and instance-origin state. Removing or changing a paired profile first
+attempts current-token revocation at the old bound origin, then removes the credential.
 
 `propr://connect` and `propr://open` are the only accepted deep-link actions. A single-instance lock routes later
 activations to the existing window. Local lifecycle methods intentionally return `not-implemented`; this scaffold does

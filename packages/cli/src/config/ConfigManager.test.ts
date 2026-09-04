@@ -54,6 +54,25 @@ test("getRemoteProfiles returns copied profiles and includes an empty default pr
   }
 });
 
+test("read-only configuration inspection never repairs permissions or writes", async () => {
+  if (process.platform === "win32") return;
+  const tempDir = createTempDir();
+  const configPath = join(tempDir, "config.json");
+  try {
+    writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { "/trusted/root": false } }));
+    chmodSync(configPath, 0o644);
+    const manager = new ConfigManager(tempDir, { readOnly: true, warn: () => undefined });
+    await manager.init();
+
+    assert.equal(manager.getTunnelEnabled("/trusted/root"), undefined);
+    assert.equal(lstatSync(configPath).mode & 0o777, 0o644);
+    await assert.rejects(manager.setTunnelEnabled("/trusted/root", true), /read-only/);
+    assert.equal(lstatSync(configPath).mode & 0o777, 0o644);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
 test("setRemoteProfile updates a named profile without changing the active profile", async () => {
   const tempDir = createTempDir();
   try {
@@ -380,39 +399,47 @@ test("root-specific tunnel toggles do not alter another stack", async () => {
   }
 });
 
-test("configuration tokens are persisted atomically under private modes", async () => {
-  if (process.platform === "win32") return;
+test("configuration save remains operational on Windows and uses private modes elsewhere", { timeout: 20_000 }, async () => {
+  const started = Date.now();
   const tempDir = createTempDir();
   try {
-    chmodSync(tempDir, 0o755);
+    if (process.platform !== "win32") chmodSync(tempDir, 0o755);
     const manager = new ConfigManager(tempDir);
     await manager.init();
     await manager.setGithubToken("private-token");
 
     const configPath = join(tempDir, "config.json");
-    assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
-    assert.equal(lstatSync(configPath).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
+      assert.equal(lstatSync(configPath).mode & 0o777, 0o600);
+    }
     assert.match(readFileSync(configPath, "utf8"), /private-token/);
     assert.deepEqual(readdirSync(tempDir).filter(name => name.includes(".tmp-")), []);
+    assert.ok(Date.now() - started < 20_000, "configuration save exceeded its Windows aggregate deadline");
   } finally {
     cleanupTempDir(tempDir);
   }
 });
 
-test("loading an existing token file tightens permissive directory and file modes", async () => {
-  if (process.platform === "win32") return;
+test("loading an existing token file tightens permissive directory and file modes", { timeout: 20_000 }, async () => {
+  const started = Date.now();
   const tempDir = createTempDir();
   try {
     writeProfileConfig(tempDir);
-    chmodSync(tempDir, 0o755);
-    chmodSync(join(tempDir, "config.json"), 0o644);
+    if (process.platform !== "win32") {
+      chmodSync(tempDir, 0o755);
+      chmodSync(join(tempDir, "config.json"), 0o644);
+    }
 
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
     assert.equal(manager.getGithubToken(), "stored-token");
-    assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
-    assert.equal(lstatSync(join(tempDir, "config.json")).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
+      assert.equal(lstatSync(join(tempDir, "config.json")).mode & 0o777, 0o600);
+    }
+    assert.ok(Date.now() - started < 20_000, "configuration load exceeded its Windows aggregate deadline");
   } finally {
     cleanupTempDir(tempDir);
   }

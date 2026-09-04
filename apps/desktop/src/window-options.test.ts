@@ -11,6 +11,14 @@ import {
 const normalWorkArea = { x: 0, y: 0, width: 1920, height: 1040 };
 
 describe('desktop BrowserWindow security', () => {
+  it('uses the production 1280x820 size with safe minimum dimensions', () => {
+    const options = createBrowserWindowOptions('/app/preload.cjs', false, normalWorkArea, 'win32');
+    assert.deepEqual(
+      { width: options.width, height: options.height, minWidth: options.minWidth, minHeight: options.minHeight },
+      { width: 1280, height: 820, minWidth: 880, minHeight: 620 },
+    );
+  });
+
   it('isolates and sandboxes the renderer without Node or webviews', () => {
     const options = createBrowserWindowOptions('/app/preload.cjs', true, normalWorkArea, 'linux');
     assert.deepEqual(options.webPreferences, {

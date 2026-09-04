@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { normalizeBaseUrl, resolveDesktopAdapters } from './browserAdapters';
 import { DESKTOP_AUTHENTICATION_COMPLETE_EVENT } from './types';
 
@@ -19,6 +20,7 @@ describe('desktop browser fixtures', () => {
     const adapters = resolveDesktopAdapters();
     expect(adapters).not.toBeNull();
     await expect(adapters?.profiles.list()).resolves.toHaveLength(2);
+    expect(adapters?.discovery.supported).toBe(false);
   });
 
   it('does not enable query-driven fixtures in production mode', () => {
@@ -28,10 +30,23 @@ describe('desktop browser fixtures', () => {
     expect(resolveDesktopAdapters()).toBeNull();
   });
 
-  it('normalizes safe instance origins and rejects non-http protocols', () => {
+  it('normalizes safe instance origins and rejects unsafe URL components', () => {
     expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
-    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/);
-    expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
+    for (const unsafe of [
+      'file:///tmp/propr',
+      'https://user:secret@example.com',
+      'https://propr.example.com/api',
+      'https://propr.example.com?token=secret',
+    ]) {
+      expect(() => normalizeBaseUrl(unsafe)).toThrow('The configured ProPR API URL is invalid.');
+    }
+  });
+
+  it('matches the shared canonical origin parity table', () => {
+    for (const [, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) expect(() => normalizeBaseUrl(input)).toThrow();
+      else expect(normalizeBaseUrl(input)).toBe(expected);
+    }
   });
 
   it('resolves fixture authentication only after the matching desktop completion signal', async () => {

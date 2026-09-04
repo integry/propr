@@ -409,15 +409,13 @@ test('api container receives explicit request rate-limit overrides', () => {
   }
 });
 
-test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
+test('an alternate explicit Connect URL remains raw and fails validation', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
     PROPR_UI_PUBLIC_API_URL: 'https://t-abc123.propr.dev/',
   }, { manifestPath });
-  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev');
-  // and every consumer sees the canonical (no trailing slash) form.
-  assert.deepEqual(envValues(buildServiceSpec(cfg, 'api').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
-  assert.deepEqual(envValues(buildServiceSpec(cfg, 'ui').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
+  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev/');
+  assert.match(validateEnv(cfg).errors.join('\n'), /not a hosted proxy URL/);
 });
 
 test('ui container receives the tunnel public API URL (no /api appended) when set', () => {

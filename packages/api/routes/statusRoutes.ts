@@ -3,6 +3,8 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
+  PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+  canonicalProprProxyUrl,
   getProprCompatibilityMetadata,
   AGENT_DEFAULTS,
   resolveGithubAuthMode,
@@ -22,6 +24,7 @@ import type { SyntheticAgentConfig } from '@propr/shared';
 import path from 'node:path';
 import os from 'node:os';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
+import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -37,6 +40,7 @@ interface StatusRoutesDeps {
     snapshot: Record<string, unknown> & { timestamp: string },
     additionalAdministratorIds: readonly string[],
   ) => Promise<void>;
+  getPublicInstanceIdentity?: () => string | Promise<string>;
 }
 
 interface IndexingStatusQueue {
@@ -68,7 +72,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     agentHealthTimeoutMs = 1500,
     now = Date.now,
     loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState,
-    projectSystemSnapshot
+    projectSystemSnapshot,
+    getPublicInstanceIdentity: loadPublicInstanceIdentity = getOrCreatePublicInstanceIdentity,
   } = deps;
   // Unit/integration callers that replace the direct config loader predate
   // synthetic pools. Treat that fixture as an empty synthetic document unless
@@ -81,11 +86,29 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     res.json(getProprCompatibilityMetadata(!isDemoMode()));
   }
 
-  function getDesktopDiscovery(_req: Request, res: Response): void {
-    res.json({
-      product: 'ProPR',
-      ...getProprCompatibilityMetadata(!isDemoMode()),
+  async function getDesktopDiscovery(_req: Request, res: Response): Promise<void> {
+    // This endpoint is intentionally unauthenticated. Keep it cache-safe and
+    // bounded, and never include environment/account/credential state.
+    res.set({
+      'Cache-Control': 'no-store, max-age=0',
+      Pragma: 'no-cache',
+      'X-Content-Type-Options': 'nosniff',
     });
+    try {
+      res.json({
+        schemaVersion: PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+        product: 'ProPR',
+        canonicalEndpoint: canonicalProprProxyUrl(process.env.API_PUBLIC_URL) ?? null,
+        publicInstanceIdentity: await loadPublicInstanceIdentity(),
+        ...getProprCompatibilityMetadata(!isDemoMode()),
+      });
+    } catch {
+      // Do not expose a persistence path or parse error through public discovery.
+      res.status(503).json({
+        schemaVersion: PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+        code: 'IDENTITY_UNAVAILABLE',
+      });
+    }
   }
 
   async function getStatus(req: Request, res: Response): Promise<void> {

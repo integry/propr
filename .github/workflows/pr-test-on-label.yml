@@ -48,7 +48,12 @@ jobs:
 
       - name: Build workspace packages
         id: build
-        run: npm run test:prepare
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          npm run test:prepare
+          test -f packages/shared/dist/index.js
+          test -f packages/client/dist/index.js
 
       - name: Validate docs site
         id: docs
