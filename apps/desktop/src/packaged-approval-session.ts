@@ -14,6 +14,7 @@ import type {
 
 const APPROVAL_REJECTED = 'Packaged pairing browser approval was rejected';
 const APPROVAL_STATUS = 200;
+const APPROVAL_COMPLETION_TIMEOUT_MS = 5_000;
 const claimedSessions = new WeakSet<Session>();
 
 export const packagedApprovalPartition = (nonce: string): string => {
@@ -80,9 +81,17 @@ export const createPackagedApprovalNavigation = ({
   let committedUrl: string | null = null;
   let completedStatus: number | null = null;
   let boundaryRejected = false;
+  let completionResolve: (() => void) | null = null;
   let cleanupPromise: Promise<void> | null = null;
 
-  const rejectBoundary = (): void => { boundaryRejected = true; };
+  const releaseCompletionWait = (): void => {
+    completionResolve?.();
+    completionResolve = null;
+  };
+  const rejectBoundary = (): void => {
+    boundaryRejected = true;
+    releaseCompletionWait();
+  };
   const ownsMainFrame = (details: {
     webContentsId?: number;
     webContents?: Electron.WebContents;
@@ -169,6 +178,7 @@ export const createPackagedApprovalNavigation = ({
       return;
     }
     completedStatus = details.statusCode;
+    releaseCompletionWait();
   };
   approvalSession.webRequest.onBeforeRequest(onBeforeRequest);
   approvalSession.webRequest.onBeforeSendHeaders(onBeforeSendHeaders);
@@ -231,12 +241,28 @@ export const createPackagedApprovalNavigation = ({
     async navigate() {
       if (!active || navigated) throw rejected();
       navigated = true;
+      const completion = completedStatus !== null || boundaryRejected
+        ? Promise.resolve()
+        : new Promise<void>(resolve => { completionResolve = resolve; });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
-        await approvalWindow.loadURL(approvalUrl);
+        await Promise.race([
+          (async () => {
+            await approvalWindow.loadURL(approvalUrl);
+            await completion;
+          })(),
+          new Promise<void>((_resolve, reject) => {
+            timeout = setTimeout(() => reject(rejected()), APPROVAL_COMPLETION_TIMEOUT_MS);
+          }),
+        ]);
       } catch {
         throw rejected();
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        completionResolve = null;
       }
-      if (boundaryRejected
+      if (!active
+        || boundaryRejected
         || allowedRequestId === null
         || !requestSent
         || responseStatus === null
@@ -251,6 +277,7 @@ export const createPackagedApprovalNavigation = ({
       if (cleanupPromise) return cleanupPromise;
       cleanupPromise = (async () => {
         active = false;
+        releaseCompletionWait();
         if (!approvalWindow.isDestroyed()) approvalWindow.destroy();
         contents.off('will-navigate', onWillNavigate);
         contents.off('will-redirect', onWillRedirect);

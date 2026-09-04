@@ -2,62 +2,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopDeepLinkInbox } from '../desktop-deep-link';
 import { DesktopExperience } from './DesktopExperience';
-import { DesktopTitleBar } from './DesktopTitleBar';
-import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
+import { adaptersFor, deferred, localProfile, remoteProfile, renderConnectedExperience } from './DesktopExperience.testSupport';
+import type { DesktopConnectionResult } from './types';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
 
 vi.mock('../api/apiClient', () => ({ setApiBaseUrl: apiMock.setApiBaseUrl }));
 vi.mock('../config/runtimeConfig', () => ({ setDesktopApiBaseUrl: runtimeMock.setDesktopApiBaseUrl }));
-
-const localProfile: DesktopProfile = {
-  id: 'local',
-  name: 'This computer',
-  baseUrl: 'http://127.0.0.1:3000',
-  kind: 'local',
-};
-
-const remoteProfile: DesktopProfile = {
-  id: 'remote',
-  name: 'Team server',
-  baseUrl: 'https://propr.example.com',
-  kind: 'remote',
-};
-
-const adaptersFor = (
-  profiles: DesktopProfile[] = [],
-  activeId: string | null = null,
-  probe: (profile: DesktopProfile) => Promise<DesktopConnectionResult> = async () => ({ status: 'ready', version: '0.8.15' })
-): DesktopAdapters => ({
-  platform: 'linux',
-  app: { onDeepLink: () => () => undefined },
-  profiles: {
-    list: vi.fn(async () => profiles),
-    save: vi.fn(async () => undefined),
-    remove: vi.fn(async () => undefined),
-    getActiveId: vi.fn(async () => activeId),
-    setActiveId: vi.fn(async () => undefined),
-  },
-  discovery: { supported: true, discover: vi.fn(async () => []) },
-  authentication: { authenticate: vi.fn(async () => undefined) },
-  externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { supported: true, setup: vi.fn(async () => localProfile) },
-  connection: { probe: vi.fn(probe) },
-});
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>(complete => { resolve = complete; });
-  return { promise, resolve };
-}
-
-const renderConnectedExperience = (adapters: DesktopAdapters, content?: string) => render(
-  <DesktopExperience adapters={adapters}>
-    <DesktopTitleBar />
-    {content && <div>{content}</div>}
-  </DesktopExperience>
-);
 
 describe('DesktopExperience', () => {
   beforeEach(() => {
@@ -417,53 +369,6 @@ describe('DesktopExperience', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent(/storage is locked/i);
     expect(screen.getByText('Team server')).toBeInTheDocument();
     expect(adapters.profiles.remove).toHaveBeenCalledWith(remoteProfile.id);
-  });
-
-  it('reconnects after authentication completes and advances to the connected app', async () => {
-    const probe = vi.fn()
-      .mockResolvedValueOnce({ status: 'authentication-required', message: 'Please sign in.' })
-      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' });
-    const adapters = adaptersFor([remoteProfile], remoteProfile.id, probe);
-    const stages: string[] = [];
-    adapters.acceptance = {
-      reportJourneyStage: vi.fn(async stage => { stages.push(stage); }),
-    };
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
-
-    expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    expect(adapters.authentication.authenticate).toHaveBeenCalledWith(remoteProfile);
-    expect(probe).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(stages).toEqual([
-      'AUTHENTICATION_REQUIRED',
-      'CREDENTIAL_COMMITTED',
-      'AUTHENTICATED_REPROBE_READY',
-      'ACTIVATION_COMMITTED',
-      'ACTIVATION_PUBLISHED',
-      'REACT_CONNECTED',
-    ]));
-  });
-
-  it('reports rejected authentication and connection-help operations in the blocked panel', async () => {
-    const adapters = adaptersFor(
-      [remoteProfile],
-      remoteProfile.id,
-      async () => ({ status: 'authentication-required', message: 'Please sign in.' })
-    );
-    vi.mocked(adapters.authentication.authenticate).mockRejectedValueOnce(new Error('Browser launch failed.'));
-    vi.mocked(adapters.externalBrowser.open).mockRejectedValueOnce(new Error('No browser is configured.'));
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
-    expect(await screen.findByText(/could not open sign in.*try again/i)).toBeInTheDocument();
-    expect(screen.queryByText(/browser launch failed/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Sign in in browser/i })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /Open connection help/i }));
-    expect(await screen.findByText(/could not open connection help.*try again/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no browser is configured/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Open connection help/i })).toBeInTheDocument();
   });
 
   it.each(['macos', 'windows'] as const)('offers remote connection guidance instead of local setup on %s', async platform => {

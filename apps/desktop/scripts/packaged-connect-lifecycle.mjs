@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
 export const CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
 export const CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+export const CONNECT_JOURNEY_FAILURE_EVENT = 'desktop.renderer.connect_journey.failure';
 export const CONNECT_NETWORK_PERMISSION_EVENT = 'desktop.renderer.connect_network_permission';
 export const CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
 export const CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
@@ -30,6 +31,7 @@ const diagnosticEvents = new Set([
   CONNECT_READY_EVENT,
   CONNECT_DISCOVERY_MILESTONE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_JOURNEY_FAILURE_EVENT,
   CONNECT_NETWORK_PERMISSION_EVENT,
   CONNECT_JOURNEY_OPERATION_EVENT,
   CONNECT_RENDERER_OWNERSHIP_EVENT,
@@ -77,6 +79,14 @@ const journeyStageCodes = new Set([
   'JOURNEY_REPROBE_REACT_CONNECTED',
   'JOURNEY_REPROBE_TRANSPORT',
   'JOURNEY_REPROBE_COMPLETE',
+]);
+const journeyFailurePhases = new Set(['pair', 'reprobe']);
+const journeyFailureReasons = new Set([
+  'APPROVAL_REJECTED',
+  'JOURNEY_FAILED',
+  'RENDERER_STAGE_TIMEOUT',
+  'RENDERER_STATE_TIMEOUT',
+  'TRANSPORT_EVIDENCE_TIMEOUT',
 ]);
 const diagnosticPhases = new Set([
   'config-read',
@@ -176,6 +186,16 @@ export const boundedChildDiagnostics = records => {
     if (record.event === CONNECT_JOURNEY_OPERATION_EVENT) {
       return [{ event: record.event, ...boundedJourneyOperationEvidence(record) }];
     }
+    if (record.event === CONNECT_JOURNEY_FAILURE_EVENT) {
+      return [{
+        event: record.event,
+        ...(journeyFailurePhases.has(record.phase)
+          && (record.stage === 'JOURNEY_NOT_STARTED' || journeyStageCodes.has(record.stage))
+          && journeyFailureReasons.has(record.reason)
+          ? { phase: record.phase, stage: record.stage, reason: record.reason }
+          : {}),
+      }];
+    }
     if (record.event === CONNECT_RENDERER_OWNERSHIP_EVENT) {
       return [{ event: record.event, ...boundedRendererOwnershipEvidence(record) }];
     }
@@ -208,6 +228,7 @@ export const boundedChildDiagnostics = records => {
       diagnostics.findLast(record => typeof record.code === 'string'
         && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
           || record.event === CONNECT_JOURNEY_STAGE_EVENT)),
+      diagnostics.findLast(record => record.event === CONNECT_JOURNEY_FAILURE_EVENT),
     ].filter(Boolean);
     const withoutLatestCriticalEvidence = bounded.filter(record => !latestCriticalEvidence.includes(record));
     return withoutLatestCriticalEvidence

@@ -31,6 +31,7 @@ import {
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
+  createVisualPreviewAuthRoutes,
   createInstanceCatalogRoutes,
   createDesktopAuthRoutes,
   attachmentUpload
@@ -81,6 +82,10 @@ import {
 } from './routeRegistry.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
+import {
+  startVisualPreviewOAuthRefreshScheduler,
+  type VisualPreviewOAuthRefreshScheduler,
+} from './services/visualPreviewOAuth.js';
 
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
@@ -197,6 +202,7 @@ let notificationProjection: NotificationProjectionService | undefined;
 let webPushDispatcher: WebPushDispatcher | undefined;
 let webPushDispatcherConfigured = false;
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
+let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -292,6 +298,7 @@ function setupRoutes(): void {
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
   const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
   const adminRoutes = createAdminRoutes();
+  const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
 
@@ -328,6 +335,7 @@ function setupRoutes(): void {
       agentRuntimeRoutes,
       agentVersionRoutes,
       configRoutes,
+      visualPreviewAuthRoutes,
     }),
   ];
   assertNoDuplicateRoutes(routes);
@@ -442,6 +450,7 @@ async function start(): Promise<void> {
       // chain so no settings update can race with the startup snapshot.
       await configReloadSubscription.reload();
       await initializePushSubscriptionMaintenance();
+      visualPreviewOAuthRefreshScheduler = await startVisualPreviewOAuthRefreshScheduler();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -515,6 +524,7 @@ async function start(): Promise<void> {
       if (!demoMode) {
         shutdownTasks.push(
           { name: 'Web Push dispatcher', close: () => webPushDispatcher?.close() ?? Promise.resolve() },
+          { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },

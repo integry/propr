@@ -1262,7 +1262,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
 
   const preflight = harness.indexOf('const staged = await validateWindowsStagedPackage');
-  const spawn = harness.indexOf("const child = spawn(binaryPath, ['--disable-gpu'");
+  const spawn = harness.indexOf('const child = spawnPackagedConnectBinary');
   assert.ok(preflight >= 0 && preflight < spawn, 'ordinary-user package preflight must complete before spawn');
   assert.equal((harness.match(/await validateWindowsStagedPackage\(/gu) ?? []).length, 1);
   assert.equal((harness.match(/await runPackagedConnectLifecycle\(/gu) ?? []).length, 1);

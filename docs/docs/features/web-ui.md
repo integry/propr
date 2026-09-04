@@ -45,7 +45,7 @@ These records are the heart of ProPR's observability — see [Observability And 
 
 ## Repositories
 
-**Repositories** (`/repositories`) manages the repos ProPR monitors — add, alias, set a base branch, enable/disable, reindex, hide, or delete. The selected repository opens a panel with four tabs:
+**Repositories** (`/repositories`) manages the repos ProPR monitors — add, alias, set a base branch, enable/disable, configure [visual previews](./visual-previews.md), reindex, hide, or delete. Visual preview controls select image/video evidence and optional capture instructions for each repository. The selected repository opens a panel with four tabs:
 
 - **Chat** — converse with the indexed repository;
 - **Improve** — generate categorized improvement suggestions;

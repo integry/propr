@@ -177,6 +177,32 @@ describe('packaged pairing approval isolated session', () => {
     await controller.cleanup();
   });
 
+  it('waits for an exact completion event that arrives after loadURL resolves', async () => {
+    const value = harness();
+    const controller = controllerFor(value);
+    const originalLoad = value.window.load;
+    let finishCompletion: (() => void) | undefined;
+    value.window.load = async url => {
+      const onCompleted = value.approvalSession.webRequest.completed;
+      assert.ok(onCompleted);
+      value.approvalSession.webRequest.completed = details => {
+        finishCompletion = () => onCompleted(details);
+      };
+      await originalLoad(url);
+    };
+
+    const navigation = controller.navigate();
+    let settled = false;
+    void navigation.finally(() => { settled = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.ok(finishCompletion);
+    assert.equal(settled, false);
+    finishCompletion();
+    await navigation;
+    assert.equal(settled, true);
+    await controller.cleanup();
+  });
+
   it('rejects redirects, alternate origins and paths, methods, subframes, and credential headers', async t => {
     for (const scenario of [
       'redirect',

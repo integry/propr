@@ -49,7 +49,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       autoConnect: true,
       path: '/socket.io/',
       forceNew: true,
-      ...(desktopScope ? { query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope } } : {}),
+      ...(desktopScope ? {
+        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+      } : {}),
     });
     let disposed = false;
     const isCurrentScope = (): boolean => {

@@ -88,6 +88,7 @@ describe('SocketProvider', () => {
     expect(connectSocketMock).toHaveBeenCalledOnce();
     expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
       forceNew: true,
+      auth: { proprDesktopTransportScope: 'AAAAAAAAAAAAAAAAAAAAAA' },
       query: { proprDesktopTransportScope: 'AAAAAAAAAAAAAAAAAAAAAA' },
     }));
   });
@@ -159,6 +160,7 @@ describe('SocketProvider', () => {
 
     expect(connectSocketMock).toHaveBeenCalledOnce();
     expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({ forceNew: true }));
+    expect(connectSocketMock).toHaveBeenCalledWith(expect.not.objectContaining({ auth: expect.anything() }));
     expect(connectSocketMock).toHaveBeenCalledWith(expect.not.objectContaining({ query: expect.anything() }));
   });
 

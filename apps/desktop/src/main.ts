@@ -69,6 +69,7 @@ const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const PACKAGED_CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
 const PACKAGED_CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+const PACKAGED_CONNECT_JOURNEY_FAILURE_EVENT = 'desktop.renderer.connect_journey.failure';
 const PACKAGED_CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
 const PACKAGED_CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
 type PackagedConnectJourneyStage =
@@ -98,6 +99,17 @@ type PackagedConnectJourneyStage =
   | 'JOURNEY_REPROBE_REACT_CONNECTED'
   | 'JOURNEY_REPROBE_TRANSPORT'
   | 'JOURNEY_REPROBE_COMPLETE';
+type PackagedConnectJourneyFailureReason =
+  | 'APPROVAL_REJECTED'
+  | 'JOURNEY_FAILED'
+  | 'RENDERER_STAGE_TIMEOUT'
+  | 'RENDERER_STATE_TIMEOUT'
+  | 'TRANSPORT_EVIDENCE_TIMEOUT';
+interface PackagedConnectJourneyDiagnosticState {
+  phase: 'pair' | 'reprobe';
+  stage: PackagedConnectJourneyStage | 'JOURNEY_NOT_STARTED';
+}
+let packagedConnectJourneyDiagnosticState: PackagedConnectJourneyDiagnosticState | null = null;
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
@@ -236,7 +248,23 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
 };
 
 const reportPackagedConnectJourneyStage = (code: PackagedConnectJourneyStage): void => {
+  if (packagedConnectJourneyDiagnosticState) packagedConnectJourneyDiagnosticState.stage = code;
   log('info', PACKAGED_CONNECT_JOURNEY_STAGE_EVENT, { code });
+};
+
+const packagedConnectJourneyFailureReason = (error: unknown): PackagedConnectJourneyFailureReason => {
+  if (!(error instanceof Error)) return 'JOURNEY_FAILED';
+  if (error.message === 'Packaged pairing browser approval was rejected') return 'APPROVAL_REJECTED';
+  if (error.message === 'Packaged Connect journey renderer stage timed out') {
+    return 'RENDERER_STAGE_TIMEOUT';
+  }
+  if (error.message === 'Packaged Connect journey renderer state timed out') {
+    return 'RENDERER_STATE_TIMEOUT';
+  }
+  if (error.message === 'Packaged Connect authenticated transport proof timed out') {
+    return 'TRANSPORT_EVIDENCE_TIMEOUT';
+  }
+  return 'JOURNEY_FAILED';
 };
 
 interface PackagedJourneyStageTracker {
@@ -1104,6 +1132,9 @@ if (!hasSingleInstanceLock) {
     activePackagedTransportSmoke = transportSmoke;
     const connectSmoke = packagedConnectSmoke();
     activePackagedConnectJourney = Boolean(connectSmoke?.journeyEndpoint);
+    packagedConnectJourneyDiagnosticState = connectSmoke?.journeyEndpoint && connectSmoke.journeyPhase
+      ? { phase: connectSmoke.journeyPhase, stage: 'JOURNEY_NOT_STARTED' }
+      : null;
     if (transportSmoke && connectSmoke) throw new Error('Packaged desktop smoke modes are mutually exclusive');
     const journeyStages = connectSmoke?.journeyPhase
       ? createPackagedJourneyStageTracker(connectSmoke.journeyPhase)
@@ -1249,6 +1280,7 @@ if (!hasSingleInstanceLock) {
         );
       }
       await publishPackagedConnectReady(readyFields);
+      packagedConnectJourneyDiagnosticState = null;
       app.quit();
     } else if (transportSmoke) {
       await runPackagedTransportSmoke(mainWindow, profiles, credentials, transportSmoke);
@@ -1295,6 +1327,13 @@ if (!hasSingleInstanceLock) {
       }
     });
   }).catch(error => {
+    if (packagedConnectJourneyDiagnosticState) {
+      log('error', PACKAGED_CONNECT_JOURNEY_FAILURE_EVENT, {
+        phase: packagedConnectJourneyDiagnosticState.phase,
+        stage: packagedConnectJourneyDiagnosticState.stage,
+        reason: packagedConnectJourneyFailureReason(error),
+      });
+    }
     log('error', 'desktop.app.start_failed', { error });
     app.exit(1);
   });

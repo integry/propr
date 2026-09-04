@@ -8,6 +8,7 @@ import { describe, test } from 'node:test';
 import {
   CHILD_CAPTURE_MAX_BYTES,
   CONNECT_DISCOVERY_MILESTONE_EVENT,
+  CONNECT_JOURNEY_FAILURE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
   CONNECT_JOURNEY_OPERATION_EVENT,
   CONNECT_NETWORK_PERMISSION_EVENT,
@@ -227,6 +228,58 @@ describe('packaged Connect bounded child lifecycle', () => {
       code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
     });
     assert.doesNotMatch(JSON.stringify(result), /not-returned/u);
+  });
+
+  test('retains only fixed terminal journey failure evidence when diagnostics fill the cap', async () => {
+    const { result } = await run({
+      onApp: app => {
+        for (let index = 0; index < 20; index += 1) {
+          app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
+        }
+        app.write({
+          event: CONNECT_JOURNEY_FAILURE_EVENT,
+          phase: 'pair',
+          stage: 'JOURNEY_PAIR_REACT_CONNECTED',
+          reason: 'RENDERER_STATE_TIMEOUT',
+          error: 'secret-SENTINEL',
+          url: 'https://not-returned.example.test/private',
+          responseBody: 'not-returned',
+          token: 'not-returned',
+          path: privateWindowsPath,
+          environment: 'not-returned',
+        });
+        app.write({ event: 'desktop.app.start_failed', error: 'secret-SENTINEL' });
+        app.close(1, null);
+      },
+    });
+    assert.equal(result.records.length, 20);
+    assert.deepEqual(result.records.at(-1), {
+      event: CONNECT_JOURNEY_FAILURE_EVENT,
+      phase: 'pair',
+      stage: 'JOURNEY_PAIR_REACT_CONNECTED',
+      reason: 'RENDERER_STATE_TIMEOUT',
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /secret-SENTINEL|not-returned|private-user|url|responseBody|token|path|environment/u,
+    );
+  });
+
+  test('drops non-allowlisted terminal journey failure fields', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_FAILURE_EVENT,
+          phase: 'hostile-phase',
+          stage: 'HOSTILE_STAGE',
+          reason: 'hostile-reason',
+          error: 'secret-SENTINEL',
+        });
+        app.close(1, null);
+      },
+    });
+    assert.deepEqual(result.records, [{ event: CONNECT_JOURNEY_FAILURE_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /hostile|secret-SENTINEL/u);
   });
 
   test('returns only fixed secret-free Local Network Access decision evidence', async () => {

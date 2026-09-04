@@ -151,9 +151,11 @@ const createPackagedJourneyFixture = async () => {
         const authenticatedRest = requests.filter(item => item.socketIo === false
           && item.url === '/api/auth/user'
           && item.authorization === `Bearer ${token}`
-          && typeof item.transportScope === 'string');
+          && item.transportScope === null);
         const authenticatedSockets = requests.filter(item => item.socketIo === true
-          && item.authorization === `Bearer ${token}`);
+          && item.authorization === `Bearer ${token}`
+          && item.transportScope !== null
+          && item.socketAuthScope === item.transportScope);
         response.writeHead(200, cors);
         response.end(JSON.stringify({
           authenticatedRest: authenticatedRest.length,
@@ -280,6 +282,7 @@ const createPackagedJourneyFixture = async () => {
       authorization: socket.handshake.headers.authorization ?? null,
       origin: socket.handshake.headers.origin ?? null,
       transportScope: scopes[0] ?? null,
+      socketAuthScope: socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] ?? null,
       socketIo: true,
     });
     if (!active || socket.handshake.headers.authorization !== `Bearer ${token}`
@@ -604,7 +607,10 @@ try {
         && request.url === '/api/auth/user'
         && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
       const authenticatedSockets = applicationRequests.filter(request =>
-        request.socketIo === true && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
+        request.socketIo === true
+        && request.authorization === `Bearer ${journeyFixture.secrets[2]}`
+        && request.transportScope !== null
+        && request.socketAuthScope === request.transportScope);
       const socketScopes = new Set(authenticatedSockets.map(request =>
         new URL(request.url, 'http://fixture.invalid').searchParams.get(DESKTOP_TRANSPORT_SCOPE_QUERY)));
       const restScopes = new Set(authenticatedRest.map(request => request.transportScope));
@@ -620,11 +626,10 @@ try {
         || bootstrap.some(request => request.authorization !== null)
         || authenticatedRest.length < 2
         || authenticatedSockets.length < 2
-        || restScopes.has(null)
-        || restScopes.size < 2
+        || restScopes.size !== 1
+        || !restScopes.has(null)
         || socketScopes.has(null)
         || socketScopes.size < 2
-        || [...restScopes].some(scope => !socketScopes.has(scope))
         || plaintextPersisted
         || firstIdentity < 0
         || firstBearer <= firstIdentity) {

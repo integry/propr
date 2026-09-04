@@ -1,24 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { parseProprConnectEndpoint } from '@propr/shared';
-import { LoaderCircle, Plus, X } from 'lucide-react';
+import { LoaderCircle } from 'lucide-react';
 import { setApiBaseUrl } from '../api/apiClient';
 import * as runtimeConfig from '../config/runtimeConfig';
 import type { DesktopDeepLinkInbox } from '../desktop-deep-link';
-import { DesktopContext } from './DesktopContext';
+import { DesktopConnectedExperience } from './DesktopConnectedExperience';
 import { useAttemptFence, useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
-import { ConnectionPanel, DesktopBrand, InstanceChooser, ManagedRecoveryReview, ProfileEditor, ProfileList } from './DesktopExperiencePanels';
+import { ConnectionPanel, DesktopBrand, InstanceChooser, ManagedRecoveryReview, ProfileEditor } from './DesktopExperiencePanels';
 import { managedRecoveryMessage, managedRediscoveryUnavailableMessage, safeConnectionMessage } from './desktopExperienceMessages';
+import { mergeProfiles, recoverableError, settleAuthenticationCancellation, type ExperienceState } from './desktopExperienceState';
 import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 import { useDesktopDeepLinks } from './useDesktopDeepLinks';
 import './desktop.css';
-
-type ExperienceState =
-  | { phase: 'loading' }
-  | { phase: 'choose' }
-  | { phase: 'connecting'; profile: DesktopProfile }
-  | { phase: 'blocked'; profile: DesktopProfile; result: Exclude<DesktopConnectionResult, { status: 'ready' }> }
-  | { phase: 'recovery-review'; profile: DesktopProfile; candidate: DesktopProfile }
-  | { phase: 'connected'; profile: DesktopProfile; result: Extract<DesktopConnectionResult, { status: 'ready' }> };
 
 interface DesktopExperienceProps {
   adapters: DesktopAdapters;
@@ -26,23 +19,6 @@ interface DesktopExperienceProps {
   children: React.ReactNode;
 }
 
-const mergeProfiles = (current: DesktopProfile[], incoming: DesktopProfile[]): DesktopProfile[] => {
-  const profiles = new Map(current.map(profile => [profile.id, profile]));
-  incoming.forEach(profile => profiles.set(profile.id, profile));
-  return [...profiles.values()].sort((a, b) =>
-    (b.lastConnectedAt || '').localeCompare(a.lastConnectedAt || ''));
-};
-
-const recoverableError = (message: string): string => `${message} Try again.`;
-
-const settleAuthenticationCancellation = (adapters: DesktopAdapters, profileId: string): void => {
-  // Back/navigation must remain synchronous. Cancellation is best effort and
-  // its rejection is deliberately consumed so shutdown cannot create an
-  // unhandled promise containing host-specific IPC details.
-  void Promise.resolve()
-    .then(() => adapters.authentication.cancel?.(profileId))
-    .catch(() => undefined);
-};
 export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, deepLinks, children }) => {
   const [profiles, setProfiles] = useState<DesktopProfile[]>([]);
   const [state, setState] = useState<ExperienceState>({ phase: 'loading' });
@@ -50,7 +26,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [managerOpen, setManagerOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [networkOffline, setNetworkOffline] = useState(!navigator.onLine);
   const connectionAttempt = useRef(0);
   const activeProfileId = useRef<string | null>(null);
   const stateRef = useRef(state);
@@ -209,14 +184,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     window.addEventListener(DESKTOP_ACCESS_INVALID_EVENT, accessInvalid);
     return () => window.removeEventListener(DESKTOP_ACCESS_INVALID_EVENT, accessInvalid);
   }, [adapters]);
-
-  useEffect(() => {
-    const online = () => setNetworkOffline(false); const offline = () => setNetworkOffline(true);
-    window.addEventListener('online', online); window.addEventListener('offline', offline);
-    return () => {
-      window.removeEventListener('online', online); window.removeEventListener('offline', offline);
-    };
-  }, []);
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
@@ -418,36 +385,15 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   if (state.phase !== 'connected') return <div className={`desktop-entry desktop-platform-${adapters.platform}`}>{deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}{content()}</div>;
 
-  const displayedConnection: DesktopConnectionResult = networkOffline ? { status: 'offline', message: 'This computer is offline.' } : state.result;
-  const contextValue = {
-    isDesktop: true as const, platform: adapters.platform, profile: state.profile,
-    connection: displayedConnection,
-    openProfileManager: openManager,
-    authenticate: () => adapters.authentication.authenticate(state.profile),
-    openConnectionHelp: () => adapters.externalBrowser.open('https://propr.dev'),
-    retry,
-  };
-
   return (
-    <DesktopContext.Provider value={contextValue}>
-      {deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}
-      <div className={`desktop-app desktop-platform-${adapters.platform}`} inert={managerOpen} aria-hidden={managerOpen || undefined}>{children}</div>
-      {managerOpen && (
-        <div className="desktop-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeManager(); }}>
-          <section ref={managerRef} className="desktop-profile-manager" role="dialog" aria-modal="true" aria-labelledby="desktop-manager-title" tabIndex={-1}>
-            <header><div><span className="desktop-eyebrow">Desktop</span><h2 id="desktop-manager-title">Manage instances</h2></div><button type="button" className="desktop-icon-button" onClick={closeManager} aria-label="Close instance manager"><X /></button></header>
-            {editing ? (
-              <ProfileEditor key={editing === 'new' ? editing : editing.id} initial={editing === 'new' ? undefined : editing} candidate={hasPendingConnectCandidate()} notice={editorNotice} operationError={operationError} onCancel={closeEditor} onSave={profile => void saveProfile(profile, hasPendingConnectCandidate() || editing === 'new' || state.profile.id === profile.id)} />
-            ) : (
-              <>
-                {operationError && <div className="desktop-inline-error" role="alert">{operationError}</div>}
-                <ProfileList profiles={profiles} onConnect={profile => { setManagerOpen(false); void connect(profile); }} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />
-                <button type="button" className="desktop-secondary-button desktop-add-instance" onClick={() => openEditor('new')}><Plus /> Add instance</button>
-              </>
-            )}
-          </section>
-        </div>
-      )}
-    </DesktopContext.Provider>
+    <DesktopConnectedExperience
+      adapters={adapters} profile={state.profile} result={state.result} profiles={profiles}
+      managerOpen={managerOpen} managerRef={managerRef} editing={editing}
+      operationError={operationError} deepLinkError={deepLinkError} editorNotice={editorNotice}
+      hasPendingConnectCandidate={hasPendingConnectCandidate()} openManager={openManager}
+      closeManager={closeManager} closeEditor={closeEditor} openEditor={openEditor}
+      connect={connect} removeProfile={removeProfile} saveProfile={saveProfile} retry={retry}
+      setManagerOpen={setManagerOpen}
+    >{children}</DesktopConnectedExperience>
   );
 };

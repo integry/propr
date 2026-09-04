@@ -174,11 +174,13 @@ describe('useRepositoryManagement', () => {
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: false,
+      visualPreview: { enabled: false, types: ['image'] },
       baseBranch: 'release/2026'
     });
 
     act(() => result.current.handleToggleRepo(result.current.repos[0].id));
     act(() => result.current.handleToggleAutoCiFollowup(result.current.repos[0].id));
+    act(() => result.current.handleUpdateVisualPreview(result.current.repos[0].id, { enabled: true, types: ['video'] }));
 
     expect(result.current.repos[0].enabled).toBe(true);
     expect(result.current.repos[0].autoFollowupOnFailedCi).toBe(false);
@@ -197,6 +199,39 @@ describe('useRepositoryManagement', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.repos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, false]);
+    expect(result.current.repos.map(repo => repo.visualPreview)).toEqual([
+      { enabled: false, types: ['image'] },
+      { enabled: false, types: ['image'] }
+    ]);
+  });
+
+  it('synchronizes visual preview settings across repository branch entries', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release' },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.handleUpdateVisualPreview('repo-main', {
+      enabled: true,
+      types: ['image', 'video'],
+      instructions: 'Capture desktop and mobile.'
+    }));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos[0].visualPreview).toEqual(savedRepos[1].visualPreview);
+    expect(savedRepos[0].visualPreview).toEqual({
+      enabled: true,
+      types: ['image', 'video'],
+      instructions: 'Capture desktop and mobile.'
+    });
+    expect(savedRepos[2].visualPreview).toEqual({ enabled: false, types: ['image'] });
   });
 
   it('adds the selected automatic CI setting without changing existing repositories', async () => {
