@@ -117,7 +117,7 @@ export const inspectDarwinSigningEvidence = async ({
   );
   await runVerificationCommand(
     runCommand,
-    ['--verify', '--test-requirement', `=${expected.expression}`, application],
+    ['--verify', `-R=${expected.expression}`, application],
     DARWIN_VERIFICATION_DIAGNOSTICS.expectedRequirementFailure,
   );
   const requirementResult = await runVerificationCommand(

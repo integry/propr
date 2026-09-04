@@ -23,6 +23,10 @@ const darwinVerifier = await readFile(
   new URL('./verify-darwin-packaged-connect-signature.mjs', import.meta.url),
   'utf8',
 );
+const packagedConnectSmoke = await readFile(
+  new URL('./smoke-packaged-connect.mjs', import.meta.url),
+  'utf8',
+);
 const boundedDarwinRunner = await readFile(
   new URL('./run-bounded-darwin-command.mjs', import.meta.url),
   'utf8',
@@ -78,7 +82,8 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /'--keychain', keychain/u);
     assert.match(darwinSigner, /'--timestamp=none'/u);
     assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
-    assert.match(darwinVerifier, /'--verify', '--test-requirement', `=\$\{expected\.expression\}`, application/u);
+    assert.match(darwinVerifier, /'--verify', `-R=\$\{expected\.expression\}`, application/u);
+    assert.doesNotMatch(darwinVerifier, /'--test-requirement'\s*,\s*`?=/u);
     assert.match(darwinVerifier, /identifier "\$\{REQUIRED_IDENTIFIER\}" and certificate leaf = H"\$\{expectedSha1\}"/u);
     assert.doesNotMatch(darwinVerifier, /extract-certificates|X509Certificate/u);
     assert.doesNotMatch(darwinVerifier, /Authority=/u);
@@ -93,6 +98,10 @@ describe('packaged Connect target-native credential setup', () => {
     const smoke = darwinRunner.indexOf('npm run smoke:connect-package');
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
     assert.ok(establish >= 0 && establish < smoke && smoke < stable);
+    assert.match(packagedConnectSmoke, /const runPhase = async phase => await runPackagedConnectLifecycle\([\s\S]*?spawn: spawnLifecycleProcess/u);
+    assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);[\s\S]*?if \(outcome\.ok && journeyFixture\) \{\s*outcome = await runPhase\('reprobe'\);/u);
+    assert.match(workflow, /target: darwin-x64\s+runner: macos-15-intel\s+platform: darwin\s+arch: x64/u);
+    assert.match(workflow, /target: darwin-arm64\s+runner: macos-15\s+platform: darwin\s+arch: arm64/u);
   });
 
   test('Darwin emits only allowlisted fixed stage markers around every blocking phase', async () => {

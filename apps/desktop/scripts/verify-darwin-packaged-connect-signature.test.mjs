@@ -70,7 +70,11 @@ const createCodesignSimulator = (overrides = {}) => {
         ].join('\n'),
       };
     }
-    if (arguments_.includes('--test-requirement')) {
+    const requirementArgument = arguments_.find(argument => argument.startsWith('-R='));
+    if (requirementArgument !== undefined) {
+      if (requirementArgument !== `-R=${requirementExpressionFor(selfSignedFingerprint)}`) {
+        throw new Error('unexpected simulated requirement expression');
+      }
       if (!fixture.signed || fixture.adHoc
         || fixture.identifier !== REQUIRED_IDENTIFIER
         || fixture.leaf !== selfSignedFingerprint) {
@@ -130,13 +134,16 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
       ['--display', '--verbose=4', application],
       [
         '--verify',
-        '--test-requirement',
-        `=${requirementExpressionFor(selfSignedFingerprint)}`,
+        `-R=${requirementExpressionFor(selfSignedFingerprint)}`,
         application,
       ],
       ['-d', '-r-', application],
       ['--verify', '--deep', '--strict', application],
     ]);
+    const requirementArguments = simulator.calls[1].arguments;
+    assert.equal(requirementArguments.length, 3);
+    assert.ok(!requirementArguments.includes('--test-requirement'));
+    assert.ok(!requirementArguments.some(argument => argument.startsWith('=')));
     for (const call of simulator.calls) {
       assert.equal(call.executable, '/usr/bin/codesign');
       assert.equal(call.timeoutMs, 20_000);
