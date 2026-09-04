@@ -205,7 +205,7 @@ describe('packaged pairing approval isolated session', () => {
     await controller.cleanup();
   });
 
-  it('drains delayed approval work exactly once before the next pairing case', async () => {
+  it('reports owned approval readiness and drains delayed work before the next pairing case', async () => {
     const requested: string[] = [];
     const releases: Array<() => void> = [];
     const tracker = createPackagedApprovalTaskTracker<string>(async request => {
@@ -214,8 +214,14 @@ describe('packaged pairing approval isolated session', () => {
     });
 
     for (const request of ['expiry', 'cancel', 'success']) {
-      const opened = tracker.open(request);
+      let ready = false;
+      const readiness = tracker.waitForNextOpen().then(() => { ready = true; });
+      const concurrentReadiness = tracker.waitForNextOpen();
       await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(ready, false);
+      const opened = tracker.open(request);
+      await Promise.all([readiness, concurrentReadiness]);
+      assert.equal(ready, true);
       let idle = false;
       const drained = tracker.waitForIdle().then(() => { idle = true; });
       await new Promise<void>(resolve => setImmediate(resolve));

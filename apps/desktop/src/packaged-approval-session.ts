@@ -31,6 +31,7 @@ export interface PackagedApprovalNavigation {
 
 export interface PackagedApprovalTaskTracker<Request> {
   open(request: Request): Promise<void>;
+  waitForNextOpen(): Promise<void>;
   waitForIdle(): Promise<void>;
 }
 
@@ -59,12 +60,20 @@ export const createPackagedApprovalTaskTracker = <Request>(
   open: (request: Request) => Promise<void>,
 ): PackagedApprovalTaskTracker<Request> => {
   const active = new Set<Promise<void>>();
+  const nextOpenWaiters = new Set<{ after: number; resolve(): void }>();
+  let openGeneration = 0;
   let rejectedTask = false;
 
   return {
     open(request) {
       const task = Promise.resolve().then(() => open(request));
       active.add(task);
+      openGeneration += 1;
+      for (const waiter of nextOpenWaiters) {
+        if (waiter.after >= openGeneration) continue;
+        nextOpenWaiters.delete(waiter);
+        waiter.resolve();
+      }
       void task.then(
         () => active.delete(task),
         () => {
@@ -73,6 +82,10 @@ export const createPackagedApprovalTaskTracker = <Request>(
         },
       );
       return task;
+    },
+    waitForNextOpen() {
+      const after = openGeneration;
+      return new Promise<void>(resolve => nextOpenWaiters.add({ after, resolve }));
     },
     async waitForIdle() {
       while (active.size > 0) {

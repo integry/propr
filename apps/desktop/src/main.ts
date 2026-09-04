@@ -602,6 +602,7 @@ const runPackagedConnectJourneySmoke = async (
   window: BrowserWindow,
   profiles: ProfileStore,
   credentials: DesktopCredentialService,
+  waitForNextApproval: () => Promise<void>,
   waitForApprovalIdle: () => Promise<void>,
   endpoint: string,
   phase: 'pair' | 'reprobe',
@@ -649,9 +650,11 @@ const runPackagedConnectJourneySmoke = async (
     await waitForApprovalIdle();
     reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_CANCEL');
     await setMode('cancel');
+    const approvalReady = waitForNextApproval();
     const cancelledPairing = credentials.pair({
       id: 'negative-cancel', label: 'Packaged cancel', apiBaseUrl: endpoint,
     });
+    await approvalReady;
     await new Promise(resolve => setTimeout(resolve, 50));
     credentials.cancelPairing('negative-cancel');
     await cancelledPairing.then(
@@ -1285,6 +1288,7 @@ if (!hasSingleInstanceLock) {
           mainWindow,
           profiles,
           credentials,
+          packagedJourneyApprovals.waitForNextOpen,
           packagedJourneyApprovals.waitForIdle,
           connectSmoke.journeyEndpoint,
           connectSmoke.journeyPhase,
