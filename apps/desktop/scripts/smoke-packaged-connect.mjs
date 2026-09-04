@@ -25,6 +25,7 @@ import {
   createPackagedConnectLaunchArguments,
   spawnPackagedConnectBinary,
 } from './packaged-connect-launch.mjs';
+import { evaluatePackagedConnectEvidence } from './packaged-connect-evidence.mjs';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
@@ -282,6 +283,7 @@ const createPackagedJourneyFixture = async () => {
       authorization: socket.handshake.headers.authorization ?? null,
       origin: socket.handshake.headers.origin ?? null,
       transportScope: scopes[0] ?? null,
+      socketQueryScopeCount: scopes.length,
       socketAuthScope: socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] ?? null,
       socketIo: true,
     });
@@ -608,32 +610,40 @@ try {
         && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
       const authenticatedSockets = applicationRequests.filter(request =>
         request.socketIo === true
-        && request.authorization === `Bearer ${journeyFixture.secrets[2]}`
-        && request.transportScope !== null
-        && request.socketAuthScope === request.transportScope);
+        && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
       const socketScopes = new Set(authenticatedSockets.map(request =>
         new URL(request.url, 'http://fixture.invalid').searchParams.get(DESKTOP_TRANSPORT_SCOPE_QUERY)));
       const restScopes = new Set(authenticatedRest.map(request => request.transportScope));
       const firstBearer = applicationRequests.findIndex(request => request.authorization !== null);
       const firstIdentity = applicationRequests.findIndex(request => request.url === '/api/desktop/discovery');
       const plaintextPersisted = await directoryContainsPlaintext(userDataPath, journeyFixture.secrets);
-      if (discoveries.length !== 8
-        || discoveries.some(request => request.authorization !== null)
-        || pairingStarts.length !== 3
-        || pairingBrowsers.length !== 3
-        || pairingPolls.length !== 1
-        || pairingActivations.length !== 1
-        || bootstrap.some(request => request.authorization !== null)
-        || authenticatedRest.length < 2
-        || authenticatedSockets.length < 2
-        || restScopes.size !== 1
-        || !restScopes.has(null)
-        || socketScopes.has(null)
-        || socketScopes.size < 2
-        || plaintextPersisted
-        || firstIdentity < 0
-        || firstBearer <= firstIdentity) {
-        outcome = { ok: false, category: 'journey-evidence', capture: 'complete', records: [] };
+      const evidenceFailure = evaluatePackagedConnectEvidence({
+        discoveryCount: discoveries.length,
+        discoveryAuthorizationPresent: discoveries.some(request => request.authorization !== null),
+        pairingStartCount: pairingStarts.length,
+        pairingBrowserCount: pairingBrowsers.length,
+        pairingPollCount: pairingPolls.length,
+        pairingActivationCount: pairingActivations.length,
+        bootstrapAuthorizationPresent: bootstrap.some(request => request.authorization !== null),
+        authenticatedRestCount: authenticatedRest.length,
+        authenticatedSocketCount: authenticatedSockets.length,
+        restScopeCount: restScopes.size,
+        restHasOnlyNullScope: restScopes.has(null),
+        socketHasNullScope: socketScopes.has(null),
+        socketScopeBindingMismatch: authenticatedSockets.some(request =>
+          request.socketQueryScopeCount !== 1 || request.socketAuthScope !== request.transportScope),
+        socketScopeCount: socketScopes.size,
+        plaintextCredentialPersisted: plaintextPersisted,
+        firstIdentityIndex: firstIdentity,
+        firstBearerIndex: firstBearer,
+      });
+      if (evidenceFailure) {
+        outcome = {
+          ok: false,
+          category: 'journey-evidence',
+          capture: 'complete',
+          records: [evidenceFailure],
+        };
       }
     }
   }
