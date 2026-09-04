@@ -5,6 +5,7 @@ import type { BrowserWindow, Session } from 'electron';
 import {
   clearPackagedApprovalStorage,
   createPackagedApprovalNavigation,
+  createPackagedApprovalTaskTracker,
   packagedApprovalPartition,
 } from './packaged-approval-session';
 
@@ -202,6 +203,30 @@ describe('packaged pairing approval isolated session', () => {
     await navigation;
     assert.equal(settled, true);
     await controller.cleanup();
+  });
+
+  it('drains delayed approval work exactly once before the next pairing case', async () => {
+    const requested: string[] = [];
+    const releases: Array<() => void> = [];
+    const tracker = createPackagedApprovalTaskTracker<string>(async request => {
+      requested.push(request);
+      await new Promise<void>(resolve => { releases.push(resolve); });
+    });
+
+    for (const request of ['expiry', 'cancel', 'success']) {
+      const opened = tracker.open(request);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      let idle = false;
+      const drained = tracker.waitForIdle().then(() => { idle = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(idle, false);
+      assert.equal(requested.filter(value => value === request).length, 1);
+      releases.shift()?.();
+      await Promise.all([opened, drained]);
+      assert.equal(idle, true);
+    }
+
+    assert.deepEqual(requested, ['expiry', 'cancel', 'success']);
   });
 
   it('cancels an incidental resource without invalidating the exact main-frame approval', async () => {

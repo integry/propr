@@ -380,6 +380,8 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.ok(manual >= 0 && browser >= 0 && credential >= 0 && reprobeReady >= 0
       && activation >= 0 && publication >= 0 && react >= 0);
     assert.match(main, /await stages\.waitFor\('CREDENTIAL_COMMITTED'\)[\s\S]*?await stages\.waitFor\('AUTHENTICATED_REPROBE_READY'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_COMMITTED'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_PUBLISHED'\)[\s\S]*?await stages\.waitFor\('REACT_CONNECTED'\)/u);
+    assert.match(main, /Packaged pairing expiry classification failed[\s\S]*?await waitForApprovalIdle\(\)[\s\S]*?JOURNEY_NEGATIVE_CANCEL[\s\S]*?Packaged pairing cancellation classification failed[\s\S]*?await waitForApprovalIdle\(\)/u);
+    assert.match(main, /await waitForApprovalIdle\(\);\s+reportPackagedConnectJourneyStage\(phase === 'pair'\s+\? 'JOURNEY_PAIR_COMPLETE'/u);
     assert.match(main, /if \(packagedSmokeTest && !transportSmoke && !connectJourney\)/u);
     assert.match(main, /if \(packagedSmokeTest && !connectJourney\) \{/u);
     assert.doesNotMatch(main, /JOURNEY_PAIR_RENDERER|JOURNEY_REPROBE_RENDERER/u);
