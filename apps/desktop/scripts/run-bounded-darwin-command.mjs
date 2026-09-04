@@ -71,7 +71,9 @@ const runProcessGroupGuard = async argv => {
     windowsHide: true,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  command.once('error', () => publishResult({ exitCode: 1, signal: null }));
+  command.once('error', () => publishResult({
+    exitCode: 1, signal: null, spawnError: true,
+  }));
   command.once('close', (exitCode, signal) => publishResult({ exitCode, signal }));
 
   process.on('message', message => {
@@ -111,7 +113,9 @@ export const runBoundedProcess = async ({
   let drainTimer;
   let timeout;
   let child;
+  let childClosed;
   let commandResult;
+  let commandSpawnFailed = false;
   let resolveForcedSettlement;
   const forcedSettlement = new Promise(resolve => { resolveForcedSettlement = resolve; });
 
@@ -160,8 +164,26 @@ export const runBoundedProcess = async ({
         ? ['ignore', 'pipe', 'pipe', 'ipc']
         : ['ignore', 'pipe', 'pipe'],
     });
-    onSpawn?.(child);
-    if (primaryReason) signalProcessGroup(child, 'SIGTERM', platform);
+    const processError = new Promise(resolve => {
+      child.once('error', error => resolve({ operationError: error }));
+    });
+    childClosed = new Promise(resolve => {
+      child.once('close', (exitCode, signal) => resolve(commandResult ?? { exitCode, signal }));
+    });
+    if (guardProcessGroup) {
+      child.on('message', message => {
+        if (message?.type !== GROUP_GUARD_RESULT || commandResult) return;
+        commandResult = { exitCode: message.exitCode, signal: message.signal };
+        commandSpawnFailed = message.spawnError === true;
+        if (primaryReason) return;
+        if (commandSpawnFailed) requestTermination('spawn-or-io');
+        else if (commandResult.exitCode !== 0 || commandResult.signal) requestTermination('exit');
+        else {
+          // Only success releases the guard. Every failure retains the PGID through SIGKILL.
+          child.send({ type: GROUP_GUARD_RELEASE }, () => {});
+        }
+      });
+    }
     child.stdout?.on('data', chunk => appendBounded(
       stdoutChunks, chunk, stdoutState, maxOutputBytes,
       forwardOutput ? process.stdout : undefined,
@@ -171,23 +193,15 @@ export const runBoundedProcess = async ({
       forwardOutput ? process.stderr : undefined,
     ));
 
+    onSpawn?.(child);
+    if (primaryReason) signalProcessGroup(child, 'SIGTERM', platform);
     timeout = setTimeout(() => requestTermination('timeout'), timeoutMs);
-    const closeResult = new Promise((resolve, reject) => {
-      child.once('error', reject);
-      if (guardProcessGroup) {
-        child.on('message', message => {
-          if (message?.type !== GROUP_GUARD_RESULT || commandResult) return;
-          commandResult = { exitCode: message.exitCode, signal: message.signal };
-          if (!primaryReason) {
-            // Keep the outer bound active until the guard itself closes.
-            child.send({ type: GROUP_GUARD_RELEASE }, () => {});
-          }
-        });
-      }
-      child.once('close', (exitCode, signal) => resolve(commandResult ?? { exitCode, signal }));
-    });
-    const result = await Promise.race([closeResult, forcedSettlement])
+    const settlement = await Promise.race([
+      childClosed, processError, forcedSettlement,
+    ])
       .finally(() => clearTimeout(timeout));
+    if ('operationError' in settlement) throw settlement.operationError;
+    const result = settlement;
     if (forceTimer) clearTimeout(forceTimer);
     if (drainTimer) clearTimeout(drainTimer);
     if (result.drainTimedOut) {
@@ -211,6 +225,10 @@ export const runBoundedProcess = async ({
     return completed;
   } catch (error) {
     if (child?.pid && !primaryReason) requestTermination('spawn-or-io');
+    if (child?.pid && childClosed && forceTimer) {
+      // The guard ignores TERM, so this settles only after SIGKILL or the final drain bound.
+      await Promise.race([childClosed, forcedSettlement]);
+    }
     if (error instanceof BoundedProcessError) throw error;
     throw new BoundedProcessError('spawn-or-io', { cause: error });
   } finally {

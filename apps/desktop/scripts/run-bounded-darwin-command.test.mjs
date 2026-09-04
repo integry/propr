@@ -139,6 +139,53 @@ test('a command failure is not replaced by timeout or cleanup status', async () 
   }
 });
 
+test('nonzero exit escalates against a TERM-ignoring descendant before releasing the guard', async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-nonzero-'));
+  const descendantPidPath = join(fixtureRoot, 'descendant.pid');
+  try {
+    await assert.rejects(runBoundedProcess({
+      executable: process.execPath,
+      arguments: ['-e', [
+        'const { existsSync } = require("node:fs");',
+        'const { spawn } = require("node:child_process");',
+        'spawn(process.execPath, ["-e", [',
+        '  "const { writeFileSync } = require(\\"node:fs\\");",',
+        '  "process.on(\\"SIGTERM\\", () => {});",',
+        '  "writeFileSync(process.argv[1], String(process.pid));",',
+        '  "setInterval(() => {}, 1000);",',
+        '].join(" "), process.argv[1]], { stdio: "ignore" });',
+        'const waitState = new Int32Array(new SharedArrayBuffer(4));',
+        'const deadline = Date.now() + 1000;',
+        'while (!existsSync(process.argv[1]) && Date.now() < deadline) Atomics.wait(waitState, 0, 0, 10);',
+        'process.exit(existsSync(process.argv[1]) ? 23 : 24);',
+      ].join(' '), descendantPidPath],
+      timeoutMs: 2_000,
+      terminationGraceMs: 150,
+      maxOutputBytes: 1_024,
+    }), error => error instanceof BoundedProcessError
+      && error.reason === 'exit'
+      && error.result.exitCode === 23);
+    const descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+    await waitForProcessExit(descendantPid);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('command spawn error retains the guard through SIGKILL escalation', async () => {
+  const startedAt = Date.now();
+  await assert.rejects(runBoundedProcess({
+    executable: join(tmpdir(), 'propr-command-that-does-not-exist'),
+    timeoutMs: 2_000,
+    terminationGraceMs: 100,
+    maxOutputBytes: 1_024,
+  }), error => error instanceof BoundedProcessError
+    && error.reason === 'spawn-or-io'
+    && error.result.exitCode === 1);
+  assert.ok(Date.now() - startedAt >= 75, 'spawn failure released the process-group guard early');
+});
+
 test('CLI timeout diagnostics never echo command arguments or secret values', async () => {
   const secretArgument = 'DO_NOT_PRINT_THIS_SECRET';
   await assert.rejects(new Promise((resolve, reject) => {
