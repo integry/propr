@@ -1,6 +1,7 @@
 import { isIP } from 'net';
 import { canonicalProprHttpUrlOrigin, isProprLoopbackHostname } from '@propr/shared';
 import type { AllowedRedirectHost } from './authTypes.js';
+import { getMcpOriginSync } from './mcp/configResolver.js';
 
 function isValidHostname(hostname: string): boolean {
     if (!hostname || hostname.length > 253 || hostname.includes('..')) return false;
@@ -40,8 +41,9 @@ function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = fa
 }
 
 function getAllowedRedirectHosts(): AllowedRedirectHost[] {
+    const mcpOrigin = getMcpOriginSync();
     const hosts = [
-        process.env.MCP_ENABLED === 'true' && process.env.MCP_PUBLIC_ORIGIN ? parseAllowedRedirectHost(process.env.MCP_PUBLIC_ORIGIN) : null,
+        mcpOrigin ? parseAllowedRedirectHost(mcpOrigin) : null,
         process.env.FRONTEND_URL ? parseAllowedRedirectHost(process.env.FRONTEND_URL) : null,
         process.env.COOKIE_DOMAIN ? parseAllowedRedirectHost(process.env.COOKIE_DOMAIN, process.env.COOKIE_DOMAIN.trim().startsWith('.')) : null,
         ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',').map(value => parseAllowedRedirectHost(value))

@@ -1,6 +1,7 @@
 import type { Express, RequestHandler } from 'express';
 import type {
   createAdminRoutes,
+  createAdminMcpRoutes,
   createAgentLoginRoutes,
   createAgentRuntimeRoutes,
   createAgentVersionRoutes,
@@ -23,6 +24,7 @@ export type RouteEntry = [RouteMethod, string, ...RequestHandler<never>[]];
 
 interface ManagementRouteDeps {
   adminRoutes: ReturnType<typeof createAdminRoutes>;
+  adminMcpRoutes: ReturnType<typeof createAdminMcpRoutes>;
   agentLoginRoutes: ReturnType<typeof createAgentLoginRoutes>;
   agentRuntimeRoutes: ReturnType<typeof createAgentRuntimeRoutes>;
   agentVersionRoutes: ReturnType<typeof createAgentVersionRoutes>;
@@ -36,6 +38,7 @@ interface MemberCatalogRouteDeps {
 
 export function createManagementRouteEntries({
   adminRoutes,
+  adminMcpRoutes,
   agentLoginRoutes,
   agentRuntimeRoutes,
   agentVersionRoutes,
@@ -85,6 +88,10 @@ export function createManagementRouteEntries({
     ['post', '/api/admin/members', requireManageMembers, adminRoutes.addMember],
     ['patch', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.updateMemberRole],
     ['delete', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.removeMember],
+
+    ['get', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.getSettings],
+    ['put', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.putSettings],
+    ['post', '/api/admin/mcp/revoke-all', requireManageSettings, adminMcpRoutes.revokeAll],
 
     ['get', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.getRuntimePackages],
     ['get', '/api/agent-runtime/packages/search', requireManageRuntime, agentRuntimeRoutes.searchRuntimePackages],

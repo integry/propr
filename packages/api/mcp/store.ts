@@ -25,7 +25,10 @@ export class McpStore {
   async get<T>(kind: string, id: string, database: Knex = this.db): Promise<T | undefined> {
     const row = await database('mcp_records').where({ kind, id }).first();
     if (!row || (row.expires_at && Number(row.expires_at) <= Date.now())) return undefined;
-    return this.unseal<T>(row.value);
+    // A row sealed under a superseded encryption key cannot be read back. Treat
+    // it as a miss so callers surface an invalid grant instead of a raw crypto
+    // exception escaping the OAuth handlers.
+    try { return this.unseal<T>(row.value); } catch { return undefined; }
   }
 
   async put(kind: string, id: string, value: unknown, { expiresAt, database = this.db }: { expiresAt?: number; database?: Knex } = {}): Promise<void> {

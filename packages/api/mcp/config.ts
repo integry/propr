@@ -6,6 +6,8 @@ export interface McpConfig {
   resource: string;
   instanceId: string;
   encryptionKey: Buffer;
+  /** Admin-configured upper bound on grantable scopes. Absent means every scope is grantable. */
+  scopeCeiling?: McpScope[];
   connect?: { issuer: string; jwks: string; installationId: number; resource: string; tunnelId: string; relayToken: string };
 }
 

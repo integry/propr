@@ -2,6 +2,7 @@ import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 /* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
 import { mountMcp, mcpResponseHeaders } from './mcp/server.js';
+import { getMcpOriginSync, isMcpEnabledSync, invalidateMcpConfigCache, resolveMcpConfig } from './mcp/configResolver.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
@@ -33,6 +34,7 @@ import {
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
+  createAdminMcpRoutes,
   createGoalRoutes,
   createVisualPreviewAuthRoutes,
   createVoiceRoutes,
@@ -187,12 +189,12 @@ try {
 }
 
 // Mark even parser/rate-limit/error responses at the instance boundary.
-if (process.env.MCP_ENABLED === 'true') app.use('/api/mcp', mcpResponseHeaders);
+app.use('/api/mcp', (req, res, next) => { if (isMcpEnabledSync()) { mcpResponseHeaders(req, res, next); } else { next(); } });
 
 app.use((req, res, next) => {
   // Server-rendered MCP consent forms submit on the API's own public origin,
   // which can differ from FRONTEND_URL. Keep other API CORS policy intact.
-  const mcpOrigin = process.env.MCP_ENABLED === 'true' ? process.env.MCP_PUBLIC_ORIGIN?.replace(/\/$/, '') : undefined;
+  const mcpOrigin = getMcpOriginSync();
   const consentOrigin = req.path.startsWith('/mcp/') && mcpOrigin && req.get('origin') === mcpOrigin;
   cors({ origin: consentOrigin ? mcpOrigin : validateCorsOrigin, credentials: true })(req, res, next);
 });
@@ -324,6 +326,7 @@ function setupRoutes(): void {
   });
   const voiceRoutes = createVoiceRoutes({ briefingService: voiceBriefingService });
   const adminRoutes = createAdminRoutes();
+  const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
@@ -367,6 +370,7 @@ function setupRoutes(): void {
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,
+      adminMcpRoutes,
       agentLoginRoutes,
       agentRuntimeRoutes,
       agentVersionRoutes,
@@ -481,7 +485,16 @@ async function start(): Promise<void> {
       }
       notificationProjection = new NotificationProjectionService({ database: db });
       notificationProjection.startStalledDetector();
-      configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
+      // Every API process drops its MCP cache on a published config event, so an
+      // admin toggle applies across processes rather than waiting out the TTL.
+      // Re-resolve immediately: authRedirect and the CORS/header middleware read
+      // the resolved state synchronously and cannot trigger a resolve themselves,
+      // so dropping the cache alone would leave them on the pre-change values.
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, async () => {
+        invalidateMcpConfigCache();
+        await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+        await reloadConfigs();
+      });
       // Subscribe first, then enqueue the initial load through the same serial
       // chain so no settings update can race with the startup snapshot.
       await configReloadSubscription.reload();
@@ -497,6 +510,21 @@ async function start(): Promise<void> {
       }
     } else {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
+    }
+    // Prime MCP config cache before route registration so authRedirect and CORS
+    // middleware see the correct origin on the first request after startup.
+    // The env-managed path keeps its pre-toggle behavior: an invalid MCP_* value,
+    // or MCP_ENABLED=true in demo mode, aborts startup through start()'s catch
+    // rather than leaving the MCP server silently 404ing everywhere.
+    if (process.env.MCP_ENABLED === 'true' && demoMode) {
+      throw new Error('MCP_ENABLED cannot be enabled in demo mode. Demo remains read-only.');
+    }
+    if (!demoMode) {
+      if (process.env.MCP_ENABLED === 'true') {
+        await resolveMcpConfig(db);
+      } else {
+        await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+      }
     }
     setupRoutes();
     if (!demoMode) {

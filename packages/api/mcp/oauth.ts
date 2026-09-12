@@ -26,7 +26,16 @@ export class McpOAuthProvider implements OAuthServerProvider {
   // passes the verifier through when this flag is set; validation is never skipped.
   readonly skipLocalPkceValidation = true;
   readonly clientsStore;
-  constructor(readonly store: McpStore, readonly config: McpConfig) { this.clientsStore = createClientsStore(store); }
+  // The ceiling is read through a callback so an admin change applies to live
+  // grants and refreshes without restarting the process.
+  constructor(readonly store: McpStore, readonly config: McpConfig,
+    private readonly scopeCeiling: () => McpScope[] | undefined = () => config.scopeCeiling) { this.clientsStore = createClientsStore(store); }
+
+  /** Scopes this instance permits. 'read' is always grantable; no ceiling means every scope. */
+  private allowedScopes(): Set<string> {
+    const ceiling = this.scopeCeiling();
+    return new Set<string>(ceiling ? [...ceiling, 'read'] : MCP_SCOPES);
+  }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     if (!client.redirect_uris.includes(params.redirectUri)) throw new InvalidRequestError('Exact registered redirect_uri required');
@@ -34,8 +43,12 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (!/^[A-Za-z0-9_-]{43}$/.test(params.codeChallenge)) throw new InvalidRequestError('A valid S256 PKCE challenge is required');
     const scopes = params.scopes?.length ? params.scopes : ['read'];
     if (!Array.isArray(scopes) || !scopes.includes('read') || scopes.length > MCP_SCOPES.length || scopes.some(scope => typeof scope !== 'string' || !MCP_SCOPES.includes(scope as McpScope))) throw new InvalidScopeError('Unknown scope');
+    // Requests above the ceiling are narrowed rather than rejected, so a client
+    // asking for more than this instance permits still gets a usable grant.
+    const allowed = this.allowedScopes();
+    const permitted = scopes.filter(scope => allowed.has(scope));
     const id = secret();
-    await this.store.put('pending', digest(id), { client, params: { ...params, scopes, resource: this.config.resource } }, { expiresAt: Date.now() + 600_000 });
+    await this.store.put('pending', digest(id), { client, params: { ...params, scopes: permitted, resource: this.config.resource } }, { expiresAt: Date.now() + 600_000 });
     res.redirect(`${this.config.origin}/mcp/consent?request=${encodeURIComponent(id)}`);
   }
 
@@ -44,9 +57,10 @@ export class McpOAuthProvider implements OAuthServerProvider {
       const pending = await this.store.take<PendingAuthorization>('pending', digest(pendingId), tx);
       if (!pending || !user.accessToken || !/^\d+$/.test(user.id)) throw new InvalidGrantError('Authorization expired or GitHub credential unavailable');
       const scopes = selectedScopes === undefined ? pending.params.scopes : selectedScopes;
+      const allowed = this.allowedScopes();
       if (!Array.isArray(scopes) || !scopes.length || scopes.length > MCP_SCOPES.length || !scopes.includes('read')
-        || scopes.some(scope => typeof scope !== 'string' || !pending.params.scopes?.includes(scope))) {
-        throw new InvalidScopeError('Select read and only permissions originally requested by the app');
+        || scopes.some(scope => typeof scope !== 'string' || !pending.params.scopes?.includes(scope) || !allowed.has(scope))) {
+        throw new InvalidScopeError('Select read and only permissions originally requested by the app and permitted by this instance');
       }
       const grant: McpGrant = {
         id: randomUUID(), ownerId: user.id, clientId: pending.client.client_id,
@@ -115,7 +129,8 @@ export class McpOAuthProvider implements OAuthServerProvider {
       }
       if (scopes !== undefined && (!Array.isArray(scopes) || !scopes.length || !scopes.includes('read') || scopes.length > MCP_SCOPES.length || scopes.some(scope => typeof scope !== 'string' || !token.scopes.includes(scope as McpScope)))) throw new InvalidScopeError('Scope escalation is forbidden');
       await this.store.put('refresh', digest(refresh), { ...token, used: true }, { expiresAt: token.expiresAt, database: tx });
-      return this.issue(grant, tx, scopes?.length ? scopes as McpScope[] : token.scopes);
+      const allowed = this.allowedScopes();
+      return this.issue(grant, tx, (scopes?.length ? scopes as McpScope[] : token.scopes).filter(scope => allowed.has(scope)));
     });
     if (!result) throw new InvalidGrantError('Refresh reuse detected; grant revoked');
     return result;
@@ -125,7 +140,8 @@ export class McpOAuthProvider implements OAuthServerProvider {
     const record = await this.store.get<Token & { scopes: McpScope[] }>('access', digest(token));
     if (!record || record.expiresAt <= Date.now()) throw new InvalidTokenError('Invalid access token');
     const grant = await this.grant(record.grantId);
-    return { token, clientId: grant.clientId, scopes: record.scopes.filter(scope => grant.scopes.includes(scope)), expiresAt: Math.floor(record.expiresAt / 1000), resource: new URL(grant.resource), extra: { grantId: grant.id } };
+    const allowed = this.allowedScopes();
+    return { token, clientId: grant.clientId, scopes: record.scopes.filter(scope => grant.scopes.includes(scope) && allowed.has(scope)), expiresAt: Math.floor(record.expiresAt / 1000), resource: new URL(grant.resource), extra: { grantId: grant.id } };
   }
 
   async revokeToken(client: OAuthClientInformationFull, request: { token: string }): Promise<void> {

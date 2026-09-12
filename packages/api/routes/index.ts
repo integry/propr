@@ -29,6 +29,7 @@ export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js'
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
 export { createNotificationRoutes } from './notificationRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';
+export { createAdminMcpRoutes } from './adminMcpRoutes.js';
 export { createDesktopAuthRoutes } from './desktopAuthRoutes.js';
 export { createActiveWorkRoutes } from './activeWorkRoutes.js';
 export { createGoalRoutes } from './goalRoutes.js';

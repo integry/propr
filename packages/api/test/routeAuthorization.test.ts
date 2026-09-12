@@ -48,6 +48,7 @@ function createAuthorizationTestApp() {
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes: handlerCollection() }),
     ...createManagementRouteEntries({
       adminRoutes: handlerCollection(),
+      adminMcpRoutes: handlerCollection(),
       agentLoginRoutes: handlerCollection(),
       agentRuntimeRoutes: handlerCollection(),
       agentVersionRoutes: handlerCollection(),

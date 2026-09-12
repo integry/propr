@@ -21,10 +21,12 @@ export interface ConfigReloadSubscription {
   close(): Promise<void>;
 }
 
+const RELOADABLE_SUBTYPES = ['settings_update', 'repos_update', 'mcp_settings_update'];
+
 function isReloadableConfigUpdate(message: string): boolean {
   const event = JSON.parse(message) as { type?: unknown; subtype?: unknown };
   return event.type === 'config_update'
-    && (event.subtype === 'settings_update' || event.subtype === 'repos_update');
+    && RELOADABLE_SUBTYPES.includes(event.subtype as string);
 }
 
 /**

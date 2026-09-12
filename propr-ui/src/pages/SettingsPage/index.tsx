@@ -17,6 +17,7 @@ import DesktopVoiceSettingsSection from './DesktopVoiceSettingsSection';
 import { useDesktop } from '../../desktop/DesktopContext';
 import ManagedPreviewStorageSection from './ManagedPreviewStorageSection';
 import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNavigation';
+import McpServerSection from './McpServerSection';
 
 const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
@@ -287,6 +288,12 @@ const AdminSettingsPage: React.FC = () => {
       searchText: 'desktop native notifications operating system task started completed failed needs attention device test alert',
       content: <DesktopNotificationSettingsSection />
     }] : []),
+    {
+      id: 'mcp-server',
+      category: 'integrations',
+      searchText: 'MCP model context protocol AI assistant Claude Claude Code ChatGPT tools connection OAuth enable disable toggle server',
+      content: <McpServerSection />
+    },
     {
       id: 'personal-notifications',
       category: 'notifications',
