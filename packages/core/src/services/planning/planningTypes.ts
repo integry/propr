@@ -199,6 +199,7 @@ export interface FindFilesOptions {
   correlationId?: string;
   contextModel?: string;
   routingSession?: SyntheticRoutingSession;
+  branch?: string;
 }
 
 export interface TaskDraftForFind {
