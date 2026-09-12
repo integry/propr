@@ -7,7 +7,7 @@ import os from 'os';
 import fs from 'fs-extra';
 import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
-import { parseRedisOutput } from './redisOutputParser.js';
+import { parseAgentStreamOutput } from './agentStreamProjection.js';
 import { withStableLiveEventIds } from './liveEventIds.js';
 import { resolveConfigPath } from '@propr/core';
 import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
@@ -371,7 +371,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Check if task has Redis output (indicates Codex/non-Claude agent)
+   * Check if task has Redis output (every Docker-backed agent streams there)
    */
   private async hasRedisOutput(taskId: string): Promise<boolean> {
     if (!this.deps) return false;
@@ -429,10 +429,10 @@ export class TaskWatcherManager {
       }
       watcherInfo.lastRedisLength = output.length;
 
-      // Parse the output using the Redis output parser
-      const lines = output.trim().split('\n').filter((line: string) => line.trim());
+      // Parse the output with the provider-aware projection (Claude's
+      // stream-json needs its own parser, every other agent uses the Redis one).
       const executionStartTimestamp = await this.findExecutionStartTimestampForTask(taskId);
-      const result = parseRedisOutput(lines, { executionStartTimestamp });
+      const result = parseAgentStreamOutput(output, { executionStartTimestamp });
 
       // Determine which events to send
       const stableEvents = withStableLiveEventIds({

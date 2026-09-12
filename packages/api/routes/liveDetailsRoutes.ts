@@ -18,6 +18,7 @@ import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodePa
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
+import { parseAgentStreamOutput } from '../services/agentStreamProjection.js';
 import { parseConversationFile } from '../services/conversationParser.js';
 import { withStableLiveEventIds, type LiveEventSource } from '../services/liveEventIds.js';
 
@@ -273,7 +274,7 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
   const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
-  const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()), { executionStartTimestamp });
+  const redisParsed = parseAgentStreamOutput(output, { executionStartTimestamp });
   if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
     return {
       events: withStableLiveEventIds({

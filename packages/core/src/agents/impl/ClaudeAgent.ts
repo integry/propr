@@ -130,7 +130,7 @@ export class ClaudeAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
-                    streamToRedis: executionMode === 'goal', preserveOutputOnTimeout: true
+                    streamToRedis: true, preserveOutputOnTimeout: true
                 })
             );
 
