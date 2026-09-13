@@ -55,10 +55,15 @@ export interface RepoActionContainerProps {
   settingsContent?: React.ReactNode;
 }
 
-const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo, initialTab, settingsContent }) => {
-  const [requestedTab, setActiveTab] = useState<ActionTab>(initialTab || 'settings');
+function getRepositoryTabState(selectedRepo: RepoActionContainerProps['selectedRepo'], requestedTab: ActionTab) {
   const mediaEnabled = selectedRepo?.visualPreview?.enabled === true;
   const activeTab = requestedTab === 'media' && !mediaEnabled ? 'settings' : requestedTab;
+  return { mediaEnabled, activeTab };
+}
+
+const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo, initialTab, settingsContent }) => {
+  const [requestedTab, setActiveTab] = useState<ActionTab>(initialTab || 'settings');
+  const { mediaEnabled, activeTab } = getRepositoryTabState(selectedRepo, requestedTab);
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);

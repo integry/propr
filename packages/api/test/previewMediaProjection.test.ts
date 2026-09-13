@@ -85,8 +85,8 @@ test('artifact sources use stored PR identities, including final results, and ig
 });
 
 function response() {
-  const state = { status: 200, body: {} as any };
-  const res = { status(code: number) { state.status = code; return this; }, json(body: unknown) { state.body = body; } } as Response;
+  const state: { status: number; body: Record<string, unknown> } = { status: 200, body: {} };
+  const res = { status(code: number) { state.status = code; return this; }, json(body: Record<string, unknown>) { state.body = body; } } as Response;
   return { res, state };
 }
 
@@ -113,6 +113,7 @@ test('repository gallery scopes tasks and owned goals, paginates, reports empty/
     const route = createRepositoryMediaRoutes({ db, reader }).getMedia;
     const req = { user: { id: 'alice' }, query: { repository: 'acme/web' } } as unknown as Request;
     const first = response(); await route(req, first.res);
+    assert.ok(Array.isArray(first.state.body.previews));
     assert.equal(first.state.body.previews.length, 10);
     assert.equal(first.state.body.unavailable, true);
     assert.equal(first.state.body.nextOffset, 24);
