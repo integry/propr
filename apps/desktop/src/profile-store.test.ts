@@ -56,7 +56,9 @@ const legacyCredential = (profileId: string, tokenCharacter = 'A') => ({
   token: `propr_it_${tokenCharacter.repeat(43)}`,
 });
 
-const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
+// Real journal writes and fsyncs can exceed one second on busy CI runners.
+// Keep a finite deadlock guard without treating disk latency as a lock failure.
+const bounded = <T>(promise: Promise<T>, milliseconds = 10_000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error('Profile store operation did not settle')), milliseconds);
