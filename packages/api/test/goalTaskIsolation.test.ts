@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import knex from 'knex';
+import { closeConnection } from '@propr/core';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
+
+// Task preview projection also initializes the shared core database connection.
+after(closeConnection);
 
 test('generic task lists exclude native goal backing tasks', async () => {
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
