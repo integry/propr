@@ -232,17 +232,23 @@ test('a throwing readiness hook cleans up the owned process group', async () => 
 test('timeout remains primary while TERM runs the wrapper cleanup', async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-cleanup-'));
   const cleanupPath = join(fixtureRoot, 'cleanup.txt');
+  const readyPidPath = join(fixtureRoot, 'ready.pid');
   try {
     await assert.rejects(runBoundedProcess({
       executable: '/bin/bash',
       arguments: ['-c', [
+        // Model CI startup taking longer than the operation timeout.
+        'sleep 0.5',
         'trap \"printf CLEANED > \\\"$1\\\"; exit 143\" TERM',
         'sleep 30 &',
+        'printf "%s" "$$" > "$2"',
         'wait',
-      ].join('\n'), 'bash', cleanupPath],
+      ].join('\n'), 'bash', cleanupPath, readyPidPath],
       timeoutMs: 300,
       terminationGraceMs: 1_000,
       maxOutputBytes: 1_024,
+      // Arm the timeout only after the wrapper has installed its cleanup trap.
+      onSpawn: () => { waitForFixtureProcessId(readyPidPath); },
     }), error => error instanceof BoundedProcessError
       && error.reason === 'timeout'
       && error.result.exitCode === 143);
