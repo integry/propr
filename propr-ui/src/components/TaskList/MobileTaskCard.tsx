@@ -1,10 +1,11 @@
 import { PreviewThumbnails } from '../PreviewMedia';
 import React from 'react';
-import { ChevronRight, ChevronDown, ChevronUp, GitPullRequest, CircleDot } from 'lucide-react';
+import { ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask, getParentDisplayTitle, getChildDisplayTitle } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
 import { ScoreBadge } from './ScoreBadge';
+import { TaskReferenceChips } from './ReferenceChips';
 
 interface MobileTaskCardProps {
   group: TaskGroup;
@@ -21,12 +22,7 @@ const MobileTaskItemWithGroup: React.FC<{
 }> = ({ task, group, isChild = false, onRowClick }) => {
   const typeInfo = getTaskTypeInfo(task);
   const isDimmed = shouldDimTask(task);
-  const displayTitle = (() => {
-    if (typeInfo.type === 'followup' && task.subtitle) {
-      return task.subtitle;
-    }
-    return typeInfo.cleanTitle || task.subtitle || 'No title';
-  })();
+  const displayTitle = isChild ? getChildDisplayTitle(task) : getParentDisplayTitle(task);
 
   return (
     <div
@@ -39,39 +35,12 @@ const MobileTaskItemWithGroup: React.FC<{
         <div className="flex items-center gap-2 flex-wrap mb-1">
           {!isChild && (
             <>
-              {(() => {
-                const badges: React.ReactNode[] = [];
-
-                // Show PR badge if there's a PR number
-                if (group.prNumber) {
-                  badges.push(
-                    <span key="pr" className="inline-flex items-center gap-1 text-sm font-bold text-primary-600">
-                      <GitPullRequest size={14} className="text-purple-600" />
-                      #{group.prNumber}
-                    </span>
-                  );
-                }
-
-                // Determine the issue number to display
-                const issueToShow = task.linkedIssueNumber || task.issueNumber;
-
-                // Show Issue badge if it differs from PR number, or if there's no PR
-                if (issueToShow && issueToShow !== group.prNumber) {
-                  badges.push(
-                    <span key="issue" className="inline-flex items-center gap-1 text-sm font-bold text-primary-600">
-                      <CircleDot size={14} className="text-green-600" />
-                      #{issueToShow}
-                    </span>
-                  );
-                }
-
-                return badges;
-              })()}
-              <TaskTypeBadge type={typeInfo.type} />
+              <TaskReferenceChips task={task} prNumber={group.prNumber} />
+              <TaskTypeBadge type={typeInfo.type} label={typeInfo.workflowLabel} />
             </>
           )}
           {getStatusPill(task.status)}
-          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} className="ml-auto" />
         </div>
         <p className={`text-sm text-gray-900 line-clamp-2 ${isChild ? 'text-gray-600' : 'font-medium'}`}>
           {displayTitle}

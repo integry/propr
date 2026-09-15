@@ -5,14 +5,12 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
   AreaChart,
   Area,
   Legend,
 } from 'recharts';
 import { tooltipStyle, axisProps } from './chartConstants';
+import { formatPercent, type StatusBreakdownEntry } from './taskStatusBreakdown';
 
 interface VolumeChartProps {
   data: Array<{ displayDate: string; count: number }>;
@@ -79,48 +77,45 @@ export const ProcessingTimeChart: React.FC<ProcessingTimeChartProps> = ({ data, 
   </ResponsiveContainer>
 );
 
-interface PieChartEntry {
-  [key: string]: string | number;
-  name: string;
-  value: number;
-  color: string;
+interface StatusSegmentedBarProps {
+  data: StatusBreakdownEntry[];
 }
 
-interface StatusPieChartProps {
-  data: PieChartEntry[];
-}
-
-export const StatusPieChart: React.FC<StatusPieChartProps> = ({ data }) => (
-  <ResponsiveContainer width="100%" height="100%">
-    <PieChart>
-      <Pie
-        data={data}
-        cx="50%"
-        cy="50%"
-        innerRadius={60}
-        outerRadius={90}
-        paddingAngle={3}
-        dataKey="value"
-        labelLine={false}
+/**
+ * Compact horizontal segmented bar (GitHub language-bar style) with a tabular
+ * two-column legend. Replaces the donut: same data in a fraction of the height.
+ */
+export const StatusSegmentedBar: React.FC<StatusSegmentedBarProps> = ({ data }) => {
+  const total = data.reduce((sum, entry) => sum + entry.value, 0);
+  return (
+    <div>
+      <div
+        className="flex h-2 w-full gap-[2px] overflow-hidden rounded-sm bg-slate-100"
+        role="img"
+        aria-label={data.map(entry => `${entry.name} ${formatPercent(entry.percent)}`).join(', ')}
       >
-        {data.map((entry, index) => (
-          <Cell key={`cell-${index}`} fill={entry.color} />
+        {data.map(entry => (
+          <div
+            key={entry.key}
+            className="h-full"
+            style={{ flex: `${entry.value} 0 0`, minWidth: '3px', backgroundColor: entry.color }}
+            title={`${entry.name}: ${entry.value.toLocaleString()} tasks (${formatPercent(entry.percent)})`}
+            data-status={entry.key}
+          />
         ))}
-      </Pie>
-      <Tooltip
-        contentStyle={tooltipStyle}
-        formatter={(value: number | undefined, name: string | undefined) => [value === undefined ? 'N/A' : `${value} tasks`, name ?? 'Tasks']}
-      />
-      <Legend
-        layout="horizontal"
-        align="center"
-        verticalAlign="bottom"
-        iconType="circle"
-        iconSize={8}
-        formatter={(value: string) => (
-          <span style={{ color: '#64748B', fontSize: '11px' }}>{value}</span>
-        )}
-      />
-    </PieChart>
-  </ResponsiveContainer>
-);
+      </div>
+      <ul className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5" aria-label="Task status breakdown">
+        {data.map(entry => (
+          <li key={entry.key} className="flex items-center justify-between gap-2 text-xs min-w-0">
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="h-2 w-2 flex-shrink-0 rounded-sm" style={{ backgroundColor: entry.color }} aria-hidden="true" />
+              <span className="truncate text-slate-600">{entry.name}</span>
+            </span>
+            <span className="flex-shrink-0 font-mono tabular-nums text-slate-800">{formatPercent(entry.percent)}</span>
+          </li>
+        ))}
+      </ul>
+      <span className="sr-only">{total.toLocaleString()} tasks total</span>
+    </div>
+  );
+};

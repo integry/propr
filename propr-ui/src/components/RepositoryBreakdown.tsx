@@ -120,7 +120,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
                 </td>
                 <td className="py-2 px-2 text-right">
                   <span className={`text-xs font-medium ${
-                    repo.successRate >= 80 ? 'text-emerald-600' :
+                    repo.successRate >= 90 ? 'text-slate-900' :
                     repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
                   }`}>
                     {repo.successRate}%

@@ -42,6 +42,15 @@ export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: n
   return title;
 };
 
+// Matches backend-generated PR task titles such as "Fix PR #2393: Add retries".
+const PR_WORKFLOW_TITLE_PATTERN = /^(Follow-up|Followup|Fix|Review|Ultrafix|Merge) PR #(\d+):\s*(.*)$/i;
+
+const normalizeWorkflowLabel = (raw: string): string => {
+  const lower = raw.toLowerCase();
+  if (lower === 'followup' || lower === 'follow-up') return 'Follow-up';
+  return raw.charAt(0).toUpperCase() + lower.slice(1);
+};
+
 export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
   const title = task.title || '';
 
@@ -59,10 +68,52 @@ export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
     };
   }
 
+  const prWorkflow = title.match(PR_WORKFLOW_TITLE_PATTERN);
+  if (prWorkflow) {
+    return {
+      type: 'pr-workflow',
+      cleanTitle: title,
+      workflowLabel: normalizeWorkflowLabel(prWorkflow[1]),
+      workflowPrNumber: Number(prWorkflow[2]),
+    };
+  }
+
   return {
     type: 'unknown',
     cleanTitle: title
   };
+};
+
+/**
+ * Title shown on the parent (newest) row of a task group. The parent names the
+ * entity the group is about, so PR-scoped tasks keep their full "Fix PR #N: ..." title.
+ */
+export const getParentDisplayTitle = (task: Task): string => {
+  const typeInfo = getTaskTypeInfo(task);
+  if (typeInfo.type === 'followup' && task.subtitle) return task.subtitle;
+  return typeInfo.cleanTitle || task.subtitle || 'No title';
+};
+
+/**
+ * Title shown on a nested child row. Children describe the delta against the
+ * parent entity (the specific fix, review, or follow-up request), so they never
+ * repeat the parent's pull request title. Issue tasks keep their issue title,
+ * because their subtitle is only a "Preparing a PR" placeholder.
+ */
+export const getChildDisplayTitle = (task: Task): string => {
+  const typeInfo = getTaskTypeInfo(task);
+  const subtitle = (task.subtitle || '').trim();
+
+  if (typeInfo.type === 'followup') {
+    return subtitle || typeInfo.cleanTitle || 'Update';
+  }
+
+  if (typeInfo.type === 'pr-workflow') {
+    if (subtitle && subtitle !== typeInfo.cleanTitle) return subtitle;
+    return `${typeInfo.workflowLabel} requested`;
+  }
+
+  return typeInfo.cleanTitle || subtitle || 'Update';
 };
 
 export const getStatusPill = (status: string) => {

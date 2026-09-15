@@ -9,6 +9,11 @@ export default {
   },
   theme: {
     extend: {
+      // Keep `font-sans` identical to the body font so explicit resets never fall
+      // back to a different stack than the rest of the UI.
+      fontFamily: {
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+      },
       colors: {
         primary: {
           '500': '#24A3A3',

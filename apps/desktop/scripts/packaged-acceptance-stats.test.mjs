@@ -13,6 +13,7 @@ const runnerSource = readSource('./run-packaged-acceptance.mjs');
 const taskStatsApiSource = readSource('../../../propr-ui/src/api/taskStatsApi.ts');
 const dashboardSource = readSource('../../../propr-ui/src/components/Dashboard.tsx');
 const taskStatsChartSource = readSource('../../../propr-ui/src/components/TaskStatsChart.tsx');
+const taskStatusBreakdownSource = readSource('../../../propr-ui/src/components/taskStatusBreakdown.ts');
 const topModelsSource = readSource('../../../propr-ui/src/components/TopModels.tsx');
 const repositoryBreakdownSource = readSource('../../../propr-ui/src/components/RepositoryBreakdown.tsx');
 const headerStatsSource = readSource('../../../propr-ui/src/hooks/useHeaderStats.ts');
@@ -87,10 +88,18 @@ describe('packaged acceptance stats fixtures', () => {
     assert.match(dashboardSource, /const \{ completed, total \} = taskStats\.summary/);
     assert.match(dashboardSource, /taskStats\?\.summary\?\.total\?\.toLocaleString/);
     assert.match(dashboardSource, /taskStats\?\.summary\?\.failed/);
-    for (const field of ['dailyCounts', 'statusDistribution', 'avgProcessingTime']) {
+    for (const field of ['dailyCounts', 'avgProcessingTime']) {
       assert.match(taskStatsChartSource, new RegExp(`stats\\.${field}\\.map`));
       assert.ok(Array.isArray(payload[field]), `${field} must be synchronously mappable`);
     }
+    // statusDistribution is merged into display groups by buildStatusBreakdown,
+    // which iterates the array synchronously instead of mapping it inline.
+    assert.match(taskStatsChartSource, /buildStatusBreakdown\(stats\.statusDistribution\)/);
+    assert.match(
+      taskStatusBreakdownSource,
+      /export function buildStatusBreakdown\(distribution: StatusDistribution\[\]\)[\s\S]*?for \(const item of distribution\)/
+    );
+    assert.ok(Array.isArray(payload.statusDistribution), 'statusDistribution must be synchronously iterable');
     assert.equal(payload.summary.total, 12);
     assert.equal(payload.summary.completed, 12);
     assert.equal(payload.summary.failed, 0);

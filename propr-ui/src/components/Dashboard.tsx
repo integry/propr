@@ -34,13 +34,14 @@ interface StatItemProps {
   isLoading?: boolean;
 }
 
-const StatItem: React.FC<StatItemProps> = ({ label, value, color = 'text-gray-900', isLoading }) => (
+// Metric values are data, not display type: standard sans-serif, semibold, tabular digits.
+const StatItem: React.FC<StatItemProps> = ({ label, value, color = 'text-slate-900', isLoading }) => (
   <div className="flex flex-col items-start">
     <span className="text-[10px] font-bold text-gray-500 uppercase">{label}</span>
     {isLoading ? (
       <Loader2 className="w-4 h-4 animate-spin text-gray-400 mt-0.5" />
     ) : (
-      <span className={`text-xl font-bold ${color}`}>{value}</span>
+      <span className={`font-sans text-xl font-semibold tabular-nums ${color}`}>{value}</span>
     )}
   </div>
 );
@@ -83,7 +84,6 @@ export const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, ove
         <StatItem
           label="Success"
           value={calculateSuccessRate(taskStats)}
-          color="text-blue-600"
           isLoading={statsLoading && !taskStats}
         />
       </div>
@@ -108,7 +108,7 @@ export const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, ove
       <StatItem
         label="Total Cost"
         value={formatCost(overviewStats)}
-        color="text-violet-600"
+        color="text-slate-900"
         isLoading={statsLoading && !overviewStats}
       />
     </div>

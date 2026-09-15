@@ -92,7 +92,7 @@ const Section: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 const SectionHeader: React.FC<{ title: string; score?: number }> = ({ title, score }) => (
   <div className="flex items-center gap-2 mb-2">
     <h5 className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">{title}</h5>
-    {score !== undefined && <ScoreBadge score={score} />}
+    {score !== undefined && <ScoreBadge score={score} className="ml-auto" />}
   </div>
 );
 
