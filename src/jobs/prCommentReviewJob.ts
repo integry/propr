@@ -1,12 +1,10 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit, retryConfigs, TaskStates, withRetry } from '@propr/core';
+import { AgentRegistry, getAuthenticatedOctokit, loadPrReviewModel, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
-import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { loadPrReviewModel } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
-import { buildCombinedComment } from './prCommentJobUtils.js';
+import { buildCombinedComment, fetchOriginalContributionDiscussion } from './prCommentJobUtils.js';
 import { fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
 import { prepareRelatedReviewContext } from './reviewContextScout.js';
 import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
@@ -313,6 +311,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             maxContextTokens: reviewMaxContextTokens, correlationId, correlatedLogger,
         }
     );
+    const originalDiscussion = job.data.ultrafixMeta ? '' : await fetchOriginalContributionDiscussion(state.octokit, context, correlationId);
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
         repoOwner,
         repoName,
@@ -398,7 +397,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, reviewedHead: prData!.data.head.sha,
         // Prior review prose must never become an expanded Ultrafix objective.
-        commentHistory: job.data.ultrafixMeta ? '' : commentHistory,
+        commentHistory: (job.data.ultrafixMeta ? '' : commentHistory) + originalDiscussion,
         originalTaskSpec,
         commandInstructions: job.data.commandInstructions,
         prDiff,

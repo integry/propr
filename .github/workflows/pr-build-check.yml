@@ -508,18 +508,16 @@ jobs:
 
       - name: Detect Changes
         id: filter
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # The checkout includes the merge commit and its parents, so this
-          # comparison needs no separate GitHub API request or network fetch.
+          # Compare against the base actually used by the checked-out merge.
+          # The event base SHA can differ and be absent from a shallow checkout.
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
           import { appendFileSync } from 'node:fs';
 
           const diff = execFileSync('git', [
             'diff', '--no-renames', '--name-status', '-z',
-            process.env.PR_BASE_SHA, 'HEAD', '--',
+            'HEAD^1', 'HEAD', '--',
           ], { encoding: 'utf8' }).split('\0');
           const files = [];
           for (let i = 0; i + 1 < diff.length; i += 2) {
