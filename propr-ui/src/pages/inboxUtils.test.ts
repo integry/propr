@@ -53,8 +53,13 @@ describe('Inbox notification presentation', () => {
     expect(notificationHref(item({}))).toBe('/tasks/task-1');
     expect(notificationHref(item({
       kind: 'indexing',
+      target: { type: 'indexing', repository: 'integry/propr', branch: 'release/2026' },
+    }))).toBe('/summaries/integry/propr?branch=release%2F2026');
+    expect(notificationHref(item({
+      kind: 'indexing',
       target: { type: 'indexing', repository: 'integry/propr' },
-    }))).toBe('/summaries/integry/propr');
+      action: { type: 'navigate', label: 'Browse', href: '/summaries/integry/propr?branch=feature%2Fui' },
+    }))).toBe('/summaries/integry/propr?branch=feature%2Fui');
   });
 
   test('accepts only matching HTTPS GitHub pull-request actions', () => {

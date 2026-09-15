@@ -427,7 +427,10 @@ function notificationPath(notification: Notification): string {
       const repository = safeRepository(target.repository);
       if (!repository) return '/repositories';
       const [owner, name] = repository.split('/');
-      return `/summaries/${safePathSegment(owner)}/${safePathSegment(name)}`;
+      const path = `/summaries/${safePathSegment(owner)}/${safePathSegment(name)}`;
+      return target.branch
+        ? `${path}?branch=${safePathSegment(target.branch)}`
+        : path;
     }
     case 'system_failure': return '/';
   }

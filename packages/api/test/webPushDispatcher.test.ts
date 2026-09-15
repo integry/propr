@@ -261,6 +261,42 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal(job.attempt_count, 1);
   });
 
+  test('keeps the indexing branch in the web-push Browse deep link', async () => {
+    userSequence += 1;
+    const userId = `indexing-push-user-${userSequence}`;
+    await notifications.updateNotificationPreferences(userId, {
+      preferences: { indexing: { pushEnabled: true } },
+    });
+    await notifications.upsertPushSubscription(userId, {
+      endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+      expirationTime: null,
+      keys: { p256dh: browserPublicKey(), auth: 'A'.repeat(22) },
+    });
+    await notifications.createNotificationEvent({
+      deduplicationKey: `indexing-dispatcher:${userId}`,
+      kind: 'indexing',
+      severity: 'error',
+      target: { type: 'indexing', repository: 'integry/propr', branch: 'release/2026 Q1' },
+      title: 'Repository indexing failed',
+      body: 'Indexing failed.',
+      actions: [],
+      recipients: [{ userId, pushEnabled: true }],
+    });
+
+    const payloads: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        payloads.push(payload);
+        return success;
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    const deepLink = new URL((JSON.parse(payloads[0]) as { deepLink: string }).deepLink);
+    assert.equal(deepLink.pathname, '/summaries/integry/propr');
+    assert.equal(deepLink.searchParams.get('branch'), 'release/2026 Q1');
+  });
+
   test('never turns an advertised stop into a push-click action', async () => {
     await queuedEvent({ advertiseStop: true });
     const payloads: string[] = [];

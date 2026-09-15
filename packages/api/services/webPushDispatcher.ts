@@ -272,9 +272,11 @@ function targetPath(target: NotificationTarget): string {
       : '/tasks';
     case 'indexing': {
       const [owner, repository] = target.repository.split('/');
-      return owner && repository
-        ? `/summaries/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`
-        : '/repositories';
+      if (!owner || !repository) return '/repositories';
+      const path = `/summaries/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
+      return target.branch
+        ? `${path}?branch=${encodeURIComponent(target.branch)}`
+        : path;
     }
     case 'pull_request': return '/repositories';
     case 'system_failure': return '/';

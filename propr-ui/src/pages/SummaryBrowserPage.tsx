@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Book, ChevronLeft, Search, Loader2 } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import SummaryBrowser from '../components/SummaryBrowser';
-import { getAvailableGithubRepos } from '../api/proprApi';
+import { getAvailableGithubRepos, getInstanceCatalog } from '../api/proprApi';
+import { resolveSummaryBranch, summaryBrowserPath, normalizeSummaryBranch } from '../utils/summaryBrowser';
 
 interface ReposResponse {
   repos: string[];
@@ -12,10 +13,20 @@ interface ReposResponse {
 const SummaryBrowserPage: React.FC = () => {
   const { owner, repo } = useParams<{ owner?: string; repo?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [repos, setRepos] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [configuredBranches, setConfiguredBranches] = useState<Record<string, string>>({});
+  const [branchConfigReady, setBranchConfigReady] = useState(false);
+
+  const requestedBranch = new URLSearchParams(location.search).get('branch');
+  const configuredBranch = owner && repo
+    ? configuredBranches[`${owner}/${repo}`.toLowerCase()]
+    : undefined;
+  const resolvedBranch = resolveSummaryBranch(requestedBranch, configuredBranch);
+  const hasExplicitBranch = Boolean(normalizeSummaryBranch(requestedBranch));
 
   // Set document title with repository name or default
   const documentTitle = owner && repo ? `${owner}/${repo}` : 'File Summaries';
@@ -38,6 +49,30 @@ const SummaryBrowserPage: React.FC = () => {
     fetchRepos();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    getInstanceCatalog()
+      .then(catalog => {
+        if (!active) return;
+        const branches: Record<string, string> = {};
+        for (const repository of catalog.repositories) {
+          const branch = normalizeSummaryBranch(repository.baseBranch);
+          if (branch) branches[repository.name.toLowerCase()] = branch;
+        }
+        setConfiguredBranches(branches);
+      })
+      .catch(error => {
+        console.error('Failed to load configured repository branches:', error);
+      })
+      .finally(() => {
+        if (active) setBranchConfigReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const filteredRepos = repos.filter(r =>
     r.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -54,7 +89,19 @@ const SummaryBrowserPage: React.FC = () => {
           Back to repositories
         </button>
 
-        <SummaryBrowser owner={owner} repo={repo} />
+        {!hasExplicitBranch && !branchConfigReady ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+            <span className="ml-2 text-gray-500">Loading repository configuration...</span>
+          </div>
+        ) : (
+          <SummaryBrowser
+            key={`${owner}/${repo}:${resolvedBranch || 'HEAD'}`}
+            owner={owner}
+            repo={repo}
+            branch={resolvedBranch}
+          />
+        )}
       </div>
     );
   }
@@ -110,7 +157,11 @@ const SummaryBrowserPage: React.FC = () => {
             return (
               <button
                 key={repoFullName}
-                onClick={() => navigate(`/summaries/${repoOwner}/${repoName}`)}
+                onClick={() => navigate(summaryBrowserPath(
+                  repoOwner,
+                  repoName,
+                  configuredBranches[repoFullName.toLowerCase()],
+                ))}
                 className="flex items-center gap-3 p-4 bg-white border border-gray-200 rounded-lg hover:border-primary-300 hover:shadow-sm transition-all text-left group"
               >
                 <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center group-hover:bg-primary-50 transition-colors">

@@ -304,7 +304,7 @@ test('advertises notification mutations only for canonical task and draft target
       id: 'indexing-warning',
       severity: 'warning',
       title: 'Indexing needs attention',
-      target: { type: 'indexing', repository: 'integry/propr' },
+      target: { type: 'indexing', repository: 'integry/propr', branch: 'release/2026 Q1' },
       occurredAt: '2026-09-07T01:19:00.000Z',
       actions: advertisedActions,
     }),
@@ -361,6 +361,10 @@ test('advertises notification mutations only for canonical task and draft target
 
   assert.deepEqual(actionsById['system-warning'], []);
   assert.deepEqual(actionsById['indexing-warning'], []);
+  assert.equal(
+    briefing.items.find(item => item.id === 'indexing-warning')?.href,
+    '/summaries/integry/propr?branch=release%2F2026%20Q1',
+  );
   assert.deepEqual(actionsById['pull-request-warning'], ['open']);
   assert.deepEqual(actionsById['review-without-task'], ['open']);
   assert.deepEqual(actionsById['review-task'], ['open', 'stop', 'follow_up']);

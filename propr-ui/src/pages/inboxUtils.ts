@@ -1,4 +1,5 @@
 import type { Notification } from '@propr/shared';
+import { summaryBrowserPath } from '../utils/summaryBrowser';
 
 export const INBOX_GROUPS = [
   'Needs attention',
@@ -54,7 +55,7 @@ export function notificationHref(notification: Notification): string {
     case 'indexing': {
       const [owner, repository] = notification.target.repository.split('/');
       return owner && repository
-        ? `/summaries/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`
+        ? summaryBrowserPath(owner, repository, notification.target.branch)
         : '/repositories';
     }
     case 'system_failure': return '/';
