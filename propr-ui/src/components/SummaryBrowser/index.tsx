@@ -19,6 +19,7 @@ const shortenHash = (hash: string | null): string => {
 export interface SummaryBrowserProps {
   owner: string;
   repo: string;
+  branch?: string;
 }
 
 export interface TreeNodeState {
@@ -27,7 +28,7 @@ export interface TreeNodeState {
   loading: boolean;
 }
 
-const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
+const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo, branch }) => {
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatusResponse | null>(null);
   const [rootEntries, setRootEntries] = useState<SummaryEntry[]>([]);
   const [nodeStates, setNodeStates] = useState<Record<string, TreeNodeState>>({});
@@ -41,11 +42,11 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
       setLoading(true);
       setError(null);
       try {
-        const status = await getIndexingStatus(owner, repo);
+        const status = await getIndexingStatus(owner, repo, branch);
         setIndexingStatus(status);
 
         if (status.indexed) {
-          const tree = await getDirectoryTree(owner, repo, '');
+          const tree = await getDirectoryTree(owner, repo, '', branch);
           setRootEntries(tree.entries);
         }
       } catch (err) {
@@ -55,7 +56,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
       }
     }
     fetchInitialData();
-  }, [owner, repo]);
+  }, [owner, repo, branch]);
 
   // Handle expanding/collapsing a directory
   const toggleDirectory = useCallback(
@@ -81,7 +82,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
           }));
 
           try {
-            const tree = await getDirectoryTree(owner, repo, entry.path);
+            const tree = await getDirectoryTree(owner, repo, entry.path, branch);
             setNodeStates((prev) => ({
               ...prev,
               [entry.path]: { expanded: true, children: tree.entries, loading: false },
@@ -100,7 +101,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         }
       }
     },
-    [owner, repo, nodeStates]
+    [owner, repo, branch, nodeStates]
   );
 
   // Handle selecting an entry

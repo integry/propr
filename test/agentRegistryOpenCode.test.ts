@@ -29,6 +29,8 @@ let saveAgents: typeof import('../packages/core/src/config/configManager.js').sa
 let loadAgents: typeof import('../packages/core/src/config/configManager.js').loadAgents;
 let saveSettings: typeof import('../packages/core/src/config/configManager.js').saveSettings;
 let saveAgentRuntimePackageState: typeof import('../packages/core/src/agents/runtime/agentRuntimePackages.js').saveAgentRuntimePackageState;
+let getUnifiedAgentImageRetryDelay: typeof import('../packages/core/src/agents/AgentRegistry.js').getUnifiedAgentImageRetryDelay;
+let UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS: typeof import('../packages/core/src/agents/AgentRegistry.js').UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS;
 
 before(async () => {
     ({ AgentRegistry } = await import('../packages/core/src/agents/AgentRegistry.js'));
@@ -37,6 +39,7 @@ before(async () => {
     ({ runMigrations, closeConnection } = await import('../packages/core/src/db/connection.js'));
     ({ saveAgents, loadAgents, saveSettings } = await import('../packages/core/src/config/configManager.js'));
     ({ saveAgentRuntimePackageState } = await import('../packages/core/src/agents/runtime/agentRuntimePackages.js'));
+    ({ getUnifiedAgentImageRetryDelay, UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS } = await import('../packages/core/src/agents/AgentRegistry.js'));
     await runMigrations();
 });
 
@@ -44,6 +47,7 @@ beforeEach(async () => {
     (AgentRegistry as unknown as { instance?: unknown }).instance = undefined;
     await saveAgents([opencodeConfig]);
     await saveSettings({ default_agent_alias: null });
+    AgentRegistry.getInstance().setImagePreparationOwner(true);
 });
 
 after(async () => {
@@ -230,46 +234,94 @@ test('AgentRegistry exposes unified image degraded status', async () => {
     });
 });
 
-test('AgentRegistry automatically retries an unavailable unified image', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] });
+test('AgentRegistry uses bounded exponential backoff with jitter', () => {
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(1, () => 0.5), 5_000);
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(2, () => 0.5), 10_000);
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(3, () => 0.5), 20_000);
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(4, () => 0.5), 40_000);
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(5, () => 0.5), 80_000);
+    assert.strictEqual(getUnifiedAgentImageRetryDelay(50, () => 0.5), 5 * 60_000);
+});
+
+test('AgentRegistry API recovery requests one worker-owned preparation', async () => {
     const registry = AgentRegistry.getInstance();
-    let attempts = 0;
+    registry.setImagePreparationOwner(false);
     const preparationModes: boolean[] = [];
+    let recoveryRequests = 0;
+    let recovery: Promise<void> | undefined;
     const internal = registry as unknown as {
         ensureUnifiedAgentImage: (_configs: AgentConfig[], prepareImages: boolean) => Promise<string | null>;
-        scheduleUnifiedAgentImageRetry: () => void;
+        startWorkerOwnedImageRecovery: () => Promise<void>;
         unavailableUnifiedAgentImage: { imageTag: string; error: string; recordedAt: string } | null;
     };
     internal.ensureUnifiedAgentImage = async (_configs, prepareImages) => {
-        attempts += 1;
         preparationModes.push(prepareImages);
-        if (attempts < 3) {
-            internal.unavailableUnifiedAgentImage = {
-                imageTag: 'propr/agent:bundle-retry',
-                error: 'temporary download failure',
-                recordedAt: '2026-08-08T20:00:00.000Z'
-            };
-            internal.scheduleUnifiedAgentImageRetry();
-            return null;
-        }
-        internal.unavailableUnifiedAgentImage = null;
-        return 'propr/agent:recovered';
+        internal.unavailableUnifiedAgentImage = {
+            imageTag: 'propr/agent:bundle-retry',
+            error: 'temporary download failure',
+            recordedAt: '2026-08-08T20:00:00.000Z'
+        };
+        return null;
+    };
+    internal.startWorkerOwnedImageRecovery = () => {
+        recovery ??= Promise.resolve().then(() => {
+            recoveryRequests += 1;
+            internal.unavailableUnifiedAgentImage = null;
+        });
+        return recovery;
     };
 
-    await registry.refresh();
-    assert.deepStrictEqual(registry.getAllAgents(), []);
+    await Promise.all([registry.ensureInitialized(), registry.ensureInitialized()]);
 
-    t.mock.timers.tick(60_000);
-    await registry.waitForPendingRefresh();
-    assert.strictEqual(attempts, 2);
-    assert.deepStrictEqual(registry.getAllAgents(), [], 'a repeated failure remains degraded');
+    assert.deepStrictEqual(preparationModes, [false]);
+    assert.strictEqual(recoveryRequests, 1);
+});
 
-    t.mock.timers.tick(60_000);
-    await registry.waitForPendingRefresh();
+test('AgentRegistry opens a circuit after bounded transient failures', () => {
+    const registry = AgentRegistry.getInstance();
+    registry.setImagePreparationOwner(false);
+    const internal = registry as unknown as {
+        recordUnavailableUnifiedAgentImage: (imageTag: string, error: string) => void;
+        clearUnifiedAgentImageRetry: () => void;
+    };
 
-    assert.strictEqual(attempts, 3);
-    assert.deepStrictEqual(preparationModes, [false, true, true]);
-    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:recovered');
+    internal.recordUnavailableUnifiedAgentImage('propr/agent:bundle-retry', 'temporary download failure');
+    assert.ok(registry.getOperationalStatus().unifiedAgentImage.nextRetryAt);
+    for (let attempt = 1; attempt < UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS; attempt += 1) {
+        internal.recordUnavailableUnifiedAgentImage('propr/agent:bundle-retry', 'temporary download failure');
+    }
+    internal.clearUnifiedAgentImageRetry();
+
+    const status = registry.getOperationalStatus().unifiedAgentImage;
+    assert.strictEqual(status.status, 'unavailable');
+    assert.strictEqual(status.retryCount, UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS);
+    assert.strictEqual(status.circuitBreakerOpen, true);
+    assert.strictEqual(status.operatorActionRequired, undefined);
+});
+
+test('AgentRegistry halts recovery immediately for ENOSPC', () => {
+    const registry = AgentRegistry.getInstance();
+    const internal = registry as unknown as {
+        recordUnavailableUnifiedAgentImage: (imageTag: string, error: string) => void;
+    };
+
+    internal.recordUnavailableUnifiedAgentImage('propr/agent:bundle-disk-full', 'docker build failed: no space left on device');
+
+    const status = registry.getOperationalStatus().unifiedAgentImage;
+    assert.strictEqual(status.circuitBreakerOpen, true);
+    assert.strictEqual(status.operatorActionRequired, true);
+    assert.match(status.error || '', /no space left on device/);
+});
+
+test('AgentRegistry clears failure state after successful preparation', () => {
+    const registry = AgentRegistry.getInstance();
+    const internal = registry as unknown as {
+        recordUnavailableUnifiedAgentImage: (imageTag: string, error: string) => void;
+        markUnifiedAgentImageReady: (imageTag: string) => string;
+    };
+
+    internal.recordUnavailableUnifiedAgentImage('propr/agent:bundle-recovered', 'temporary download failure');
+    assert.strictEqual(internal.markUnifiedAgentImageReady('propr/agent:bundle-recovered'), 'propr/agent:bundle-recovered');
     assert.deepStrictEqual(registry.getOperationalStatus(), {
         unifiedAgentImage: { status: 'ready' }
     });

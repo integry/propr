@@ -363,7 +363,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
         )}
         {activeTab === 'browse' && (() => {
           const [owner, repo] = selectedRepo.name.split('/');
-          return <RepoBrowsePanel owner={owner} repo={repo} />;
+          return <RepoBrowsePanel owner={owner} repo={repo} branch={selectedRepo.baseBranch} />;
         })()}
         {activeTab === 'todos' && (
           <RepoTodosPanel

@@ -43,17 +43,20 @@ export interface IndexingStatusResponse {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param path - Optional path within the repository (defaults to root)
+ * @param branch - Optional repository branch
  * @returns Directory tree with entries and their summaries
  */
 export async function getDirectoryTree(
   owner: string,
   repo: string,
-  path: string = ''
+  path: string = '',
+  branch?: string
 ): Promise<DirectoryTreeResponse> {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
   const pathSuffix = path ? `/${encodeURIComponent(path)}` : '';
-  const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/tree${pathSuffix}`;
+  const branchQuery = branch ? `?branch=${encodeURIComponent(branch)}` : '';
+  const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/tree${pathSuffix}${branchQuery}`;
 
   const response = await apiFetch(url, {
     method: 'GET',
@@ -104,15 +107,18 @@ export async function getPathSummary(
  * Check the indexing status for a repository.
  * @param owner - Repository owner
  * @param repo - Repository name
+ * @param branch - Optional repository branch
  * @returns Indexing status including file/directory counts
  */
 export async function getIndexingStatus(
   owner: string,
-  repo: string
+  repo: string,
+  branch?: string
 ): Promise<IndexingStatusResponse> {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
-  const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/status`;
+  const branchQuery = branch ? `?branch=${encodeURIComponent(branch)}` : '';
+  const url = `${API_BASE_URL}/api/summaries/${encodedOwner}/${encodedRepo}/status${branchQuery}`;
 
   const response = await apiFetch(url, {
     method: 'GET',

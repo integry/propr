@@ -7,13 +7,15 @@ export interface RepoBrowsePanelProps {
   owner: string;
   /** Repository name (e.g., "propr") */
   repo: string;
+  /** Configured repository branch */
+  branch?: string;
 }
 
 /**
  * Panel component for browsing repository file summaries.
  * Embeds the SummaryBrowser component within the repository action tabs.
  */
-const RepoBrowsePanel: React.FC<RepoBrowsePanelProps> = ({ owner, repo }) => {
+const RepoBrowsePanel: React.FC<RepoBrowsePanelProps> = ({ owner, repo, branch }) => {
   if (!owner || !repo) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-4">
@@ -32,7 +34,7 @@ const RepoBrowsePanel: React.FC<RepoBrowsePanelProps> = ({ owner, repo }) => {
 
   return (
     <div className="h-full overflow-auto bg-slate-50">
-      <SummaryBrowser owner={owner} repo={repo} />
+      <SummaryBrowser owner={owner} repo={repo} branch={branch} />
     </div>
   );
 };

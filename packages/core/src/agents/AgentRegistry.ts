@@ -5,17 +5,27 @@ import * as configManager from '../config/configManager.js';
 import { executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { loadAgentRuntimePackageState } from './runtime/agentRuntimePackages.js';
 import { GoalCapabilityProbe, type GoalCapability } from './goalCapabilities.js';
 import type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 import { SyntheticAgentRegistry, type BeginSyntheticRoutingOptions, type SyntheticRoutingSession } from './SyntheticAgentRegistry.js';
 import { createAgentFromConfig } from './createAgentFromConfig.js';
 import { resolveDefaultAgentConfig, resolveUnifiedAgentImage } from './agentImagePreparation.js';
+import { closeAgentImagePreparationQueue, enqueueAgentImagePreparation } from './agentImagePreparationQueue.js';
+import { isAgentImageDiskPressureError } from './agentImageBuildCapacity.js';
+import { areAgentImagesAvailable, captureRuntimePackageStateVersion, hasRuntimePackageStateChanged } from './agentRegistryRuntimeState.js';
+import {
+    logUnifiedAgentImageCircuitOpen,
+    recordUnifiedAgentImageFailure,
+    scheduleUnifiedAgentImageRetry,
+    startUnifiedAgentImageRecovery,
+    type UnavailableUnifiedAgentImage,
+} from './unifiedAgentImageRecovery.js';
 
 export type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 
 const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
-const UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS = 60_000;
+
+export { getUnifiedAgentImageRetryDelay, UNIFIED_AGENT_IMAGE_RETRY_MAX_ATTEMPTS } from './unifiedAgentImageRecovery.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -34,8 +44,9 @@ export class AgentRegistry {
     private pendingRefresh: Promise<void> | null = null;
     private pendingRefreshPreparesImages = false;
     private pendingBackgroundRefresh: Promise<void> | null = null;
-    private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
+    private unavailableUnifiedAgentImage: UnavailableUnifiedAgentImage | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private imagePreparationOwner = false;
     private goalCapabilityProbe = new GoalCapabilityProbe();
     private syntheticAgents = new SyntheticAgentRegistry(this.agents, this.agentsByAlias);
 
@@ -66,14 +77,20 @@ export class AgentRegistry {
 
     /**
      * Prepares missing base and runtime-package images, then refreshes the
-     * registry. The main worker calls this eagerly at startup and when agent
-     * version configuration changes; execution processes also use it on first
-     * initialization and missing-image recovery. Ordinary configuration reloads
-     * use refresh().
+     * registry. Only the main worker should call this method in production;
+     * API and analysis processes use the worker-owned preparation queue when an
+     * image is missing. Ordinary configuration reloads use refresh().
      */
     prepareImagesAndRefresh(): Promise<void> {
         return this.requestRefresh(true);
     }
+
+    /**
+     * Marks this process as the single owner allowed to prepare Docker images.
+     * The main worker sets this before startup preparation; API/analysis
+     * processes leave it disabled and use the worker-owned preparation queue.
+     */
+    setImagePreparationOwner(owner = true): void { this.imagePreparationOwner = owner; }
 
     private requestRefresh(prepareImages: boolean): Promise<void> {
         if (this.pendingRefresh) {
@@ -319,23 +336,17 @@ export class AgentRegistry {
         return { unifiedAgentImage: { status: 'ready' } };
     }
 
-    /**
-     * Ensures the registry is initialized, refreshing if necessary.
-     *
-     * When a runtime package state change is detected on an already-initialized
-     * registry, the inspect-only refresh runs in the background. The dedicated
-     * runtime build worker prepares changed package images before publishing the
-     * new state. First-use initialization and missing-image recovery are the
-     * bounded exceptions that can prepare an image from an execution process.
-     */
     async ensureInitialized(): Promise<void> {
         if (!this.initialized) {
-            // The main worker prepares images eagerly, but planning and other
-            // lightweight analysis also execute in API/analysis processes. A
-            // process may start before the worker has prepared the exact tag (or
-            // run against a different Docker daemon), so first use must be able
-            // to make its own execution runtime ready.
-            await this.prepareImagesAndRefresh();
+            if (this.imagePreparationOwner) {
+                await this.prepareImagesAndRefresh();
+            } else {
+                // API and analysis processes may initialize before the worker
+                // has prepared the exact tag. They may request worker-owned
+                // preparation, but must never invoke Docker image builds.
+                await this.refresh();
+                if (this.unavailableUnifiedAgentImage) await this.startWorkerOwnedImageRecovery();
+            }
             return;
         }
 
@@ -350,18 +361,21 @@ export class AgentRegistry {
             return;
         }
 
-        // If an image disappears after initialization, synchronously restore it
-        // before returning an agent. An inspect-only refresh would rediscover
-        // the same missing tag forever and leave every execution path degraded.
+        // If an image disappears after initialization, restore it through the
+        // worker owner. API/analysis processes never start a Docker build.
         if (!(await this.registeredAgentImagesAvailable())) {
-            if (!this.pendingBackgroundRefresh) {
-                logger.warn('Preparing agent registry because a registered agent image is no longer available locally');
-                this.pendingBackgroundRefresh = this.prepareImagesAndRefresh()
-                    .finally(() => {
-                        this.pendingBackgroundRefresh = null;
-                    });
+            logger.warn('Requesting worker-owned agent image preparation because a registered image is unavailable locally');
+            if (this.imagePreparationOwner) {
+                if (!this.pendingBackgroundRefresh) {
+                    this.pendingBackgroundRefresh = this.prepareImagesAndRefresh()
+                        .finally(() => {
+                            this.pendingBackgroundRefresh = null;
+                        });
+                }
+                await this.pendingBackgroundRefresh;
+            } else {
+                await this.startWorkerOwnedImageRecovery();
             }
-            await this.pendingBackgroundRefresh;
             return;
         }
 
@@ -383,49 +397,26 @@ export class AgentRegistry {
         const images = [...new Set([...this.agents.values()]
             .map(agent => agent.config.dockerImage)
             .filter(Boolean))];
-        if (images.length === 0) return true;
-
-        try {
-            const result = await executeDockerCommand('docker', [
+        return areAgentImagesAvailable(images, () => executeDockerCommand('docker', [
                 'image', 'inspect', '--format', '{{.Id}}', ...images
-            ], { timeout: 10000 });
-            return result.exitCode === 0;
-        } catch (error) {
-            logger.warn({ images, error: (error as Error).message }, 'Could not verify registered agent Docker images');
-            return false;
-        }
+            ], { timeout: 10000 }));
     }
 
-    /**
-     * Resolves once any in-flight background refresh has completed.
-     * Primarily for shutdown paths and tests that need a settled registry.
-     */
-    async waitForPendingRefresh(): Promise<void> {
-        await this.pendingBackgroundRefresh;
-    }
+    async waitForPendingRefresh(): Promise<void> { await this.pendingBackgroundRefresh; }
 
     private async captureRuntimePackageStateVersion(): Promise<void> {
-        try {
-            this.runtimePackagesUpdatedAt = (await loadAgentRuntimePackageState()).updatedAt;
-            this.runtimePackageStateUnavailable = false;
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'Could not capture agent runtime package state version');
-            this.runtimePackagesUpdatedAt = undefined;
-            this.runtimePackageStateUnavailable = true;
-        }
+        await captureRuntimePackageStateVersion((updatedAt, unavailable) => {
+            this.runtimePackagesUpdatedAt = updatedAt;
+            this.runtimePackageStateUnavailable = unavailable;
+        });
     }
 
     private async hasRuntimePackageStateChanged(): Promise<boolean> {
-        if (this.runtimePackagesUpdatedAt === undefined && !this.runtimePackageStateUnavailable) return true;
-        try {
-            const state = await loadAgentRuntimePackageState();
-            this.runtimePackageStateUnavailable = false;
-            return state.updatedAt !== this.runtimePackagesUpdatedAt;
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'Could not check agent runtime package state version');
-            this.runtimePackageStateUnavailable = true;
-            return false;
-        }
+        return hasRuntimePackageStateChanged(
+            this.runtimePackagesUpdatedAt,
+            this.runtimePackageStateUnavailable,
+            value => { this.runtimePackageStateUnavailable = value; },
+        );
     }
 
     private async ensureUnifiedAgentImage(configs: AgentConfig[], prepareImages: boolean): Promise<string | null> {
@@ -436,57 +427,47 @@ export class AgentRegistry {
             this.recordUnavailableUnifiedAgentImage(result.imageTag, error);
             return null;
         }
-        this.clearUnifiedAgentImageRetry();
-        this.unavailableUnifiedAgentImage = null;
-        return result.image;
+        return this.markUnifiedAgentImageReady(result.image);
     }
 
+    private markUnifiedAgentImageReady(image: string): string { this.clearUnifiedAgentImageRetry(); this.unavailableUnifiedAgentImage = null; return image; }
+
     /**
-     * A consumer can initialize while the worker is still preparing the image,
-     * or it can use a Docker daemon that is not shared with that worker. Retry
-     * through the preparation path so recovery does not depend on another
-     * process eventually making the exact tag appear.
+     * Request a single worker-owned preparation and refresh this process after
+     * the worker reports completion. The deterministic BullMQ job ID coalesces
+     * callers across API/analysis processes.
      */
     private scheduleUnifiedAgentImageRetry(): void {
-        if (this.unifiedAgentImageRetryTimer) return;
-        this.unifiedAgentImageRetryTimer = setTimeout(() => {
-            this.unifiedAgentImageRetryTimer = null;
-            if (!this.initialized || !this.unavailableUnifiedAgentImage || this.pendingBackgroundRefresh) return;
-
-            const refresh = this.prepareImagesAndRefresh();
-            this.pendingBackgroundRefresh = refresh;
-            void refresh
-                .catch(error => {
-                    logger.error(
-                        { error: (error as Error).message },
-                        'Automatic unified agent image recovery refresh failed',
-                    );
-                })
-                .finally(() => {
-                    if (this.pendingBackgroundRefresh === refresh) this.pendingBackgroundRefresh = null;
-                });
-        }, UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS);
-        this.unifiedAgentImageRetryTimer.unref?.();
+        scheduleUnifiedAgentImageRetry({
+            unavailable: this.unavailableUnifiedAgentImage,
+            imagePreparationOwner: this.imagePreparationOwner,
+            retryTimer: this.unifiedAgentImageRetryTimer,
+            pendingBackgroundRefresh: this.pendingBackgroundRefresh,
+            startRecovery: () => this.startWorkerOwnedImageRecovery(),
+            setRetryTimer: timer => { this.unifiedAgentImageRetryTimer = timer; },
+        });
     }
 
-    private clearUnifiedAgentImageRetry(): void {
-        if (!this.unifiedAgentImageRetryTimer) return;
-        clearTimeout(this.unifiedAgentImageRetryTimer);
-        this.unifiedAgentImageRetryTimer = null;
+    private startWorkerOwnedImageRecovery(): Promise<void> {
+        const firstAgent = this.agents.values().next().value as Agent | undefined;
+        const imageTag = this.unavailableUnifiedAgentImage?.imageTag || firstAgent?.config.dockerImage;
+        return startUnifiedAgentImageRecovery({
+            pendingBackgroundRefresh: this.pendingBackgroundRefresh,
+            imageTag,
+            clearRetry: () => this.clearUnifiedAgentImageRetry(),
+            enqueuePreparation: enqueueAgentImagePreparation,
+            refresh: () => this.refresh(),
+            recordFailure: (failedImageTag, error) => this.recordUnavailableUnifiedAgentImage(failedImageTag, error),
+            setPendingBackgroundRefresh: promise => { this.pendingBackgroundRefresh = promise; },
+        });
     }
 
-    /**
-     * Creates an agent instance from configuration.
-     * This is the factory method that handles different agent types.
-     */
+    private clearUnifiedAgentImageRetry(): void { if (this.unifiedAgentImageRetryTimer) clearTimeout(this.unifiedAgentImageRetryTimer); this.unifiedAgentImageRetryTimer = null; }
+
     createAgentFromConfig(config: AgentConfig): Agent {
         return createAgentFromConfig(config);
     }
 
-    /**
-     * Registers a default Claude agent using environment variables.
-     * This is the fallback when no agents are configured.
-     */
     private async registerDefaultAgent(prepareImages: boolean): Promise<void> {
         const result = await resolveDefaultAgentConfig(prepareImages);
         if (!result.config) {
@@ -515,11 +496,19 @@ export class AgentRegistry {
     }
 
     private recordUnavailableUnifiedAgentImage(imageTag: string | undefined, error: string): void {
-        this.unavailableUnifiedAgentImage = {
+        const diskPressure = isAgentImageDiskPressureError(error);
+        const result = recordUnifiedAgentImageFailure({
+            previous: this.unavailableUnifiedAgentImage,
             imageTag,
             error,
-            recordedAt: new Date().toISOString(),
-        };
+            diskPressure,
+        });
+        this.unavailableUnifiedAgentImage = result.state;
+        if (!result.shouldRetry) {
+            this.clearUnifiedAgentImageRetry();
+            logUnifiedAgentImageCircuitOpen(imageTag, error, result.state.retryCount, diskPressure);
+            return;
+        }
         this.scheduleUnifiedAgentImageRetry();
     }
 
@@ -541,6 +530,7 @@ export class AgentRegistry {
 
             // Shutdown queues and Redis connections
             await shutdownQueue();
+            await closeAgentImagePreparationQueue();
 
             logger.debug('AgentRegistry destroyed and cleaned up');
         } catch (error) {

@@ -11,6 +11,7 @@ const pullGate = new Promise<void>(resolve => {
 
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     namedExports: {
+        getDockerRootDir: mock.fn(async () => '/docker/storage'),
         executeDockerCommand: mock.fn(async (_command: string, args: string[]) => {
             if (args[0] === 'images') {
                 imageChecks += 1;
@@ -27,6 +28,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 });
 
 const { ensureAgentBundleImage } = await import('../packages/core/src/claude/docker/dockerImageBuilder.js');
+const { agentImagePreparationJobId } = await import('../packages/core/src/agents/agentImagePreparationQueue.js');
 
 test('concurrent preparation of the same bundle shares one Docker operation', async () => {
     const versions: AgentCliVersionMatrix = {
@@ -46,4 +48,15 @@ test('concurrent preparation of the same bundle shares one Docker operation', as
     const results = await Promise.all(preparations);
     assert.ok(results.every(result => result.success));
     assert.strictEqual(new Set(results.map(result => result.imageTag)).size, 1);
+});
+
+test('worker-owned image preparation uses one deterministic job identity per image', () => {
+    assert.strictEqual(
+        agentImagePreparationJobId('propr/runtime-agent:one'),
+        agentImagePreparationJobId('propr/runtime-agent:one'),
+    );
+    assert.notStrictEqual(
+        agentImagePreparationJobId('propr/runtime-agent:one'),
+        agentImagePreparationJobId('propr/runtime-agent:two'),
+    );
 });

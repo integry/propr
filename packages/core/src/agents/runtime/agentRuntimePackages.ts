@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import logger from '../../utils/logger.js';
 import { getConfig, saveConfig } from '../../config/configStore.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { buildAgentRuntimeImage } from './agentRuntimeImageBuilder.js';
 
 export const AGENT_RUNTIME_BUILD_QUEUE_NAME = 'agent-runtime-build';
 const CONFIG_KEY = 'agent_runtime_packages';
@@ -241,35 +242,6 @@ async function imageExists(image: string): Promise<boolean> {
     return result.exitCode === 0;
 }
 
-async function buildRuntimeImage(
-    baseImage: string,
-    packages: string[],
-    installationId: string
-): Promise<{ record: AgentRuntimeImageRecord; log: string }> {
-    const { id: baseImageId, user, packageManager } = await inspectAgentRuntimeBaseImage(baseImage);
-    const image = getAgentRuntimeImageTag(baseImage, baseImageId, packages, installationId);
-    if (await imageExists(image)) {
-        return {
-            record: { baseImage, baseImageId, image, packageManager, builtAt: new Date().toISOString() },
-            log: `${image} already exists locally`
-        };
-    }
-    const result = await executeDockerCommand('docker', [
-        'build', '--pull=false',
-        '--label', `dev.propr.agent-runtime.installation=${installationId}`,
-        '-t', image, '-'
-    ], {
-        timeout: 20 * 60 * 1000,
-        stdinData: buildAgentRuntimeDockerfile(baseImage, packages, user)
-    });
-    const log = `${result.stdout}\n${result.stderr}`.trim();
-    if (result.exitCode !== 0) throw new Error(log || `Docker build exited with code ${result.exitCode}`);
-    return {
-        record: { baseImage, baseImageId, image, packageManager, builtAt: new Date().toISOString() },
-        log
-    };
-}
-
 async function cleanupRuntimeImages(
     previous: Record<string, AgentRuntimeImageRecord>,
     active: Record<string, AgentRuntimeImageRecord>,
@@ -354,7 +326,15 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
     const logs: string[] = [];
     try {
         for (const baseImage of [...new Set(job.baseImages)].sort()) {
-            const built = await buildRuntimeImage(baseImage, validation.packages, installationId);
+            const inspected = await inspectAgentRuntimeBaseImage(baseImage);
+            const built = await buildAgentRuntimeImage({
+                baseImage,
+                packages: validation.packages,
+                installationId,
+                inspection: inspected,
+                image: getAgentRuntimeImageTag(baseImage, inspected.id, validation.packages, installationId),
+                buildDockerfile: buildAgentRuntimeDockerfile,
+            });
             images[baseImage] = built.record;
             logs.push(`### ${baseImage}\n${built.log}`);
             const latest = await loadAgentRuntimePackageState();
@@ -412,7 +392,14 @@ export async function resolveAgentRuntimeImage(
         return baseImage;
     }
 
-    const built = await buildRuntimeImage(baseImage, activePackages, state.installationId);
+    const built = await buildAgentRuntimeImage({
+        baseImage,
+        packages: activePackages,
+        installationId: state.installationId,
+        inspection: inspected,
+        image: getAgentRuntimeImageTag(baseImage, inspected.id, activePackages, state.installationId),
+        buildDockerfile: buildAgentRuntimeDockerfile,
+    });
     const latest = await loadAgentRuntimePackageState();
     if (latest.activePackages.join('\0') !== activePackages.join('\0')) {
         await cleanupRuntimeImages({ [baseImage]: built.record }, latest.images, state.installationId);

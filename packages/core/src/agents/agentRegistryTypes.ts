@@ -4,5 +4,9 @@ export interface AgentRegistryOperationalStatus {
         imageTag?: string;
         error?: string;
         recordedAt?: string;
+        retryCount?: number;
+        nextRetryAt?: string;
+        circuitBreakerOpen?: boolean;
+        operatorActionRequired?: boolean;
     };
 }
