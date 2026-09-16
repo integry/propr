@@ -19,9 +19,10 @@ interface StoredExecutionOutputLine {
   tool_calls?: unknown;
   tool_call_id?: string;
   source?: string;
+  payload_type?: string;
 }
 
-export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'unknown';
+export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'muse' | 'unknown';
 
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
@@ -110,6 +111,7 @@ function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null {
 }
 
 function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat | null {
+  if (parsed.payload_type?.startsWith('run.') || parsed.payload_type?.startsWith('task.')) return 'muse';
   if (isClaudeStoredOutputLine(parsed)) return 'claude';
   return isStrongOpenCodeStoredOutputLine(parsed) && !isCodexStoredOutputLine(parsed) ? 'opencode' : null;
 }

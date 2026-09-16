@@ -190,19 +190,52 @@ RUN set -eu; \
     agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
 
 
+FROM agent-base AS muse-cli
+ARG MUSE_CLI_VERSION=1.1.1
+# Meta addresses each CLI release by version plus a release-train marker; bump
+# both together when moving MUSE_CLI_VERSION. The x86_linux manifest artifact
+# below matches this image's linux/amd64-only platform (see AGENT_PLATFORM).
+ARG MUSE_CLI_RELEASE=R2514.1
+USER root
+RUN set -eu; \
+    install_dir=/opt/muse; \
+    mkdir -p "$install_dir"; \
+    curl -fsSL https://api.meta.ai/muse-launcher.sh -o "$install_dir/muse"; \
+    chmod 0755 "$install_dir/muse"; \
+    if [ "$MUSE_CLI_VERSION" = latest ]; then \
+        MUSE_LAUNCHER_INSTALL=1 "$install_dir/muse"; \
+    else \
+        release_version="${MUSE_CLI_VERSION}-${MUSE_CLI_RELEASE}"; \
+        manifest_url="https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=${release_version}&file=manifest.json"; \
+        curl -fsSL "$manifest_url" -o /tmp/muse-manifest.json; \
+        artifact_url="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.artifacts.x86_linux.url)' /tmp/muse-manifest.json)"; \
+        checksum="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.artifacts.x86_linux.checksum)' /tmp/muse-manifest.json)"; \
+        curl -fsSL "$artifact_url" -o "$install_dir/muse-bin-${release_version}"; \
+        echo "$checksum  $install_dir/muse-bin-${release_version}" | sha256sum -c -; \
+        chmod 0755 "$install_dir/muse-bin-${release_version}"; \
+        printf '%s\n' "$release_version" > "$install_dir/.muse-version"; \
+        cp /tmp/muse-manifest.json "$install_dir/.muse-release-info.json"; \
+        rm -f /tmp/muse-manifest.json; \
+        MUSE_NO_AUTO_UPDATE=1 "$install_dir/muse" --version | grep -F "Muse Code ${MUSE_CLI_VERSION}"; \
+    fi; \
+    MUSE_NO_AUTO_UPDATE=1 "$install_dir/muse" --version
+
+
 FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.263
 ARG CODEX_CLI_VERSION=0.153.4
 ARG ANTIGRAVITY_CLI_VERSION=1.1.27
 ARG OPENCODE_CLI_VERSION=1.18.29
 ARG VIBE_CLI_VERSION=2.25.0
+ARG MUSE_CLI_VERSION=1.1.1
 
 LABEL dev.propr.agent-bundle="true" \
       dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
       dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
       dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
       dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
-      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}"
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
+      dev.propr.agent.muse.version="${MUSE_CLI_VERSION}"
 
 USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
@@ -214,12 +247,14 @@ COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
 COPY --from=vibe-cli /usr/local/bin/vibe-acp /usr/local/bin/vibe-acp
 COPY --from=vibe-cli /opt/uv /opt/uv
 COPY --from=antigravity-cli --chown=node:node /home/node/.local /home/node/.local
+COPY --from=muse-cli /opt/muse /opt/muse
 
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     PATH="/home/node/.local/bin:${PATH}" \
-    AGY_CLI_DISABLE_AUTO_UPDATE=true
+    AGY_CLI_DISABLE_AUTO_UPDATE=true \
+    MUSE_NO_AUTO_UPDATE=1
 
 COPY --chown=node:node \
     scripts/agent-entrypoint.sh \
@@ -228,9 +263,11 @@ COPY --chown=node:node \
     scripts/antigravity-entrypoint.sh \
     scripts/opencode-entrypoint.sh \
     scripts/vibe-entrypoint.sh \
+    scripts/muse-entrypoint.sh \
     /home/node/
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
 COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
+COPY --chown=node:node scripts/muse-run.sh /usr/local/bin/muse-run
 RUN set -eu; \
     link_npm_bin() { \
         package="$1"; \
@@ -242,6 +279,7 @@ RUN set -eu; \
     && link_npm_bin @openai/codex codex \
     && link_npm_bin opencode-ai opencode \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
+    && ln -sf /opt/muse/muse /usr/local/bin/muse \
     && chmod +x \
         /home/node/agent-entrypoint.sh \
         /home/node/claude-entrypoint.sh \
@@ -249,13 +287,16 @@ RUN set -eu; \
         /home/node/antigravity-entrypoint.sh \
         /home/node/opencode-entrypoint.sh \
         /home/node/vibe-entrypoint.sh \
+        /home/node/muse-entrypoint.sh \
         /usr/local/bin/opencode-run \
         /usr/local/bin/propr-vibe-prompt-file \
+        /usr/local/bin/muse-run \
     && claude --version \
     && codex --version \
     && opencode --version \
     && vibe --version \
-    && agy --version
+    && agy --version \
+    && muse --version
 
 USER node
 RUN git config --global user.name "ProPR Agent Bot" \

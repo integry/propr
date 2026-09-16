@@ -17,7 +17,8 @@ export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     codex: '@openai/codex',
     antigravity: 'https://antigravity.google/cli/install.sh',
     opencode: 'opencode-ai',
-    vibe: 'mistral-vibe'
+    vibe: 'mistral-vibe',
+    muse: 'https://api.meta.ai/muse-launcher.sh'
 } as const;
 
 /**
@@ -29,7 +30,8 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
     codex: ['latest', 'alpha'],
     antigravity: ['latest'],
     opencode: ['latest', 'beta', 'dev'],
-    vibe: ['latest']
+    vibe: ['latest'],
+    muse: ['latest']
 };
 
 /**
@@ -41,7 +43,8 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     codex: '0.153.4',
     antigravity: '1.1.27',
     opencode: '1.18.29',
-    vibe: '2.25.0'
+    vibe: '2.25.0',
+    muse: '1.1.1'
 };
 
 /** The single repository used for every managed agent execution. */
@@ -61,6 +64,8 @@ export const AGENT_BUNDLE_CONTENT_FILES = [
     'scripts/opencode-run.sh',
     'scripts/vibe-entrypoint.sh',
     'scripts/vibe-prompt-file-runner.py',
+    'scripts/muse-entrypoint.sh',
+    'scripts/muse-run.sh',
     'scripts/init-firewall.sh',
     'scripts/gh-wrapper.sh',
     'NOTICE',

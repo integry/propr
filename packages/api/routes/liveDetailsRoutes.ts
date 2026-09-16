@@ -13,7 +13,7 @@ import {
   parseCodexOutputToConversationResult,
   type ConversationResult
 } from './liveDetailsCodexParser.js';
-import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
+import { parseAntigravityOutputToConversationResult, parseMuseOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, hasCodexAppServerNotification, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
@@ -26,8 +26,8 @@ export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
 interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'opencode_execution']);
-const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'opencode_execution', 'vibe_execution', 'muse_execution']);
+const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution', 'muse_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
   const send = (res: Response, value: unknown) => res.json(redactVisualPreviewValue(value));
@@ -220,7 +220,7 @@ export function findLatestHistoryEntryWithSessionId(history: HistoryEntryWithSes
 }
 interface StoredLogData { files?: Record<string, string>; }
 // Keep Codex first for unknown streams because its result-only usage envelope overlaps OpenCode.
-const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode', 'vibe'];
+const STORED_OUTPUT_FALLBACK_ORDER: StoredOutputFormat[] = ['codex', 'claude', 'opencode', 'vibe', 'muse'];
 export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
@@ -368,6 +368,7 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
   if (format === 'antigravity') return parseAntigravityOutputToConversationResult(output);
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
+  if (format === 'muse') return parseMuseOutputToConversationResult(output);
   return null;
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {

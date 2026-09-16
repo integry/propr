@@ -320,6 +320,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    const hostMuseDir = get('HOST_MUSE_DIR');
     const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
@@ -374,7 +375,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         webPushVapidSubject, webPushVapidPublicKey, webPushVapidPrivateKey,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
-        hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
+        hostVibeDir, hostMuseDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
@@ -450,6 +451,10 @@ export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {})
     if (cfg.hostVibeDir) {
         args.push('-v', `${cfg.hostVibeDir}:${cfg.hostVibeDir}`);
         args.push('-e', `VIBE_CONFIG_PATH=${cfg.hostVibeDir}`);
+    }
+    if (cfg.hostMuseDir) {
+        args.push('-v', `${cfg.hostMuseDir}:${cfg.hostMuseDir}`);
+        args.push('-e', `MUSE_CONFIG_PATH=${cfg.hostMuseDir}`);
     }
     return args;
 }
@@ -2147,6 +2152,7 @@ export function validateEnv(cfg) {
         ['HOST_OPENCODE_XDG_DIR', cfg.hostOpencodeXdgDir],
         ['HOST_OPENCODE_DATA_DIR', cfg.hostOpencodeDataDir],
         ['HOST_VIBE_DIR', cfg.hostVibeDir],
+        ['HOST_MUSE_DIR', cfg.hostMuseDir],
     ];
     const invalidCredential = credentialDirs
         .map(([name, value]) => (value ? validateDockerBindPath(name, value) : null))

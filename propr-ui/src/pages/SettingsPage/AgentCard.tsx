@@ -72,7 +72,7 @@ function getModelDisplayName(modelId: string, modelInfo: typeof MODEL_INFO_MAP[s
   return `GPT-${gptMatch[1]}${suffix}`;
 }
 
-const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type;
+const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type === 'muse' ? 'Muse Code' : type;
 
 // The catalog is ordered for capability rather than release date, so unknown
 // and custom model IDs intentionally stay visible.

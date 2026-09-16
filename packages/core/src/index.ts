@@ -339,6 +339,7 @@ export {
 export type { AgentStatusResponse } from './services/agentTankService.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
+export { MuseAgent, parseMuseJsonl } from './agents/impl/MuseAgent.js';
 export type {
     Agent,
     AgentConfig,

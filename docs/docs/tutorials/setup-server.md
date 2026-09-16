@@ -128,6 +128,7 @@ docker run --rm \
   -e HOST_OPENCODE_XDG_DIR="$HOME/.config/opencode" \
   -e HOST_OPENCODE_DATA_DIR="$HOME/.local/share/opencode" \
   -e HOST_VIBE_DIR="$HOME/.vibe" \
+  -e HOST_MUSE_DIR="$HOME/.config/muse" \
   -e HOST_VIBE_PROMPT_CACHE_DIR="/tmp/propr-vibe-prompts-$(id -u)" \
   -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
   propr/launcher:latest

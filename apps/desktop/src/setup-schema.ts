@@ -1,6 +1,6 @@
 import type { DesktopSetupRecoveryRequest, DesktopSetupRequest } from './shared/contract';
 
-const AGENTS = new Set(['claude', 'codex', 'antigravity', 'opencode', 'vibe']);
+const AGENTS = new Set(['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'muse']);
 const CAPABILITY = /^[A-Za-z0-9_-]{32,128}$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i;
 const INTEGER = /^[1-9][0-9]{0,19}$/;

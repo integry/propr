@@ -44,6 +44,7 @@ export interface OrchestratorConfig {
   readonly hostOpencodeXdgDir?: string;
   readonly hostOpencodeDataDir?: string;
   readonly hostVibeDir?: string;
+  readonly hostMuseDir?: string;
   readonly vibePromptCacheDir: string;
   readonly hostVibePromptCacheDir?: string;
   readonly hostGhPrivateKey?: string;

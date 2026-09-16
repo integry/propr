@@ -88,8 +88,21 @@ describe('agent version management', () => {
 
         assert.match(agentDockerfile, new RegExp(`^ARG OPENCODE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.opencode}$`, 'm'));
         assert.match(agentDockerfile, new RegExp(`^ARG VIBE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
+        assert.match(agentDockerfile, new RegExp(`^ARG MUSE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.muse}$`, 'm'));
         assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
+        assert.match(buildScript, /"--build-arg" "MUSE_CLI_VERSION=\$MUSE_CLI_VERSION"/);
+    });
+
+    test('keeps the Muse release-train marker aligned between Dockerfile and build script', () => {
+        const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        const buildScript = fs.readFileSync('scripts/build-images.sh', 'utf8');
+
+        const dockerDefault = agentDockerfile.match(/^ARG MUSE_CLI_RELEASE=(.+)$/m)?.[1];
+        const scriptDefault = buildScript.match(/^MUSE_CLI_RELEASE="\$\{MUSE_CLI_RELEASE:-(.+)\}"$/m)?.[1];
+        assert.ok(dockerDefault, 'Dockerfile.agent pins a Muse release-train marker');
+        assert.strictEqual(scriptDefault, dockerDefault);
+        assert.match(buildScript, /"--build-arg" "MUSE_CLI_RELEASE=\$MUSE_CLI_RELEASE"/);
     });
 
     test('defaults every coding agent task execution to 24 hours', () => {
@@ -99,7 +112,8 @@ describe('agent version management', () => {
             'CODEX_TIMEOUT_MS',
             'ANTIGRAVITY_TIMEOUT_MS',
             'OPENCODE_TIMEOUT_MS',
-            'VIBE_TIMEOUT_MS'
+            'VIBE_TIMEOUT_MS',
+            'MUSE_TIMEOUT_MS'
         ];
         const agentSources = [
             'packages/core/src/agents/impl/ClaudeAgent.ts',
@@ -107,6 +121,7 @@ describe('agent version management', () => {
             'packages/core/src/agents/impl/AntigravityAgent.ts',
             'packages/core/src/agents/impl/OpenCodeAgent.ts',
             'packages/core/src/agents/impl/VibeAgent.ts',
+            'packages/core/src/agents/impl/MuseAgent.ts',
             'packages/core/src/claude/claudeService.ts'
         ];
 

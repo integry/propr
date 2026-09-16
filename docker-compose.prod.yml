@@ -144,6 +144,7 @@ services:
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       # --- Vibe agent (config-file auth, alternative to API-key) ---
       VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
+      MUSE_CONFIG_PATH: ${MUSE_CONFIG_PATH:-/root/.config/muse}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
@@ -173,6 +174,7 @@ services:
       # Vibe config-file auth. Mounts host config to the same path the worker
       # passes to sibling agent containers.
       - ${HOST_VIBE_DIR:-/root/.vibe}:${VIBE_CONFIG_PATH:-/root/.vibe}:ro
+      - ${HOST_MUSE_DIR:-/root/.config/muse}:${MUSE_CONFIG_PATH:-/root/.config/muse}:ro
     depends_on:
       redis:
         condition: service_healthy

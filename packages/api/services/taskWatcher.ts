@@ -13,7 +13,7 @@ import { withStableLiveEventIds } from './liveEventIds.js';
 import { resolveConfigPath } from '@propr/core';
 import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
 
-const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution']);
+const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'gemini_execution', 'opencode_execution', 'vibe_execution', 'muse_execution']);
 
 /** Active task watcher info */
 export interface TaskWatcherInfo {
@@ -96,7 +96,7 @@ export class TaskWatcherManager {
     const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
 
     let conversationPath: string;
-    if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
+    if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe' || agentType === 'muse') {
       console.log(`[TaskWatcher] ${agentType} task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;

@@ -60,7 +60,7 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 
 ### Agent Skill
 
-The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity CLI, OpenCode, and Vibe. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, or `all`; status defaults to all targets:
+The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity CLI, OpenCode, Vibe, and Muse. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, `muse`, or `all`; status defaults to all targets:
 
 ```bash
 propr skill install codex claude  # install, adopt an exact copy, or update a managed copy
@@ -284,7 +284,7 @@ propr agent pool apply pools.json       # Also accepts '-' for stdin
 propr agent pool delete balanced-pool
 ```
 
-Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
+Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`, `muse`.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
 

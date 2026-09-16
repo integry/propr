@@ -4,6 +4,7 @@ import {
   getAntigravityAnalysisText,
   parseAntigravityJsonl,
   parseVibeConversationLog,
+  parseMuseJsonl,
   type AntigravityOutputEvent,
 } from '@propr/core';
 import {
@@ -106,4 +107,15 @@ export function parseVibeOutputToConversationResult(output: string): Conversatio
   const currentTask = deriveCurrentTask(todos);
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
   return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
+}
+
+export function parseMuseOutputToConversationResult(output: string): ConversationResult | null {
+  const parsed = parseMuseJsonl(output);
+  if (!parsed.text) return null;
+  return {
+    events: [{ type: 'thought', content: parsed.text }],
+    todos: [],
+    currentTask: null,
+    tokenUsage: null,
+  };
 }

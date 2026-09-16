@@ -1,6 +1,6 @@
 import type { AgentType } from './types.js';
 
-export const AGENT_TYPES = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'] as const satisfies readonly AgentType[];
+export const AGENT_TYPES = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'muse'] as const satisfies readonly AgentType[];
 export const AGENT_IMAGE_NAME = 'propr/agent';
 export const DEFAULT_AGENT_EXECUTION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -23,5 +23,6 @@ export const DEFAULT_AGENT_DOCKER_IMAGES: Record<AgentType, string> = {
     codex: `${AGENT_IMAGE_NAME}:latest`,
     antigravity: `${AGENT_IMAGE_NAME}:latest`,
     opencode: `${AGENT_IMAGE_NAME}:latest`,
-    vibe: `${AGENT_IMAGE_NAME}:latest`
+    vibe: `${AGENT_IMAGE_NAME}:latest`,
+    muse: `${AGENT_IMAGE_NAME}:latest`
 };

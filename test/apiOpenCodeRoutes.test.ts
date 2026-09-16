@@ -171,7 +171,7 @@ describe('OpenCode API routes', () => {
 
         assert.equal(res.statusCode, 400);
         assert.deepEqual(res.body, {
-            error: "Invalid agent type 'llama'. Must be one of: antigravity, claude, codex, opencode, vibe"
+            error: "Invalid agent type 'llama'. Must be one of: antigravity, claude, codex, muse, opencode, vibe"
         });
     });
 });

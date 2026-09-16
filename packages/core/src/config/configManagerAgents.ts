@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- host credential mapping for each agent runtime */
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -49,7 +50,8 @@ export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
     codex: '~/.codex',
     antigravity: '~/.gemini',
     opencode: '~/.config/opencode',
-    vibe: '~/.vibe'
+    vibe: '~/.vibe',
+    muse: '~/.config/muse'
 };
 
 export class AgentConfigPathUnavailableError extends Error {
@@ -83,6 +85,7 @@ function validateCodexCredentialMapping(value: string, source: string): string {
 /**
  * Resolves a config path, expanding ~ to the home directory.
  */
+// eslint-disable-next-line complexity
 export function resolveConfigPath(
     configPath: string,
     environment: ConfigPathEnvironment = process.env
@@ -105,6 +108,19 @@ export function resolveConfigPath(
             throw new AgentConfigPathUnavailableError(
                 'The existing ~/.codex credential path has no host mapping in this container; ' +
                 'configure HOST_CODEX_DIR and restart ProPR, or use a ProPR-managed Codex login'
+            );
+        }
+    }
+    if (configPath === DEFAULT_CONFIG_PATHS.muse) {
+        const mapping = environment.MUSE_CONFIG_PATH?.trim()
+            ? { source: 'MUSE_CONFIG_PATH', value: environment.MUSE_CONFIG_PATH }
+            : environment.HOST_MUSE_DIR?.trim()
+                ? { source: 'HOST_MUSE_DIR', value: environment.HOST_MUSE_DIR }
+                : undefined;
+        if (mapping) return validateCodexCredentialMapping(mapping.value, mapping.source);
+        if (isContainerizedEnvironment(environment)) {
+            throw new AgentConfigPathUnavailableError(
+                'The existing ~/.config/muse credential path has no host mapping in this container; configure HOST_MUSE_DIR and restart ProPR'
             );
         }
     }
@@ -209,7 +225,8 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     codex: AGENT_DEFAULT_VERSIONS.codex,
     antigravity: AGENT_DEFAULT_VERSIONS.antigravity,
     opencode: AGENT_DEFAULT_VERSIONS.opencode,
-    vibe: AGENT_DEFAULT_VERSIONS.vibe
+    vibe: AGENT_DEFAULT_VERSIONS.vibe,
+    muse: AGENT_DEFAULT_VERSIONS.muse
 };
 
 const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
@@ -217,7 +234,8 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     codex: AGENT_DEFAULTS.codex.defaultModels,
     antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
     opencode: AGENT_DEFAULTS.opencode.defaultModels,
-    vibe: AGENT_DEFAULTS.vibe.defaultModels
+    vibe: AGENT_DEFAULTS.vibe.defaultModels,
+    muse: AGENT_DEFAULTS.muse.defaultModels
 };
 const OPENCODE_CURRENT_MODELS = OPENCODE_MODELS.map(model => model.id);
 const RETIRED_OPENCODE_DEFAULT_MODELS = new Set([

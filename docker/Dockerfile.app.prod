@@ -99,6 +99,8 @@ COPY scripts/opencode-entrypoint.sh ./scripts/opencode-entrypoint.sh
 COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
 COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
 COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
+COPY scripts/muse-entrypoint.sh ./scripts/muse-entrypoint.sh
+COPY scripts/muse-run.sh ./scripts/muse-run.sh
 COPY scripts/init-firewall.sh ./scripts/init-firewall.sh
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
 COPY NOTICE ./NOTICE

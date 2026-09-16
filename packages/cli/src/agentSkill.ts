@@ -26,7 +26,7 @@ import {
   type DirectoryDescriptorAccess,
 } from "./utils/directoryDescriptor.js";
 
-export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe"] as const;
+export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe", "muse"] as const;
 export type AgentSkillTarget = (typeof AGENT_SKILL_TARGETS)[number];
 
 const AGENT_SKILL_EXECUTABLES: Record<AgentSkillTarget, string> = {
@@ -35,6 +35,7 @@ const AGENT_SKILL_EXECUTABLES: Record<AgentSkillTarget, string> = {
   antigravity: "agy",
   opencode: "opencode",
   vibe: "vibe",
+  muse: "muse",
 };
 
 const MANAGED_FILE = ".propr-managed.json";
@@ -189,6 +190,11 @@ export function resolveAgentSkillLocation(
     case "vibe":
       toolHome = join(home(), ".vibe");
       break;
+    case "muse": {
+      const xdg = assertSafeBase(environmentValue(env, "XDG_CONFIG_HOME", () => join(home(), ".config")), "XDG_CONFIG_HOME", { directRoot });
+      toolHome = join(xdg, "muse");
+      break;
+    }
   }
   const path = resolve(toolHome, "skills", "propr");
   const rel = relative(toolHome, path);

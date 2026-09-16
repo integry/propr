@@ -9,6 +9,7 @@ import {
 import {
   resolveClaudeReasoningLevel,
   resolveCodexReasoningLevel,
+  resolveMuseReasoningLevel,
 } from '../packages/core/src/config/configManagerReasoning.ts';
 
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
@@ -63,5 +64,20 @@ describe('reasoning level runtime clamping', () => {
   test('clamps Codex-only ultra to Claude max and passes Claude auto', () => {
     assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
     assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
+  });
+
+  test('omits none and minimal on the Claude and Codex runtimes', () => {
+    assert.equal(resolveCodexReasoningLevel('none'), null);
+    assert.equal(resolveCodexReasoningLevel('minimal'), null);
+    assert.equal(resolveClaudeReasoningLevel('none'), null);
+    assert.equal(resolveClaudeReasoningLevel('minimal'), null);
+  });
+
+  test('omits none, auto, ultracode, and ultra on the Muse runtime', () => {
+    assert.equal(resolveMuseReasoningLevel('auto'), null);
+    assert.equal(resolveMuseReasoningLevel('ultracode'), null);
+    assert.equal(resolveMuseReasoningLevel('ultra'), null);
+    assert.equal(resolveMuseReasoningLevel('none'), null);
+    assert.equal(resolveMuseReasoningLevel('minimal'), 'minimal');
   });
 });

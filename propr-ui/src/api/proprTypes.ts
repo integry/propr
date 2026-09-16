@@ -160,7 +160,7 @@ export interface DeleteTaskResponse {
 
 export interface AgentConfig {
   id: string;
-  type: 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
+  type: 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'muse';
   alias: string;
   enabled: boolean;
   dockerImage: string;

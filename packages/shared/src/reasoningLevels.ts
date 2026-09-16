@@ -1,6 +1,8 @@
 import type { AgentType } from './modelDefinitions.js';
 
 export const REASONING_LEVELS = [
+  'none',
+  'minimal',
   'low',
   'medium',
   'high',
@@ -33,6 +35,15 @@ export const CLAUDE_REASONING_LEVELS = [
   'auto',
 ] as const satisfies readonly ReasoningLevel[];
 
+export const MUSE_REASONING_LEVELS = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const satisfies readonly ReasoningLevel[];
+
 export function isReasoningLevel(value: string): value is ReasoningLevel {
   return (REASONING_LEVELS as readonly string[]).includes(value);
 }
@@ -59,6 +70,8 @@ const REASONING_LEVEL_LABEL_PRIORITY = [
   'high',
   'medium',
   'low',
+  'minimal',
+  'none',
   'auto',
 ] as const satisfies readonly ReasoningLevel[];
 
@@ -90,6 +103,7 @@ export function parseReasoningLevelFromLabels(labels: readonly ReasoningLevelLab
 export function getReasoningLevelsForAgentType(agentType: AgentType): readonly ReasoningLevel[] {
   if (agentType === 'codex') return CODEX_REASONING_LEVELS;
   if (agentType === 'claude') return CLAUDE_REASONING_LEVELS;
+  if (agentType === 'muse') return MUSE_REASONING_LEVELS;
   return [];
 }
 

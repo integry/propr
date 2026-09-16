@@ -11,7 +11,7 @@ type GithubMode = DesktopSetupRequest['github']['mode'];
 type DraftGithubMode = GithubMode | 'demo';
 type IntakeMode = DesktopSetupRequest['intake']['mode'];
 const stages: Stage[] = ['prerequisites', 'directory', 'github', 'intake', 'agents', 'summary'];
-const agents = ['codex', 'claude', 'antigravity', 'opencode', 'vibe'];
+const agents = ['codex', 'claude', 'antigravity', 'opencode', 'vibe', 'muse'];
 
 interface Draft {
   githubMode: DraftGithubMode; appId: string; installationId: string; privateKey: DesktopFilesystemSelection | null;

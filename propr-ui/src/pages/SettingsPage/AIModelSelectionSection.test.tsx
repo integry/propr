@@ -60,6 +60,8 @@ describe('AIModelSelectionSection', () => {
 
     expect(options).toEqual([
       'Agent default',
+      'None — GitHub: level-none',
+      'Minimal (Muse Code only) — GitHub: level-minimal',
       'Low — GitHub: level-low',
       'Medium — GitHub: level-medium',
       'High — GitHub: level-high',

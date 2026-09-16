@@ -44,6 +44,7 @@ function formatType(type: string): string {
     antigravity: "Antigravity",
     opencode: "OpenCode",
     vibe: "Mistral Vibe",
+    muse: "Muse Code",
   };
   return typeMap[type?.toLowerCase()] || type;
 }
@@ -215,6 +216,7 @@ Agent Types:
   antigravity  Antigravity models
   opencode     OpenCode models
   vibe         Mistral Vibe models
+  muse         Muse Code models
 
 JSON File Format:
   {
@@ -230,6 +232,7 @@ JSON File Format:
 Examples:
   $ propr agent add my-claude -t claude -m claude-fable-5-1
   $ propr agent add opencode -t opencode -m opencode-big-pickle
+  $ propr agent add muse -t muse -m muse-spark-1.3
   $ propr agent add prod-agent -t claude -m claude-fable-5-1,claude-opus-5 -d claude-fable-5-1
   $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash-high --disabled
   $ propr agent add --file agent-config.json

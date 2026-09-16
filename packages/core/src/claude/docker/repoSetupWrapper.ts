@@ -8,7 +8,8 @@ const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     codex: '/home/node/codex-entrypoint.sh',
     antigravity: '/home/node/antigravity-entrypoint.sh',
     opencode: '/home/node/opencode-entrypoint.sh',
-    vibe: '/home/node/vibe-entrypoint.sh'
+    vibe: '/home/node/vibe-entrypoint.sh',
+    muse: '/home/node/muse-entrypoint.sh'
 };
 
 const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
@@ -16,7 +17,8 @@ const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
     codex: { name: 'ProPR Codex Bot', email: 'codex-bot@propr.dev' },
     antigravity: { name: 'ProPR Antigravity Bot', email: 'antigravity-bot@propr.dev' },
     opencode: { name: 'ProPR OpenCode Bot', email: 'opencode-bot@propr.dev' },
-    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' }
+    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' },
+    muse: { name: 'ProPR Muse Code Bot', email: 'muse-bot@propr.dev' }
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';

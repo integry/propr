@@ -35,6 +35,8 @@ ANTIGRAVITY_CLI_RELEASE_ID="${ANTIGRAVITY_CLI_RELEASE_ID:-5211191891591168}"
 ANTIGRAVITY_CLI_SHA512="${ANTIGRAVITY_CLI_SHA512:-793d4b9ea2c08d9a7e50bafa02cfc8c19424bd60d6e83f91408d45f9c6d4ce79a5d576fede5bef164d823abf84f81359a14b4ca665952c47b0a7cfd743bb69c0}"
 OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-1.18.29}"
 VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-2.25.0}"
+MUSE_CLI_VERSION="${MUSE_CLI_VERSION:-1.1.1}"
+MUSE_CLI_RELEASE="${MUSE_CLI_RELEASE:-R2514.1}"
 PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
@@ -55,6 +57,8 @@ AGENT_BUNDLE_CONTENT_FILES=(
   scripts/opencode-run.sh
   scripts/vibe-entrypoint.sh
   scripts/vibe-prompt-file-runner.py
+  scripts/muse-entrypoint.sh
+  scripts/muse-run.sh
   scripts/init-firewall.sh
   scripts/gh-wrapper.sh
   NOTICE
@@ -67,10 +71,11 @@ resolve_agent_bundle_tag() {
   ANTIGRAVITY_CLI_VERSION="$ANTIGRAVITY_CLI_VERSION" \
   OPENCODE_CLI_VERSION="$OPENCODE_CLI_VERSION" \
   VIBE_CLI_VERSION="$VIBE_CLI_VERSION" \
+  MUSE_CLI_VERSION="$MUSE_CLI_VERSION" \
     node --input-type=module -e '
       import crypto from "node:crypto";
       import fs from "node:fs";
-      const types = ["claude", "codex", "antigravity", "opencode", "vibe"];
+      const types = ["claude", "codex", "antigravity", "opencode", "vibe", "muse"];
       const versions = Object.fromEntries(types.map(type => [
         type,
         process.env[`${type.toUpperCase()}_CLI_VERSION`]
@@ -221,7 +226,7 @@ image_description() {
     app) echo "Backend service image for ProPR daemon, workers, and API roles." ;;
     ui) echo "Static web UI image for operating ProPR." ;;
     docs) echo "Static documentation site image for ProPR." ;;
-    agent) echo "Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container for ProPR agent runs." ;;
+    agent) echo "Unified Claude, Codex, Antigravity, OpenCode, Vibe, and Muse Code execution container for ProPR agent runs." ;;
     launcher) echo "Single-command launcher that starts and manages the ProPR Docker stack." ;;
     *) echo "ProPR production image." ;;
   esac
@@ -555,6 +560,8 @@ build_image() {
         "--build-arg" "ANTIGRAVITY_CLI_SHA512=$ANTIGRAVITY_CLI_SHA512"
         "--build-arg" "OPENCODE_CLI_VERSION=$OPENCODE_CLI_VERSION"
         "--build-arg" "VIBE_CLI_VERSION=$VIBE_CLI_VERSION"
+        "--build-arg" "MUSE_CLI_VERSION=$MUSE_CLI_VERSION"
+        "--build-arg" "MUSE_CLI_RELEASE=$MUSE_CLI_RELEASE"
       )
       ;;
   esac

@@ -29,7 +29,7 @@ import {
 } from './pypiClient.js';
 
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
-const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity']);
+const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity', 'muse']);
 
 export type AgentCliVersionMatrix = Record<AgentType, string>;
 

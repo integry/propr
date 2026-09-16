@@ -13,9 +13,9 @@ import type { ReasoningLevel } from "@propr/shared";
 /**
  * Agent type identifier.
  */
-export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe";
+export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe" | "muse";
 
-export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe"] as const;
+export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe", "muse"] as const;
 
 // Keep in sync with the core unified agent image name.
 const AGENT_IMAGE_NAME = "propr/agent";
@@ -30,7 +30,7 @@ export interface AgentConfig {
   id: string;
 
   /**
-   * The agent type (claude, codex, antigravity, opencode, or vibe).
+   * The agent type (claude, codex, antigravity, opencode, vibe, or muse).
    */
   type: AgentType;
 
@@ -100,7 +100,7 @@ export interface AddAgentOptions {
   alias: string;
 
   /**
-   * The agent type (claude, codex, antigravity, opencode, or vibe).
+   * The agent type (claude, codex, antigravity, opencode, vibe, or muse).
    */
   type: AgentType;
 

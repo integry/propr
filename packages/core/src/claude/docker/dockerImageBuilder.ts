@@ -25,7 +25,7 @@ export interface VersionedImageBuildResult {
 
 function validateVersionMatrix(versions: AgentCliVersionMatrix): void {
     for (const [type, version] of Object.entries(versions)) {
-        if (type === 'antigravity' && version === 'latest') continue;
+        if ((type === 'antigravity' || type === 'muse') && version === 'latest') continue;
         if (type === 'vibe') {
             if (!version.trim() || /[\r\n\0]/.test(version)) {
                 throw new Error(`Unsupported Vibe CLI install spec for image build: ${version}`);
@@ -45,7 +45,8 @@ function bundleBuildArgs(versions: AgentCliVersionMatrix): string[] {
         '--build-arg', `CODEX_CLI_VERSION=${versions.codex}`,
         '--build-arg', `ANTIGRAVITY_CLI_VERSION=${versions.antigravity}`,
         '--build-arg', `OPENCODE_CLI_VERSION=${versions.opencode}`,
-        '--build-arg', `VIBE_CLI_VERSION=${versions.vibe}`
+        '--build-arg', `VIBE_CLI_VERSION=${versions.vibe}`,
+        '--build-arg', `MUSE_CLI_VERSION=${versions.muse}`
     ];
 }
 

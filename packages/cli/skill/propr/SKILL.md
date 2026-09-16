@@ -48,7 +48,7 @@ Managed model labels normally follow `llm-<agent-or-provider-alias>-<model-alias
 gh label list --repo OWNER/REPO --search "llm-"
 ```
 
-Prefer stable short-form aliases exposed by the repository, such as `llm-claude-opus`, `llm-claude-sonnet`, `llm-gemini-pro`, `llm-vibe-mistral`, or, where configured, `llm-codex-max`. Version-specific labels age quickly; use one only when exact-model qualification is intentional. If no appropriate override label exists, use `AI` alone rather than guessing.
+Prefer stable short-form aliases exposed by the repository, such as `llm-claude-opus`, `llm-claude-sonnet`, `llm-gemini-pro`, `llm-vibe-mistral`, `llm-muse-spark13`, or, where configured, `llm-codex-max`. Version-specific labels age quickly; use one only when exact-model qualification is intentional. If no appropriate override label exists, use `AI` alone rather than guessing.
 
 Default route:
 

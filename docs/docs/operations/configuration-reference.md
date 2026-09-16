@@ -98,9 +98,12 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
 | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | Vibe task run timeout. | Optional. |
+| `MUSE_MAX_MODEL_STEPS` | `1000` | Maximum model steps per Muse Code implementation run. | Optional. |
+| `MUSE_TIMEOUT_MS` | `86400000` (24 hours) | Muse Code task run timeout. | Optional. |
+| `MUSE_ANALYSIS_TIMEOUT_MS` | `1800000` (30 minutes) | Muse Code analysis and PR review timeout. | Optional. |
 | `VIBE_CONFIG_PATH` | Unset | Absolute path to your `~/.vibe` directory (no `~`). | Running a Vibe agent. |
 | `MISTRAL_API_KEY` | Unset | Vibe credentials fallback when `VIBE_CONFIG_PATH` does not provide them. | Vibe without config-dir credentials. |
-| `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` | Unset | Production launcher only — absolute host paths for reusing existing agent credential directories. ProPR-managed direct-login accounts need no `HOST_*` setting. Antigravity is Gemini-based, so its directory is `~/.gemini`. | Reusing host credentials with the launcher. |
+| `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` / `HOST_MUSE_DIR` | Unset | Production launcher only — absolute host paths for reusing existing agent credential directories. ProPR-managed direct-login accounts need no `HOST_*` setting. Antigravity uses `~/.gemini`; Muse uses `~/.config/muse` after a host `muse login`. | Reusing host credentials with the launcher. |
 | `HOST_OPENCODE_XDG_DIR` | Unset | Host path to an existing OpenCode XDG config directory (`~/.config/opencode`). | Reusing OpenCode host config via docker/launcher. |
 | `HOST_OPENCODE_DATA_DIR` | Unset | Host path to existing OpenCode auth data (`~/.local/share/opencode`), so `opencode auth login` credentials reach spawned agent containers. Managed accounts keep their own isolated data directory. | Reusing OpenCode host auth via launcher. |
 | `VIBE_PROMPT_CACHE_DIR` / `HOST_VIBE_PROMPT_CACHE_DIR` | Container `/tmp/propr-vibe-prompts`; host `/tmp/propr-vibe-prompts-<uid>` | Vibe Docker-outside-Docker writes prompt files to a host-visible directory so spawned containers can bind-mount them. Set both only to override the locations. | Optional. |

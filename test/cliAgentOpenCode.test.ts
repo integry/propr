@@ -26,7 +26,7 @@ describe("CLI OpenCode agent support", () => {
 
     assert.ok(addCommand);
     const normalizedHelp = addCommand.helpInformation().replace(/\s+/g, " ");
-    assert.match(normalizedHelp, /Agent type \(claude, codex, antigravity, opencode, vibe\)/);
+    assert.match(normalizedHelp, /Agent type \(claude, codex, antigravity, opencode, vibe, muse\)/);
   });
 
   test("addAgent applies OpenCode Docker image and config path defaults", async () => {

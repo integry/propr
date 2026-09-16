@@ -121,6 +121,7 @@ function detectCredentials(): DetectedCred[] {
     { envKey: "HOST_OPENCODE_XDG_DIR", path: join(home, ".config", "opencode") },
     { envKey: "HOST_OPENCODE_DATA_DIR", path: join(home, ".local", "share", "opencode") },
     { envKey: "HOST_VIBE_DIR", path: join(home, ".vibe") },
+    { envKey: "HOST_MUSE_DIR", path: join(home, ".config", "muse") },
   ];
   // Only keep dirs that exist and are safe as Docker bind mounts (no ':').
   return candidates.filter((c) => existsSync(c.path) && !c.path.includes(":"));
@@ -309,7 +310,7 @@ function displayResult(result: InitStackResult): void {
     }
   } else {
     console.log("");
-    console.log("No agent credential directories detected (~/.claude, ~/.codex, ~/.gemini, ~/.config/opencode, ~/.vibe).");
+    console.log("No agent credential directories detected (~/.claude, ~/.codex, ~/.gemini, ~/.config/opencode, ~/.vibe, ~/.config/muse).");
     console.log("Log in with an agent CLI on this host, then re-run `propr init stack`.");
   }
   console.log("");

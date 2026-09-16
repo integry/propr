@@ -87,12 +87,13 @@ services:
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
       # IMPORTANT: Create any missing directories before starting:
-      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe ~/.config/muse
       # Docker will create them as root-owned if they do not exist.
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      - ${HOME:?HOME must be set}/.config/muse:${HOME:?HOME must be set}/.config/muse:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
@@ -108,6 +109,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - MUSE_CONFIG_PATH=${HOME:?HOME must be set}/.config/muse
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       # Optional override for the encrypted OAuth credential collected through
       # the Web UI. App installation tokens cannot upload GitHub attachments.
@@ -138,6 +140,7 @@ services:
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      - ${HOME:?HOME must be set}/.config/muse:${HOME:?HOME must be set}/.config/muse:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
@@ -149,6 +152,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - MUSE_CONFIG_PATH=${HOME:?HOME must be set}/.config/muse
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       - PROPR_CONTAINERIZED=1
     depends_on:
@@ -173,6 +177,7 @@ services:
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      - ${HOME:?HOME must be set}/.config/muse:${HOME:?HOME must be set}/.config/muse:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
@@ -188,6 +193,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - MUSE_CONFIG_PATH=${HOME:?HOME must be set}/.config/muse
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       - PROPR_CONTAINERIZED=1
       # How often to scan for repos needing indexing (default: 5 minutes)
@@ -242,6 +248,7 @@ services:
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      - ${HOME:?HOME must be set}/.config/muse:${HOME:?HOME must be set}/.config/muse:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
@@ -263,6 +270,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - MUSE_CONFIG_PATH=${HOME:?HOME must be set}/.config/muse
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       - PROPR_CONTAINERIZED=1
       - PROPR_STACK=${PROPR_STACK:-propr}

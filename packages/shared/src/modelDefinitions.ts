@@ -2,8 +2,8 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
-export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'];
+export type AgentType = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'muse';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'muse'];
 
 export interface ModelInfo {
   id: string;
@@ -107,8 +107,17 @@ export const VIBE_MODELS: ModelInfo[] = [
   { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium', shortAlias: 'mistral', githubLabel: 'llm-vibe-mistral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3-5' },
 ];
 
+// Muse Code models. Contributor variants may use submitted content for
+// product improvement; operators should select the variant matching their plan.
+export const MUSE_MODELS: ModelInfo[] = [
+  { id: 'muse-spark-1.3', name: 'Muse Spark 1.3', shortName: 'Muse Spark 1.3', shortAlias: 'spark13', githubLabel: 'llm-muse-spark13', contextWindow: '1M', maxTokens: 1007997, openRouterId: 'meta/muse-spark-1.3', minAgentVersion: '1.1.1' },
+  { id: 'muse-spark-1.3-contributor', name: 'Muse Spark 1.3 Contributor', shortName: 'Muse Spark 1.3 Contributor', shortAlias: 'spark13-contributor', githubLabel: 'llm-muse-spark13-contributor', contextWindow: '1M', maxTokens: 1007997, openRouterId: 'meta/muse-spark-1.3-contributor', minAgentVersion: '1.1.1' },
+  { id: 'muse-spark-1.2', name: 'Muse Spark 1.2', shortName: 'Muse Spark 1.2', shortAlias: 'spark12', githubLabel: 'llm-muse-spark12', contextWindow: '1M', maxTokens: 1007997, openRouterId: 'meta/muse-spark-1.2' },
+  { id: 'muse-spark-1.2-contributor', name: 'Muse Spark 1.2 Contributor', shortName: 'Muse Spark 1.2 Contributor', shortAlias: 'spark12-contributor', githubLabel: 'llm-muse-spark12-contributor', contextWindow: '1M', maxTokens: 1007997, openRouterId: 'meta/muse-spark-1.2-contributor' },
+];
+
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS, ...MUSE_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
@@ -117,6 +126,7 @@ export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   antigravity: ANTIGRAVITY_MODELS,
   opencode: OPENCODE_MODELS,
   vibe: VIBE_MODELS,
+  muse: MUSE_MODELS,
 };
 
 export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
@@ -125,6 +135,7 @@ export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
   codex: { label: 'Codex (OpenAI)', order: 30 },
   opencode: { label: 'OpenCode', order: 40 },
   vibe: { label: 'Vibe', order: 50 },
+  muse: { label: 'Muse Code', order: 60 },
 };
 
 export const AGENT_DISPLAY_ORDER: AgentType[] = (Object.keys(AGENT_DISPLAY) as AgentType[])
@@ -190,6 +201,14 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',
     defaultCliVersion: '2.25.0'
+  },
+  muse: {
+    dockerImage: 'propr/agent:latest',
+    configPath: '~/.config/muse',
+    defaultModels: MUSE_MODELS.map(m => m.id),
+    defaultAlias: 'muse',
+    npmPackage: 'https://api.meta.ai/muse-launcher.sh',
+    defaultCliVersion: '1.1.1'
   }
 };
 
@@ -199,5 +218,6 @@ export const typeBadgeColors: Record<AgentType, string> = {
   codex: 'bg-green-100 text-green-800 border-green-300',
   antigravity: 'bg-violet-100 text-violet-800 border-violet-300',
   opencode: 'bg-cyan-100 text-cyan-800 border-cyan-300',
-  vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
+  vibe: 'bg-red-100 text-red-700 border-red-400',  // Mistral Vibe brand orange-red (#FA500F)
+  muse: 'bg-blue-100 text-blue-800 border-blue-300'
 };

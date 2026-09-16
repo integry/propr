@@ -146,7 +146,7 @@ propr skill remove codex           # refuses modified or foreign content
 propr skill install codex --force  # preserves a timestamped backup first
 ```
 
-Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), and `~/.vibe/skills/propr`. Run `propr skill --help` for the exact mapping.
+Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), `~/.vibe/skills/propr`, and `$XDG_CONFIG_HOME/muse/skills/propr` (or `~/.config`). Run `propr skill --help` for the exact mapping.
 
 ### Authentication
 

@@ -79,6 +79,7 @@ function agentDescriptors(): AgentDescriptor[] {
     { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent", bin: "opencode" },
     { type: "opencode-data", runtimeType: "opencode", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent", bin: "opencode" },
     { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent", bin: "vibe" },
+    { type: "muse", hostDirKey: "hostMuseDir", envKey: "HOST_MUSE_DIR", defaultDir: join(home, ".config", "muse"), imageKey: "agent", bin: "muse" },
   ];
 }
 

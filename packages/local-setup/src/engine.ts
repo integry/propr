@@ -149,6 +149,7 @@ function agentCatalog(): AgentDescriptor[] {
       ],
     },
     { type: "vibe", imageKey: "agent", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
+    { type: "muse", imageKey: "agent", credentials: [{ envKey: "HOST_MUSE_DIR", defaultDir: join(home, ".config", "muse") }] },
   ];
 }
 

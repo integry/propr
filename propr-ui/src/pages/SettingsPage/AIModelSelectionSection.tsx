@@ -162,7 +162,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <SettingRow
               label="Reasoning Level"
               htmlFor="model_reasoning_level"
-              helperText="System-wide reasoning effort for supported GPT and Claude agents."
+              helperText="System-wide reasoning effort for supported GPT, Claude, and Muse Code agents."
             >
               <select
                 id="model_reasoning_level"

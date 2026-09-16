@@ -28,7 +28,8 @@ export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: 
       const previous = agents.find(agent => agent.id === args.agentId);
       if ((action === 'create') === !!previous) throw new McpError('PRECONDITION_FAILED', 'Agent already exists or no longer exists.', 409);
       const patch = Object.fromEntries(Object.keys(agentPatch).filter(key => args[key] !== undefined).map(key => [key, args[key]]));
-      const created = { id: args.agentId, type: args.type, ...patch, configPath: isAgentLoginSupported(args.type) ? getManagedAgentConfigPath(args.agentId, args.type) : '~/.vibe', dockerImage: '' };
+      // Only the create schema carries a type; update and remove must not touch it.
+      const created = action === 'create' ? { id: args.agentId, type: args.type, ...patch, configPath: isAgentLoginSupported(args.type) ? getManagedAgentConfigPath(args.agentId, args.type) : AGENT_DEFAULTS[args.type as keyof typeof AGENT_DEFAULTS].configPath, dockerImage: '' } : null;
       const updated = action === 'create' ? [...agents, created] : action === 'remove' ? agents.filter(agent => agent.id !== args.agentId) : agents.map(agent => agent.id === args.agentId ? { ...agent, ...patch } : agent);
       const response = await callWorkflow(config.postAgents, principal, { body: { agents: updated, expectedRevision: configRevision(agents) } });
       return ok({ agentId: args.agentId, action, warnings: (response.data as { warnings?: unknown }).warnings, ...(action === 'create' ? { enabled: false, browserSetup: `${deps.policy.config.origin}/settings` } : {}) });

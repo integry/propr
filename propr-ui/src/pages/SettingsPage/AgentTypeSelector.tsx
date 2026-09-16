@@ -24,7 +24,7 @@ const AgentTypeSelector: React.FC<AgentTypeSelectorProps> = ({ value, onChange }
               : 'text-gray-600 hover:text-gray-900'
           }`}
         >
-          {type === 'opencode' ? 'OpenCode' : type === 'antigravity' ? 'Antigravity' : type}
+          {type === 'opencode' ? 'OpenCode' : type === 'antigravity' ? 'Antigravity' : type === 'muse' ? 'Muse Code' : type}
         </button>
       ))}
     </div>

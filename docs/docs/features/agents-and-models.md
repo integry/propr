@@ -32,8 +32,9 @@ For virtual routing across several configured direct agents, see [Synthetic Pool
 | Antigravity (Google, multi-model) | `antigravity` | `propr/agent` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
+| Muse Code | `muse` | `propr/agent` | `HOST_MUSE_DIR` → `~/.config/muse` |
 
-When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config. Muse uses **Use existing config**: run `muse login` on the host first, then mount the resulting `~/.config/muse` directory. Its browser/device login is not driven through ProPR's container login-session UI.
 
 Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
 
@@ -43,7 +44,7 @@ To reuse an account that is already authenticated on the host, select **Use exis
 
 The Web UI includes an AI Agents page for configuring coding agents. Each agent entry defines:
 
-- Agent type (claude, codex, antigravity, opencode, vibe)
+- Agent type (claude, codex, antigravity, opencode, vibe, muse)
 - A unique alias (lowercase alphanumeric and hyphens)
 - An enable toggle
 - The Docker image (predefined per agent type)
@@ -62,9 +63,9 @@ For an interactive login, choose direct login while adding the agent or select *
 
 ## Reasoning Levels
 
-The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use each CLI's default. Each supported model can also set one of its agent runtime's native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
+The system setting `model_reasoning_level` applies to Claude, Codex, and Muse Code agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use each CLI's default. Each supported model can also set one of its agent runtime's native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
 
-Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
+Valid values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the provider vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`, `none`, and `minimal`; Claude maps `ultra` to `max`, passes `auto` through as Claude Code's adaptive effort mode, and omits `none` and `minimal`; Muse Code accepts `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, and omits `auto`, `ultracode`, `ultra` (Ultra is a Muse mode, not a reasoning level), and `none` (rejected by the meta provider).
 
 Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a global or model-specific reasoning level surfaces a non-blocking warning for enabled agents pinned below those versions. If the mismatch remains, ProPR also fails an affected run before starting the CLI with a version-specific error.
 
@@ -170,6 +171,17 @@ For an existing host account, install the CLI, run `opencode auth login`, and us
 | Model | Label | Context |
 |-------|-------|---------|
 | Mistral Medium 3.5 | `llm-vibe-mistral` | 256K |
+
+## Muse Code Models
+
+These models run through the `muse` binary and use the mounted Muse subscription login, not OpenCode or OpenRouter billing. Contributor variants may allow submitted content to be used for product improvement; choose the variant appropriate for your account and data policy.
+
+| Model | Label | Context |
+|-------|-------|---------|
+| Muse Spark 1.3 | `llm-muse-spark13` | 1M |
+| Muse Spark 1.3 Contributor | `llm-muse-spark13-contributor` | 1M |
+| Muse Spark 1.2 | `llm-muse-spark12` | 1M |
+| Muse Spark 1.2 Contributor | `llm-muse-spark12-contributor` | 1M |
 
 ## Choosing Models per Phase
 

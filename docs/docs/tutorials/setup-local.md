@@ -48,6 +48,10 @@ mkdir -p "/tmp/propr-vibe-prompts-$(id -u)"
 
 `/tmp/propr-vibe-prompts-$(id -u)` is the default host path and `/tmp/propr-vibe-prompts` the in-container path. Override with `HOST_VIBE_PROMPT_CACHE_DIR` (host) and `VIBE_PROMPT_CACHE_DIR` (container) only when needed.
 
+### Muse Code
+
+Install Muse Code, run `muse login` on the host, and confirm that `~/.config/muse/auth.json` exists. Set `HOST_MUSE_DIR` to the absolute path of `~/.config/muse`. ProPR mounts that directory read-write so Muse can refresh its account token. Muse's browser/device login is not available through `propr agent login`; select **Use existing config** when adding the agent.
+
 ## Set Up And Start With The CLI (Recommended)
 
 The ProPR CLI is the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack. The quickest way to get everything running is the guided `propr setup` wizard:
@@ -69,7 +73,7 @@ custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
 different copy of the CLI or leave root-owned files in a user-owned prefix.
 :::
 
-`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects the agent credentials you prepared above, pulls images, enrolls the default hosted ProPR GitHub App through [ProPR Connect](../operations/propr-connect.md), starts the stack, restricts triggers to the authenticated GitHub user, and can add a first repository and open the Web UI. It can also offer the bundled ProPR Operator Agent Skill for detected Codex, Claude Code, Antigravity, OpenCode, and Vibe installations; installation is opt-in. On a clean install, accepting the defaults performs the GitHub login and App-install handoff when needed, writes the relay/routing credentials to `.env`, and configures Connect for browser login at the local UI; no separate OAuth App or `propr relay enroll` command is required. Setup is safe to re-run at any time: it skips already-satisfied steps and never overwrites existing configuration or data.
+`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects the agent credentials you prepared above, pulls images, enrolls the default hosted ProPR GitHub App through [ProPR Connect](../operations/propr-connect.md), starts the services, restricts triggers to the authenticated GitHub user, and can add a first repository and open the Web UI. It can also offer the bundled ProPR Operator Agent Skill for detected Codex, Claude Code, Antigravity, OpenCode, Vibe, and Muse installations; installation is opt-in. On a clean install, accepting the defaults performs the GitHub login and App-install handoff when needed, writes the relay/routing credentials to `.env`, and configures Connect for browser login at the local UI; no separate OAuth App or `propr relay enroll` command is required. Setup is safe to re-run at any time: it skips already-satisfied steps and never overwrites existing configuration or data.
 
 Over SSH or in terminals without raw-mode support, add `--no-tui` for line-by-line prompts. When stdin is a pipe or CI stream, setup cannot prompt — use the manual flow below instead.
 

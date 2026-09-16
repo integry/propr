@@ -117,7 +117,7 @@ test("invalid explicit skill targets fail with the valid target list", async () 
       env: { HOME: "/tmp/propr-invalid-explicit" },
       log: (line) => lines.push(line),
     }),
-    /unknown agent skill target\(s\): nope \(choose codex, claude, antigravity, opencode, vibe\)/
+    /unknown agent skill target\(s\): nope \(choose codex, claude, antigravity, opencode, vibe, muse\)/
   );
   assert.equal(lines.some((line) => line.includes("skipped")), false);
 
@@ -127,7 +127,7 @@ test("invalid explicit skill targets fail with the valid target list", async () 
     command.parseAsync(["node", "propr", "--install-skill", "nope"]),
     (error: { code?: string; exitCode?: number }) => error.code === "commander.invalidArgument" && error.exitCode === 1
   );
-  assert.match(errors.join(""), /choose codex, claude, antigravity, opencode, vibe/);
+  assert.match(errors.join(""), /choose codex, claude, antigravity, opencode, vibe, muse/);
 });
 
 test("--no-skill conflicts with --install-skill", async () => {

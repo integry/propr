@@ -9,7 +9,7 @@
 #   - Unified agent image pulled or built locally (`propr/agent:latest`)
 #   - `gh auth login` or PROPR_E2E_TOKEN
 #   - Mounted agent credentials on the host ($HOME/.vibe, /.gemini,
-#     and /.config/opencode as applicable for the tests being run)
+#     /.config/opencode, and /.config/muse as applicable for the tests being run)
 #
 # Env:
 #   PROPR_E2E_REPO   (default: integry/propr-test)
@@ -18,6 +18,7 @@
 #   PROPR_E2E_VIBE_MODELS comma-separated Vibe models
 #   PROPR_E2E_ANTIGRAVITY_MODELS comma-separated Antigravity models
 #   PROPR_E2E_OPENCODE_MODELS comma-separated OpenCode models
+#   PROPR_E2E_MUSE_MODELS comma-separated Muse Code models
 #   AGENT_TAG          unified agent image to verify (default: propr/agent:latest)
 #   PROPR_E2E_KEEP_STACK=1  leave containers/logs running after the script exits
 #   PROPR_E2E_REUSE_DATA=1  reuse /tmp/$STACK data from a previous run
@@ -169,6 +170,9 @@ elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   echo "  Required for Vibe-backed image integration tests; set PROPR_E2E_SKIP_SLOW=1 to skip agent execution." >&2
   exit 1
 fi
+if [ -f "$HOME/.config/muse/auth.json" ]; then
+  LAUNCHER_ARGS+=(-e "HOST_MUSE_DIR=$HOME/.config/muse")
+fi
 
 OPENCODE_XDG_CFG="$HOME/.config/opencode"
 OPENCODE_CFG=""
@@ -241,7 +245,9 @@ echo "▸ configuring agents"
 # containers via docker socket, the bind mount resolves correctly on the host.
 ANTIGRAVITY_CFG="${HOME}/.gemini"
 VIBE_CFG="${HOME}/.vibe"
+MUSE_CFG="${HOME}/.config/muse"
 VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5}"
+MUSE_MODELS="${PROPR_E2E_MUSE_MODELS:-muse-spark-1.3-contributor}"
 ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.8-flash-medium,antigravity-gemini-3.8-flash-high,antigravity-gemini-3.8-flash-low,antigravity-gemini-3.7-flash-medium,antigravity-gemini-3.7-flash-high,antigravity-gemini-3.7-flash-low,antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
 OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-big-pickle,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
 json_array_from_csv() {
@@ -255,10 +261,13 @@ first_csv_value() {
 VIBE_MODELS_JSON="$(json_array_from_csv "$VIBE_MODELS")"
 ANTIGRAVITY_MODELS_JSON="$(json_array_from_csv "$ANTIGRAVITY_MODELS")"
 OPENCODE_MODELS_JSON="$(json_array_from_csv "$OPENCODE_MODELS")"
+MUSE_MODELS_JSON="$(json_array_from_csv "$MUSE_MODELS")"
 VIBE_DEFAULT_MODEL="$(first_csv_value "$VIBE_MODELS")"
 ANTIGRAVITY_DEFAULT_MODEL="$(first_csv_value "$ANTIGRAVITY_MODELS")"
 OPENCODE_DEFAULT_MODEL="$(first_csv_value "$OPENCODE_MODELS")"
+MUSE_DEFAULT_MODEL="$(first_csv_value "$MUSE_MODELS")"
 OPENCODE_AGENT_JSON=""
+MUSE_AGENT_JSON=""
 if [ -n "$OPENCODE_CFG" ]; then
   OPENCODE_AGENT_JSON=$(cat <<JSON
 ,
@@ -266,6 +275,16 @@ if [ -n "$OPENCODE_CFG" ]; then
    "dockerImage":"propr/agent:latest","configPath":"${OPENCODE_CFG}",
    "supportedModels":${OPENCODE_MODELS_JSON},
    "defaultModel":"${OPENCODE_DEFAULT_MODEL}"}
+JSON
+)
+fi
+if [ -f "$MUSE_CFG/auth.json" ]; then
+  MUSE_AGENT_JSON=$(cat <<JSON
+,
+  {"id":"itest-muse","type":"muse","alias":"muse","enabled":true,
+   "dockerImage":"propr/agent:latest","configPath":"${MUSE_CFG}",
+   "supportedModels":${MUSE_MODELS_JSON},
+   "defaultModel":"${MUSE_DEFAULT_MODEL}"}
 JSON
 )
 fi
@@ -278,7 +297,7 @@ agents_payload=$(cat <<JSON
   {"id":"itest-antigravity","type":"antigravity","alias":"antigravity","enabled":true,
    "dockerImage":"propr/agent:latest","configPath":"${ANTIGRAVITY_CFG}",
    "supportedModels":${ANTIGRAVITY_MODELS_JSON},
-   "defaultModel":"${ANTIGRAVITY_DEFAULT_MODEL}"}${OPENCODE_AGENT_JSON}
+   "defaultModel":"${ANTIGRAVITY_DEFAULT_MODEL}"}${OPENCODE_AGENT_JSON}${MUSE_AGENT_JSON}
 ]}
 JSON
 )

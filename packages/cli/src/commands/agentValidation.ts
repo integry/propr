@@ -367,6 +367,26 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     // Vibe has no interactive login flow here — it uses MISTRAL_API_KEY or a
     // pre-populated ~/.vibe — so loginArgs is intentionally omitted.
   },
+  {
+    type: "muse",
+    imageKey: "agent",
+    hostDirKey: "hostMuseDir",
+    envKey: "HOST_MUSE_DIR",
+    defaultHostDir: join(home, ".config", "muse"),
+    hostBin: existsSync(join(home, ".local", "bin", "muse")) ? join(home, ".local", "bin", "muse") : "muse",
+    hostInvocation: ({ promptFileHost }) => ({
+      args: ["exec", "--no-session-log", "--disable-shell", "--disable-write", "--max-model-steps", "2", "--prompt-file", promptFileHost],
+    }),
+    imageInvocation: ({ image, hostDir, workspaceDir }) => ({
+      args: [
+        ...baseArgs(image, hostDir, "/home/node/.config/muse", workspaceDir, { agentType: "muse" }),
+        "muse-run", "--no-session-log", "--disable-shell", "--disable-write", "--max-model-steps", "2",
+      ],
+      stdin: VALIDATION_PROMPT,
+    }),
+    versionArgs: ["muse", "--version"],
+    containerConfigPath: "/home/node/.config/muse",
+  },
 ];
 
 async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {

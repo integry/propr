@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, MUSE_MODELS, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
@@ -86,6 +86,21 @@ test('Gemini 3.8 Flash tiers are namespaced Antigravity models with 1M limits', 
         assert.strictEqual(model?.maxTokens, 1_000_000);
     }
     assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
+});
+
+test('Muse Code catalog uses llm-muse labels and the mounted CLI login', () => {
+    assert.deepStrictEqual(MUSE_MODELS.map(model => model.id), [
+        'muse-spark-1.3',
+        'muse-spark-1.3-contributor',
+        'muse-spark-1.2',
+        'muse-spark-1.2-contributor',
+    ]);
+    assert.strictEqual(MODEL_INFO_MAP['muse-spark-1.3']?.githubLabel, 'llm-muse-spark13');
+    assert.strictEqual(MODEL_INFO_MAP['muse-spark-1.3']?.openRouterId, 'meta/muse-spark-1.3');
+    assert.strictEqual(MODEL_INFO_MAP['muse-spark-1.3']?.minAgentVersion, '1.1.1');
+    assert.strictEqual(AGENT_DEFAULTS.muse.defaultAlias, 'muse');
+    assert.strictEqual(AGENT_DEFAULTS.muse.configPath, '~/.config/muse');
+    assert.strictEqual(AGENT_DEFAULTS.muse.defaultCliVersion, AGENT_DEFAULT_VERSIONS.muse);
 });
 
 test('long model labels use the configured agent alias', () => {

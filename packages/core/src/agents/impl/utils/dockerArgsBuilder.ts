@@ -28,7 +28,7 @@ function isGitHubCredentialEnvironmentVariable(name: string): boolean {
         || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
 }
 
-function buildEnvironmentVariableArgs(
+export function buildEnvironmentVariableArgs(
     sources: Array<Record<string, string> | undefined>,
     omitGitHubCredentials: boolean
 ): string[] {
