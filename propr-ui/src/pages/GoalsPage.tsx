@@ -119,6 +119,17 @@ const tokenTotal = (usage: { input_tokens?: number | null; output_tokens?: numbe
     + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0)
   : 0;
 
+// Codex counts the objective in Unicode code points; Claude Code's `/goal`
+// counts its (trimmed) condition in UTF-16 units, so an emoji counts as two.
+const objectiveLength = (objective: string, agentType: string | undefined) => agentType === 'claude'
+  ? objective.trim().length
+  : Array.from(objective).length;
+
+const OBJECTIVE_LIMIT_PROVIDERS: Record<string, { name: string; unit: string }> = {
+  codex: { name: 'Codex', unit: 'Unicode characters' },
+  claude: { name: 'Claude', unit: 'characters (emoji and some symbols count as two)' },
+};
+
 const capabilityAgentLabel = (agent: GoalCapability, agents: GoalCapability[]) => formatAgentLabel(
   { type: agent.agentType, alias: agent.agentAlias },
   agents.map(candidate => ({ type: candidate.agentType, alias: candidate.agentAlias })),
@@ -194,7 +205,8 @@ function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange
   const [rechecking, setRechecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedAgent = agents.find(agent => agent.agentId === agentId);
-  const objectiveCharacters = Array.from(objective).length;
+  const objectiveCharacters = objectiveLength(objective, selectedAgent?.agentType);
+  const objectiveLimitProvider = OBJECTIVE_LIMIT_PROVIDERS[selectedAgent?.agentType ?? ''];
   const objectiveMaxCharacters = selectedAgent?.objectiveMaxCharacters ?? null;
   const objectiveTooLong = objectiveMaxCharacters !== null
     && objectiveCharacters > objectiveMaxCharacters;
@@ -342,7 +354,7 @@ function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange
           void addGoalFiles(files, pasted, setFiles, setError);
         }} rows={5} className={`mt-1 w-full rounded-md border p-2 ${objectiveTooLong ? 'border-red-500' : 'border-slate-300'}`} required />
         {objectiveMaxCharacters !== null && <div id="goal-objective-limit" className={`mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs ${objectiveTooLong ? 'text-red-600' : 'text-slate-500'}`}>
-          <span>{selectedAgent?.agentType === 'codex' ? 'Codex' : selectedAgent?.agentAlias} accepts up to {objectiveMaxCharacters.toLocaleString('en-US')} Unicode characters for the objective.</span>
+          <span>{objectiveLimitProvider?.name ?? selectedAgent?.agentAlias} accepts up to {objectiveMaxCharacters.toLocaleString('en-US')} {objectiveLimitProvider?.unit ?? 'characters'} for the objective.</span>
           <output aria-label="Objective character count" aria-live="polite">{objectiveCharacters.toLocaleString('en-US')} / {objectiveMaxCharacters.toLocaleString('en-US')} characters</output>
         </div>}
         <GoalAttachmentInput files={files} onFilesSelected={markDirty} onChange={nextFiles => { markDirty(); setFiles(nextFiles); }} onError={setError} disabled={submitting} />

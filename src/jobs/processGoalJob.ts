@@ -16,6 +16,7 @@ import {
     getStateManager,
     goalAttemptLabel,
     goalTitleFallback,
+    hasNativeGoalControl,
     logger,
     loadRepositoryVisualPreviewSettings,
     prepareVisualPreviewEvidence,
@@ -317,10 +318,12 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
 export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
     const { goal, agent, githubToken, worktree, pendingInput, checkpointFeedback } = prepared;
     const freshSession = !goal.session_id;
-    // Codex steers the durable delivery context as a same-turn second message.
-    // The other providers have no steer capability, so their first invocation
-    // must carry the context inside the initial prompt to govern from the start.
-    const initialContextInput = freshSession && goal.agent_type !== 'codex' && pendingInput?.kind === 'context'
+    // Native goal providers (Codex, Claude) steer the durable delivery context
+    // into the live session themselves. Whole-session providers have no steer
+    // capability, so their first invocation must carry the context inside the
+    // initial prompt to govern from the start.
+    const liveControl = hasNativeGoalControl(goal.agent_type);
+    const initialContextInput = freshSession && !liveControl && pendingInput?.kind === 'context'
         ? pendingInput
         : null;
     const prompt = freshSession
@@ -346,9 +349,9 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             nativeGoalObjective: goal.initial_prompt,
             resumeSessionId: goal.session_id ?? undefined,
             resumeConversationId: goal.conversation_id ?? undefined,
-            initialControlInputId: goal.agent_type === 'codex' ? pendingInput?.input_id : undefined,
-            initialControlInputMessage: goal.agent_type === 'codex' ? pendingInput?.message : undefined,
-            initialGoalFeedback: goal.agent_type === 'codex' ? checkpointFeedback : undefined,
+            initialControlInputId: liveControl ? pendingInput?.input_id : undefined,
+            initialControlInputMessage: liveControl ? pendingInput?.message : undefined,
+            initialGoalFeedback: liveControl ? checkpointFeedback : undefined,
             goalControl: control,
             environment: buildGoalPolicyEnvironment(goal.launch_strategy),
             onSessionId: async (sessionId, conversationId) => {
@@ -356,10 +359,10 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
                     job: data, goal, sessionId, conversationId,
                     acknowledgeControls: !pendingInput,
                 });
-                if (pendingInput && goal.agent_type !== 'codex' && (!freshSession || initialContextInput)) {
+                if (pendingInput && !liveControl && (!freshSession || initialContextInput)) {
                     await control.markInputDelivered(pendingInput.input_id, `session:${sessionId}`);
                 }
-                if (freshSession && goal.agent_type !== 'codex') {
+                if (freshSession && !liveControl) {
                     const boundary = await control.load();
                     if (boundary.desiredState !== 'running') {
                         executionController.abort(new Error('Goal stopped after its whole-session identity was persisted'));
@@ -387,9 +390,9 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
     );
 }
 
-async function acknowledgeNonCodexInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
+async function acknowledgeWholeSessionInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
     const { pendingInput, goal } = prepared;
-    if (!pendingInput || goal.agent_type === 'codex' || !goal.session_id) return;
+    if (!pendingInput || hasNativeGoalControl(goal.agent_type) || !goal.session_id) return;
     await db.transaction(async trx => {
         const owned = await trx('goals').where({
             goal_id: data.goalId,
@@ -512,7 +515,7 @@ async function handleGoalResult(
     await operations.acknowledgeInput(data, prepared);
     await operations.recordMetrics(goal, data, result);
     const boundary = await operations.fencedGoal(data);
-    const declaration = result.success && goal.launch_strategy === 'direct' && goal.agent_type !== 'codex'
+    const declaration = result.success && goal.launch_strategy === 'direct' && !hasNativeGoalControl(goal.agent_type)
         ? parseGoalCheckpointDeclaration(result.summary)
         : null;
     if (boundary?.launch_strategy === 'direct' && boundary.desired_state !== 'cancelled' && declaration) {
@@ -580,7 +583,7 @@ async function handleGoalResult(
 interface GoalResultOperations {
     loadGoal(goalId: string): Promise<GoalRow | null>;
     fencedGoal: typeof fencedGoal;
-    acknowledgeInput: typeof acknowledgeNonCodexInput;
+    acknowledgeInput: typeof acknowledgeWholeSessionInput;
     recordMetrics: typeof recordGoalMetrics;
     handleStopped: typeof handleStoppedGoal;
     saveProviderResult: typeof saveProviderResult;
@@ -598,7 +601,7 @@ interface GoalResultOperations {
 const defaultGoalResultOperations: GoalResultOperations = {
     loadGoal: async goalId => await db<GoalRow>('goals').where({ goal_id: goalId }).first() ?? null,
     fencedGoal,
-    acknowledgeInput: acknowledgeNonCodexInput,
+    acknowledgeInput: acknowledgeWholeSessionInput,
     recordMetrics: recordGoalMetrics,
     handleStopped: handleStoppedGoal,
     saveProviderResult,

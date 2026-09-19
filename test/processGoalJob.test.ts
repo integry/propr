@@ -75,7 +75,7 @@ test('whole-session direct goals publish an agent declaration and continue after
     active_turn_id: null, pause_confirmed_at: null, resume_requested: false,
     started_at: new Date().toISOString(), paused_at: null, control_generation: 0, control_ack_generation: 0,
   };
-  const wholeSessionGoal = { ...goal, agent_type: 'claude' };
+  const wholeSessionGoal = { ...goal, agent_type: 'antigravity' };
   const published: Array<{ kind: string; message?: string; include?: string[]; exclude?: string[] }> = [];
   let continuedAfterCheckpoint = false;
   const dependencies = {
@@ -124,7 +124,7 @@ test('whole-session direct goals record a malformed declaration and continue for
   const goal = {
     goal_id: data.goalId, owner_id: 'owner-1', repository: 'acme/repo', objective: 'Ship it',
     launch_strategy: 'direct', initial_prompt: '/goal Ship it', base_branch: 'main', branch_name: 'goal/ship-it',
-    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'claude', agent_type: 'claude',
+    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity',
     requested_model: 'claude-opus', desired_state: 'running', result_state: null,
     current_task_id: data.taskId, session_id: 'session-1', conversation_id: null,
     run_generation: data.generation, run_claim: data.claimId, claimed_at: new Date().toISOString(),
@@ -305,7 +305,7 @@ test('fresh whole-session providers receive the durable context with the first p
   };
   const goal = {
     goal_id: data.goalId, initial_prompt: initialPrompt, session_id: null, conversation_id: null,
-    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'claude',
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'antigravity',
   };
   const prepared = {
     goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },
@@ -326,6 +326,44 @@ test('fresh whole-session providers receive the durable context with the first p
   assert.equal(captured[1].prompt, correction);
   assert.equal(captured[1].nativeGoalObjective, initialPrompt);
   assert.equal(captured[1].resumeSessionId, 'session-1');
+});
+
+test('Claude native goals receive the durable context and checkpoint feedback as live control input', async () => {
+  const data: GoalJobData = {
+    goalId: 'goal-claude-native', taskId: 'goal-task-claude-native', repoOwner: 'acme', repoName: 'repo',
+    generation: 1, claimId: 'claim-claude-native',
+  };
+  const initialPrompt = '/goal Ship it';
+  const initialContext = 'Additional ProPR delivery context for the goal above:\n\nImmutable launch policy';
+  const captured: AgentTaskOptions[] = [];
+  const agent = {
+    executeTask: async (options: AgentTaskOptions) => {
+      captured.push(options);
+      return { success: false, modelUsed: 'claude-opus-5', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+    },
+  };
+  const goal = {
+    goal_id: data.goalId, initial_prompt: initialPrompt, session_id: null, conversation_id: null,
+    requested_model: 'claude-opus-5', current_task_id: data.taskId, agent_type: 'claude',
+  };
+
+  await executePreparedGoal(data, {
+    goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },
+    pendingInput: { input_id: 'context-1', message: initialContext, kind: 'context' },
+  } as never);
+  await executePreparedGoal({ ...data, generation: 2 }, {
+    goal: { ...goal, session_id: 'session-1' }, agent, githubToken: 'token',
+    worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },
+    pendingInput: null, checkpointFeedback: 'ProPR accepted and published your checkpoint as commit abc.',
+  } as never);
+
+  assert.equal(captured[0].prompt, initialPrompt);
+  assert.equal(captured[0].nativeGoalObjective, initialPrompt);
+  assert.equal(captured[0].initialControlInputId, 'context-1');
+  assert.equal(captured[0].initialControlInputMessage, initialContext);
+  assert.ok(captured[0].goalControl);
+  assert.equal(captured[1].resumeSessionId, 'session-1');
+  assert.equal(captured[1].initialGoalFeedback, 'ProPR accepted and published your checkpoint as commit abc.');
 });
 
 test('resumed providers cannot replace the persisted session or conversation identity', () => {

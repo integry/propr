@@ -15,11 +15,48 @@ export const DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES = 15;
 export const MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES = 5;
 export const MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES = 120;
 
+/** Claude Code rejects `/goal` conditions longer than this many UTF-16 units. */
+export const CLAUDE_GOAL_CONDITION_MAX_LENGTH = 4_000;
+
+/**
+ * Providers whose goal runs keep a live control plane: the provider owns the
+ * goal loop, and ProPR steers input, checkpoints, pause, and cancel into the
+ * running session instead of stopping and resuming whole invocations.
+ */
+const NATIVE_GOAL_AGENT_TYPES: ReadonlySet<string> = new Set(['codex', 'claude']);
+
+export function hasNativeGoalControl(agentType: string | null | undefined): boolean {
+    return Boolean(agentType && NATIVE_GOAL_AGENT_TYPES.has(agentType));
+}
+
+/** Maximum user objective length the provider's native goal command accepts, or null when unbounded. */
+export function nativeGoalObjectiveMaxLength(agentType: string | null | undefined): number | null {
+    if (agentType === 'codex') return CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH;
+    if (agentType === 'claude') return CLAUDE_GOAL_CONDITION_MAX_LENGTH;
+    return null;
+}
+
 /** Codex measures goal objectives as Unicode code points, not UTF-16 units. */
 export function codexGoalPromptValidationError(prompt: string): string | null {
     return Array.from(prompt).length > CODEX_GOAL_OBJECTIVE_MAX_LENGTH
         ? `Final Codex goal prompt must be at most ${CODEX_GOAL_OBJECTIVE_MAX_LENGTH} Unicode characters`
         : null;
+}
+
+/** Claude measures the `/goal` condition (the text after the command) in UTF-16 units. */
+export function claudeGoalPromptValidationError(prompt: string): string | null {
+    const condition = prompt.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
+        ? prompt.slice(NATIVE_GOAL_COMMAND_PREFIX.length)
+        : prompt;
+    return condition.trim().length > CLAUDE_GOAL_CONDITION_MAX_LENGTH
+        ? `Claude goal objective must be at most ${CLAUDE_GOAL_CONDITION_MAX_LENGTH} characters`
+        : null;
+}
+
+export function nativeGoalPromptValidationError(agentType: string, prompt: string): string | null {
+    if (agentType === 'codex') return codexGoalPromptValidationError(prompt);
+    if (agentType === 'claude') return claudeGoalPromptValidationError(prompt);
+    return null;
 }
 
 const launchInstructions: Record<GoalLaunchStrategy, string> = {

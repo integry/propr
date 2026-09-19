@@ -1,7 +1,12 @@
 import type { ConversationEvent } from '@propr/shared';
 import { parseClaudeOutputToConversationResult } from '../routes/liveDetailsCodexParser.js';
 import { detectStoredOutputFormat } from '../routes/liveDetailsStoredOutputFormat.js';
-import { parseRedisOutput, type ParsedRedisOutput, type RedisOutputParseOptions } from './redisOutputParser.js';
+import {
+  parseRedisOutput,
+  type NativeGoalProjection,
+  type ParsedRedisOutput,
+  type RedisOutputParseOptions,
+} from './redisOutputParser.js';
 
 /** Matches the conversation-file watcher budget so live payloads stay bounded. */
 const MAX_LIVE_EVENTS = 100;
@@ -41,12 +46,47 @@ function projectClaudeStreamOutput(output: string, options: AgentStreamParseOpti
     currentTask: result.currentTask,
     tokenUsage: result.tokenUsage,
     totalEventCount: events.length,
-    // Claude has no native goal protocol: goal runs pipe the goal prompt into
-    // the regular CLI (ClaudeAgent), and thread/goal/updated records are only
-    // written by Codex's app-server connection, so a Claude stream never
-    // carries native goal records to project.
-    nativeGoal: null,
+    nativeGoal: projectClaudeNativeGoal(envelopeLines, result.tokenUsage),
   };
+}
+
+interface ClaudeNativeGoalRecord {
+  objective?: unknown;
+  status?: unknown;
+  setAt?: unknown;
+  updatedAt?: unknown;
+}
+
+/**
+ * Claude reports its `/goal` verdicts only in the session transcript, so the
+ * worker writes `propr_native_goal` snapshots into the live stream at each
+ * goal boundary. Project the latest one like Codex's thread/goal/updated.
+ */
+function projectClaudeNativeGoal(
+  lines: string[],
+  tokenUsage: ReturnType<typeof parseClaudeOutputToConversationResult>['tokenUsage'],
+): NativeGoalProjection | null {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].includes('"propr_native_goal"')) continue;
+    let envelope: { type?: string; subtype?: string; goal?: ClaudeNativeGoalRecord };
+    try { envelope = JSON.parse(lines[index]) as typeof envelope; } catch { continue; }
+    const goal = envelope.goal;
+    if (envelope.type !== 'system' || envelope.subtype !== 'propr_native_goal') continue;
+    if (typeof goal?.objective !== 'string' || typeof goal.status !== 'string') continue;
+    const setAt = Number(goal.setAt);
+    const until = goal.status === 'active' ? Date.now() : Number(goal.updatedAt);
+    return {
+      objective: goal.objective,
+      status: goal.status,
+      tokenBudget: null,
+      tokensUsed: tokenUsage
+        ? tokenUsage.input_tokens + tokenUsage.output_tokens
+          + tokenUsage.cache_creation_input_tokens + tokenUsage.cache_read_input_tokens
+        : 0,
+      timeUsedSeconds: Number.isFinite(setAt) && Number.isFinite(until) ? Math.max(0, Math.round((until - setAt) / 1000)) : 0,
+    };
+  }
+  return null;
 }
 
 /**

@@ -20,9 +20,11 @@ import {
     UsageLimitError,
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
+import { randomUUID } from 'node:crypto';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import {
     assertReasoningLevelCliVersionSupported,
+    resolveConfigPath,
     loadModelReasoningLevel,
     resolveAgentModelReasoningLevel,
     resolveClaudeReasoningLevel,
@@ -34,6 +36,11 @@ import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import {
+    claudeSessionTranscriptExists,
+    claudeSessionTranscriptPath,
+    executeClaudeNativeGoal,
+} from './claudeNativeGoal.js';
 
 export { UsageLimitError };
 
@@ -94,7 +101,7 @@ export class ClaudeAgent implements Agent {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
-            executionMode = 'task', resumeSessionId, metadata
+            executionMode = 'task', metadata
         } = options;
 
         const startTime = Date.now();
@@ -108,21 +115,21 @@ export class ClaudeAgent implements Agent {
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
         }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
 
+        if (executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
+
         try {
-            const prompt = executionMode === 'goal' ? customPrompt : buildClaudePrompt({
+            const prompt = buildClaudePrompt({
                 customPrompt, issueRef, branchName, modelName: effectiveModel, issueDetails, isRetry, retryReason
             });
 
-            await setWorktreeOwnership(worktreePath, issueRef.number, {
-                protectGitMetadata: executionMode === 'goal' && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
-            });
+            await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -175,6 +182,51 @@ export class ClaudeAgent implements Agent {
                 modifiedFiles: [], commitMessage: null, summary: undefined,
                 modelUsed: this.config.defaultModel || 'unknown',
                 ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel })
+            };
+        }
+    }
+
+    /**
+     * Runs one attempt of a native `/goal` session. Claude owns the goal loop
+     * through its Stop hook; ProPR steers input, checkpoints, and stops over
+     * the session's stream-json stdin and resumes the exact session later.
+     */
+    private async executeNativeGoal(options: AgentTaskOptions, model: string): Promise<AgentExecutionResult> {
+        const { worktreePath, issueRef, githubToken, environment, taskId, reasoningLevel, resumeSessionId } = options;
+        const startTime = Date.now();
+        try {
+            await setWorktreeOwnership(worktreePath, issueRef.number, {
+                protectGitMetadata: environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+            });
+            const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, model);
+            const sessionId = resumeSessionId ?? randomUUID();
+            const transcriptPath = claudeSessionTranscriptPath(resolveConfigPath(this.config.configPath), sessionId);
+            // An identity persisted before the provider wrote its first
+            // transcript record has nothing to resume; start it under that id.
+            const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
+            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
+                worktreePath, githubToken, modelName: model, issueNumber: issueRef.number,
+                environment, taskId, reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
+                ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+            });
+            const response = await executeClaudeNativeGoal(
+                { ...options, resumeSessionId: resumable ? sessionId : undefined },
+                { dockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
+            );
+            if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
+            if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            logger.info({
+                taskId, sessionId, success: response.success, error: response.error, agentAlias: this.config.alias,
+            }, 'Claude native goal attempt finished');
+            return response;
+        } catch (error) {
+            if (error instanceof UsageLimitError) throw error;
+            logger.error({ taskId, error: (error as Error).message, agentAlias: this.config.alias }, 'Claude native goal attempt failed');
+            return {
+                success: false, error: (error as Error).message, executionTimeMs: Date.now() - startTime,
+                logs: (error as Error).message, modifiedFiles: [], commitMessage: null,
+                modelUsed: model,
             };
         }
     }

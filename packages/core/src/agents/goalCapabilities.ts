@@ -1,5 +1,6 @@
 import { executeDockerCommand, type ExecutionResult } from '../claude/docker/dockerExecutor.js';
 import { parseAntigravityJsonl } from './impl/utils/antigravityOutputParser.js';
+import { hasNativeGoalControl } from '../goals.js';
 import type { Agent, AgentType } from './types.js';
 
 export interface GoalCapability {
@@ -35,13 +36,13 @@ const REQUIRED_CODEX_GOAL_METHODS = [
 const FAILURE_CACHE_TTL_MS = 30_000;
 
 function controlsFor(agent: Agent): GoalCapability['controls'] {
-    return agent.config.type === 'codex'
+    return hasNativeGoalControl(agent.config.type)
         ? { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true }
         : { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true };
 }
 
 function lifecycleFor(agent: Agent): NonNullable<GoalCapability['lifecycle']> {
-    return agent.config.type === 'codex'
+    return hasNativeGoalControl(agent.config.type)
         ? { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' }
         : { launch: 'goal-prompt', resume: 'whole-session', runningInput: 'safe-boundary-resume' };
 }
@@ -126,6 +127,35 @@ export function claudeHelpSupportsWholeSession(output: string): boolean {
         .every(option => cliHelpHasOption(output, option));
 }
 
+/**
+ * Claude native goals run `/goal` inside a live stream-json session: ProPR
+ * assigns the session identity up front, steers input over stdin, and resumes
+ * the exact session (which restores its goal) after a boundary.
+ */
+export function claudeHelpSupportsNativeGoal(output: string): boolean {
+    return ['--print', '--resume', '--session-id', '--input-format', '--output-format']
+        .every(option => cliHelpHasOption(output, option));
+}
+
+const CLAUDE_GOAL_PROBE_SEPARATOR = '===PROPR-CLAUDE-GOAL-PROBE===';
+
+/**
+ * `claude -p /goal` is a local command: with no goal set it prints its usage
+ * without authentication or network access. Runtimes without a noninteractive
+ * `/goal` send the text to the model instead, which fails offline.
+ */
+export function claudeGoalCommandProbeSucceeded(output: string): boolean {
+    for (const line of output.split('\n')) {
+        try {
+            const message = JSON.parse(line) as { type?: string; result?: unknown };
+            if (message.type === 'result' && typeof message.result === 'string') {
+                return /No goal set\. Usage: `\/goal <condition>`/.test(message.result);
+            }
+        } catch { /* help text and entrypoint diagnostics */ }
+    }
+    return false;
+}
+
 /** Antigravity goal mode needs noninteractive output and exact-conversation resume. */
 export function antigravityHelpSupportsWholeSession(output: string): boolean {
     return ['--print', '--conversation', '--output-format', '--disable-slash-commands']
@@ -178,13 +208,22 @@ async function probeCodex(agent: Agent, executor: DockerExecutor): Promise<GoalC
 }
 
 async function probeClaude(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    const probeCommand = [
+        'claude --help',
+        `echo '${CLAUDE_GOAL_PROBE_SEPARATOR}'`,
+        'claude -p /goal --output-format stream-json --verbose --no-session-persistence',
+    ].join('; ');
     const result = await executor('docker', [
-        'run', '--rm', '--network', 'none', '--entrypoint', 'claude',
-        agent.config.dockerImage, '--help',
-    ], { timeout: 30_000 });
-    return result.exitCode === 0 && claudeHelpSupportsWholeSession(introspectionOutput(result))
+        'run', '--rm', '--network', 'none', '--entrypoint', '/bin/sh',
+        agent.config.dockerImage, '-c', probeCommand,
+    ], { timeout: 60_000 });
+    const [help, goalProbe = ''] = result.stdout.split(CLAUDE_GOAL_PROBE_SEPARATOR);
+    if (!claudeHelpSupportsNativeGoal(`${help}\n${result.stderr}`)) {
+        return unsupportedCapability(agent, 'Pinned Claude runtime does not expose stream-json sessions with --session-id and exact --resume support');
+    }
+    return claudeGoalCommandProbeSucceeded(goalProbe)
         ? supportedCapability(agent)
-        : unsupportedCapability(agent, 'Pinned Claude runtime does not expose persisted noninteractive sessions with exact --resume support');
+        : unsupportedCapability(agent, 'Pinned Claude runtime does not provide a noninteractive native /goal command');
 }
 
 async function probeAntigravity(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {

@@ -92,15 +92,30 @@ test('Claude envelopes that already carry timestamps keep them', () => {
   assert.equal(result.events[0].timestamp, '2026-09-12T09:59:59.000Z');
 });
 
-test('Claude goal runs project with nativeGoal null - Claude has no native goal protocol', () => {
-  // Claude goal runs pipe the goal prompt into the regular CLI, so the stream
-  // is the same stream-json as a task run: no goal-status records exist to
-  // lose, and the projection must keep everything else intact.
+test('Claude streams without ProPR goal snapshots project nativeGoal null', () => {
   const result = parseAgentStreamOutput(claudeStreamOutput, { executionStartTimestamp: '2026-09-12T10:00:00.000Z' });
 
   assert.equal(result.nativeGoal, null);
   assert.equal(result.totalEventCount, 4);
   assert.equal(result.currentTask, 'Fix the parser');
+});
+
+test('Claude native /goal snapshots written by the worker populate nativeGoal', () => {
+  const snapshot = (status: string, updatedAt: number) => JSON.stringify({
+    type: 'system', subtype: 'propr_native_goal',
+    goal: { objective: 'Ship it', status, iterations: 2, setAt: 1_000_000, updatedAt },
+  });
+  const output = [claudeStreamOutput, snapshot('active', 1_030_000), snapshot('complete', 1_095_000)].join('\n');
+
+  const result = parseAgentStreamOutput(output, { executionStartTimestamp: '2026-09-12T10:00:00.000Z' });
+
+  const usage = result.tokenUsage!;
+  assert.deepEqual(result.nativeGoal, {
+    objective: 'Ship it', status: 'complete', tokenBudget: null,
+    tokensUsed: usage.input_tokens + usage.output_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens,
+    timeUsedSeconds: 95,
+  });
+  assert.equal(result.totalEventCount, 4, 'goal snapshots are not conversation events');
 });
 
 test('Codex stream output still uses the Redis parser', () => {

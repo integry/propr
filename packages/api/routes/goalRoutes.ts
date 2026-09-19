@@ -6,7 +6,6 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
-  CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   GOAL_LAUNCH_STRATEGIES,
@@ -14,7 +13,9 @@ import {
   MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   buildNativeGoalCommand,
   buildNativeGoalContext,
-  codexGoalPromptValidationError,
+  hasNativeGoalControl,
+  nativeGoalObjectiveMaxLength,
+  nativeGoalPromptValidationError,
   generateGoalTitle,
   getAuthenticatedOctokit,
   goalTitleFallback,
@@ -231,7 +232,7 @@ async function resolveCreationAgent(
   await registry.ensureInitialized();
   const agent = registry.getAgentById(body.agentId as string) || registry.getAgentByAlias(body.agentId as string);
   if (!agent) return { error: 'Selected agent was not found', status: 400 };
-  const promptError = agent.config.type === 'codex' ? codexGoalPromptValidationError(initialPrompt) : null;
+  const promptError = nativeGoalPromptValidationError(agent.config.type, initialPrompt);
   if (promptError) return { error: promptError, status: 400 };
   if (!agent.config.supportedModels.includes(body.model as string) && agent.config.defaultModel !== body.model) {
     return { error: 'Selected model is not supported by this agent', status: 400 };
@@ -307,9 +308,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         ...capability,
         models: agent?.config.supportedModels ?? [],
         defaultModel: agent?.config.defaultModel ?? null,
-        objectiveMaxCharacters: capability.agentType === 'codex'
-          ? CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH
-          : null,
+        objectiveMaxCharacters: capability.goalCapable ? nativeGoalObjectiveMaxLength(capability.agentType) : null,
       };
     });
     res.json({ agents });
@@ -557,9 +556,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       });
       if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before pause could be claimed' });
     }
-    // Codex pauses through native turn/interrupt. Other proven providers stop
-    // their resumable noninteractive invocation and resume the exact session.
-    if (row.agent_type !== 'codex' && row.claimed_at && row.session_id && !row.pause_confirmed_at) {
+    // Native goal providers pause through an interrupt on their live control
+    // channel. Other proven providers stop their resumable noninteractive
+    // invocation and resume the exact session.
+    if (!hasNativeGoalControl(row.agent_type) && row.claimed_at && row.session_id && !row.pause_confirmed_at) {
       await stop(row.current_task_id, {
         redisClient: deps.redisClient,
         requestedBy: req.user!.username,
@@ -650,12 +650,12 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!row) return;
     const idempotencyKey = requiredIdempotencyKey(req, res);
     if (!idempotencyKey) return;
-    const nativeCodexResume = row.agent_type === 'codex' && Boolean(row.session_id);
+    const nativeResume = hasNativeGoalControl(row.agent_type) && Boolean(row.session_id);
     const resumeMessage = row.session_id || row.claimed_at ? GOAL_CONTINUE_INPUT : row.initial_prompt;
     const resumeOperation = 'goal.resume';
     const resumePayloadHash = mutationHash(resumeOperation, {
       goalId: row.goal_id,
-      ...(nativeCodexResume ? { transport: 'native-goal' } : { message: resumeMessage }),
+      ...(nativeResume ? { transport: 'native-goal' } : { message: resumeMessage }),
     });
     let resumeInserted = false;
     try {
@@ -670,7 +670,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
     if (row.desired_state !== 'paused') return void res.status(409).json({ error: 'Goal is not paused' });
     if (resumeInserted) {
-      if (nativeCodexResume) {
+      if (nativeResume) {
         await recordControlMutation(deps.db, row, idempotencyKey, resumeOperation, resumePayloadHash);
       } else {
         await addGoalInput({ row, key: idempotencyKey, message: resumeMessage, kind: 'resume' });
@@ -719,13 +719,14 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       });
       if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before cancellation could be claimed' });
     }
-    // A live Codex App Server performs the native /goal clear equivalent before
-    // interrupting its turn. Session-resume providers use the existing container
-    // stop path because they have no native goal control plane.
-    const stopped = row.agent_type === 'codex' && row.claimed_at
+    // A live native goal session (Codex App Server, Claude stream-json)
+    // interrupts its turn and clears the goal itself. Session-resume providers
+    // use the existing container stop path because they have no native goal
+    // control plane.
+    const stopped = hasNativeGoalControl(row.agent_type) && row.claimed_at
       ? {
         success: true, taskId: row.current_task_id, containerStopped: false,
-        removedQueuedJobs: 0, message: 'Native Codex goal clear requested',
+        removedQueuedJobs: 0, message: 'Native goal clear requested',
       }
       : await stop(row.current_task_id, {
         redisClient: deps.redisClient,
@@ -834,7 +835,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       updated_at: deps.db.fn.now(),
     });
     if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before the model request was saved' });
-    if (row.desired_state === 'running' && row.agent_type !== 'codex' && row.claimed_at && row.session_id) {
+    if (row.desired_state === 'running' && !hasNativeGoalControl(row.agent_type) && row.claimed_at && row.session_id) {
       await stop(row.current_task_id, {
         redisClient: deps.redisClient, requestedBy: req.user!.username,
         reason: 'Goal model change requested at the next provider boundary.',
@@ -912,7 +913,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
           : {}),
         updated_at: deps.db.fn.now(),
       });
-      if (row.agent_type !== 'codex' && row.claimed_at && !row.pause_confirmed_at) {
+      if (!hasNativeGoalControl(row.agent_type) && row.claimed_at && !row.pause_confirmed_at) {
         await stop(row.current_task_id, {
           redisClient: deps.redisClient, requestedBy: req.user!.username,
           reason: 'Goal input queued for the next provider boundary.',
@@ -921,7 +922,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       }
       const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
       if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
-    } else if (row.agent_type === 'codex') {
+    } else if (hasNativeGoalControl(row.agent_type)) {
       if (inputDisposition === 'inserted') await deps.db('goals').where({
         goal_id: row.goal_id, owner_id: row.owner_id,
         run_generation: row.run_generation, run_claim: row.run_claim, desired_state: 'running',

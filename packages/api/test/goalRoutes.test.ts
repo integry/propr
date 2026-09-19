@@ -62,7 +62,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         const common = {
             owner_login: 'alice', repository: 'acme/repo', title: 'Ship Reliable Goal Delivery', objective: 'Ship it',
             launch_strategy: 'direct', initial_prompt: '/goal Ship it\n\nSaved policy',
-            agent_id: 'agent-1', agent_alias: 'claude', agent_type: 'claude', requested_model: 'gpt-5.6',
+            agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity', requested_model: 'gpt-5.6',
             desired_state: 'paused', run_generation: 2, run_claim: 'claim-2', session_id: 'thread-1',
             branch_name: 'goal/ship-it', worktree_path: '/worktrees/goal-1',
             pause_confirmed_at: new Date().toISOString(),
@@ -250,7 +250,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.deepEqual(capabilityRequests, [{ force: true }]);
         const capabilityLimits = (rechecked.state.body as { agents: Array<{ agentType: string; objectiveMaxCharacters: number | null }> }).agents;
         assert.equal(capabilityLimits.find(agent => agent.agentType === 'codex')?.objectiveMaxCharacters, 3_994);
-        assert.equal(capabilityLimits.find(agent => agent.agentType === 'claude')?.objectiveMaxCharacters, null);
+        assert.equal(capabilityLimits.find(agent => agent.agentType === 'claude')?.objectiveMaxCharacters, 4_000);
 
         const oversizedCodexPrompt = response();
         const oversizedCodexRequest = request('owner-1', {}, {
@@ -371,11 +371,11 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await routes.input(attachmentInput, response().res);
         assert.equal(attachmentProcessCount, 1);
 
-        const runningClaudeInput = response();
+        const runningWholeSessionInput = response();
         const runningInputRequest = request('owner-2', { goalId: 'goal-3' }, { message: 'Apply this at a safe boundary.' });
         runningInputRequest.get = () => 'owner-running-input-1';
-        await routes.input(runningInputRequest, runningClaudeInput.res);
-        assert.equal(runningClaudeInput.state.status, 200);
+        await routes.input(runningInputRequest, runningWholeSessionInput.res);
+        assert.equal(runningWholeSessionInput.state.status, 200);
         const boundary = await database('goals').where({ goal_id: 'goal-3' }).first();
         assert.equal(boundary.desired_state, 'paused');
         assert.equal(Boolean(boundary.resume_requested), true);

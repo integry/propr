@@ -74,6 +74,8 @@ export interface DockerArgsParams {
     /** Preserve provider state and use native session resume semantics. */
     executionMode?: 'task' | 'goal';
     resumeSessionId?: string;
+    /** Identity to assign a fresh goal session so it is durable before any work starts. */
+    sessionId?: string;
 }
 
 function repositoryInspectionArgs(enabled: boolean): string[] {
@@ -121,12 +123,14 @@ function buildBaseDockerArgs(options: {
     workerOwnedGoalGit: boolean;
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
+    sessionId?: string;
 }): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeJsonMount, inspectionArgs, reasoningLevel, readOnlyWorkspace,
-        workerOwnedGoalGit, executionMode, resumeSessionId,
+        workerOwnedGoalGit, executionMode, resumeSessionId, sessionId,
     } = options;
+    const goal = executionMode === 'goal';
     return [
         'run', '--rm', '-i',
         '--name', containerName,
@@ -149,10 +153,13 @@ function buildBaseDockerArgs(options: {
         ...envVars,
         '-w', '/home/node/workspace',
         config.dockerImage,
-        'claude', '-p', '-',
-        ...(executionMode === 'task' ? ['--no-session-persistence'] : []),
-        ...(executionMode === 'goal' && resumeSessionId ? ['--resume', resumeSessionId] : []),
-        ...(executionMode === 'task' ? ['--max-turns', maxTurns.toString()] : []),
+        // Goal sessions keep stdin open as a stream-json control channel, so
+        // `/goal` and later steering arrive as real user messages.
+        'claude', '-p', ...(goal ? ['--input-format', 'stream-json'] : ['-']),
+        ...(goal ? [] : ['--no-session-persistence']),
+        ...(goal && resumeSessionId ? ['--resume', resumeSessionId] : []),
+        ...(goal && !resumeSessionId && sessionId ? ['--session-id', sessionId] : []),
+        ...(goal ? [] : ['--max-turns', maxTurns.toString()]),
         '--output-format', 'stream-json',
         '--verbose',
         ...inspectionArgs,
@@ -183,7 +190,7 @@ export function buildDockerArgs(
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId,
+        executionMode = 'task', resumeSessionId, sessionId,
     } = params;
     const configPath = resolveConfigPath(config.configPath);
     if (repositoryInspection && !readOnlyWorkspace) {
@@ -217,6 +224,7 @@ export function buildDockerArgs(
         workerOwnedGoalGit,
         executionMode,
         resumeSessionId,
+        sessionId,
     });
 
     // Add model parameter if specified

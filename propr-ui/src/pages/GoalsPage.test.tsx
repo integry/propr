@@ -132,16 +132,16 @@ describe('GoalsPage', () => {
   });
 
   it('counts Unicode characters and applies only the selected provider objective limit', async () => {
-    const claudeCapability = {
+    const unlimitedCapability = {
       ...capability,
       agentId: 'agent-2',
-      agentAlias: 'claude',
-      agentType: 'claude',
-      models: ['claude-sonnet-4-6'],
-      defaultModel: 'claude-sonnet-4-6',
+      agentAlias: 'antigravity',
+      agentType: 'antigravity',
+      models: ['gemini-3-pro'],
+      defaultModel: 'gemini-3-pro',
       objectiveMaxCharacters: null,
     };
-    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [capability, claudeCapability] });
+    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [capability, unlimitedCapability] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     openGoalCreator();
     await screen.findByRole('option', { name: 'Codex' });
@@ -160,9 +160,40 @@ describe('GoalsPage', () => {
     expect(goalsApi.createGoal).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText('Coding agent'), { target: { value: 'agent-2' } });
-    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('claude-sonnet-4-6'));
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('gemini-3-pro'));
     expect(screen.queryByLabelText('Objective character count')).not.toBeInTheDocument();
     expect(objective).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeEnabled();
+  });
+
+  it('counts Claude objectives in UTF-16 units like Claude Code /goal does', async () => {
+    const claudeCapability = {
+      ...capability,
+      agentId: 'agent-3',
+      agentAlias: 'claude',
+      agentType: 'claude',
+      models: ['claude-opus-5'],
+      defaultModel: 'claude-opus-5',
+      objectiveMaxCharacters: 4_000,
+    };
+    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [claudeCapability] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    openGoalCreator();
+    await screen.findByRole('option', { name: 'Claude' });
+
+    const objective = screen.getByLabelText('Objective');
+    fireEvent.change(objective, { target: { value: '😀'.repeat(2_000) } });
+    expect(screen.getByLabelText('Objective character count')).toHaveTextContent('4,000 / 4,000 characters');
+    expect(screen.getByText(/Claude accepts up to 4,000 characters \(emoji and some symbols count as two\)/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeEnabled();
+
+    fireEvent.change(objective, { target: { value: `${'😀'.repeat(2_000)}x` } });
+    expect(screen.getByLabelText('Objective character count')).toHaveTextContent('4,001 / 4,000 characters');
+    expect(objective).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeDisabled();
+
+    fireEvent.change(objective, { target: { value: `  ${'x'.repeat(4_000)}\n` } });
+    expect(screen.getByLabelText('Objective character count')).toHaveTextContent('4,000 / 4,000 characters');
     expect(screen.getByRole('button', { name: 'Start goal' })).toBeEnabled();
   });
 

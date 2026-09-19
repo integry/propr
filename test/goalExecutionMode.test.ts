@@ -17,6 +17,8 @@ import {
   antigravityConversationIdentity,
   antigravityHelpSupportsWholeSession,
   claudeHelpSupportsWholeSession,
+  claudeHelpSupportsNativeGoal,
+  claudeGoalCommandProbeSucceeded,
   claudeSessionIdentity,
   codexHandshakeSupportsNativeGoal,
   codexSchemaSupportsNativeGoal,
@@ -279,10 +281,34 @@ describe('native goal provider contract', () => {
     assert.equal(antigravityHelpSupportsWholeSession('--print\n--output-format'), false);
   });
 
+  test('recognizes Claude native goal support from offline help and the local /goal command', () => {
+    const help = [
+      '-p, --print  Print response and exit',
+      '-r, --resume [value]  Resume a conversation by session ID',
+      '--session-id <uuid>  Use a specific session ID for the conversation',
+      '--input-format <format>  Input format (only works with --print)',
+      '--output-format <format>  Output format for print mode',
+    ].join('\n');
+    assert.equal(claudeHelpSupportsNativeGoal(help), true);
+    assert.equal(claudeHelpSupportsNativeGoal(help.replace(/--input-format.*\n/, '')), false);
+    assert.equal(claudeGoalCommandProbeSucceeded([
+      '{"type":"system","subtype":"init","session_id":"s"}',
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'No goal set. Usage: `/goal <condition>`' }),
+    ].join('\n')), true);
+    assert.equal(claudeGoalCommandProbeSucceeded(
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' }),
+    ), false);
+    assert.equal(claudeGoalCommandProbeSucceeded('Unknown command: /goal'), false);
+  });
+
   test('capability listing uses offline introspection and never launches provider inference', async () => {
     const schema = JSON.stringify(REQUIRED_GOAL_SCHEMA);
     const help: Record<string, string> = {
-      claude: '--print\n--resume [value]\n--output-format <format>\n--no-session-persistence',
+      claude: [
+        '--print\n--resume [value]\n--session-id <uuid>\n--input-format <format>\n--output-format <format>',
+        '===PROPR-CLAUDE-GOAL-PROBE===',
+        JSON.stringify({ type: 'result', is_error: false, result: 'No goal set. Usage: `/goal <condition>`' }),
+      ].join('\n'),
       antigravity: '--print\n--conversation <id>\n--output-format <format>\n--disable-slash-commands',
     };
     for (const type of ['codex', 'claude', 'antigravity'] as const) {
@@ -302,9 +328,33 @@ describe('native goal provider contract', () => {
       assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--network'), calls[0].args.indexOf('--network') + 2), ['--network', 'none']);
       assert.equal(calls[0].args.includes('-v'), false, 'introspection must not read mounted credentials');
       assert.equal(calls[0].args.includes('--model'), false);
-      assert.doesNotMatch(calls[0].args.join(' '), /\/goal|Reply with|--conversation\s+\S+$/);
-      assert.ok(type === 'codex' ? calls[0].args.join(' ').includes('generate-json-schema') : calls[0].args.includes('--help'));
+      assert.doesNotMatch(calls[0].args.join(' '), /Reply with|--conversation\s+\S+$/);
+      if (type === 'codex') assert.ok(calls[0].args.join(' ').includes('generate-json-schema'));
+      else if (type === 'claude') {
+        // `/goal` with no condition is a local usage command: no model call.
+        assert.match(calls[0].args.join(' '), /claude --help; .*claude -p \/goal --output-format stream-json --verbose --no-session-persistence$/);
+        assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
+        assert.equal(capability.controls.liveInput, true);
+      } else {
+        assert.doesNotMatch(calls[0].args.join(' '), /\/goal/);
+        assert.ok(calls[0].args.includes('--help'));
+      }
     }
+  });
+
+  test('Claude runtimes without a noninteractive /goal command are not goal capable', async () => {
+    const capability = await probeGoalCapability({
+      config: baseConfig('claude'), goalCapable: true,
+    } as Agent, async () => ({
+      stdout: [
+        '--print\n--resume [value]\n--session-id <uuid>\n--input-format <format>\n--output-format <format>',
+        '===PROPR-CLAUDE-GOAL-PROBE===',
+        JSON.stringify({ type: 'result', is_error: true, result: 'Not logged in · Please run /login' }),
+      ].join('\n'),
+      stderr: '', exitCode: 0, messageTimestamps: new Map(),
+    }));
+    assert.equal(capability.goalCapable, false);
+    assert.match(capability.reason || '', /noninteractive native \/goal/);
   });
 
   test('unsupported capability results expire and can be explicitly rechecked', async () => {
