@@ -43,15 +43,17 @@ export async function resolveUnifiedAgentImage(
     configs: AgentConfig[],
     prepareImages: boolean,
 ): Promise<AgentImageResolution> {
+    let imageTag: string | undefined;
     try {
         const base = await resolveBundleBaseImage(configs, prepareImages);
+        imageTag = base.imageTag;
         if (!base.image) return base;
         return {
             image: await resolveAgentRuntimeImage(base.image, { buildMissing: prepareImages }),
             imageTag: base.imageTag,
         };
     } catch (error) {
-        return { error: (error as Error).message };
+        return { imageTag, error: (error as Error).message };
     }
 }
 

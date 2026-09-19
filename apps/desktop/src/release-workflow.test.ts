@@ -22,6 +22,10 @@ const makeDmg = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/make-dmg.mjs', import.meta.url)),
   'utf8',
 ));
+const retryTransientDownload = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/retry-transient-download.mjs', import.meta.url)),
+  'utf8',
+));
 const verifyDarwinImage = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/verify-darwin-image.mjs', import.meta.url)),
   'utf8',
@@ -389,6 +393,29 @@ describe('desktop trusted release workflow', () => {
     assert.match(section, /npm run desktop:test/);
     assert.match(section, /npm run desktop:package/);
     assert.match(section, /npm run desktop:smoke/);
+  });
+
+  test('retries only transient Electron downloads around unsigned validation packaging', () => {
+    const validation = job('package', 'finalize');
+    assert.match(
+      validation,
+      /- name: Package desktop app from clean checkout[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs -- npm run desktop:package\n/,
+    );
+    assert.match(
+      validation,
+      /- name: Make Linux validation packages[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs\n\s+-- npm run make -w @propr\/desktop -- --arch=\$\{\{ matrix\.arch \}\}\n/,
+    );
+    assert.match(
+      validation,
+      /- name: Make macOS validation packages[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs \\\n\s+-- npm run make -w @propr\/desktop -- --arch=\$\{\{ matrix\.arch \}\}\n\s+npm run make:dmg -w @propr\/desktop -- --arch=\$\{\{ matrix\.arch \}\}\n/,
+    );
+    assert.equal(validation.match(/retry-transient-download\.mjs/g)?.length, 3);
+    assert.ok(!job('release-package', 'release-finalize').includes('retry-transient-download.mjs'),
+      'signed production packaging must not silently repeat signing or notarization');
+    assert.match(retryTransientDownload, /export const DEFAULT_ATTEMPTS = 3;/);
+    assert.match(retryTransientDownload, /if \(!isTransientDownloadFailure\(output\.text\(\)\)\) \{\n\s+log\('Command failed without a transient download signature; not retrying\.'\);\n\s+return exitCode;/);
+    assert.match(retryTransientDownload, /if \(attempt >= attempts\) \{/);
+    assert.match(retryTransientDownload, /\/fetch failed\/i/);
   });
 
   test('keeps complete Windows validation assertions dormant and outside production', () => {

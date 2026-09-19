@@ -47,6 +47,7 @@ let mockWaitingJobs: unknown[] = [];
 let mockDelayedJobs: unknown[] = [];
 await mock.module('bullmq', {
     namedExports: {
+        ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
         Queue: function Queue() {
             return {
                 add: mockQueueAdd,
@@ -56,6 +57,9 @@ await mock.module('bullmq', {
                 getWaiting: mock.fn(async () => mockWaitingJobs),
                 getDelayed: mock.fn(async () => mockDelayedJobs),
             };
+        },
+        QueueEvents: function QueueEvents() {
+            return { waitUntilReady: mock.fn(async () => {}), close: mock.fn(async () => {}) };
         },
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };

@@ -163,6 +163,35 @@ describe('OpenCode API routes', () => {
         });
     });
 
+    test('POST agent image build delegates preparation to the worker queue', async () => {
+        const enqueueAgentImagePreparation = mock.fn(async () => {});
+        const routes = createAgentVersionRoutes({
+            resolveVersion: async () => '9.8.7',
+            loadAgents: async () => [{
+                id: 'opencode-1',
+                type: 'opencode',
+                alias: 'opencode',
+                enabled: true,
+                cliVersionResolved: '1.18.29',
+                dockerImage: 'propr/agent:latest',
+            }],
+            enqueueAgentImagePreparation,
+        });
+        const res = createMockResponse();
+
+        await routes.buildImage({
+            params: { agentId: 'opencode-1' },
+            body: { cliVersionType: 'specific', cliVersion: '9.8.7' },
+        } as never, res as never);
+
+        assert.equal(res.statusCode, 200);
+        assert.equal(enqueueAgentImagePreparation.mock.calls.length, 1);
+        const [imageTag, options] = enqueueAgentImagePreparation.mock.calls[0].arguments;
+        assert.match(imageTag, /^propr\/agent:bundle-/);
+        assert.equal(options?.contentHash !== undefined, true);
+        assert.equal(options?.versions.opencode, '9.8.7');
+    });
+
     test('agent version routes reject invalid agent types with a deterministic 400', async () => {
         const routes = createAgentVersionRoutes();
         const res = createMockResponse();

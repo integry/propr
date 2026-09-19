@@ -26,6 +26,7 @@ import {
     inspectSessionMessageLine,
     SessionLineInspectionContext,
 } from './dockerSessionOutput.js';
+export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
 export {
@@ -444,6 +445,5 @@ function detectContainerId(
     }, 2000);
 }
 
-// Re-export image builder functions for backward compatibility
 export { agentDockerImageExists, buildClaudeDockerImage, ensureAgentBundleImage, ensureAgentDockerImage } from './dockerImageBuilder.js';
 export type { VersionedImageBuildResult } from './dockerImageBuilder.js';

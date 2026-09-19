@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Worker } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
 import { logger } from '@propr/core';
@@ -13,6 +13,12 @@ import {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
     buildAgentRuntimePackageProfile,
     type AgentRuntimeBuildJobData
+} from '@propr/core';
+import {
+    AGENT_IMAGE_PREPARATION_QUEUE_NAME,
+    createAgentImagePreparationQueue,
+    closeAgentImageBuildLock,
+    type AgentImagePreparationJobData,
 } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
@@ -30,6 +36,7 @@ import {
 } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
+import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -222,21 +229,61 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
 
-    // The main worker is the single owner of base/runtime agent image
-    // preparation. Do this before heartbeats and BullMQ workers so the stack
-    // cannot advertise or claim task capacity while an image is still building.
-    logger.info('Preparing agent Docker images and initializing agent registry...');
-    const registry = AgentRegistry.getInstance();
-    await registry.prepareImagesAndRefresh();
-    const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
-    if (imageStatus.status !== 'ready') {
-        throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
-    }
-    const agents = registry.getAllAgents();
-    logger.info({
-        agentCount: agents.length,
-        agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, dockerImage: a.config.dockerImage }))
-    }, 'Agent images prepared and registry initialized successfully');
+    const agentImagePreparationQueue: Queue<AgentImagePreparationJobData> = createAgentImagePreparationQueue();
+    await agentImagePreparationQueue.setGlobalConcurrency(1);
+    const agentImagePreparationWorker = new Worker<AgentImagePreparationJobData>(
+        AGENT_IMAGE_PREPARATION_QUEUE_NAME,
+        async (job) => {
+            await processAgentImagePreparationJob(job);
+            logger.info({ requestedImageTag: job.data.imageTag }, 'Worker-owned unified agent image preparation completed');
+        },
+        {
+            connection: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                maxRetriesPerRequest: null,
+            },
+            concurrency: 1,
+        },
+    );
+    agentImagePreparationWorker.on('failed', (job, error) => {
+        logger.error({ imageTag: job?.data.imageTag, error: error.message }, 'Worker-owned unified agent image preparation failed');
+    });
+
+    // Runtime-package preparation must stay available while startup waits for
+    // readiness: rebuilding a missing runtime image (and the registry refresh
+    // after it succeeds) can be exactly what establishes readiness.
+    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
+        AGENT_RUNTIME_BUILD_QUEUE_NAME,
+        async (job) => {
+            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
+            await job.updateProgress(5);
+            const state = await buildAgentRuntimePackageProfile(job.data);
+            if (state.buildId !== job.data.buildId) {
+                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+                return state;
+            }
+            await job.updateProgress(90);
+            await AgentRegistry.getInstance().refresh();
+            await job.updateProgress(100);
+            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
+            return state;
+        },
+        {
+            connection: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                maxRetriesPerRequest: null
+            },
+            concurrency: 1
+        }
+    );
+    runtimeBuildWorker.on('failed', (job, error) => {
+        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+    });
+
+    // Do not advertise or claim task capacity while an image is still building.
+    await prepareAgentRegistryAtStartup();
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
@@ -341,35 +388,6 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         recoverGoals: () => recoverNonterminalGoals(),
     });
 
-    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
-        AGENT_RUNTIME_BUILD_QUEUE_NAME,
-        async (job) => {
-            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
-            await job.updateProgress(5);
-            const state = await buildAgentRuntimePackageProfile(job.data);
-            if (state.buildId !== job.data.buildId) {
-                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
-                return state;
-            }
-            await job.updateProgress(90);
-            await AgentRegistry.getInstance().refresh();
-            await job.updateProgress(100);
-            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
-            return state;
-        },
-        {
-            connection: {
-                host: process.env.REDIS_HOST || 'localhost',
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                maxRetriesPerRequest: null
-            },
-            concurrency: 1
-        }
-    );
-    runtimeBuildWorker.on('failed', (job, error) => {
-        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
-    });
-
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
         await taskStateRecovery.close();
@@ -377,6 +395,9 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();
+        await agentImagePreparationWorker.close();
+        await agentImagePreparationQueue.close();
+        await closeAgentImageBuildLock();
         await heartbeatRedis.srem('system:status:workers', workerId);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();

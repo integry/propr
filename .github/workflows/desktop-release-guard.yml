@@ -234,7 +234,7 @@ jobs:
           test ! -e packages/shared/dist
           test ! -e packages/client/dist
           test ! -e apps/desktop/out
-          npm run desktop:package
+          node apps/desktop/scripts/retry-transient-download.mjs -- npm run desktop:package
 
       - name: Verify packaged Linux and macOS native icon assets and metadata
         if: matrix.platform == 'linux' || matrix.platform == 'darwin'
@@ -265,13 +265,17 @@ jobs:
       - name: Make Linux validation packages
         if: matrix.platform == 'linux'
         shell: bash
-        run: PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1 npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+        run: >-
+          PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1
+          node apps/desktop/scripts/retry-transient-download.mjs
+          -- npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
 
       - name: Make macOS validation packages
         if: matrix.platform == 'darwin'
         shell: bash
         run: |
-          npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+          node apps/desktop/scripts/retry-transient-download.mjs \
+            -- npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
           npm run make:dmg -w @propr/desktop -- --arch=${{ matrix.arch }}
 
       - name: Verify final local ARM64 signatures and tamper rejection

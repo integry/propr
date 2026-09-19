@@ -9,6 +9,8 @@ import {
     generateAgentBundleImageTag,
     getDefaultAgentCliVersionMatrix
 } from '../../agents/version/versionService.js';
+import { assertAgentImageBuildCapacity } from '../../agents/agentImageBuildCapacity.js';
+import { withAgentImageBuildSlot } from '../../agents/agentImageBuildLock.js';
 import { executeDockerCommand } from './dockerExecutor.js';
 
 const PROJECT_ROOT = process.env.PROPR_ROOT
@@ -69,22 +71,33 @@ async function buildBundle(
         return { success: false, imageTag, error: `Unified agent Dockerfile not found: ${dockerfile}` };
     }
 
-    logger.info({ imageTag, versions, dockerfile }, 'Building unified agent Docker image...');
-    const result = await executeDockerCommand('docker', [
-        'build',
-        '-f', dockerfile,
-        ...bundleBuildArgs(versions),
-        '-t', imageTag,
-        basePath
-    ], { timeout: 20 * 60 * 1000 });
-
-    if (result.exitCode !== 0) {
-        const error = `Build failed with exit code ${result.exitCode}: ${result.stderr}`;
-        logger.error({ imageTag, versions, error }, 'Failed to build unified agent image');
-        return { success: false, imageTag, error };
-    }
-    logger.info({ imageTag, versions }, 'Unified agent Docker image built successfully');
-    return { success: true, imageTag };
+    return withAgentImageBuildSlot(async () => {
+        // Recheck after acquiring the installation-wide slot so concurrent
+        // processes do not build an image that another process just produced.
+        if (await agentDockerImageExists(imageTag) || await pullImage(imageTag)) {
+            return { success: true, imageTag };
+        }
+        await assertAgentImageBuildCapacity();
+        logger.info({ imageTag, versions, dockerfile }, 'Building unified agent Docker image...');
+        const result = await executeDockerCommand('docker', [
+            'build',
+            '-f', dockerfile,
+            ...bundleBuildArgs(versions),
+            '-t', imageTag,
+            basePath
+        ], { timeout: 20 * 60 * 1000 });
+        if (result.exitCode !== 0) {
+            // Docker reports disk pressure on either stream depending on the
+            // builder and progress mode. Both are kept so the message-based
+            // disk-pressure classification cannot miss `no space left on device`.
+            const output = [result.stderr, result.stdout].map(stream => stream?.trim()).filter(Boolean).join('\n');
+            const error = `Build failed with exit code ${result.exitCode}: ${output}`;
+            logger.error({ imageTag, versions, error }, 'Failed to build unified agent image');
+            return { success: false, imageTag, error };
+        }
+        logger.info({ imageTag, versions }, 'Unified agent Docker image built successfully');
+        return { success: true, imageTag };
+    });
 }
 
 function scheduleBundleImageCleanup(imageTag: string): void {

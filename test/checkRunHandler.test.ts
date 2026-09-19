@@ -39,8 +39,12 @@ await mock.module('ioredis', {
 // Mock bullmq
 await mock.module('bullmq', {
     namedExports: {
+        ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
         Queue: function Queue() {
             return { add: mock.fn(), close: mock.fn(), on: mock.fn() };
+        },
+        QueueEvents: function QueueEvents() {
+            return { waitUntilReady: mock.fn(async () => {}), close: mock.fn(async () => {}) };
         },
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };
