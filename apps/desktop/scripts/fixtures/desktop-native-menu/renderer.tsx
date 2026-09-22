@@ -4,6 +4,7 @@ import { DesktopExperience } from '../../../../../propr-ui/src/desktop/DesktopEx
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from '../../../../../propr-ui/src/components/Layout';
 import PlanStudioPage from '../../../../../propr-ui/src/pages/PlanStudioPage';
+import NewTaskPage from '../../../../../propr-ui/src/pages/NewTaskPage';
 import { DesktopNativeNavigationObserver } from '../../../../../propr-ui/src/desktop/DesktopNativeNavigationObserver';
 import { createApplicationMenuTemplate } from '../../../src/application-menu';
 import { createDesktopNativeCommandDispatcher } from '../../../src/native-commands';
@@ -87,7 +88,7 @@ createRoot(document.getElementById('root')!).render(
         <ToastProvider>
           <AuthProvider user={{ id: 'frame-user', login: 'frame-user', username: 'frame-user', displayName: 'Frame Test', email: null, avatarUrl: null, role: 'member', permissions: [], authorizationSource: 'local' }}>
             <NotificationCenterProvider>
-              <Layout><Routes><Route path="/studio/new" element={<PlanStudioPage isNew />} /><Route path="*" element={<div className="p-6">Desktop menu test workspace</div>} /></Routes></Layout>
+              <Layout><Routes><Route path="/studio/new" element={<PlanStudioPage isNew />} /><Route path="/tasks/new" element={<NewTaskPage />} /><Route path="*" element={<div className="p-6">Desktop menu test workspace</div>} /></Routes></Layout>
             </NotificationCenterProvider>
           </AuthProvider>
         </ToastProvider>

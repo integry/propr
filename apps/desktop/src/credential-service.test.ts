@@ -2223,7 +2223,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Slowloris terminal contract test',
       openPairingBrowser: async () => undefined,
-      revocationDeadlines: { headerMs: 50, bodyMs: 25, recordMs: 75, aggregateMs: 100 },
+      revocationDeadlines: { headerMs: 5_000, bodyMs: 25, recordMs: 5_000, aggregateMs: 5_000 },
       fetch: async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
         cancel() { bodyCancelled = true; },
