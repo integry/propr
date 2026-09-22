@@ -96,7 +96,7 @@ for (const width of [320, 390]) {
     await expect(page.locator('header')).toBeHidden();
     await expect(mobileNavigation.getByRole('link', { name: /Inbox/ })).toBeVisible();
     await expect(mobileNavigation.getByRole('link', { name: 'Activity' })).toBeVisible();
-    await expect(mobileNavigation.getByRole('button', { name: 'New Plan' })).toBeVisible();
+    await expect(mobileNavigation.getByRole('button', { name: 'New Task' })).toBeVisible();
     await expect(mobileNavigation.getByRole('link', { name: 'Repositories' })).toBeVisible();
     await expect(mobileNavigation.getByRole('button', { name: 'More' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible();

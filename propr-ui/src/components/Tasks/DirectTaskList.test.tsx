@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DirectTaskList from './DirectTaskList';
@@ -20,6 +20,13 @@ describe('DirectTaskList', () => {
     vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [] });
     const { container } = render(<MemoryRouter><DirectTaskList /></MemoryRouter>);
     await vi.waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledWith('task'));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders nothing instead of crashing when the response has no goals array', async () => {
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({} as { goals: goalsApi.Goal[] });
+    const { container } = render(<MemoryRouter><DirectTaskList /></MemoryRouter>);
+    await act(async () => { await vi.mocked(goalsApi.listGoals).mock.results[0]?.value; });
     expect(container).toBeEmptyDOMElement();
   });
 

@@ -72,7 +72,7 @@ export default function DirectTaskList() {
     const generation = ++generationRef.current;
     try {
       const data = await listGoals('task');
-      if (generation === generationRef.current) setTasks(data.goals);
+      if (generation === generationRef.current) setTasks(Array.isArray(data.goals) ? data.goals : []);
     } catch {
       // Direct tasks are supplementary to the task table; keep the last successful read.
     }
