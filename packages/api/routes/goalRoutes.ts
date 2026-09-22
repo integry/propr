@@ -163,14 +163,22 @@ function validateCreateBody(body: Record<string, unknown>): string | null {
   if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
   if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
   if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
-  if (body.kind != null && !GOAL_KINDS.includes(body.kind as GoalKind)) return 'kind must be goal or task';
-  if (body.kind === 'task' && body.launchStrategy !== 'direct') return 'tasks must use the direct launch strategy';
   if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
   if (typeof body.model !== 'string' || !body.model) return 'model is required';
   if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
   if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
   if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
-  return validateCreateCheckpointInterval(body);
+  return validateCreateLaunchOptions(body);
+}
+
+function validateCreateLaunchOptions(body: Record<string, unknown>): string | null {
+  return validateCreateKind(body) ?? validateCreateCheckpointInterval(body);
+}
+
+function validateCreateKind(body: Record<string, unknown>): string | null {
+  if (body.kind != null && !GOAL_KINDS.includes(body.kind as GoalKind)) return 'kind must be goal or task';
+  if (body.kind === 'task' && body.launchStrategy !== 'direct') return 'tasks must use the direct launch strategy';
+  return null;
 }
 
 function validateCreateCheckpointInterval(body: Record<string, unknown>): string | null {
