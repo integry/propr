@@ -1,20 +1,21 @@
 import { PreviewThumbnails } from '../components/PreviewMedia';
 /* eslint-disable max-lines -- goal list and split-pane console intentionally share this route-level surface */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Activity, CheckCircle2, CircleDot, CirclePause, CirclePlay, CircleStop, Clock3,
   Coins, ExternalLink, FileText, Filter, GitPullRequest, Github, ListTodo, LoaderCircle, Plus, Send,
   MoreHorizontal, Terminal, Trash2, X,
 } from 'lucide-react';
-import { getInstanceCatalog } from '../api/proprApi';
-import type { InstanceCatalogRepository } from '../api/proprTypes';
 import {
-  cancelGoal, createGoal, deleteGoal, getGoal, getGoalCapabilities, getGoalVisualPreviews, listGoals, pauseGoal,
+  cancelGoal, deleteGoal, getGoal, getGoalCapabilities, getGoalVisualPreviews, listGoals, pauseGoal,
   requestGoalModel, resumeGoal, sendGoalInput,
   getGoalAttachmentUrl,
-  type Goal, type GoalCapability, type GoalLaunchStrategy, type GoalVisualPreview,
+  type Goal, type GoalVisualPreview,
 } from '../api/goals';
+import { goalPath } from '../components/Goals/goalPaths';
+import { GoalLauncherForm } from '../components/Goals/GoalLauncher';
+import { addGoalFiles, buttonClass } from '../components/Goals/goalLauncherUtils';
 import { useTaskLiveData } from '../components/TaskDetails/useTaskLiveData';
 import TodoList from '../components/TaskDetails/TodoList';
 import ExecutionEventLog from '../components/TaskDetails/ExecutionEventLog';
@@ -27,85 +28,7 @@ import { formatAgentLabel } from '../utils/agentStatus';
 import { getModelDisplayName } from '../utils/modelDisplay';
 import { GoalAttachmentInput } from '../components/Goals/GoalAttachmentInput';
 import { clipboardImageFiles } from '../components/Goals/goalAttachmentUtils';
-import { resizeImage } from '../components/TaskPlanner/imageUtils';
 import { useDemoMode } from '../contexts/DemoModeContext';
-
-const buttonClass = 'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50';
-const checkpointIntervalOptions = [5, 10, 15, 30, 60, 120];
-const goalFormSettingsStorageKey = 'propr.goalFormSettings';
-const maxGoalAttachmentsPerPrompt = 10;
-
-async function addGoalFiles(
-  current: File[],
-  incoming: File[],
-  setFiles: React.Dispatch<React.SetStateAction<File[]>>,
-  setError: React.Dispatch<React.SetStateAction<string | null>>,
-) {
-  if (current.length + incoming.length > maxGoalAttachmentsPerPrompt) {
-    setError(`Attach up to ${maxGoalAttachmentsPerPrompt} files to each prompt.`);
-    return;
-  }
-  setFiles([...current, ...await Promise.all(incoming.map(resizeImage))]);
-}
-
-const createGoalWithOptionalFiles = (body: Parameters<typeof createGoal>[0], files: File[]) => files.length > 0
-  ? createGoal(body, files)
-  : createGoal(body);
-
-interface GoalFormSettings {
-  repository: string;
-  agentId: string;
-  model: string;
-  launchStrategy: GoalLaunchStrategy;
-  maxParallelTasks: number | null;
-  ultrafix: boolean;
-  checkpointIntervalMinutes: number;
-}
-
-const defaultGoalFormSettings: GoalFormSettings = {
-  repository: '',
-  agentId: '',
-  model: '',
-  launchStrategy: 'direct',
-  maxParallelTasks: null,
-  ultrafix: false,
-  checkpointIntervalMinutes: 15,
-};
-
-const readGoalFormSettings = (): GoalFormSettings => {
-  try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(goalFormSettingsStorageKey) || 'null');
-    if (!parsed || typeof parsed !== 'object') return defaultGoalFormSettings;
-    const stored = parsed as Record<string, unknown>;
-    return {
-      repository: typeof stored.repository === 'string' ? stored.repository : '',
-      agentId: typeof stored.agentId === 'string' ? stored.agentId : '',
-      model: typeof stored.model === 'string' ? stored.model : '',
-      launchStrategy: stored.launchStrategy === 'orchestrate' ? 'orchestrate' : 'direct',
-      maxParallelTasks: typeof stored.maxParallelTasks === 'number'
-        && Number.isInteger(stored.maxParallelTasks)
-        && stored.maxParallelTasks >= 1
-        && stored.maxParallelTasks <= 32
-        ? stored.maxParallelTasks
-        : null,
-      ultrafix: typeof stored.ultrafix === 'boolean' ? stored.ultrafix : false,
-      checkpointIntervalMinutes: typeof stored.checkpointIntervalMinutes === 'number'
-        && checkpointIntervalOptions.includes(stored.checkpointIntervalMinutes)
-        ? stored.checkpointIntervalMinutes
-        : 15,
-    };
-  } catch {
-    return defaultGoalFormSettings;
-  }
-};
-
-const saveGoalFormSettings = (settings: GoalFormSettings) => {
-  try {
-    window.localStorage.setItem(goalFormSettingsStorageKey, JSON.stringify(settings));
-  } catch {
-    // The form should remain usable when browser storage is unavailable.
-  }
-};
 
 const duration = (milliseconds: number) => {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -118,22 +41,6 @@ const tokenTotal = (usage: { input_tokens?: number | null; output_tokens?: numbe
   ? (usage.input_tokens || 0) + (usage.output_tokens || 0)
     + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0)
   : 0;
-
-// Codex counts the objective in Unicode code points; Claude Code's `/goal`
-// counts its (trimmed) condition in UTF-16 units, so an emoji counts as two.
-const objectiveLength = (objective: string, agentType: string | undefined) => agentType === 'claude'
-  ? objective.trim().length
-  : Array.from(objective).length;
-
-const OBJECTIVE_LIMIT_PROVIDERS: Record<string, { name: string; unit: string }> = {
-  codex: { name: 'Codex', unit: 'Unicode characters' },
-  claude: { name: 'Claude', unit: 'characters (emoji and some symbols count as two)' },
-};
-
-const capabilityAgentLabel = (agent: GoalCapability, agents: GoalCapability[]) => formatAgentLabel(
-  { type: agent.agentType, alias: agent.agentAlias },
-  agents.map(candidate => ({ type: candidate.agentType, alias: candidate.agentAlias })),
-);
 
 function GoalState({ goal, quietCompleted = false }: { goal: Goal; quietCompleted?: boolean }) {
   const state = goal.resultState || (goal.desiredState === 'cancelled' ? 'cancelling' : goal.desiredState);
@@ -176,198 +83,6 @@ function CheckpointDeclaration({ checkpoint }: { checkpoint: NonNullable<Goal['c
     {latest.commitSha && <p className="mt-3 text-xs text-slate-500">Published commit <code className="font-mono text-slate-700">{latest.commitSha}</code></p>}
     {latest.error && <p className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{latest.error}</p>}
   </section>;
-}
-
-// The create surface coordinates persisted settings, runtime capabilities, attachments, and demo-mode access.
-interface CreateGoalFormProps {
-  onCancel: () => void;
-  onCreated: (goal: Goal) => void;
-  onDirtyChange: (dirty: boolean) => void;
-  onSubmittingChange: (submitting: boolean) => void;
-}
-
-// eslint-disable-next-line complexity
-function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange }: CreateGoalFormProps) {
-  const { isDemoMode } = useDemoMode();
-  const previousSettings = useMemo(readGoalFormSettings, []);
-  const [repositories, setRepositories] = useState<InstanceCatalogRepository[]>([]);
-  const [agents, setAgents] = useState<GoalCapability[]>([]);
-  const [repository, setRepository] = useState(previousSettings.repository);
-  const [agentId, setAgentId] = useState(previousSettings.agentId);
-  const [model, setModel] = useState(previousSettings.model);
-  const [objective, setObjective] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
-  const [launchStrategy, setLaunchStrategy] = useState<GoalLaunchStrategy>(previousSettings.launchStrategy);
-  const [parallelism, setParallelism] = useState(previousSettings.maxParallelTasks?.toString() || '');
-  const [ultrafix, setUltrafix] = useState(previousSettings.ultrafix);
-  const [checkpointInterval, setCheckpointInterval] = useState(previousSettings.checkpointIntervalMinutes);
-  const [submitting, setSubmitting] = useState(false);
-  const [rechecking, setRechecking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const selectedAgent = agents.find(agent => agent.agentId === agentId);
-  const objectiveCharacters = objectiveLength(objective, selectedAgent?.agentType);
-  const objectiveLimitProvider = OBJECTIVE_LIMIT_PROVIDERS[selectedAgent?.agentType ?? ''];
-  const objectiveMaxCharacters = selectedAgent?.objectiveMaxCharacters ?? null;
-  const objectiveTooLong = objectiveMaxCharacters !== null
-    && objectiveCharacters > objectiveMaxCharacters;
-  const unsupportedAgents = agents.filter(agent => !agent.goalCapable);
-  const showRuntimeDiagnostics = agents.length > 0 && unsupportedAgents.length === agents.length;
-  const repositoryOptions = useMemo<RepoOption[]>(() => repositories.map(repo => ({
-    name: repo.name,
-    enabled: repo.enabled,
-    ...(repo.alias ? { displayName: repo.alias } : {}),
-    ...(repo.baseBranch ? { baseBranch: repo.baseBranch } : {}),
-  })), [repositories]);
-  const markDirty = useCallback(() => onDirtyChange(true), [onDirtyChange]);
-
-  const applyCapabilities = useCallback((capabilities: GoalCapability[]) => {
-    setAgents(capabilities);
-    setAgentId(current => capabilities.some(agent => agent.agentId === current && agent.goalCapable)
-      ? current
-      : capabilities.find(agent => agent.goalCapable)?.agentId || '');
-  }, []);
-
-  useEffect(() => {
-    Promise.all([getInstanceCatalog(), getGoalCapabilities()]).then(([catalog, capabilityData]) => {
-      setRepositories(catalog.repositories);
-      applyCapabilities(capabilityData.agents);
-      setRepository(current => catalog.repositories.some(repo => repo.name === current)
-        ? current
-        : catalog.repositories[0]?.name || '');
-    }).catch(err => setError((err as Error).message));
-  }, [applyCapabilities]);
-
-  useEffect(() => {
-    if (selectedAgent && !selectedAgent.models.includes(model)) setModel(selectedAgent.defaultModel || selectedAgent.models[0] || '');
-  }, [model, selectedAgent]);
-
-  const recheckCapabilities = async () => {
-    setRechecking(true);
-    setError(null);
-    try {
-      applyCapabilities((await getGoalCapabilities(true)).agents);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setRechecking(false);
-    }
-  };
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (isDemoMode) return;
-    if (objectiveTooLong) {
-      setError(`Objective exceeds this coding agent's ${objectiveMaxCharacters?.toLocaleString('en-US')} character limit.`);
-      return;
-    }
-    setSubmitting(true);
-    onSubmittingChange(true);
-    setError(null);
-    try {
-      const createBody = {
-        repository, agentId, model, objective, launchStrategy,
-        ...(parallelism ? { maxParallelTasks: Number(parallelism) } : {}),
-        ...(launchStrategy === 'direct' ? { checkpointIntervalMinutes: checkpointInterval } : {}),
-        ultrafix,
-      };
-      const result = await createGoalWithOptionalFiles(createBody, files);
-      saveGoalFormSettings({
-        repository,
-        agentId,
-        model,
-        launchStrategy,
-        maxParallelTasks: parallelism ? Number(parallelism) : null,
-        ultrafix,
-        checkpointIntervalMinutes: checkpointInterval,
-      });
-      onCreated(result.goal);
-    } catch (err) { setError((err as Error).message); }
-    finally { setSubmitting(false); onSubmittingChange(false); }
-  };
-
-  return (
-    <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7">
-      {isDemoMode && <p className="mb-4 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">Demo mode is read-only. You can inspect existing goals, but cannot start a new one.</p>}
-      {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
-      {showRuntimeDiagnostics && <div className="mb-3 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">
-        <p>No configured coding-agent runtime currently supports goals.</p>
-        <ul className="mt-2 list-disc space-y-1 pl-5">
-          {unsupportedAgents.map(agent => <li key={agent.agentId}><span className="font-medium">{agent.agentAlias}:</span> {agent.reason || 'Required goal/session transport is unavailable'}</li>)}
-        </ul>
-        <button type="button" disabled={rechecking} onClick={recheckCapabilities} className="mt-2 font-medium underline disabled:opacity-50">{rechecking ? 'Rechecking…' : 'Recheck runtimes'}</button>
-      </div>}
-      <fieldset disabled={isDemoMode} aria-label="Goal creation controls" className={`min-w-0 border-0 p-0 ${isDemoMode ? 'opacity-70' : ''}`}>
-        <div className="grid gap-4 md:grid-cols-2">
-        <div className="text-sm font-medium text-slate-700">Repository
-          <RepositorySelector repos={repositoryOptions} selectedRepo={repository} onRepoChange={value => { markDirty(); setRepository(value); }} className="mt-1" />
-        </div>
-        <label className="text-sm font-medium text-slate-700">Coding agent
-          <select aria-label="Coding agent" value={agentId} onChange={event => { markDirty(); setAgentId(event.target.value); }} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
-            {agents.map(agent => <option key={agent.agentId} value={agent.agentId} disabled={!agent.goalCapable}>{capabilityAgentLabel(agent, agents)}{agent.goalCapable ? '' : ' — unsupported'}</option>)}
-          </select>
-        </label>
-        <label className="text-sm font-medium text-slate-700">Model
-          <select aria-label="Model" value={model} onChange={event => { markDirty(); setModel(event.target.value); }} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
-            {(selectedAgent?.models || []).map(item => <option key={item} value={item}>{getModelDisplayName(item)}</option>)}
-          </select>
-        </label>
-        <label className="text-sm font-medium text-slate-700">Maximum parallel tasks (optional)
-          <input aria-label="Maximum parallel tasks" type="number" min="1" max="32" value={parallelism} onChange={event => { markDirty(); setParallelism(event.target.value); }} className="mt-1 w-full rounded-md border border-slate-300 p-2" />
-        </label>
-        </div>
-        <fieldset className="mt-4">
-        <legend className="text-sm font-medium text-slate-700">Goal launch strategy</legend>
-        <div className="mt-2 grid gap-3 md:grid-cols-2">
-          <label className="flex cursor-pointer gap-3 border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent implements directly" type="radio" name="launch-strategy" value="direct" checked={launchStrategy === 'direct'} onChange={() => { markDirty(); setLaunchStrategy('direct'); }} /><span><strong className="block text-slate-900">Agent implements directly</strong>ProPR opens the draft PR before work begins and safely commits the agent's changes at checkpoints.</span></label>
-          <label className="flex cursor-pointer gap-3 border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent orchestrates through ProPR" type="radio" name="launch-strategy" value="orchestrate" checked={launchStrategy === 'orchestrate'} onChange={() => { markDirty(); setLaunchStrategy('orchestrate'); }} /><span><strong className="block text-slate-900">Agent orchestrates through ProPR</strong>The agent owns decomposition, creates issues, and starts and monitors their implementation through ProPR.</span></label>
-        </div>
-        </fieldset>
-        {launchStrategy === 'direct' && <div className="mt-4 max-w-xl">
-        <div className="flex items-center justify-between gap-3">
-          <label htmlFor="checkpoint-frequency" className="text-sm font-medium text-slate-700">Checkpoint target cadence</label>
-          <output htmlFor="checkpoint-frequency" className="rounded-full bg-primary-500/10 px-2.5 py-1 text-xs font-semibold text-primary-700">{checkpointInterval} minutes</output>
-        </div>
-        <input
-          id="checkpoint-frequency"
-          aria-label="Checkpoint target cadence"
-          aria-valuetext={`${checkpointInterval} minutes`}
-          type="range"
-          min="0"
-          max={checkpointIntervalOptions.length - 1}
-          step="1"
-          value={checkpointIntervalOptions.indexOf(checkpointInterval)}
-          onChange={event => { markDirty(); setCheckpointInterval(checkpointIntervalOptions[Number(event.target.value)]); }}
-          className="mt-3 h-2 w-full cursor-pointer accent-primary-600"
-        />
-        <div aria-label="Checkpoint target cadence options" className="mt-1 flex justify-between text-xs text-slate-500">
-          {checkpointIntervalOptions.map(minutes => <span key={minutes}>{minutes}</span>)}
-        </div>
-        <p className="mt-2 text-xs text-slate-500">Guidance for the agent, not a timer. ProPR commits only when the agent declares a coherent checkpoint ready.</p>
-        </div>}
-        <div className="mt-4 text-sm font-medium text-slate-700">Objective
-        <textarea aria-label="Objective" aria-invalid={objectiveTooLong || undefined} aria-describedby={objectiveMaxCharacters === null ? undefined : 'goal-objective-limit'} value={objective} onChange={event => { markDirty(); setObjective(event.target.value); }} onPaste={event => {
-          const pasted = clipboardImageFiles(event);
-          if (!pasted.length) return;
-          event.preventDefault();
-          markDirty();
-          void addGoalFiles(files, pasted, setFiles, setError);
-        }} rows={5} className={`mt-1 w-full rounded-md border p-2 ${objectiveTooLong ? 'border-red-500' : 'border-slate-300'}`} required />
-        {objectiveMaxCharacters !== null && <div id="goal-objective-limit" className={`mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs ${objectiveTooLong ? 'text-red-600' : 'text-slate-500'}`}>
-          <span>{objectiveLimitProvider?.name ?? selectedAgent?.agentAlias} accepts up to {objectiveMaxCharacters.toLocaleString('en-US')} {objectiveLimitProvider?.unit ?? 'characters'} for the objective.</span>
-          <output aria-label="Objective character count" aria-live="polite">{objectiveCharacters.toLocaleString('en-US')} / {objectiveMaxCharacters.toLocaleString('en-US')} characters</output>
-        </div>}
-        <GoalAttachmentInput files={files} onFilesSelected={markDirty} onChange={nextFiles => { markDirty(); setFiles(nextFiles); }} onError={setError} disabled={submitting} />
-        </div>
-        <label className="mt-3 flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={ultrafix} onChange={event => { markDirty(); setUltrafix(event.target.checked); }} /> Ask the coding agent to use Ultrafix</label>
-      </fieldset>
-      </div>
-      <div className="flex flex-none justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
-        <button type="button" onClick={onCancel} disabled={submitting} className={`${buttonClass} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Cancel</button>
-        <button type="submit" disabled={isDemoMode || submitting || objectiveTooLong || !repository || !agentId || !model || !objective.trim() || !selectedAgent?.goalCapable} title={isDemoMode ? 'Demo mode is read-only' : undefined} className={`${buttonClass} bg-primary-600 text-white hover:bg-primary-700`}>{submitting ? 'Starting…' : 'Start goal'}</button>
-      </div>
-    </form>
-  );
 }
 
 interface CreateGoalDialogProps {
@@ -450,7 +165,7 @@ function CreateGoalDialog({ isOpen, onClose, onCreated }: CreateGoalDialogProps)
         </div>
         <button type="button" onClick={requestClose} disabled={submitting} aria-label="Close goal creation" className="inline-flex h-10 w-10 flex-none items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"><X className="h-5 w-5" /></button>
       </header>
-      <CreateGoalForm onCancel={requestClose} onCreated={onCreated} onDirtyChange={setDirty} onSubmittingChange={setSubmitting} />
+      <GoalLauncherForm onCancel={requestClose} onCreated={onCreated} onDirtyChange={setDirty} onSubmittingChange={setSubmitting} />
     </div>
   </div>;
 }
@@ -511,7 +226,8 @@ function GoalList() {
   const [refreshing, setRefreshing] = useState(false);
   const [hasSuccessfulRead, setHasSuccessfulRead] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  // Global "New goal" entry points open the creator directly via ?new=1.
+  const [isCreating, setIsCreating] = useState(() => searchParams.get('new') === '1');
   const requestGenerationRef = useRef(0);
   const repositoryFilter = searchParams.get('repository') || 'all';
   useDocumentTitle('Goals');
@@ -521,7 +237,7 @@ function GoalList() {
     else setRefreshing(true);
     setError(null);
     try {
-      const data = await listGoals();
+      const data = await listGoals('goal');
       if (generation !== requestGenerationRef.current) return;
       setGoals(data.goals);
       setHasSuccessfulRead(true);
@@ -566,9 +282,17 @@ function GoalList() {
   const goalAgents = goals.map(goal => ({ type: goal.agent.type, alias: goal.agent.alias }));
   const closeCreator = useCallback(() => {
     setIsCreating(false);
+    setSearchParams(current => {
+      if (!current.has('new')) return current;
+      const next = new URLSearchParams(current);
+      next.delete('new');
+      return next;
+    }, { replace: true });
     newGoalButtonRef.current?.focus();
-  }, []);
+  }, [setSearchParams]);
   const openCreator = useCallback(() => setIsCreating(true), []);
+  const requestedCreator = searchParams.get('new') === '1';
+  useEffect(() => { if (requestedCreator) setIsCreating(true); }, [requestedCreator]);
   return <div className="min-h-full w-full min-w-0 bg-white p-4 sm:p-6">
     <div className="border-b border-slate-200 pb-5">
       <div><h1 className="text-2xl font-bold text-slate-900">Goals</h1><p className="mt-1 text-sm text-slate-600">Long-running work kept in one exact coding-agent session.</p></div>
@@ -606,13 +330,19 @@ function GoalList() {
             <ul aria-label="Goal work queue">{visibleGoals.map(goal => <GoalQueueRow key={goal.id} goal={goal} goalAgents={goalAgents} />)}</ul>
           </div>}
     </section>
-    <CreateGoalDialog isOpen={isCreating} onClose={closeCreator} onCreated={goal => navigate(`/goals/${goal.id}`)} />
+    <CreateGoalDialog isOpen={isCreating} onClose={closeCreator} onCreated={goal => navigate(goalPath(goal))} />
   </div>;
 }
 
 // The detail surface intentionally composes all goal controls and existing task projections.
+/** One-off tasks reuse the goal console, presented with task wording and task navigation. */
+export type GoalPresentation = 'goal' | 'task';
+
 // eslint-disable-next-line complexity
-function GoalDetails({ goalId }: { goalId: string }) {
+function GoalDetails({ goalId, presentation = 'goal' }: { goalId: string; presentation?: GoalPresentation }) {
+  const isTask = presentation === 'task';
+  const noun = isTask ? 'task' : 'goal';
+  const Noun = isTask ? 'Task' : 'Goal';
   const navigate = useNavigate();
   const { isDemoMode } = useDemoMode();
   const [goal, setGoal] = useState<Goal | null>(null);
@@ -628,7 +358,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
     ? [{ state: 'CLAUDE_EXECUTION', timestamp: goal.startedAt }]
     : [], [goal?.startedAt]);
   const thinkingLog = useThinkingLog(live, goalHistory);
-  useDocumentTitle(goal?.title || 'Goal');
+  useDocumentTitle(goal?.title || Noun);
 
   const refresh = useCallback(async () => {
     try {
@@ -663,18 +393,20 @@ function GoalDetails({ goalId }: { goalId: string }) {
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
   const remove = async () => {
-    if (!goal || isDemoMode || !window.confirm('Delete this goal? If it is running, it will be stopped first. This action cannot be undone.')) return;
+    if (!goal || isDemoMode || !window.confirm(`Delete this ${noun}? If it is running, it will be stopped first. This action cannot be undone.`)) return;
     setBusy(true); setError(null);
     try {
       await deleteGoal(goal.id);
-      navigate('/goals', { replace: true });
+      navigate(isTask ? '/tasks' : '/goals', { replace: true });
     } catch (err) { setError((err as Error).message); setBusy(false); }
   };
   const totalTokens = useMemo(
     () => tokenTotal(live.tokenUsage || null) || goal?.liveSummary.nativeGoal?.tokensUsed || 0,
     [goal?.liveSummary.nativeGoal?.tokensUsed, live.tokenUsage],
   );
-  if (!goal) return <div className="p-6 text-slate-600">{error || 'Loading goal…'}</div>;
+  if (!goal) return <div className="p-6 text-slate-600">{error || `Loading ${noun}…`}</div>;
+  // Keep each item under the concept it was started as, whichever URL was followed.
+  if ((goal.kind === 'task') !== isTask) return <Navigate to={goalPath(goal)} replace />;
   const terminal = Boolean(goal.resultState);
   const cancelling = !terminal && goal.desiredState === 'cancelled';
   const mutable = !terminal && !cancelling;
@@ -685,7 +417,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
     <header className="w-full border-b border-slate-200 px-4 py-3 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
         <div className="flex items-center gap-4">
-          <Link to="/goals" className="text-sm font-medium text-slate-600 transition hover:text-primary-700">← All goals</Link>
+          <Link to={isTask ? '/tasks' : '/goals'} className="text-sm font-medium text-slate-600 transition hover:text-primary-700">{isTask ? '← All tasks' : '← All goals'}</Link>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">{goal.title}</h1>
@@ -693,8 +425,8 @@ function GoalDetails({ goalId }: { goalId: string }) {
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-sm text-slate-700">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Strategy</span>
-            <span className="font-medium">{strategyLabel}</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{isTask ? 'Type' : 'Strategy'}</span>
+            <span className="font-medium">{isTask ? 'Direct task' : strategyLabel}</span>
             <span aria-hidden="true" className="text-slate-300">•</span>
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Model</span>
             <code className="rounded bg-slate-100 px-2 py-1 font-mono text-xs font-semibold text-slate-700">{currentModel}</code>
@@ -710,10 +442,10 @@ function GoalDetails({ goalId }: { goalId: string }) {
             {canMutate && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} border border-red-300 text-red-700 hover:bg-red-50`}><CircleStop className="h-4 w-4" />Cancel</button>}
             {goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-600 text-white shadow-sm hover:bg-primary-700`}><GitPullRequest className="h-4 w-4" />{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-3.5 w-3.5" /></a>}
             <details className="group relative">
-              <summary aria-label="More goal actions" className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-4 w-4" /></summary>
+              <summary aria-label={`More ${noun} actions`} className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-4 w-4" /></summary>
               <div className="absolute right-0 z-20 mt-2 w-48 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
                 <Link to={`/tasks/${encodeURIComponent(goal.taskId)}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Open task history</Link>
-                {!isDemoMode && <button disabled={busy} onClick={remove} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"><Trash2 className="h-4 w-4" />Delete goal</button>}
+                {!isDemoMode && <button disabled={busy} onClick={remove} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"><Trash2 className="h-4 w-4" />Delete {noun}</button>}
               </div>
             </details>
           </div>
@@ -728,15 +460,15 @@ function GoalDetails({ goalId }: { goalId: string }) {
     </div>}
 
     <div className="mx-auto grid min-h-[calc(100vh-17rem)] max-w-7xl lg:grid-cols-[minmax(0,3fr)_minmax(22rem,2fr)]">
-      <main aria-label="Goal monitor" className="min-w-0 bg-white px-4 py-6 sm:px-6 lg:px-8">
+      <main aria-label={`${Noun} monitor`} className="min-w-0 bg-white px-4 py-6 sm:px-6 lg:px-8">
         <section aria-labelledby="goal-context-heading">
           <h2 id="goal-context-heading" className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Context</h2>
           <details className="group border-b border-slate-200 py-4 text-sm" open>
-            <summary className="cursor-pointer font-semibold text-slate-800">Goal description</summary>
+            <summary className="cursor-pointer font-semibold text-slate-800">{isTask ? 'Task instruction' : 'Goal description'}</summary>
             <p className="mt-3 whitespace-pre-wrap break-words leading-6 text-slate-600">{goal.objective}</p>
           </details>
           {(goal.attachments || []).length > 0 && <div className="border-b border-slate-200 py-4 text-sm">
-            <h3 className="font-semibold text-slate-800">Files shared with this goal</h3>
+            <h3 className="font-semibold text-slate-800">Files shared with this {noun}</h3>
             <div className="mt-3 flex flex-wrap gap-2">{(goal.attachments || []).map(attachment => <a key={attachment.id} href={getGoalAttachmentUrl(goal.id, attachment.id)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-700 hover:border-primary-300 hover:text-primary-700">
               {attachment.type === 'image'
                 ? <img src={getGoalAttachmentUrl(goal.id, attachment.id)} alt="" className="h-9 w-9 rounded object-cover" />
@@ -766,7 +498,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
           <div className="flex items-end justify-between gap-3">
             <div>
               <h2 id="goal-visual-previews-heading" className="font-semibold text-slate-900">Visual previews</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Current evidence published on the goal PR.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Current evidence published on the {noun} PR.</p>
             </div>
             <span className="text-xs text-slate-400">From GitHub</span>
           </div>
@@ -795,8 +527,8 @@ function GoalDetails({ goalId }: { goalId: string }) {
 
         <section className="mt-8 border-t border-slate-200 pt-5">
           <header className="flex items-center justify-between gap-3">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Goal output</h2>
-            <div role="group" aria-label="Goal output view" className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1">
+            <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{Noun} output</h2>
+            <div role="group" aria-label={`${Noun} output view`} className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1">
               <button type="button" aria-pressed={outputMode === 'readable'} onClick={() => setOutputMode('readable')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'readable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileText className="h-3.5 w-3.5" />Human readable</button>
               <button type="button" aria-pressed={outputMode === 'terminal'} onClick={() => setOutputMode('terminal')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'terminal' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Terminal className="h-3.5 w-3.5" />Raw terminal</button>
             </div>
@@ -849,7 +581,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
             type="text"
             disabled
             className="w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-100 px-3 py-3 text-sm text-slate-500 shadow-sm placeholder:text-slate-500 disabled:opacity-100"
-            placeholder={isDemoMode && mutable ? 'Demo mode is read-only. Corrections disabled.' : goal.resultState === 'completed' ? 'Goal completed. Corrections disabled.' : 'Goal closed. Corrections disabled.'}
+            placeholder={isDemoMode && mutable ? 'Demo mode is read-only. Corrections disabled.' : goal.resultState === 'completed' ? `${Noun} completed. Corrections disabled.` : `${Noun} closed. Corrections disabled.`}
           />
         </section>}
       </aside>
@@ -857,4 +589,8 @@ function GoalDetails({ goalId }: { goalId: string }) {
   </div>;
 }
 
-export default function GoalsPage() { const { goalId } = useParams(); return goalId ? <GoalDetails goalId={goalId} /> : <GoalList />; }
+export default function GoalsPage({ presentation = 'goal' }: { presentation?: GoalPresentation }) {
+  const { goalId } = useParams();
+  if (goalId) return <GoalDetails key={goalId} goalId={goalId} presentation={presentation} />;
+  return presentation === 'task' ? <Navigate to="/tasks" replace /> : <GoalList />;
+}

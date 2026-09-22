@@ -76,12 +76,12 @@ describe('MobileBottomNavigation', () => {
     renderNavigation();
 
     const navigation = screen.getByRole('navigation', { name: 'Primary navigation' });
-    const destinations = within(navigation).getAllByText(/^(Inbox|Activity|New Plan|Repositories|More)$/);
+    const destinations = within(navigation).getAllByText(/^(Inbox|Activity|New Task|Repositories|More)$/);
 
     expect(destinations.map(destination => destination.textContent)).toEqual([
       'Inbox',
       'Activity',
-      'New Plan',
+      'New Task',
       'Repositories',
       'More',
     ]);

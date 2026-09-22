@@ -100,7 +100,8 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(within(center).getByRole('textbox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
     expect(within(center).getByText('⌘K')).toBeInTheDocument();
     expect(within(right).getByRole('button', { name: 'Quick add to-do' })).toBeInTheDocument();
-    expect(within(right).getByRole('button', { name: 'New Plan' })).toHaveClass('border-0', 'bg-teal-600');
+    expect(within(right).getByRole('button', { name: 'New Task' })).toHaveClass('border-0', 'bg-teal-600');
+    expect(within(right).getByRole('button', { name: 'More ways to start work' })).toHaveAttribute('aria-haspopup', 'menu');
     expect(within(right).getByRole('button', { name: 'System Status' })).toBeInTheDocument();
     expect(within(toolbar!).queryByText('The Octocat')).not.toBeInTheDocument();
     expect(within(toolbar!).queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();

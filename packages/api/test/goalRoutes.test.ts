@@ -10,6 +10,7 @@ import { up as addGoalCheckpoints } from '../../core/src/db/migrations/202609030
 import { up as addGoalCheckpointDeclarations } from '../../core/src/db/migrations/20260906000000_add_goal_checkpoint_declarations.js';
 import { up as addGoalTitles } from '../../core/src/db/migrations/20260907000000_add_goal_titles.js';
 import { up as addGoalAttachments } from '../../core/src/db/migrations/20260908000000_add_goal_attachments.js';
+import { up as addGoalKind } from '../../core/src/db/migrations/20260922090000_add_goal_kind.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
 function request(userId: string, params: Record<string, string> = {}, body: unknown = {}): Request {
@@ -43,6 +44,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await addGoalCheckpointDeclarations(database);
         await addGoalTitles(database);
         await addGoalAttachments(database);
+        await addGoalKind(database);
         await database.schema.createTable('task_history', table => {
             table.increments('id');
             table.string('task_id');
@@ -280,6 +282,43 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.match(storedPreviewContext.message, /VISUAL PREVIEW REQUIREMENT/);
         assert.match(storedPreviewContext.message, /Capture the completed dashboard/);
         assert.match(storedPreviewContext.message, /already-open draft PR at checkpoint boundaries/);
+        assert.doesNotMatch(storedPreviewContext.message, /one-off task/);
+        assert.equal((previewGoal.state.body as { goal: { kind: string } }).goal.kind, 'goal');
+
+        const orchestratedTask = response();
+        const orchestratedTaskRequest = request('owner-1', {}, {
+            repository: 'acme/repo', objective: 'Fix the typo', agentId: 'agent-1', model: 'gpt-5.6',
+            launchStrategy: 'orchestrate', kind: 'task',
+        });
+        orchestratedTaskRequest.get = () => 'orchestrated-task';
+        await routes.create(orchestratedTaskRequest, orchestratedTask.res);
+        assert.equal(orchestratedTask.state.status, 400);
+        assert.match((orchestratedTask.state.body as { error: string }).error, /direct launch strategy/);
+
+        const directTaskRequest = request('owner-1', {}, {
+            repository: 'acme/repo', objective: 'Fix the typo', agentId: 'agent-1', model: 'gpt-5.6',
+            launchStrategy: 'direct', kind: 'task',
+        });
+        directTaskRequest.get = () => 'direct-task';
+        const directTask = response();
+        await routes.create(directTaskRequest, directTask.res);
+        assert.equal(directTask.state.status, 201);
+        const createdTask = (directTask.state.body as { goal: { id: string; kind: string } }).goal;
+        assert.equal(createdTask.kind, 'task');
+        const storedTaskContext = await database('goal_inputs').where({ goal_id: createdTask.id }).first();
+        assert.match(storedTaskContext.message, /Scope policy — one-off task/);
+        assert.match(storedTaskContext.message, /propose a plan or goal/);
+
+        const listedTasksRequest = request('owner-1');
+        (listedTasksRequest as unknown as { query: Record<string, string> }).query = { kind: 'task' };
+        const listedTasks = response();
+        await routes.list(listedTasksRequest, listedTasks.res);
+        assert.deepEqual((listedTasks.state.body as { goals: Array<{ id: string }> }).goals.map(goal => goal.id), [createdTask.id]);
+        const invalidKindRequest = request('owner-1');
+        (invalidKindRequest as unknown as { query: Record<string, string> }).query = { kind: 'plan' };
+        const invalidKind = response();
+        await routes.list(invalidKindRequest, invalidKind.res);
+        assert.equal(invalidKind.state.status, 400);
         queued.length = 0;
 
         await database('goals').where({ goal_id: 'goal-1' }).update({

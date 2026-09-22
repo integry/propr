@@ -7,6 +7,7 @@ import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
   GOAL_CONTINUE_INPUT,
+  GOAL_KINDS,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   GOAL_LAUNCH_STRATEGIES,
   MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
@@ -25,6 +26,7 @@ import {
   parsePublishedVisualPreviews,
   type GoalCapability,
   type GoalJobData,
+  type GoalKind,
   type GoalLaunchStrategy,
   type Agent,
   type MulterFile,
@@ -161,6 +163,8 @@ function validateCreateBody(body: Record<string, unknown>): string | null {
   if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
   if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
   if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
+  if (body.kind != null && !GOAL_KINDS.includes(body.kind as GoalKind)) return 'kind must be goal or task';
+  if (body.kind === 'task' && body.launchStrategy !== 'direct') return 'tasks must use the direct launch strategy';
   if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
   if (typeof body.model !== 'string' || !body.model) return 'model is required';
   if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
@@ -193,6 +197,7 @@ function buildCreateIdentity(
       ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
       : null,
     ...(attachmentIdentity.length > 0 ? { attachments: attachmentIdentity } : {}),
+    ...(body.kind === 'task' ? { kind: 'task' } : {}),
   });
   return { operation, payloadHash };
 }
@@ -317,9 +322,15 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const list = async (req: Request, res: Response) => {
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
-    const rows = await timeApiStage('sql.goals.list', () =>
-      deps.db<GoalRow>('goals').where({ owner_id: ownerId }).orderBy('updated_at', 'desc').limit(200)
-    );
+    const kind = req.query?.kind;
+    if (kind != null && !GOAL_KINDS.includes(kind as GoalKind)) {
+      return void res.status(400).json({ error: 'kind must be goal or task' });
+    }
+    const rows = await timeApiStage('sql.goals.list', () => {
+      const query = deps.db<GoalRow>('goals').where({ owner_id: ownerId });
+      if (kind) query.where({ kind: kind as GoalKind });
+      return query.orderBy('updated_at', 'desc').limit(200);
+    });
     const goals = await timeApiStage('goals.projection', () =>
       Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row)))
     );
@@ -382,8 +393,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (existing) return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
 
     const launchStrategy = body.launchStrategy as GoalLaunchStrategy;
+    const kind: GoalKind = body.kind === 'task' ? 'task' : 'goal';
     const promptOptions = {
       objective: body.objective as string,
+      kind,
       launchStrategy,
       maxParallelTasks: body.maxParallelTasks as number | null | undefined,
       ultrafix: body.ultrafix === true,
@@ -430,6 +443,8 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         title,
         objective: body.objective as string,
         launch_strategy: launchStrategy,
+        // The column defaults to goal, so only one-off tasks need an explicit kind.
+        ...(kind === 'task' ? { kind } : {}),
         initial_prompt: initialPrompt,
         attachments: JSON.stringify(attachments),
         base_branch: body.baseBranch || null,

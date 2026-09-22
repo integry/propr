@@ -1,6 +1,7 @@
 import RepoMediaPanel from './RepoMediaPanel';
 import React, { useState, useCallback, useEffect } from 'react';
-import { MessageSquareText, Sparkles, Book, ListTodo, Settings, Images } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { MessageSquareText, Sparkles, Book, ListTodo, Settings, Images, Zap } from 'lucide-react';
 import RepoChatPanel, { ChatResponse, Message } from './RepoChatPanel';
 import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
 import RepoBrowsePanel from './RepoBrowsePanel';
@@ -58,6 +59,17 @@ export interface RepoActionContainerProps {
 function availableTab(requestedTab: ActionTab, mediaEnabled: boolean): ActionTab {
   return requestedTab === 'media' && !mediaEnabled ? 'settings' : requestedTab;
 }
+
+/** Starts a direct task with this repository preselected. */
+const RepoNewTaskLink: React.FC<{ repository: string; hidden: boolean }> = ({ repository, hidden }) => hidden ? null : (
+  <Link
+    to={`/tasks/new?repository=${encodeURIComponent(repository)}`}
+    className="ml-auto hidden shrink-0 items-center gap-1.5 px-3 text-xs font-medium text-teal-700 hover:bg-teal-50 sm:flex"
+  >
+    <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+    New task
+  </Link>
+);
 
 const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo, initialTab, settingsContent }) => {
   const [requestedTab, setActiveTab] = useState<ActionTab>(initialTab || 'settings');
@@ -286,6 +298,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
             />
           )}
         </div>
+        <RepoNewTaskLink repository={selectedRepo.name} hidden={isDemoMode} />
       </div>
 
       {/* Tab Content */}

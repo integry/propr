@@ -23,6 +23,7 @@ const loadSettingsPage = preloadable(() => import('./pages/SettingsPage'));
 const loadSummaryBrowserPage = preloadable(() => import('./pages/SummaryBrowserPage'));
 const loadTasksPage = preloadable(() => import('./pages/TasksPage'));
 const loadGoalsPage = preloadable(() => import('./pages/GoalsPage'));
+const loadNewTaskPage = preloadable(() => import('./pages/NewTaskPage'));
 
 export const AiAgentsPage = lazy(loadAiAgentsPage);
 export const AccessManagementPage = lazy(loadAccessManagementPage);
@@ -39,6 +40,7 @@ export const SettingsPage = lazy(loadSettingsPage);
 export const SummaryBrowserPage = lazy(loadSummaryBrowserPage);
 export const TasksPage = lazy(loadTasksPage);
 export const GoalsPage = lazy(loadGoalsPage);
+export const NewTaskPage = lazy(loadNewTaskPage);
 
 const initialRouteChunks: Array<{
   matches: (pathname: string) => boolean;
@@ -50,6 +52,8 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/revert', load: loadRevertPage },
   { matches: pathname => pathname === '/inbox', load: loadInboxPage },
   { matches: pathname => pathname === '/repositories', load: loadRepositoriesPage },
+  { matches: pathname => pathname === '/tasks/new', load: loadNewTaskPage },
+  { matches: pathname => pathname.startsWith('/tasks/run/'), load: loadGoalsPage },
   { matches: pathname => pathname === '/tasks' || pathname.startsWith('/tasks/'), load: loadTasksPage },
   { matches: pathname => pathname === '/goals' || pathname.startsWith('/goals/'), load: loadGoalsPage },
   { matches: pathname => pathname === '/studio/new' || pathname.startsWith('/studio/'), load: loadPlanStudioPage },

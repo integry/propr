@@ -24,6 +24,8 @@ export interface GoalCapability {
 }
 
 export type GoalLaunchStrategy = 'direct' | 'orchestrate';
+/** A task is a one-off direct goal presented as a task: implement, validate, publish, and stop. */
+export type GoalKind = 'goal' | 'task';
 
 export interface GoalAttachment {
   id: string;
@@ -43,6 +45,7 @@ export interface Goal {
   repository: string;
   title: string;
   objective: string;
+  kind?: GoalKind;
   launchStrategy: GoalLaunchStrategy;
   initialPrompt: string;
   attachments: GoalAttachment[];
@@ -139,7 +142,7 @@ const multipartMutation = (payload: unknown, files: readonly File[]): RequestIni
 
 export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
-export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
+export const listGoals = async (kind?: GoalKind) => request<{ goals: Goal[] }>(`/api/goals${kind ? `?kind=${kind}` : ''}`);
 export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
 export const getGoalVisualPreviews = async (id: string) => {
   const response = await request<{ previews?: unknown[]; unavailable?: boolean }>(`/api/goals/${encodeURIComponent(id)}/previews`);
@@ -151,7 +154,7 @@ export const deleteGoal = async (id: string): Promise<void> => {
   });
   await handleApiResponse(response);
 };
-export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean; checkpointIntervalMinutes?: number }, files: readonly File[] = []) =>
+export const createGoal = async (body: { repository: string; objective: string; kind?: GoalKind; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean; checkpointIntervalMinutes?: number }, files: readonly File[] = []) =>
   request<{ goal: Goal }>('/api/goals', files.length > 0 ? multipartMutation(body, files) : idempotentMutation('POST', body));
 export const pauseGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/pause`, idempotentMutation('POST'));
 export const resumeGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/resume`, idempotentMutation('POST'));

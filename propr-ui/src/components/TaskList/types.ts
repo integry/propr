@@ -1,3 +1,4 @@
+import type React from 'react';
 import type { PublishedVisualPreview } from '@propr/shared';
 export interface Task {
   previewMedia?: PublishedVisualPreview[];
@@ -36,6 +37,8 @@ export interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
   hideFilters?: boolean;
+  /** Rendered above the task table on the full Tasks page, scrolling with it. */
+  leadingContent?: React.ReactNode;
 }
 
 export interface TaskGroup {

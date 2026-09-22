@@ -94,7 +94,7 @@ describe.each(['darwin', 'linux'] as const)('%s menu to dispatcher to preload to
       ['Dashboard', '/'], ['Inbox', '/inbox'], ['Plans', '/plans'],
       ['Goals', '/goals'], ['Tasks', '/tasks'], ['Repositories', '/repositories'],
       ['Settings…', '/settings', ','], ['New Plan', '/studio/new', 'N'],
-      ['New Task…', '/studio/new?mode=task'],
+      ['New Task…', '/tasks/new'],
     ]) {
       expect(value.item(label).accelerator).toBe(shortcut ? `CmdOrCtrl+${shortcut}` : undefined);
       await value.click(label);

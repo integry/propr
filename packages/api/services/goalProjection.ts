@@ -5,6 +5,7 @@ import {
   parseGoalArtifacts,
   redactVisualPreviewValue,
   type GoalArtifactStats,
+  type GoalKind,
   type GoalLaunchStrategy,
 } from '@propr/core';
 import { projectTaskLiveDetails } from '../routes/liveDetailsRoutes.js';
@@ -17,6 +18,7 @@ export interface GoalProjectionRow {
   repository: string;
   title: string | null;
   objective: string;
+  kind?: GoalKind | null;
   launch_strategy: GoalLaunchStrategy;
   initial_prompt: string;
   attachments: string | unknown[] | null;
@@ -156,6 +158,7 @@ export async function serializeGoal(
     repository: row.repository,
     title: row.title || goalTitleFallback(row.objective),
     objective: row.objective,
+    kind: row.kind === 'task' ? 'task' as const : 'goal' as const,
     launchStrategy: row.launch_strategy,
     initialPrompt: row.initial_prompt,
     attachments: publicGoalAttachments(parseGoalAttachments(row.attachments)),

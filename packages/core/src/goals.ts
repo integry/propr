@@ -5,6 +5,9 @@ export type GoalDesiredState = 'running' | 'paused' | 'cancelled';
 export type GoalResultState = 'completed' | 'failed' | 'cancelled';
 export const GOAL_LAUNCH_STRATEGIES = ['direct', 'orchestrate'] as const;
 export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
+/** A task is a one-off direct goal: implement, validate, publish, and stop. */
+export const GOAL_KINDS = ['goal', 'task'] as const;
+export type GoalKind = typeof GOAL_KINDS[number];
 
 export const GOAL_CONTINUE_INPUT = 'ProPR has acknowledged any checkpoint request from the previous turn. Continue working toward the goal.';
 export const NATIVE_GOAL_COMMAND_PREFIX = '/goal ';
@@ -72,8 +75,15 @@ const launchInstructions: Record<GoalLaunchStrategy, string> = {
     ].join('\n'),
 };
 
+const taskStoppingRule = [
+    'Scope policy — one-off task:',
+    'This is a single task, not an open-ended goal. Implement the requested change, run the relevant checks, let ProPR publish the result, and then stop.',
+    'Do not expand the assignment. If the request turns out to need substantially larger scope, do not start that extra work; deliver the requested change when it stands on its own, then report the larger scope and propose a plan or goal for it.',
+].join('\n');
+
 export interface NativeGoalPromptOptions {
     objective: string;
+    kind?: GoalKind;
     launchStrategy: GoalLaunchStrategy;
     maxParallelTasks?: number | null;
     ultrafix?: boolean | null;
@@ -117,6 +127,7 @@ export function buildNativeGoalContext(options: NativeGoalPromptOptions): string
         'Additional ProPR delivery context for the goal above:',
         '',
         launchInstructions[options.launchStrategy],
+        ...(options.kind === 'task' ? [taskStoppingRule] : []),
         ...checkpointPolicy,
         parallelPolicy,
         ultrafixPolicy,

@@ -149,6 +149,15 @@ describe('native goal provider contract', () => {
     });
   });
 
+  test('adds a one-off stopping rule only to direct tasks', () => {
+    const task = buildNativeGoalContext({ objective: 'Fix the typo', kind: 'task', launchStrategy: 'direct' });
+    const goal = buildNativeGoalContext({ objective: 'Fix the typo', launchStrategy: 'direct' });
+    assert.match(task, /Scope policy — one-off task/);
+    assert.match(task, /run the relevant checks, let ProPR publish the result, and then stop/);
+    assert.match(task, /propose a plan or goal/);
+    assert.doesNotMatch(goal, /one-off task/);
+  });
+
   test('validates the fully rendered Codex prompt with Unicode character semantics', () => {
     const exactObjective = `${'x'.repeat(CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH - 1)}😀`;
     const exactPrompt = buildNativeGoalCommand({ objective: exactObjective });

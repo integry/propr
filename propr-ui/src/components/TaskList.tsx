@@ -72,7 +72,7 @@ const TaskBlockingState: React.FC<{
   return dashboard ? <DashboardErrorState error={state.message} /> : <FullPageErrorState error={state.message} />;
 };
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, leadingContent }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
@@ -315,7 +315,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         {visibleTasks.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
             <Inbox className="mb-4 h-12 w-12 text-slate-200" aria-hidden="true" />
-            <p className="max-w-md text-sm text-slate-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
+            <p className="max-w-md text-sm text-slate-500">No tasks found — try clearing filters, or start one with New Task, by creating a plan, or by adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
           <TaskTableContent {...tableContentProps} />
@@ -342,10 +342,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-auto">
+        {leadingContent}
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
-            <p className="text-gray-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
+            <p className="text-gray-500">No tasks found — try clearing filters, or start one with New Task, by creating a plan, or by adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
           <div className="flex flex-col h-full bg-white">

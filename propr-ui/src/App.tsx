@@ -33,6 +33,7 @@ import {
   Dashboard,
   DesktopPairingPage,
   GoalsPage,
+  NewTaskPage,
   InboxPage,
   LlmLogsPage,
   LoginPage,
@@ -206,6 +207,8 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
+                    <Route path="/tasks/new" element={<Layout><NewTaskPage /></Layout>} />
+                    <Route path="/tasks/run/:goalId" element={<Layout><GoalsPage presentation="task" /></Layout>} />
                     <Route
                       path="/tasks/:taskId"
                       element={

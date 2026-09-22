@@ -740,4 +740,36 @@ describe('GoalsPage', () => {
     view.rerender(page());
     await waitFor(() => expect(socket.subscribeToTaskLive).toHaveBeenCalledTimes(2));
   });
+
+  it('lists only goals and opens the creator when requested by a global entry point', async () => {
+    render(<MemoryRouter initialEntries={['/goals?new=1']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    expect(await screen.findByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(goalsApi.listGoals).toHaveBeenCalledWith('goal');
+  });
+
+  it('presents a direct task as a task and keeps goal URLs from showing it', async () => {
+    const task = { ...goal, id: 'task-1', kind: 'task' as const, launchStrategy: 'direct' as const, title: 'Fix invoice dates', objective: 'Fix the invoice date format' };
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal: task });
+    render(<MemoryRouter initialEntries={['/goals/task-1']}><Routes>
+      <Route path="/goals/:goalId" element={<GoalsPage />} />
+      <Route path="/tasks/run/:goalId" element={<GoalsPage presentation="task" />} />
+    </Routes></MemoryRouter>);
+
+    expect(await screen.findByRole('link', { name: '← All tasks' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('heading', { name: 'Fix invoice dates' })).toBeInTheDocument();
+    expect(screen.getByText('Direct task')).toBeInTheDocument();
+    expect(screen.getByText('Task instruction')).toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Task monitor' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Cancel/ })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Correction or follow-up' })).toBeInTheDocument();
+  });
+
+  it('sends a goal opened through a task URL back to Goals', async () => {
+    render(<MemoryRouter initialEntries={['/tasks/run/goal-1']}><Routes>
+      <Route path="/goals/:goalId" element={<GoalsPage />} />
+      <Route path="/tasks/run/:goalId" element={<GoalsPage presentation="task" />} />
+    </Routes></MemoryRouter>);
+
+    expect(await screen.findByRole('link', { name: '← All goals' })).toHaveAttribute('href', '/goals');
+  });
 });

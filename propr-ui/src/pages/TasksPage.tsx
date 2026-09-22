@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
+import DirectTaskList from '../components/Tasks/DirectTaskList';
 
 const TasksPage: React.FC = () => {
   const { taskId } = useParams();
@@ -18,7 +19,7 @@ const TasksPage: React.FC = () => {
   // Full-height flex column layout for TaskList with anchored header/footer
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-white">
-      <TaskList limit={50} />
+      <TaskList limit={50} leadingContent={<DirectTaskList />} />
     </div>
   );
 };

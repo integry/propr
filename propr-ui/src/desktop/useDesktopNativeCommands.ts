@@ -25,7 +25,7 @@ interface DesktopNativeCommandOptions {
 
 const commandPaths: Record<Exclude<DesktopNativeCommand, 'manage-instances' | 'connect-instance' | 'diagnostics' | 'search' | 'toggle-sidebar' | 'quit' | 'back' | 'forward'>, string> = {
   'new-plan': '/studio/new',
-  'new-task': '/studio/new?mode=task',
+  'new-task': '/tasks/new',
   dashboard: '/',
   goals: '/goals',
   repositories: '/repositories',

@@ -13,6 +13,7 @@ export {
     type GoalCapability,
 } from './agents/goalCapabilities.js';
 export {
+    GOAL_KINDS,
     GOAL_LAUNCH_STRATEGIES,
     GOAL_CONTINUE_INPUT,
     NATIVE_GOAL_COMMAND_PREFIX,
@@ -34,6 +35,7 @@ export {
     goalJobId,
     goalAttemptLabel,
     type GoalDesiredState,
+    type GoalKind,
     type GoalLaunchStrategy,
     type NativeGoalPromptOptions,
     type GoalCheckpointDeclaration,

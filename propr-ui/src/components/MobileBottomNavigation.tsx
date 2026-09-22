@@ -18,6 +18,7 @@ import {
   Target,
   ShieldCheck,
   X,
+  Zap,
 } from 'lucide-react';
 import type { HeaderStats } from '../hooks/useHeaderStats';
 import type { CurrentUser } from '../api/proprTypes';
@@ -44,14 +45,14 @@ const pathMatches = (pathname: string, path: string): boolean =>
   pathname === path || pathname.startsWith(`${path}/`);
 
 const getNavigationState = (pathname: string) => {
-  const newPlan = pathname === '/studio/new';
+  const newTask = pathname === '/tasks/new';
   return {
     inbox: pathMatches(pathname, '/inbox'),
-    activity: pathMatches(pathname, '/tasks'),
-    newPlan,
+    activity: pathMatches(pathname, '/tasks') && !newTask,
+    newTask,
     repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
     more: pathname === '/' || pathMatches(pathname, '/plans') ||
-      (pathMatches(pathname, '/studio') && !newPlan) ||
+      pathMatches(pathname, '/studio') ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
       pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
   };
@@ -320,19 +321,19 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
         <button
           type="button"
           onClick={() => {
-            if (!isDemoMode) navigate('/studio/new');
+            if (!isDemoMode) navigate('/tasks/new');
           }}
           disabled={isDemoMode}
-          aria-current={active.newPlan ? 'page' : undefined}
-          aria-label={isDemoMode ? 'New Plan unavailable in demo mode' : 'New Plan'}
+          aria-current={active.newTask ? 'page' : undefined}
+          aria-label={isDemoMode ? 'New Task unavailable in demo mode' : 'New Task'}
           className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:text-slate-400 ${
-            active.newPlan ? 'text-primary-800' : 'text-primary-700'
+            active.newTask ? 'text-primary-800' : 'text-primary-700'
           }`}
         >
           <span className={`flex h-8 w-9 items-center justify-center rounded-lg ${isDemoMode ? 'bg-slate-200' : 'bg-primary-600 text-white shadow-sm'}`}>
-            <ScrollText className="h-4 w-4" aria-hidden="true" />
+            <Zap className="h-4 w-4" aria-hidden="true" />
           </span>
-          <span className="truncate">New Plan</span>
+          <span className="truncate">New Task</span>
         </button>
         <MobileNavLink
           to="/repositories"

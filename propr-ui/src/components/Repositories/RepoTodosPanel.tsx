@@ -19,7 +19,7 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { ListTodo, Plus, Check, Folder, X, Sparkles, Search } from 'lucide-react';
+import { ListTodo, Plus, Check, Folder, X, Sparkles, Search, Play } from 'lucide-react';
 import {
   TodoItemOverlay,
   CategorySection,
@@ -200,6 +200,15 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
     navigate('/studio/new', { state: { initialPrompt: prompt, initialRepository: repositoryId, todoIds } });
   }, [selectedTodos, navigate, repositoryId]);
 
+  const handleRunTask = useCallback(() => {
+    // A single to-do is the instruction itself; several are listed like a plan prompt.
+    const prompt = selectedTodos.length === 1
+      ? selectedTodos[0].content
+      : selectedTodos.map((todo, index) => `${index + 1}. ${todo.content}`).join('\n');
+    const todoIds = selectedTodos.map((t) => t.todoId);
+    navigate('/tasks/new', { state: { initialPrompt: prompt, initialRepository: repositoryId, todoIds } });
+  }, [selectedTodos, navigate, repositoryId]);
+
   const activeTodo = activeId ? todos.find((t) => t.todoId === activeId) : null;
 
   if (isLoading) {
@@ -362,8 +371,12 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
       </div>
 
       {selectedTodos.length > 0 && (
-        <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white">
-          <button onClick={handleCreatePlan} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
+        <div className="flex-shrink-0 flex flex-col gap-2 p-4 border-t border-slate-200 bg-white sm:flex-row">
+          <button onClick={handleRunTask} disabled={disabled} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+            <Play size={16} />
+            <span className="font-medium">Run Task</span>
+          </button>
+          <button onClick={handleCreatePlan} className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
             <Sparkles size={16} />
             <span className="font-medium">Create Plan from {selectedTodos.length} Item{selectedTodos.length !== 1 ? 's' : ''}</span>
           </button>

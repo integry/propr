@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RepoActionContainer from './RepoActionContainer';
 import { getRepositoryMedia } from '../../api/repositoryMediaApi';
@@ -8,12 +9,12 @@ vi.mock('../../api/repoChatApi', () => ({ getChatMessages: async () => [] }));
 vi.mock('../../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: false }) }));
 const repo = { id: 'repo-1', name: 'acme/web', visualPreview: { enabled: true } };
 const media = [{ title: 'Dashboard preview', type: 'image' as const, url: 'https://github.com/user-attachments/assets/dashboard' }];
-const renderPanel = (enabled = true) => render(<RepoActionContainer selectedRepo={{ ...repo, visualPreview: { enabled } }} initialTab="media" settingsContent={<p>Repository settings</p>} />);
+const renderPanel = (enabled = true) => render(<RepoActionContainer selectedRepo={{ ...repo, visualPreview: { enabled } }} initialTab="media" settingsContent={<p>Repository settings</p>} />, { wrapper: MemoryRouter });
 
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(getRepositoryMedia).mockResolvedValue({ previews: [], nextOffset: null, unavailable: false }); });
 describe('repository Media tab', () => {
   it.each([false, undefined])('omits tab and requests for disabled/legacy repositories (%s)', enabled => {
-    render(<RepoActionContainer selectedRepo={{ ...repo, visualPreview: enabled === undefined ? undefined : { enabled } }} initialTab="media" settingsContent={<p>Repository settings</p>} />);
+    render(<RepoActionContainer selectedRepo={{ ...repo, visualPreview: enabled === undefined ? undefined : { enabled } }} initialTab="media" settingsContent={<p>Repository settings</p>} />, { wrapper: MemoryRouter });
     expect(screen.queryByRole('button', { name: 'Media' })).not.toBeInTheDocument();
     expect(screen.getByText('Repository settings')).toBeInTheDocument();
     expect(getRepositoryMedia).not.toHaveBeenCalled();
