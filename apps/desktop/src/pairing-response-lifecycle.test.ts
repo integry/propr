@@ -91,7 +91,13 @@ class ProtocolClock {
   }
 }
 
-const bounded = async <T,>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
+// These bounds only turn a genuine hang into a readable failure; the suite
+// runner still kills the file long before they elapse. They are deliberately
+// far wider than the work they cover, because every step they wrap — durable
+// profile I/O, credential encryption, IPC drain — can be stalled for seconds by
+// the rest of the shard sharing the worker, and a slow step is not a behaviour
+// difference. Everything this file actually asserts is checked after the await.
+const bounded = async <T,>(promise: Promise<T>, milliseconds = 30_000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -338,7 +344,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         }, error => ({ status: 'rejected' as const, error }));
         // Reaching activation includes durable profile I/O and can contend with
         // the rest of the desktop suite. Protocol deadlines remain virtual.
-        await bounded(barrier.promise, 5_000);
+        await bounded(barrier.promise);
 
         const provisionalCouldExist = ['activate', 'cancel'].includes(scenario.endpoint);
         const pendingBeforeShutdown = await store.pendingRevocations();

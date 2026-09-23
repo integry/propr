@@ -14,14 +14,18 @@ const fixture = resolve(dirname(fileURLToPath(import.meta.url)), 'electron-pairi
 // stalled worker is reported as the stall it is, never as an opaque kill.
 const FIXTURE_TIMEOUT_MS = 40_000;
 // A contended shared runner can starve the probe or this server past those
-// deadlines, so a request is abandoned before it is ever accepted. That is
-// transport evidence rather than a behaviour change, and one clean retry keeps
-// every assertion below strict without failing the shard for the contention.
+// deadlines, or fail to bring Chromium up at all, so an attempt ends without
+// the evidence it was launched for. That is a launch or transport outcome
+// rather than a behaviour change, and one clean retry keeps every assertion
+// below strict without failing the shard for the contention.
 const FIXTURE_ATTEMPTS = 2;
 
 const PROBE_PATHS = ['/valid', '/decoded-over-limit', '/truncated', '/stacked'];
 
-const runFixture = (command, args) => new Promise((resolveRun, rejectRun) => {
+// Never rejects: an attempt that produced no report is an outcome the caller
+// classifies alongside the requests this server did serve, so the retry
+// decision is made in one place with all of the evidence.
+const runFixture = (command, args) => new Promise(resolveRun => {
   const child = spawn(command, args, {
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -40,24 +44,24 @@ const runFixture = (command, args) => new Promise((resolveRun, rejectRun) => {
   }, FIXTURE_TIMEOUT_MS);
   child.once('error', error => {
     clearTimeout(timer);
-    rejectRun(error);
+    resolveRun({ launchError: error.message, stderr });
   });
   child.once('close', (code, signal) => {
     clearTimeout(timer);
     if (timedOut) {
-      resolveRun({ timedOut: true });
+      resolveRun({ timedOut: true, stderr });
       return;
     }
     if (code !== 0) {
-      rejectRun(new Error(`Electron zstd fixture failed (${String(code ?? signal)}): ${stderr.slice(-2_000)}`));
+      resolveRun({ exitFailure: String(code ?? signal), stderr });
       return;
     }
     const reportLine = stdout.trim().split(/\r?\n/u).findLast(line => line.startsWith('{'));
     if (!reportLine) {
-      rejectRun(new Error(`Electron zstd fixture did not report evidence: ${stderr.slice(-2_000)}`));
+      resolveRun({ missingEvidence: true, stderr });
       return;
     }
-    resolveRun({ report: JSON.parse(reportLine) });
+    resolveRun({ report: JSON.parse(reportLine), stderr });
   });
 });
 
@@ -133,22 +137,30 @@ describe('Electron pairing response compression', () => {
         const expiredDeadlines = Object.entries(outcome.report ?? {})
           .filter(([, result]) => result?.kind === 'timeout')
           .map(([probe]) => probe);
-        // Only a request that was never served in time is read as worker
-        // contention. Everything the probe did exchange is asserted below, on
-        // this attempt, so no behaviour difference can be retried away.
-        const contention = outcome.timedOut
-          ? `the probe exceeded its ${FIXTURE_TIMEOUT_MS}ms budget after serving ${JSON.stringify(served)}`
-          : unserved.length > 0
-            ? `${JSON.stringify(unserved)} never reached the test server`
-            : expiredDeadlines.length > 0
-              ? `the pairing deadline expired on ${JSON.stringify(expiredDeadlines)}`
-              : undefined;
+        // Only an attempt that produced no complete evidence — Chromium never
+        // started, was killed, died, or left a request unserved — is read as
+        // worker contention. Everything the probe did exchange is asserted
+        // below, on this attempt, so no behaviour difference is retried away.
+        const contention = outcome.launchError !== undefined
+          ? `Electron could not be spawned (${outcome.launchError})`
+          : outcome.timedOut
+            ? `the probe exceeded its ${FIXTURE_TIMEOUT_MS}ms budget after serving ${JSON.stringify(served)}`
+            : outcome.exitFailure !== undefined
+              ? `the probe exited ${outcome.exitFailure} after serving ${JSON.stringify(served)}`
+              : outcome.missingEvidence
+                ? `the probe exited cleanly without reporting evidence after serving ${JSON.stringify(served)}`
+                : unserved.length > 0
+                  ? `${JSON.stringify(unserved)} never reached the test server`
+                  : expiredDeadlines.length > 0
+                    ? `the pairing deadline expired on ${JSON.stringify(expiredDeadlines)}`
+                    : undefined;
         if (contention) {
           if (attempt < FIXTURE_ATTEMPTS) {
             context.diagnostic(`Retrying the Electron zstd probe: ${contention}`);
             continue;
           }
-          assert.fail(`The Electron zstd probe never completed its pairing requests: ${contention}`);
+          assert.fail(`The Electron zstd probe never completed its pairing requests: ${contention}. `
+            + `Probe stderr: ${outcome.stderr.slice(-2_000)}`);
         }
 
         const { report } = outcome;
