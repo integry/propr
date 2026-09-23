@@ -29,6 +29,7 @@ import { addAdministrationTools } from './toolsAdministration.js';
 import { addArtifactTools } from './toolsArtifacts.js';
 import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
+import { addActivityTools } from './toolsActivity.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import { summarizeGoal, summarizeTask } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
@@ -73,6 +74,17 @@ export async function markMergedPullRequests(
     .whereIn('pr_number', numbers).whereNotNull('merged_at').select('pr_number');
   const merged = new Set(rows.map(row => Number(row.pr_number)));
   for (const item of items) if (merged.has(Number(item[fields.number]))) item[fields.state] = 'merged';
+}
+
+/**
+ * Hide other users' private goal tasks. A goal's current task is visible only
+ * to that goal's owner, and a goal-typed task with no owning goal is visible to
+ * nobody. Shared by every tool that lists tasks so one predicate governs them.
+ */
+export function applyTaskVisibility(db: Knex, query: Knex.QueryBuilder, userId: string): Knex.QueryBuilder {
+  query.whereNotIn('tasks.task_id', db('goals').select('current_task_id').whereNot('owner_id', userId).whereNotNull('current_task_id'));
+  query.andWhere(builder => builder.whereNot('tasks.task_type', 'goal').orWhereIn('tasks.task_id', db('goals').select('current_task_id').where({ owner_id: userId })));
+  return query;
 }
 
 export function createToolCatalog(deps: ToolDeps): McpTool[] {
@@ -124,6 +136,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addContextTools(tools, deps);
   addManagementTools(tools, deps, { todos, config, runtime });
   addNotificationTools(tools, deps, notifications);
+  addActivityTools(tools, deps);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context in a repository.', scope: 'read', readOnly: true, schema: z.object({ repository: repositorySchema, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const rows = await db('goals').where({ owner_id: principal.user.id, repository: args.repository })
@@ -155,8 +168,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     const latestPlanIssueId = db('plan_issues').select('id')
       .where('task_id', db.ref('tasks.task_id')).orderBy('id', 'desc').limit(1);
     const query = db('tasks').where({ 'tasks.repository': args.repository });
-    query.whereNotIn('tasks.task_id', db('goals').select('current_task_id').whereNot('owner_id', principal.user.id).whereNotNull('current_task_id'));
-    query.andWhere(builder => builder.whereNot('tasks.task_type', 'goal').orWhereIn('tasks.task_id', db('goals').select('current_task_id').where({ owner_id: principal.user.id })));
+    applyTaskVisibility(db, query, principal.user.id);
     // Apply visibility and pagination before looking up history or plan relations.
     const taskPage = query.select(...taskColumns, 'model_name', 'pr_number', 'initial_job_data')
       .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').offset(args.offset).limit(args.limit).as('tasks');

@@ -68,8 +68,8 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         assert.ok(inventory.tools.some(tool => tool.name === 'create_plan'));
         assert.ok(inventory.tools.some(tool => tool.name === 'get_agent_activity'));
         assert.ok(!inventory.tools.some(tool => tool.name === 'merge_pull_request'));
-        const resources = await client.listResources(); assert.equal(resources.resources.length, 4);
-        const promptList = await client.listPrompts(); assert.equal(promptList.prompts.length, 7);
+        const resources = await client.listResources(); assert.equal(resources.resources.length, 6);
+        const promptList = await client.listPrompts(); assert.equal(promptList.prompts.length, 8);
         const prompt = await client.getPrompt({ name: 'plan_change', arguments: { request: 'Improve reliability' } }); assert.equal(prompt.messages.length, 1);
         assert.equal((await db('task_drafts').count('* as count').first())!.count, modern ? 0 : 1);
         const call = async (name: string, args: Record<string, unknown>) => {
