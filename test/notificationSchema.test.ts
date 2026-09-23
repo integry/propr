@@ -63,6 +63,7 @@ const timestamp = '2026-08-02T08:00:00.000Z';
 const eventCreatedAt = '2026-08-02T07:59:00.000Z';
 const claimedAt = '2026-08-02T08:01:00.000Z';
 const leaseExpiresAt = '2099-08-02T08:06:00.000Z';
+const futureClaimedAt = '2099-08-02T08:05:00.000Z';
 function generatedP256dhKey(privateKeyValue: number): string {
   const privateKey = Buffer.alloc(32);
   privateKey[31] = privateKeyValue;
@@ -2915,16 +2916,16 @@ describe('durable notification schema', { concurrency: false }, () => {
           'pending-worker'
         )
       `);
-      const scheduled = await firstConnection('push_delivery_jobs')
-        .where({ job_id: 'three-state-claim-job' })
-        .first();
+      // claimed_at must be a fixed future timestamp rather than the row's
+      // next_retry_at: that value is only 200ms ahead, so a slow runner can
+      // drift past it and make this claim legitimately valid.
       await assert.rejects(
         firstConnection('push_delivery_jobs')
           .where({ job_id: 'three-state-claim-job' })
           .update({
             status: 'processing',
             claim_token: 'future-time-worker',
-            claimed_at: scheduled.next_retry_at,
+            claimed_at: futureClaimedAt,
             lease_expires_at: leaseExpiresAt,
             next_retry_at: null,
           }),
