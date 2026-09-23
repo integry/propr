@@ -317,6 +317,37 @@ async function claimJobUsingDatabaseTime(
   ) as Promise<Array<Record<string, unknown>>>;
 }
 
+/**
+ * Wait until the database clock has passed every supplied deadline.
+ *
+ * Views and triggers compare stored timestamps against the database's own
+ * `now`, so a test that needs a deadline to have elapsed must observe that
+ * clock rather than sleep for a hard-coded span. Polling the real deadline
+ * returns immediately on a runner that already drifted past it and keeps
+ * waiting on one that has not, which a fixed sleep cannot do.
+ */
+async function waitForDatabaseDeadlines(
+  db: Knex,
+  deadlines: string[],
+  timeoutMs = 30000,
+): Promise<void> {
+  // Both sides are '%Y-%m-%dT%H:%M:%fZ' UTC, so lexical ordering is chronological.
+  const latest = deadlines.reduce((a, b) => (a > b ? a : b));
+  const giveUpAt = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await db.raw(
+      "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS database_now",
+    ) as Array<{ database_now: string }>;
+    if (rows[0].database_now > latest) {
+      return;
+    }
+    if (Date.now() > giveUpAt) {
+      throw new Error('database clock did not pass ' + latest + ' within ' + timeoutMs + 'ms');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 function createCrossProcessClaimWorker(
   filename: string,
   jobId: string,
@@ -3291,10 +3322,15 @@ describe('durable notification schema', { concurrency: false }, () => {
       null,
     );
 
+    // expires_at is immutable, so natural expiration can only be produced by
+    // letting the clock pass it. The subscription must still be live when the
+    // claim runs, and push_delivery_claimable_jobs enforces that, so this
+    // window has to cover the statements in between on a loaded runner; 200ms
+    // did not, and the claim silently matched nothing.
     await db('push_subscriptions').insert({
       ...createSubscription({ subscription_id: 'naturally-expiring-subscription' }),
       expires_at: db.raw(
-        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.200 seconds')",
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+2 seconds')",
       ),
     });
     await insertDeliveryJob(db, {
@@ -3308,7 +3344,18 @@ describe('durable notification schema', { concurrency: false }, () => {
       'naturally-expiring-worker',
       '+0.200 seconds',
     )).length, 1);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const expiringSubscription = await db('push_subscriptions')
+      .where({ subscription_id: 'naturally-expiring-subscription' })
+      .first();
+    const expiringJob = await db('push_delivery_jobs')
+      .where({ job_id: 'naturally-expiring-processing-job' })
+      .first();
+    // The view reports the job only once both the subscription and the lease
+    // have expired, so wait on the later of the two recorded deadlines.
+    await waitForDatabaseDeadlines(db, [
+      expiringSubscription.expires_at,
+      expiringJob.lease_expires_at,
+    ]);
     assert.ok(
       await db('push_delivery_jobs_requiring_cancellation')
         .where({ job_id: 'naturally-expiring-processing-job' })
