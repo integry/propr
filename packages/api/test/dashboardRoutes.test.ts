@@ -1,136 +1,28 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
-import type { Request, Response as ExpressResponse } from 'express';
-import knex, { type Knex } from 'knex';
+import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
+import {
+  NOW,
+  call,
+  clearDashboardTestDatabase,
+  createDashboardTestDatabase,
+  daysAgo,
+  minutesAgo,
+  seedTask as seedTaskInto,
+  type TaskSeed,
+} from './dashboardTestHarness.js';
 
 let database: Knex;
 
-const NOW = new Date('2026-09-23T12:00:00.000Z');
-const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
-const daysAgo = (days: number): string => new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
-
-before(async () => {
-  database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  await database.schema.createTable('tasks', table => {
-    table.string('task_id').primary();
-    table.string('repository').notNullable();
-    table.integer('issue_number');
-    table.integer('pr_number');
-    table.string('task_type');
-    table.string('model_name');
-    table.timestamp('created_at');
-    table.text('initial_job_data');
-    table.text('final_result');
-  });
-  await database.schema.createTable('task_history', table => {
-    table.increments('history_id').primary();
-    table.string('task_id').notNullable();
-    table.string('state').notNullable();
-    table.timestamp('timestamp').notNullable();
-    table.text('reason');
-    table.text('metadata');
-  });
-  await database.schema.createTable('plan_issues', table => {
-    table.increments('id').primary();
-    table.string('draft_id');
-    table.string('repository').notNullable();
-    table.integer('issue_number').notNullable();
-    table.integer('pr_number');
-    table.string('status').notNullable();
-    table.string('task_id');
-    table.timestamp('created_at');
-    table.timestamp('updated_at');
-  });
-  await database.schema.createTable('llm_executions', table => {
-    table.increments('execution_id').primary();
-    table.string('task_id');
-    table.timestamp('start_time');
-    table.decimal('cost_usd', 10, 6);
-    table.text('analysis_report');
-  });
-  // Inbox state, shaped like the real notification schema. The dashboard must
-  // never read either table: attention is derived from work state alone.
-  await database.schema.createTable('notification_events', table => {
-    table.string('event_id').primary();
-    table.string('deduplication_key').notNullable();
-    table.string('kind').notNullable();
-    table.text('target_json').notNullable();
-    table.string('title').notNullable();
-    table.text('body').notNullable();
-    table.timestamp('occurred_at');
-  });
-  await database.schema.createTable('notification_user_states', table => {
-    table.increments('id').primary();
-    table.string('event_id').notNullable();
-    table.string('user_id').notNullable();
-    table.timestamp('read_at');
-    table.timestamp('dismissed_at');
-  });
-});
-
+before(async () => { database = await createDashboardTestDatabase(); });
 after(async () => database.destroy());
+beforeEach(async () => clearDashboardTestDatabase(database));
 
-beforeEach(async () => {
-  await database('task_history').del();
-  await database('tasks').del();
-  await database('plan_issues').del();
-  await database('llm_executions').del();
-  await database('notification_user_states').del();
-  await database('notification_events').del();
-});
-
-interface TaskSeed {
-  taskId: string;
-  repository?: string;
-  issueNumber?: number | null;
-  prNumber?: number | null;
-  taskType?: string;
-  title?: string;
-  createdAt?: string;
-  states: Array<{ state: string; timestamp: string; reason?: string }>;
-}
-
-async function seedTask(seed: TaskSeed): Promise<void> {
-  const repository = seed.repository ?? 'integry/propr';
-  await database('tasks').insert({
-    task_id: seed.taskId,
-    repository,
-    issue_number: seed.issueNumber === undefined ? 1 : seed.issueNumber,
-    pr_number: seed.prNumber ?? null,
-    task_type: seed.taskType ?? 'issue',
-    model_name: 'claude-opus-5',
-    created_at: seed.createdAt ?? seed.states[0].timestamp,
-    initial_job_data: JSON.stringify({ title: seed.title ?? `Task ${seed.taskId}` }),
-    final_result: null,
-  });
-  await database('task_history').insert(seed.states.map(entry => ({
-    task_id: seed.taskId,
-    state: entry.state,
-    timestamp: entry.timestamp,
-    reason: entry.reason ?? null,
-    metadata: '{}',
-  })));
-}
-
-function jsonResponse(): {
-  response: ExpressResponse;
-  status: () => number;
-  body: () => Record<string, never> & Record<string, unknown>;
-} {
-  let statusCode = 200;
-  let payload: Record<string, unknown> = {};
-  const response = {
-    status(code: number) { statusCode = code; return response; },
-    json(body: Record<string, unknown>) { payload = body; return response; },
-  } as unknown as ExpressResponse;
-  return { response, status: () => statusCode, body: () => payload as never };
-}
-
-const request = (query: Record<string, string> = {}): Request => ({ query } as unknown as Request);
+const seedTask = (seed: TaskSeed): Promise<void> => seedTaskInto(database, seed);
 
 interface QueueStub {
   paused?: boolean;
@@ -152,15 +44,6 @@ function routes(queue: QueueStub = {}, liveDetails?: (taskId: string) => Promise
     liveDetails: liveDetails ?? (async () => null),
     now: () => NOW,
   });
-}
-
-async function call(
-  handler: (req: Request, res: ExpressResponse) => Promise<void>,
-  query: Record<string, string> = {},
-): Promise<{ status: number; body: Record<string, unknown> }> {
-  const recorder = jsonResponse();
-  await handler(request(query), recorder.response);
-  return { status: recorder.status(), body: recorder.body() };
 }
 
 test('summary returns four integer counts that match the active endpoint for the same filter', async () => {
@@ -439,62 +322,4 @@ test('every dashboard endpoint rejects a malformed repository filter with HTTP 4
     const accepted = await call(handler, { repository: 'integry/propr' });
     assert.equal(accepted.status, 200);
   }
-});
-
-test('success rate excludes queued, running and cancelled work and is null when nothing finished', async () => {
-  await seedTask({ taskId: 'run-a', repository: 'acme/only-running', issueNumber: 1, states: [{ state: 'claude_execution', timestamp: daysAgo(1) }] });
-  await seedTask({ taskId: 'run-b', repository: 'acme/only-running', issueNumber: 2, states: [{ state: 'pending', timestamp: daysAgo(1) }] });
-  await seedTask({ taskId: 'run-c', repository: 'acme/only-running', issueNumber: 3, states: [{ state: 'cancelled', timestamp: daysAgo(1) }] });
-
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
-  const onlyRunning = await call(stats.getDashboardStats, { repository: 'acme/only-running' });
-  assert.equal(onlyRunning.body.successRate, null);
-  assert.notEqual(onlyRunning.body.successRate, 0);
-  assert.equal(onlyRunning.body.completed, 0);
-  assert.equal(onlyRunning.body.recordedSpend, null);
-
-  await seedTask({ taskId: 'mix-1', repository: 'acme/mixed', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(1) }] });
-  await seedTask({ taskId: 'mix-2', repository: 'acme/mixed', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
-  await seedTask({ taskId: 'mix-3', repository: 'acme/mixed', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
-  await seedTask({ taskId: 'mix-4', repository: 'acme/mixed', issueNumber: 4, states: [{ state: 'failed', timestamp: daysAgo(3), reason: 'nope' }] });
-  await seedTask({ taskId: 'mix-5', repository: 'acme/mixed', issueNumber: 5, states: [{ state: 'cancelled', timestamp: daysAgo(3) }] });
-  await seedTask({ taskId: 'mix-6', repository: 'acme/mixed', issueNumber: 6, states: [{ state: 'processing', timestamp: daysAgo(3) }] });
-
-  const mixed = await call(stats.getDashboardStats, { repository: 'acme/mixed', period: '7d' });
-  // Three completed and one failed: cancelled, queued and running never reach the denominator.
-  assert.equal(mixed.body.completed, 3);
-  assert.equal(mixed.body.successRate, 75);
-  assert.equal((mixed.body.dailyCompleted as unknown[]).length, 7);
-  assert.equal((mixed.body.dailyCompleted as Array<{ date: string; count: number }>)
-    .reduce((total, day) => total + day.count, 0), 3);
-});
-
-test('dashboard stats compare against the previous period and report recorded spend only when recorded', async () => {
-  await seedTask({ taskId: 'now-1', repository: 'acme/spend', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
-  await seedTask({ taskId: 'then-1', repository: 'acme/spend', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(9) }] });
-  await seedTask({ taskId: 'then-2', repository: 'acme/spend', issueNumber: 3, states: [{ state: 'failed', timestamp: daysAgo(10), reason: 'nope' }] });
-  await database('llm_executions').insert([
-    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: 1.25 },
-    // A run with no recorded cost must not be read as $0 spend.
-    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: null },
-    { task_id: 'then-1', start_time: daysAgo(9), cost_usd: 0.5 },
-  ]);
-
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
-  const current = await call(stats.getDashboardStats, { repository: 'acme/spend', period: '7d' });
-  assert.equal(current.body.completed, 1);
-  assert.equal(current.body.successRate, 100);
-  assert.equal(current.body.recordedSpend, 1.25);
-  assert.deepEqual(current.body.previous, { completed: 1, successRate: 50, recordedSpend: 0.5 });
-
-  const empty = await call(stats.getDashboardStats, { repository: 'acme/never-used', period: '30d' });
-  assert.equal(empty.body.successRate, null);
-  assert.equal(empty.body.recordedSpend, null);
-  assert.equal((empty.body.dailyCompleted as unknown[]).length, 30);
-});
-
-test('dashboard stats reject an unsupported period', async () => {
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
-  const rejected = await call(stats.getDashboardStats, { repository: 'all', period: '90d' });
-  assert.equal(rejected.status, 400);
 });
