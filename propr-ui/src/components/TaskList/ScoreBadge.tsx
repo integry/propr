@@ -6,9 +6,18 @@ interface ScoreBadgeProps {
   score: number | null | undefined;
   dimmed?: boolean;
   className?: string;
+  /**
+   * Draw the score inside square brackets: `[ ● 9 ]`.
+   *
+   * Reserved for fixed-width right rails (the dashboard's outcome feed), where
+   * the brackets give every score the same visible start and end and stop the
+   * rail from vibrating as 7, 8 and 9 trade places. The task list asked for the
+   * bare form, so brackets are opt-in rather than the default.
+   */
+  bracketed?: boolean;
 }
 
-export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false, className = '' }) => {
+export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false, className = '', bracketed = false }) => {
   if (score === null || score === undefined) return null;
 
   // Determine color and shape based on score using 4-tier grading scale
@@ -38,8 +47,10 @@ export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false, c
       className={`inline-flex justify-center items-center gap-0.5 w-12 min-w-12 max-w-12 py-0.5 font-mono text-sm font-bold tabular-nums ${colorClasses} ${dimmed ? 'opacity-40' : ''} ${className}`}
       title={`Code Quality Score: ${score}/10`}
     >
+      {bracketed && <span aria-hidden="true" className="text-slate-400">[</span>}
       <ShapeIcon size={8} className="shrink-0" fill="currentColor" aria-hidden="true" />
       <span>{score}</span>
+      {bracketed && <span aria-hidden="true" className="text-slate-400">]</span>}
     </span>
   );
 };

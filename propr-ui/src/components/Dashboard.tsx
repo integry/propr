@@ -10,9 +10,13 @@
  * subscription that keeps every section current, and the responsive layout.
  * Each section reads its own slice of the dashboard API.
  *
- * The layout is one solid canvas, not a tray of cards: sections are divided by
- * 1px rules and by the grid column boundary, and they share row lines so the
- * horizontal dividers in the two columns land on the same pixel.
+ * The layout is a split-pane console, not a tray of cards. There are no boxes:
+ * the two columns are separated by one continuous vertical rule that runs the
+ * full height of the canvas, sub-sections are separated by edge-to-edge
+ * horizontal rules, and the panes share row lines so the dividers in the two
+ * columns land on the same pixel. The console fills the viewport — the last
+ * grid row absorbs the leftover height — so the pane divider never stops
+ * halfway down the screen above a band of dead white space.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -144,7 +148,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <RepositoryIconProvider icons={repositoryIcons}>
-      <div className="min-h-full bg-white">
+      <div className="flex min-h-full flex-col bg-white">
         <ConnectSoftPromoBanner />
 
         {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
@@ -181,44 +185,51 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/*
-          Mobile keeps the DOM order: summary, attention, happening now,
-          recent outcomes, historical stats. Desktop places running work and
-          outcomes in the main column and the two supporting panels in a
-          narrower right column; with nothing to attend to, that panel leaves
-          the layout and the stats move up into its place.
+          The status bar for the whole console, anchored directly above the
+          panes rather than floating between the toolbar and the feed.
+        */}
+        <SummaryStrip {...sectionProps} />
+
+        {/*
+          Mobile keeps the DOM order: attention, happening now, recent
+          outcomes, historical stats. Desktop places running work and outcomes
+          in the main column and the two supporting panels in a narrower right
+          column; with nothing to attend to, that panel leaves the layout and
+          the stats move up into its place.
 
           Placement is explicit rather than nested so that DOM order can serve
           mobile while the columns stay real columns. Cells stretch, which is
           what keeps the two columns' row rules on one continuous horizon.
 
-          The pane divider hangs off the main column, not the supporting one:
-          the main column is always the taller, so the rule runs the full height
-          of the canvas even when the right column has fewer panels to show.
+          `flex-1` plus a last row of `minmax(min-content,1fr)` is what makes
+          the divider continuous: the bottom row grows into whatever height is
+          left — and never shrinks below its content, so a long feed still
+          scrolls rather than clipping — so the `lg:border-r` hanging off the
+          main column reaches the bottom of the viewport instead of ending
+          wherever the content happened to stop. The
+          divider hangs off the main column, not the supporting one, because
+          the main column is always the taller of the two.
         */}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="min-w-0 border-b border-slate-200 lg:col-span-2">
-            <SummaryStrip {...sectionProps} />
-          </div>
-
+        <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_minmax(min-content,1fr)]">
           <div
-            className={`min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-2 ${
+            className={`min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-1 ${
               attentionEmpty ? 'lg:hidden' : ''
             }`}
           >
             <NeedsAttentionPanel {...sectionProps} onEmptyChange={setAttentionEmpty} />
           </div>
 
-          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-r">
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-1 lg:border-r">
             <HappeningNowSection {...sectionProps} />
           </div>
 
-          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-3 lg:border-r">
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-b-0 lg:border-r">
             <RecentOutcomesFeed {...sectionProps} />
           </div>
 
           <div
-            className={`min-w-0 border-b border-slate-200 lg:col-start-2 ${
-              attentionEmpty ? 'lg:row-start-2' : 'lg:row-start-3'
+            className={`min-w-0 border-b border-slate-200 lg:col-start-2 lg:border-b-0 ${
+              attentionEmpty ? 'lg:row-start-1' : 'lg:row-start-2'
             }`}
           >
             <HistoricalStatsPanel {...sectionProps} />

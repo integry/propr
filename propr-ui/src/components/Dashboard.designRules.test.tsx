@@ -27,6 +27,7 @@ import {
 import {
   activeItem,
   activeResponse,
+  attentionItem,
   attentionResponse,
   outcomeItem,
   outcomesResponse,
@@ -209,6 +210,101 @@ describe('Dashboard studio design rules', () => {
       expect(count.className).toMatch(/items-baseline/);
       expect(count.className).not.toMatch(/rounded-(?:md|lg|xl)/);
       expect(count.className).not.toMatch(/flex-col/);
+    }
+  });
+
+  it('anchors the summary counts in a sub-toolbar rather than floating them', async () => {
+    renderDashboard();
+    await waitForSections();
+
+    // Loose text between the toolbar and the feed reads as an orphan, so the
+    // strip is real chrome: a fixed-height tinted bar closed by a rule.
+    const strip = screen.getByTestId('summary-strip');
+    expect(strip.className).toMatch(/min-h-10/);
+    expect(strip.className).toMatch(/bg-slate-50\/50/);
+    expect(strip.className).toMatch(/border-b/);
+  });
+
+  it('divides the two panes with one continuous rule instead of boxing each quadrant', async () => {
+    const { container } = renderDashboard();
+    await waitForSections();
+
+    const grid = container.querySelector('.grid.flex-1');
+    expect(grid).not.toBeNull();
+    // The last row absorbs the leftover height, which is what carries the
+    // column rule to the bottom of the canvas rather than to the last row of
+    // content.
+    expect(grid?.className).toMatch(/lg:grid-rows-\[auto_minmax\(min-content,1fr\)\]/);
+
+    // The divider hangs off the main column and nothing else draws one, so
+    // there is exactly one vertical line between the panes.
+    const cells = [...(grid?.children ?? [])] as HTMLElement[];
+    const divided = cells.filter(cell => /lg:border-r/.test(cell.className));
+    expect(divided.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(cell.className).not.toMatch(/rounded/);
+      expect(cell.className).not.toMatch(/shadow/);
+      // A quadrant is bounded by shared rules, never by its own four sides.
+      expect(cell.className).not.toMatch(/\bborder\b(?!-)/);
+    }
+  });
+
+  it('lands both columns\' pane headers on the same horizon', async () => {
+    mockAttention.mockResolvedValue(attentionResponse([attentionItem()]));
+
+    renderDashboard();
+    await waitForSections();
+
+    // A section with a segmented control must not sit taller than one without,
+    // or the rules under the two columns stop lining up.
+    const headings = ['happening-now-heading', 'needs-attention-heading', 'recent-outcomes-heading', 'historical-stats-heading']
+      .map(id => document.getElementById(id)?.parentElement);
+    expect(headings.filter(Boolean)).toHaveLength(4);
+    for (const heading of headings) {
+      expect(heading?.className).toMatch(/min-h-10/);
+      expect(heading?.className).toMatch(/border-b/);
+    }
+  });
+
+  it('draws a recorded score as the fixed-width quality pill, never as /10 prose', async () => {
+    mockOutcomes.mockResolvedValue(outcomesResponse([
+      outcomeItem({ id: 'nine', score: 9 }),
+      outcomeItem({ id: 'seven', taskId: 'done-2', score: 7 }),
+    ]));
+
+    renderDashboard();
+    await waitForSections();
+
+    const scores = await screen.findAllByTestId('outcome-score');
+    expect(scores).toHaveLength(2);
+    for (const score of scores) {
+      // Variable-width prose beside a fixed badge is what made the rail move.
+      expect(score.textContent).not.toMatch(/\/10/);
+      const pill = score.querySelector('span[title^="Code Quality Score"]');
+      expect(pill?.className).toMatch(/w-12/);
+      expect(pill?.textContent).toMatch(/^\[\d+\]$/);
+    }
+  });
+
+  it('gives every attention action the same fixed-width verb', async () => {
+    // Two different verbs in the same column is the case that used to ragged
+    // the left edge, so both kinds are on screen for this assertion.
+    mockAttention.mockResolvedValue(attentionResponse([
+      attentionItem(),
+      attentionItem({ id: 'plan-issue:5', kind: 'plan_review', category: 'decision', taskId: null, prNumber: 51, title: null }),
+    ]));
+
+    renderDashboard();
+    await waitForSections();
+
+    const panel = screen.getByTestId('needs-attention-panel');
+    const actions = within(panel).getAllByRole('link', { name: /^(Open|Review)\b/ });
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) {
+      expect(action.className).toMatch(/\bw-20\b/);
+      expect(action.className).toMatch(/justify-center/);
+      // The face of the button is one verb; the entity is announced, not drawn.
+      expect(action.firstChild?.textContent).toMatch(/^(Open|Review)$/);
     }
   });
 });

@@ -3,7 +3,8 @@
  *
  * One line per result, newest first, with no grouping to unfold. The title is
  * the prominent element; a score only appears when one was recorded, and it
- * carries its scale so "8" is never mistaken for a percentage.
+ * uses the design system's quality pill — a fixed-width bracketed shape and
+ * number — so the right rail is a straight edge down the feed.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -94,11 +95,17 @@ const OutcomeRow: React.FC<{ item: OutcomeItem }> = ({ item }) => (
         <RowTitle>{outcomeTitle(item)}</RowTitle>
         {item.detail && <RowDetail>{item.detail}</RowDetail>}
       </span>
-      {/* Rendered only when a score exists, so no empty column is reserved. */}
+      {/*
+        Rendered only when a score exists, so no empty column is reserved.
+
+        The scale is carried by the shape and by the assistive-technology
+        label, never as visible `/10` prose: floating prose next to a
+        fixed-width badge puts variable-width glyphs outside the w-12 box and
+        makes the right rail shift by a pixel or two between 7, 8 and 9.
+      */}
       {item.score !== null && item.score !== undefined && (
         <span className="mt-0.5 flex flex-none items-baseline" data-testid="outcome-score">
-          <ScoreBadge score={item.score} />
-          <span className="text-[10px] text-slate-400" aria-hidden="true">/10</span>
+          <ScoreBadge score={item.score} bracketed />
           <span className="sr-only">Code quality score {item.score} out of 10</span>
         </span>
       )}

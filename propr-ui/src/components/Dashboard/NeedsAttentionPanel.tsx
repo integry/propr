@@ -40,9 +40,30 @@ const REASON_LABELS: Record<AttentionItem['kind'], string> = {
   plan_review: 'Review requested',
 };
 
+/**
+ * One word, always.
+ *
+ * The button sits in a fixed right rail, so the label has to be a fixed-width
+ * verb: "Open task" beside "Review pull request" moved every button's left
+ * edge by ten characters and made the column look unaligned. What is being
+ * opened or reviewed is already named by the row's chip and title directly
+ * above, so the entity belongs in the accessible name, not on the button face.
+ */
 function actionLabel(item: AttentionItem): string {
-  if (item.kind === 'plan_review') return item.prNumber ? 'Review pull request' : 'Open issue';
-  return 'Open task';
+  return item.kind === 'plan_review' ? 'Review' : 'Open';
+}
+
+/**
+ * The entity the verb acts on.
+ *
+ * It rides in the button's `aria-label` rather than in a visually hidden span:
+ * a hidden span is joined to the visible verb without a separator by the
+ * accessible-name algorithm, which announces "Openissue #42".
+ */
+function actionContext(item: AttentionItem): string {
+  if (item.prNumber) return `pull request #${item.prNumber}`;
+  if (item.issueNumber) return `issue #${item.issueNumber}`;
+  return 'task';
 }
 
 /** The review decision lives on GitHub; everything else resolves in a task. */
@@ -76,16 +97,20 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
           <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
         </RowMeta>
         <RowTitle>{itemTitle(item)}</RowTitle>
-        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-          <time dateTime={item.since} title={new Date(item.since).toLocaleString()} className="text-xs text-gray-500">
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <time dateTime={item.since} title={new Date(item.since).toLocaleString()} className="min-w-0 truncate text-xs text-gray-500">
             Waiting {elapsedLabel(item.since)}
           </time>
+          {/*
+            Fixed w-20 and centred: every button in the column starts and ends
+            on the same two vertical lines whatever its verb.
+          */}
           <RowLink
             href={href}
-            className="inline-flex min-h-8 items-center rounded-sm border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            aria-label={`${actionLabel(item)} ${actionContext(item)}${external ? ' (opens GitHub)' : ''}`}
+            className="inline-flex min-h-8 w-20 flex-none items-center justify-center rounded-sm border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
           >
             {actionLabel(item)}
-            {external && <span className="sr-only"> (opens GitHub)</span>}
           </RowLink>
         </div>
       </div>

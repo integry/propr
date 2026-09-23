@@ -1,10 +1,19 @@
 /**
- * Summary row: four counts, each one a door into the list behind it.
+ * Summary sub-toolbar: four counts, each one a door into the list behind it.
  *
- * These are four single numbers, so they get one line — not four boxes. Each
- * count sits inline next to its label, the whole row is one rule-separated
- * strip, and the counts stay neutral. Only "Needs attention" takes colour, and
- * only when it is non-zero — if everything is emphasised, nothing is.
+ * These are four single numbers, so they get one line — not four boxes. The
+ * strip is a real piece of chrome rather than loose text between the
+ * breadcrumb bar and the feed: a 40px tinted bar with its own bottom rule, so
+ * it reads as the console's status/filter bar. Counts stay neutral; only
+ * "Needs attention" takes colour, and only when it is non-zero — if everything
+ * is emphasised, nothing is.
+ *
+ * The first count carries the same `px-3` left rail as every section heading
+ * below it, so `NEEDS ATTENTION` in the bar sits on the same vertical line as
+ * `HAPPENING NOW` in the pane underneath.
+ *
+ * It wraps below `sm`, where four counts cannot share 320px, so the bar grows
+ * to two rows instead of scrolling sideways.
  */
 
 import React, { useCallback } from 'react';
@@ -31,8 +40,8 @@ const SummaryCount: React.FC<SummaryCountProps> = ({ label, value, href, title, 
     title={title}
     data-testid={testId}
     data-emphasis={emphasised ? 'true' : 'false'}
-    className={`flex min-w-0 items-baseline gap-2 border-r border-slate-200 px-3 py-2 last:border-r-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${
-      emphasised ? 'hover:bg-amber-50' : 'hover:bg-slate-50'
+    className={`flex min-w-0 items-baseline gap-2 border-r border-slate-200 px-3 py-2.5 last:border-r-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${
+      emphasised ? 'hover:bg-amber-100/60' : 'hover:bg-slate-100'
     }`}
   >
     <span
@@ -65,7 +74,7 @@ export const SummaryStrip: React.FC<DashboardSectionProps> = ({ repository, refr
     <div
       aria-label="Work summary"
       data-testid="summary-strip"
-      className="flex flex-wrap items-stretch"
+      className="flex min-h-10 flex-wrap items-stretch border-b border-slate-200 bg-slate-50/50"
     >
       <SummaryCount
         testId="summary-needs-attention"

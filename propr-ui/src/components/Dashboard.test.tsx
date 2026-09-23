@@ -305,7 +305,7 @@ describe('Dashboard', () => {
     expect(queue).toHaveTextContent('All agents are busy');
   });
 
-  it('shows a recorded score with its scale and omits the element entirely without one', async () => {
+  it('shows a recorded score as the quality pill and omits the element entirely without one', async () => {
     mockOutcomes.mockResolvedValue(outcomesResponse([
       outcomeItem({ id: 'scored', score: 8 }),
       outcomeItem({ id: 'unscored', taskId: 'done-2', title: 'No score here' }),
@@ -317,6 +317,8 @@ describe('Dashboard', () => {
     const scores = await screen.findAllByTestId('outcome-score');
     expect(scores).toHaveLength(1);
     expect(scores[0]).toHaveTextContent('8');
-    expect(scores[0]).toHaveTextContent('/10');
+    // The scale reaches assistive technology without being drawn on screen.
+    expect(scores[0]).toHaveTextContent('Code quality score 8 out of 10');
+    expect(scores[0].textContent).not.toMatch(/\/10/);
   });
 });

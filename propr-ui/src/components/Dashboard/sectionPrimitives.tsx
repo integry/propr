@@ -80,6 +80,13 @@ export const WorkReference: React.FC<{ issueNumber?: number | null; prNumber?: n
  * floating card: tinted background, a 1px rule beneath it, and the section's
  * own count carried inline as `HAPPENING NOW (6)` so a top-level number never
  * needs a box of its own.
+ *
+ * `min-h-10` is the horizon line. Two panes sit side by side, and only some of
+ * them carry a segmented control; without a shared minimum the header in one
+ * column is 28px and the header beside it is 40px, so the rule under each one
+ * lands on a different pixel and the split-pane reads as two separate boxes.
+ * Forty is also the summary bar's height, so the whole console keeps one
+ * chrome rhythm.
  */
 export const SectionHeading: React.FC<{
   id: string;
@@ -87,7 +94,7 @@ export const SectionHeading: React.FC<{
   count?: number | null;
   children?: React.ReactNode;
 }> = ({ id, title, count, children }) => (
-  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
+  <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
     <h2 id={id} className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
       {title}
       {count !== undefined && count !== null && count > 0 && (

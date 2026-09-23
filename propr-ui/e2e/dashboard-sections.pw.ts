@@ -30,6 +30,49 @@ const outcomes = [
   { id: 'task:done-5:cancelled', kind: 'cancelled', taskId: 'done-5', repository: 'example/workspace', issueNumber: 2452, prNumber: null, title: 'Prototype a percentage progress bar', detail: 'Cancelled by operator', planIssueStatus: null, score: null, occurredAt: minutesAgo(420) },
 ];
 
+/**
+ * The shell around the dashboard.
+ *
+ * The fixture signs a user in and serves Agent Tank usage so the left
+ * navigation renders whole — nav, the USAGE telemetry widget and the account
+ * block — instead of ending at Settings above a column of dead space. The user
+ * is a plain member on purpose: the admin-only banners (onboarding, missing
+ * default model, Agent Tank detection) would otherwise push the dashboard
+ * itself down the page and out of the capture.
+ */
+const user = {
+  id: 'preview-user',
+  login: 'operator',
+  username: 'operator',
+  displayName: 'Dana Okonkwo',
+  email: null,
+  avatarUrl: null,
+  role: 'member',
+  permissions: [],
+  authorizationSource: 'local',
+};
+
+const agentTankUsage = {
+  enabled: true,
+  agents: {
+    claude: {
+      name: 'claude',
+      usage: {
+        session: { percent: 34, resetsIn: '2h 10m' },
+        weeklyAll: { percent: 61, resetsIn: '3d 4h' },
+        weeklySonnet: { percent: 22, resetsIn: '3d 4h' },
+      },
+    },
+    codex: {
+      name: 'codex',
+      usage: {
+        fiveHour: { percentUsed: 12, resetsIn: '1h 05m' },
+        weekly: { percentUsed: 47, resetsIn: '4d 2h' },
+      },
+    },
+  },
+};
+
 const dashboardResponses = (attentionItems: typeof attention): Record<string, unknown> => ({
   '/api/dashboard/summary': {
     repository: 'all',
@@ -77,6 +120,8 @@ async function fixture(page: Page, attentionItems: typeof attention = attention)
     const pathname = new URL(route.request().url()).pathname;
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: true },
+      '/api/auth/user': user,
+      '/api/config/agent-tank/usage': agentTankUsage,
       '/api/tasks': { tasks: [], total: 0 },
       '/api/instance/catalog': {
         agents: [{ id: 'fixture', name: 'Fixture agent', defaultModel: 'gpt-6-astra' }],
@@ -123,6 +168,19 @@ test('desktop shows every section with running work in the main column', async (
 
   // Five active rows before the list is expanded.
   await expect(page.getByTestId('happening-now-list').locator('li')).toHaveCount(5);
+
+  // The navigation column is whole: nav, then telemetry, then the account.
+  const sidebar = page.locator('aside').first();
+  await expect(sidebar.getByRole('link', { name: 'Settings' })).toBeVisible();
+  await expect(sidebar.getByText('Usage')).toBeVisible();
+  await expect(sidebar.getByText('Dana Okonkwo')).toBeVisible();
+
+  // Every action in the attention column starts on the same vertical line.
+  const actionLefts = await page.getByTestId('needs-attention-panel').getByRole('link', { name: /^(Open|Review)\b/ })
+    .evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().left)));
+  expect(actionLefts.length).toBeGreaterThan(1);
+  expect(new Set(actionLefts).size).toBe(1);
+
   await capture(page, 'dashboard-desktop');
 
   await page.getByRole('button', { name: 'Show 1 more' }).click();
