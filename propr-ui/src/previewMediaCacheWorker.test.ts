@@ -4,7 +4,10 @@ import {
   createHarness, dispatchFetch, waitableEvent,
 } from './test/serviceWorkerHarness';
 
-const capture = { url: CAPTURE_URL, method: 'GET', mode: 'no-cors' as RequestMode };
+const capture = {
+  url: CAPTURE_URL, method: 'GET', mode: 'no-cors' as RequestMode,
+  destination: 'image' as RequestDestination,
+};
 const stampOf = (url: string) => `${url}?${PREVIEW_STAMP_PARAMETER}`;
 
 describe('preview media worker cache', () => {
@@ -14,6 +17,9 @@ describe('preview media worker cache', () => {
     ['any other github.com resource', { url: 'https://github.com/integry/propr/pull/1', method: 'GET', mode: 'no-cors' as RequestMode }],
     ['a capture requested with a query', { ...capture, url: `${CAPTURE_URL}?raw=1` }],
     ['a non-GET capture request', { ...capture, method: 'POST' }],
+    // A published capture may be a video, which seeks with range requests that
+    // one whole-resource entry keyed on the URL cannot answer.
+    ['a published video', { ...capture, destination: 'video' as RequestDestination }],
   ])('never answers %s', (_label, request) => {
     const harness = createHarness();
     expect(dispatchFetch(harness, request)).toBeUndefined();
@@ -32,6 +38,20 @@ describe('preview media worker cache', () => {
     // second load that reached the network would re-download the whole capture.
     expect(harness.networkRequests).toEqual([CAPTURE_URL]);
     expect(served).toBeDefined();
+  });
+
+  test('never writes a partial capture under the whole-resource key', async () => {
+    const harness = createHarness();
+
+    const served = await dispatchFetch(harness, {
+      ...capture, headers: new Headers({ Range: 'bytes=128-' }),
+    });
+
+    // The request still reaches the network; only the entry that a later
+    // whole-resource load would be answered from is withheld.
+    expect(served).toBeDefined();
+    expect(harness.networkRequests).toEqual([CAPTURE_URL]);
+    expect(harness.cacheContents(PREVIEW_CACHE)).toEqual([]);
   });
 
   test('re-fetches a capture once the one-week window has passed', async () => {

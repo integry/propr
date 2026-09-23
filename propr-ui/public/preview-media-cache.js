@@ -10,7 +10,9 @@
  * unreadable both here and in the page — a canvas drawn from one is tainted, so
  * no downsampled thumbnail can be exported into storage. The opaque response
  * itself can be kept though, keyed by the stable attachment URL, and that is
- * enough for a reload to paint from disk without touching the network.
+ * enough for a reload to paint from disk without touching the network. Only
+ * still images are held: published videos are streamed with range requests, and
+ * a cache keyed on the URL alone has no way to answer one.
  *
  * `service-worker.js` loads this with `importScripts`. It registers its own
  * listeners and shares no state with the application shell cache, so a deploy
@@ -75,6 +77,10 @@ async function trimPreviewCache(cache, now) {
  * replayed for the rest of the week.
  */
 async function storePreviewMedia(cache, request, response) {
+  // An opaque partial response still reports status 0, so `Cache.put` would not
+  // reject it, and Cache Storage keys on the URL alone: a range of a capture
+  // would be replayed as the whole thing. Ranged requests are never written.
+  if (request.headers.get('range')) return;
   if (response.type !== 'opaque' && !response.ok) return;
   try {
     await cache.put(request, response);
@@ -130,6 +136,11 @@ if (typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWo
   self.addEventListener('fetch', event => {
     const request = event.request;
     if (request.method !== 'GET') return;
+    // Only still images. A published capture may equally be a video, which the
+    // page plays with range requests that a single whole-resource entry keyed on
+    // the URL cannot answer, and whose bytes would crowd out the thumbnails this
+    // cache exists to keep warm.
+    if (request.destination !== 'image') return;
     // Captures are the only cross-origin resource worth holding, and only as the
     // opaque bytes a no-cors element asked for: answering a CORS request with
     // them would fail the load outright.

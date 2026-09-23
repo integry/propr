@@ -187,7 +187,8 @@ export function dispatchFetch(harness: WorkerHarness, request: Partial<Request> 
   let responsePromise: Promise<unknown> | undefined;
   const pending: Array<Promise<unknown>> = [];
   harness.dispatch('fetch', {
-    request,
+    // A real Request always carries these; a fixture names only what it exercises.
+    request: { destination: '' as RequestDestination, headers: new Headers(), ...request },
     respondWith(value: Promise<unknown>) {
       // The browser rejects a second answer to one request; so must the harness.
       if (responsePromise) throw new Error('respondWith() was already called for this request');
