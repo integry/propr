@@ -1,152 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import vm from 'node:vm';
 import { describe, expect, test, vi } from 'vitest';
-
-type WorkerListener = (event: Record<string, unknown>) => void;
-
-interface WorkerHarness {
-  listeners: Map<string, WorkerListener>;
-  openedUrls: string[];
-  shownNotifications: Array<{ title: string; options: Record<string, unknown> }>;
-  badgeCounts: number[];
-  networkRequests: string[];
-  setWindows(windows: Array<Record<string, unknown>>): void;
-}
-
-const workerSource = readFileSync(
-  resolve(process.cwd(), 'public/service-worker.js'),
-  'utf8',
-);
-
-function response(body: string, contentType: string): Response {
-  const result = new Response(body, {
-    status: 200,
-    headers: { 'Content-Type': contentType },
-  });
-  Object.defineProperties(result, {
-    type: { value: 'basic' },
-    redirected: { value: false },
-  });
-  return result;
-}
-
-function createHarness(): WorkerHarness {
-  class MockServiceWorkerGlobalScope {}
-  const listeners = new Map<string, WorkerListener>();
-  const openedUrls: string[] = [];
-  const shownNotifications: WorkerHarness['shownNotifications'] = [];
-  const badgeCounts: number[] = [];
-  const networkRequests: string[] = [];
-  let windows: Array<Record<string, unknown>> = [];
-  const cacheEntries = new Map<string, Response>();
-  const cache = {
-    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(String(request))),
-    put: vi.fn(async (request: RequestInfo, value: Response) => {
-      cacheEntries.set(String(request), value);
-    }),
-  };
-  const caches = {
-    open: vi.fn(async () => cache),
-    keys: vi.fn(async () => ['unrelated-cache', 'propr-shell-old']),
-    delete: vi.fn(async () => true),
-    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(String(request))),
-  };
-  const scope = Object.assign(new MockServiceWorkerGlobalScope(), {
-    location: { origin: 'https://app.example.com' },
-    addEventListener: (name: string, listener: WorkerListener) => listeners.set(name, listener),
-    skipWaiting: vi.fn(async () => undefined),
-    navigator: {
-      setAppBadge: vi.fn(async (count: number) => { badgeCounts.push(count); }),
-      clearAppBadge: vi.fn(async () => { badgeCounts.push(0); }),
-    },
-    registration: {
-      showNotification: vi.fn(async (title: string, options: Record<string, unknown>) => {
-        shownNotifications.push({ title, options });
-      }),
-    },
-    clients: {
-      claim: vi.fn(async () => undefined),
-      matchAll: vi.fn(async () => windows),
-      openWindow: vi.fn(async (url: string) => {
-        openedUrls.push(url);
-        return null;
-      }),
-    },
-  });
-  const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
-    networkRequests.push(request instanceof Request ? request.url : String(request));
-    const url = request instanceof Request ? request.url : String(request);
-    const pathname = new URL(url, 'https://app.example.com').pathname;
-    if (pathname === '/' || pathname === '/index.html') {
-      return response(`<!doctype html>
-        <script src="/config.js"></script>
-        <script type="module" src="/assets/app-abc.js"></script>
-        <link rel="modulepreload" href="/assets/vendor-def.js">
-        <link rel="stylesheet" href="/assets/app-abc.css">`, 'text/html');
-    }
-    if (pathname.endsWith('.js')) return response('asset', 'text/javascript');
-    if (pathname.endsWith('.css')) return response('asset', 'text/css');
-    if (pathname === '/pwa-shell-assets.json') {
-      return response(JSON.stringify([
-        '/assets/app-abc.js',
-        '/assets/vendor-def.js',
-        '/assets/app-abc.css',
-        '/assets/lazy-route.js',
-        'https://attacker.example/external.js',
-      ]), 'application/json');
-    }
-    if (pathname.endsWith('.webmanifest')) return response('{}', 'application/manifest+json');
-    return response('image', 'image/png');
-  });
-
-  vm.runInNewContext(workerSource, {
-    self: scope,
-    ServiceWorkerGlobalScope: MockServiceWorkerGlobalScope,
-    caches,
-    fetch: fetchMock,
-    Request,
-    Response,
-    URL,
-    Set,
-  });
-
-  return {
-    listeners,
-    openedUrls,
-    shownNotifications,
-    badgeCounts,
-    networkRequests,
-    setWindows(nextWindows) { windows = nextWindows; },
-  };
-}
-
-function dispatchFetch(harness: WorkerHarness, request: Partial<Request> & {
-  method: string;
-  mode: RequestMode;
-  url: string;
-}): Promise<unknown> | undefined {
-  let responsePromise: Promise<unknown> | undefined;
-  harness.listeners.get('fetch')?.({
-    request,
-    respondWith(value: Promise<unknown>) { responsePromise = value; },
-  });
-  return responsePromise;
-}
-
-function waitableEvent(properties: Record<string, unknown>): {
-  event: Record<string, unknown>;
-  completion(): Promise<unknown>;
-} {
-  let promise: Promise<unknown> = Promise.resolve();
-  return {
-    event: {
-      ...properties,
-      waitUntil(value: Promise<unknown>) { promise = value; },
-    },
-    completion: () => promise,
-  };
-}
+import { createHarness, dispatchFetch, waitableEvent } from './test/serviceWorkerHarness';
 
 describe('PWA service worker', () => {
   test.each([
@@ -157,7 +10,7 @@ describe('PWA service worker', () => {
     const harness = createHarness();
     const push = waitableEvent({ ...(data === undefined ? {} : { data }) });
 
-    harness.listeners.get('push')?.(push.event);
+    harness.dispatch('push', push.event);
     await push.completion();
 
     expect(harness.shownNotifications).toEqual([{
@@ -181,7 +34,7 @@ describe('PWA service worker', () => {
     const harness = createHarness();
     const install = waitableEvent({});
 
-    harness.listeners.get('install')?.(install.event);
+    harness.dispatch('install', install.event);
     await install.completion();
 
     expect(harness.networkRequests).toEqual(expect.arrayContaining([
@@ -243,7 +96,7 @@ describe('PWA service worker', () => {
       },
     });
 
-    harness.listeners.get('push')?.(push.event);
+    harness.dispatch('push', push.event);
     await push.completion();
 
     expect(harness.shownNotifications).toHaveLength(1);
@@ -274,7 +127,7 @@ describe('PWA service worker', () => {
     const notification = { data: { deepLink: '/tasks/task-1', unreadCount: 2 }, close: vi.fn() };
     const click = waitableEvent({ notification, action: '' });
 
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(navigate).toHaveBeenCalledWith('https://app.example.com/tasks/task-1');
@@ -295,7 +148,7 @@ describe('PWA service worker', () => {
       },
       action: 'view',
     });
-    harness.listeners.get('notificationclick')?.(githubClick.event);
+    harness.dispatch('notificationclick', githubClick.event);
     await githubClick.completion();
     expect(harness.openedUrls).toEqual(['https://github.com/integry/propr/pull/1721']);
 
@@ -310,7 +163,7 @@ describe('PWA service worker', () => {
       },
       action: 'view',
     });
-    harness.listeners.get('notificationclick')?.(hostileClick.event);
+    harness.dispatch('notificationclick', hostileClick.event);
     await hostileClick.completion();
     expect(harness.openedUrls).toEqual(['https://app.example.com/repositories']);
   });
@@ -331,7 +184,7 @@ describe('PWA service worker', () => {
       action: 'approve-execute',
     });
 
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(harness.openedUrls).toEqual(['https://app.example.com/tasks/task-1']);
@@ -351,7 +204,7 @@ describe('PWA service worker', () => {
         }),
       },
     });
-    harness.listeners.get('push')?.(push.event);
+    harness.dispatch('push', push.event);
     await push.completion();
 
     expect(harness.shownNotifications[0].options.actions).toEqual([
@@ -364,7 +217,7 @@ describe('PWA service worker', () => {
       action: 'approve-execute',
     });
     (click.event.notification as { close?: () => void }).close = vi.fn();
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(harness.openedUrls).toEqual([
@@ -383,7 +236,7 @@ describe('PWA service worker', () => {
       action: 'propr-dismiss',
     });
 
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(harness.openedUrls).toEqual([
@@ -403,7 +256,7 @@ describe('PWA service worker', () => {
       action: 'propr-dismiss',
     });
 
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(harness.openedUrls).toEqual([
@@ -422,7 +275,7 @@ describe('PWA service worker', () => {
       action: 'propr-dismiss',
     });
 
-    harness.listeners.get('notificationclick')?.(click.event);
+    harness.dispatch('notificationclick', click.event);
     await click.completion();
 
     expect(harness.openedUrls).toEqual([]);

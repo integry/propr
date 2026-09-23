@@ -657,7 +657,9 @@ describe('GoalsPage', () => {
     await waitFor(() => expect(screen.queryByText(goal.title)).not.toBeInTheDocument());
     expect(screen.getByText(apiGoal.title)).toBeInTheDocument();
     expect(screen.getByText('1 of 2')).toBeInTheDocument();
-    expect(screen.getByTestId('location-search')).toHaveTextContent('search=billing+api');
+    // The debounce commits the filter and the URL together, but React Router applies the
+    // navigation in a transition, so the probe catches up a render after the filtered list.
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('search=billing+api'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
 

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
 import { downsampleToCanvas } from './previewDownsampling';
@@ -122,5 +122,53 @@ describe('compact preview downsampling', () => {
     const canvas = document.createElement('canvas');
     vi.spyOn(canvas, 'getContext').mockReturnValue(null);
     expect(downsampleToCanvas(sourceImage(1920, 1080), canvas, 80, 56)).toBe(false);
+  });
+});
+
+
+describe('compact preview media cache', () => {
+  const postMessage = vi.fn();
+  let drawImage: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    postMessage.mockClear();
+    drawImage = vi.fn();
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { controller: { postMessage } } });
+    // jsdom reports a zero-sized layout box, so stand in for a laid-out, decoded thumbnail.
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(80);
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(56);
+    vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+    vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(3840);
+    vi.spyOn(HTMLImageElement.prototype, 'naturalHeight', 'get').mockReturnValue(2160);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+      return { canvas: this, imageSmoothingEnabled: false, imageSmoothingQuality: 'low', clearRect: vi.fn(), drawImage } as unknown as CanvasRenderingContext2D;
+    } as never);
+  });
+  afterEach(() => {
+    delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+    vi.restoreAllMocks();
+  });
+
+  it('loads captures without CORS, which the attachment host refuses outright', () => {
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    // A refused probe would cost an extra request per thumbnail and still leave the canvas tainted.
+    expect(screen.getByAltText('Published screen 0')).not.toHaveAttribute('crossorigin');
+  });
+
+  it('asks the worker to forget a capture whose cached bytes will not decode', () => {
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    // The worker holds opaque bytes, so only the element can tell a capture from an error page.
+    expect(postMessage).toHaveBeenCalledWith({ type: 'propr-forget-preview', url: media[0].url });
+    expect(screen.getByRole('img', { name: /screen 0 — image unavailable/ })).toBeInTheDocument();
+  });
+
+  it('runs the halving passes once per rendered size', () => {
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    const passes = drawImage.mock.calls.length;
+    expect(passes).toBeGreaterThan(1);
+    // A re-delivered load event repaints nothing the canvas already shows at this size.
+    fireEvent.load(screen.getByAltText('Published screen 0'));
+    expect(drawImage).toHaveBeenCalledTimes(passes);
   });
 });

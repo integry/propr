@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Film, ImageOff } from 'lucide-react';
 import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
 import { downsampleToCanvas } from './previewDownsampling';
+import { forgetCachedPreviewMedia } from './previewMediaCache';
 
 /** `className` replaces the default sizing classes; compact thumbnails keep their canvas downsampling either way. */
 export function PreviewImage({ preview, compact = false, className: sizing }: { preview: PublishedVisualPreview; compact?: boolean; className?: string }) {
@@ -9,37 +10,52 @@ export function PreviewImage({ preview, compact = false, className: sizing }: { 
   const [downsampled, setDownsampled] = useState(false);
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // What the canvas already shows, so a repeated `load` or a resize that settles
+  // on the same box does not run the halving passes again.
+  const renderedSizeRef = useRef<{ url: string; width: number; height: number } | null>(null);
   const className = sizing ?? (compact ? 'h-12 w-full object-contain bg-slate-900/5 sm:h-14' : 'aspect-video w-full object-contain');
 
   const draw = useCallback(() => {
     const image = imageRef.current;
     const canvas = canvasRef.current;
-    if (!compact || !image || !canvas || !image.complete) return;
+    if (!compact || !image || !canvas || !image.complete || !image.naturalWidth) return;
+    const width = image.clientWidth;
+    const height = image.clientHeight;
+    if (width <= 0 || height <= 0) return;
+    const rendered = renderedSizeRef.current;
+    if (rendered && rendered.url === preview.url && rendered.width === width && rendered.height === height) return;
     try {
-      setDownsampled(downsampleToCanvas(image, canvas, image.clientWidth, image.clientHeight));
+      const drawn = downsampleToCanvas(image, canvas, width, height);
+      setDownsampled(drawn);
+      renderedSizeRef.current = drawn ? { url: preview.url, width, height } : null;
     } catch {
       setDownsampled(false); // The native image remains a complete fallback.
     }
-  }, [compact]);
+  }, [compact, preview.url]);
 
   useEffect(() => {
     setFailed(false);
     setDownsampled(false);
+    renderedSizeRef.current = null;
   }, [preview.url]);
 
   useEffect(() => {
     const image = imageRef.current;
     if (!compact || failed || !image) return;
-    if (image.complete && image.naturalWidth) draw();
+    draw();
     if (typeof ResizeObserver === 'undefined') return;
     // Thumbnail widths change at breakpoints; redraw for the new backing size.
     const observer = new ResizeObserver(() => draw());
     observer.observe(image);
     return () => observer.disconnect();
-  }, [compact, draw, failed, preview.url]);
+  }, [compact, draw, failed]);
 
   if (failed) return <span role="img" aria-label={`${preview.title} — image unavailable`} className={`${className} flex items-center justify-center bg-slate-100 text-slate-500`}><ImageOff className="h-5 w-5" /></span>;
-  const image = <img ref={imageRef} src={preview.url} alt={preview.title} loading="lazy" onLoad={draw} onError={() => setFailed(true)}
+  // No `crossorigin`: the attachment host refuses CORS, so asking for it would
+  // only cost a refused request per thumbnail. Durability comes from the worker
+  // cache instead — see `previewMediaCache`.
+  const image = <img ref={imageRef} src={preview.url} alt={preview.title} loading="lazy" onLoad={draw}
+    onError={() => { forgetCachedPreviewMedia(preview.url); setFailed(true); }}
     className={`${className}${compact && downsampled ? ' opacity-0' : ''}`} />;
   if (!compact) return image;
   // The image stays in the DOM for lazy loading, accessibility and fallback; the canvas is presentation only.
