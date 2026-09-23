@@ -78,7 +78,7 @@ export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
 export { applyDatabaseMigrations, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
-export { installSqliteRetry, retryOnSqliteContention, isSqliteContentionError, isSqliteSnapshotConflict, sqliteRetryDelayMs } from './db/sqliteRetry.js';
+export { installSqliteRetry, retryOnSqliteContention, replayableTransaction, isSqliteContentionError, isSqliteSnapshotConflict, sqliteRetryDelayMs } from './db/sqliteRetry.js';
 export type { SqliteRetryOptions } from './db/sqliteRetry.js';
 
 export { getRepoConfigKey, detectDefaultBranch, listRepositoryBranchConfigurations } from './git/branchConfig.js';

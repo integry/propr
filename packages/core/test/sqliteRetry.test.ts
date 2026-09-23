@@ -5,6 +5,7 @@ import {
     installSqliteRetry,
     isSqliteContentionError,
     isSqliteSnapshotConflict,
+    replayableTransaction,
     retryOnSqliteContention,
     sqliteRetryDelayMs,
     type SqliteRetryOptions
@@ -19,10 +20,31 @@ interface Fault {
 
 interface PreparingConnection {
     prepare(sql: string): unknown;
+    pragma(source: string, options?: { simple?: boolean }): unknown;
+}
+
+/** A clock that only moves when the retry loop waits on it. */
+function fakeClock(startMs = 0): {
+    now: () => number;
+    sleep: (ms: number) => Promise<void>;
+    sleeps: number[];
+} {
+    let clock = startMs;
+    const sleeps: number[] = [];
+    return {
+        now: () => clock,
+        sleep: async (ms: number) => {
+            sleeps.push(ms);
+            clock += ms;
+        },
+        sleeps
+    };
 }
 
 let database: Knex | undefined;
 let faults: Fault[] = [];
+let statements: string[] = [];
+let pragmas: string[] = [];
 
 // Deterministic retries: no real waiting, no jitter.
 const instantRetries: SqliteRetryOptions = { sleep: async () => undefined, random: () => 1 };
@@ -38,13 +60,19 @@ function contention(code = 'SQLITE_BUSY'): Error {
  */
 function injectFaults(connection: PreparingConnection): void {
     const prepare = connection.prepare.bind(connection);
+    const pragma = connection.pragma.bind(connection);
     connection.prepare = (sql: string) => {
+        statements.push(sql);
         const fault = faults.find(candidate => candidate.pattern.test(sql));
         if (fault) {
             fault.attempts += 1;
             if (fault.attempts <= fault.failures) throw contention(fault.code);
         }
         return prepare(sql);
+    };
+    connection.pragma = (source: string, options?: { simple?: boolean }) => {
+        pragmas.push(source);
+        return pragma(source, options);
     };
 }
 
@@ -80,10 +108,17 @@ async function createDatabase(): Promise<Knex> {
     return database;
 }
 
+async function busyTimeoutMs(db: Knex): Promise<number> {
+    const rows = await db.raw('PRAGMA busy_timeout') as Array<Record<string, number>>;
+    return Number(rows[0]?.timeout ?? rows[0]?.busy_timeout);
+}
+
 afterEach(async () => {
     await database?.destroy();
     database = undefined;
     faults = [];
+    statements = [];
+    pragmas = [];
 });
 
 describe('SQLite contention detection', () => {
@@ -187,6 +222,127 @@ describe('retryOnSqliteContention', () => {
         assert.equal(attempts, 1);
     });
 
+    test('caps the backoff at the budget that is left', async () => {
+        // A 25 ms backoff inside a 10 ms budget would sleep past the deadline
+        // and then take another blocking attempt on the far side of it.
+        const clock = fakeClock();
+        let attempts = 0;
+        await assert.rejects(
+            retryOnSqliteContention(
+                async () => {
+                    attempts += 1;
+                    throw contention();
+                },
+                { operation: 'test' },
+                {
+                    random: () => 1,
+                    baseDelayMs: 25,
+                    maxTotalMs: 10,
+                    now: clock.now,
+                    sleep: clock.sleep
+                }
+            ),
+            /database is locked/
+        );
+        assert.deepEqual(clock.sleeps, [10]);
+        assert.equal(attempts, 1);
+    });
+
+    test('keeps retrying while the budget allows it', async () => {
+        const clock = fakeClock();
+        let attempts = 0;
+        const result = await retryOnSqliteContention(
+            async () => {
+                attempts += 1;
+                if (attempts < 3) throw contention();
+                return 'done';
+            },
+            { operation: 'test' },
+            {
+                random: () => 1,
+                baseDelayMs: 25,
+                maxTotalMs: 1000,
+                now: clock.now,
+                sleep: clock.sleep
+            }
+        );
+        assert.equal(result, 'done');
+        assert.deepEqual(clock.sleeps, [25, 50]);
+    });
+
+    test('lowers the driver blocking wait to the budget that is left', async () => {
+        const clock = fakeClock();
+        const calls: Array<number | 'restored'> = [];
+        await assert.rejects(
+            retryOnSqliteContention(
+                async () => {
+                    throw contention();
+                },
+                {
+                    operation: 'test',
+                    limitBlockingWaitMs: ms => calls.push(ms),
+                    restoreBlockingWait: () => calls.push('restored')
+                },
+                {
+                    random: () => 1,
+                    baseDelayMs: 25,
+                    maxDelayMs: 25,
+                    maxTotalMs: 100,
+                    maxAttempts: 3,
+                    now: clock.now,
+                    sleep: clock.sleep
+                }
+            ),
+            /database is locked/
+        );
+        assert.deepEqual(calls, [75, 50, 'restored']);
+    });
+
+    test('holds a nested retry to the budget of the retry around it', async () => {
+        const clock = fakeClock();
+        const limits: Array<number | 'restored'> = [];
+        let innerAttempts = 0;
+        await assert.rejects(
+            retryOnSqliteContention(
+                async () => retryOnSqliteContention(
+                    async () => {
+                        innerAttempts += 1;
+                        throw contention();
+                    },
+                    {
+                        operation: 'inner',
+                        limitBlockingWaitMs: ms => limits.push(ms),
+                        restoreBlockingWait: () => limits.push('restored')
+                    },
+                    {
+                        random: () => 1,
+                        baseDelayMs: 10,
+                        maxTotalMs: 60_000,
+                        now: clock.now,
+                        sleep: clock.sleep
+                    }
+                ),
+                { operation: 'outer', sharesBudget: true },
+                {
+                    random: () => 1,
+                    baseDelayMs: 10,
+                    maxTotalMs: 30,
+                    maxAttempts: 1,
+                    now: clock.now,
+                    sleep: clock.sleep
+                }
+            ),
+            /database is locked/
+        );
+        // The inner retry stops at the outer deadline instead of spending the
+        // minute-long budget of its own.
+        assert.equal(clock.now(), 30);
+        assert.equal(innerAttempts, 2);
+        // Including the blocking wait of the nested operation's first attempt:
+        // the budget it inherited was already running.
+        assert.deepEqual(limits, [30, 20, 'restored']);
+    });
+
     test('does not replay failures that are not contention', async () => {
         let attempts = 0;
         await assert.rejects(
@@ -256,9 +412,24 @@ describe('installSqliteRetry', () => {
         assert.deepEqual(await db('widgets').pluck('id'), [1]);
     });
 
-    test('replays the whole transaction when its snapshot goes stale', async () => {
+    test('takes the write lock before the transaction callback runs', async () => {
         const db = await createDatabase();
-        const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');
+        installSqliteRetry(db, instantRetries);
+        statements.length = 0;
+
+        await db.transaction(async trx => {
+            await trx('widgets').insert({ id: 1 });
+        });
+
+        // A deferred BEGIN would only meet the writer at the callback's first
+        // write, where contention can no longer be replayed on its own.
+        assert.ok(statements.includes('BEGIN IMMEDIATE;'));
+        assert.ok(!statements.includes('BEGIN;'));
+    });
+
+    test('retries a locked BEGIN instead of replaying the callback', async () => {
+        const db = await createDatabase();
+        const begin = failStatements(/^begin/i, 2);
         installSqliteRetry(db, instantRetries);
 
         let containerRuns = 0;
@@ -267,11 +438,75 @@ describe('installSqliteRetry', () => {
             await trx('widgets').insert({ id: 1 });
         });
 
+        assert.equal(begin.attempts, 3);
+        assert.equal(containerRuns, 1);
+        assert.deepEqual(await db('widgets').pluck('id'), [1]);
+    });
+
+    test('never replays a transaction callback on its own', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');
+        installSqliteRetry(db, instantRetries);
+
+        let containerRuns = 0;
+        let itemsTaken = 0;
+        await assert.rejects(
+            db.transaction(async trx => {
+                containerRuns += 1;
+                // Stands in for the work a rollback cannot undo: an item taken
+                // off a queue, a request sent, a counter advanced.
+                itemsTaken += 1;
+                await trx('widgets').insert({ id: 1 });
+            }),
+            /database is locked/
+        );
+
+        assert.equal(containerRuns, 1);
+        assert.equal(itemsTaken, 1);
+        assert.equal(insert.attempts, 1);
+    });
+
+    test('replays a transaction the caller declared replayable', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');
+        installSqliteRetry(db, instantRetries);
+
+        let containerRuns = 0;
+        await db.transaction(async trx => {
+            containerRuns += 1;
+            await trx('widgets').insert({ id: 1 });
+        }, replayableTransaction());
+
         // The statement is not replayed in place: only a rollback clears a
         // stale snapshot, so the container runs a second time.
         assert.equal(containerRuns, 2);
         assert.equal(insert.attempts, 2);
         assert.deepEqual(await db('widgets').pluck('id'), [1]);
+    });
+
+    test('lowers the connection busy timeout to the budget left on a retry', async () => {
+        const db = await createDatabase();
+        const configured = await busyTimeoutMs(db);
+        failStatements(/^insert/i, 1);
+        const clock = fakeClock();
+        installSqliteRetry(db, {
+            random: () => 1,
+            baseDelayMs: 25,
+            maxTotalMs: 100,
+            now: clock.now,
+            sleep: clock.sleep
+        });
+        pragmas.length = 0;
+
+        await db('widgets').insert({ id: 1 });
+
+        // better-sqlite3 blocks this thread for the whole busy_timeout, so the
+        // retry lowers it to what the budget still allows and puts the
+        // connection's own value back afterwards.
+        assert.deepEqual(
+            pragmas.filter(source => source.startsWith('busy_timeout =')),
+            ['busy_timeout = 75', `busy_timeout = ${configured}`]
+        );
     });
 
     test('leaves transactions the caller drives to the caller', async () => {

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Knex } from 'knex';
 import logger from '../utils/logger.js';
 
@@ -12,9 +13,20 @@ import logger from '../utils/logger.js';
  * the lock for the entire timeout and the query then fails outright. Every
  * query issued through a database patched by {@link installSqliteRetry} instead
  * waits on an asynchronous timer and tries again, which also lets whichever
- * connection owns the lock finish its work on this event loop. Retries are
- * bounded by a wall-clock budget so they shorten contention rather than
- * multiplying a blocked thread.
+ * connection owns the lock finish its work on this event loop.
+ *
+ * Only statements are replayed. A transaction callback is application code: a
+ * rollback undoes its SQL, not the items it took off a queue, the requests it
+ * sent or the JavaScript state it captured, so running it twice is not
+ * something this layer may decide on its own. Transactions instead open with
+ * `BEGIN IMMEDIATE`, which moves lock acquisition ahead of the callback where
+ * the statement retry can replay it harmlessly; callbacks that genuinely are
+ * safe to run again opt in through {@link replayableTransaction}.
+ *
+ * Retries are bounded by a wall-clock budget so they shorten contention rather
+ * than multiplying a blocked thread. The budget bounds the asynchronous waits,
+ * the driver's own blocking waits, and every retry nested inside a retried
+ * transaction, so an operation cannot outlive the deadline it was given.
  */
 
 /** Result codes that mean "someone else holds the lock right now". */
@@ -31,6 +43,9 @@ const SQLITE_CONTENTION_CODES = new Set([
 const SQLITE_CONTENTION_MESSAGE =
     /database (?:is locked|table is locked|schema is locked)/i;
 
+/** knex opens an outermost transaction with a deferred `BEGIN`. */
+const DEFERRED_BEGIN = /^\s*begin\s*;?\s*$/i;
+
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BASE_DELAY_MS = 25;
 const DEFAULT_MAX_DELAY_MS = 500;
@@ -44,8 +59,17 @@ const MIN_TOTAL_MS = 5000;
 const RETRY_PATCHED = Symbol.for('propr.sqliteRetryPatched');
 /** Carries the retry options on the knex config every client of a database shares. */
 const RETRY_OPTIONS = Symbol.for('propr.sqliteRetryOptions');
+/** Marks a transaction config whose callback the caller declared safe to replay. */
+const REPLAYABLE = Symbol.for('propr.sqliteRetryReplayable');
 /** Lets the per-query path reuse options instead of re-reading the environment. */
 const RETRY_RESOLVED = Symbol('propr.sqliteRetryResolved');
+
+/**
+ * The deadline of the retried operation currently in flight. A statement retry
+ * running inside a retried transaction inherits it, so nested retries share one
+ * budget instead of each starting a fresh one.
+ */
+const retryBudget = new AsyncLocalStorage<{ deadline: number }>();
 
 export interface SqliteRetryOptions {
     /** Total attempts, including the first one. */
@@ -60,7 +84,18 @@ export interface SqliteRetryOptions {
      * retrying past that point would multiply a freeze rather than shorten it.
      */
     maxTotalMs?: number;
-    /** Retry whole transaction callbacks whose contention cannot be replayed in place. */
+    /**
+     * Open outermost transactions with `BEGIN IMMEDIATE` so contention for the
+     * write lock surfaces on a statement that can be replayed, before the
+     * callback has done anything. On by default.
+     */
+    immediateTransactions?: boolean;
+    /**
+     * Replay *every* transaction callback that loses the race for the lock.
+     * Off by default: replaying a callback re-runs whatever it does besides
+     * SQL. Prefer declaring individual transactions replayable with
+     * {@link replayableTransaction}.
+     */
     retryTransactions?: boolean;
     /** Test seams. */
     sleep?: (ms: number) => Promise<void>;
@@ -74,6 +109,7 @@ interface ResolvedRetryOptions {
     baseDelayMs: number;
     maxDelayMs: number;
     maxTotalMs: number;
+    immediateTransactions: boolean;
     retryTransactions: boolean;
     sleep: (ms: number) => Promise<void>;
     random: () => number;
@@ -85,6 +121,12 @@ interface RetryContext {
     operation: string;
     /** Lets the statement-level retry decline contention it cannot replay. */
     isRetryable?: (error: unknown) => boolean;
+    /** Shares this operation's deadline with every retry nested inside it. */
+    sharesBudget?: boolean;
+    /** Caps the driver's own blocking wait at what is left of the budget. */
+    limitBlockingWaitMs?: (remainingMs: number) => void;
+    /** Restores the driver's configured blocking wait once retrying is over. */
+    restoreBlockingWait?: () => void;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -107,6 +149,30 @@ export function isSqliteContentionError(error: unknown): boolean {
  */
 export function isSqliteSnapshotConflict(error: unknown): boolean {
     return errorCode(error) === 'SQLITE_BUSY_SNAPSHOT';
+}
+
+/**
+ * Declare a transaction callback safe to run again from the start, so the whole
+ * transaction can be replayed when contention cannot be resolved in place:
+ *
+ * ```ts
+ * await db.transaction(async trx => { ... }, replayableTransaction());
+ * ```
+ *
+ * Only pass this for callbacks whose non-SQL effects — queue reads, HTTP calls,
+ * counters, captured state — either do not exist or are idempotent. Everything
+ * the callback did outside the database survives the rollback.
+ */
+export function replayableTransaction(
+    config: Knex.TransactionConfig = {}
+): Knex.TransactionConfig {
+    return { ...config, [REPLAYABLE]: true } as Knex.TransactionConfig;
+}
+
+function isReplayableTransaction(config: unknown): boolean {
+    return typeof config === 'object'
+        && config !== null
+        && (config as Record<symbol, unknown>)[REPLAYABLE] === true;
 }
 
 /** An unset or blank environment variable must not read as zero. */
@@ -157,8 +223,11 @@ function resolveOptions(options: SqliteRetryOptions = {}): ResolvedRetryOptions 
                 nonNegativeNumber(process.env.SQLITE_BUSY_TIMEOUT_MS, DEFAULT_BUSY_TIMEOUT_MS)
             )
         ),
+        immediateTransactions: options.immediateTransactions
+            ?? process.env.SQLITE_RETRY_IMMEDIATE_TRANSACTIONS !== '0',
+        // Opt-in: this replays application code, so it cannot default to on.
         retryTransactions: options.retryTransactions
-            ?? process.env.SQLITE_RETRY_TRANSACTIONS !== '0',
+            ?? process.env.SQLITE_RETRY_TRANSACTIONS === '1',
         sleep: options.sleep ?? delay,
         random: options.random ?? Math.random,
         now: options.now ?? Date.now
@@ -181,8 +250,11 @@ export function sqliteRetryDelayMs(
 /**
  * Run `operation`, replaying it while SQLite reports lock contention.
  *
- * The final attempt's error is rethrown unchanged so callers keep seeing the
- * SQLite result code and message they expect.
+ * Every attempt after the first has to fit inside the remaining wall-clock
+ * budget: the backoff is capped by it, the deadline is rechecked once the wait
+ * is over, and the driver's blocking wait is lowered to match. The final
+ * attempt's error is rethrown unchanged so callers keep seeing the SQLite
+ * result code and message they expect.
  */
 export async function retryOnSqliteContention<T>(
     operation: () => Promise<T>,
@@ -192,44 +264,128 @@ export async function retryOnSqliteContention<T>(
     const resolved = resolveOptions(options);
     const isRetryable = context.isRetryable ?? isSqliteContentionError;
     const startedAt = resolved.now();
+    const inheritedDeadline = retryBudget.getStore()?.deadline;
+    // An outer retry's deadline wins: nested retries may not extend it.
+    const deadline = Math.min(
+        startedAt + resolved.maxTotalMs,
+        inheritedDeadline ?? Number.POSITIVE_INFINITY
+    );
+    const runAttempt = context.sharesBudget
+        ? () => retryBudget.run({ deadline }, operation)
+        : operation;
 
-    for (let attempt = 1; ; attempt += 1) {
-        try {
-            return await operation();
-        } catch (error) {
-            const elapsedMs = resolved.now() - startedAt;
-            const exhausted = attempt >= resolved.maxAttempts
-                || elapsedMs >= resolved.maxTotalMs;
-            if (exhausted || !isRetryable(error)) {
-                if (attempt > 1 && isSqliteContentionError(error)) {
-                    logger.warn({
-                        operation: context.operation,
-                        attempts: attempt,
-                        elapsedMs,
-                        code: errorCode(error)
-                    }, 'SQLite stayed locked across every retry');
-                }
-                throw error;
-            }
-
-            const waitMs = sqliteRetryDelayMs(attempt, resolved);
-            logger.debug({
+    const giveUp = (error: unknown, attempts: number): void => {
+        if (attempts > 1 && isSqliteContentionError(error)) {
+            logger.warn({
                 operation: context.operation,
-                attempt,
-                waitMs,
+                attempts,
+                elapsedMs: resolved.now() - startedAt,
                 code: errorCode(error)
-            }, 'SQLite is locked; retrying');
-            await resolved.sleep(waitMs);
+            }, 'SQLite stayed locked across every retry');
         }
+    };
+
+    try {
+        // An inherited budget is already partly spent, so even the first
+        // blocking wait of this operation has to fit in what is left of it.
+        if (inheritedDeadline !== undefined) {
+            context.limitBlockingWaitMs?.(deadline - startedAt);
+        }
+
+        for (let attempt = 1; ; attempt += 1) {
+            try {
+                return await runAttempt();
+            } catch (error) {
+                const remainingMs = deadline - resolved.now();
+                if (attempt >= resolved.maxAttempts
+                    || remainingMs <= 0
+                    || !isRetryable(error)) {
+                    giveUp(error, attempt);
+                    throw error;
+                }
+
+                const waitMs = Math.min(sqliteRetryDelayMs(attempt, resolved), remainingMs);
+                logger.debug({
+                    operation: context.operation,
+                    attempt,
+                    waitMs,
+                    code: errorCode(error)
+                }, 'SQLite is locked; retrying');
+                await resolved.sleep(waitMs);
+
+                // The wait itself can spend the rest of the budget, and the
+                // next attempt would block on the lock all over again.
+                const leftMs = deadline - resolved.now();
+                if (leftMs <= 0) {
+                    giveUp(error, attempt);
+                    throw error;
+                }
+                context.limitBlockingWaitMs?.(leftMs);
+            }
+        }
+    } finally {
+        context.restoreBlockingWait?.();
     }
 }
 
-type SqliteQueryConnection = { inTransaction?: boolean };
+type SqliteQueryConnection = {
+    inTransaction?: boolean;
+    readonly?: boolean;
+    pragma?: (source: string, options?: { simple?: boolean }) => unknown;
+};
+
+/** A read-only connection cannot take the write lock `BEGIN IMMEDIATE` asks for. */
+function isReadonlyConnection(connection: unknown): boolean {
+    return typeof connection === 'object'
+        && connection !== null
+        && (connection as SqliteQueryConnection).readonly === true;
+}
 
 function isInTransaction(connection: unknown): boolean {
     return typeof connection === 'object'
         && connection !== null
         && (connection as SqliteQueryConnection).inTransaction === true;
+}
+
+/**
+ * Keeps the driver's synchronous lock wait inside the retry budget.
+ *
+ * better-sqlite3 blocks this thread for the whole `busy_timeout` on every
+ * attempt, so a retry made with less budget left than that timeout would
+ * overshoot the deadline by the difference. Lowering the pragma for the
+ * duration of the retries bounds that wait; the connection's configured value
+ * is restored once the statement is done with it.
+ */
+function blockingWaitLimiter(connection: unknown): Pick<
+    RetryContext, 'limitBlockingWaitMs' | 'restoreBlockingWait'
+> {
+    const pragma = (connection as SqliteQueryConnection | null)?.pragma;
+    if (typeof pragma !== 'function') return {};
+    const run = pragma.bind(connection as SqliteQueryConnection);
+    let configuredMs: number | undefined;
+
+    return {
+        limitBlockingWaitMs(remainingMs: number): void {
+            try {
+                configuredMs ??= Number(run('busy_timeout', { simple: true }));
+                if (!Number.isFinite(configuredMs)) return;
+                const capped = Math.max(0, Math.floor(remainingMs));
+                if (capped < configuredMs) run(`busy_timeout = ${capped}`);
+            } catch {
+                // A driver without this pragma still has the wall-clock budget.
+            }
+        },
+        restoreBlockingWait(): void {
+            if (configuredMs === undefined || !Number.isFinite(configuredMs)) return;
+            const restored = configuredMs;
+            configuredMs = undefined;
+            try {
+                run(`busy_timeout = ${restored}`);
+            } catch {
+                // Nothing left to undo: the pragma is gone with the connection.
+            }
+        }
+    };
 }
 
 interface RetryableClient {
@@ -263,19 +419,33 @@ function retryStatements(client: RetryableClient): void {
         const options = this.config?.[RETRY_OPTIONS] as ResolvedRetryOptions | undefined;
         if (!options) return runQuery.call(this, connection, obj);
 
-        const sql = typeof obj === 'object' && obj !== null
-            ? String((obj as { sql?: unknown }).sql ?? '')
-            : '';
+        const query = typeof obj === 'object' && obj !== null
+            ? obj as { sql?: unknown }
+            : undefined;
+
+        // Take the write lock at BEGIN rather than at the callback's first
+        // write: contention then lands on a statement with no side effects to
+        // undo, which the retry below simply repeats, and the callback does not
+        // start until the lock is held.
+        if (options.immediateTransactions
+            && query
+            && DEFERRED_BEGIN.test(String(query.sql ?? ''))
+            && !isInTransaction(connection)
+            && !isReadonlyConnection(connection)) {
+            query.sql = 'BEGIN IMMEDIATE;';
+        }
+
         return retryOnSqliteContention(
             () => runQuery.call(this, connection, obj),
             {
-                operation: sql,
+                operation: String(query?.sql ?? ''),
                 // A stale snapshot inside an open transaction can only be
                 // cleared by rolling back, so let it reach the transaction
-                // retry below instead of replaying a statement that is certain
-                // to fail again.
+                // retry instead of replaying a statement that is certain to
+                // fail again.
                 isRetryable: error => isSqliteContentionError(error)
-                    && !(isSqliteSnapshotConflict(error) && isInTransaction(connection))
+                    && !(isSqliteSnapshotConflict(error) && isInTransaction(connection)),
+                ...blockingWaitLimiter(connection)
             },
             options
         );
@@ -293,15 +463,19 @@ function retryTransactions(database: Knex, options: ResolvedRetryOptions): void 
         config: unknown,
         outerTx: unknown = null
     ): unknown {
-        // Only whole outermost transactions can be replayed: a savepoint shares
-        // its parent's stale snapshot, and a transaction opened without a
-        // callback is driven by the caller, who owns the retry decision.
-        if (typeof container !== 'function' || outerTx) {
-            return runTransaction(container, config, outerTx);
-        }
+        // Replaying a callback re-runs everything it does besides SQL, so only
+        // callbacks whose caller declared them safe are replayed. Savepoints
+        // are excluded too: one shares its parent's stale snapshot, and a
+        // transaction opened without a callback is driven by the caller, who
+        // owns the retry decision.
+        const replayable = typeof container === 'function'
+            && !outerTx
+            && (options.retryTransactions || isReplayableTransaction(config));
+        if (!replayable) return runTransaction(container, config, outerTx);
+
         return retryOnSqliteContention(
             async () => await runTransaction(container, config, outerTx),
-            { operation: 'transaction' },
+            { operation: 'transaction', sharesBudget: true },
             options
         );
     };
@@ -311,11 +485,12 @@ function retryTransactions(database: Knex, options: ResolvedRetryOptions): void 
  * Make every query issued through `database` survive transient lock contention.
  *
  * Retries are installed at knex's single query funnel so they cover query
- * builders, `raw`, migrations and statements inside transactions alike, plus at
- * the transaction boundary for the contention a single statement cannot replay.
- * Only this database is affected: other knex instances sharing the dialect —
- * such as the try-lock connections that depend on seeing SQLITE_BUSY at once —
- * keep failing fast. Installing twice on the same database is a no-op.
+ * builders, `raw`, migrations and statements inside transactions alike, and at
+ * the transaction boundary for callbacks the caller declared replayable with
+ * {@link replayableTransaction}. Only this database is affected: other knex
+ * instances sharing the dialect — such as the try-lock connections that depend
+ * on seeing SQLITE_BUSY at once — keep failing fast. Installing twice on the
+ * same database is a no-op.
  */
 export function installSqliteRetry<T extends Knex>(
     database: T,
@@ -328,7 +503,7 @@ export function installSqliteRetry<T extends Knex>(
     const resolved = resolveOptions(options);
     retryStatements(client);
     client.config[RETRY_OPTIONS] = resolved;
-    if (resolved.retryTransactions) retryTransactions(database, resolved);
+    retryTransactions(database, resolved);
 
     return database;
 }
