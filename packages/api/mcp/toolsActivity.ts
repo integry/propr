@@ -8,13 +8,18 @@ import { compactText, summarizeGoal, summarizeTask } from './listSummaries.js';
 import { applyTaskVisibility, ok, repositorySchema, type McpTool, type ToolDeps } from './tools.js';
 import {
   ACTIVE_TASK_LOOKBACK_DAYS, DIGEST_TEXT_LIMIT, MAX_DIGEST_REPOSITORIES, MAX_NARRATION_LOOKUPS,
-  MAX_TIMELINE_ROWS, QUEUED_TASK_STATES, TASK_COLUMNS, TERMINAL_TASK_STATES,
-  collectFinishedGoals, collectMergedPullRequests, collectPublishedPlans, collectTerminalTasks,
-  compareNewestFirst, elapsedSeconds, githubUrl, inboxEntries, inboxReference, isOperatorRelevant,
-  isTimelineNotification, isoTimestamp, latestPlanIssue, line, lowerBound, normalizedTimestamp,
-  orderByNewest, positiveNumber, readInbox, reference, resolveWindow,
-  type InboxRow, type Row, type TimelineScope, type WindowArguments,
+  QUEUED_TASK_STATES, TASK_COLUMNS, TERMINAL_TASK_STATES,
+  compareNewestFirst, elapsedSeconds, githubUrl, inboxReference, isOperatorRelevant,
+  isoTimestamp, latestPlanIssue, line, lowerBound, normalizedTimestamp, orderByNewest,
+  positiveNumber, readInbox, reference, resolveWindow,
+  type InboxRow, type Row, type WindowArguments,
 } from './activityDigest.js';
+import {
+  MAX_TIMELINE_ROWS,
+  collectFinishedGoals, collectMergedPullRequests, collectPublishedPlans, collectTerminalTasks,
+  inboxEntries, isTimelineNotification,
+  type TimelineScope,
+} from './activityTimeline.js';
 
 interface CurrentActivityArgs { repository?: string; limit: number; includeRoutine: boolean }
 interface RecentActivityArgs extends WindowArguments {
