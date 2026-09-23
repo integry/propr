@@ -1,6 +1,7 @@
 import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '../services/previewMediaProjection.js';
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -17,9 +18,10 @@ export interface TaskQuery {
 // The UI labels in-progress work "Active"/"Implementing" and queued work
 // "Waiting", but task_history only ever stores canonical worker lifecycle
 // states. Filtering on the label directly matched no rows, so map each label
-// onto the worker states it represents.
-const ACTIVE_WORKER_STATES = ['processing', 'claude_execution', 'post_processing', 'active'];
-const WAITING_WORKER_STATES = ['pending', 'queued', 'waiting'];
+// onto the worker states it represents. The dashboard counts the same states,
+// so both read one definition.
+const ACTIVE_WORKER_STATES = [...RUNNING_TASK_STATES];
+const WAITING_WORKER_STATES = [...QUEUED_TASK_STATES];
 
 function resolveStatusStates(status: string): string[] | null {
   switch (status.trim().toLowerCase()) {

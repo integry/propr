@@ -1,0 +1,397 @@
+import assert from 'node:assert/strict';
+import { after, before, beforeEach, test } from 'node:test';
+import type { Request, Response as ExpressResponse } from 'express';
+import knex, { type Knex } from 'knex';
+import type { RedisClientType } from 'redis';
+import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
+import { createStatsRoutes } from '../routes/statsRoutes.js';
+
+let database: Knex;
+
+const NOW = new Date('2026-09-23T12:00:00.000Z');
+const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
+const daysAgo = (days: number): string => new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
+
+before(async () => {
+  database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  await database.schema.createTable('tasks', table => {
+    table.string('task_id').primary();
+    table.string('repository').notNullable();
+    table.integer('issue_number');
+    table.integer('pr_number');
+    table.string('task_type');
+    table.string('model_name');
+    table.timestamp('created_at');
+    table.text('initial_job_data');
+    table.text('final_result');
+  });
+  await database.schema.createTable('task_history', table => {
+    table.increments('history_id').primary();
+    table.string('task_id').notNullable();
+    table.string('state').notNullable();
+    table.timestamp('timestamp').notNullable();
+    table.text('reason');
+    table.text('metadata');
+  });
+  await database.schema.createTable('plan_issues', table => {
+    table.increments('id').primary();
+    table.string('draft_id');
+    table.string('repository').notNullable();
+    table.integer('issue_number').notNullable();
+    table.integer('pr_number');
+    table.string('status').notNullable();
+    table.string('task_id');
+    table.timestamp('created_at');
+    table.timestamp('updated_at');
+  });
+  await database.schema.createTable('llm_executions', table => {
+    table.increments('execution_id').primary();
+    table.string('task_id');
+    table.timestamp('start_time');
+    table.decimal('cost_usd', 10, 6);
+  });
+  // Inbox state. The dashboard must never read it.
+  await database.schema.createTable('notification_user_states', table => {
+    table.increments('id').primary();
+    table.string('notification_id').notNullable();
+    table.string('user_id').notNullable();
+    table.timestamp('dismissed_at');
+  });
+});
+
+after(async () => database.destroy());
+
+beforeEach(async () => {
+  await database('task_history').del();
+  await database('tasks').del();
+  await database('plan_issues').del();
+  await database('llm_executions').del();
+  await database('notification_user_states').del();
+});
+
+interface TaskSeed {
+  taskId: string;
+  repository?: string;
+  issueNumber?: number | null;
+  prNumber?: number | null;
+  taskType?: string;
+  title?: string;
+  createdAt?: string;
+  states: Array<{ state: string; timestamp: string; reason?: string }>;
+}
+
+async function seedTask(seed: TaskSeed): Promise<void> {
+  const repository = seed.repository ?? 'integry/propr';
+  await database('tasks').insert({
+    task_id: seed.taskId,
+    repository,
+    issue_number: seed.issueNumber === undefined ? 1 : seed.issueNumber,
+    pr_number: seed.prNumber ?? null,
+    task_type: seed.taskType ?? 'issue',
+    model_name: 'claude-opus-5',
+    created_at: seed.createdAt ?? seed.states[0].timestamp,
+    initial_job_data: JSON.stringify({ title: seed.title ?? `Task ${seed.taskId}` }),
+    final_result: null,
+  });
+  await database('task_history').insert(seed.states.map(entry => ({
+    task_id: seed.taskId,
+    state: entry.state,
+    timestamp: entry.timestamp,
+    reason: entry.reason ?? null,
+    metadata: '{}',
+  })));
+}
+
+function jsonResponse(): {
+  response: ExpressResponse;
+  status: () => number;
+  body: () => Record<string, never> & Record<string, unknown>;
+} {
+  let statusCode = 200;
+  let payload: Record<string, unknown> = {};
+  const response = {
+    status(code: number) { statusCode = code; return response; },
+    json(body: Record<string, unknown>) { payload = body; return response; },
+  } as unknown as ExpressResponse;
+  return { response, status: () => statusCode, body: () => payload as never };
+}
+
+const request = (query: Record<string, string> = {}): Request => ({ query } as unknown as Request);
+
+interface QueueStub {
+  paused?: boolean;
+  activeCount?: number;
+  workers?: number;
+}
+
+function routes(queue: QueueStub = {}, liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>) {
+  const redisClient = {
+    sCard: async () => queue.workers ?? 1,
+  } as unknown as RedisClientType;
+  return createDashboardRoutes({
+    db: database,
+    redisClient,
+    taskQueue: {
+      isPaused: async () => queue.paused ?? false,
+      getActiveCount: async () => queue.activeCount ?? 0,
+    } as never,
+    liveDetails: liveDetails ?? (async () => null),
+    now: () => NOW,
+  });
+}
+
+async function call(
+  handler: (req: Request, res: ExpressResponse) => Promise<void>,
+  query: Record<string, string> = {},
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const recorder = jsonResponse();
+  await handler(request(query), recorder.response);
+  return { status: recorder.status(), body: recorder.body() };
+}
+
+test('summary returns four integer counts that match the active endpoint for the same filter', async () => {
+  await seedTask({ taskId: 'running-1', issueNumber: 11, states: [{ state: 'claude_execution', timestamp: minutesAgo(10) }] });
+  await seedTask({ taskId: 'running-2', issueNumber: 12, states: [{ state: 'post_processing', timestamp: minutesAgo(8) }] });
+  await seedTask({ taskId: 'queued-1', issueNumber: 13, states: [{ state: 'pending', timestamp: minutesAgo(6) }] });
+  await seedTask({ taskId: 'failed-1', issueNumber: 14, states: [{ state: 'failed', timestamp: minutesAgo(30), reason: 'Tests failed' }] });
+  await seedTask({ taskId: 'done-1', issueNumber: 15, states: [{ state: 'completed', timestamp: minutesAgo(45) }] });
+  await seedTask({ taskId: 'other-repo', repository: 'acme/web', issueNumber: 2, states: [{ state: 'claude_execution', timestamp: minutesAgo(5) }] });
+
+  const dashboard = routes();
+  const summary = await call(dashboard.getSummary, { repository: 'all' });
+  assert.equal(summary.status, 200);
+  for (const key of ['needsAttention', 'running', 'queued', 'completedRecently']) {
+    assert.ok(Number.isInteger(summary.body[key]), `${key} must be an integer`);
+  }
+  assert.deepEqual(
+    { needsAttention: summary.body.needsAttention, running: summary.body.running, queued: summary.body.queued, completedRecently: summary.body.completedRecently },
+    { needsAttention: 1, running: 3, queued: 1, completedRecently: 1 },
+  );
+
+  const active = await call(dashboard.getActive, { repository: 'all' });
+  assert.deepEqual(active.body.counts, { running: summary.body.running, queued: summary.body.queued });
+  assert.equal((active.body.queue as { queuedCount: number }).queuedCount, summary.body.queued);
+
+  const scopedSummary = await call(dashboard.getSummary, { repository: 'integry/propr' });
+  const scopedActive = await call(dashboard.getActive, { repository: 'integry/propr' });
+  assert.equal(scopedSummary.body.running, 2);
+  assert.deepEqual(scopedActive.body.counts, { running: scopedSummary.body.running, queued: scopedSummary.body.queued });
+  assert.equal((scopedActive.body.running as unknown[]).length, scopedSummary.body.running);
+});
+
+test('a failed task that is being retried appears in active and not in attention', async () => {
+  await seedTask({
+    taskId: 'retried', issueNumber: 21,
+    states: [{ state: 'failed', timestamp: minutesAgo(40), reason: 'Transient failure' }, { state: 'processing', timestamp: minutesAgo(5) }],
+  });
+  await seedTask({ taskId: 'retry-run', issueNumber: 22, createdAt: minutesAgo(60), states: [{ state: 'failed', timestamp: minutesAgo(50), reason: 'Flaky' }] });
+  // A newer run of the same issue thread is queued: the system is already fixing it.
+  await seedTask({ taskId: 'retry-run-2', issueNumber: 22, createdAt: minutesAgo(4), states: [{ state: 'queued', timestamp: minutesAgo(4) }] });
+  await seedTask({ taskId: 'unresolved', issueNumber: 23, states: [{ state: 'failed', timestamp: minutesAgo(45), reason: 'Compile error' }] });
+
+  const dashboard = routes();
+  const attention = await call(dashboard.getAttention, { repository: 'all' });
+  const ids = (attention.body.items as Array<{ taskId: string }>).map(item => item.taskId);
+  assert.deepEqual(ids, ['unresolved']);
+
+  const active = await call(dashboard.getActive, { repository: 'all' });
+  const activeIds = [
+    ...(active.body.running as Array<{ taskId: string }>).map(item => item.taskId),
+    ...(active.body.queued as Array<{ taskId: string }>).map(item => item.taskId),
+  ];
+  assert.deepEqual(activeIds.sort(), ['retried', 'retry-run-2']);
+});
+
+test('a failure superseded by a later successful run is not attention', async () => {
+  await seedTask({ taskId: 'first-attempt', issueNumber: 31, createdAt: daysAgo(1), states: [{ state: 'failed', timestamp: daysAgo(1), reason: 'Bad patch' }] });
+  await seedTask({ taskId: 'second-attempt', issueNumber: 31, createdAt: minutesAgo(90), states: [{ state: 'completed', timestamp: minutesAgo(60) }] });
+
+  const attention = await call(routes().getAttention, { repository: 'all' });
+  assert.deepEqual(attention.body.items, []);
+  assert.deepEqual(attention.body.counts, { blocked: 0, decisions: 0, total: 0 });
+});
+
+test('attention lists blocking problems before pending decisions, oldest first in each group', async () => {
+  await seedTask({ taskId: 'blocked-new', issueNumber: 41, states: [{ state: 'failed', timestamp: minutesAgo(10), reason: 'Newer failure' }] });
+  await seedTask({ taskId: 'blocked-old', issueNumber: 42, states: [{ state: 'failed', timestamp: minutesAgo(120), reason: 'Older failure' }] });
+  await seedTask({ taskId: 'needs-human', issueNumber: 43, states: [{ state: 'action_required', timestamp: minutesAgo(60), reason: 'Credentials expired' }] });
+  await database('plan_issues').insert([
+    { draft_id: 'draft-1', repository: 'integry/propr', issue_number: 51, pr_number: 501, status: 'under_review', task_id: null, created_at: daysAgo(3), updated_at: minutesAgo(30) },
+    { draft_id: 'draft-1', repository: 'integry/propr', issue_number: 52, pr_number: 502, status: 'under_review', task_id: null, created_at: daysAgo(3), updated_at: minutesAgo(300) },
+    { draft_id: 'draft-1', repository: 'integry/propr', issue_number: 53, pr_number: 503, status: 'processing', task_id: null, created_at: daysAgo(3), updated_at: minutesAgo(5) },
+    { draft_id: 'draft-1', repository: 'integry/propr', issue_number: 54, pr_number: null, status: 'pending', task_id: null, created_at: daysAgo(3), updated_at: minutesAgo(5) },
+  ]);
+
+  const attention = await call(routes().getAttention, { repository: 'all' });
+  const items = attention.body.items as Array<{ id: string; category: string; kind: string }>;
+  assert.deepEqual(items.map(item => item.category), ['blocked', 'blocked', 'blocked', 'decision', 'decision']);
+  assert.deepEqual(items.map(item => item.id), [
+    'task:blocked-old', 'task:needs-human', 'task:blocked-new', 'plan-issue:2', 'plan-issue:1',
+  ]);
+  assert.deepEqual(attention.body.counts, { blocked: 3, decisions: 2, total: 5 });
+});
+
+test('dismissing a notification does not change attention output for the same work', async () => {
+  await seedTask({ taskId: 'blocked-task', issueNumber: 61, states: [{ state: 'failed', timestamp: minutesAgo(20), reason: 'Boom' }] });
+
+  const dashboard = routes();
+  const before = await call(dashboard.getAttention, { repository: 'all' });
+
+  await database('notification_user_states').insert({
+    notification_id: 'notification-for-blocked-task',
+    user_id: 'user-1',
+    dismissed_at: minutesAgo(1),
+  });
+
+  const after = await call(dashboard.getAttention, { repository: 'all' });
+  assert.deepEqual(after.body, before.body);
+  assert.equal((after.body.items as unknown[]).length, 1);
+});
+
+test('active reports a phase label and a live progress line, and leaves the line null when unknown', async () => {
+  await seedTask({ taskId: 'live-task', issueNumber: 71, states: [{ state: 'claude_execution', timestamp: minutesAgo(3) }] });
+  await seedTask({ taskId: 'silent-task', issueNumber: 72, states: [{ state: 'post_processing', timestamp: minutesAgo(2) }] });
+  await seedTask({ taskId: 'waiting-task', issueNumber: 73, states: [{ state: 'queued', timestamp: minutesAgo(1) }] });
+
+  const dashboard = routes({}, async taskId =>
+    taskId === 'live-task' ? { currentTask: 'Running the test suite' } : null);
+  const active = await call(dashboard.getActive, { repository: 'all' });
+
+  const running = active.body.running as Array<Record<string, unknown>>;
+  const live = running.find(item => item.taskId === 'live-task');
+  const silent = running.find(item => item.taskId === 'silent-task');
+  assert.deepEqual([live?.phase, live?.progressLine], ['Implementing', 'Running the test suite']);
+  assert.deepEqual([silent?.phase, silent?.progressLine], ['Finishing up', null]);
+  assert.ok(!('progress' in (live ?? {})), 'no synthesised percentage progress');
+
+  const queued = active.body.queued as Array<Record<string, unknown>>;
+  assert.deepEqual([queued[0].phase, queued[0].progressLine], ['Waiting', null]);
+});
+
+test('queue reason is null unless the backend knows why work is waiting', async () => {
+  await seedTask({ taskId: 'queued-task', issueNumber: 81, states: [{ state: 'pending', timestamp: minutesAgo(9) }] });
+
+  const idle = await call(routes({ activeCount: 0, workers: 2 }).getActive, { repository: 'all' });
+  assert.equal((idle.body.queue as { reason: string | null }).reason, null);
+
+  const busy = await call(routes({ activeCount: 3, workers: 2 }).getActive, { repository: 'all' });
+  assert.equal((busy.body.queue as { reason: string | null }).reason, 'All agents are busy');
+
+  const paused = await call(routes({ paused: true, activeCount: 3, workers: 2 }).getActive, { repository: 'all' });
+  assert.equal((paused.body.queue as { reason: string | null }).reason, 'Queue processing is paused');
+
+  const noWorkers = await call(routes({ activeCount: 0, workers: 0 }).getActive, { repository: 'all' });
+  assert.equal((noWorkers.body.queue as { reason: string | null }).reason, 'No workers are running');
+});
+
+test('queue reason stays null when nothing is queued', async () => {
+  await seedTask({ taskId: 'only-running', issueNumber: 91, states: [{ state: 'processing', timestamp: minutesAgo(4) }] });
+  const active = await call(routes({ paused: true, activeCount: 5, workers: 0 }).getActive, { repository: 'all' });
+  assert.deepEqual(active.body.queue, { queuedCount: 0, reason: null });
+});
+
+test('outcomes collapse one result per task and exclude non-outcome history entries', async () => {
+  await seedTask({
+    taskId: 'shipped', issueNumber: 101, prNumber: 900, title: 'Ship the thing',
+    states: [
+      { state: 'pending', timestamp: minutesAgo(90) },
+      { state: 'claude_execution', timestamp: minutesAgo(80) },
+      // Heartbeat-style progress and indexing entries must never become outcomes.
+      { state: 'indexing_update', timestamp: minutesAgo(70) },
+      { state: 'post_processing', timestamp: minutesAgo(65) },
+      { state: 'completed', timestamp: minutesAgo(60) },
+    ],
+  });
+  await seedTask({ taskId: 'broke', issueNumber: 102, states: [{ state: 'failed', timestamp: minutesAgo(30), reason: 'Lint failed' }] });
+  await seedTask({ taskId: 'stopped', issueNumber: 103, states: [{ state: 'cancelled', timestamp: minutesAgo(20) }] });
+  await seedTask({ taskId: 'still-running', issueNumber: 104, states: [{ state: 'claude_execution', timestamp: minutesAgo(10) }] });
+  await database('plan_issues').insert({
+    draft_id: 'draft-2', repository: 'integry/propr', issue_number: 101, pr_number: 900,
+    status: 'merged', task_id: 'shipped', created_at: daysAgo(2), updated_at: minutesAgo(10),
+  });
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
+  const items = outcomes.body.items as Array<Record<string, unknown>>;
+  // The merge is a later, separate outcome; the run itself collapses to one entry.
+  assert.deepEqual(items.map(item => item.kind), ['merged', 'cancelled', 'failed', 'completed']);
+  assert.deepEqual(items.map(item => item.taskId), ['shipped', 'stopped', 'broke', 'shipped']);
+  assert.equal(items.filter(item => item.kind === 'completed' && item.taskId === 'shipped').length, 1);
+  assert.equal(items[3].planIssueStatus, 'merged');
+  assert.equal(items[3].title, 'Ship the thing');
+  assert.equal(items[2].detail, 'Lint failed');
+
+  const limited = await call(routes().getOutcomes, { repository: 'all', limit: '2' });
+  assert.deepEqual((limited.body.items as Array<Record<string, unknown>>).map(item => item.kind), ['merged', 'cancelled']);
+});
+
+test('every dashboard endpoint rejects a malformed repository filter with HTTP 400', async () => {
+  const dashboard = routes();
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const handlers = [dashboard.getSummary, dashboard.getAttention, dashboard.getActive, dashboard.getOutcomes, stats.getDashboardStats];
+  for (const handler of handlers) {
+    const rejected = await call(handler, { repository: 'not a repository' });
+    assert.equal(rejected.status, 400);
+    assert.ok(typeof rejected.body.error === 'string');
+
+    const accepted = await call(handler, { repository: 'integry/propr' });
+    assert.equal(accepted.status, 200);
+  }
+});
+
+test('success rate excludes queued, running and cancelled work and is null when nothing finished', async () => {
+  await seedTask({ taskId: 'run-a', repository: 'acme/only-running', issueNumber: 1, states: [{ state: 'claude_execution', timestamp: daysAgo(1) }] });
+  await seedTask({ taskId: 'run-b', repository: 'acme/only-running', issueNumber: 2, states: [{ state: 'pending', timestamp: daysAgo(1) }] });
+  await seedTask({ taskId: 'run-c', repository: 'acme/only-running', issueNumber: 3, states: [{ state: 'cancelled', timestamp: daysAgo(1) }] });
+
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const onlyRunning = await call(stats.getDashboardStats, { repository: 'acme/only-running' });
+  assert.equal(onlyRunning.body.successRate, null);
+  assert.notEqual(onlyRunning.body.successRate, 0);
+  assert.equal(onlyRunning.body.completed, 0);
+  assert.equal(onlyRunning.body.recordedSpend, null);
+
+  await seedTask({ taskId: 'mix-1', repository: 'acme/mixed', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(1) }] });
+  await seedTask({ taskId: 'mix-2', repository: 'acme/mixed', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
+  await seedTask({ taskId: 'mix-3', repository: 'acme/mixed', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
+  await seedTask({ taskId: 'mix-4', repository: 'acme/mixed', issueNumber: 4, states: [{ state: 'failed', timestamp: daysAgo(3), reason: 'nope' }] });
+  await seedTask({ taskId: 'mix-5', repository: 'acme/mixed', issueNumber: 5, states: [{ state: 'cancelled', timestamp: daysAgo(3) }] });
+  await seedTask({ taskId: 'mix-6', repository: 'acme/mixed', issueNumber: 6, states: [{ state: 'processing', timestamp: daysAgo(3) }] });
+
+  const mixed = await call(stats.getDashboardStats, { repository: 'acme/mixed', period: '7d' });
+  // Three completed and one failed: cancelled, queued and running never reach the denominator.
+  assert.equal(mixed.body.completed, 3);
+  assert.equal(mixed.body.successRate, 75);
+  assert.equal((mixed.body.dailyCompleted as unknown[]).length, 7);
+  assert.equal((mixed.body.dailyCompleted as Array<{ date: string; count: number }>)
+    .reduce((total, day) => total + day.count, 0), 3);
+});
+
+test('dashboard stats compare against the previous period and report recorded spend only when recorded', async () => {
+  await seedTask({ taskId: 'now-1', repository: 'acme/spend', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
+  await seedTask({ taskId: 'then-1', repository: 'acme/spend', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(9) }] });
+  await seedTask({ taskId: 'then-2', repository: 'acme/spend', issueNumber: 3, states: [{ state: 'failed', timestamp: daysAgo(10), reason: 'nope' }] });
+  await database('llm_executions').insert([
+    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: 1.25 },
+    // A run with no recorded cost must not be read as $0 spend.
+    { task_id: 'now-1', start_time: daysAgo(2), cost_usd: null },
+    { task_id: 'then-1', start_time: daysAgo(9), cost_usd: 0.5 },
+  ]);
+
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const current = await call(stats.getDashboardStats, { repository: 'acme/spend', period: '7d' });
+  assert.equal(current.body.completed, 1);
+  assert.equal(current.body.successRate, 100);
+  assert.equal(current.body.recordedSpend, 1.25);
+  assert.deepEqual(current.body.previous, { completed: 1, successRate: 50, recordedSpend: 0.5 });
+
+  const empty = await call(stats.getDashboardStats, { repository: 'acme/never-used', period: '30d' });
+  assert.equal(empty.body.successRate, null);
+  assert.equal(empty.body.recordedSpend, null);
+  assert.equal((empty.body.dailyCompleted as unknown[]).length, 30);
+});
+
+test('dashboard stats reject an unsupported period', async () => {
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const rejected = await call(stats.getDashboardStats, { repository: 'all', period: '90d' });
+  assert.equal(rejected.status, 400);
+});
