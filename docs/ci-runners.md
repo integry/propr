@@ -135,6 +135,20 @@ Docker's [rootless client and resource-limit documentation](https://docs.docker.
 and [networking limitations](https://docs.docker.com/engine/security/rootless/troubleshoot/)
 explain the endpoint, delegation and namespace assumptions.
 
+## Change-based job selection
+
+Which checks a pull request runs is decided once, by the shared classifier
+described in [CI change classification](ci-change-classification.md). Nothing in
+that policy changes runner eligibility, the rootless opt-in, the hosted
+fallback, the preflight, isolation, Redis ownership, cleanup or superseded-run
+cancellation described in this document. It only decides whether a job is
+applicable to the change set, and every gate skips solely on an explicit `false`
+decision, so a failed or missing classifier runs the work.
+
+`Run Full Test Suite`, with all four shards, its coverage verification, the
+docs/test-preparation job and the hosted native Electron units, still runs
+unconditionally on every pull request.
+
 ## Deduplicated validation
 
 Eight rootless jobs now serve a pull request instead of eleven: four shards,

@@ -1,16 +1,12 @@
 name: Packaged Connect Discovery Guard
 
+# The workflow-level path filter this used to carry matched on filenames only,
+# so a manifest edit confined to a backend test script pulled in the whole
+# packaged Connect matrix, and a filter list here could never see a shared or
+# classifier change the way the classifier does. Selection now happens once, in
+# the shared classifier, and is visible in this run's job summary.
 on:
   pull_request:
-    paths:
-      - '.github/workflows/desktop-connect-discovery-guard.yml'
-      - 'apps/desktop/**'
-      - 'packages/cli/**'
-      - 'packages/client/**'
-      - 'packages/shared/**'
-      - 'propr-ui/**'
-      - 'package.json'
-      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
@@ -21,8 +17,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      desktop: ${{ steps.classify.outputs.desktop }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
   packaged-connect-discovery:
     name: Packaged Connect (${{ matrix.target }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the matrix. `!cancelled()` keeps
+    # superseded-run cancellation intact.
+    if: ${{ !cancelled() && needs.classify.outputs.desktop != 'false' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -150,3 +174,43 @@ jobs:
         run: >-
           & apps/desktop/scripts/run-packaged-windows-connect-smoke.ps1
           -Architecture '${{ matrix.arch }}'
+
+  packaged-connect-guard:
+    # Stable aggregate over the matrix above. It is not an unconditional green
+    # placeholder: it passes only when every leg succeeded, or when the shared
+    # classifier proved the desktop surface inapplicable and the matrix was
+    # skipped for exactly that reason.
+    name: Packaged Connect Discovery Guard
+    needs: [classify, packaged-connect-discovery]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce packaged Connect discovery results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          DESKTOP_DECISION: ${{ needs.classify.outputs.desktop }}
+          MATRIX_RESULT: ${{ needs.packaged-connect-discovery.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "Desktop decision: ${DESKTOP_DECISION:-none}"
+          echo "Packaged Connect matrix: ${MATRIX_RESULT:-did not run}"
+          inapplicable=0
+          if [ "${CLASSIFY_RESULT:-}" = success ] \
+            && [ "${CLASSIFY_STATUS:-}" = ok ] \
+            && [ "${DESKTOP_DECISION:-}" = false ]; then
+            inapplicable=1
+          fi
+          if [ "$inapplicable" -eq 1 ] && [ "${MATRIX_RESULT:-}" = skipped ]; then
+            echo "Packaged Connect discovery is not applicable to this change set." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Packaged Connect discovery proved inapplicable; see the classifier job summary for the reasons."
+            exit 0
+          fi
+          if [ "${MATRIX_RESULT:-}" != success ]; then
+            echo "::error::Packaged Connect discovery finished with result '${MATRIX_RESULT:-did not run}'."
+            exit 1
+          fi

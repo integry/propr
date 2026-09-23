@@ -657,7 +657,8 @@ describe('GoalsPage', () => {
     await waitFor(() => expect(screen.queryByText(goal.title)).not.toBeInTheDocument());
     expect(screen.getByText(apiGoal.title)).toBeInTheDocument();
     expect(screen.getByText('1 of 2')).toBeInTheDocument();
-    expect(screen.getByTestId('location-search')).toHaveTextContent('search=billing+api');
+    // The debounced navigation lands in a transition, so the router commits it after the filtered list.
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('search=billing+api'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
 

@@ -657,6 +657,9 @@ describe('PR check routing', () => {
             'windows-connect-discovery': 'windows-2025',
             'connect-authority-darwin': 'macos-15',
             comment: 'ubuntu-latest',
+            // Selection and its fail-closed aggregate are cheap hosted jobs.
+            classify: 'ubuntu-latest',
+            'compatibility-guard': 'ubuntu-latest',
         };
         assert.deepEqual(jobNames(buildCheck).sort(), [...Object.keys(expected), 'validate', 'cli-node-matrix'].sort());
         for (const [job, runner] of Object.entries(expected)) {

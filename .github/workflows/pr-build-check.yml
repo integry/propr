@@ -9,8 +9,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One shared classifier decides which surfaces this pull request touches. The
+  # rules live in scripts/ci-change-classification.mjs and are exercised by
+  # test/ciChangeClassification.test.mjs; nothing in this file restates them.
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      cli: ${{ steps.classify.outputs.cli }}
+      connect: ${{ steps.classify.outputs.connect }}
+      ui: ${{ steps.classify.outputs.ui }}
+      desktop: ${{ steps.classify.outputs.desktop }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
   cli-node-matrix:
     name: CLI Agent Skill (Node ${{ matrix.node }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the job. `!cancelled()` keeps
+    # superseded-run cancellation intact.
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
     # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
     runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
@@ -137,6 +171,8 @@ jobs:
 
   cli-agent-skill-glibc-231:
     name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
     runs-on: ubuntu-latest
     container:
       image: node:22.22.3-bullseye-slim@sha256:f81e523790f0a2c86827ff6356a28fad2edbe0fe36bc3c4275a4d1e16304bf43
@@ -179,6 +215,8 @@ jobs:
 
   cli-agent-skill-darwin:
     name: CLI Agent Skill (Darwin arm64, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
     runs-on: macos-15
     permissions:
       contents: read
@@ -235,6 +273,8 @@ jobs:
 
   windows-connect-discovery:
     name: Windows Connect Discovery (ordinary user, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.connect != 'false' }}
     runs-on: windows-2025
     permissions:
       contents: read
@@ -328,6 +368,8 @@ jobs:
 
   connect-authority-darwin:
     name: Connect Discovery and Darwin ACL (Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.connect != 'false' }}
     runs-on: macos-15
     permissions:
       contents: read
@@ -376,8 +418,9 @@ jobs:
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Include the PR merge commit's parents for local change detection.
-          fetch-depth: 2
+          # Full history: the shared classifier diffs the merge base of the
+          # captured base and head, which a shallow checkout may not contain.
+          fetch-depth: 0
           # Do not leave the token in .git/config on a persistent runner.
           persist-credentials: false
 
@@ -556,61 +599,29 @@ jobs:
           # re-verified against the built files on use.
           echo "PROPR_CLI_WORKSPACE_DIST_READY=1" >> "$GITHUB_ENV"
 
-      - name: Ensure PR base is available for change detection
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          # The event base can differ from the merge commit's first parent when
-          # the base branch advances, so a shallow checkout may not contain it.
-          if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
-            git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
-          fi
-
+      # One shared classifier, the same rules the gating jobs above used, so a
+      # path can never mean one thing here and another thing there. This job
+      # runs for every pull request, so an unresolvable change set fails here
+      # rather than silently reporting the conservative fallback with empty
+      # file lists.
       - name: Detect Changes
         id: filter
-        run: |
-          # Compare against the base actually used by the checked-out merge.
-          # The event base SHA can differ and be absent from a shallow checkout.
-          node --input-type=module <<'NODE'
-          import { execFileSync } from 'node:child_process';
-          import { appendFileSync } from 'node:fs';
-
-          const diff = execFileSync('git', [
-            'diff', '--no-renames', '--name-status', '-z',
-            'HEAD^1', 'HEAD', '--',
-          ], { encoding: 'utf8' }).split('\0');
-          const files = [];
-          for (let i = 0; i + 1 < diff.length; i += 2) {
-            files.push({ status: diff[i], path: diff[i + 1] });
-          }
-          const filters = {
-            core: ({ path }) => /^(src\/|Dockerfile[^/]*$|package[^/]*\.json$|packages\/(core|shared)\/)/.test(path),
-            ui: ({ path }) => /^(propr-ui\/|packages\/(client|shared)\/)/.test(path),
-            docs: ({ path }) => path.startsWith('docs/'),
-            cli: ({ path }) => path.startsWith('packages/cli/'),
-            api: ({ path }) => /^packages\/(api|core|shared)\//.test(path),
-            core_package: ({ path }) => /^packages\/(core|shared)\//.test(path),
-            core_package_source: ({ status, path }) =>
-              ['A', 'M'].includes(status) && /^packages\/core\/src\/.*\.(js|ts)$/.test(path),
-          };
-          for (const [name, matches] of Object.entries(filters)) {
-            const paths = files.filter(matches).map(file => file.path);
-            appendFileSync(process.env.GITHUB_OUTPUT,
-              `${name}=${paths.length > 0}\n${name}_files=${JSON.stringify(paths)}\n`);
-            console.log(`${name}: ${paths.length} matching files`);
-          }
-          NODE
+        uses: ./.github/actions/classify-changes
+        with:
+          require-resolution: 'true'
 
       # The PWA and mobile browser smoke test below runs Playwright `*.pw.ts`
       # specs. Full-suite discovery matches only `*.test.*`/`*.spec.*`, and the
       # propr-ui vitest config excludes the Playwright directory, so these
       # assertions exist nowhere else and stay here.
       - name: Install Chromium for PWA Smoke Test
-        if: steps.filter.outputs.ui == 'true'
+        # `!= 'false'` and not `== 'true'`: an empty decision is never read as
+        # permission to skip.
+        if: steps.filter.outputs.ui != 'false'
         run: ./scripts/ci-install-chromium.sh
 
       - name: Run PWA and Mobile Browser Smoke Test
-        if: steps.filter.outputs.ui == 'true'
+        if: steps.filter.outputs.ui != 'false'
         run: |
           set -euo pipefail
           # The Playwright web server builds propr-ui, which imports
@@ -626,6 +637,14 @@ jobs:
         continue-on-error: true
         env:
           CORE_PACKAGE_SOURCE_FILES: ${{ steps.filter.outputs.core_package_source_files }}
+          # Decisions reach the script as environment data, and each section
+          # runs unless its surface was explicitly reported inapplicable.
+          FILTER_CORE: ${{ steps.filter.outputs.core }}
+          FILTER_UI: ${{ steps.filter.outputs.ui }}
+          FILTER_DOCS: ${{ steps.filter.outputs.docs }}
+          FILTER_CORE_PACKAGE: ${{ steps.filter.outputs.core_package }}
+          FILTER_CLI: ${{ steps.filter.outputs.cli }}
+          FILTER_API: ${{ steps.filter.outputs.api }}
         run: |
           # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
@@ -701,7 +720,7 @@ jobs:
           }
 
           # --- CORE ---
-          if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
+          if [ "${FILTER_CORE:-}" != 'false' ]; then
             echo -e "\n--- Core Service: Lint & Build ---" >> build_log.txt
             CORE_FAILED=0
 
@@ -738,7 +757,7 @@ jobs:
           fi
 
           # --- UI ---
-          if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
+          if [ "${FILTER_UI:-}" != 'false' ]; then
             echo -e "\n--- UI: Typecheck, Lint & Build ---" >> build_log.txt
             UI_FAILED=0
 
@@ -799,7 +818,7 @@ jobs:
           fi
 
           # --- DOCS ---
-          if [ "${{ steps.filter.outputs.docs }}" == 'true' ]; then
+          if [ "${FILTER_DOCS:-}" != 'false' ]; then
             echo -e "\n--- Docs: Typecheck & Build ---" >> build_log.txt
             DOCS_FAILED=0
             
@@ -838,7 +857,7 @@ jobs:
           fi
 
           # --- CORE PACKAGE ---
-          if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
+          if [ "${FILTER_CORE_PACKAGE:-}" != 'false' ]; then
             echo -e "\n--- Core Package: Build & Lint ---" >> build_log.txt
             CORE_SECTION_FAILED=0
 
@@ -901,7 +920,7 @@ jobs:
           fi
 
           # --- CLI ---
-          if [ "${{ steps.filter.outputs.cli }}" == 'true' ]; then
+          if [ "${FILTER_CLI:-}" != 'false' ]; then
             echo -e "\n--- CLI: Lint ---" >> build_log.txt
             CLI_FAILED=0
             CLI_LINT_OUTPUT=$(npm run lint -w @propr/cli -- --max-warnings 0 2>&1) || {
@@ -916,7 +935,7 @@ jobs:
           fi
 
           # --- API ---
-          if [ "${{ steps.filter.outputs.api }}" == 'true' ]; then
+          if [ "${FILTER_API:-}" != 'false' ]; then
             echo -e "\n--- API: Build & Lint ---" >> build_log.txt
             API_FAILED=0
 
@@ -1070,3 +1089,64 @@ jobs:
               issue_number: context.issue.number,
               body,
             });
+
+  compatibility-guard:
+    # Stable aggregate over the CLI and Connect compatibility jobs above. It is
+    # not an unconditional green placeholder: each constituent must have
+    # succeeded, or have been skipped because the shared classifier proved its
+    # surface inapplicable. A failure, a cancellation or an unexpected skip
+    # still fails this check.
+    name: CLI and Connect Compatibility Guard
+    needs:
+      - classify
+      - cli-node-matrix
+      - cli-agent-skill-glibc-231
+      - cli-agent-skill-darwin
+      - windows-connect-discovery
+      - connect-authority-darwin
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce compatibility results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          CLI_DECISION: ${{ needs.classify.outputs.cli }}
+          CONNECT_DECISION: ${{ needs.classify.outputs.connect }}
+          CLI_MATRIX_RESULT: ${{ needs.cli-node-matrix.result }}
+          CLI_GLIBC_RESULT: ${{ needs.cli-agent-skill-glibc-231.result }}
+          CLI_DARWIN_RESULT: ${{ needs.cli-agent-skill-darwin.result }}
+          CONNECT_WINDOWS_RESULT: ${{ needs.windows-connect-discovery.result }}
+          CONNECT_DARWIN_RESULT: ${{ needs.connect-authority-darwin.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "CLI decision: ${CLI_DECISION:-none}; Connect decision: ${CONNECT_DECISION:-none}"
+          classifier_trusted=0
+          if [ "${CLASSIFY_RESULT:-}" = success ] && [ "${CLASSIFY_STATUS:-}" = ok ]; then
+            classifier_trusted=1
+          fi
+          status=0
+          # $3 is the decision for this job's surface. A skip is acceptable only
+          # when a trusted classifier explicitly reported that surface as false.
+          require() {
+            echo "$1: ${2:-did not run}"
+            if [ "${2:-}" = success ]; then
+              return
+            fi
+            if [ "${2:-}" = skipped ] && [ "$classifier_trusted" -eq 1 ] && [ "${3:-}" = false ]; then
+              echo "::notice::$1 was skipped: the shared classifier proved its surface inapplicable."
+              return
+            fi
+            echo "::error::$1 finished with result '${2:-did not run}'."
+            status=1
+          }
+          require 'CLI Agent Skill matrix' "${CLI_MATRIX_RESULT:-}" "${CLI_DECISION:-}"
+          require 'CLI Agent Skill glibc 2.31' "${CLI_GLIBC_RESULT:-}" "${CLI_DECISION:-}"
+          require 'CLI Agent Skill Darwin' "${CLI_DARWIN_RESULT:-}" "${CLI_DECISION:-}"
+          require 'Windows Connect discovery' "${CONNECT_WINDOWS_RESULT:-}" "${CONNECT_DECISION:-}"
+          require 'Darwin Connect authority' "${CONNECT_DARWIN_RESULT:-}" "${CONNECT_DECISION:-}"
+          exit "$status"

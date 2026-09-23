@@ -123,7 +123,9 @@ describe('assertions the build check must keep', () => {
         assert.match(buildCheck, /test -f packages\/shared\/dist\/index\.js \|\| npm run build -w @propr\/shared\n/);
         assert.equal(buildCheck.split('./scripts/ci-install-chromium.sh').length - 1, 1,
             'exactly one Chromium install remains, for the browser smoke test');
-        assert.match(buildCheck, /- name: Install Chromium for PWA Smoke Test\n\s+if: steps\.filter\.outputs\.ui == 'true'\n/);
+        // The shared classifier decides this now, and a decision is only ever
+        // read as "skip" when it is an explicit false.
+        assert.match(buildCheck, /- name: Install Chromium for PWA Smoke Test\n(\s+#[^\n]*\n)*\s+if: steps\.filter\.outputs\.ui != 'false'\n/);
     });
 
     test('packaging, release metadata and workflow linting still run in the build check', () => {

@@ -1,0 +1,112 @@
+name: Classify changed surfaces
+description: >-
+  Run the shared conservative CI change classifier and expose one decision per
+  surface. Every workflow that selects work asks this action, so the rules can
+  never diverge between workflows. Any failure reports every surface as
+  selected: callers must treat a missing or empty decision as "run it".
+
+inputs:
+  base-sha:
+    description: Commit the pull request is merging into. Defaults to the event base.
+    required: false
+    default: ''
+  head-sha:
+    description: Head commit of the pull request. Defaults to the event head.
+    required: false
+    default: ''
+  event-name:
+    description: >-
+      Event that triggered the run. Anything other than pull_request selects
+      every surface, so manual dispatch and tag pushes stay conservative.
+    required: false
+    default: ''
+  require-resolution:
+    description: >-
+      Fail the step when the change set cannot be resolved, instead of
+      reporting the conservative fallback. Used by jobs that always run anyway,
+      where a silent fallback would hide a broken classifier.
+    required: false
+    default: 'false'
+
+outputs:
+  status:
+    description: '`ok` when the change set was resolved, `fallback` when it was not.'
+    value: ${{ steps.classify.outputs.status }}
+  broad:
+    description: '`true` when every surface was selected.'
+    value: ${{ steps.classify.outputs.broad }}
+  core:
+    description: Root orchestrator service checks apply.
+    value: ${{ steps.classify.outputs.core }}
+  core_files:
+    description: JSON array of changed files attributed to the core surface.
+    value: ${{ steps.classify.outputs.core_files }}
+  api:
+    description: API build, typecheck, lint, security and MCP checks apply.
+    value: ${{ steps.classify.outputs.api }}
+  api_files:
+    description: JSON array of changed files attributed to the api surface.
+    value: ${{ steps.classify.outputs.api_files }}
+  core_package:
+    description: '@propr/core and @propr/shared package checks apply.'
+    value: ${{ steps.classify.outputs.core_package }}
+  core_package_files:
+    description: JSON array of changed files attributed to the core_package surface.
+    value: ${{ steps.classify.outputs.core_package_files }}
+  core_package_source:
+    description: Added or modified @propr/core sources exist and must be linted.
+    value: ${{ steps.classify.outputs.core_package_source }}
+  core_package_source_files:
+    description: JSON array of added or modified @propr/core source files.
+    value: ${{ steps.classify.outputs.core_package_source_files }}
+  ui:
+    description: UI, client and browser checks apply.
+    value: ${{ steps.classify.outputs.ui }}
+  ui_files:
+    description: JSON array of changed files attributed to the ui surface.
+    value: ${{ steps.classify.outputs.ui_files }}
+  cli:
+    description: Standalone CLI skill and native compatibility checks apply.
+    value: ${{ steps.classify.outputs.cli }}
+  cli_files:
+    description: JSON array of changed files attributed to the cli surface.
+    value: ${{ steps.classify.outputs.cli_files }}
+  connect:
+    description: Native Connect discovery and authority proofs apply.
+    value: ${{ steps.classify.outputs.connect }}
+  connect_files:
+    description: JSON array of changed files attributed to the connect surface.
+    value: ${{ steps.classify.outputs.connect_files }}
+  desktop:
+    description: Desktop packaging, installers and packaged Connect checks apply.
+    value: ${{ steps.classify.outputs.desktop }}
+  desktop_files:
+    description: JSON array of changed files attributed to the desktop surface.
+    value: ${{ steps.classify.outputs.desktop_files }}
+  docs:
+    description: Documentation site checks apply.
+    value: ${{ steps.classify.outputs.docs }}
+  docs_files:
+    description: JSON array of changed files attributed to the docs surface.
+    value: ${{ steps.classify.outputs.docs_files }}
+
+runs:
+  using: composite
+  steps:
+    # Paths and commit ids reach the classifier as environment data and as
+    # argv, never as interpolated shell code.
+    - name: Classify changed surfaces
+      id: classify
+      shell: bash
+      env:
+        PROPR_CLASSIFY_BASE_SHA: ${{ inputs.base-sha != '' && inputs.base-sha || github.event.pull_request.base.sha }}
+        PROPR_CLASSIFY_HEAD_SHA: ${{ inputs.head-sha != '' && inputs.head-sha || github.event.pull_request.head.sha }}
+        PROPR_CLASSIFY_EVENT: ${{ inputs.event-name != '' && inputs.event-name || github.event_name }}
+        PROPR_CLASSIFY_REQUIRE_RESOLUTION: ${{ inputs.require-resolution }}
+      run: |
+        set -euo pipefail
+        args=(--github-output --summary)
+        if [ "${PROPR_CLASSIFY_REQUIRE_RESOLUTION:-false}" = 'true' ]; then
+          args+=(--require-resolution)
+        fi
+        node "$GITHUB_WORKSPACE/scripts/ci-change-classification.mjs" "${args[@]}"
