@@ -216,7 +216,18 @@ const Dashboard: React.FC = () => {
               attentionEmpty ? 'lg:hidden' : ''
             }`}
           >
-            <NeedsAttentionPanel {...sectionProps} onEmptyChange={setAttentionEmpty} />
+            {/*
+              The dashboard keeps the one quiet mobile line, so it opts out of
+              the panel's default disappearing act; the wrapper's `lg:hidden`
+              removes both from the desktop layout instead. Whether the panel
+              is empty is a data fact the panel itself reports, so this stays a
+              CSS decision rather than a measured viewport one.
+            */}
+            <NeedsAttentionPanel
+              {...sectionProps}
+              onEmptyChange={setAttentionEmpty}
+              hideWhenEmpty={false}
+            />
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-1 lg:border-r">

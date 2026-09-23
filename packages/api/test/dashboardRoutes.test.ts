@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
+import { getTasksFromDb } from '../routes/taskHelpers.js';
 
 let database: Knex;
 
@@ -51,11 +52,22 @@ before(async () => {
     table.decimal('cost_usd', 10, 6);
     table.text('analysis_report');
   });
-  // Inbox state. The dashboard must never read it.
+  // Inbox state, shaped like the real notification schema. The dashboard must
+  // never read either table: attention is derived from work state alone.
+  await database.schema.createTable('notification_events', table => {
+    table.string('event_id').primary();
+    table.string('deduplication_key').notNullable();
+    table.string('kind').notNullable();
+    table.text('target_json').notNullable();
+    table.string('title').notNullable();
+    table.text('body').notNullable();
+    table.timestamp('occurred_at');
+  });
   await database.schema.createTable('notification_user_states', table => {
     table.increments('id').primary();
-    table.string('notification_id').notNullable();
+    table.string('event_id').notNullable();
     table.string('user_id').notNullable();
+    table.timestamp('read_at');
     table.timestamp('dismissed_at');
   });
 });
@@ -68,6 +80,7 @@ beforeEach(async () => {
   await database('plan_issues').del();
   await database('llm_executions').del();
   await database('notification_user_states').del();
+  await database('notification_events').del();
 });
 
 interface TaskSeed {
@@ -180,6 +193,52 @@ test('summary returns four integer counts that match the active endpoint for the
   assert.equal((scopedActive.body.running as unknown[]).length, scopedSummary.body.running);
 });
 
+/** The task page behind a dashboard count, asked for its total only. */
+async function taskPageTotal(status: string, repository: string): Promise<number> {
+  const page = await getTasksFromDb({
+    db: database,
+    status,
+    repository,
+    limit: 0,
+    offset: 0,
+    previewReader: { project: async () => [] } as never,
+  });
+  return page.total;
+}
+
+test('the dashboard and the task pages count the same work for the same filter', async () => {
+  await seedTask({ taskId: 'count-running-1', issueNumber: 111, states: [{ state: 'claude_execution', timestamp: minutesAgo(12) }] });
+  await seedTask({ taskId: 'count-running-2', issueNumber: 112, states: [{ state: 'processing', timestamp: minutesAgo(11) }] });
+  await seedTask({ taskId: 'count-queued-1', issueNumber: 113, states: [{ state: 'queued', timestamp: minutesAgo(10) }] });
+  await seedTask({ taskId: 'count-queued-2', issueNumber: 114, states: [{ state: 'pending', timestamp: minutesAgo(9) }] });
+  await seedTask({ taskId: 'count-blocked', issueNumber: 115, states: [{ state: 'failed', timestamp: minutesAgo(8), reason: 'Boom' }] });
+  await seedTask({ taskId: 'count-waiting-human', issueNumber: 116, states: [{ state: 'action_required', timestamp: minutesAgo(7) }] });
+  // Goal tasks and other repositories stay out of the scoped counts on both sides.
+  await seedTask({ taskId: 'count-goal', issueNumber: 117, taskType: 'goal', states: [{ state: 'claude_execution', timestamp: minutesAgo(6) }] });
+  await seedTask({ taskId: 'count-elsewhere', repository: 'acme/web', issueNumber: 1, states: [{ state: 'claude_execution', timestamp: minutesAgo(5) }] });
+
+  const dashboard = routes();
+  for (const repository of ['all', 'integry/propr']) {
+    const summary = await call(dashboard.getSummary, { repository });
+    const active = await call(dashboard.getActive, { repository });
+    const attention = await call(dashboard.getAttention, { repository });
+
+    // One definition, three readings: the strip, the live section and the list
+    // the count links to must never disagree.
+    assert.deepEqual(active.body.counts, { running: summary.body.running, queued: summary.body.queued });
+    assert.equal((attention.body.counts as { total: number }).total, summary.body.needsAttention);
+    assert.equal(await taskPageTotal('active', repository), summary.body.running);
+    assert.equal(await taskPageTotal('waiting', repository), summary.body.queued);
+    assert.equal(await taskPageTotal('attention', repository), summary.body.needsAttention);
+  }
+
+  const scoped = await call(dashboard.getSummary, { repository: 'integry/propr' });
+  assert.deepEqual(
+    { running: scoped.body.running, queued: scoped.body.queued, needsAttention: scoped.body.needsAttention },
+    { running: 2, queued: 2, needsAttention: 2 },
+  );
+});
+
 test('a failed task that is being retried appears in active and not in attention', async () => {
   await seedTask({
     taskId: 'retried', issueNumber: 21,
@@ -232,21 +291,45 @@ test('attention lists blocking problems before pending decisions, oldest first i
   assert.deepEqual(attention.body.counts, { blocked: 3, decisions: 2, total: 5 });
 });
 
-test('dismissing a notification does not change attention output for the same work', async () => {
+test('dismissing every notification for a failed task leaves the task in attention', async () => {
   await seedTask({ taskId: 'blocked-task', issueNumber: 61, states: [{ state: 'failed', timestamp: minutesAgo(20), reason: 'Boom' }] });
+  // Two inbox notifications about the same failure, for two different people.
+  await database('notification_events').insert([
+    {
+      event_id: 'event-failed-1', deduplication_key: 'task-failed:blocked-task', kind: 'task_failed',
+      target_json: JSON.stringify({ type: 'task', repository: 'integry/propr', taskId: 'blocked-task', issueNumber: 61 }),
+      title: 'Task failed', body: 'Boom', occurred_at: minutesAgo(20),
+    },
+    {
+      event_id: 'event-failed-2', deduplication_key: 'task-failed:blocked-task:retry', kind: 'task_failed',
+      target_json: JSON.stringify({ type: 'task', repository: 'integry/propr', taskId: 'blocked-task', issueNumber: 61 }),
+      title: 'Task failed again', body: 'Boom', occurred_at: minutesAgo(19),
+    },
+  ]);
+  await database('notification_user_states').insert([
+    { event_id: 'event-failed-1', user_id: 'user-1', read_at: minutesAgo(18), dismissed_at: null },
+    { event_id: 'event-failed-2', user_id: 'user-1', read_at: minutesAgo(18), dismissed_at: null },
+    { event_id: 'event-failed-1', user_id: 'user-2', read_at: null, dismissed_at: null },
+  ]);
 
   const dashboard = routes();
   const before = await call(dashboard.getAttention, { repository: 'all' });
+  assert.deepEqual((before.body.items as Array<{ taskId: string }>).map(item => item.taskId), ['blocked-task']);
 
-  await database('notification_user_states').insert({
-    notification_id: 'notification-for-blocked-task',
-    user_id: 'user-1',
-    dismissed_at: minutesAgo(1),
-  });
+  // Every recipient dismisses every notification about the failure.
+  const dismissed = await database('notification_user_states').update({ dismissed_at: minutesAgo(1) });
+  assert.equal(dismissed, 3);
+  assert.equal(await database('notification_user_states').whereNull('dismissed_at').first(), undefined);
 
   const after = await call(dashboard.getAttention, { repository: 'all' });
+  // A cleared inbox is not a resolved blocker: the item and its counts are unchanged.
   assert.deepEqual(after.body, before.body);
-  assert.equal((after.body.items as unknown[]).length, 1);
+  assert.deepEqual((after.body.items as Array<{ taskId: string; kind: string }>).map(item => item.kind), ['task_failed']);
+  assert.deepEqual(after.body.counts, { blocked: 1, decisions: 0, total: 1 });
+
+  // And the same is true of the count the summary strip shows.
+  const summary = await call(dashboard.getSummary, { repository: 'all' });
+  assert.equal(summary.body.needsAttention, 1);
 });
 
 test('active reports a phase label and a live progress line, and leaves the line null when unknown', async () => {

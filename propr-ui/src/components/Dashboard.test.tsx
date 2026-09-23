@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Dashboard from './Dashboard';
+import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
 import {
   getDashboardActive,
   getDashboardAttention,
@@ -77,6 +78,17 @@ const mockActive = vi.mocked(getDashboardActive);
 const mockOutcomes = vi.mocked(getDashboardOutcomes);
 const mockStats = vi.mocked(getDashboardStats);
 
+/**
+ * The two things "Happening now" can say when it has no rows.
+ *
+ * They are named here so the test can assert they are genuinely different
+ * strings: "nothing is running" and "we could not find out" are different
+ * facts, and a refactor that collapsed them into one message would otherwise
+ * still satisfy a pair of `toHaveTextContent` assertions.
+ */
+const IDLE_RUNNING_MESSAGE = 'No work running';
+const UNAVAILABLE_RUNNING_MESSAGE = 'Unable to load running work';
+
 const LocationProbe: React.FC = () => {
   const location = useLocation();
   return <span data-testid="location-search">{location.search}</span>;
@@ -118,6 +130,54 @@ describe('Dashboard', () => {
     expect(screen.queryByTestId('needs-attention-panel')).not.toBeInTheDocument();
     expect(screen.getByTestId('needs-attention-empty')).toHaveTextContent('Nothing needs your attention');
     expect(screen.getByTestId('summary-needs-attention')).toHaveAttribute('data-emphasis', 'false');
+  });
+
+  it('renders nothing at all for an empty attention list when the caller hides it', async () => {
+    mockAttention.mockResolvedValue(attentionResponse([]));
+    const { container } = render(
+      <MemoryRouter>
+        <NeedsAttentionPanel repository="all" refreshToken={0} hideWhenEmpty />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(mockAttention).toHaveBeenCalledTimes(1));
+    // Absent from the DOM, not hidden by a class: an empty panel that is still
+    // rendered keeps its border and its grid cell, which is the space the
+    // section is supposed to give back.
+    await waitFor(() => expect(container.querySelector('[data-testid="section-skeleton"]')).toBeNull());
+    expect(container).toBeEmptyDOMElement();
+    expect(container.textContent).toBe('');
+    expect(container.querySelector('h2')).toBeNull();
+    expect(screen.queryByText('Needs attention')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing needs your attention')).not.toBeInTheDocument();
+  });
+
+  it('keeps one quiet line for an empty attention list when the caller has room for it', async () => {
+    mockAttention.mockResolvedValue(attentionResponse([]));
+    const { container } = render(
+      <MemoryRouter>
+        <NeedsAttentionPanel repository="all" refreshToken={0} hideWhenEmpty={false} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('needs-attention-empty')).toBeInTheDocument());
+    expect(screen.getByTestId('needs-attention-empty')).toHaveTextContent('Nothing needs your attention');
+    // Still no heading and no list: one line is the whole empty state.
+    expect(container.querySelector('h2')).toBeNull();
+    expect(container.querySelector('ul')).toBeNull();
+  });
+
+  it('shows the attention list whatever the caller asked for when work is blocked', async () => {
+    mockAttention.mockResolvedValue(attentionResponse([attentionItem()]));
+    render(
+      <MemoryRouter>
+        <NeedsAttentionPanel repository="all" refreshToken={0} hideWhenEmpty />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('needs-attention-panel')).toBeInTheDocument());
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByTestId('needs-attention-panel')).toHaveTextContent('Checkout retries never fire');
   });
 
   it('emphasises the attention count and lists attention items when work is blocked', async () => {
@@ -250,19 +310,25 @@ describe('Dashboard', () => {
   });
 
   it('distinguishes no running work from a failed read of running work', async () => {
+    // The point of the section: the idle line and the unavailable line are not
+    // the same sentence, and neither one is reachable in the other's state.
+    expect(IDLE_RUNNING_MESSAGE).not.toBe(UNAVAILABLE_RUNNING_MESSAGE);
+
     mockActive.mockResolvedValue(activeResponse([]));
     const empty = renderDashboard();
     await waitForSections();
-    expect(screen.getByTestId('happening-now-section')).toHaveTextContent('No work running');
-    expect(screen.getByTestId('happening-now-section')).not.toHaveTextContent('Unable to load running work');
+    expect(screen.getByTestId('happening-now-section')).toHaveTextContent(IDLE_RUNNING_MESSAGE);
+    expect(screen.getByTestId('happening-now-section')).not.toHaveTextContent(UNAVAILABLE_RUNNING_MESSAGE);
+    // An empty list is normal operation, so it never offers a retry.
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     empty.unmount();
 
     mockActive.mockRejectedValue(new Error('network down'));
     renderDashboard();
     await waitFor(() =>
-      expect(screen.getByTestId('happening-now-section')).toHaveTextContent('Unable to load running work'),
+      expect(screen.getByTestId('happening-now-section')).toHaveTextContent(UNAVAILABLE_RUNNING_MESSAGE),
     );
-    expect(screen.getByTestId('happening-now-section')).not.toHaveTextContent('No work running');
+    expect(screen.getByTestId('happening-now-section')).not.toHaveTextContent(IDLE_RUNNING_MESSAGE);
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 

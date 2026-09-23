@@ -121,6 +121,15 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
 interface NeedsAttentionPanelProps extends DashboardSectionProps {
   /** Lets the layout drop the column entirely once the list is known empty. */
   onEmptyChange?: (empty: boolean) => void;
+  /**
+   * Whether an empty list leaves the DOM entirely.
+   *
+   * Nothing to attend to is the normal case, so by default the section is
+   * simply absent rather than occupying a column with a reassuring graphic.
+   * A caller that has room for one quiet line — the dashboard's mobile column,
+   * where the panel is the only thing between two rules — opts out.
+   */
+  hideWhenEmpty?: boolean;
 }
 
 export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
@@ -128,6 +137,7 @@ export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
   refreshToken,
   onLoaded,
   onEmptyChange,
+  hideWhenEmpty = true,
 }) => {
   const load = useCallback(() => getDashboardAttention(repository), [repository]);
   const { data, error, loading, reload } = useDashboardSection<DashboardAttentionResponse>(
@@ -158,6 +168,7 @@ export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
 
   // Nothing to do: no panel at all on desktop, one quiet line on mobile.
   if (items.length === 0) {
+    if (hideWhenEmpty) return null;
     return (
       <p data-testid="needs-attention-empty" className="px-3 py-3 text-sm text-slate-500 lg:hidden">
         Nothing needs your attention
