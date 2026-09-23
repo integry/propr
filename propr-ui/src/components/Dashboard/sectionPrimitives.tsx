@@ -31,44 +31,67 @@ export const RepositoryIconProvider: React.FC<{
 
 export const Dot: React.FC = () => <span className="text-gray-300" aria-hidden="true">•</span>;
 
-/** Repository name with its icon, kept short enough to drop before a title does. */
+/**
+ * Repository slug as a monospace code chip.
+ *
+ * A repository is a technical entity, so it gets the same chip treatment as an
+ * issue or a pull request rather than reading as prose. The icon rides inside
+ * the chip so the two never separate when the metadata line wraps.
+ */
 export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }) => {
   const icons = useContext(RepositoryIconContext);
   const icon = icons.get(repository);
   return (
-    <span className="inline-flex min-w-0 items-center gap-1 text-gray-500">
+    <span
+      className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] leading-4 text-slate-800"
+      title={repository}
+    >
       <RepositoryIcon
         repository={repository}
         iconPath={icon?.iconPath}
         revision={icon?.revision}
-        className="h-3.5 w-3.5"
+        className="h-3.5 w-3.5 flex-none"
       />
       <span className="truncate">{repository}</span>
     </span>
   );
 };
 
-/** Issue or pull request reference, using the task list's code chip. */
+/**
+ * Issue or pull request reference, using the task list's code chip.
+ *
+ * The entity type is always spelled out. A bare `#2479` leaves the reader
+ * guessing whether it is an issue or a pull request, so the prefix is not
+ * optional — the chip is either `PR #n` or `Issue #n`.
+ */
 export const WorkReference: React.FC<{ issueNumber?: number | null; prNumber?: number | null }> = ({
   issueNumber,
   prNumber,
 }) => {
   if (prNumber) return <ReferenceChip title={`Pull request #${prNumber}`}>PR #{prNumber}</ReferenceChip>;
-  if (issueNumber) return <ReferenceChip title={`Issue #${issueNumber}`}>#{issueNumber}</ReferenceChip>;
+  if (issueNumber) return <ReferenceChip title={`Issue #${issueNumber}`}>Issue #{issueNumber}</ReferenceChip>;
   return null;
 };
 
+/**
+ * Utility header for a section.
+ *
+ * A ruled strip across the full width of its column, not the title of a
+ * floating card: tinted background, a 1px rule beneath it, and the section's
+ * own count carried inline as `HAPPENING NOW (6)` so a top-level number never
+ * needs a box of its own.
+ */
 export const SectionHeading: React.FC<{
   id: string;
   title: string;
   count?: number | null;
   children?: React.ReactNode;
 }> = ({ id, title, count, children }) => (
-  <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
-    <h2 id={id} className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-500">
+  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
+    <h2 id={id} className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
       {title}
       {count !== undefined && count !== null && count > 0 && (
-        <span className="font-semibold tabular-nums text-gray-400">{count}</span>
+        <span className="tabular-nums"> ({count})</span>
       )}
     </h2>
     {children && <div className="flex items-center gap-2 text-xs">{children}</div>}
@@ -92,15 +115,15 @@ export const SectionEmpty: React.FC<{ children: React.ReactNode }> = ({ children
  * same fact, and only one of them offers a retry.
  */
 export const SectionError: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
-  <div className="px-1 py-1">
+  <div className="px-3 py-3">
     <SystemAlert onRetry={onRetry}>{message}</SystemAlert>
   </div>
 );
 
 export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
-  <div className="animate-pulse space-y-2 px-1 py-2" data-testid="section-skeleton">
+  <div className="animate-pulse space-y-2 px-3 py-3" data-testid="section-skeleton">
     {Array.from({ length: rows }, (_, index) => (
-      <div key={index} className="h-12 rounded-lg bg-slate-100" />
+      <div key={index} className="h-10 rounded-sm bg-slate-100" />
     ))}
   </div>
 );

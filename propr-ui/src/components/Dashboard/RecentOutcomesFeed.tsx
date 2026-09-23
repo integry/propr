@@ -7,6 +7,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
+import { Check } from 'lucide-react';
 import { getDashboardOutcomes, type DashboardOutcomesResponse, type OutcomeItem, type OutcomeKind } from '../../api/dashboardApi';
 import { ScoreBadge } from '../TaskList/ScoreBadge';
 import {
@@ -47,13 +48,21 @@ const KIND_LABELS: Record<OutcomeKind, string> = {
   closed: 'Closed',
 };
 
+/**
+ * Colour is spent only where it changes what someone does. A failure is the
+ * one outcome worth interrupting for; completed, merged, cancelled and closed
+ * are all history, so they recede into slate.
+ */
 const KIND_CLASSES: Record<OutcomeKind, string> = {
-  completed: 'text-slate-700',
+  completed: 'text-slate-600',
   failed: 'text-red-700',
-  cancelled: 'text-orange-700',
-  merged: 'text-teal-700',
+  cancelled: 'text-slate-500',
+  merged: 'text-slate-600',
   closed: 'text-slate-500',
 };
+
+/** Successful end states carry a checkmark instead of a colour. */
+const SUCCESS_KINDS: ReadonlySet<OutcomeKind> = new Set<OutcomeKind>(['completed', 'merged']);
 
 function outcomeTitle(item: OutcomeItem): string {
   if (item.title) return item.title;
@@ -66,11 +75,14 @@ const OutcomeRow: React.FC<{ item: OutcomeItem }> = ({ item }) => (
   <li className="border-b border-slate-100 last:border-b-0">
     <RowLink
       href={workHref(item)}
-      className="flex min-w-0 items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
+      className="flex min-w-0 items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
     >
       <span className="min-w-0 flex-1">
         <RowMeta>
-          <span className={`font-medium ${KIND_CLASSES[item.kind]}`}>{KIND_LABELS[item.kind]}</span>
+          <span className={`inline-flex items-center gap-1 font-medium ${KIND_CLASSES[item.kind]}`}>
+            {SUCCESS_KINDS.has(item.kind) && <Check className="h-3 w-3 flex-none" aria-hidden="true" />}
+            {KIND_LABELS[item.kind]}
+          </span>
           <Dot />
           <RepositoryLabel repository={item.repository} />
           <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
@@ -132,7 +144,7 @@ export const RecentOutcomesFeed: React.FC<DashboardSectionProps> = ({ repository
           <button
             type="button"
             onClick={() => setShowAll(value => !value)}
-            className="mt-1 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            className="w-full border-t border-slate-100 px-3 py-2 text-left text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
           >
             {showAll ? 'Show fewer' : `Show ${items.length - VISIBLE_ITEMS} more`}
           </button>
@@ -145,17 +157,17 @@ export const RecentOutcomesFeed: React.FC<DashboardSectionProps> = ({ repository
     <section
       aria-labelledby="recent-outcomes-heading"
       data-testid="recent-outcomes-section"
-      className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm"
+      className="min-w-0 bg-white"
     >
       <SectionHeading id="recent-outcomes-heading" title="Recent outcomes">
-        <div className="inline-flex rounded-md border border-slate-200 p-0.5" role="group" aria-label="Outcome window">
+        <div className="inline-flex rounded-sm border border-slate-200 bg-white p-0.5" role="group" aria-label="Outcome window">
           {(Object.keys(WINDOW_LABELS) as OutcomeWindow[]).map(option => (
             <button
               key={option}
               type="button"
               aria-pressed={range === option}
               onClick={() => { setRange(option); setShowAll(false); }}
-              className={`rounded px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+              className={`rounded-sm px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                 range === option ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:text-slate-700'
               }`}
             >

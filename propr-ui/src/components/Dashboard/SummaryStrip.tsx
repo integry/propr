@@ -1,7 +1,9 @@
 /**
- * Summary strip: four counts, each one a door into the list behind it.
+ * Summary row: four counts, each one a door into the list behind it.
  *
- * The counts are neutral by default. Only "Needs attention" changes colour, and
+ * These are four single numbers, so they get one line — not four boxes. Each
+ * count sits inline next to its label, the whole row is one rule-separated
+ * strip, and the counts stay neutral. Only "Needs attention" takes colour, and
  * only when it is non-zero — if everything is emphasised, nothing is.
  */
 
@@ -29,17 +31,23 @@ const SummaryCount: React.FC<SummaryCountProps> = ({ label, value, href, title, 
     title={title}
     data-testid={testId}
     data-emphasis={emphasised ? 'true' : 'false'}
-    className={`flex min-w-0 flex-col gap-0.5 rounded-lg border px-3 py-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-      emphasised
-        ? 'border-amber-200 bg-amber-50 hover:bg-amber-100'
-        : 'border-slate-200 bg-white hover:bg-slate-50'
+    className={`flex min-w-0 items-baseline gap-2 border-r border-slate-200 px-3 py-2 last:border-r-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${
+      emphasised ? 'hover:bg-amber-50' : 'hover:bg-slate-50'
     }`}
   >
-    <span className={`text-xl font-semibold tabular-nums ${emphasised ? 'text-amber-700' : 'text-slate-900'}`}>
-      {value === null ? <span className="text-slate-300">—</span> : value}
-    </span>
-    <span className={`truncate text-[11px] font-medium uppercase tracking-wide ${emphasised ? 'text-amber-700' : 'text-gray-500'}`}>
+    <span
+      className={`truncate text-[10px] font-bold uppercase tracking-wider ${
+        emphasised ? 'text-amber-700' : 'text-slate-500'
+      }`}
+    >
       {label}
+    </span>
+    <span
+      className={`font-mono text-sm font-semibold tabular-nums ${
+        emphasised ? 'text-amber-700' : 'text-slate-900'
+      }`}
+    >
+      {value === null ? <span className="text-slate-300">—</span> : value}
     </span>
   </Link>
 );
@@ -57,7 +65,7 @@ export const SummaryStrip: React.FC<DashboardSectionProps> = ({ repository, refr
     <div
       aria-label="Work summary"
       data-testid="summary-strip"
-      className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+      className="flex flex-wrap items-stretch"
     >
       <SummaryCount
         testId="summary-needs-attention"

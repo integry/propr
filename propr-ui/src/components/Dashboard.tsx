@@ -9,6 +9,10 @@
  * This file owns only three things — the shared repository filter, the socket
  * subscription that keeps every section current, and the responsive layout.
  * Each section reads its own slice of the dashboard API.
+ *
+ * The layout is one solid canvas, not a tray of cards: sections are divided by
+ * 1px rules and by the grid column boundary, and they share row lines so the
+ * horizontal dividers in the two columns land on the same pixel.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -140,7 +144,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <RepositoryIconProvider icons={repositoryIcons}>
-      <div className="min-h-full bg-slate-50">
+      <div className="min-h-full bg-white">
         <ConnectSoftPromoBanner />
 
         {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
@@ -161,7 +165,7 @@ const Dashboard: React.FC = () => {
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2 sm:px-6">
           <LiveStatus isConnected={isConnected} lastUpdatedAt={lastUpdatedAt} />
           {(reposLoading || repoOptions.length > 1) && (
             <RepositorySelector
@@ -182,25 +186,41 @@ const Dashboard: React.FC = () => {
           outcomes in the main column and the two supporting panels in a
           narrower right column; with nothing to attend to, that panel leaves
           the layout and the stats move up into its place.
+
+          Placement is explicit rather than nested so that DOM order can serve
+          mobile while the columns stay real columns. Cells stretch, which is
+          what keeps the two columns' row rules on one continuous horizon.
+
+          The pane divider hangs off the main column, not the supporting one:
+          the main column is always the taller, so the rule runs the full height
+          of the canvas even when the right column has fewer panels to show.
         */}
-        <div className="grid grid-cols-1 items-start gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="min-w-0 lg:col-span-2">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="min-w-0 border-b border-slate-200 lg:col-span-2">
             <SummaryStrip {...sectionProps} />
           </div>
 
-          <div className={`min-w-0 lg:col-start-2 lg:row-start-2 ${attentionEmpty ? 'lg:hidden' : ''}`}>
+          <div
+            className={`min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-2 ${
+              attentionEmpty ? 'lg:hidden' : ''
+            }`}
+          >
             <NeedsAttentionPanel {...sectionProps} onEmptyChange={setAttentionEmpty} />
           </div>
 
-          <div className="min-w-0 lg:col-start-1 lg:row-start-2">
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-r">
             <HappeningNowSection {...sectionProps} />
           </div>
 
-          <div className="min-w-0 lg:col-start-1 lg:row-start-3">
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-3 lg:border-r">
             <RecentOutcomesFeed {...sectionProps} />
           </div>
 
-          <div className={`min-w-0 lg:col-start-2 ${attentionEmpty ? 'lg:row-start-2' : 'lg:row-start-3'}`}>
+          <div
+            className={`min-w-0 border-b border-slate-200 lg:col-start-2 ${
+              attentionEmpty ? 'lg:row-start-2' : 'lg:row-start-3'
+            }`}
+          >
             <HistoricalStatsPanel {...sectionProps} />
           </div>
         </div>

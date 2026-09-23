@@ -4,11 +4,16 @@
  * One bar per day, no axis furniture beyond the first and last dates: the
  * panel's job is shape, not precise readings. The numbers themselves are in
  * the metrics above it.
+ *
+ * Finished days are history and are drawn in neutral slate. Only the day still
+ * in progress takes brand teal, so the eye lands on the day that can still
+ * change rather than on a wall of colour reporting last week.
  */
 
 import React from 'react';
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
+import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { tooltipStyle } from '../chartConstants';
+import { dailyBarFill, utcToday } from './chartPalette';
 
 export interface DailyCompletion {
   date: string;
@@ -21,6 +26,7 @@ const shortDate = (date: string): string =>
 export const DailyCompletionsChart: React.FC<{ data: DailyCompletion[] }> = ({ data }) => {
   if (data.length === 0) return null;
 
+  const today = utcToday();
   const points = data.map(point => ({ ...point, label: shortDate(point.date) }));
   const first = points[0].label;
   const last = points[points.length - 1].label;
@@ -42,7 +48,11 @@ export const DailyCompletionsChart: React.FC<{ data: DailyCompletion[] }> = ({ d
               }
             />
             {/* A seven-bar summary reads instantly; a grow animation only delays it. */}
-            <Bar dataKey="count" fill="#14B8A6" radius={[2, 2, 0, 0]} maxBarSize={18} isAnimationActive={false} />
+            <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={18} isAnimationActive={false}>
+              {points.map(point => (
+                <Cell key={point.date} fill={dailyBarFill(point.date, today)} />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>

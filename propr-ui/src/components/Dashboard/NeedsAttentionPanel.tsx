@@ -82,7 +82,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
           </time>
           <RowLink
             href={href}
-            className="inline-flex min-h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            className="inline-flex min-h-8 items-center rounded-sm border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
           >
             {actionLabel(item)}
             {external && <span className="sr-only"> (opens GitHub)</span>}
@@ -124,7 +124,7 @@ export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
 
   if (error && items.length === 0) {
     return (
-      <section aria-labelledby="needs-attention-heading" data-testid="needs-attention-panel">
+      <section aria-labelledby="needs-attention-heading" data-testid="needs-attention-panel" className="min-w-0 bg-white">
         <SectionHeading id="needs-attention-heading" title="Needs attention" />
         <SectionError message="Unable to load what needs attention" onRetry={reload} />
       </section>
@@ -134,7 +134,7 @@ export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
   // Nothing to do: no panel at all on desktop, one quiet line on mobile.
   if (items.length === 0) {
     return (
-      <p data-testid="needs-attention-empty" className="px-1 py-2 text-sm text-slate-500 lg:hidden">
+      <p data-testid="needs-attention-empty" className="px-3 py-3 text-sm text-slate-500 lg:hidden">
         Nothing needs your attention
       </p>
     );
@@ -146,7 +146,7 @@ export const NeedsAttentionPanel: React.FC<NeedsAttentionPanelProps> = ({
     <section
       aria-labelledby="needs-attention-heading"
       data-testid="needs-attention-panel"
-      className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm"
+      className="min-w-0 bg-white"
     >
       <SectionHeading id="needs-attention-heading" title="Needs attention" count={items.length}>
         <SectionLink to={filteredTasksHref('attention', repository)}>View all</SectionLink>

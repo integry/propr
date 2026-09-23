@@ -8,16 +8,18 @@ import {
   getDashboardOutcomes,
   getDashboardStats,
   getDashboardSummary,
-  type ActiveItem,
-  type AttentionItem,
-  type DashboardActiveResponse,
-  type DashboardAttentionResponse,
-  type DashboardOutcomesResponse,
-  type DashboardStatsResponse,
-  type DashboardSummaryResponse,
-  type OutcomeItem,
 } from '../api/dashboardApi';
 import type { TaskUpdatePayload } from '@propr/shared';
+import {
+  activeItem,
+  activeResponse,
+  attentionItem,
+  attentionResponse,
+  outcomeItem,
+  outcomesResponse,
+  statsResponse,
+  summaryResponse,
+} from './Dashboard.fixtures';
 
 vi.mock('../api/dashboardApi', () => ({
   getDashboardSummary: vi.fn(),
@@ -74,92 +76,6 @@ const mockAttention = vi.mocked(getDashboardAttention);
 const mockActive = vi.mocked(getDashboardActive);
 const mockOutcomes = vi.mocked(getDashboardOutcomes);
 const mockStats = vi.mocked(getDashboardStats);
-
-const summaryResponse = (over: Partial<DashboardSummaryResponse> = {}): DashboardSummaryResponse => ({
-  repository: 'all',
-  needsAttention: 0,
-  running: 0,
-  queued: 0,
-  completedRecently: 0,
-  recentWindowHours: 24,
-  ...over,
-});
-
-const attentionItem = (over: Partial<AttentionItem> = {}): AttentionItem => ({
-  id: 'task:blocked-1',
-  category: 'blocked',
-  kind: 'task_failed',
-  taskId: 'blocked-1',
-  repository: 'acme/app',
-  issueNumber: 42,
-  prNumber: null,
-  title: 'Checkout retries never fire',
-  state: 'failed',
-  detail: 'Lint failed',
-  since: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-  ...over,
-});
-
-const attentionResponse = (items: AttentionItem[] = []): DashboardAttentionResponse => ({
-  repository: 'all',
-  items,
-  counts: { blocked: items.length, decisions: 0, total: items.length },
-});
-
-const activeItem = (over: Partial<ActiveItem> = {}): ActiveItem => ({
-  id: 'task:run-1',
-  taskId: 'run-1',
-  repository: 'acme/app',
-  issueNumber: 7,
-  prNumber: null,
-  title: 'Add retry budget',
-  state: 'claude_execution',
-  phase: 'Implementing',
-  progressLine: 'Editing src/retry.ts',
-  createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-  updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
-  ...over,
-});
-
-const activeResponse = (running: ActiveItem[] = [], queued: ActiveItem[] = []): DashboardActiveResponse => ({
-  repository: 'all',
-  running,
-  queued,
-  queue: { queuedCount: queued.length, reason: queued.length ? 'All agents are busy' : null },
-  counts: { running: running.length, queued: queued.length },
-});
-
-const outcomeItem = (over: Partial<OutcomeItem> = {}): OutcomeItem => ({
-  id: 'task:done-1:completed',
-  kind: 'completed',
-  taskId: 'done-1',
-  repository: 'acme/app',
-  issueNumber: 9,
-  prNumber: 100,
-  title: 'Ship the retry budget',
-  detail: null,
-  planIssueStatus: null,
-  score: null,
-  occurredAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-  ...over,
-});
-
-const outcomesResponse = (items: OutcomeItem[] = []): DashboardOutcomesResponse => ({
-  repository: 'all',
-  limit: 50,
-  items,
-});
-
-const statsResponse = (over: Partial<DashboardStatsResponse> = {}): DashboardStatsResponse => ({
-  period: '7d',
-  repository: 'all',
-  completed: 12,
-  successRate: 80,
-  recordedSpend: 3.5,
-  dailyCompleted: [{ date: '2026-09-22', count: 2 }],
-  previous: { completed: 10, successRate: 75, recordedSpend: 2 },
-  ...over,
-});
 
 const LocationProbe: React.FC = () => {
   const location = useLocation();

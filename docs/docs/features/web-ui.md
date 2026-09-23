@@ -22,11 +22,13 @@ When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only 
 
 The landing page (`/`) answers "what needs my attention right now" in five sections:
 
-1. **Summary strip** — Needs attention, Running, Queued, and Completed today. Each number opens the matching filtered task list, and only the attention count is emphasised, and only when it is non-zero.
+1. **Summary strip** — Needs attention, Running, Queued, and Completed today, on a single compact row. Each number opens the matching filtered task list, and only the attention count is emphasised, and only when it is non-zero.
 2. **Needs attention** — the three oldest blockers and pending decisions, each with its reason, repository and issue/PR reference, how long it has been waiting, and one primary action. With nothing to attend to, the panel leaves the desktop layout entirely and mobile shows a single quiet line.
 3. **Happening now** — compact rows for work in flight with its lifecycle phase, elapsed time, and the latest progress line the agent actually reported. Five rows expand inline to the rest, ordering stays stable while tasks run, and a compact queue summary below says how much is waiting and why when the backend knows.
 4. **Recent outcomes** — a flat feed of results, last 24 hours by default with a seven-day option. A quality score appears only where one was recorded, labelled out of 10.
 5. **Historical stats** — Completed, Success rate, and Recorded spend over seven or thirty days, compared with the preceding period, plus a small daily-completions chart. Data the instance cannot report renders as "—", never as zero.
+
+The dashboard is one unified canvas rather than a set of cards: sections are separated by 1px rules and a pane divider, technical entities (repository slugs, issue and PR references) are monospace chips that always name their type, and colour is reserved for work in progress, blockers and failures — completed and merged work stays neutral.
 
 A single repository filter applies to every section and is kept in the URL, so it survives navigation and a reload. The sections refresh live over WebSocket; if the connection drops, the last known rows stay on screen under a "Reconnecting · Last updated …" line. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it.
 

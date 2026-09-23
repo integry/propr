@@ -58,7 +58,7 @@ const Metric: React.FC<{
   change: string | null;
   testId: string;
 }> = ({ label, value, change, testId }) => (
-  <div className="min-w-0">
+  <div className="min-w-0 px-3 first:pl-0 last:pr-0">
     <div className="truncate text-[10px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
     <div
       data-testid={testId}
@@ -87,17 +87,17 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
     <section
       aria-labelledby="historical-stats-heading"
       data-testid="historical-stats-section"
-      className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+      className="min-w-0 bg-white"
     >
       <SectionHeading id="historical-stats-heading" title="Historical stats">
-        <div className="inline-flex rounded-md border border-slate-200 p-0.5" role="group" aria-label="Stats period">
+        <div className="inline-flex rounded-sm border border-slate-200 bg-white p-0.5" role="group" aria-label="Stats period">
           {(Object.keys(PERIOD_LABELS) as DashboardStatsPeriod[]).map(option => (
             <button
               key={option}
               type="button"
               aria-pressed={period === option}
               onClick={() => setPeriod(option)}
-              className={`rounded px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+              className={`rounded-sm px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                 period === option ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
@@ -110,8 +110,8 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
       {loading && <SectionSkeleton rows={2} />}
       {!loading && error && !data && <SectionError message="Unable to load historical stats" onRetry={reload} />}
       {data && (
-        <>
-          <div className="grid grid-cols-3 gap-3">
+        <div className="px-3 py-3">
+          <div className="grid grid-cols-3 divide-x divide-slate-200">
             <Metric
               testId="stat-completed"
               label="Completed"
@@ -138,7 +138,7 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
               Full analytics
             </Link>
           </div>
-        </>
+        </div>
       )}
     </section>
   );

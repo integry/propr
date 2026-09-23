@@ -8,7 +8,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { getDashboardActive, type ActiveItem, type DashboardActiveResponse } from '../../api/dashboardApi';
 import {
   Dot,
@@ -49,10 +49,14 @@ const ActiveRow: React.FC<{
 }> = ({ item, expanded, onToggle }) => (
   <li className="border-b border-slate-100 last:border-b-0">
     <div className="flex min-w-0 items-start gap-1">
-      <RowLink href={workHref(item)} className="block min-w-0 flex-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
+      <RowLink href={workHref(item)} className="block min-w-0 flex-1 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
         <RowMeta>
+          {/*
+            A spinner, not a dot: a filled circle reads as a status light, and a
+            green one reads as "done". Motion is unambiguous about work in flight.
+          */}
           <span className="inline-flex items-center gap-1.5 font-medium text-teal-700">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal-500" aria-hidden="true" />
+            <Loader2 className="h-3 w-3 flex-none animate-spin" aria-hidden="true" />
             {item.phase || 'Running'}
           </span>
           <Dot />
@@ -71,7 +75,7 @@ const ActiveRow: React.FC<{
         aria-expanded={expanded}
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${itemTitle(item)}`}
         onClick={() => onToggle(item.id)}
-        className="mt-1.5 inline-flex h-8 w-8 flex-none items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        className="mt-1.5 mr-1 inline-flex h-8 w-8 flex-none items-center justify-center rounded-sm text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
       >
         <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
       </button>
@@ -102,7 +106,7 @@ const QueueSummary: React.FC<{ queuedCount: number; reason: string | null; repos
   return (
     <div
       data-testid="queue-summary"
-      className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600"
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
     >
       <span className="font-medium text-slate-700">
         {queuedCount} queued
@@ -179,7 +183,7 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
           <button
             type="button"
             onClick={() => setShowAll(value => !value)}
-            className="mt-1 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            className="w-full border-t border-slate-100 px-3 py-2 text-left text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
           >
             {showAll ? 'Show fewer' : `Show ${orderedRunning.length - VISIBLE_ITEMS} more`}
           </button>
@@ -192,7 +196,7 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
     <section
       aria-labelledby="happening-now-heading"
       data-testid="happening-now-section"
-      className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm"
+      className="min-w-0 bg-white"
     >
       {heading}
       {body()}
