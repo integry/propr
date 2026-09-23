@@ -91,7 +91,14 @@ class ProtocolClock {
   }
 }
 
-const bounded = async <T,>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
+// Every deadline this suite asserts on is virtual: the protocol budgets run on
+// the deterministic ProtocolClock, so these wall-clock races only exist to turn
+// a genuine hang into a readable failure instead of a suite-wide cancellation.
+// The real drains behind them — durable profile I/O, credential disposal, IPC
+// idling — contend with the rest of the CI shard, so the budget is generous.
+const SETTLE_BUDGET_MS = 5_000;
+
+const bounded = async <T,>(promise: Promise<T>, milliseconds = SETTLE_BUDGET_MS): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -336,9 +343,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           counts.rendererPublication += 1;
           return { status: 'fulfilled' as const, value };
         }, error => ({ status: 'rejected' as const, error }));
-        // Reaching activation includes durable profile I/O and can contend with
-        // the rest of the desktop suite. Protocol deadlines remain virtual.
-        await bounded(barrier.promise, 5_000);
+        await bounded(barrier.promise);
 
         const provisionalCouldExist = ['activate', 'cancel'].includes(scenario.endpoint);
         const pendingBeforeShutdown = await store.pendingRevocations();
