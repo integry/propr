@@ -17,6 +17,7 @@ import type { Knex } from 'knex';
 // route modules must not import. The assertion below keeps the literals below
 // tied to `PlanIssueStatus` at compile time.
 import type { PlanIssueStatus } from '@propr/core';
+import { loadCritiqueScores, toScoreNumber } from './critiqueScore.js';
 
 /** Worker lifecycle states the UI labels "Active"/"Implementing". */
 export const RUNNING_TASK_STATES = ['processing', 'claude_execution', 'post_processing', 'active'] as const;
@@ -417,6 +418,8 @@ export async function loadDashboardWork(
 
 export interface OutcomeRow extends DashboardTaskRow {
   planIssueStatus: string | null;
+  /** Implementation critique score out of 10, or null when none was recorded. */
+  score: number | null;
 }
 
 /**
@@ -444,15 +447,23 @@ export async function loadOutcomeRows(
   const mapped = rows.map(mapTaskRow);
   if (mapped.length === 0) return [];
 
-  const planRows = await db('plan_issues')
-    .whereIn('task_id', mapped.map(row => row.taskId))
-    .whereNotNull('task_id')
-    .select('task_id', 'status')
-    .orderBy('id', 'asc') as Array<Record<string, unknown>>;
+  const taskIds = mapped.map(row => row.taskId);
+  const [planRows, scores] = await Promise.all([
+    db('plan_issues')
+      .whereIn('task_id', taskIds)
+      .whereNotNull('task_id')
+      .select('task_id', 'status')
+      .orderBy('id', 'asc') as unknown as Promise<Array<Record<string, unknown>>>,
+    loadCritiqueScores(db, taskIds),
+  ]);
   const statusByTask = new Map<string, string>();
   for (const row of planRows) statusByTask.set(String(row.task_id), String(row.status));
 
-  return mapped.map(row => ({ ...row, planIssueStatus: statusByTask.get(row.taskId) ?? null }));
+  return mapped.map(row => ({
+    ...row,
+    planIssueStatus: statusByTask.get(row.taskId) ?? null,
+    score: toScoreNumber(scores.get(row.taskId)),
+  }));
 }
 
 export interface PlanIssueOutcomeRow {

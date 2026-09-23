@@ -86,6 +86,8 @@ export interface OutcomeItem {
   title: string | null;
   detail: string | null;
   planIssueStatus: string | null;
+  /** Implementation critique score out of 10; null whenever none was recorded. */
+  score: number | null;
   occurredAt: string;
 }
 

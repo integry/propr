@@ -8,7 +8,7 @@ This page is a tour of what each screen does. For how the UI is wired to the bac
 
 Two persistent elements frame every page.
 
-**Sidebar (left).** The primary navigation: **Dashboard**, **Plans**, **Tasks**, **Repositories**, **Coding Agents**, **LLM Log**, and **Settings**. Tasks and Plans show live count badges, and an amber dot flags setup gaps (no repositories, no agents, or no tasks yet). Below the navigation, the [Agent Tank](../operations/agent-tank.md) usage section shows live per-provider capacity bars when the integration is enabled. The footer shows the running version and copyright.
+**Sidebar (left).** The primary navigation: **Dashboard**, **Plans**, **Tasks**, **Repositories**, **Coding Agents**, **Analytics**, **LLM Log**, and **Settings**. Tasks and Plans show live count badges, and an amber dot flags setup gaps (no repositories, no agents, or no tasks yet). Below the navigation, the [Agent Tank](../operations/agent-tank.md) usage section shows live per-provider capacity bars when the integration is enabled. The footer shows the running version and copyright.
 
 **Header (top).** A global **search** (focus with `Cmd/Ctrl+K`) spans tasks, plans, and repositories. To its right: an **AI activity monitor** (how many tasks are running now), an **active plans** dropdown, a **tasks awaiting review** dropdown grouped by repo/PR/issue, a **quick add to-do** popover (`Alt+T`), a **New Plan** button, a **system health** indicator that opens a status modal (daemon, workers, Redis, GitHub auth, indexing, and per-agent health), and your GitHub profile with sign-out.
 
@@ -20,7 +20,17 @@ When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only 
 
 ## Dashboard
 
-The landing page (`/`) pairs a **Recent Activity** task feed with an analytics rail: an Active / Success / Total / Failed stats grid, Total Cost, a daily activity sparkline, task status distribution, a Repository Breakdown, and Top Models. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it. The panels refresh live over WebSocket as tasks change. For where each number comes from and how to read it, see [Metrics](../operations/metrics.md).
+The landing page (`/`) answers "what needs my attention right now" in five sections:
+
+1. **Summary strip** — Needs attention, Running, Queued, and Completed today. Each number opens the matching filtered task list, and only the attention count is emphasised, and only when it is non-zero.
+2. **Needs attention** — the three oldest blockers and pending decisions, each with its reason, repository and issue/PR reference, how long it has been waiting, and one primary action. With nothing to attend to, the panel leaves the desktop layout entirely and mobile shows a single quiet line.
+3. **Happening now** — compact rows for work in flight with its lifecycle phase, elapsed time, and the latest progress line the agent actually reported. Five rows expand inline to the rest, ordering stays stable while tasks run, and a compact queue summary below says how much is waiting and why when the backend knows.
+4. **Recent outcomes** — a flat feed of results, last 24 hours by default with a seven-day option. A quality score appears only where one was recorded, labelled out of 10.
+5. **Historical stats** — Completed, Success rate, and Recorded spend over seven or thirty days, compared with the preceding period, plus a small daily-completions chart. Data the instance cannot report renders as "—", never as zero.
+
+A single repository filter applies to every section and is kept in the URL, so it survives navigation and a reload. The sections refresh live over WebSocket; if the connection drops, the last known rows stay on screen under a "Reconnecting · Last updated …" line. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it.
+
+**Analytics** (`/analytics`) holds the fuller reporting view — daily activity, task status distribution, the Repository Breakdown, and Top Models — because the dashboard benefits more from space for ongoing work. For where each number comes from and how to read it, see [Metrics](../operations/metrics.md).
 
 ## Plans And Planner Studio
 

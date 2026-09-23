@@ -156,7 +156,7 @@ async function exerciseChrome(context, native) {
     };
     await capture('entry', 'macOS entry: continuous gradient through the drag region');
     await page.getByRole('button', { name: 'This computer Local instance' }).click();
-    await expect(page.getByRole('heading', { name: 'Recent Activity' })).toBeVisible();
+    await expect(page.getByTestId('happening-now-section')).toBeVisible();
     await expect(page.locator('.desktop-sidebar-header')).toHaveCount(0);
     await expect(page.locator('.desktop-sidebar img[alt="ProPR"]')).toHaveCount(0);
     await expect(page.locator('.desktop-sidebar')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.4)');

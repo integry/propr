@@ -49,6 +49,7 @@ before(async () => {
     table.string('task_id');
     table.timestamp('start_time');
     table.decimal('cost_usd', 10, 6);
+    table.text('analysis_report');
   });
   // Inbox state. The dashboard must never read it.
   await database.schema.createTable('notification_user_states', table => {
@@ -322,6 +323,25 @@ test('outcomes collapse one result per task and exclude non-outcome history entr
 
   const limited = await call(routes().getOutcomes, { repository: 'all', limit: '2' });
   assert.deepEqual((limited.body.items as Array<Record<string, unknown>>).map(item => item.kind), ['merged', 'cancelled']);
+});
+
+test('outcomes carry a recorded critique score and stay null when none was recorded', async () => {
+  await seedTask({ taskId: 'scored', issueNumber: 201, states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  await seedTask({ taskId: 'unscored', issueNumber: 202, states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
+  await database('llm_executions').insert([
+    {
+      task_id: 'scored',
+      start_time: minutesAgo(35),
+      cost_usd: 0.5,
+      analysis_report: JSON.stringify({ report: JSON.stringify({ implementation_critique_score: 8 }) }),
+    },
+    { task_id: 'unscored', start_time: minutesAgo(25), cost_usd: 0.5, analysis_report: null },
+  ]);
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
+  const items = outcomes.body.items as Array<Record<string, unknown>>;
+  assert.equal(items.find(item => item.taskId === 'scored')?.score, 8);
+  assert.equal(items.find(item => item.taskId === 'unscored')?.score, null);
 });
 
 test('every dashboard endpoint rejects a malformed repository filter with HTTP 400', async () => {

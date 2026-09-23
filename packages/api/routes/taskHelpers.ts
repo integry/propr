@@ -1,7 +1,8 @@
 import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '../services/previewMediaProjection.js';
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
+import { ATTENTION_TASK_STATES, QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
+import { loadCritiqueScores } from './critiqueScore.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -22,6 +23,9 @@ export interface TaskQuery {
 // so both read one definition.
 const ACTIVE_WORKER_STATES = [...RUNNING_TASK_STATES];
 const WAITING_WORKER_STATES = [...QUEUED_TASK_STATES];
+// The dashboard's "needs attention" count covers explicit action-required work
+// plus unresolved failures, so the list that count opens must match it.
+const ATTENTION_WORKER_STATES = [...ATTENTION_TASK_STATES, 'failed'];
 
 function resolveStatusStates(status: string): string[] | null {
   switch (status.trim().toLowerCase()) {
@@ -31,6 +35,8 @@ function resolveStatusStates(status: string): string[] | null {
     case 'waiting':
     case 'pending':
       return WAITING_WORKER_STATES;
+    case 'attention':
+      return ATTENTION_WORKER_STATES;
     default:
       return null;
   }
@@ -167,15 +173,10 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
   if (excludeMerged) planIssueQuery.whereNot('status', 'merged');
   const planIssueRows = await planIssueQuery;
 
-  // Fetch only executions belonging to this page. Selecting newest first lets
-  // the loop exactly mirror the old "latest valid outer analysis report"
-  // choice without evaluating SQLite JSON functions over unrelated tasks.
-  const executionRows = await db('llm_executions')
-    .whereIn('task_id', taskIds)
-    .whereNotNull('analysis_report')
-    .select('task_id', 'analysis_report')
-    .orderBy('task_id', 'asc')
-    .orderBy('execution_id', 'desc');
+  // Only executions belonging to this page are read, newest first, so the
+  // "latest valid outer analysis report" choice never evaluates JSON for
+  // unrelated tasks. The dashboard's recent outcomes read the same projection.
+  const critiqueScoreByTask = await loadCritiqueScores(db, taskIds);
 
   // Only rows that may carry a completion comment are read; the helper confirms the parsed shape.
   const commentRows = await db('task_history')
@@ -201,53 +202,7 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
     if (!planStatusByTask.has(taskId)) planStatusByTask.set(taskId, row.status);
   }
 
-  const critiqueScoreByTask = new Map<string, unknown>();
-  const tasksWithValidReport = new Set<string>();
-  for (const row of executionRows as Array<Record<string, unknown>>) {
-    const taskId = String(row.task_id);
-    if (tasksWithValidReport.has(taskId)) continue;
-    const analysisReport = parseAnalysisReport(row.analysis_report);
-    if (!analysisReport.valid) continue;
-    // The old MAX(execution_id) subquery chose the newest valid outer JSON
-    // before checking for $.report, so a valid report-less execution must not
-    // fall back to an older score.
-    tasksWithValidReport.add(taskId);
-    if (analysisReport.report !== null && analysisReport.report !== undefined) {
-      critiqueScoreByTask.set(taskId, extractCritiqueScore(analysisReport.report));
-    }
-  }
-
   return { historyByTask, planStatusByTask, critiqueScoreByTask, commentMetadataByTask };
-}
-
-function parseAnalysisReport(value: unknown): { valid: boolean; report?: unknown } {
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    const report = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>).report
-      : undefined;
-    return { valid: true, report };
-  } catch {
-    return { valid: false };
-  }
-}
-
-function extractCritiqueScore(report: unknown): unknown {
-  const reportText = typeof report === 'string' ? report : JSON.stringify(report);
-  const jsonStart = reportText.indexOf('{');
-  if (jsonStart < 0) return null;
-
-  // Match SQLite RTRIM(..., CHAR(10) || CHAR(13) || ' ' || '`').
-  const cleanJson = reportText.slice(jsonStart).replace(/[\n\r `]+$/g, '');
-  try {
-    const parsed = JSON.parse(cleanJson);
-    if (parsed === null || typeof parsed !== 'object') return null;
-    const score = (parsed as Record<string, unknown>).implementation_critique_score ?? null;
-    // SQLite json_extract represents JSON booleans as integer 1/0.
-    return typeof score === 'boolean' ? Number(score) : score;
-  } catch {
-    return null;
-  }
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {

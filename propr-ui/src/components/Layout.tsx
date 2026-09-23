@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, Cpu, Settings, ShieldCheck, Inbox, LogOut, Target, TriangleAlert } from 'lucide-react';
+import { LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, Cpu, Settings, ShieldCheck, Inbox, LogOut, Target, TriangleAlert } from 'lucide-react';
 import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
@@ -57,6 +57,7 @@ function getResourceNavigation(canManageAgents: boolean, canManageMembers: boole
   const navigation: NavItem[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
   if (canManageAgents) navigation.push({ name: 'Coding Agents', href: '/ai-agents', icon: Bot });
   navigation.push(
+    { name: 'Analytics', href: '/analytics', icon: ChartColumn },
     { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
     { name: 'Settings', href: '/settings', icon: Settings },
   );

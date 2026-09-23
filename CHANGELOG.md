@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rebuilt dashboard**: the home page now answers "what needs my attention right
+  now" in five sections — a summary strip of four clickable counts, **Needs
+  attention**, **Happening now**, **Recent outcomes**, and **Historical stats** —
+  with live work taking the main column. A single repository filter applies to every
+  section and is kept in the URL, ordering stays stable while tasks run, and a
+  dropped socket keeps the last known rows on screen under a
+  "Reconnecting · Last updated …" line. Unavailable data renders as "—" rather than
+  as zero, and cost is labelled **Recorded spend**. The Repository Breakdown, Top
+  Models, activity and status-distribution charts moved to a new **Analytics**
+  page (`/analytics`).
+
 - **Voice Briefings are opt-in everywhere**: the experimental feature is now off by
   default in the browser, the installed PWA, and the desktop app. Enable
   **Voice briefings · Experimental** in Settings (under *Integrations* for

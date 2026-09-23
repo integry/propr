@@ -183,11 +183,11 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     await expect(html).toHaveAttribute('data-window-expanded', 'false');
 
     await pointerClick('This computer Local instance');
-    await expect(page.getByRole('heading', { name: 'Recent Activity' })).toBeVisible();
+    await expect(page.getByTestId('happening-now-section')).toBeVisible();
     // Reload with a saved active profile so the connected shell is also tested
     // on startup, not only after the chooser-to-Dashboard transition.
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Recent Activity' })).toBeVisible();
+    await expect(page.getByTestId('happening-now-section')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Connected: This computer' })).toBeVisible();
     const wordmark = page.locator('.desktop-sidebar-header img');
     await expect(wordmark).toHaveAttribute('alt', 'ProPR');

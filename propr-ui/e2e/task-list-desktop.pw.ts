@@ -55,8 +55,9 @@ async function fixture(page: Page, platform?: 'macos' | 'linux') {
 
 for (const platform of ['macos', 'linux'] as const) {
   for (const width of [880, 1024, 1280]) {
-    for (const route of ['/tasks', '/']) {
-      test(`${platform} ${width}px ${route === '/' ? 'Recent Activity' : 'Tasks'} stays readable and navigable`, async ({ page }) => {
+    // The dashboard no longer embeds the task list; it has its own sections.
+    for (const route of ['/tasks']) {
+      test(`${platform} ${width}px Tasks stays readable and navigable`, async ({ page }) => {
         await page.setViewportSize({ width, height: width === 880 ? 620 : 820 });
         await fixture(page, platform);
         await page.goto(route);
@@ -87,7 +88,7 @@ for (const platform of ['macos', 'linux'] as const) {
         if (process.env.PROPR_CAPTURE_PREVIEWS && platform === 'macos') {
           const directory = path.resolve('../.propr/previews');
           await mkdir(directory, { recursive: true });
-          await page.screenshot({ path: path.join(directory, `task-list-${route === '/' ? 'activity' : 'tasks'}-${width}.png`) });
+          await page.screenshot({ path: path.join(directory, `task-list-tasks-${width}.png`) });
           if (route === '/tasks' && width === 1280) {
             const longTitleRow = table.getByRole('button', { name: /Support configuration/ }).locator('xpath=ancestor::tr');
             await longTitleRow.screenshot({ path: path.join(directory, 'task-list-long-title.png') });

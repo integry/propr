@@ -213,6 +213,7 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
     { task_id: 'pending-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T02:00:00.000Z' },
     { task_id: 'completed-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T01:00:00.000Z' },
     { task_id: 'failed-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T00:00:00.000Z' },
+    { task_id: 'blocked-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-13T23:00:00.000Z' },
   ]);
   await database('task_history').insert([
     // The completed task passed through an active state first; only its latest
@@ -225,6 +226,7 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
     { task_id: 'queued-task', state: 'queued', timestamp: '2026-09-14T03:01:00.000Z' },
     { task_id: 'pending-task', state: 'pending', timestamp: '2026-09-14T02:01:00.000Z' },
     { task_id: 'failed-task', state: 'failed', timestamp: '2026-09-14T00:01:00.000Z' },
+    { task_id: 'blocked-task', state: 'action_required', timestamp: '2026-09-13T23:01:00.000Z' },
   ]);
 
   const idsFor = async (status: string) => {
@@ -248,9 +250,15 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
   assert.deepEqual(waiting.ids, waitingIds);
   assert.deepEqual(await idsFor('pending'), waiting);
 
+  // The dashboard's attention count opens this list, so it spans explicit
+  // action-required work and unresolved failures.
+  const attention = await idsFor('attention');
+  assert.equal(attention.total, 2);
+  assert.deepEqual(attention.ids, ['failed-task', 'blocked-task']);
+
   // Terminal and granular states keep matching exactly.
   assert.deepEqual((await idsFor('completed')).ids, ['completed-task']);
   assert.deepEqual((await idsFor('failed')).ids, ['failed-task']);
   assert.deepEqual((await idsFor('claude_execution')).ids, ['claude-task']);
-  assert.equal((await idsFor('all')).total, 7);
+  assert.equal((await idsFor('all')).total, 8);
 });

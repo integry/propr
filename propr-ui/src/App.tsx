@@ -31,6 +31,7 @@ import { DesktopTaskNotificationAdapter } from './desktop/DesktopTaskNotificatio
 import {
   AccessManagementPage,
   AiAgentsPage,
+  AnalyticsPage,
   Dashboard,
   DesktopPairingPage,
   GoalsPage,
@@ -191,6 +192,7 @@ const AppContent: React.FC = () => {
                       }
                     />
                     <Route path="/inbox" element={<Layout><InboxPage /></Layout>} />
+                    <Route path="/analytics" element={<Layout><AnalyticsPage /></Layout>} />
                     <Route
                       path="/repositories"
                       element={

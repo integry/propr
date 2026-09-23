@@ -68,6 +68,8 @@ export interface OutcomeItem {
   title: string | null;
   detail: string | null;
   planIssueStatus: string | null;
+  /** Implementation critique score out of 10; null whenever none was recorded. */
+  score: number | null;
   occurredAt: string;
 }
 
@@ -99,6 +101,7 @@ function toPlanIssueOutcomeItem(row: PlanIssueOutcomeRow): OutcomeItem {
     title: null,
     detail: row.status === 'merged' ? 'Pull request merged' : 'Closed without merging',
     planIssueStatus: row.status,
+    score: null,
     occurredAt: row.occurredAt,
   };
 }
@@ -114,6 +117,7 @@ function toOutcomeItem(row: OutcomeRow): OutcomeItem {
     title: row.title,
     detail: row.reason,
     planIssueStatus: row.planIssueStatus,
+    score: row.score,
     occurredAt: row.stateTimestamp,
   };
 }

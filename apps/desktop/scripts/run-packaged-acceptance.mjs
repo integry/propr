@@ -1225,8 +1225,11 @@ const rendererUiStateSummary = async page => {
         '[class~="h-screen"][class~="w-full"] [class~="h-12"][class~="w-12"][class~="animate-spin"]',
       );
       const validatedCurrentUserMarker = document.querySelector('a[href="/admin/members"]');
-      const dashboardMarker = [...document.querySelectorAll('main h3')]
-        .some(element => element.textContent?.trim() === 'Recent Activity');
+      // The dashboard's running-work section is its structural marker; it
+      // renders whether or not the section has rows.
+      const dashboardMarker = document.querySelector(
+        'main [data-testid="happening-now-section"]',
+      ) !== null;
       return {
         schemaVersion: 1,
         instanceSelectorPresent: selector !== null,
