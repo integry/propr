@@ -62,6 +62,9 @@ async function withDefaultRetryEnv(body: () => Promise<void>): Promise<void> {
 }
 
 let database: Knex | undefined;
+// The pooled connection itself, so a test can read connection state without
+// queueing a query behind the one that is retrying on it.
+let connectionUnderTest: PreparingConnection | undefined;
 let faults: Fault[] = [];
 let statements: string[] = [];
 let pragmas: string[] = [];
@@ -79,6 +82,7 @@ function contention(code = 'SQLITE_BUSY'): Error {
  * transaction.
  */
 function injectFaults(connection: PreparingConnection): void {
+    connectionUnderTest = connection;
     const prepare = connection.prepare.bind(connection);
     const pragma = connection.pragma.bind(connection);
     connection.prepare = (sql: string) => {
@@ -136,6 +140,7 @@ async function busyTimeoutMs(db: Knex): Promise<number> {
 afterEach(async () => {
     await database?.destroy();
     database = undefined;
+    connectionUnderTest = undefined;
     faults = [];
     statements = [];
     pragmas = [];
@@ -263,8 +268,9 @@ describe('retryOnSqliteContention', () => {
                     },
                     {
                         operation: 'test',
-                        limitBlockingWaitMs: ms => {
+                        withBlockingWaitLimit: (ms, attempt) => {
                             blockingWaitMs = ms;
+                            return attempt();
                         }
                     },
                     {
@@ -342,8 +348,14 @@ describe('retryOnSqliteContention', () => {
                 },
                 {
                     operation: 'test',
-                    limitBlockingWaitMs: ms => calls.push(ms),
-                    restoreBlockingWait: () => calls.push('restored')
+                    withBlockingWaitLimit: (ms, attempt) => {
+                        calls.push(ms);
+                        try {
+                            return attempt();
+                        } finally {
+                            calls.push('restored');
+                        }
+                    }
                 },
                 {
                     random: () => 1,
@@ -359,8 +371,9 @@ describe('retryOnSqliteContention', () => {
         );
         // A third of the budget per attempt, the first one included: an
         // uncapped first attempt would block for the whole budget and no retry
-        // would ever run.
-        assert.deepEqual(calls, [30, 30, 30, 'restored']);
+        // would ever run. Each cap is taken back down before the attempt that
+        // installed it hands the event loop back.
+        assert.deepEqual(calls, [30, 'restored', 30, 'restored', 30, 'restored']);
     });
 
     test('holds a nested retry to the budget of the retry around it', async () => {
@@ -376,8 +389,14 @@ describe('retryOnSqliteContention', () => {
                     },
                     {
                         operation: 'inner',
-                        limitBlockingWaitMs: ms => limits.push(ms),
-                        restoreBlockingWait: () => limits.push('restored')
+                        withBlockingWaitLimit: (ms, attempt) => {
+                            limits.push(ms);
+                            try {
+                                return attempt();
+                            } finally {
+                                limits.push('restored');
+                            }
+                        }
                     },
                     {
                         random: () => 1,
@@ -406,7 +425,39 @@ describe('retryOnSqliteContention', () => {
         // Including the blocking wait of the nested operation's first attempt:
         // the budget it inherited was already running, and what is left of it
         // is less than the share an attempt would otherwise get.
-        assert.deepEqual(limits, [30, 20, 'restored']);
+        assert.deepEqual(limits, [30, 'restored', 20, 'restored']);
+    });
+
+    test('keeps the backoff timer holding the process open', async () => {
+        // A worker awaiting a retry has nothing else pending while the backoff
+        // runs. An unref'd timer would let the process exit right there, and
+        // the awaited operation would neither finish nor reject — so this uses
+        // the shipped sleep rather than the test seam.
+        const referencedTimers = (): number => process
+            .getActiveResourcesInfo()
+            .filter(resource => resource === 'Timeout')
+            .length;
+        let beforeBackoff = 0;
+        let duringBackoff = 0;
+        let attempts = 0;
+
+        const result = await retryOnSqliteContention(
+            async () => {
+                attempts += 1;
+                if (attempts > 1) return 'done';
+                beforeBackoff = referencedTimers();
+                // Runs once the retry is asleep on its backoff timer.
+                setImmediate(() => {
+                    duringBackoff = referencedTimers();
+                });
+                throw contention();
+            },
+            { operation: 'test' },
+            { baseDelayMs: 25, maxDelayMs: 25, random: () => 1 }
+        );
+
+        assert.equal(result, 'done');
+        assert.equal(duringBackoff, beforeBackoff + 1);
     });
 
     test('does not replay failures that are not contention', async () => {
@@ -569,12 +620,44 @@ describe('installSqliteRetry', () => {
 
         // better-sqlite3 blocks this thread for the whole busy_timeout, so the
         // retry lowers it to the quarter of the budget each of the four
-        // attempts may spend and puts the connection's own value back
-        // afterwards.
+        // attempts may spend — and puts the connection's own value back at the
+        // end of every one of them, never holding the cap across a wait.
         assert.deepEqual(
             pragmas.filter(source => source.startsWith('busy_timeout =')),
-            ['busy_timeout = 25', `busy_timeout = ${configured}`]
+            [
+                'busy_timeout = 25',
+                `busy_timeout = ${configured}`,
+                'busy_timeout = 25',
+                `busy_timeout = ${configured}`
+            ]
         );
+    });
+
+    test('puts the connection busy timeout back before the retry yields', async () => {
+        const db = await createDatabase();
+        const configured = await busyTimeoutMs(db);
+        failStatements(/^insert/i, 1);
+        const observed: number[] = [];
+        installSqliteRetry(db, {
+            random: () => 1,
+            baseDelayMs: 25,
+            maxTotalMs: 100,
+            maxAttempts: 4,
+            // The backoff is the only moment another caller on this connection
+            // gets to run, so it is where the cap must already be gone: the
+            // pragma is connection-wide, and a concurrent read would otherwise
+            // see the retry's internal value and a concurrent write would be
+            // undone by the restore.
+            sleep: async () => {
+                observed.push(
+                    Number(connectionUnderTest?.pragma('busy_timeout', { simple: true }))
+                );
+            }
+        });
+
+        await db('widgets').insert({ id: 1 });
+
+        assert.deepEqual(observed, [configured]);
     });
 
     test('reports the connection busy timeout to a caller reading it back', async () => {

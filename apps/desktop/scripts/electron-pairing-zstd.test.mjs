@@ -20,7 +20,15 @@ const FIXTURE_TIMEOUT_MS = 40_000;
 // below strict without failing the shard for the contention.
 const FIXTURE_ATTEMPTS = 2;
 
-const PROBE_PATHS = ['/valid', '/decoded-over-limit', '/truncated', '/stacked'];
+// Each request the probe makes, in order, and the key it reports the outcome
+// under.
+const PROBES = [
+  { key: 'valid', path: '/valid' },
+  { key: 'decodedOverLimit', path: '/decoded-over-limit' },
+  { key: 'truncated', path: '/truncated' },
+  { key: 'stacked', path: '/stacked' },
+];
+const PROBE_PATHS = PROBES.map(probe => probe.path);
 
 // Never rejects: an attempt that produced no report is an outcome the caller
 // classifies alongside the requests this server did serve, so the retry
@@ -87,6 +95,32 @@ describe('Electron pairing response compression', () => {
     const decodedOverLimit = zstdCompressSync(Buffer.from(JSON.stringify({
       value: 'A'.repeat(4_097),
     })));
+    // What each probe's response has to look like, checked wherever the probe
+    // got far enough to produce one.
+    const assertProbeResult = {
+      valid: result => {
+        assert.deepEqual(result, {
+          kind: 'success',
+          responseEncoding: 'zstd',
+          responseLength: String(compressed.byteLength),
+          value: expected,
+        });
+      },
+      decodedOverLimit: result => {
+        assert.equal(result.kind, 'invalid_response');
+        assert.equal(result.responseEncoding, 'zstd');
+        assert.equal(result.responseLength, String(decodedOverLimit.byteLength));
+      },
+      truncated: result => {
+        assert.ok(['invalid_response', 'network'].includes(result.kind));
+        assert.equal(result.responseEncoding, 'zstd');
+        assert.doesNotMatch(result.message, /zstd|decompress|decoder/u);
+      },
+      stacked: result => {
+        assert.equal(result.kind, 'invalid_response');
+        assert.equal(result.responseEncoding, 'zstd, gzip');
+      },
+    };
     let requests = [];
     const server = createServer((request, response) => {
       requests.push({ url: request.url, acceptEncoding: request.headers['accept-encoding'] });
@@ -154,6 +188,20 @@ describe('Electron pairing response compression', () => {
                   : expiredDeadlines.length > 0
                     ? `the pairing deadline expired on ${JSON.stringify(expiredDeadlines)}`
                     : undefined;
+        // Whatever this attempt did observe is judged now, before any retry:
+        // a request that was served and answered without hitting the pairing
+        // deadline is evidence of behaviour, and behaviour that came back
+        // wrong is a failure no second attempt may paper over. Only an
+        // exchange that never completed is left for the retry below.
+        for (const { acceptEncoding } of requests) {
+          assert.match(acceptEncoding ?? '', /(?:^|,\s*)zstd(?:\s*,|$)/u);
+        }
+        for (const { key, path } of PROBES) {
+          const result = outcome.report?.[key];
+          if (!result || result.kind === 'timeout' || !served.includes(path)) continue;
+          assertProbeResult[key](result);
+        }
+
         if (contention) {
           if (attempt < FIXTURE_ATTEMPTS) {
             context.diagnostic(`Retrying the Electron zstd probe: ${contention}`);
@@ -163,25 +211,11 @@ describe('Electron pairing response compression', () => {
             + `Probe stderr: ${outcome.stderr.slice(-2_000)}`);
         }
 
-        const { report } = outcome;
+        // Every probe ran, in order, and each result was asserted above.
         assert.deepEqual(served, PROBE_PATHS);
-        for (const { acceptEncoding } of requests) {
-          assert.match(acceptEncoding ?? '', /(?:^|,\s*)zstd(?:\s*,|$)/u);
+        for (const { key } of PROBES) {
+          assert.ok(outcome.report?.[key], `The probe reported no result for ${key}`);
         }
-        assert.deepEqual(report.valid, {
-          kind: 'success',
-          responseEncoding: 'zstd',
-          responseLength: String(compressed.byteLength),
-          value: expected,
-        });
-        assert.equal(report.decodedOverLimit.kind, 'invalid_response');
-        assert.equal(report.decodedOverLimit.responseEncoding, 'zstd');
-        assert.equal(report.decodedOverLimit.responseLength, String(decodedOverLimit.byteLength));
-        assert.ok(['invalid_response', 'network'].includes(report.truncated.kind));
-        assert.equal(report.truncated.responseEncoding, 'zstd');
-        assert.doesNotMatch(report.truncated.message, /zstd|decompress|decoder/u);
-        assert.equal(report.stacked.kind, 'invalid_response');
-        assert.equal(report.stacked.responseEncoding, 'zstd, gzip');
         return;
       }
     } finally {
