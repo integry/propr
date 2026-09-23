@@ -33,6 +33,7 @@ import { addActivityTools } from './toolsActivity.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import { summarizeGoal, summarizeTask } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
+import { GOAL_DETAIL_COLUMNS, TERMINAL_TASK_STATES, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 
 export const repositorySchema = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(255);
 export const idSchema = z.string().min(1).max(255);
@@ -87,6 +88,30 @@ export function applyTaskVisibility(db: Knex, query: Knex.QueryBuilder, userId: 
   return query;
 }
 
+/** Cross-repository list results carry their own repository, so merge state is resolved per repository. */
+export async function markMergedListPullRequests(db: Knex, items: Record<string, unknown>[]): Promise<void> {
+  const groups = new Map<string, Record<string, unknown>[]>();
+  for (const item of items) {
+    const repository = typeof item.repository === 'string' ? item.repository : null;
+    if (!repository) continue;
+    const group = groups.get(repository) ?? [];
+    group.push(item);
+    groups.set(repository, group);
+  }
+  for (const [repository, group] of groups) await markMergedPullRequests(db, repository, group);
+}
+
+export const listScopeShape = {
+  repository: repositorySchema.optional().describe('Exact repository handle. Omit to list across every repository in this grant.'),
+  state: z.enum(['active', 'completed', 'failed', 'all']).default('all').describe('active covers everything that has not reached a terminal result yet.'),
+};
+
+/** Scope a list query to one exact repository, or to the granted repositories when none was given. */
+function scopeRepositories(query: Knex.QueryBuilder, column: string, repository: string | undefined, granted: string[] | null): void {
+  if (repository) query.where(column, repository);
+  else query.whereIn(column, granted ?? []);
+}
+
 export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const { db, taskQueue, redisClient, policy } = deps;
   const tools: McpTool[] = [];
@@ -113,13 +138,21 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     resource: principal.grant.resource,
     links: { connectedApps: principal.grant.membershipSource === 'connect' ? 'https://connect.propr.dev/connected-apps' : `${policy.config.origin}/mcp/apps`, signIn: `${policy.config.origin}/api/auth/github`, settings: `${process.env.FRONTEND_URL || policy.config.origin}/settings` },
   }) });
-  tools.push({ name: 'list_repositories', description: 'List currently configured repositories accessible under this grant.', scope: 'read', readOnly: true, schema: z.object(pageShape).strict(), run: async ({ principal, args }) => {
+  const accessibleRepositories = async (principal: McpPrincipal) => {
     const configured = await loadMonitoredReposRaw();
     const accessible = [];
     for (const repo of configured.filter(repo => repo.enabled)) {
       try { await policy.repository(principal, repo.name); accessible.push({ name: repo.name, alias: repo.alias, baseBranch: repo.baseBranch }); }
       catch (error) { if (!(error instanceof McpError) || error.status !== 403) throw error; }
     }
+    return accessible;
+  };
+  // Listing without an exact repository must resolve the same intersection of the grant and the
+  // currently enabled configuration that list_repositories reports, skipping forbidden repositories.
+  const listScope = async (principal: McpPrincipal, args: Args): Promise<string[] | null> =>
+    args.repository ? null : (await accessibleRepositories(principal)).map(repo => repo.name);
+  tools.push({ name: 'list_repositories', description: 'List currently configured repositories accessible under this grant.', scope: 'read', readOnly: true, schema: z.object(pageShape).strict(), run: async ({ principal, args }) => {
+    const accessible = await accessibleRepositories(principal);
     return ok({ repositories: accessible.slice(args.offset, args.offset + args.limit), nextOffset: args.offset + args.limit < accessible.length ? args.offset + args.limit : null });
   } });
   tools.push({ name: 'list_models', description: 'List enabled agents and their actual supported models.', scope: 'read', readOnly: true, schema: z.object({}).strict(), run: async () => {
@@ -138,27 +171,46 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
 
-  tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context in a repository.', scope: 'read', readOnly: true, schema: z.object({ repository: repositorySchema, ...pageShape }).strict(), run: async ({ principal, args }) => {
-    const rows = await db('goals').where({ owner_id: principal.user.id, repository: args.repository })
+  tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
+    const query = db('goals').where({ owner_id: principal.user.id });
+    scopeRepositories(query, 'repository', args.repository, await listScope(principal, args));
+    if (args.state === 'active') query.whereNull('result_state');
+    else if (args.state === 'completed' || args.state === 'failed') query.where('result_state', args.state);
+    const rows = await query
       .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state', 'current_task_id',
         'agent_alias', 'requested_model', 'effective_model', 'final_pr_number', 'artifact_refs', 'failure_reason',
         'created_at', 'updated_at', 'started_at', 'completed_at')
       .orderBy('created_at', 'desc').orderBy('goal_id', 'desc').offset(args.offset).limit(args.limit);
     const goals = rows.map(row => summarizeGoal(row));
-    await markMergedPullRequests(db, args.repository, goals);
+    await markMergedListPullRequests(db, goals);
     return ok({ goals, nextOffset: rows.length === args.limit ? args.offset + args.limit : null });
   } });
   const goalTarget = { table: 'goals', column: 'goal_id', arg: 'goalId', owner: 'owner_id' };
-  workflow(tools, { name: 'get_goal', description: 'Read a goal and its current progress.', scope: 'read', readOnly: true, schema: z.object(goalShape).strict(), target: goalTarget }, goals.get, args => ({ params: { goalId: args.goalId } }));
+  const loadGoalRow = async (principal: McpPrincipal, args: Args): Promise<GoalDetailRow> =>
+    db('goals').where({ goal_id: args.goalId, owner_id: principal.user.id, repository: args.repository })
+      .first(GOAL_DETAIL_COLUMNS) as Promise<GoalDetailRow>;
+  tools.push({ name: 'get_goal', description: 'Read a goal with its newest narration, task progress, checkpoint state, whether it is waiting on you, and the pull requests it produced. Raw agent reasoning is never included; Codex reasoning summaries stay opt-in through get_agent_activity.', scope: 'read', readOnly: true, schema: z.object(goalShape).strict(), target: goalTarget, run: async ({ principal, args }) => {
+    const response = await callWorkflow(goals.get, principal, { params: { goalId: args.goalId } });
+    const row = await loadGoalRow(principal, args);
+    if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
+    const detail = await goalDetail({ db, redisClient }, row,
+      (repository, items, fields) => markMergedPullRequests(db, repository, items, fields));
+    return { status: response.status, data: { ...response.data as Record<string, unknown>, ...detail } };
+  } });
+  tools.push({ name: 'list_goal_inputs', description: 'Read the bounded, newest-first history of operator inputs already sent to a goal, so an existing correction is not sent twice. Delivery state is persisted; delivered does not prove the agent acted on it.', scope: 'read', readOnly: true, schema: z.object({ ...goalShape, ...pageShape }).strict(), target: goalTarget, run: async ({ principal, args }) => {
+    const row = await loadGoalRow(principal, args);
+    if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
+    return ok(await goalInputPage(db, row, { offset: args.offset, limit: args.limit }));
+  } });
   workflow(tools, { name: 'create_goal', description: 'Create a goal and explicitly START autonomous work. Requires a supported model and launch strategy.', scope: 'execute', schema: z.object({ ...mutationShape, repository: repositorySchema, objective: textSchema, agentId: idSchema, model: idSchema, launchStrategy: z.enum(['direct', 'orchestrate']), baseBranch: idSchema.optional(), maxParallelTasks: z.number().int().min(1).max(8).default(1), checkpointIntervalMinutes: z.number().int().min(5).max(120).optional(), ultrafix: z.literal(false).default(false) }).strict() }, goals.create, args => ({ body: args, idempotencyKey: args.idempotencyKey }));
   for (const action of ['pause', 'resume', 'cancel'] as const) workflow(tools, { name: `${action}_goal`, description: `${action} your goal. Cancellation acceptance does not mean execution has stopped.`, scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape }).strict(), target: goalTarget }, goals[action], args => ({ params: { goalId: args.goalId }, idempotencyKey: args.idempotencyKey }));
-  workflow(tools, { name: 'send_goal_input', description: 'Send additional instructions to your goal.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, message: textSchema }).strict(), target: goalTarget }, goals.input, args => ({ params: { goalId: args.goalId }, body: { message: args.message, kind: 'text' }, idempotencyKey: args.idempotencyKey }));
+  workflow(tools, { name: 'send_goal_input', description: 'Deliver a correction or question to your running goal. This instance persists exactly one operator input kind, so instruction and question produce the same durable input and differ only on this receipt; state your intent in the message itself. Acceptance means the input was queued for the next provider boundary, not that the agent has read or acted on it — confirm with get_goal or list_goal_inputs.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, message: textSchema, kind: z.enum(['instruction', 'question']).default('instruction').describe('Recorded on the mutation receipt. Both kinds map to the same durable goal input this backend supports.') }).strict(), target: goalTarget }, goals.input, args => ({ params: { goalId: args.goalId }, body: { message: args.message }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'set_goal_model', description: 'Request a supported model change for your goal.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, model: idSchema }).strict(), target: goalTarget }, goals.requestModel, args => ({ params: { goalId: args.goalId }, body: { model: args.model }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'get_goal_capabilities', description: 'Get current native goal support for configured agents.', scope: 'read', readOnly: true, schema: z.object({}).strict() }, goals.capabilities, () => ({}));
 
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];
-  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks.', scope: 'read', readOnly: true, schema: z.object({ repository: repositorySchema, ...pageShape }).strict(), run: async ({ principal, args }) => {
+  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     // Correlated indexed lookups avoid materializing history for unrelated tasks.
     const latestHistoryId = db('task_history').select('history_id')
       .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
@@ -167,8 +219,16 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     // Keep PR state and agent/model fields from the same latest relation row.
     const latestPlanIssueId = db('plan_issues').select('id')
       .where('task_id', db.ref('tasks.task_id')).orderBy('id', 'desc').limit(1);
-    const query = db('tasks').where({ 'tasks.repository': args.repository });
+    const query = db('tasks');
+    scopeRepositories(query, 'tasks.repository', args.repository, await listScope(principal, args));
     applyTaskVisibility(db, query, principal.user.id);
+    // The lifecycle filter reads the same newest history row the summary reports, before paging.
+    if (args.state && args.state !== 'all') {
+      const latestState = db('task_history').select('state')
+        .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
+      if (args.state === 'active') query.whereRaw(`coalesce((?), 'pending') not in (${TERMINAL_TASK_STATES.map(() => '?').join(', ')})`, [latestState, ...TERMINAL_TASK_STATES]);
+      else query.whereRaw('(?) = ?', [latestState, args.state]);
+    }
     // Apply visibility and pagination before looking up history or plan relations.
     const taskPage = query.select(...taskColumns, 'model_name', 'pr_number', 'initial_job_data')
       .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').offset(args.offset).limit(args.limit).as('tasks');
@@ -181,10 +241,15 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
         'task_plan_issue.agent_alias as plan_agent_alias', 'task_plan_issue.model_name as plan_model_name')
       .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc');
     const tasks = rows.map(row => summarizeTask(row));
-    await markMergedPullRequests(db, args.repository, tasks);
+    await markMergedListPullRequests(db, tasks);
     return ok({ tasks, nextOffset: rows.length === args.limit ? args.offset + args.limit : null });
   } });
-  tools.push({ name: 'get_task', description: 'Read a task’s persisted state.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ args }) => ok({ ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns), latestEvent: await db('task_history').where({ task_id: args.taskId }).orderBy('history_id', 'desc').first('state', 'reason', 'timestamp') }) });
+  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
+    ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns),
+    latestEvent: await db('task_history').where({ task_id: args.taskId }).orderBy('history_id', 'desc').first('state', 'reason', 'timestamp'),
+    ...await taskDetail({ db, redisClient }, { repository: args.repository, taskId: args.taskId }, principal.user.id,
+      (repository, items, fields) => markMergedPullRequests(db, repository, items, fields)),
+  }) });
   tools.push({
     name: 'get_agent_activity',
     description: 'Read recent compact agent narration for exactly one goal or task, newest first. Opt in to Codex app-server summaries with includeReasoningSummaries; raw reasoning and tool logs are always excluded. Use offset for older entries.',
