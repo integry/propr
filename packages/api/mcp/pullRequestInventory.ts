@@ -168,6 +168,9 @@ function matchesRequest(item: InventoryItem, options: InventoryOptions): boolean
 
 interface RepositoryScan { items: InventoryItem[]; scanTruncated: boolean }
 
+/** How a single repository scan is ordered and how far it has to get. */
+interface ScanPlan { options: InventoryOptions; field: string; need: number }
+
 /**
  * Collects matching pull requests newest-first until the requested page plus one
  * extra result exists — that extra is what makes a continuation offset trustworthy —
@@ -176,8 +179,9 @@ interface RepositoryScan { items: InventoryItem[]; scanTruncated: boolean }
  * the scan simply stopped early.
  */
 async function scanRepository(
-  deps: { db: Knex }, principal: McpPrincipal, repository: string, options: InventoryOptions, field: string, need: number,
+  deps: { db: Knex }, principal: McpPrincipal, repository: string, plan: ScanPlan,
 ): Promise<RepositoryScan> {
+  const { options, field, need } = plan;
   const [owner, repo] = repository.split('/');
   const cutoff = field === 'UPDATED_AT' ? minutesAgo(options.updatedWithinMinutes) : minutesAgo(options.openedWithinMinutes);
   const items: InventoryItem[] = [];
@@ -300,7 +304,7 @@ export async function listPullRequestInventory(
   // One result beyond the requested page is all it takes to tell a next page from
   // the end of the inventory.
   const need = options.offset + options.limit + 1;
-  const scans = await mapConcurrent(repositories, REPOSITORY_CONCURRENCY, repository => scanRepository(deps, principal, repository, options, field, need));
+  const scans = await mapConcurrent(repositories, REPOSITORY_CONCURRENCY, repository => scanRepository(deps, principal, repository, { options, field, need }));
   const all = scans.flatMap(scan => scan.items).sort((left, right) => orderKey(right, field) - orderKey(left, field));
   const page = all.slice(options.offset, options.offset + options.limit);
   const byRepository = new Map<string, InventoryItem[]>();
