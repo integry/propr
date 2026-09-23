@@ -52,7 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rollback undoes its SQL and not its other effects. Retrying is bounded by a
   wall-clock budget that caps the backoff, the driver's own blocking wait and any
   retry nested inside a retried transaction, so a query can still not take longer
-  than SQLite's own `busy_timeout`. Tune with `SQLITE_RETRY_MAX_ATTEMPTS`,
+  than SQLite's own `busy_timeout`. Each attempt blocks for at most its share of
+  that budget, so a lock held for the full timeout is retried rather than
+  spending the budget on one blocked attempt. Tune with `SQLITE_RETRY_MAX_ATTEMPTS`,
   `SQLITE_RETRY_BASE_DELAY_MS`, `SQLITE_RETRY_MAX_DELAY_MS`,
   `SQLITE_RETRY_MAX_TOTAL_MS`, `SQLITE_RETRY_IMMEDIATE_TRANSACTIONS=0`, and
   `SQLITE_RETRY_TRANSACTIONS=1`.

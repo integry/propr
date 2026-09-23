@@ -41,6 +41,26 @@ function fakeClock(startMs = 0): {
     };
 }
 
+/** Runs `body` with the SQLite retry environment back at its shipped defaults. */
+async function withDefaultRetryEnv(body: () => Promise<void>): Promise<void> {
+    const keys = [
+        'SQLITE_BUSY_TIMEOUT_MS',
+        'SQLITE_RETRY_MAX_ATTEMPTS',
+        'SQLITE_RETRY_BASE_DELAY_MS',
+        'SQLITE_RETRY_MAX_DELAY_MS',
+        'SQLITE_RETRY_MAX_TOTAL_MS'
+    ];
+    const saved = keys.map(key => [key, process.env[key]] as const);
+    for (const key of keys) delete process.env[key];
+    try {
+        await body();
+    } finally {
+        for (const [key, value] of saved) {
+            if (value !== undefined) process.env[key] = value;
+        }
+    }
+}
+
 let database: Knex | undefined;
 let faults: Fault[] = [];
 let statements: string[] = [];
@@ -202,9 +222,10 @@ describe('retryOnSqliteContention', () => {
     });
 
     test('stops once the blocking busy wait has used the whole budget', async () => {
-        // A busy handler that already blocked this thread for its full timeout
-        // is not transient contention; retrying would only freeze the process
-        // again. Attempts before the budget is spent still run.
+        // A caller without a blocking-wait limiter cannot bound the busy
+        // handler, so an attempt that blocked for the entire budget has nothing
+        // left to retry with: retrying past it would only freeze the process
+        // again.
         let clock = 0;
         let attempts = 0;
         await assert.rejects(
@@ -220,6 +241,47 @@ describe('retryOnSqliteContention', () => {
             /database is locked/
         );
         assert.equal(attempts, 1);
+    });
+
+    test('divides the default budget into several blocking attempts', async () => {
+        // The default budget is the connection's own `busy_timeout`, so an
+        // attempt allowed to block for all of it would leave nothing over and
+        // the locked update of issue #2495 would fail after a single try. Each
+        // attempt may block for its share of the budget instead.
+        await withDefaultRetryEnv(async () => {
+            let clock = 0;
+            let blockingWaitMs = Number.POSITIVE_INFINITY;
+            let attempts = 0;
+            await assert.rejects(
+                retryOnSqliteContention(
+                    async () => {
+                        attempts += 1;
+                        // Stands in for better-sqlite3 sitting in the busy
+                        // handler for the whole wait it was allowed.
+                        clock += blockingWaitMs;
+                        throw contention();
+                    },
+                    {
+                        operation: 'test',
+                        limitBlockingWaitMs: ms => {
+                            blockingWaitMs = ms;
+                        }
+                    },
+                    {
+                        random: () => 1,
+                        now: () => clock,
+                        sleep: async (ms: number) => {
+                            clock += ms;
+                        }
+                    }
+                ),
+                /database is locked/
+            );
+            // Every default attempt runs, and together with the backoff between
+            // them they spend exactly the 30 s budget — never more.
+            assert.equal(attempts, 6);
+            assert.equal(clock, 30_000);
+        });
     });
 
     test('caps the backoff at the budget that is left', async () => {
@@ -270,7 +332,7 @@ describe('retryOnSqliteContention', () => {
         assert.deepEqual(clock.sleeps, [25, 50]);
     });
 
-    test('lowers the driver blocking wait to the budget that is left', async () => {
+    test('lowers the driver blocking wait to each attempt\'s share of the budget', async () => {
         const clock = fakeClock();
         const calls: Array<number | 'restored'> = [];
         await assert.rejects(
@@ -287,7 +349,7 @@ describe('retryOnSqliteContention', () => {
                     random: () => 1,
                     baseDelayMs: 25,
                     maxDelayMs: 25,
-                    maxTotalMs: 100,
+                    maxTotalMs: 90,
                     maxAttempts: 3,
                     now: clock.now,
                     sleep: clock.sleep
@@ -295,7 +357,10 @@ describe('retryOnSqliteContention', () => {
             ),
             /database is locked/
         );
-        assert.deepEqual(calls, [75, 50, 'restored']);
+        // A third of the budget per attempt, the first one included: an
+        // uncapped first attempt would block for the whole budget and no retry
+        // would ever run.
+        assert.deepEqual(calls, [30, 30, 30, 'restored']);
     });
 
     test('holds a nested retry to the budget of the retry around it', async () => {
@@ -339,7 +404,8 @@ describe('retryOnSqliteContention', () => {
         assert.equal(clock.now(), 30);
         assert.equal(innerAttempts, 2);
         // Including the blocking wait of the nested operation's first attempt:
-        // the budget it inherited was already running.
+        // the budget it inherited was already running, and what is left of it
+        // is less than the share an attempt would otherwise get.
         assert.deepEqual(limits, [30, 20, 'restored']);
     });
 
@@ -493,6 +559,7 @@ describe('installSqliteRetry', () => {
             random: () => 1,
             baseDelayMs: 25,
             maxTotalMs: 100,
+            maxAttempts: 4,
             now: clock.now,
             sleep: clock.sleep
         });
@@ -501,11 +568,12 @@ describe('installSqliteRetry', () => {
         await db('widgets').insert({ id: 1 });
 
         // better-sqlite3 blocks this thread for the whole busy_timeout, so the
-        // retry lowers it to what the budget still allows and puts the
-        // connection's own value back afterwards.
+        // retry lowers it to the quarter of the budget each of the four
+        // attempts may spend and puts the connection's own value back
+        // afterwards.
         assert.deepEqual(
             pragmas.filter(source => source.startsWith('busy_timeout =')),
-            ['busy_timeout = 75', `busy_timeout = ${configured}`]
+            ['busy_timeout = 25', `busy_timeout = ${configured}`]
         );
     });
 

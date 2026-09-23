@@ -26,7 +26,11 @@ import logger from '../utils/logger.js';
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
  * the driver's own blocking waits, and every retry nested inside a retried
- * transaction, so an operation cannot outlive the deadline it was given.
+ * transaction, so an operation cannot outlive the deadline it was given. Each
+ * attempt may block for no more than its share of that budget, which is what
+ * leaves room for the attempts after it: an uncapped first attempt would sit in
+ * the busy handler for the whole `busy_timeout` and there would be nothing left
+ * to retry with.
  */
 
 /** Result codes that mean "someone else holds the lock right now". */
@@ -250,11 +254,11 @@ export function sqliteRetryDelayMs(
 /**
  * Run `operation`, replaying it while SQLite reports lock contention.
  *
- * Every attempt after the first has to fit inside the remaining wall-clock
- * budget: the backoff is capped by it, the deadline is rechecked once the wait
- * is over, and the driver's blocking wait is lowered to match. The final
- * attempt's error is rethrown unchanged so callers keep seeing the SQLite
- * result code and message they expect.
+ * Every attempt has to fit inside the remaining wall-clock budget: the driver's
+ * blocking wait is lowered to an equal share of the budget before each attempt,
+ * the backoff is capped by what is left, and the deadline is rechecked once the
+ * wait is over. The final attempt's error is rethrown unchanged so callers keep
+ * seeing the SQLite result code and message they expect.
  */
 export async function retryOnSqliteContention<T>(
     operation: () => Promise<T>,
@@ -273,6 +277,14 @@ export async function retryOnSqliteContention<T>(
     const runAttempt = context.sharesBudget
         ? () => retryBudget.run({ deadline }, operation)
         : operation;
+    // better-sqlite3 blocks this thread inside the busy handler for the whole
+    // `busy_timeout` on every attempt, so an attempt that is allowed the full
+    // budget leaves nothing for the one after it. Each attempt gets an equal
+    // share instead, which is what makes the budget divisible into retries.
+    const attemptBlockingWaitMs = Math.floor(resolved.maxTotalMs / resolved.maxAttempts);
+    const limitBlockingWait = (remainingMs: number): void => {
+        context.limitBlockingWaitMs?.(Math.min(attemptBlockingWaitMs, remainingMs));
+    };
 
     const giveUp = (error: unknown, attempts: number): void => {
         if (attempts > 1 && isSqliteContentionError(error)) {
@@ -286,11 +298,10 @@ export async function retryOnSqliteContention<T>(
     };
 
     try {
-        // An inherited budget is already partly spent, so even the first
-        // blocking wait of this operation has to fit in what is left of it.
-        if (inheritedDeadline !== undefined) {
-            context.limitBlockingWaitMs?.(deadline - startedAt);
-        }
+        // The first attempt is bounded like every other one, and an inherited
+        // budget is already partly spent, so its blocking wait also has to fit
+        // in whatever is left of that budget.
+        limitBlockingWait(deadline - startedAt);
 
         for (let attempt = 1; ; attempt += 1) {
             try {
@@ -320,7 +331,7 @@ export async function retryOnSqliteContention<T>(
                     giveUp(error, attempt);
                     throw error;
                 }
-                context.limitBlockingWaitMs?.(leftMs);
+                limitBlockingWait(leftMs);
             }
         }
     } finally {
@@ -363,6 +374,7 @@ function blockingWaitLimiter(connection: unknown): Pick<
     if (typeof pragma !== 'function') return {};
     const run = pragma.bind(connection as SqliteQueryConnection);
     let configuredMs: number | undefined;
+    let appliedMs: number | undefined;
 
     return {
         limitBlockingWaitMs(remainingMs: number): void {
@@ -370,15 +382,21 @@ function blockingWaitLimiter(connection: unknown): Pick<
                 configuredMs ??= Number(run('busy_timeout', { simple: true }));
                 if (!Number.isFinite(configuredMs)) return;
                 const capped = Math.max(0, Math.floor(remainingMs));
-                if (capped < configuredMs) run(`busy_timeout = ${capped}`);
+                // Successive attempts usually ask for the same cap; the pragma
+                // is only worth writing when it actually changes.
+                if (capped >= configuredMs || capped === appliedMs) return;
+                run(`busy_timeout = ${capped}`);
+                appliedMs = capped;
             } catch {
                 // A driver without this pragma still has the wall-clock budget.
             }
         },
         restoreBlockingWait(): void {
-            if (configuredMs === undefined || !Number.isFinite(configuredMs)) return;
+            // Nothing was lowered, so there is nothing to put back.
+            if (appliedMs === undefined || configuredMs === undefined) return;
             const restored = configuredMs;
             configuredMs = undefined;
+            appliedMs = undefined;
             try {
                 run(`busy_timeout = ${restored}`);
             } catch {
