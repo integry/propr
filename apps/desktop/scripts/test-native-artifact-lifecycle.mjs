@@ -350,9 +350,21 @@ export class NativeLifecycleOperationFailure extends Error {
   }
 }
 
+// A cleanup error is never rendered, so a cleanup failure whose error carries a
+// fixed result class contributes it to the label instead. Only a bare screaming
+// -snake identifier is accepted, so an arbitrary error cannot smuggle a path, a
+// URL, or command output into the one message the CI log does show.
+const FIXED_RESULT_CLASS = /^[A-Z][A-Z0-9_]{0,47}$/;
+
+export const cleanupFailureLabel = failure => (
+  typeof failure.error?.resultClass === 'string' && FIXED_RESULT_CLASS.test(failure.error.resultClass)
+    ? `${failure.label} [result:${failure.error.resultClass}]`
+    : failure.label
+);
+
 export class NativeLifecycleFailure extends AggregateError {
   constructor(primaryError, cleanupFailures) {
-    const cleanupLabels = cleanupFailures.map(failure => failure.label).sort();
+    const cleanupLabels = cleanupFailures.map(cleanupFailureLabel).sort();
     const classification = primaryError instanceof NativeLifecycleOperationFailure
       ? [
           ` [stage:${primaryError.stage}]`,
@@ -1024,13 +1036,34 @@ export const linuxProtocolDispatch = async ({ application, profile, link, env, p
 const LAUNCH_SERVICES = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 
 // lsregister -u can return before -dump reflects the removal, so absence is
-// re-probed for a bounded window before the copied app is declared stale.
-const LAUNCH_SERVICES_ABSENCE_ATTEMPTS = 10;
+// re-probed for a bounded window before the copied app is declared stale. A
+// launched bundle can also be re-registered by the system for several seconds
+// after the removal returns, so the window is wider than the observed lag.
+const LAUNCH_SERVICES_ABSENCE_ATTEMPTS = 20;
 const LAUNCH_SERVICES_ABSENCE_INTERVAL_MS = 1_000;
 // lsregister -dump emits megabytes, so a dump record is never read back through
 // the shared bounded-output helper: that would reduce the probe to whichever
 // records happened to land in the retained OUTPUT_CAP tail.
 const LAUNCH_SERVICES_DUMP_LINE_CAP = 64 * 1024;
+
+// The absence proof can end three ways and the CI log only ever renders the
+// cleanup label, so the mode is carried as a fixed class: a record that outlived
+// the window, a dump probe that never answered, or a re-issued removal that kept
+// failing. The vocabulary is closed so the copied bundle path is never exposed.
+export const LAUNCH_SERVICES_ABSENCE_RESULT_CLASSES = Object.freeze([
+  'REGISTRATION_RETAINED', 'PROBE_FAILED', 'UNREGISTER_FAILED',
+]);
+
+export class NativeLifecycleLaunchServicesFailure extends Error {
+  constructor(resultClass) {
+    if (!LAUNCH_SERVICES_ABSENCE_RESULT_CLASSES.includes(resultClass)) {
+      throw new Error('Native lifecycle LaunchServices absence result class is invalid');
+    }
+    super(`Copied application remained registered with LaunchServices [result:${resultClass}]`);
+    this.name = 'NativeLifecycleLaunchServicesFailure';
+    this.resultClass = resultClass;
+  }
+}
 
 export const launchServicesRecordMatchesApplication = (line, applicationRoot) => {
   const record = line.trim();
@@ -1153,17 +1186,34 @@ export class LaunchServicesAuthority {
   }
 
   async assertGone() {
-    for (let attempt = 1; await this.isListed(); attempt += 1) {
-      if (attempt >= this.absenceAttempts) {
-        throw new Error('Copied application remained registered with LaunchServices');
+    // Neither a failed dump probe nor a failed re-issued removal proves the
+    // record is gone, but one of either does not prove it is stale: both keep
+    // the bounded window running. The first mode that went wrong is retained so
+    // an exhausted window names why, since the CI log renders only the label.
+    let resultClass;
+    for (let attempt = 1; attempt <= this.absenceAttempts; attempt += 1) {
+      let listed = true;
+      try {
+        listed = await this.isListed();
+      } catch {
+        resultClass ??= 'PROBE_FAILED';
       }
+      if (!listed) {
+        this.registered = false;
+        return;
+      }
+      if (attempt === this.absenceAttempts) break;
       await this.wait(LAUNCH_SERVICES_ABSENCE_INTERVAL_MS);
       // A bundle opened through LaunchServices can be re-registered by the
       // system after -u returns, so each re-probe re-issues the removal instead
       // of only waiting for the first one to be reflected.
-      await this.unregister();
+      try {
+        await this.unregister();
+      } catch {
+        resultClass ??= 'UNREGISTER_FAILED';
+      }
     }
-    this.registered = false;
+    throw new NativeLifecycleLaunchServicesFailure(resultClass ?? 'REGISTRATION_RETAINED');
   }
 }
 
