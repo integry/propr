@@ -1,4 +1,15 @@
-/* global ServiceWorkerGlobalScope */
+/* global ServiceWorkerGlobalScope, importScripts */
+
+/**
+ * Cached preview media is an independent worker module with its own cache,
+ * listeners and expiry: see `preview-media-cache.js`. A deploy that cannot
+ * serve it still installs a working application shell worker.
+ */
+try {
+  importScripts('/preview-media-cache.js');
+} catch {
+  // Previews fall back to the network; nothing else in this worker depends on it.
+}
 
 const CACHE_PREFIX = 'propr-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}v1`;

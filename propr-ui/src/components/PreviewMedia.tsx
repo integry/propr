@@ -1,99 +1,61 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Film, ImageOff } from 'lucide-react';
 import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
-import { downsampleToCanvas, previewPixelRatio } from './previewDownsampling';
-import { cacheCanvasPreview, getCachedPreview, getPreviewCacheKey, renderCachedPreview } from './previewCache';
-import { previewCorsWorthTrying, rememberPreviewCorsRefused } from './previewCors';
-
-/** Cache reads are asynchronous, so confirm the element still holds the preview the read was started for. */
-const showsPreview = (image: HTMLImageElement | null, url: string) => image?.getAttribute('src') === url;
+import { downsampleToCanvas } from './previewDownsampling';
+import { forgetCachedPreviewMedia } from './previewMediaCache';
 
 /** `className` replaces the default sizing classes; compact thumbnails keep their canvas downsampling either way. */
 export function PreviewImage({ preview, compact = false, className: sizing }: { preview: PublishedVisualPreview; compact?: boolean; className?: string }) {
   const [failed, setFailed] = useState(false);
   const [downsampled, setDownsampled] = useState(false);
-  // Compact thumbnails ask for CORS so the capture can be exported and stored;
-  // a refusal remounts the element without the attribute, so the visible image
-  // never regresses, it just stops being cacheable. See `previewCors`.
-  const [cors, setCors] = useState(() => previewCorsWorthTrying(preview.url));
-  // A cache read started before the fallback can still be in flight, so the
-  // export gate reads the live value rather than the one its closure captured.
-  const corsRef = useRef(cors);
-  const corsRequested = compact && cors;
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // What the canvas currently shows, so the lazy `<img>` finishing later does
-  // not repeat a downsample the cache already satisfied at this size.
+  // What the canvas already shows, so a repeated `load` or a resize that settles
+  // on the same box does not run the halving passes again.
   const renderedSizeRef = useRef<{ url: string; width: number; height: number } | null>(null);
   const className = sizing ?? (compact ? 'h-12 w-full object-contain bg-slate-900/5 sm:h-14' : 'aspect-video w-full object-contain');
-
-  /** Paints last session's thumbnail without waiting on the full-resolution source. */
-  const renderFromCache = useCallback(async (width: number, height: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return false;
-    const cached = await getCachedPreview(getPreviewCacheKey(preview.url, width, height, previewPixelRatio()));
-    // Bail out if the component unmounted or moved to another preview while we were reading storage.
-    if (!cached || canvasRef.current !== canvas || !showsPreview(imageRef.current, preview.url)) return false;
-    if (!await renderCachedPreview(canvas, cached)) return false;
-    renderedSizeRef.current = { url: preview.url, width, height };
-    setDownsampled(true);
-    return true;
-  }, [preview.url]);
 
   const draw = useCallback(() => {
     const image = imageRef.current;
     const canvas = canvasRef.current;
-    if (!compact || !image || !canvas) return;
+    if (!compact || !image || !canvas || !image.complete || !image.naturalWidth) return;
     const width = image.clientWidth;
     const height = image.clientHeight;
     if (width <= 0 || height <= 0) return;
     const rendered = renderedSizeRef.current;
     if (rendered && rendered.url === preview.url && rendered.width === width && rendered.height === height) return;
-    void renderFromCache(width, height).then(hit => {
-      const source = imageRef.current;
-      const target = canvasRef.current;
-      if (hit || !source || !target || !showsPreview(source, preview.url) || !source.complete || !source.naturalWidth) return;
-      try {
-        const drawn = downsampleToCanvas(source, target, width, height);
-        setDownsampled(drawn);
-        if (!drawn) return;
-        renderedSizeRef.current = { url: preview.url, width, height };
-        // Only an origin-clean canvas can be exported; skip the attempt otherwise.
-        if (corsRef.current) void cacheCanvasPreview(preview.url, width, height, target);
-      } catch {
-        setDownsampled(false); // The native image remains a complete fallback.
-      }
-    });
-  }, [compact, preview.url, renderFromCache]);
+    try {
+      const drawn = downsampleToCanvas(image, canvas, width, height);
+      setDownsampled(drawn);
+      renderedSizeRef.current = drawn ? { url: preview.url, width, height } : null;
+    } catch {
+      setDownsampled(false); // The native image remains a complete fallback.
+    }
+  }, [compact, preview.url]);
 
   useEffect(() => {
     setFailed(false);
     setDownsampled(false);
-    const probe = previewCorsWorthTrying(preview.url);
-    setCors(probe);
-    corsRef.current = probe;
     renderedSizeRef.current = null;
   }, [preview.url]);
 
   useEffect(() => {
     const image = imageRef.current;
     if (!compact || failed || !image) return;
-    // Once the layout box is known the cache can answer immediately, whether or
-    // not the source image has downloaded yet.
-    if (image.clientWidth > 0 && image.clientHeight > 0) draw();
+    draw();
     if (typeof ResizeObserver === 'undefined') return;
     // Thumbnail widths change at breakpoints; redraw for the new backing size.
     const observer = new ResizeObserver(() => draw());
     observer.observe(image);
     return () => observer.disconnect();
-  }, [compact, draw, failed, preview.url]);
+  }, [compact, draw, failed]);
 
   if (failed) return <span role="img" aria-label={`${preview.title} — image unavailable`} className={`${className} flex items-center justify-center bg-slate-100 text-slate-500`}><ImageOff className="h-5 w-5" /></span>;
-  // The key remounts the element when CORS is dropped so the retry is a fresh fetch.
-  const image = <img key={corsRequested ? 'cors' : 'no-cors'} ref={imageRef} src={preview.url} alt={preview.title} loading="lazy"
-    {...(corsRequested ? { crossOrigin: 'anonymous' as const } : {})}
-    onLoad={() => { if (compact && !cors) rememberPreviewCorsRefused(preview.url); draw(); }}
-    onError={() => { if (!corsRequested) return setFailed(true); corsRef.current = false; setCors(false); }}
+  // No `crossorigin`: the attachment host refuses CORS, so asking for it would
+  // only cost a refused request per thumbnail. Durability comes from the worker
+  // cache instead — see `previewMediaCache`.
+  const image = <img ref={imageRef} src={preview.url} alt={preview.title} loading="lazy" onLoad={draw}
+    onError={() => { forgetCachedPreviewMedia(preview.url); setFailed(true); }}
     className={`${className}${compact && downsampled ? ' opacity-0' : ''}`} />;
   if (!compact) return image;
   // The image stays in the DOM for lazy loading, accessibility and fallback; the canvas is presentation only.

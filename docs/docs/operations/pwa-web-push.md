@@ -132,6 +132,7 @@ The proxy must preserve HTTPS, content types, and these exact UI-origin paths. E
 | UI-origin path | Required handling | Recommended `Cache-Control` |
 |---|---|---|
 | `/service-worker.js` (the ProPR worker; often named `sw.js` in other deployments) | Serve JavaScript from the UI root with scope `/`; never SPA-rewrite it | `no-cache, must-revalidate` |
+| `/preview-media-cache.js` (imported by the worker to hold published capture thumbnails) | Serve JavaScript from the UI root; never SPA-rewrite it | `no-cache, must-revalidate` |
 | `/manifest.webmanifest` | Serve as a web app manifest; never SPA-rewrite it | `no-cache, must-revalidate` |
 | `/pwa-shell-assets.json` | Serve the release's shell asset list | `no-cache, must-revalidate` |
 | `/icons/pwa-192x192.png`, `/icons/pwa-512x512.png`, `/icons/pwa-maskable-512x512.png`, `/apple-touch-icon.png` | Serve the real PNG files | `public, max-age=86400` (purge when replaced) |
