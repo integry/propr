@@ -86,6 +86,8 @@ export interface McpAccessLogRow {
 interface McpAccessContext {
   protocolVersion?: string | null;
   requestId?: string | null;
+  /** Shared by every nested scope of one dispatch, so the caller can see whether it produced a row. */
+  dispatch?: { recorded: boolean };
   /** Set while a resource or prompt handler runs, so the invocation it makes is attributed to that surface. */
   surface?: { kind: McpAccessKind; name: string; recorded: boolean };
 }
@@ -120,8 +122,11 @@ function warnAccessLogFailure(action: string, error: unknown): void {
  * change a tool result, a status code or a response body.
  */
 export async function recordMcpAccess(db: Knex, entry: McpAccessLogEntry): Promise<void> {
+  const context = accessContext.getStore();
+  // Claim the dispatch before the write: a row that failed to insert is still
+  // this invocation's row, and must not be replaced by a rejection row.
+  if (context?.dispatch) context.dispatch.recorded = true;
   try {
-    const context = accessContext.getStore();
     await db('mcp_access_log').insert({
       occurred_at: entry.occurredAt ?? Date.now(),
       owner_id: text(entry.ownerId, 64),
@@ -186,6 +191,19 @@ export function withMcpRequestContext<T>(context: { protocolVersion?: string | n
 }
 
 /**
+ * Run one dispatched MCP message and report whether it recorded an invocation.
+ * The protocol SDK validates a tool's input schema and a prompt's argument
+ * schema before it calls the registered callback, so a rejected call never
+ * reaches the recorders below; the caller records that rejection itself when
+ * this returns false.
+ */
+export async function withMcpDispatch(run: () => Promise<void>): Promise<boolean> {
+  const dispatch = { recorded: false };
+  await accessContext.run({ ...accessContext.getStore(), dispatch }, run);
+  return dispatch.recorded;
+}
+
+/**
  * Record one resource read or prompt fetch. The invocation it performs claims
  * the surface, so a resource backed by a tool still produces exactly one row;
  * a failure before that claim is recorded here instead.
@@ -228,7 +246,21 @@ function schedulePrune(db: Knex): void {
   void pruneMcpAccessLog(db).catch(error => warnAccessLogFailure('prune', error));
 }
 
-/** Drop rows outside the retention window, then enforce the row ceiling. */
+/**
+ * Delete the oldest rows a query matches, at most `limit` of them, in one
+ * statement: find the id that closes the batch, then delete up to it.
+ */
+async function deleteOldestBatch(scope: Knex.QueryBuilder, limit: number): Promise<number> {
+  const boundary = await scope.clone().orderBy('id').offset(limit - 1).limit(1).first('id');
+  return boundary ? scope.clone().where('id', '<=', boundary.id).delete() : scope.clone().delete();
+}
+
+/**
+ * Drop rows outside the retention window, then enforce the row ceiling. Each
+ * statement is bounded to one batch of the oldest rows, and the sweep repeats
+ * until both limits hold, so a backlog deeper than one batch is cleared by the
+ * sweep that found it rather than surviving until the next one.
+ */
 export async function pruneMcpAccessLog(
   db: Knex,
   { now = Date.now(), retentionMs = MCP_ACCESS_LOG_RETENTION_MS, maxRows = MCP_ACCESS_LOG_MAX_ROWS } = {},
@@ -236,16 +268,20 @@ export async function pruneMcpAccessLog(
   let deleted = 0;
   try {
     const cutoff = now - retentionMs;
-    const expired = db('mcp_access_log').where('occurred_at', '<', cutoff);
-    // Bound each statement to one batch of the oldest rows; a deep backlog is
-    // cleared over the following sweeps instead of in one long delete.
-    const oldest = await expired.clone().orderBy('id').offset(PRUNE_BATCH - 1).limit(1).first('id');
-    deleted += await (oldest ? expired.clone().where('id', '<=', oldest.id) : expired.clone()).delete();
-    const [total] = await db('mcp_access_log').count<Array<{ count: string | number }>>({ count: '*' });
-    const excess = Math.min(Number(total?.count ?? 0) - maxRows, PRUNE_BATCH);
-    if (excess > 0) {
-      const boundary = await db('mcp_access_log').orderBy('id').offset(excess - 1).limit(1).first('id');
-      if (boundary) deleted += await db('mcp_access_log').where('id', '<=', boundary.id).delete();
+    for (;;) {
+      const removed = await deleteOldestBatch(db('mcp_access_log').where('occurred_at', '<', cutoff), PRUNE_BATCH);
+      deleted += removed;
+      if (removed < PRUNE_BATCH) break;
+    }
+    for (;;) {
+      const [total] = await db('mcp_access_log').count<Array<{ count: string | number }>>({ count: '*' });
+      const excess = Math.min(Number(total?.count ?? 0) - maxRows, PRUNE_BATCH);
+      if (excess <= 0) break;
+      const removed = await deleteOldestBatch(db('mcp_access_log'), excess);
+      deleted += removed;
+      // A statement that removed nothing cannot make progress; stop instead of
+      // spinning against a table the next sweep will retry.
+      if (!removed) break;
     }
   } catch (error) {
     warnAccessLogFailure('prune', error);

@@ -326,9 +326,35 @@ async function authorizeTarget(tool: McpTool, args: Args, principal: McpPrincipa
 const operationHandle = (data: Record<string, unknown>): string | undefined =>
   typeof data.operationId === 'string' ? data.operationId : undefined;
 
-/** Identifiers, sizes and handles the access log records for one invocation. */
-interface ToolAccess { repository?: string; operationId?: string; resultBytes: number }
+/** How one invocation ended, as the access log records it. */
+interface RecordedFailure { status: number; outcome: McpAccessOutcome; errorCode: string }
+
+/** Identifiers, sizes, handles and outcomes the access log records for one invocation. */
+interface ToolAccess { repository?: string; operationId?: string; resultBytes: number; failure?: RecordedFailure }
 interface ToolInvocation { tool: McpTool; raw: unknown; principal: McpPrincipal; deps: ToolDeps; access: ToolAccess }
+
+/**
+ * The outcome a durable receipt reports. A replayed operation returns the
+ * projection of an earlier attempt rather than throwing, so its failure is read
+ * back off that receipt; an accepted, queued or completed one stays a success.
+ */
+function receiptFailure(data: Record<string, unknown>): RecordedFailure | undefined {
+  if (data.state !== 'failed' && data.state !== 'unknown') return undefined;
+  const code = (data.result as { error?: { code?: unknown } } | null)?.error?.code;
+  const errorCode = typeof code === 'string' ? code : 'OUTCOME_UNKNOWN';
+  // 'failed' is the rejection the caller can act on; 'unknown' is an outcome
+  // this instance could not establish.
+  return data.state === 'failed' ? { status: 400, outcome: 'denied', errorCode } : { status: 500, outcome: 'error', errorCode };
+}
+
+/** Read the handle, the size and the outcome one result carries into the access row. */
+function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string, unknown>): void {
+  access.operationId = operationHandle(data);
+  access.resultBytes = Buffer.byteLength(JSON.stringify(data));
+  // A replayed receipt reports an earlier attempt instead of throwing, so its
+  // outcome is read back off the projection.
+  if (!tool.readOnly) access.failure ??= receiptFailure(data);
+}
 
 async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
@@ -357,10 +383,13 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
   }
   const result = deletedReplay ?? cancellationReplay ?? (tool.readOnly
     ? (await tool.run({ principal, args })).data
-    : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository }, operationId => tool.run({ principal, args, operationId })));
+    // The operation wrapper turns a failed callback into a durable receipt
+    // instead of throwing, so the classification is captured here, before that
+    // projection consumes it.
+    : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
+      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error); throw error; })));
   const data = redact(result) as Record<string, unknown>;
-  access.operationId = operationHandle(data);
-  access.resultBytes = Buffer.byteLength(JSON.stringify(data));
+  noteToolOutcome(tool, access, data);
   if (access.resultBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
   return { ...presentResult(tool, args, data, deps.policy.config), data };
 }
@@ -396,7 +425,7 @@ export async function executeTool(tool: McpTool, raw: unknown, principal: McpPri
   const invocation: ToolInvocation = { tool, raw, principal, deps, access: { resultBytes: 0 } };
   try {
     const presented = await runTool(invocation);
-    await recordToolAccess(invocation, startedAt, { status: 200, outcome: 'success', errorCode: null });
+    await recordToolAccess(invocation, startedAt, invocation.access.failure ?? { status: 200, outcome: 'success', errorCode: null });
     return presented;
   } catch (error) {
     await recordToolAccess(invocation, startedAt, classifyMcpFailure(error));
