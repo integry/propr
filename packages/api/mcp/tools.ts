@@ -18,6 +18,7 @@ import { createNotificationRoutes } from '../routes/notificationRoutes.js';
 import { createConfigRoutes } from '../routes/configRoutes.js';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import { McpError, type McpScope } from './config.js';
+import { accessPrincipal, claimMcpSurface, classifyMcpFailure, recordMcpAccess, type McpAccessOutcome } from './accessLog.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations, type OperationResult, type Operation } from './operations.js';
 import { callWorkflow, redact, type WorkflowHandler } from './adapter.js';
@@ -321,8 +322,17 @@ async function authorizeTarget(tool: McpTool, args: Args, principal: McpPrincipa
   }
 }
 
-export async function executeTool(tool: McpTool, raw: unknown, principal: McpPrincipal, deps: ToolDeps): Promise<PresentedResult> {
+/** Durable operation handle a mutation result carries, for access-log correlation. */
+const operationHandle = (data: Record<string, unknown>): string | undefined =>
+  typeof data.operationId === 'string' ? data.operationId : undefined;
+
+/** Identifiers, sizes and handles the access log records for one invocation. */
+interface ToolAccess { repository?: string; operationId?: string; resultBytes: number }
+interface ToolInvocation { tool: McpTool; raw: unknown; principal: McpPrincipal; deps: ToolDeps; access: ToolAccess }
+
+async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
+  access.repository = args.repository;
   deps.policy.requireScope(principal, tool.scope);
   if (tool.permission) deps.policy.requirePermission(principal, tool.permission);
   if (args.repository && tool.name !== 'create_repository_configuration') await deps.policy.repository(principal, args.repository, !tool.readOnly, { includeDisabled: tool.name.endsWith('_repository_configuration'), allowUnconfigured: tool.name === 'remove_repository_configuration' });
@@ -337,7 +347,7 @@ export async function executeTool(tool: McpTool, raw: unknown, principal: McpPri
   if (tool.name === 'cancel_operation') {
     const source = await new McpOperations(deps.db).get(principal, args.operationId);
     operationRepository = source.repository;
-    if (operationRepository) await deps.policy.repository(principal, operationRepository, true);
+    if (operationRepository) { access.repository = operationRepository; await deps.policy.repository(principal, operationRepository, true); }
     if (['generate_plan', 'refine_plan'].includes(source.tool)) deps.policy.requireScope(principal, 'plan');
     cancellationReplay = await new McpOperations(deps.db).replay(principal, tool.name, args);
     if (!cancellationReplay) {
@@ -349,6 +359,47 @@ export async function executeTool(tool: McpTool, raw: unknown, principal: McpPri
     ? (await tool.run({ principal, args })).data
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository }, operationId => tool.run({ principal, args, operationId })));
   const data = redact(result) as Record<string, unknown>;
-  if (Buffer.byteLength(JSON.stringify(data)) > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
+  access.operationId = operationHandle(data);
+  access.resultBytes = Buffer.byteLength(JSON.stringify(data));
+  if (access.resultBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
   return { ...presentResult(tool, args, data, deps.policy.config), data };
+}
+
+/**
+ * Every tool call is observable: success, authorization denial and internal
+ * error alike. The write is a single indexed insert that swallows its own
+ * failures, so it can neither change the result nor fail the request.
+ */
+async function recordToolAccess(
+  { tool, principal, deps, access }: ToolInvocation, startedAt: number,
+  result: { status: number; outcome: McpAccessOutcome; errorCode: string | null },
+): Promise<void> {
+  // A resource read or prompt fetch that reached a tool is one invocation, and
+  // is recorded under that surface rather than twice.
+  const surface = claimMcpSurface();
+  await recordMcpAccess(deps.db, {
+    ...accessPrincipal(principal),
+    kind: surface?.kind ?? 'tool',
+    name: surface?.name ?? tool.name,
+    repository: access.repository ?? null,
+    scope: tool.scope,
+    readOnly: !!tool.readOnly,
+    operationId: access.operationId ?? null,
+    durationMs: Date.now() - startedAt,
+    resultBytes: access.resultBytes,
+    ...result,
+  });
+}
+
+export async function executeTool(tool: McpTool, raw: unknown, principal: McpPrincipal, deps: ToolDeps): Promise<PresentedResult> {
+  const startedAt = Date.now();
+  const invocation: ToolInvocation = { tool, raw, principal, deps, access: { resultBytes: 0 } };
+  try {
+    const presented = await runTool(invocation);
+    await recordToolAccess(invocation, startedAt, { status: 200, outcome: 'success', errorCode: null });
+    return presented;
+  } catch (error) {
+    await recordToolAccess(invocation, startedAt, classifyMcpFailure(error));
+    throw error;
+  }
 }
