@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
-import { downsampleToCanvas } from './previewDownsampling';
+import { downsampleToCanvas, previewPixelRatio } from './previewDownsampling';
+import { cacheCanvasPreview, clearPreviewCache, getCachedPreview, getPreviewCacheKey, renderCachedPreview, setCachedPreview, PREVIEW_CACHE_TTL_MS, type CachedPreviewRecord } from './previewCache';
 import { ParentTaskRow, ChildTaskRow } from './TaskList/TaskRows';
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 import { InboxCard } from '../pages/InboxPageComponents';
@@ -122,5 +123,79 @@ describe('compact preview downsampling', () => {
     const canvas = document.createElement('canvas');
     vi.spyOn(canvas, 'getContext').mockReturnValue(null);
     expect(downsampleToCanvas(sourceImage(1920, 1080), canvas, 80, 56)).toBe(false);
+  });
+});
+
+describe('preview thumbnail cache', () => {
+  const url = 'https://github.com/user-attachments/assets/screen-0';
+  const cached = (timestamp: number): CachedPreviewRecord => ({ key: 'entry', dataUrl: 'data:image/png;base64,QUJD', cssWidth: 80, cssHeight: 45, width: 160, height: 90, timestamp });
+  beforeEach(async () => { await clearPreviewCache(); });
+
+  it('keys each rendered size and pixel density independently', () => {
+    const key = getPreviewCacheKey(url, 80, 56, 1);
+    // Micro rows, compact rows and retina displays must not overwrite each other.
+    expect(getPreviewCacheKey(url, 24, 24, 1)).not.toBe(key);
+    expect(getPreviewCacheKey(url, 80, 56, 2)).not.toBe(key);
+    expect(getPreviewCacheKey(`${url}-1`, 80, 56, 1)).not.toBe(key);
+    // Subpixel layout measurements must not fragment the cache.
+    expect(getPreviewCacheKey(url, 79.6, 56.2, 1)).toBe(key);
+  });
+
+  it('serves records inside the one-week window and discards expired ones', async () => {
+    const now = Date.parse('2026-09-23T12:00:00.000Z');
+    await setCachedPreview('fresh', cached(now - PREVIEW_CACHE_TTL_MS + 1000));
+    await setCachedPreview('stale', cached(now - PREVIEW_CACHE_TTL_MS - 1000));
+    expect(await getCachedPreview('fresh', now)).toMatchObject({ key: 'fresh', width: 160 });
+    expect(await getCachedPreview('stale', now)).toBeUndefined();
+    // The stale record is dropped, not just reported as a miss.
+    expect(await getCachedPreview('stale', now - PREVIEW_CACHE_TTL_MS)).toBeUndefined();
+  });
+
+  it('captures the drawn canvas so the next load skips the resize', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 90;
+    canvas.style.width = '80px';
+    canvas.style.height = '45px';
+    vi.spyOn(canvas, 'toDataURL').mockReturnValue('data:image/png;base64,QUJD');
+    await expect(cacheCanvasPreview(url, 80, 56, canvas)).resolves.toMatchObject({ dataUrl: 'data:image/png;base64,QUJD', cssWidth: 80, cssHeight: 45, width: 160, height: 90 });
+    expect(await getCachedPreview(getPreviewCacheKey(url, 80, 56, previewPixelRatio()))).toMatchObject({ dataUrl: 'data:image/png;base64,QUJD' });
+  });
+
+  it('fails silently when a cross-origin capture taints the canvas', async () => {
+    const canvas = document.createElement('canvas');
+    vi.spyOn(canvas, 'toDataURL').mockImplementation(() => { throw new DOMException('Tainted canvases may not be exported', 'SecurityError'); });
+    await expect(cacheCanvasPreview(url, 80, 56, canvas)).resolves.toBeUndefined();
+    expect(await getCachedPreview(getPreviewCacheKey(url, 80, 56, previewPixelRatio()))).toBeUndefined();
+  });
+
+  it('restores the cached thumbnail onto the canvas without the source image', async () => {
+    const draws: Array<[number, number]> = [];
+    const canvas = document.createElement('canvas');
+    vi.spyOn(canvas, 'getContext').mockReturnValue({
+      clearRect: vi.fn(), drawImage: (...args: unknown[]) => draws.push([args[3] as number, args[4] as number]),
+    } as unknown as CanvasRenderingContext2D);
+    const original = globalThis.Image;
+    globalThis.Image = class { onload: (() => void) | null = null; onerror: (() => void) | null = null; set src(_value: string) { queueMicrotask(() => this.onload?.()); } } as unknown as typeof Image;
+    try {
+      await expect(renderCachedPreview(canvas, cached(Date.now()))).resolves.toBe(true);
+    } finally {
+      globalThis.Image = original;
+    }
+    expect([canvas.width, canvas.height]).toEqual([160, 90]);
+    expect([canvas.style.width, canvas.style.height]).toEqual(['80px', '45px']);
+    expect(draws).toEqual([[160, 90]]);
+  });
+
+  it('reports a miss instead of throwing when a cached thumbnail cannot decode', async () => {
+    const canvas = document.createElement('canvas');
+    vi.spyOn(canvas, 'getContext').mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    const original = globalThis.Image;
+    globalThis.Image = class { onload: (() => void) | null = null; onerror: (() => void) | null = null; set src(_value: string) { queueMicrotask(() => this.onerror?.()); } } as unknown as typeof Image;
+    try {
+      await expect(renderCachedPreview(canvas, { ...cached(Date.now()), dataUrl: 'data:image/png;base64,!!' })).resolves.toBe(false);
+    } finally {
+      globalThis.Image = original;
+    }
   });
 });
