@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
 import { downsampleToCanvas, previewPixelRatio } from './previewDownsampling';
 import { cacheCanvasPreview, clearPreviewCache, getCachedPreview, getPreviewCacheKey, renderCachedPreview, setCachedPreview, PREVIEW_CACHE_TTL_MS, type CachedPreviewRecord } from './previewCache';
+import { previewCorsWorthTrying, resetPreviewCorsMemory } from './previewCors';
 import { ParentTaskRow, ChildTaskRow } from './TaskList/TaskRows';
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 import { InboxCard } from '../pages/InboxPageComponents';
@@ -14,11 +15,16 @@ const media = Array.from({ length: 5 }, (_, i) => ({ title: `Published screen ${
 const task = { id: 'task-1', status: 'completed', title: 'Ship media', createdAt: '2026-09-13', previewMedia: media };
 const group = { key: 'one', repoOwner: 'acme', repoName: 'web', tasks: [task] };
 
+// The refusal memo outlives a render, so every test starts probing for CORS again.
+beforeEach(() => resetPreviewCorsMemory());
+
 describe('preview thumbnails', () => {
   it('limits trusted images, provides alt text and handles unavailable images', () => {
     render(<PreviewThumbnails media={[{ ...media[0], url: 'https://evil.test/image.png' }, ...media]} />);
     expect(screen.getAllByRole('img')).toHaveLength(3);
     expect(screen.getByAltText('Published screen 0')).toHaveAttribute('loading', 'lazy');
+    // The first failure only drops the CORS request; the retry decides availability.
+    fireEvent.error(screen.getByAltText('Published screen 0'));
     fireEvent.error(screen.getByAltText('Published screen 0'));
     expect(screen.getByRole('img', { name: /screen 0 — image unavailable/ })).toBeInTheDocument();
   });
@@ -187,6 +193,35 @@ describe('preview thumbnail cache', () => {
     expect(draws).toEqual([[160, 90]]);
   });
 
+  it('round-trips a capture from the canvas into storage and back onto a canvas', async () => {
+    const source = document.createElement('canvas');
+    source.width = 160;
+    source.height = 90;
+    source.style.width = '80px';
+    source.style.height = '45px';
+    vi.spyOn(source, 'toDataURL').mockReturnValue('data:image/png;base64,QUJD');
+    await cacheCanvasPreview(url, 80, 56, source);
+
+    const stored = await getCachedPreview(getPreviewCacheKey(url, 80, 56, previewPixelRatio()));
+    expect(stored).toMatchObject({ dataUrl: 'data:image/png;base64,QUJD', cssWidth: 80, cssHeight: 45, width: 160, height: 90 });
+
+    const draws: Array<[number, number]> = [];
+    const target = document.createElement('canvas');
+    vi.spyOn(target, 'getContext').mockReturnValue({
+      clearRect: vi.fn(), drawImage: (...args: unknown[]) => draws.push([args[3] as number, args[4] as number]),
+    } as unknown as CanvasRenderingContext2D);
+    const original = globalThis.Image;
+    globalThis.Image = class { onload: (() => void) | null = null; onerror: (() => void) | null = null; set src(_value: string) { queueMicrotask(() => this.onload?.()); } } as unknown as typeof Image;
+    try {
+      await expect(renderCachedPreview(target, stored!)).resolves.toBe(true);
+    } finally {
+      globalThis.Image = original;
+    }
+    // The reload repaints the stored thumbnail at its recorded size in a single draw.
+    expect(draws).toEqual([[160, 90]]);
+    expect([target.style.width, target.style.height]).toEqual(['80px', '45px']);
+  });
+
   it('reports a miss instead of throwing when a cached thumbnail cannot decode', async () => {
     const canvas = document.createElement('canvas');
     vi.spyOn(canvas, 'getContext').mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
@@ -197,5 +232,91 @@ describe('preview thumbnail cache', () => {
     } finally {
       globalThis.Image = original;
     }
+  });
+});
+
+describe('compact preview cross-origin capture', () => {
+  const url = media[0].url;
+  const dataUrl = 'data:image/png;base64,QUJD';
+  let drawImage: ReturnType<typeof vi.fn>;
+  let originalImage: typeof Image;
+  // A fetch the browser refused leaves the element complete but undecoded, so the
+  // 4K source only becomes available once a load actually succeeds.
+  let decoded = false;
+  const finishLoad = () => { decoded = true; };
+
+  beforeEach(async () => {
+    await clearPreviewCache();
+    drawImage = vi.fn();
+    decoded = false;
+    // jsdom reports a zero-sized layout box, so stand in for a laid-out thumbnail.
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(80);
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(56);
+    vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+    vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockImplementation(() => decoded ? 3840 : 0);
+    vi.spyOn(HTMLImageElement.prototype, 'naturalHeight', 'get').mockImplementation(() => decoded ? 2160 : 0);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+      return { canvas: this, imageSmoothingEnabled: false, imageSmoothingQuality: 'low', clearRect: vi.fn(), drawImage } as unknown as CanvasRenderingContext2D;
+    } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(dataUrl);
+    originalImage = globalThis.Image;
+    globalThis.Image = class { onload: (() => void) | null = null; onerror: (() => void) | null = null; set src(_value: string) { queueMicrotask(() => this.onload?.()); } } as unknown as typeof Image;
+  });
+  afterEach(() => {
+    globalThis.Image = originalImage;
+    vi.restoreAllMocks();
+  });
+
+  it('requests the capture with CORS and repaints the next mount from storage', async () => {
+    const first = render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    const image = screen.getByAltText('Published screen 0');
+    // Without this the canvas is tainted and nothing can ever be persisted.
+    expect(image).toHaveAttribute('crossorigin', 'anonymous');
+    finishLoad();
+    fireEvent.load(image);
+    await waitFor(async () => expect(await getCachedPreview(getPreviewCacheKey(url, 80, 56, previewPixelRatio()))).toMatchObject({ dataUrl, cssWidth: 80, cssHeight: 45 }));
+    first.unmount();
+
+    drawImage.mockClear();
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    await waitFor(() => expect(screen.getByTestId('preview-thumbnail-canvas')).not.toHaveClass('hidden'));
+    // A single draw of the stored thumbnail, with none of the halving passes.
+    expect(drawImage).toHaveBeenCalledTimes(1);
+    expect(screen.getByAltText('Published screen 0')).toHaveClass('opacity-0');
+  });
+
+  it('stops re-requesting CORS from an origin that has already refused it', () => {
+    const first = render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    finishLoad();
+    fireEvent.load(screen.getByAltText('Published screen 0'));
+    first.unmount();
+
+    render(<PreviewThumbnails media={[media[1]]} limit={1} />);
+    // A doomed extra request per thumbnail per load would cost more than the cache saves.
+    expect(screen.getByAltText('Published screen 1')).not.toHaveAttribute('crossorigin');
+    // Persisted, so the probe is not repeated on the next page load either.
+    expect(localStorage.getItem('propr.previewCorsBlockedOrigins')).toContain('https://github.com');
+  });
+
+  it('keeps probing when the image itself is unavailable rather than CORS-refused', () => {
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    expect(screen.getByRole('img', { name: /screen 0 — image unavailable/ })).toBeInTheDocument();
+    // Nothing proved the origin refuses CORS, so the next preview still asks for it.
+    expect(previewCorsWorthTrying(media[0].url)).toBe(true);
+  });
+
+  it('retries without CORS and skips the unstorable capture when the fetch is refused', async () => {
+    render(<PreviewThumbnails media={[media[0]]} limit={1} />);
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    const retried = screen.getByAltText('Published screen 0');
+    expect(retried).not.toHaveAttribute('crossorigin');
+    finishLoad();
+    fireEvent.load(retried);
+    // The thumbnail still renders; only the tainted capture is left unwritten.
+    await waitFor(() => expect(screen.getByTestId('preview-thumbnail-canvas')).not.toHaveClass('hidden'));
+    expect(await getCachedPreview(getPreviewCacheKey(url, 80, 56, previewPixelRatio()))).toBeUndefined();
   });
 });

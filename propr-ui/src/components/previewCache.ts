@@ -145,10 +145,11 @@ function schedulePrune() {
 }
 
 /**
- * Captures the finished thumbnail from a drawn canvas. `toDataURL` throws a
- * SecurityError once a cross-origin image has tainted the canvas, and storage
- * can be over quota — both fail silently, leaving the freshly drawn canvas (or
- * the native `<img>`) as the user-visible result.
+ * Captures the finished thumbnail from a drawn canvas. Callers only reach this
+ * with a canvas drawn from a CORS-enabled source; the remaining failures — a
+ * SecurityError from a tainted canvas, or storage over quota — fail silently,
+ * leaving the freshly drawn canvas (or the native `<img>`) as the user-visible
+ * result.
  */
 export async function cacheCanvasPreview(url: string, targetWidth: number, targetHeight: number, canvas: HTMLCanvasElement): Promise<CachedPreviewRecord | undefined> {
   try {
