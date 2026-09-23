@@ -83,17 +83,59 @@ export function positiveNumber(value: unknown): number | null {
 }
 
 /**
- * Lexical SQL bounds that cover both persisted timestamp spellings. A space
- * separator sorts before `T`, so the space form widens a lower bound and the
- * ISO form widens an upper bound. Callers re-filter exactly with
- * {@link withinWindow}, so the widening only costs a few extra rows.
+ * Slack the lexical bounds below carry. A persisted timestamp may spell its
+ * instant in a UTC offset up to fourteen hours from the instant itself, which
+ * moves the text of an in-window value by up to a calendar day.
+ */
+const BOUND_SLACK_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Lexical SQL bounds that keep a window query on the column's index. They are
+ * deliberately loose — the space separator sorts before `T`, fractional
+ * seconds and the `Z` suffix are optional, and an offset moves the text of an
+ * instant — so they are a superset of the window, never a filter.
+ * {@link whereWithinWindow} adds the exact bounds on top.
  */
 export function lowerBound(iso: string): string {
-  return iso.replace('T', ' ');
+  return new Date(Date.parse(iso) - BOUND_SLACK_MS).toISOString().slice(0, 19).replace('T', ' ');
 }
 
 export function upperBound(iso: string): string {
-  return iso;
+  return new Date(Date.parse(iso) + BOUND_SLACK_MS).toISOString();
+}
+
+/**
+ * SQL that rewrites either persisted spelling — canonical ISO-8601 or SQLite's
+ * offset-free `YYYY-MM-DD HH:MM:SS` — into the canonical form `toISOString`
+ * produces, the same expression the schema's own timestamp checks use. SQLite
+ * reads both, resolves any offset to UTC, and yields NULL for a value it
+ * cannot read, which then fails every bound.
+ *
+ * Ordering and filtering on it rather than on the raw column is what lets both
+ * happen *before* a LIMIT: raw text interleaves the two spellings, so a query
+ * ordered by the column can spend its whole budget on rows the exact filter
+ * then discards.
+ */
+export function normalizedTimestamp(expression: string): string {
+  return `strftime('%Y-%m-%dT%H:%M:%fZ', ${expression})`;
+}
+
+const NORMALIZED_COLUMN = normalizedTimestamp('??');
+
+/** Exact, inclusive window bounds across both spellings, applied before LIMIT. */
+export function whereWithinWindow(
+  query: Knex.QueryBuilder, column: string, window: ResolvedWindow,
+): Knex.QueryBuilder {
+  return query
+    .where(column, '>=', lowerBound(window.since))
+    .where(column, '<=', upperBound(window.until))
+    .whereRaw(`${NORMALIZED_COLUMN} >= ?`, [column, window.since])
+    .whereRaw(`${NORMALIZED_COLUMN} <= ?`, [column, window.until]);
+}
+
+/** Newest first across both spellings, ordered before LIMIT. */
+export function orderByNewest(query: Knex.QueryBuilder, column: string): Knex.QueryBuilder {
+  return query.orderByRaw(`${NORMALIZED_COLUMN} desc`, [column]);
 }
 
 export function withinWindow(value: unknown, window: ResolvedWindow): boolean {
@@ -142,12 +184,36 @@ export function classifyTaskState(state: unknown): TaskActivityPhase {
   return 'running';
 }
 
+/**
+ * Byte-by-byte comparison, the collation SQLite orders text with. The merge
+ * comparator has to agree with the `ORDER BY` that decided which rows a source
+ * contributed: under `localeCompare` a tie would merge in a different order
+ * than it was selected in, and a later page would repeat or skip it.
+ */
+export function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Width that keeps a padded integer identifier below any realistic successor. */
+const NUMERIC_KEY_WIDTH = 20;
+
+/**
+ * Tie-break key for an identifier stored as an integer. Zero padding makes the
+ * lexical comparison above agree with the numeric `ORDER BY` its source query
+ * uses, so `9` keeps sorting below `11` after the merge. Only integer columns
+ * may use it: a text column sorts its digits lexically in SQL too.
+ */
+export function numericKey(value: unknown): string {
+  const text = String(value ?? '');
+  return /^\d+$/.test(text) ? text.padStart(NUMERIC_KEY_WIDTH, '0') : text;
+}
+
 /** Newest-first, ties broken by identifier so repeated calls do not shuffle. */
 export function compareNewestFirst(
   left: { occurredAt: string; id: string },
   right: { occurredAt: string; id: string },
 ): number {
-  return right.occurredAt.localeCompare(left.occurredAt) || right.id.localeCompare(left.id);
+  return compareText(right.occurredAt, left.occurredAt) || compareText(right.id, left.id);
 }
 
 /** A factual one-liner assembled from persisted fields; never invented prose. */
@@ -199,6 +265,20 @@ const ALWAYS_RELEVANT_KINDS: ReadonlySet<NotificationKind> = new Set(
   NOTIFICATION_KINDS.filter(kind => kind === 'system_failure'),
 );
 
+/**
+ * Kinds whose producers were read for the signal table below. A kind added to
+ * the shared vocabulary after this table was written has no entry here, so its
+ * metadata cannot promote it into the digest: error severity, `system_failure`
+ * and `includeRoutine` stay the only ways in until somebody reviews what the
+ * new producer writes. `system_failure` is absent because it is always
+ * relevant already.
+ */
+const SIGNAL_BEARING_KIND_NAMES: readonly string[] = ['plan', 'task', 'review', 'pull_request', 'indexing'];
+
+const SIGNAL_BEARING_KINDS: ReadonlySet<NotificationKind> = new Set(
+  NOTIFICATION_KINDS.filter(kind => SIGNAL_BEARING_KIND_NAMES.includes(kind)),
+);
+
 /** Persisted values that mean a task, goal, plan or loop stopped short. */
 const FAILED_STATE_VALUES: ReadonlySet<string> = new Set([
   'failed', 'failure', 'cancelled', 'canceled', 'aborted', 'error', 'errored',
@@ -219,8 +299,9 @@ const presentText = (value: unknown): boolean => typeof value === 'string' && va
 
 /**
  * Blocker signals, keyed by the producer-defined field that carries them. Only
- * these fields are consulted, so an unrelated metadata key can never promote
- * routine chatter into the digest.
+ * these fields, on {@link SIGNAL_BEARING_KINDS}, are consulted, so neither an
+ * unrelated metadata key nor an unreviewed kind can promote routine chatter
+ * into the digest.
  */
 const BLOCKER_SIGNALS: ReadonlyArray<readonly [string, (value: unknown) => boolean, string]> = [
   // A failed or input-awaiting task, goal, plan or review.
@@ -282,6 +363,7 @@ export function isOperatorRelevant(
   if (options.includeRoutine) return true;
   if (ALWAYS_RELEVANT_SEVERITIES.has(notification.severity as NotificationSeverity)) return true;
   if (ALWAYS_RELEVANT_KINDS.has(notification.kind as NotificationKind)) return true;
+  if (!SIGNAL_BEARING_KINDS.has(notification.kind as NotificationKind)) return false;
   return blockerSignal(notification) !== null;
 }
 
@@ -319,41 +401,102 @@ export interface InboxRow {
   repository: string | null;
 }
 
+/** Receipts one Inbox page reads. */
+export const INBOX_PAGE_ROWS = 200;
+/** Receipts one Inbox scan reads before it reports itself truncated. */
+export const MAX_INBOX_SCAN_ROWS = 2000;
+
 /**
- * Active Inbox receipts for one user, restricted to the digest's repositories.
- * System notifications carry no repository and belong to the unscoped view
- * only, matching `list_notifications`.
+ * The repository a receipt targets, as SQL. Scoping in the query rather than
+ * after it is what stops a page of receipts from another repository from
+ * hiding a blocker in this one; `accept` below does the same for routine
+ * receipts, which are far more numerous than actionable ones.
  */
-export async function readInbox(db: Knex, owner: string, options: {
-  repositories: string[]; scoped: boolean; window?: ResolvedWindow; limit: number;
-}): Promise<InboxRow[]> {
+const RECEIPT_REPOSITORY = `case when json_valid(event.target_json)
+  and json_type(event.target_json, '$.repository') = 'text'
+  then lower(json_extract(event.target_json, '$.repository')) end`;
+
+const INBOX_COLUMNS = ['event.event_id', 'event.kind', 'event.severity', 'event.target_json',
+  'event.metadata_json', 'event.title', 'event.body', 'event.occurred_at'];
+
+export interface InboxScan {
+  notifications: InboxRow[];
+  /** The scan budget ran out with receipts still unread. */
+  truncated: boolean;
+}
+
+export interface InboxOptions {
+  repositories: string[];
+  scoped: boolean;
+  window?: ResolvedWindow;
+  /** Matching receipts to return; ask for one more than you will show. */
+  limit: number;
+  /** Everything the caller will actually use, applied before the limit. */
+  accept?: (notification: InboxRow) => boolean;
+}
+
+function inboxRow(row: Row, accessible: Set<string>, options: InboxOptions): InboxRow | null {
+  const target = parseJsonObject(row.target_json);
+  const repository = typeof target.repository === 'string' ? target.repository : null;
+  const occurredAt = isoTimestamp(row.occurred_at);
+  if (!occurredAt || (repository ? !accessible.has(repository.toLowerCase()) : options.scoped)) return null;
+  if (options.window && !withinWindow(occurredAt, options.window)) return null;
+  return {
+    id: String(row.event_id), kind: String(row.kind), severity: String(row.severity),
+    target, metadata: parseJsonObject(row.metadata_json),
+    title: compactText(row.title, DIGEST_TEXT_LIMIT), body: compactText(row.body, DIGEST_TEXT_LIMIT),
+    occurredAt, repository,
+  };
+}
+
+function inboxPage(
+  db: Knex, owner: string, options: InboxOptions, accessible: string[], limit: number, offset: number,
+): Promise<Row[]> {
   const query = db('notification_user_states as receipt')
     .join('notification_events as event', 'event.event_id', 'receipt.event_id')
     .where({ 'receipt.user_id': owner, 'receipt.inbox_enabled': true })
     .whereNull('receipt.dismissed_at')
-    .select('event.event_id', 'event.kind', 'event.severity', 'event.target_json',
-      'event.metadata_json', 'event.title', 'event.body', 'event.occurred_at')
-    .orderBy('event.occurred_at', 'desc').orderBy('event.event_id', 'desc')
-    .limit(options.limit);
-  if (options.window) {
-    query.where('event.occurred_at', '>=', lowerBound(options.window.since))
-      .where('event.occurred_at', '<=', upperBound(options.window.until));
+    .where(builder => {
+      if (accessible.length) {
+        builder.whereRaw(`(${RECEIPT_REPOSITORY}) in (${accessible.map(() => '?').join(', ')})`, accessible);
+      }
+      // A system notification carries no repository and belongs to the
+      // unscoped view only, matching `list_notifications`.
+      if (!options.scoped) builder.orWhereRaw(`(${RECEIPT_REPOSITORY}) is null`);
+    })
+    .select(...INBOX_COLUMNS);
+  if (options.window) whereWithinWindow(query, 'event.occurred_at', options.window);
+  return orderByNewest(query, 'event.occurred_at')
+    .orderBy('event.event_id', 'desc').limit(limit).offset(offset) as Promise<Row[]>;
+}
+
+/**
+ * Active Inbox receipts for one user, restricted to the digest's repositories
+ * and to what the caller will use. The Inbox is shared by every repository and
+ * dominated by routine chatter, so the scan pages through it until it has
+ * `limit` matching receipts or its budget runs out, and reports that budget
+ * running out rather than presenting a partial scan as the whole truth.
+ */
+export async function readInbox(db: Knex, owner: string, options: InboxOptions): Promise<InboxScan> {
+  const accessible = options.repositories.map(name => name.toLowerCase());
+  // Scoped to nothing: only the unscoped view can still match system receipts.
+  if (!accessible.length && options.scoped) return { notifications: [], truncated: false };
+  const lookup = new Set(accessible);
+  const accept = options.accept ?? (() => true);
+  const notifications: InboxRow[] = [];
+  let scanned = 0;
+  while (notifications.length < options.limit && scanned < MAX_INBOX_SCAN_ROWS) {
+    const size = Math.min(INBOX_PAGE_ROWS, MAX_INBOX_SCAN_ROWS - scanned);
+    const rows = await inboxPage(db, owner, options, accessible, size, scanned);
+    scanned += rows.length;
+    for (const row of rows) {
+      const notification = inboxRow(row, lookup, options);
+      if (notification && accept(notification)) notifications.push(notification);
+      if (notifications.length === options.limit) break;
+    }
+    if (rows.length < size) return { notifications, truncated: false };
   }
-  const accessible = new Set(options.repositories.map(name => name.toLowerCase()));
-  const rows = await query as Row[];
-  return rows.flatMap(row => {
-    const target = parseJsonObject(row.target_json);
-    const repository = typeof target.repository === 'string' ? target.repository : null;
-    const occurredAt = isoTimestamp(row.occurred_at);
-    if (!occurredAt || (repository ? !accessible.has(repository.toLowerCase()) : options.scoped)) return [];
-    if (options.window && !withinWindow(occurredAt, options.window)) return [];
-    return [{
-      id: String(row.event_id), kind: String(row.kind), severity: String(row.severity),
-      target, metadata: parseJsonObject(row.metadata_json),
-      title: compactText(row.title, DIGEST_TEXT_LIMIT), body: compactText(row.body, DIGEST_TEXT_LIMIT),
-      occurredAt, repository,
-    }];
-  });
+  return { notifications, truncated: notifications.length < options.limit };
 }
 
 export function inboxReference(notification: InboxRow): Row {
@@ -402,7 +545,7 @@ function terminalTaskEntry(row: Row, now: number): TimelineEntry | null {
   const label = stopReason ? `Ultrafix loop finished${forPr}`
     : review ? `Review ${outcome}${forPr}` : `Task ${state}`;
   return {
-    id: `task:${row.history_id}`, occurredAt, kind, repository: String(row.repository),
+    id: `task:${numericKey(row.history_id)}`, occurredAt, kind, repository: String(row.repository),
     outcome: stopReason ?? outcome,
     summary: line(label, summary.title, state === 'failed' ? summary.failure_reason : null),
     reference: reference({ taskId: summary.task_id, issueNumber, pullRequest }),
@@ -420,15 +563,15 @@ export async function collectTerminalTasks(scope: TimelineScope, now: number): P
   const query = db('task_history as event')
     .join('tasks', 'tasks.task_id', 'event.task_id')
     .whereIn('tasks.repository', scope.repositories)
-    .whereIn('event.state', [...TERMINAL_TASK_STATES])
-    .where('event.timestamp', '>=', lowerBound(window.since))
-    .where('event.timestamp', '<=', upperBound(window.until));
+    .whereIn('event.state', [...TERMINAL_TASK_STATES]);
+  whereWithinWindow(query, 'event.timestamp', window);
   scope.visibility(query);
-  const rows = await query
+  query
     .leftJoin('plan_issues as task_plan_issue', 'task_plan_issue.id', db.raw('(?)', [latestPlanIssue(db)]))
     .select(...TASK_COLUMNS, 'event.history_id', 'event.state', 'event.timestamp as updated_at',
-      'event.reason as state_reason', 'event.metadata as state_metadata')
-    .orderBy('event.timestamp', 'desc').orderBy('event.history_id', 'desc')
+      'event.reason as state_reason', 'event.metadata as state_metadata');
+  const rows = await orderByNewest(query, 'event.timestamp')
+    .orderBy('event.history_id', 'desc')
     .limit(scope.budget) as Row[];
   return rows.filter(row => withinWindow(row.updated_at, window))
     .flatMap(row => terminalTaskEntry(row, now) ?? []);
@@ -437,11 +580,14 @@ export async function collectTerminalTasks(scope: TimelineScope, now: number): P
 /** Pull requests ProPR recorded as merged inside the window. */
 export async function collectMergedPullRequests(scope: TimelineScope): Promise<TimelineEntry[]> {
   const { db, window } = scope;
-  const rows = (await db('notification_pull_request_state')
+  const query = db('notification_pull_request_state')
     .whereIn('repository', scope.repositories).whereNotNull('merged_at')
-    .where('merged_at', '>=', lowerBound(window.since)).where('merged_at', '<=', upperBound(window.until))
-    .select('repository', 'pr_number', 'merged_at')
-    .orderBy('merged_at', 'desc').orderBy('pr_number', 'desc')
+    .select('repository', 'pr_number', 'merged_at');
+  whereWithinWindow(query, 'merged_at', window);
+  // Ties follow the merged identifier `repository#pr`, so the repository is
+  // part of the ordering here too.
+  const rows = (await orderByNewest(query, 'merged_at')
+    .orderBy('repository', 'desc').orderBy('pr_number', 'desc')
     .limit(scope.budget) as Row[]).filter(row => withinWindow(row.merged_at, window));
   const numbers = rows.map(row => Number(row.pr_number));
   const issues = numbers.length ? await db('plan_issues')
@@ -454,7 +600,7 @@ export async function collectMergedPullRequests(scope: TimelineScope): Promise<T
     const pullRequest = Number(row.pr_number);
     const issue = byPullRequest.get(`${String(row.repository).toLowerCase()}#${pullRequest}`);
     return {
-      id: `pull_request:${row.repository}#${pullRequest}`, occurredAt: isoTimestamp(row.merged_at)!,
+      id: `pull_request:${row.repository}#${numericKey(pullRequest)}`, occurredAt: isoTimestamp(row.merged_at)!,
       kind: 'pull_request', repository: String(row.repository), outcome: 'merged',
       summary: line(`Pull request #${pullRequest} merged`),
       reference: reference({
@@ -469,13 +615,13 @@ export async function collectMergedPullRequests(scope: TimelineScope): Promise<T
 /** Goals of this owner that completed, failed or were cancelled in the window. */
 export async function collectFinishedGoals(scope: TimelineScope): Promise<TimelineEntry[]> {
   const { db, window } = scope;
-  const rows = await db('goals')
+  const query = db('goals')
     .where({ owner_id: scope.owner }).whereIn('repository', scope.repositories).whereNotNull('result_state')
-    .where('completed_at', '>=', lowerBound(window.since))
-    .where('completed_at', '<=', upperBound(window.until))
     .select('goal_id', 'repository', 'title', 'objective', 'result_state', 'current_task_id',
-      'final_pr_number', 'failure_reason', 'completed_at')
-    .orderBy('completed_at', 'desc').orderBy('goal_id', 'desc').limit(scope.budget) as Row[];
+      'final_pr_number', 'failure_reason', 'completed_at');
+  whereWithinWindow(query, 'completed_at', window);
+  const rows = await orderByNewest(query, 'completed_at')
+    .orderBy('goal_id', 'desc').limit(scope.budget) as Row[];
   return rows.filter(row => withinWindow(row.completed_at, window)).map(row => {
     const pullRequest = positiveNumber(row.final_pr_number);
     return {
@@ -496,18 +642,33 @@ export async function collectFinishedGoals(scope: TimelineScope): Promise<Timeli
  */
 export async function collectPublishedPlans(scope: TimelineScope): Promise<TimelineEntry[]> {
   const { db, window } = scope;
-  const rows = await db('task_drafts')
+  const query = db('task_drafts')
     .where({ user_id: scope.owner, status: 'executed' }).whereIn('repository', scope.repositories)
-    .where('updated_at', '>=', lowerBound(window.since))
-    .where('updated_at', '<=', upperBound(window.until))
-    .select('draft_id', 'repository', 'name', 'updated_at')
-    .orderBy('updated_at', 'desc').orderBy('draft_id', 'desc').limit(scope.budget) as Row[];
+    .select('draft_id', 'repository', 'name', 'updated_at');
+  whereWithinWindow(query, 'updated_at', window);
+  const rows = await orderByNewest(query, 'updated_at')
+    .orderBy('draft_id', 'desc').limit(scope.budget) as Row[];
   return rows.filter(row => withinWindow(row.updated_at, window)).map(row => ({
     id: `plan:${row.draft_id}`, occurredAt: isoTimestamp(row.updated_at)!, kind: 'plan',
     repository: String(row.repository), outcome: 'published',
     summary: line('Plan published', compactText(row.name, DIGEST_TEXT_LIMIT)),
     reference: reference({ planId: row.draft_id }),
   }));
+}
+
+/** The pull request a receipt records as opened, or null when it records none. */
+export function openedPullRequest(notification: InboxRow): number | null {
+  return notification.kind === 'pull_request' ? positiveNumber(notification.target.prNumber) : null;
+}
+
+/**
+ * Whether a receipt reaches the timeline at all. `readInbox` applies this
+ * before its limit, so routine receipts cannot crowd a blocker out of the scan.
+ */
+export function isTimelineNotification(
+  notification: InboxRow, options: { includeRoutine?: boolean },
+): boolean {
+  return openedPullRequest(notification) !== null || isOperatorRelevant(notification, options);
 }
 
 /**
@@ -520,8 +681,8 @@ export function inboxEntries(
 ): TimelineEntry[] {
   return notifications.flatMap(notification => {
     const pullRequest = positiveNumber(notification.target.prNumber);
-    const opened = notification.kind === 'pull_request' && pullRequest !== null;
-    if (!opened && !isOperatorRelevant(notification, options)) return [];
+    const opened = openedPullRequest(notification) !== null;
+    if (!isTimelineNotification(notification, options)) return [];
     return [{
       id: `notification:${notification.id}`, occurredAt: notification.occurredAt,
       kind: opened ? 'pull_request' : 'notification', repository: notification.repository,

@@ -11,8 +11,9 @@ import {
   MAX_TIMELINE_ROWS, QUEUED_TASK_STATES, TASK_COLUMNS, TERMINAL_TASK_STATES,
   collectFinishedGoals, collectMergedPullRequests, collectPublishedPlans, collectTerminalTasks,
   compareNewestFirst, elapsedSeconds, githubUrl, inboxEntries, inboxReference, isOperatorRelevant,
-  isoTimestamp, latestPlanIssue, line, lowerBound, positiveNumber, readInbox, reference,
-  resolveWindow, type InboxRow, type Row, type TimelineScope, type WindowArguments,
+  isTimelineNotification, isoTimestamp, latestPlanIssue, line, lowerBound, normalizedTimestamp,
+  orderByNewest, positiveNumber, readInbox, reference, resolveWindow,
+  type InboxRow, type Row, type TimelineScope, type WindowArguments,
 } from './activityDigest.js';
 
 interface CurrentActivityArgs { repository?: string; limit: number; includeRoutine: boolean }
@@ -99,7 +100,9 @@ async function activeTasks(db: Knex, options: {
     .select(...TASK_COLUMNS, 'latest_history.state', 'latest_history.timestamp as updated_at',
       'latest_history.reason as state_reason', 'latest_history.metadata as state_metadata',
       taskStart.as('started_at'))
-    .orderByRaw('coalesce(latest_history.timestamp, tasks.created_at) desc')
+    // Both spellings of a persisted timestamp have to order chronologically
+    // before the limit picks the page.
+    .orderByRaw(`${normalizedTimestamp('coalesce(latest_history.timestamp, tasks.created_at)')} desc`)
     .orderBy('tasks.task_id', 'desc')
     .limit(options.limit) as Row[];
 }
@@ -172,11 +175,14 @@ function projectPlan(row: Row, now: number): Row {
   };
 }
 
-function section(items: Row[], limit: number): { count: number; items: Row[]; truncated: boolean } {
+function section(
+  items: Row[], limit: number, incomplete = false,
+): { count: number; items: Row[]; truncated: boolean } {
   const page = items.slice(0, limit);
   // `count` reports what this page carries. Sections are read for triage, so
-  // they never pay for an exact total; `truncated` says more work exists.
-  return { count: page.length, items: page, truncated: items.length > limit };
+  // they never pay for an exact total; `truncated` says more work exists —
+  // including work a scan that ran out of budget never reached.
+  return { count: page.length, items: page, truncated: incomplete || items.length > limit };
 }
 
 /** Everything waiting on a human: failed tasks, stopped goals, blocking Inbox cards. */
@@ -243,18 +249,25 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         activeTasks(db, { owner, repositories, limit: page, phase: 'running' }),
         activeTasks(db, { owner, repositories, limit: page, phase: 'queued' }),
         activeTasks(db, { owner, repositories, limit: page, phase: 'failed' }),
-        active.where('desired_state', 'running').whereNull('result_state').select(ACTIVE_GOAL_COLUMNS)
-          .orderBy('started_at', 'desc').orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
-        blocked.where(builder => builder.where('result_state', 'failed')
+        orderByNewest(active.where('desired_state', 'running').whereNull('result_state')
+          .select(ACTIVE_GOAL_COLUMNS), 'started_at')
+          .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
+        orderByNewest(blocked.where(builder => builder.where('result_state', 'failed')
           .orWhere(paused => paused.where('desired_state', 'paused').whereNull('result_state')))
           .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state',
-            'current_task_id', 'failure_reason', 'updated_at')
-          .orderBy('updated_at', 'desc').orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
-        db('task_drafts').where({ user_id: owner }).whereIn('repository', repositories)
+            'current_task_id', 'failure_reason', 'updated_at'), 'updated_at')
+          .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
+        orderByNewest(db('task_drafts').where({ user_id: owner }).whereIn('repository', repositories)
           .whereIn('status', ['generating', 'refining'])
-          .select('draft_id', 'repository', 'name', 'status', 'created_at', 'updated_at')
-          .orderBy('updated_at', 'desc').orderBy('draft_id', 'desc').limit(page) as Promise<Row[]>,
-        readInbox(db, owner, { repositories, scoped: Boolean(args.repository), limit: MAX_TIMELINE_ROWS }),
+          .select('draft_id', 'repository', 'name', 'status', 'created_at', 'updated_at'), 'updated_at')
+          .orderBy('draft_id', 'desc').limit(page) as Promise<Row[]>,
+        // The noise filter decides which receipts are blockers, so it runs
+        // inside the scan: a page of routine cards must never hide the one
+        // card waiting on a human, and a scan that ran out of budget says so.
+        readInbox(db, owner, {
+          repositories, scoped: Boolean(args.repository), limit: page,
+          accept: notification => isOperatorRelevant(notification, { includeRoutine }),
+        }),
       ]);
 
       const narration = await goalNarration(deps, principal, goalRows);
@@ -265,7 +278,6 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         const entry = narration.get(String(goal.goal_id));
         if (entry && typeof goal.current_task_id === 'string') taskNarration.set(goal.current_task_id, entry.message);
       }
-      const blocking = inbox.filter(notification => isOperatorRelevant(notification, { includeRoutine }));
 
       return ok({
         asOf: new Date(now).toISOString(),
@@ -278,7 +290,8 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
           activeGoals: section(goalRows.map(row => projectGoal(row, now, narration.get(String(row.goal_id)))), limit),
           plansInProgress: section(plans.map(row => projectPlan(row, now)), limit),
           queued: section(queued.map(row => projectTask(row, now, null)), limit),
-          blockers: section(blockerItems(failed, blockedGoals, blocking, now), limit),
+          blockers: section(blockerItems(failed, blockedGoals, inbox.notifications, now), limit,
+            inbox.truncated),
         },
       });
     },
@@ -310,13 +323,14 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
           collectPublishedPlans(scope),
         ])
         : [];
-      // The noise filter runs after the read, so scan the whole bounded window
-      // rather than one page of it: a page of routine cards must not hide the
-      // blocking card behind them.
+      // Receipts are filtered inside the scan, so a page of routine cards
+      // cannot hide the blocking card behind them and the budget this call
+      // spends buys `budget` receipts it will actually merge.
       const inbox = await readInbox(db, owner, {
-        repositories, scoped: Boolean(args.repository), window, limit: MAX_TIMELINE_ROWS,
+        repositories, scoped: Boolean(args.repository), window, limit: budget,
+        accept: notification => isTimelineNotification(notification, { includeRoutine }),
       });
-      const entries = [...sources.flat(), ...inboxEntries(inbox, { includeRoutine })]
+      const entries = [...sources.flat(), ...inboxEntries(inbox.notifications, { includeRoutine })]
         .sort(compareNewestFirst);
 
       return ok({
@@ -330,7 +344,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
           ...(entry.url ? { url: entry.url } : {}),
         })),
         nextOffset: entries.length > offset + limit ? offset + limit : null,
-        scanTruncated: budget < offset + limit + 1,
+        scanTruncated: budget < offset + limit + 1 || inbox.truncated,
       });
     },
   });

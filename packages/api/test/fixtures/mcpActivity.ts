@@ -99,19 +99,29 @@ export async function insertGoal(db: Knex, row: Record<string, unknown>): Promis
   });
 }
 
-export async function insertNotification(db: Knex, row: {
+export interface NotificationFixture {
   id: string; kind: string; severity: string; target: Record<string, unknown>;
   title: string; body: string; occurredAt: string; metadata?: Record<string, unknown>;
-}): Promise<void> {
-  await db('notification_events').insert({
-    event_id: row.id, deduplication_key: `dedupe:${row.id}`, kind: row.kind, severity: row.severity,
-    target_json: JSON.stringify(row.target), title: row.title, body: row.body,
-    metadata_json: row.metadata ? JSON.stringify(row.metadata) : null,
-    occurred_at: row.occurredAt, created_at: row.occurredAt,
-  });
-  await db('notification_user_states').insert({
-    event_id: row.id, user_id: owner, inbox_enabled: true, push_enabled: false, created_at: row.occurredAt,
-  });
+}
+
+export async function insertNotification(db: Knex, row: NotificationFixture): Promise<void> {
+  await insertNotifications(db, [row]);
+}
+
+/** Receipts in bulk, for the floods a bounded Inbox scan has to page through. */
+export async function insertNotifications(db: Knex, rows: NotificationFixture[]): Promise<void> {
+  for (let start = 0; start < rows.length; start += 200) {
+    const page = rows.slice(start, start + 200);
+    await db('notification_events').insert(page.map(row => ({
+      event_id: row.id, deduplication_key: `dedupe:${row.id}`, kind: row.kind, severity: row.severity,
+      target_json: JSON.stringify(row.target), title: row.title, body: row.body,
+      metadata_json: row.metadata ? JSON.stringify(row.metadata) : null,
+      occurred_at: row.occurredAt, created_at: row.occurredAt,
+    })));
+    await db('notification_user_states').insert(page.map(row => ({
+      event_id: row.id, user_id: owner, inbox_enabled: true, push_enabled: false, created_at: row.occurredAt,
+    })));
+  }
 }
 
 /** Identifiers carried by a digest section or timeline, in returned order. */

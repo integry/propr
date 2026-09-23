@@ -10,8 +10,8 @@ import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
 import {
   assertSectionsConsistent, at, buildDeps, buildPrincipal, configuredRepositories,
-  createActivityDatabase, ids, insertGoal, insertHistory, insertNotification, insertTask,
-  mcpConfig, owner, repositories,
+  createActivityDatabase, ids, insertGoal, insertHistory, insertNotification, insertNotifications,
+  insertTask, mcpConfig, owner, repositories, type NotificationFixture,
 } from './fixtures/mcpActivity.js';
 
 const core = await import('@propr/core');
@@ -239,9 +239,126 @@ test('the noise predicate is closed over today’s kinds and severities', () => 
   assert.equal(isOperatorRelevant({ kind: 'plan', severity: 'info', metadata: { quotaExceeded: true } }), true);
   assert.equal(isOperatorRelevant({ kind: 'review', severity: 'info', metadata: { ultrafixStopReason: 'label_removed' } }), true);
   assert.equal(isOperatorRelevant({ kind: 'review', severity: 'info', metadata: { ultrafixStopReason: 'Goal reached' } }), false);
-  // A kind added after this table was written is excluded unless it is an error.
+  // A kind added after this table was written is excluded unless it is an
+  // error, even when it carries a signal this table would otherwise recognize.
   assert.equal(isOperatorRelevant({ kind: 'deployment', severity: 'info', metadata: {} }), false);
+  assert.equal(isOperatorRelevant({ kind: 'deployment', severity: 'info', metadata: { state: 'failed' } }), false);
+  assert.equal(isOperatorRelevant({ kind: 'deployment', severity: 'info', target: { agentAvailable: false } }), false);
   assert.equal(isOperatorRelevant({ kind: 'deployment', severity: 'error', metadata: {} }), true);
+  assert.equal(
+    isOperatorRelevant({ kind: 'deployment', severity: 'info', metadata: { state: 'failed' } }, { includeRoutine: true }),
+    true,
+  );
+});
+
+test('recent activity bounds and orders both timestamp spellings before it limits', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  repositories('acme/alpha');
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha']);
+  const [since, until] = ['2026-09-23T11:00:00.000Z', '2026-09-23T12:00:00.000Z'];
+
+  // `knex.fn.now()` writes SQLite's offset-free spelling and producers write
+  // canonical ISO-8601, so one window holds both. Raw text sorts every ISO row
+  // above every same-day SQLite row, whatever hour each one names.
+  for (const [taskId, timestamp] of [
+    ['iso-before-09', '2026-09-23T09:00:00.000Z'],
+    ['iso-before-08', '2026-09-23T08:00:00.000Z'],
+    ['sqlite-inside', '2026-09-23 11:30:00'],
+    ['sqlite-at-since', '2026-09-23 11:00:00'],
+    ['iso-at-until', '2026-09-23T12:00:00.000Z'],
+    ['sqlite-after', '2026-09-23 23:00:00'],
+  ] as const) {
+    await insertTask(db, { taskId, repository: 'acme/alpha', createdAt: timestamp, job: { title: `Work ${taskId}` } });
+    await insertHistory(db, { taskId, state: 'completed', timestamp });
+  }
+
+  // One row of budget has to buy the newest event in the window, not the
+  // oldest row a widened lexical bound happened to admit.
+  const newest = await callTool(deps, principal, 'get_recent_activity', { since, until, limit: 1 });
+  assert.deepEqual(ids(newest.events, event => event.reference.taskId), ['iso-at-until']);
+
+  // Both bounds are inclusive, and both spellings order chronologically.
+  const all = await callTool(deps, principal, 'get_recent_activity', { since, until });
+  assert.deepEqual(ids(all.events, event => event.reference.taskId),
+    ['iso-at-until', 'sqlite-inside', 'sqlite-at-since']);
+});
+
+test('pages over equal timestamps neither repeat nor skip an event', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  repositories('acme/alpha');
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha']);
+  const [since, until] = ['2026-09-23T11:00:00.000Z', '2026-09-23T12:00:00.000Z'];
+  const timestamp = '2026-09-23T11:30:00.000Z';
+
+  // Push the terminal rows onto identifiers 9, 10 and 11: the numeric order
+  // SQL limits by and the lexical order the merge ties by disagree there.
+  await insertTask(db, { taskId: 'filler', repository: 'acme/alpha', createdAt: timestamp });
+  for (let index = 0; index < 8; index++) {
+    await insertHistory(db, { taskId: 'filler', state: 'pending', timestamp });
+  }
+  for (const taskId of ['tie-9', 'tie-10', 'tie-11']) {
+    await insertTask(db, { taskId, repository: 'acme/alpha', createdAt: timestamp, job: { title: `Work ${taskId}` } });
+    await insertHistory(db, { taskId, state: 'completed', timestamp });
+  }
+  const terminal = await db('task_history').where('state', 'completed').orderBy('history_id').select('history_id');
+  assert.deepEqual(terminal.map(row => row.history_id), [9, 10, 11]);
+
+  const paged: string[] = [];
+  for (let offset = 0; offset < 3; offset++) {
+    const page = await callTool(deps, principal, 'get_recent_activity', { since, until, limit: 1, offset });
+    paged.push(...ids(page.events, event => event.reference.taskId));
+  }
+  assert.deepEqual(paged, ['tie-11', 'tie-10', 'tie-9']);
+});
+
+test('a flood of filtered receipts cannot hide a blocker, and an exhausted scan says so', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  repositories('acme/alpha');
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha']);
+
+  /** `count` routine receipts, each a second older than the one before it. */
+  const noise = (prefix: string, repository: string, count: number, newest: number): NotificationFixture[] =>
+    Array.from({ length: count }, (_unused, index) => ({
+      id: `${prefix}-${index}`, kind: 'task', severity: 'success',
+      target: { type: 'task', repository, taskId: `${prefix}-${index}` },
+      title: 'Implementation completed', body: 'Review the result.', occurredAt: at(newest + index * 1000),
+    }));
+
+  await insertNotification(db, {
+    id: 'blocked-1', kind: 'task', severity: 'error',
+    target: { type: 'task', repository: 'acme/alpha', taskId: 'broken-1' },
+    title: 'Implementation failed', body: 'The agent stopped before finishing.', occurredAt: at(3_600_000),
+  });
+  // Newer than the blocker, and more of them than one page of receipts holds:
+  // another repository's receipts and this repository's routine ones.
+  await insertNotifications(db, [
+    ...noise('other', 'acme/other', 400, 500_000),
+    ...noise('routine', 'acme/alpha', 400, 100_000),
+  ]);
+
+  const digest = await callTool(deps, principal, 'get_current_activity');
+  assert.deepEqual(ids(digest.sections.blockers.items, blocker => blocker.reference.notificationId), ['blocked-1']);
+  assert.equal(digest.sections.blockers.truncated, false);
+
+  const timeline = await callTool(deps, principal, 'get_recent_activity', { sinceMinutes: 1440 });
+  assert.deepEqual(ids(timeline.events, event => event.reference.notificationId), ['blocked-1']);
+  assert.equal(timeline.scanTruncated, false);
+
+  // Past the scan budget the blocker is out of reach, and both tools report
+  // the incomplete scan instead of an empty, settled-looking answer.
+  await insertNotifications(db, noise('flood', 'acme/alpha', 1800, 900_000));
+  const flooded = await callTool(deps, principal, 'get_current_activity');
+  assert.deepEqual(flooded.sections.blockers.items, []);
+  assert.equal(flooded.sections.blockers.truncated, true);
+  const cut = await callTool(deps, principal, 'get_recent_activity', { sinceMinutes: 1440 });
+  assert.deepEqual(cut.events, []);
+  assert.equal(cut.scanTruncated, true);
 });
 
 test('recent activity resolves windows and rejects contradictory or over-long ones', () => {
