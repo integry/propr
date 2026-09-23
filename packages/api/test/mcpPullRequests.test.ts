@@ -49,12 +49,32 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       head: String(index).padStart(40, 'f'), createdAt: minutesAgo(1440 + index), updatedAt: minutesAgo(1440 + index),
       labels: [] as string[], reviewDecision: null, checks: null,
     })),
+    // Deeper than one raw GitHub page, and only its oldest-created pull requests
+    // were updated recently: the prefix of a created-ordered scan matches nothing.
+    ...Array.from({ length: 60 }, (_, index) => ({
+      repository: 'acme/deep', number: 500 + index, state: 'OPEN' as const, merged: false, title: `Deep ${index}`,
+      head: String(index).padStart(40, 'a'), createdAt: minutesAgo(index + 1),
+      updatedAt: index >= 55 ? minutesAgo(1) : minutesAgo(5000),
+      labels: [] as string[], reviewDecision: null, checks: null,
+    })),
+    // Wider than the whole per-repository scan budget.
+    ...Array.from({ length: 210 }, (_, index) => ({
+      repository: 'acme/wide', number: 700 + index, state: 'OPEN' as const, merged: false, title: `Wide ${index}`,
+      head: String(index).padStart(40, 'b'), createdAt: minutesAgo(index + 1), updatedAt: minutesAgo(5000),
+      labels: [] as string[], reviewDecision: null, checks: null,
+    })),
   ];
+  // #6 carries more labels than one GraphQL label page returns, and its ultrafix
+  // label is beyond that page.
+  const crowdedLabels = [...Array.from({ length: 120 }, (_, index) => `topic-${index}`), 'ultrafix'];
+  pullRequests.find(pull => pull.repository === 'acme/other' && pull.number === 6)!.labels = crowdedLabels;
   const repositoryLabels = new Map<string, string[]>([
     ['acme/repo', ['llm-claude-opus-5', 'llm-claude-sonnet-5', 'ultrafix', 'auto-merge', 'AI']],
-    ['acme/other', ['llm-claude-opus-5']],
+    // More labels than label discovery pages through; the sonnet label is past the budget.
+    ['acme/other', ['llm-claude-opus-5', ...Array.from({ length: 1000 }, (_, index) => `topic-${index}`), 'llm-claude-sonnet-5']],
     ['acme/bulk', []],
   ]);
+  const PULL_REQUEST_LABEL_PAGE = 100;
   const longBody = `Latest thought ${'detail '.repeat(120)}`;
   const reviewBody = `<!-- propr:ai-review head="${'a'.repeat(40)}" -->\n## Overall Evaluation\nLooks fine.\n\n## Score\nScore: 8/10`;
   const comments: CommentFixture[] = [
@@ -82,9 +102,10 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     labels: pull.labels.map(name => ({ name })), html_url: `https://github.com/${pull.repository}/pull/${pull.number}`,
   });
   const listComments = (repository: string, pullRequest: number, args: Args) => {
+    // The per-issue comments endpoint takes no ordering parameters: it always pages
+    // oldest-first. Any sort/direction the caller sends is simply not a parameter.
     const ordered = comments.filter(comment => comment.repository === repository && comment.pullRequest === pullRequest)
       .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
-    if (args.direction === 'desc') ordered.reverse();
     const perPage = Number(args.per_page ?? 30);
     const page = Number(args.page ?? 1);
     return ordered.slice((page - 1) * perPage, page * perPage).map(comment => ({
@@ -93,10 +114,27 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       issue_url: `https://api.github.com/repos/${repository}/issues/${pullRequest}`,
     }));
   };
+  // The comment connection is a real GraphQL contract: a window read with
+  // `last`/`before` comes back oldest-first, with a cursor for the previous window.
+  const newestComments = (repository: string, pullRequest: number, args: Args) => {
+    const ordered = comments.filter(comment => comment.repository === repository && comment.pullRequest === pullRequest)
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    const end = args.before === null || args.before === undefined ? ordered.length : Number(args.before);
+    const start = Math.max(0, end - Number(args.last));
+    return { pageInfo: { hasPreviousPage: start > 0, startCursor: String(start) },
+      nodes: ordered.slice(start, end).map(comment => ({
+        databaseId: comment.id, body: comment.body, url: `https://github.com/${repository}/pull/${pullRequest}#issuecomment-${comment.id}`,
+        createdAt: comment.createdAt, author: { login: comment.author },
+      })) };
+  };
   const github = {
-    graphql: async (_query: string, args: Args) => {
-      graphqlCalls.push(args);
+    graphql: async (query: string, args: Args) => {
+      graphqlCalls.push({ query, ...args });
       const repository = `${args.owner}/${args.repo}`;
+      if (query.includes('comments(last:')) {
+        const pull = findPullRequest(repository, Number(args.number));
+        return { repository: { pullRequest: { comments: newestComments(repository, pull.number, args) } } };
+      }
       const field = args.field === 'UPDATED_AT' ? 'updatedAt' : 'createdAt';
       const matching = pullRequests.filter(pull => pull.repository === repository)
         .filter(pull => !args.states || args.states.includes(pull.state))
@@ -109,7 +147,8 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
           number: pull.number, title: pull.title, state: pull.state, isDraft: false, merged: pull.merged,
           createdAt: pull.createdAt, updatedAt: pull.updatedAt, url: `https://github.com/${pull.repository}/pull/${pull.number}`,
           headRefOid: pull.head, baseRefName: 'main', reviewDecision: pull.reviewDecision, author: { login: 'fixture-user' },
-          labels: { nodes: pull.labels.map(name => ({ name })) },
+          labels: { pageInfo: { hasNextPage: pull.labels.length > PULL_REQUEST_LABEL_PAGE },
+            nodes: pull.labels.slice(0, PULL_REQUEST_LABEL_PAGE).map(name => ({ name })) },
           commits: { nodes: [{ commit: { statusCheckRollup: pull.checks ? { state: pull.checks } : null } }] },
         })),
       } } };
@@ -134,7 +173,17 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         comments.push(comment);
         return { data: { id: comment.id, html_url: `https://github.com/${repository}/pull/${comment.pullRequest}#issuecomment-${comment.id}` } };
       }
-      if (route === 'GET /repos/{owner}/{repo}/labels') return { data: (repositoryLabels.get(repository) ?? []).map(name => ({ name })) };
+      if (route === 'GET /repos/{owner}/{repo}/labels') {
+        const all = repositoryLabels.get(repository) ?? [];
+        const perPage = Number(args.per_page ?? 30);
+        const page = Number(args.page ?? 1);
+        return { data: all.slice((page - 1) * perPage, page * perPage).map(name => ({ name })) };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/labels/{name}') {
+        const found = (repositoryLabels.get(repository) ?? []).find(name => name === args.name);
+        if (!found) throw Object.assign(new Error('Not Found'), { status: 404 });
+        return { data: { name: found } };
+      }
       if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
         const pull = findPullRequest(repository, Number(args.issue_number));
         pull.labels.push(...(args.labels as string[]));
@@ -193,7 +242,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       redisClient: { get: async () => null, sMembers: async () => [] } as never };
     const catalog = createToolCatalog(deps);
     const scopes = ['read', 'plan', 'publish', 'execute', 'review', 'merge', 'manage'] as const;
-    const grantedRepositories = ['acme/repo', 'acme/other', 'acme/bulk', 'acme/disabled', 'acme/forbidden'];
+    const grantedRepositories = ['acme/repo', 'acme/other', 'acme/bulk', 'acme/deep', 'acme/wide', 'acme/disabled', 'acme/forbidden'];
     const principal = { user: { id: '123', username: 'fixture-user', login: 'fixture-user', displayName: 'Fixture user', email: null, avatarUrl: null, accessToken: 'fixture-github' },
       authorization: { role: 'admin', source: 'local', permissions: [] }, scopes: [...scopes], github,
       grant: { id: 'pull-grant', ownerId: '123', clientId: 'fixture-client', clientName: 'Fixture', instanceId: config.instanceId,
@@ -209,6 +258,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       (await executeTool(tool(name), args, actor, deps)).data as Args;
     const mutate = async (name: string, args: Args, actor: McpPrincipal = principal) =>
       call(name, { ...args, idempotencyKey: `pulls-${name}-${sequence++}` }, actor);
+    const commentConnectionReads = () => graphqlCalls.filter(args => String(args.query).includes('comments(last:')).length;
 
     await t.test('cross-repository listing stays inside the grant and skips forbidden repositories', async () => {
       const listed = await call('list_pull_requests', {});
@@ -222,6 +272,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         ['acme/repo#42', 'acme/other#7', 'acme/bulk#100']);
       assert.equal(listed.pullRequests.length, 15);
       assert.equal(listed.nextOffset, null);
+      assert.equal(listed.scanTruncated, false);
       const head = listed.pullRequests[0];
       assert.equal(head.title, 'Improve reliability');
       assert.equal(head.state, 'open');
@@ -261,8 +312,12 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       assert.deepEqual(states, { 42: 'open', 41: 'merged', 40: 'merged' });
       const closed = await call('list_pull_requests', { repository: 'acme/repo', state: 'closed' });
       assert.deepEqual(closed.pullRequests, []);
+      // #40 is merged only in ProPR's record; GitHub still reports it closed, so the
+      // merged inventory must not be pre-filtered by GitHub's own state.
       const merged = await call('list_pull_requests', { repository: 'acme/repo', state: 'merged' });
-      assert.deepEqual(merged.pullRequests.map((pull: Args) => pull.number), [41]);
+      assert.deepEqual(merged.pullRequests.map((pull: Args) => pull.number), [41, 40]);
+      assert.deepEqual(merged.pullRequests.map((pull: Args) => pull.merged), [true, true]);
+      assert.ok(!graphqlCalls.some(args => `${args.owner}/${args.repo}` === 'acme/repo' && Array.isArray(args.states) && args.states.includes('MERGED')));
     });
 
     await t.test('the ProPR correlation block ties pull requests to tasks, plans and goals', async () => {
@@ -282,13 +337,12 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     });
 
     await t.test('includeLatestComment stays bounded and reports truncation', async () => {
-      const before = restCalls.filter(item => item.route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments').length;
+      const before = commentConnectionReads();
       const bulk = await call('list_pull_requests', { repository: 'acme/bulk', includeLatestComment: true, limit: 12 });
       assert.equal(bulk.pullRequests.length, 12);
       assert.equal(bulk.latestCommentTruncated, true);
       assert.equal(bulk.pullRequests.filter((pull: Args) => pull.latestComment !== undefined).length, 10);
-      const reads = restCalls.filter(item => item.route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments').length - before;
-      assert.equal(reads, 10);
+      assert.equal(commentConnectionReads() - before, 10);
       const scoped = await call('list_pull_requests', { repository: 'acme/repo', includeLatestComment: true });
       assert.equal(scoped.latestCommentTruncated, false);
       const latest = scoped.pullRequests[0].latestComment;
@@ -304,21 +358,27 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       assert.equal((await call('list_pull_requests', { repository: 'acme/repo' })).pullRequests[0].latestComment, undefined);
     });
 
-    await t.test('the discussion can be paged newest-first without reversing a single page', async () => {
+    await t.test('the discussion pages oldest-first by number and newest-first by cursor', async () => {
       const oldest = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, limit: 2 });
       assert.equal(oldest.order, 'oldest');
       assert.deepEqual(oldest.comments.map((comment: Args) => comment.id), [101, 102]);
       assert.equal(oldest.nextPage, 2);
+      assert.equal(oldest.nextCursor, null);
       const newest = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, limit: 2, order: 'newest' });
       assert.equal(newest.order, 'newest');
       assert.deepEqual(newest.comments.map((comment: Args) => comment.id), [103, 102]);
-      assert.equal(newest.nextPage, 2);
-      const secondPage = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, limit: 2, order: 'newest', page: 2 });
-      assert.deepEqual(secondPage.comments.map((comment: Args) => comment.id), [101]);
-      assert.equal(secondPage.nextPage, null);
-      const directions = restCalls.filter(item => item.route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments' && item.args.per_page === 2)
-        .map(item => item.args.direction);
-      assert.deepEqual(directions, ['asc', 'desc', 'desc']);
+      assert.equal(newest.nextPage, null);
+      assert.ok(newest.nextCursor);
+      const older = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, limit: 2, order: 'newest', cursor: newest.nextCursor });
+      assert.deepEqual(older.comments.map((comment: Args) => comment.id), [101]);
+      assert.equal(older.nextCursor, null);
+      // The per-issue REST endpoint has no ordering parameters, so nothing may send them.
+      assert.ok(!restCalls.some(item => item.route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments'
+        && ('sort' in item.args || 'direction' in item.args)));
+      await assert.rejects(call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, order: 'newest', page: 2 }),
+        (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
+      await assert.rejects(call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, cursor: 'Y3Vyc29y' }),
+        (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
     await t.test('comment_on_pull_request rejects slash commands and enforces the expected head', async () => {
@@ -408,6 +468,70 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
       assert.equal(restCalls.filter(item => item.route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}' && item.args.name === 'ultrafix').length, deletions);
       const stale = await mutate('stop_ultrafix', { ...pull, expectedHead: 'f'.repeat(40) });
       assert.equal(stale.result.error.code, 'STALE_HEAD');
+    });
+
+    await t.test('a full first page is not the end of the inventory', async () => {
+      // Registered only here: the grant-wide assertions above pin the configured set.
+      await core.saveMonitoredRepos([
+        ...['acme/repo', 'acme/other', 'acme/bulk', 'acme/deep', 'acme/wide', 'acme/forbidden', 'acme/ungranted']
+          .map(name => ({ id: randomUUID(), name, enabled: true, baseBranch: 'main' })),
+        { id: randomUUID(), name: 'acme/disabled', enabled: false, baseBranch: 'main' },
+      ] as never);
+      const first = await call('list_pull_requests', { repository: 'acme/deep' });
+      assert.equal(first.pullRequests.length, 20);
+      assert.equal(first.nextOffset, 20);
+      assert.equal(first.scanTruncated, false);
+      const second = await call('list_pull_requests', { repository: 'acme/deep', offset: 20 });
+      assert.equal(second.nextOffset, 40);
+      const third = await call('list_pull_requests', { repository: 'acme/deep', offset: 40 });
+      assert.equal(third.pullRequests.length, 20);
+      assert.equal(third.nextOffset, null);
+      const paged = [...first.pullRequests, ...second.pullRequests, ...third.pullRequests].map((pull: Args) => pull.number);
+      assert.equal(new Set(paged).size, 60);
+
+      // Every match here sits past the first raw page, so filtering must not be
+      // allowed to discard the fetched prefix and call the result complete.
+      const filtered = await call('list_pull_requests', { repository: 'acme/deep', openedWithinMinutes: 600, updatedWithinMinutes: 60 });
+      assert.deepEqual(filtered.pullRequests.map((pull: Args) => pull.number), [555, 556, 557, 558, 559]);
+      assert.equal(filtered.scanTruncated, false);
+    });
+
+    await t.test('a scan that runs out of budget reports truncation rather than exhaustion', async () => {
+      const truncated = await call('list_pull_requests', { repository: 'acme/wide', openedWithinMinutes: 600, updatedWithinMinutes: 60 });
+      assert.deepEqual(truncated.pullRequests, []);
+      assert.equal(truncated.scanTruncated, true);
+      assert.equal(truncated.nextOffset, null);
+      const bounded = await call('list_pull_requests', { repository: 'acme/wide' });
+      assert.equal(bounded.pullRequests.length, 20);
+      assert.equal(bounded.nextOffset, 20);
+      assert.equal(bounded.scanTruncated, false);
+    });
+
+    await t.test('a truncated label list leaves the ultrafix breaker undetermined', async () => {
+      const listed = await call('list_pull_requests', { repository: 'acme/other' });
+      const crowded = listed.pullRequests.find((pull: Args) => pull.number === 6);
+      assert.equal(crowded.labels.length, 100);
+      assert.equal(crowded.labelsTruncated, true);
+      assert.ok(!crowded.labels.includes('ultrafix'));
+      // The breaker is beyond the labels GitHub returned: undetermined, not absent.
+      assert.equal(crowded.propr.ultrafixActive, null);
+      const complete = listed.pullRequests.find((pull: Args) => pull.number === 7);
+      assert.equal(complete.labelsTruncated, false);
+      assert.equal(complete.propr.ultrafixActive, false);
+    });
+
+    await t.test('an incomplete label read never claims the model label is missing', async () => {
+      const pull = { repository: 'acme/other', pullRequest: 7, expectedHead: 'd'.repeat(40) };
+      // acme/other defines more labels than discovery pages through, and its sonnet
+      // label is past that budget: a targeted lookup still has to find it.
+      const routed = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
+      assert.equal(routed.state, 'completed');
+      assert.equal(routed.result.label, 'llm-claude-sonnet-5');
+      assert.deepEqual(routed.result.removedLabels, ['llm-claude-opus-5']);
+      assert.deepEqual(findPullRequest('acme/other', 7).labels, ['llm-claude-sonnet-5']);
+      const undetermined = await mutate('set_pull_request_model', { ...pull, model: 'gpt-5.6' });
+      assert.equal(undetermined.state, 'failed');
+      assert.equal(undetermined.result.error.code, 'MODEL_LABEL_LOOKUP_INCOMPLETE');
     });
 
     await t.test('every new tool declares its scope, strict schema and write posture', async () => {
