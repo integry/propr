@@ -17,6 +17,7 @@ function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpCo
   else if (goalId) { resource = `goals/${encodeURIComponent(goalId)}`; ui = `${frontend}/goals/${encodeURIComponent(goalId)}`; }
   else if (taskId) { resource = `tasks/${encodeURIComponent(taskId)}`; ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`; }
   else if (args.pullRequest) { resource = `repositories/${args.repository}/pulls/${args.pullRequest}`; ui = `https://github.com/${args.repository}/pull/${args.pullRequest}`; }
+  else if (tool.name === 'list_pull_requests' && args.repository) { resource = `repositories/${args.repository}/pulls`; ui = `https://github.com/${args.repository}/pulls`; }
   else if (args.artifactId || result.artifactId) { const id = args.artifactId || result.artifactId; resource = `artifacts/${id}`; ui = `${origin}/mcp/artifacts/${id}`; }
   else if (args.notificationId) { resource = `notifications/${encodeURIComponent(args.notificationId)}`; ui = `${frontend}/inbox`; }
   else if (tool.name.includes('notification') && !tool.name.includes('preferences')) { resource = 'notifications'; ui = `${frontend}/inbox`; }
