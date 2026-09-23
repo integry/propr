@@ -50,6 +50,13 @@ const SQLITE_CONTENTION_MESSAGE =
 /** knex opens an outermost transaction with a deferred `BEGIN`. */
 const DEFERRED_BEGIN = /^\s*begin\s*;?\s*$/i;
 
+/**
+ * A statement that reads or sets `busy_timeout`, with or without a schema
+ * prefix and in either assignment form (`= 5000`, `(5000)`).
+ */
+const BUSY_TIMEOUT_PRAGMA =
+    /^\s*pragma\s+(?:[^\s;=()]+\s*\.\s*)?busy_timeout\s*(?:[=(]|;?\s*$)/i;
+
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BASE_DELAY_MS = 25;
 const DEFAULT_MAX_DELAY_MS = 500;
@@ -453,17 +460,25 @@ function retryStatements(client: RetryableClient): void {
             query.sql = 'BEGIN IMMEDIATE;';
         }
 
+        const sql = String(query?.sql ?? '');
+
         return retryOnSqliteContention(
             () => runQuery.call(this, connection, obj),
             {
-                operation: String(query?.sql ?? ''),
+                operation: sql,
                 // A stale snapshot inside an open transaction can only be
                 // cleared by rolling back, so let it reach the transaction
                 // retry instead of replaying a statement that is certain to
                 // fail again.
                 isRetryable: error => isSqliteContentionError(error)
                     && !(isSqliteSnapshotConflict(error) && isInTransaction(connection)),
-                ...blockingWaitLimiter(connection)
+                // Retrying may not change what the statement it wraps does.
+                // The limiter lowers `busy_timeout` for the duration of the
+                // attempt and puts the old value back afterwards, which would
+                // report the retry's internal cap to a caller reading the
+                // pragma and would undo a caller writing it. Neither statement
+                // waits on a lock, so neither has a blocking wait to bound.
+                ...(BUSY_TIMEOUT_PRAGMA.test(sql) ? {} : blockingWaitLimiter(connection))
             },
             options
         );

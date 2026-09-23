@@ -577,6 +577,30 @@ describe('installSqliteRetry', () => {
         );
     });
 
+    test('reports the connection busy timeout to a caller reading it back', async () => {
+        const db = await createDatabase();
+        const configured = await busyTimeoutMs(db);
+        installSqliteRetry(db, {
+            random: () => 1,
+            baseDelayMs: 25,
+            maxTotalMs: 100,
+            maxAttempts: 4
+        });
+        pragmas.length = 0;
+
+        // Retrying may not change what the statement it wraps returns: the cap
+        // the retry installs on the driver's blocking wait is internal to it,
+        // so a read of the pragma still reports the configured value and the
+        // statement runs without the limiter touching the connection.
+        assert.equal(await busyTimeoutMs(db), configured);
+        assert.deepEqual(pragmas.filter(source => source.startsWith('busy_timeout')), []);
+
+        // Setting it sticks too: restoring the value the limiter saw would
+        // undo the write the caller just made.
+        await db.raw('PRAGMA busy_timeout = 1234');
+        assert.equal(await busyTimeoutMs(db), 1234);
+    });
+
     test('leaves transactions the caller drives to the caller', async () => {
         const db = await createDatabase();
         installSqliteRetry(db, instantRetries);
