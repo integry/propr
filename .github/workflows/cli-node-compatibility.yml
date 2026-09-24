@@ -1,21 +1,44 @@
 name: CLI Node Compatibility
 
+# Selection lives in the shared classifier rather than in a filename-only path
+# list here, so one policy decides what a path means for every workflow.
 on:
   pull_request:
-    paths:
-      - '.github/workflows/cli-node-compatibility.yml'
-      - 'package-lock.json'
-      - 'packages/cli/**'
-      - 'packages/local-setup/**'
-      - 'packages/shared/**'
 
 concurrency:
   group: cli-node-compatibility-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      cli: ${{ steps.classify.outputs.cli }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
   project-options:
     name: Project options (Node ${{ matrix.node-version }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the matrix.
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
     # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
     runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     strategy:
@@ -87,3 +110,39 @@ jobs:
         run: |
           git -C "$GITHUB_WORKSPACE" clean -ffdxq
           case "${PROPR_CI_TMPDIR:-}" in /tmp/propr-ci.*) rm -rf -- "$PROPR_CI_TMPDIR" ;; esac
+
+  cli-node-compatibility-guard:
+    # Stable aggregate over the matrix above. It passes only when every leg
+    # succeeded, or when the shared classifier proved the CLI surface
+    # inapplicable and the matrix was skipped for exactly that reason.
+    name: CLI Node Compatibility Guard
+    needs: [classify, project-options]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce CLI Node compatibility results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          CLI_DECISION: ${{ needs.classify.outputs.cli }}
+          MATRIX_RESULT: ${{ needs.project-options.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "CLI decision: ${CLI_DECISION:-none}"
+          echo "Project options matrix: ${MATRIX_RESULT:-did not run}"
+          if [ "${CLASSIFY_RESULT:-}" = success ] \
+            && [ "${CLASSIFY_STATUS:-}" = ok ] \
+            && [ "${CLI_DECISION:-}" = false ] \
+            && [ "${MATRIX_RESULT:-}" = skipped ]; then
+            echo "CLI Node compatibility is not applicable to this change set." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::CLI Node compatibility proved inapplicable; see the classifier job summary for the reasons."
+            exit 0
+          fi
+          if [ "${MATRIX_RESULT:-}" != success ]; then
+            echo "::error::CLI Node compatibility finished with result '${MATRIX_RESULT:-did not run}'."
+            exit 1
+          fi

@@ -267,7 +267,8 @@ describe('desktop trusted release workflow', () => {
     assert.equal(workflow.match(platformArchitecturePattern)?.length, 8);
     assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
     assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
-    assert.match(job('finalize', 'preflight'), /needs: \[validation-version, package\]/);
+    // The shared change classifier gates the pull-request packaging jobs.
+    assert.match(job('finalize', 'preflight'), /needs: \[classify, validation-version, package\]/);
     assert.match(job('release-finalize', 'sign'), /needs: \[preflight, release-package\]/);
     assert.equal(workflow.match(/sudo apt-get install --yes cpio p7zip-full rpm/g)?.length, 2);
     assert.doesNotMatch(`${job('finalize', 'preflight')}\n${job('release-finalize', 'sign')}`, /msitools|msiextract/);
@@ -384,7 +385,9 @@ describe('desktop trusted release workflow', () => {
 
   test('keeps standalone native Windows durability assertions paused but ready for re-enablement', () => {
     const section = job('native-windows-durability', 'validation-version');
-    assert.match(section, /if: github\.event_name == 'pull_request' && vars\.PROPR_WINDOWS_DESKTOP_CI_ENABLED == 'true'/);
+    assert.match(section, /github\.event_name == 'pull_request'\n\s+&& vars\.PROPR_WINDOWS_DESKTOP_CI_ENABLED == 'true'/);
+    // Only an explicit false decision skips it; an empty decision still runs.
+    assert.match(section, /needs\.classify\.outputs\.desktop != 'false'/);
     assert.match(section, /runs-on: windows-latest/);
     assert.match(section, /continue-on-error: true/);
     assert.match(section, /PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'/);

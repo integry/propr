@@ -97,12 +97,12 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
-              {/* Line 1 (Meta): Repo • Status Badge ... Time Ago (right-aligned) */}
+              {/* Line 1 (Meta): Repo · Status Badge ... Time Ago (right-aligned) */}
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-xs font-normal text-slate-500">
                   {getRepoName(plan.repository)}
                 </span>
-                <span className="text-slate-300">•</span>
+                <span className="text-slate-300">·</span>
                 <span className={`px-1.5 py-0.5 text-xs font-mono font-normal ${getStatusBadgeStyle(plan.status)}`}>
                   {plan.status}
                 </span>
@@ -212,14 +212,14 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
               }`}
               onClick={() => handleTaskClick(group)}
             >
-              {/* Line 1 (Meta): Repo • ID (Chip) ... Time Ago (right-aligned) */}
+              {/* Line 1 (Meta): Repo · ID (Chip) ... Time Ago (right-aligned) */}
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-xs font-normal text-slate-500">
                   {group.repoName}
                 </span>
                 {getIssueId(group) && (
                   <>
-                    <span className="text-slate-300">•</span>
+                    <span className="text-slate-300">·</span>
                     <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-xs font-mono font-normal text-slate-500">
                       {getIssueId(group)}
                     </span>

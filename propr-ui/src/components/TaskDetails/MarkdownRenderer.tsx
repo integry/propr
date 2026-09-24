@@ -191,7 +191,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               );
             }
             return (
-              <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-all whitespace-normal ${
+              <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-words whitespace-normal ${
                 darkMode
                   ? 'bg-zinc-700/50 border border-zinc-600 text-zinc-200'
                   : 'bg-slate-100 border border-slate-200 text-slate-800'
@@ -206,9 +206,10 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           h3: ({ children }) => <h3 className={`text-base font-semibold mt-4 mb-2 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-800'}`}>{children}</h3>,
           h4: ({ children }) => <h4 className={`text-sm font-semibold mt-3 mb-1 break-words ${darkMode ? 'text-zinc-300' : 'text-gray-700'}`}>{children}</h4>,
           p: ({ children }) => <p className={`mb-4 leading-relaxed break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</p>,
-          ul: ({ children }) => <ul className="list-disc list-inside space-y-2 my-4 ml-2">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-inside space-y-2 my-4 ml-2">{children}</ol>,
-          li: ({ children }) => <li className={`ml-2 mb-1 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</li>,
+          // Markers sit outside the text column so wrapped lines hang under the first word, not under the bullet.
+          ul: ({ children }) => <ul className="list-disc list-outside space-y-2 my-4 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal list-outside space-y-2 my-4 pl-5">{children}</ol>,
+          li: ({ children }) => <li className={`mb-1 break-words [&>p]:mb-0 ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</li>,
           a: ({ href, children }) => (
             <a href={href} className="text-sky-400 hover:text-sky-300 hover:underline" target="_blank" rel="noopener noreferrer">
               {children}

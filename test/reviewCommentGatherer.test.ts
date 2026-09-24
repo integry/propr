@@ -17,6 +17,7 @@ const {
     getPendingReviewState: getStructuredPendingReviewState,
     markReviewFindingsProcessed: markStructuredReviewFindingsProcessed,
 } = await import('../src/jobs/reviewCommentGatherer.js');
+const { renderPublicReview } = await import('../src/jobs/reviewOutputParser.js');
 const {
     formatReviewCommentsSection: formatSelectedReviewRecords,
     hasAuthorizedFixFeedback,
@@ -1182,5 +1183,82 @@ describe('formatReviewCommentsSection', () => {
         }];
         const result = formatReviewCommentsSection(comments);
         assert.ok(result.includes('@my-review-bot'));
+    });
+});
+
+// A blocker whose evidence carries the trigger, ordered failure sequence,
+// consequence, guard analysis and verification provenance the review prompt
+// requires. All of it lives in the existing evidence/minimumCorrection fields,
+// so it must survive publication, gathering and /fix rendering untruncated.
+const SCENARIO_EVIDENCE = "src/jobs/suspensionRecovery.ts:88 \u2014 trigger: suspended runs A and B are both recoverable; static trace: 1) ProPR cancels A successfully -> 2) the cancel call for B returns an explicit 403 -> 3) B's queued rerun intent still persists -> 4) an operator cancels B independently -> 5) recovery reruns B even though ProPR refused it, leaving the user with a rerun they were told would not happen; the lease guard added at line 61 runs before step 2, so it never observes B's intent. Proposed regression (not executed): assert B is not rerun while A remains recoverable.";
+const SCENARIO_CORRECTION = 'Clear the persisted rerun intent for B when its cancel call fails, before the recovery pass returns.';
+
+const SCENARIO_REVIEW = [
+    '## Overall Evaluation',
+    'One demonstrated recovery failure blocks merge.',
+    '',
+    '## Actionable Findings',
+    '### F1: Refused rerun still replays after an independent cancel',
+    '- **violatedRequirement:** A run ProPR refused to rerun must not be rerun by recovery.',
+    `- **evidence:** ${SCENARIO_EVIDENCE}`,
+    '- **introducedByPR:** true \u2014 this PR added the recovery pass that replays persisted intents.',
+    '- **requiredForMerge:** true',
+    `- **minimumCorrection:** ${SCENARIO_CORRECTION}`,
+    '',
+    '## Suggestions and Follow-ups',
+    'No suggestions.',
+    '',
+    '## Score',
+    'Score: 5/10',
+].join('\n');
+
+describe('demonstrated-failure findings survive publication and /fix gathering', () => {
+    test('keeps the full failure sequence and correction through the public comment and the fix prompt', async () => {
+        const publicReview = renderPublicReview(SCENARIO_REVIEW, undefined, {
+            changedFilePaths: ['src/jobs/suspensionRecovery.ts'],
+        });
+        assert.ok(publicReview, 'a scenario-bearing blocker must render as a public review');
+        assert.ok(publicReview!.includes(SCENARIO_EVIDENCE), 'public rendering must not truncate the evidence');
+
+        const gathered = await gatherStructuredReviewComments([{
+            id: 77,
+            body: `${publicReview}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+
+        assert.strictEqual(gathered.length, 1);
+        assert.strictEqual(gathered[0].actionableFindings.length, 1);
+        assert.strictEqual(gathered[0].actionableFindings[0].evidence, SCENARIO_EVIDENCE);
+        assert.strictEqual(gathered[0].actionableFindings[0].minimumCorrection, SCENARIO_CORRECTION);
+
+        const selected = selectReviewFeedback(gathered, parseFixFindingSelection(''));
+        const section = formatSelectedReviewRecords(selected);
+        assert.match(section, /Address actionable finding F1 only/);
+        assert.ok(section.includes(`- **Changed-code evidence:** ${SCENARIO_EVIDENCE}`));
+        assert.ok(section.includes(`- **Minimum necessary correction:** ${SCENARIO_CORRECTION}`));
+        assert.ok(section.includes('Proposed regression (not executed)'));
+    });
+
+    // Why the prompt insists every field stays on one line: the record parser
+    // reads one line per field, so a wrapped evidence line loses its tail.
+    test('a wrapped evidence field silently loses the rest of the failure sequence', () => {
+        const multiLine = SCENARIO_REVIEW.replace(
+            `- **evidence:** ${SCENARIO_EVIDENCE}`,
+            '- **evidence:** src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two recoverable runs\n  1) ProPR cancels A -> 2) the cancel call for B returns 403',
+        );
+
+        assert.strictEqual(
+            extractStructuredActionableFindings(multiLine)[0].evidence,
+            'src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two recoverable runs',
+        );
+        const published = renderPublicReview(multiLine, undefined, {
+            changedFilePaths: ['src/jobs/suspensionRecovery.ts'],
+        });
+        assert.ok(published && !published.includes('the cancel call for B returns 403'));
     });
 });

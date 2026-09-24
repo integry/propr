@@ -91,7 +91,7 @@ describe('GlobalHeader desktop toolbar', () => {
 
     const toolbar = container.querySelector<HTMLElement>('header.desktop-content-toolbar');
     expect(toolbar).toHaveAccessibleName('Application toolbar');
-    expect(toolbar).toHaveClass('bg-slate-50', 'grid-cols-[minmax(0,1fr)_16rem_minmax(0,1fr)]');
+    expect(toolbar).toHaveClass('bg-slate-50', 'grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)]');
     expect(toolbar?.children).toHaveLength(3);
 
     const [left, center, right] = Array.from(toolbar!.children) as HTMLElement[];
@@ -99,6 +99,12 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(within(left).getByRole('button', { name: '1 Task' })).toBeInTheDocument();
     expect(within(center).getByRole('textbox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
     expect(within(center).getByText('⌘K')).toBeInTheDocument();
+    // A page's scope control mounts immediately left of search; with none
+    // mounted the slot collapses and the column is search alone.
+    const scopeSlot = within(center).getByTestId('header-scope-slot');
+    expect(center.firstElementChild).toBe(scopeSlot);
+    expect(scopeSlot).toBeEmptyDOMElement();
+    expect(scopeSlot).toHaveClass('hidden', 'lg:flex', 'lg:empty:hidden');
     expect(within(right).getByRole('button', { name: 'Quick add to-do' })).toBeInTheDocument();
     expect(within(right).getByRole('button', { name: 'New Task' })).toHaveClass('border-0', 'bg-teal-600');
     expect(within(right).getByRole('button', { name: 'System Status' })).toBeInTheDocument();

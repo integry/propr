@@ -1,9 +1,25 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { validateEnum, validateRepositoryFilter } from './validation.js';
+import { loadCompletionStats, loadRecordedSpend, successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
+
+/** Periods the dashboard's historical stats section can request. */
+export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
+export type DashboardStatsPeriod = typeof DASHBOARD_STATS_PERIODS[number];
+
+const PERIOD_DAYS: Record<DashboardStatsPeriod, number> = { '7d': 7, '30d': 30 };
+
+/** Window boundaries are whole days so the daily chart buckets line up. */
+function statsWindow(now: Date, days: number): { from: Date; to: Date } {
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return { from: new Date(to.getTime() - days * 24 * 60 * 60 * 1000), to };
+}
 
 interface StatsRoutesDeps {
   db: Knex;
+  /** Seam for tests that need a fixed window. */
+  now?: () => Date;
 }
 
 interface DailyCountRow {
@@ -324,6 +340,62 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
+  /**
+   * Period-aware historical stats for the dashboard.
+   *
+   * Every scalar is nullable: unavailable data is null, never 0. Cost is
+   * reported as recorded spend, because only executions that recorded a cost
+   * contribute to it.
+   */
+  async function getDashboardStats(req: Request, res: Response): Promise<void> {
+    const repository = typeof req.query.repository === 'string' ? req.query.repository : 'all';
+    const repoValidation = validateRepositoryFilter(repository);
+    if (!repoValidation.valid) {
+      res.status(400).json({ error: repoValidation.error });
+      return;
+    }
+
+    const periodValidation = validateEnum(req.query.period, DASHBOARD_STATS_PERIODS, 'Period');
+    if (!periodValidation.valid) {
+      res.status(400).json({ error: periodValidation.error });
+      return;
+    }
+    const period: DashboardStatsPeriod = periodValidation.value ?? '7d';
+    const days = PERIOD_DAYS[period];
+
+    try {
+      const current = statsWindow(deps.now ? deps.now() : new Date(), days);
+      const previous = { from: new Date(current.from.getTime() - days * 24 * 60 * 60 * 1000), to: current.from };
+
+      const [currentStats, previousStats, currentSpend, previousSpend] = await timeApiStage(
+        'dashboard.stats',
+        () => Promise.all([
+          loadCompletionStats(db, repository, current),
+          loadCompletionStats(db, repository, previous),
+          loadRecordedSpend(db, repository, current),
+          loadRecordedSpend(db, repository, previous),
+        ]),
+      );
+
+      res.json({
+        period,
+        repository,
+        completed: currentStats.completed,
+        successRate: calculateSuccessRate(currentStats.completed, currentStats.failed),
+        recordedSpend: currentSpend,
+        dailyCompleted: currentStats.dailyCompleted,
+        previous: {
+          completed: previousStats.completed,
+          successRate: calculateSuccessRate(previousStats.completed, previousStats.failed),
+          recordedSpend: previousSpend,
+        },
+      });
+    } catch (error) {
+      console.error('Error in /api/stats/dashboard:', error);
+      res.status(500).json({ error: 'Failed to fetch dashboard statistics' });
+    }
+  }
+
   async function getGeneratingPlansCount(_req: Request, res: Response): Promise<void> {
     try {
       const countResult = await timeApiStage('sql.generating-plans.count', () => db('task_drafts')
@@ -340,5 +412,5 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  return { getTaskStats, getRepositoryStats, getOverview, getGeneratingPlansCount };
+  return { getTaskStats, getRepositoryStats, getOverview, getGeneratingPlansCount, getDashboardStats };
 }

@@ -75,19 +75,19 @@ const PlanFooterStats: React.FC<{ stats: FooterStats; onRefresh: () => void }> =
       <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
       {stats.merged > 0 && (
         <>
-          <span className="text-gray-400">•</span>
+          <span className="text-gray-400">·</span>
           <span className="text-purple-600">{stats.merged} Merged</span>
         </>
       )}
       {stats.processing > 0 && (
         <>
-          <span className="text-gray-400">•</span>
+          <span className="text-gray-400">·</span>
           <span className="text-amber-600">{stats.processing} Processing</span>
         </>
       )}
       {stats.pending > 0 && (
         <>
-          <span className="text-gray-400">•</span>
+          <span className="text-gray-400">·</span>
           <span className="text-gray-500">{stats.pending} Pending</span>
         </>
       )}

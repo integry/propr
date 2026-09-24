@@ -1,17 +1,11 @@
 name: Desktop Package and Release
 
+# The workflow-level path filter this used to carry matched on filenames only,
+# so a manifest edit confined to a backend test script pulled in the whole
+# installer matrix. Pull-request selection now happens once, in the shared
+# classifier below. Tag pushes are unchanged: they never consult the classifier.
 on:
   pull_request:
-    paths:
-      - '.github/workflows/desktop-release-guard.yml'
-      - 'apps/desktop/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'packages/cli/**'
-      - 'packages/client/**'
-      - 'packages/local-setup/**'
-      - 'packages/shared/**'
-      - 'propr-ui/**'
   push:
     tags:
       - 'desktop-v*'
@@ -24,10 +18,40 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
+  classify:
+    name: Classify changed surfaces
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      desktop: ${{ steps.classify.outputs.desktop }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
   native-windows-durability:
     name: Native Windows durability (x64)
     # Windows delivery is paused; retain the job for explicit re-enablement.
-    if: github.event_name == 'pull_request' && vars.PROPR_WINDOWS_DESKTOP_CI_ENABLED == 'true'
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the job.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+          && vars.PROPR_WINDOWS_DESKTOP_CI_ENABLED == 'true'
+          && needs.classify.outputs.desktop != 'false' }}
     runs-on: windows-latest
     continue-on-error: true
     timeout-minutes: 30
@@ -66,7 +90,10 @@ jobs:
 
   validation-version:
     name: Validate unsigned desktop package version
-    if: github.event_name == 'pull_request'
+    needs: classify
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+          && needs.classify.outputs.desktop != 'false' }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -85,7 +112,10 @@ jobs:
 
   renderer-axe-boundary:
     name: Prove stock Chromium existing-target axe boundary
-    if: github.event_name == 'pull_request'
+    needs: classify
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+          && needs.classify.outputs.desktop != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -111,8 +141,14 @@ jobs:
 
   package:
     name: Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package
-    if: github.event_name == 'pull_request'
-    needs: [validation-version, renderer-axe-boundary]
+    needs: [classify, validation-version, renderer-axe-boundary]
+    # `!cancelled()` replaces the implicit success gate that `needs` alone
+    # gives, so the prerequisites are required explicitly here.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+          && needs.classify.outputs.desktop != 'false'
+          && needs.validation-version.result == 'success'
+          && needs.renderer-axe-boundary.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.release_target == false }}
     timeout-minutes: 60
@@ -462,27 +498,72 @@ jobs:
           }
 
   finalize:
+    # Stable aggregate for the unsigned pull-request validation. It is not an
+    # unconditional green placeholder: it passes only when the packaging matrix
+    # succeeded, or when the shared classifier proved the desktop surface
+    # inapplicable and every desktop job was skipped for exactly that reason.
+    # A failed, cancelled or unexpectedly skipped job still fails it.
     name: Finalize unsigned validation checksums
-    if: github.event_name == 'pull_request'
-    needs: [validation-version, package]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    needs: [classify, validation-version, package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Resolve desktop packaging applicability
+        id: applicability
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          DESKTOP_DECISION: ${{ needs.classify.outputs.desktop }}
+          VERSION_RESULT: ${{ needs.validation-version.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "Desktop decision: ${DESKTOP_DECISION:-none}"
+          echo "Validation version: ${VERSION_RESULT:-did not run}"
+          echo "Packaging matrix: ${PACKAGE_RESULT:-did not run}"
+          if [ "${CLASSIFY_RESULT:-}" = success ] \
+            && [ "${CLASSIFY_STATUS:-}" = ok ] \
+            && [ "${DESKTOP_DECISION:-}" = false ] \
+            && [ "${VERSION_RESULT:-}" = skipped ] \
+            && [ "${PACKAGE_RESULT:-}" = skipped ]; then
+            echo 'applicable=false' >> "$GITHUB_OUTPUT"
+            echo "Desktop packaging is not applicable to this change set." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Desktop packaging proved inapplicable; see the classifier job summary for the reasons."
+            exit 0
+          fi
+          echo 'applicable=true' >> "$GITHUB_OUTPUT"
+          status=0
+          require() {
+            if [ "${2:-}" != success ]; then
+              echo "::error::$1 finished with result '${2:-did not run}'."
+              status=1
+            fi
+          }
+          require 'Unsigned validation version' "${VERSION_RESULT:-}"
+          require 'Unsigned packaging matrix' "${PACKAGE_RESULT:-}"
+          exit "$status"
+
       - name: Checkout pull-request validation source
+        if: steps.applicability.outputs.applicable == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install cross-format inspection tools
+        if: steps.applicability.outputs.applicable == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes cpio p7zip-full rpm
 
       - name: Download all unsigned native artifacts
+        if: steps.applicability.outputs.applicable == 'true'
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           pattern: propr-desktop-validation-canonical-*-${{ github.run_id }}
           path: desktop-release-fragments
 
       - name: Verify architecture, matrix completeness, and checksums
+        if: steps.applicability.outputs.applicable == 'true'
         env:
           RELEASE_VERSION: ${{ needs.validation-version.outputs.version }}
         run: |

@@ -28,6 +28,8 @@ interface GlobalHeaderProps {
   };
   newPlanPressedOverride?: boolean;
   inboxUnreadCount?: number | null;
+  /** Receives the element a page portals its scope control into, left of search. */
+  scopeSlotRef?: React.Ref<HTMLDivElement>;
 }
 
 function resolveHeaderStats(
@@ -67,7 +69,7 @@ function useHeaderKeyboardShortcuts(
   }, [searchInputRef, setQuickAddOpen]);
 }
 
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false, inboxUnreadCount = null }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false, inboxUnreadCount = null, scopeSlotRef }) => {
   const navigate = useNavigate();
   const desktop = useDesktop();
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -103,7 +105,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
     <>
     {/* Global navigation owns app-wide dropdowns, so its stacking context must stay
         above route-level sticky headers such as task details summaries. */}
-    <header aria-label="Application toolbar" className="desktop-content-toolbar sticky top-0 z-40 hidden h-14 grid-cols-[minmax(0,1fr)_16rem_minmax(0,1fr)] items-stretch border-b border-slate-200 bg-slate-50 md:grid xl:grid-cols-[minmax(0,1fr)_20rem_minmax(0,1fr)]">
+    <header aria-label="Application toolbar" className="desktop-content-toolbar sticky top-0 z-40 hidden h-14 grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)] items-stretch border-b border-slate-200 bg-slate-50 md:grid">
       <div className="flex min-w-0 items-stretch justify-self-start">
         <div className="flex items-center px-2 lg:hidden">
           <button
@@ -121,8 +123,21 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         </div>
       </div>
 
-      <div className="flex w-full items-center justify-center px-2">
-        <div className="w-full">
+      {/*
+        The center column is search plus whatever scope control the current
+        page mounts immediately to its left (the Dashboard's repository
+        filter). The slot collapses when empty, so on every other page the
+        column is search alone at its usual 16rem / 20rem.
+
+        The side columns never shrink below their buttons; when the row is
+        short of width it is search that gives way, rather than the side
+        groups sliding underneath it. Below `lg` the row has no width left to
+        give, so the slot is not drawn and the page keeps its scope control in
+        its own content.
+      */}
+      <div className="flex min-w-0 items-center justify-center gap-2 px-2">
+        <div ref={scopeSlotRef} data-testid="header-scope-slot" className="hidden flex-none items-center lg:flex lg:empty:hidden" />
+        <div className="w-60 min-w-0 xl:w-[19rem]">
           <GlobalSearch inputRef={searchInputRef} />
         </div>
       </div>

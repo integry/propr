@@ -563,6 +563,53 @@ const createFixture = async (mode, fixedOrigin) => {
     if (requestUrl.pathname === '/api/stats/repositories') {
       return json(response, 200, { repositories: [] });
     }
+    // The dashboard reads these five endpoints on every visit and indexes into
+    // the nested counts, queue and comparison objects, so the generic API stub
+    // below is not a compatible shape for them.
+    if (requestUrl.pathname === '/api/dashboard/summary') {
+      return json(response, 200, {
+        repository: 'all',
+        needsAttention: 0,
+        running: 0,
+        queued: 0,
+        completedRecently: 12,
+        recentWindowHours: 24,
+      });
+    }
+    if (requestUrl.pathname === '/api/dashboard/attention') {
+      return json(response, 200, {
+        repository: 'all',
+        items: [],
+        counts: { blocked: 0, decisions: 0, total: 0 },
+      });
+    }
+    if (requestUrl.pathname === '/api/dashboard/active') {
+      return json(response, 200, {
+        repository: 'all',
+        running: [],
+        queued: [],
+        queue: { queuedCount: 0, reason: null },
+        counts: { running: 0, queued: 0 },
+      });
+    }
+    if (requestUrl.pathname === '/api/dashboard/outcomes') {
+      return json(response, 200, {
+        repository: 'all',
+        limit: 50,
+        items: [],
+      });
+    }
+    if (requestUrl.pathname === '/api/stats/dashboard') {
+      return json(response, 200, {
+        period: '7d',
+        repository: 'all',
+        completed: 12,
+        successRate: 100,
+        recordedSpend: null,
+        dailyCompleted: [],
+        previous: { completed: 0, successRate: null, recordedSpend: null },
+      });
+    }
     if (request.url?.startsWith('/api/stats/')) return json(response, 200, { total: 12, pending: 0, inProgress: 0, completed: 12, failed: 0, dailyCounts: [] });
     if (request.url?.startsWith('/api/tasks')) return json(response, 200, { tasks: [], total: 0 });
     if (request.url?.startsWith('/api/')) return json(response, 200, { agents: [], repositories: [], items: [], count: 0 });
@@ -1225,8 +1272,11 @@ const rendererUiStateSummary = async page => {
         '[class~="h-screen"][class~="w-full"] [class~="h-12"][class~="w-12"][class~="animate-spin"]',
       );
       const validatedCurrentUserMarker = document.querySelector('a[href="/admin/members"]');
-      const dashboardMarker = [...document.querySelectorAll('main h3')]
-        .some(element => element.textContent?.trim() === 'Recent Activity');
+      // The dashboard's running-work section is its structural marker; it
+      // renders whether or not the section has rows.
+      const dashboardMarker = document.querySelector(
+        'main [data-testid="happening-now-section"]',
+      ) !== null;
       return {
         schemaVersion: 1,
         instanceSelectorPresent: selector !== null,

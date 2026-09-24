@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Activity,
   Zap,
   BookMarked,
   Bot,
@@ -10,8 +9,9 @@ import {
   CircleCheck,
   CircleAlert,
   Cpu,
-  Home,
   Inbox,
+  LayoutDashboard,
+  ListTodo,
   LogOut,
   MoreHorizontal,
   ScrollText,
@@ -48,10 +48,10 @@ const getNavigationState = (pathname: string) => {
   const newPlan = pathname === '/tasks/new';
   return {
     inbox: pathMatches(pathname, '/inbox'),
-    activity: pathMatches(pathname, '/tasks') && !newPlan,
+    dashboard: pathname === '/',
     newPlan,
     repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
-    more: pathname === '/' || pathMatches(pathname, '/plans') ||
+    more: (pathMatches(pathname, '/tasks') && !newPlan) || pathMatches(pathname, '/plans') ||
       (pathMatches(pathname, '/studio') && !newPlan) ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
       pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
@@ -59,9 +59,9 @@ const getNavigationState = (pathname: string) => {
 };
 
 const getMoreItems = (user: CurrentUser | null) => [
-  { label: 'Dashboard', to: '/', icon: Home },
   { label: 'New Plan', to: '/studio/new', icon: ScrollText },
   { label: 'New Goal', to: '/goals?new=1', icon: Target },
+  { label: 'Tasks', to: '/tasks', icon: ListTodo },
   { label: 'Plans', to: '/plans', icon: ScrollText },
   { label: 'Goals', to: '/goals', icon: Target },
   ...(userHasPermission(user, 'instance.manage_agents')
@@ -102,7 +102,12 @@ const MobileNavLink: React.FC<MobileNavLinkProps> = ({
       active ? 'text-primary-700' : 'text-slate-500 hover:text-slate-800'
     }`}
   >
-    <span className="relative">
+    {/*
+      A fixed icon slot, the height of the New Task button's pill. Without one
+      the four icon-only items were 20px tall and New Task was 32px, so every
+      label on the bar sat on a different baseline from its neighbour's.
+    */}
+    <span className="relative flex h-8 w-9 items-center justify-center">
       {icon}
       {badge}
     </span>
@@ -211,7 +216,7 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   const active = getNavigationState(location.pathname);
 
   const unreadBadge = unreadCount !== null && unreadCount > 0 ? (
-    <span className="absolute -right-2.5 -top-1.5 inline-flex min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[9px] font-bold leading-4 text-white">
+    <span className="absolute right-0 top-0 inline-flex min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[9px] font-bold leading-4 text-white">
       {unreadCount > 99 ? '99+' : unreadCount}
     </span>
   ) : undefined;
@@ -314,11 +319,17 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
           icon={<Inbox className="h-5 w-5" aria-hidden="true" />}
           badge={unreadBadge}
         />
+        {/*
+          The dashboard is a primary tab, named and drawn the way the sidebar
+          names and draws it. This slot used to be "Activity" under a pulse
+          icon — a name nothing else in the app uses, on a tab that opened
+          Tasks while the dashboard itself hid under More. Tasks is in More now.
+        */}
         <MobileNavLink
-          to="/tasks"
-          label="Activity"
-          active={active.activity}
-          icon={<Activity className="h-5 w-5" aria-hidden="true" />}
+          to="/"
+          label="Dashboard"
+          active={active.dashboard}
+          icon={<LayoutDashboard className="h-5 w-5" aria-hidden="true" />}
         />
         <button
           type="button"

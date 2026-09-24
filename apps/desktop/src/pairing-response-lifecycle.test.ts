@@ -91,29 +91,32 @@ class ProtocolClock {
   }
 }
 
-// Every deadline this suite asserts on is virtual: the protocol budgets run on
-// the deterministic ProtocolClock, so these wall-clock races only exist to turn
-// a genuine hang into a readable failure instead of a suite-wide cancellation.
-// The real drains behind them — durable profile I/O, credential disposal, IPC
-// idling — contend with the rest of the CI shard, and that tail is long: on an
-// oversubscribed box individual waits here were measured at 3.7s, 4.4s and 8.5s
-// while the suite was otherwise healthy. The budget therefore sits far above the
-// slowest honest wait rather than just above the typical one. A real hang still
-// fails with the message below, and because node:test streams each subtest as it
-// finishes, that message reaches the log even if a later scenario is cut short.
-const SETTLE_BUDGET_MS = 30_000;
+// Every protocol and shutdown deadline asserted below is advanced through the
+// virtual ProtocolClock. The wall-clock guards here assert nothing: they only
+// stop a genuinely wedged drain from hanging the unit. Sharded CI runs this file
+// beside 131 other units on a shared host, where drains that settle in single
+// milliseconds locally have been measured near a second, so each guard keeps
+// roughly an order of magnitude of headroom over its contended cost.
+// The drain guard stays under the coordinator's own 15s forced drain so a wedged
+// drain still fails here instead of being quietly forced through.
+const drainGuardMs = 10_000;
+// Reaching the barrier also covers service startup and durable profile I/O,
+// neither of which a protocol deadline bounds.
+const setupGuardMs = 30_000;
 
-// The label names which wait hung: all six guards otherwise fail identically,
-// which leaves a CI failure pointing only at the shared timer line.
-const bounded = async <T,>(promise: Promise<T>, waitingFor: string): Promise<T> => {
+const bounded = async <T,>(
+  promise: Promise<T>,
+  milliseconds = drainGuardMs,
+  step = 'shutdown',
+): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`desktop shutdown did not settle: ${waitingFor}`)),
-          SETTLE_BUDGET_MS,
+          () => reject(new Error(`desktop ${step} did not settle within ${milliseconds}ms`)),
+          milliseconds,
         );
       }),
     ]);
@@ -353,7 +356,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           counts.rendererPublication += 1;
           return { status: 'fulfilled' as const, value };
         }, error => ({ status: 'rejected' as const, error }));
-        await bounded(barrier.promise, 'pairing reached the stalled endpoint');
+        await bounded(barrier.promise, setupGuardMs, 'pairing setup');
 
         const provisionalCouldExist = ['activate', 'cancel'].includes(scenario.endpoint);
         const pendingBeforeShutdown = await store.pendingRevocations();
@@ -441,7 +444,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
 
         const cancellationExpected = scenario.phase !== 'header';
         if (cancellationExpected) {
-          await bounded(cancellationStarted.promise, 'response body cancellation started');
+          await bounded(cancellationStarted.promise, drainGuardMs, 'response cancellation');
           shutdown.beforeQuit({ preventDefault: () => { prevented += 1; } });
           assert.equal(prevented, 2, 'repeated before-quit was not prevented during cancellation');
           cancellationCanSettle = true;
@@ -453,8 +456,8 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           shutdown.beforeQuit({ preventDefault: () => { prevented += 1; } });
           assert.equal(prevented, 2, 'repeated before-quit was not prevented during header drain');
         }
-        await bounded(shutdown.awaitFinished(), 'shutdown drain finished');
-        const original = await bounded(admitted, 'the admitted pairing invocation settled');
+        await bounded(shutdown.awaitFinished(), drainGuardMs, 'shutdown');
+        const original = await bounded(admitted, drainGuardMs, 'admitted pairing');
         assert.equal(original.status, 'rejected');
         if (original.status === 'rejected') {
           assert.match(String(original.error), /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
@@ -481,8 +484,8 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         assert.equal(order.indexOf('session-dispose') > order.indexOf('profiles-close'), true);
         assert.equal(order.indexOf('window-destroy') > order.indexOf('ipc-dispose'), true);
         assert.equal(order.at(-1), 'app-quit');
-        await bounded(service.awaitIdle(), 'credential service idle');
-        await bounded(registered.awaitIdle(), 'IPC handlers idle');
+        await bounded(service.awaitIdle(), drainGuardMs, 'credential service idle');
+        await bounded(registered.awaitIdle(), drainGuardMs, 'IPC idle');
         assert.deepEqual(service.prepareRequest(`${origin}/api/tasks`, {}), { cancel: true });
         assert.equal(clock.pending, 0);
 

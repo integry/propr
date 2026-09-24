@@ -17,6 +17,7 @@ export { createInstanceCatalogRoutes } from './instanceCatalogRoutes.js';
 export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
+export { createDashboardRoutes } from './dashboardRoutes.js';
 export {
   createSummaryBrowserRoutes,
   SUMMARY_PATH_ROUTE_PATH,

@@ -16,13 +16,15 @@ import {
   extractDmg,
   extractRpm,
   inspectRunningProcessGroupMembers,
+  LaunchServicesAbsenceFailure,
   LaunchServicesAuthority,
+  LAUNCH_SERVICES_STALE_REGISTRATION,
+  LAUNCH_SERVICES_UNREGISTER_FAILED,
   launchServicesRecordMatchesApplication,
   linuxProtocolDispatch,
   NativeLifecycleCommandFailure,
   NativeLifecycleEvidenceWaitFailure,
   NativeLifecycleFailure,
-  NativeLifecycleLaunchServicesFailure,
   NativeLifecycleOperationFailure,
   OwnedProcessGroups,
   parseArguments,
@@ -634,6 +636,7 @@ describe('native staged artifact lifecycle authority', () => {
     const staleWaits = [];
     const staleUnregisters = [];
     let staleDumps = 0;
+    let staleClock = 0;
     const stale = new LaunchServicesAuthority(applicationRoot, {}, {
       runCommand: async (_file, args) => {
         staleUnregisters.push(args[0]);
@@ -644,21 +647,69 @@ describe('native staged artifact lifecycle authority', () => {
         staleDumps += 1;
         return { matched: matchesLine(`\tpath: ${applicationRoot}`) };
       },
-      wait: async milliseconds => { staleWaits.push(milliseconds); },
-      absenceAttempts: 3,
+      wait: async milliseconds => {
+        staleWaits.push(milliseconds);
+        staleClock += milliseconds;
+      },
+      now: () => staleClock,
+      absenceBudgetMs: 2_000,
     });
     stale.registered = true;
-    await assert.rejects(stale.assertGone(), error => (
-      error instanceof NativeLifecycleLaunchServicesFailure
-      && error.resultClass === 'REGISTRATION_RETAINED'
-      && /remained registered/.test(error.message)
-    ));
+    const staleError = await stale.assertGone().then(() => null, error => error);
+    assert.ok(staleError instanceof LaunchServicesAbsenceFailure);
+    assert.match(staleError.message, /remained registered/);
+    assert.equal(staleError.resultClass, LAUNCH_SERVICES_STALE_REGISTRATION);
     assert.equal(stale.registered, true);
     assert.equal(staleDumps, 3);
     assert.deepEqual(staleWaits, [1_000, 1_000]);
     // Each re-probe re-issues the removal, because opening the bundle lets the
     // system re-register it after the first unregister returns.
     assert.deepEqual(staleUnregisters, ['-u', '-u']);
+
+    // The aggregate says whether the record persisted or the probe never
+    // answered, without ever repeating an unclassified error's text.
+    assert.match(
+      new NativeLifecycleFailure(null, [{ label: 'launchservices-postcondition', error: staleError }]).message,
+      /launchservices-postcondition \[result:STALE_REGISTRATION\]/,
+    );
+    assert.match(
+      new NativeLifecycleFailure(null, [{
+        label: 'launchservices-postcondition',
+        error: new NativeLifecycleCommandFailure('COMMAND_DEADLINE'),
+      }]).message,
+      /launchservices-postcondition \[result:COMMAND_DEADLINE\]/,
+    );
+    const unclassified = new Error('https://secret.invalid/private-profile');
+    unclassified.resultClass = 'https://secret.invalid/private-profile';
+    const aggregate = new NativeLifecycleFailure(null, [{ label: 'launchservices-postcondition', error: unclassified }]);
+    assert.equal(aggregate.message, 'Native lifecycle cleanup failed: launchservices-postcondition');
+    assert.doesNotMatch(inspect(aggregate), /secret\.invalid/);
+  });
+
+  test('re-probes a lagging LaunchServices removal for the full bounded window', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    // Each -dump answer costs seconds on a loaded runner, so the window is a
+    // deadline: a slow probe must not spend the budget the removal needs.
+    let clock = 0;
+    let dumps = 0;
+    const authority = new LaunchServicesAuthority(applicationRoot, {}, {
+      runCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }),
+      scanCommand: async (_file, _args, _options, matchesLine) => {
+        dumps += 1;
+        clock += 9_000;
+        return { matched: matchesLine(`\tpath: ${applicationRoot}`) };
+      },
+      wait: async milliseconds => { clock += milliseconds; },
+      now: () => clock,
+    });
+    authority.registered = true;
+
+    await assert.rejects(authority.assertGone(), error => error instanceof LaunchServicesAbsenceFailure);
+
+    // A probe count of ten would have declared the record stale at ninety-nine
+    // seconds, well inside the window the removal is allowed to take.
+    assert.equal(dumps, 13);
+    assert.ok(clock >= 120_000);
   });
 
   test('re-probes LaunchServices until a lagging unregister is reflected in the dump', async () => {
@@ -669,6 +720,7 @@ describe('native staged artifact lifecycle authority', () => {
       '\tpath: /Applications/Other.app',
     ];
     const waits = [];
+    let clock = 0;
     const authority = new LaunchServicesAuthority(applicationRoot, {}, {
       runCommand: async (_file, args) => {
         assert.deepEqual(args, ['-u', applicationRoot]);
@@ -678,8 +730,12 @@ describe('native staged artifact lifecycle authority', () => {
         assert.deepEqual(args, ['-dump']);
         return { matched: matchesLine(dumps.shift()) };
       },
-      wait: async milliseconds => { waits.push(milliseconds); },
-      absenceAttempts: 3,
+      wait: async milliseconds => {
+        waits.push(milliseconds);
+        clock += milliseconds;
+      },
+      now: () => clock,
+      absenceBudgetMs: 2_000,
     });
     authority.registered = true;
 
@@ -690,17 +746,24 @@ describe('native staged artifact lifecycle authority', () => {
     assert.deepEqual(waits, [1_000, 1_000]);
   });
 
-  test('keeps proving LaunchServices absence through a transient dump probe failure', async () => {
+  test('spends a bounded attempt on an unreadable dump instead of ending the absence proof', async () => {
     const applicationRoot = '/private/copied/ProPR Desktop.app';
+    // One dump never answers, the next still lists the bundle, and only the
+    // third proves it gone. A probe that could not run is not evidence, so it
+    // must not be read as absence and must not abandon the proof either.
     const probes = [
       () => { throw new NativeLifecycleCommandFailure('COMMAND_DEADLINE'); },
-      () => ({ matched: true }),
-      () => ({ matched: false }),
+      () => true,
+      () => false,
     ];
     const waits = [];
+    const unregisters = [];
     const authority = new LaunchServicesAuthority(applicationRoot, {}, {
-      runCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }),
-      scanCommand: async () => probes.shift()(),
+      runCommand: async (_file, args) => {
+        unregisters.push(args[0]);
+        return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      },
+      scanCommand: async () => ({ matched: probes.shift()() }),
       wait: async milliseconds => { waits.push(milliseconds); },
       absenceAttempts: 4,
     });
@@ -711,12 +774,57 @@ describe('native staged artifact lifecycle authority', () => {
     assert.equal(authority.registered, false);
     assert.equal(probes.length, 0);
     assert.deepEqual(waits, [1_000, 1_000]);
+    assert.deepEqual(unregisters, ['-u', '-u']);
   });
 
-  test('names the first failed absence mode when the bounded window is exhausted', async () => {
+  test('reports why the absence proof ended and carries that class into cleanup reporting', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    const secret = 'https://secret.invalid/private-dump';
+    const authorityFor = probe => {
+      const authority = new LaunchServicesAuthority(applicationRoot, {}, {
+        runCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }),
+        scanCommand: async () => ({ matched: probe() }),
+        wait: async () => undefined,
+        absenceAttempts: 2,
+      });
+      authority.registered = true;
+      return authority;
+    };
+
+    const stale = await authorityFor(() => true).assertGone().catch(error => error);
+    assert.ok(stale instanceof LaunchServicesAbsenceFailure);
+    assert.equal(stale.resultClass, LAUNCH_SERVICES_STALE_REGISTRATION);
+    assert.match(stale.message, /remained registered/);
+
+    const unreadable = await authorityFor(() => {
+      throw new NativeLifecycleCommandFailure('COMMAND_DEADLINE');
+    }).assertGone().catch(error => error);
+    assert.ok(unreadable instanceof LaunchServicesAbsenceFailure);
+    assert.equal(unreadable.resultClass, 'COMMAND_DEADLINE');
+    assert.match(unreadable.message, /could not be probed/);
+
+    // A cleanup label alone cannot tell these two apart in a CI log, so the
+    // fixed class rides along — and nothing else does.
+    for (const [failure, expected] of [[stale, 'STALE_REGISTRATION'], [unreadable, 'COMMAND_DEADLINE']]) {
+      const aggregate = new NativeLifecycleFailure(null, [
+        { label: 'launchservices-postcondition', error: failure },
+      ]);
+      assert.match(aggregate.message, new RegExp(`launchservices-postcondition \\[result:${expected}\\]`));
+      assert.doesNotMatch(inspect(aggregate), new RegExp(secret));
+      assert.ok(!inspect(aggregate).includes(applicationRoot));
+    }
+
+    // An unclassified cleanup error still reports as a bare label.
+    assert.equal(
+      new NativeLifecycleFailure(null, [{ label: 'install-root', error: new Error(secret) }]).message,
+      'Native lifecycle cleanup failed: install-root',
+    );
+  });
+
+  test('names a failing probe or removal that exhausted the bounded window', async () => {
     const applicationRoot = '/private/copied/ProPR Desktop.app';
     const secret = 'https://secret.invalid/private-profile';
-    for (const [failing, expected] of [['-dump', 'PROBE_FAILED'], ['-u', 'UNREGISTER_FAILED']]) {
+    for (const [failing, expected] of [['-dump', 'COMMAND_FAILED'], ['-u', LAUNCH_SERVICES_UNREGISTER_FAILED]]) {
       const authority = new LaunchServicesAuthority(applicationRoot, {}, {
         runCommand: async () => {
           if (failing === '-u') throw new Error(secret);
@@ -733,7 +841,7 @@ describe('native staged artifact lifecycle authority', () => {
 
       const failure = await authority.assertGone().catch(error => error);
 
-      assert.ok(failure instanceof NativeLifecycleLaunchServicesFailure);
+      assert.ok(failure instanceof LaunchServicesAbsenceFailure);
       assert.equal(failure.resultClass, expected);
       // The copied bundle stays owned until its absence is actually proved.
       assert.equal(authority.registered, true);
@@ -749,7 +857,6 @@ describe('native staged artifact lifecycle authority', () => {
         assert.ok(!rendered.includes(applicationRoot));
       }
     }
-    assert.throws(() => new NativeLifecycleLaunchServicesFailure(secret), /result class is invalid/);
   });
 
   test('carries only a fixed cleanup result class into the rendered aggregate message', () => {

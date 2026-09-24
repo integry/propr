@@ -95,7 +95,7 @@ for (const width of [320, 390]) {
     await expect(mobileNavigation).toBeVisible();
     await expect(page.locator('header')).toBeHidden();
     await expect(mobileNavigation.getByRole('link', { name: /Inbox/ })).toBeVisible();
-    await expect(mobileNavigation.getByRole('link', { name: 'Activity' })).toBeVisible();
+    await expect(mobileNavigation.getByRole('link', { name: 'Dashboard' })).toBeVisible();
     const newTaskButton = mobileNavigation.getByRole('button', {
       name: 'New Task unavailable in demo mode',
       exact: true,

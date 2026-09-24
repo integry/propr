@@ -40,8 +40,14 @@ async function createDatabase(): Promise<Knex> {
   });
   await database.schema.createTable('plan_issues', table => {
     table.increments('id').primary();
+    table.string('draft_id');
+    table.string('repository');
+    table.integer('issue_number');
+    table.integer('pr_number');
     table.string('task_id');
     table.string('status');
+    table.timestamp('created_at');
+    table.timestamp('updated_at');
     table.index('task_id');
   });
   await database.schema.createTable('llm_executions', table => {
@@ -205,26 +211,33 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
   const database = await createDatabase();
   await addTaskHistoryLookupIndex(database);
 
+  // Relative timestamps: the attention filter reads the same recency window as
+  // the dashboard count it opens, so fixed dates would age out of that window.
+  const hoursAgo = (hours: number, minutes = 0): string =>
+    new Date(Date.now() - hours * 60 * 60 * 1000 + minutes * 60 * 1000).toISOString();
+
   await database('tasks').insert([
-    { task_id: 'processing-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T06:00:00.000Z' },
-    { task_id: 'claude-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T05:00:00.000Z' },
-    { task_id: 'post-processing-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T04:00:00.000Z' },
-    { task_id: 'queued-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T03:00:00.000Z' },
-    { task_id: 'pending-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T02:00:00.000Z' },
-    { task_id: 'completed-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T01:00:00.000Z' },
-    { task_id: 'failed-task', repository: 'acme/widget', task_type: 'issue', created_at: '2026-09-14T00:00:00.000Z' },
+    { task_id: 'processing-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(1) },
+    { task_id: 'claude-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(2) },
+    { task_id: 'post-processing-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(3) },
+    { task_id: 'queued-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(4) },
+    { task_id: 'pending-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(5) },
+    { task_id: 'completed-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(6) },
+    { task_id: 'failed-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(7) },
+    { task_id: 'blocked-task', repository: 'acme/widget', task_type: 'issue', created_at: hoursAgo(8) },
   ]);
   await database('task_history').insert([
     // The completed task passed through an active state first; only its latest
     // state may decide whether the Active filter includes it.
-    { task_id: 'completed-task', state: 'claude_execution', timestamp: '2026-09-14T01:01:00.000Z' },
-    { task_id: 'completed-task', state: 'completed', timestamp: '2026-09-14T01:02:00.000Z' },
-    { task_id: 'processing-task', state: 'processing', timestamp: '2026-09-14T06:01:00.000Z' },
-    { task_id: 'claude-task', state: 'claude_execution', timestamp: '2026-09-14T05:01:00.000Z' },
-    { task_id: 'post-processing-task', state: 'post_processing', timestamp: '2026-09-14T04:01:00.000Z' },
-    { task_id: 'queued-task', state: 'queued', timestamp: '2026-09-14T03:01:00.000Z' },
-    { task_id: 'pending-task', state: 'pending', timestamp: '2026-09-14T02:01:00.000Z' },
-    { task_id: 'failed-task', state: 'failed', timestamp: '2026-09-14T00:01:00.000Z' },
+    { task_id: 'completed-task', state: 'claude_execution', timestamp: hoursAgo(6, 1) },
+    { task_id: 'completed-task', state: 'completed', timestamp: hoursAgo(6, 2) },
+    { task_id: 'processing-task', state: 'processing', timestamp: hoursAgo(1, 1) },
+    { task_id: 'claude-task', state: 'claude_execution', timestamp: hoursAgo(2, 1) },
+    { task_id: 'post-processing-task', state: 'post_processing', timestamp: hoursAgo(3, 1) },
+    { task_id: 'queued-task', state: 'queued', timestamp: hoursAgo(4, 1) },
+    { task_id: 'pending-task', state: 'pending', timestamp: hoursAgo(5, 1) },
+    { task_id: 'failed-task', state: 'failed', timestamp: hoursAgo(7, 1) },
+    { task_id: 'blocked-task', state: 'action_required', timestamp: hoursAgo(8, 1) },
   ]);
 
   const idsFor = async (status: string) => {
@@ -248,9 +261,34 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
   assert.deepEqual(waiting.ids, waitingIds);
   assert.deepEqual(await idsFor('pending'), waiting);
 
+  // The dashboard's attention count opens this list, so it is that count's own
+  // projection: action-required work and unresolved failures.
+  const attention = await idsFor('attention');
+  assert.equal(attention.total, 2);
+  assert.deepEqual(attention.ids, ['failed-task', 'blocked-task']);
+
   // Terminal and granular states keep matching exactly.
   assert.deepEqual((await idsFor('completed')).ids, ['completed-task']);
   assert.deepEqual((await idsFor('failed')).ids, ['failed-task']);
   assert.deepEqual((await idsFor('claude_execution')).ids, ['claude-task']);
-  assert.equal((await idsFor('all')).total, 7);
+  assert.equal((await idsFor('all')).total, 8);
+
+  // A retry of the failed thread is the system fixing it, so the failure
+  // leaves the attention list exactly as it leaves the dashboard's count.
+  await database('tasks').insert({
+    task_id: 'retry-task', repository: 'acme/widget', task_type: 'issue',
+    issue_number: 7, created_at: hoursAgo(0, -1),
+  });
+  await database('task_history').insert({ task_id: 'retry-task', state: 'queued', timestamp: hoursAgo(0, -1) });
+  await database('tasks').where('task_id', 'failed-task').update({ issue_number: 7 });
+  assert.deepEqual((await idsFor('attention')).ids, ['blocked-task']);
+
+  // A completed run whose pull request is waiting on a decision is attention,
+  // even though no lifecycle state says so.
+  await database('plan_issues').insert({
+    draft_id: 'draft-1', repository: 'acme/widget', issue_number: 6, pr_number: 61,
+    status: 'under_review', task_id: 'completed-task',
+    created_at: hoursAgo(6), updated_at: hoursAgo(5),
+  });
+  assert.deepEqual((await idsFor('attention')).ids, ['completed-task', 'blocked-task']);
 });

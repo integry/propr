@@ -157,7 +157,7 @@ export const renderStatusStrip = (
       {/* Issue summary - grouped tightly */}
       {renderIssueSummary(summary)}
       {/* Separator dot */}
-      <span className="text-slate-300">•</span>
+      <span className="text-slate-300">·</span>
       {/* Status badge */}
       <span className={`px-2 py-0.5 inline-flex items-center gap-1 text-xs leading-5 font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
         {getStatusIcon(effectiveStatus)}

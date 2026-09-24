@@ -113,6 +113,7 @@ const METRIC_KEY_LABELS: Record<string, string> = {
     session: 'Session',
     weeklyAll: 'Weekly',
     weeklySonnet: 'Sonnet',
+    weeklyFable: 'Fable',
     weeklyOpus: 'Opus',
     weeklyHaiku: 'Haiku',
     fiveHour: 'Five Hour',

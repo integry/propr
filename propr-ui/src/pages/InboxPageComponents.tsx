@@ -21,7 +21,7 @@ import {
 
 // Separator dot between metadata items, as in the task context strip.
 const Dot: React.FC = () => (
-  <span className="text-gray-300" aria-hidden="true">•</span>
+  <span className="text-gray-300" aria-hidden="true">·</span>
 );
 
 function DetailLink({

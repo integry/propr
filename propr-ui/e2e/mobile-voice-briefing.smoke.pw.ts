@@ -278,10 +278,10 @@ test('keeps Voice Briefings off until opt-in, then usable on a narrow mobile vie
   await expect(dialog).toBeHidden();
   await expect(launcher).toBeFocused();
 
-  const activityLink = mobileNavigation.getByRole('link', { name: 'Activity' });
-  await expect(activityLink).toBeVisible();
-  await activityLink.click();
-  await expect(page).toHaveURL(/\/tasks$/);
+  const dashboardLink = mobileNavigation.getByRole('link', { name: 'Dashboard' });
+  await expect(dashboardLink).toBeVisible();
+  await dashboardLink.click();
+  await expect(page).toHaveURL(/\/$/);
 
   await page.goto('/settings');
   await expect(page.getByRole('checkbox', { name: 'Enable voice briefings' })).toBeChecked();

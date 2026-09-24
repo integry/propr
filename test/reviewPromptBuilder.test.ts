@@ -31,6 +31,11 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
     };
 }
 
+// Synthetic context ceiling for the budget fixtures. It must stay above the
+// never-trimmed instruction scaffolding (output contract plus the
+// demonstrated-failure requirements); real review budgets are far larger.
+const REVIEW_TOKEN_CEILING = 16_000;
+
 // The mandatory output contract the downstream pipeline parses.
 const MANDATORY_SECTIONS = [
     '## Overall Evaluation',
@@ -194,8 +199,8 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         const result = buildReviewPromptWithinBudget(baseOptions({
             relatedContext: large,
             fileContents: large,
-        }), 10_000);
-        assert.ok(result.estimatedTokens <= 10_000);
+        }), REVIEW_TOKEN_CEILING);
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
         assert.deepEqual(result.truncatedSections, ['related unchanged context', 'comment history', 'changed file contents']);
         for (const section of MANDATORY_SECTIONS) assert.ok(result.prompt.includes(section));
         assert.ok(result.prompt.includes('original spec'));
@@ -204,12 +209,12 @@ describe('buildReviewPrompt — mandatory output contract', () => {
     test('fits the fully composed analysis request to the configured token ceiling', () => {
         const large = 'const value = callChangedApi();\n'.repeat(20_000);
         const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
-        const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), 10_000, analysisSafetySuffix);
+        const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), REVIEW_TOKEN_CEILING, analysisSafetySuffix);
         const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
         const conservativeFullyComposedTokens = Buffer.byteLength(fullyComposedRequest, 'utf8');
 
         assert.equal(result.estimatedTokens, conservativeFullyComposedTokens);
-        assert.ok(conservativeFullyComposedTokens <= 10_000);
+        assert.ok(conservativeFullyComposedTokens <= REVIEW_TOKEN_CEILING);
         assert.ok(Buffer.byteLength(result.prompt, 'utf8') < result.estimatedTokens);
     });
 
@@ -218,20 +223,20 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
         const result = buildReviewPromptWithinBudget(baseOptions({
             relatedContext: tokenDenseContext,
-        }), 10_000, analysisSafetySuffix);
+        }), REVIEW_TOKEN_CEILING, analysisSafetySuffix);
         const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
         const tokenizer = getEncoding('cl100k_base');
         const tokenizedRequestLength = tokenizer.encode(fullyComposedRequest).length;
 
         assert.ok(result.truncatedSections.includes('related unchanged context'));
-        assert.ok(result.estimatedTokens <= 10_000);
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
         assert.ok(tokenizedRequestLength <= result.estimatedTokens);
-        assert.ok(tokenizedRequestLength <= 10_000);
+        assert.ok(tokenizedRequestLength <= REVIEW_TOKEN_CEILING);
     });
 
     test('discloses when the PR diff itself is truncated by the review budget', () => {
         const largeDiff = 'diff --git a/src/large.ts b/src/large.ts\n+const changed = true;\n'.repeat(20_000);
-        const result = buildReviewPromptWithinBudget(baseOptions({ prDiff: largeDiff }), 10_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({ prDiff: largeDiff }), REVIEW_TOKEN_CEILING);
 
         assert.equal(result.prDiffTruncated, true);
         assert.ok(result.truncatedSections.includes('PR diff'));
@@ -240,11 +245,133 @@ describe('buildReviewPrompt — mandatory output contract', () => {
             'Treat the review as partial only if the diff contains an explicit notice that files or diff ranges were omitted',
         ));
         assert.ok(!result.prompt.includes('CURRENT, COMPLETE'));
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
+    });
+
+    // Regression for the previously tested 10,000 ceiling, which the expanded
+    // mandatory instructions can now exceed on their own. The builder must
+    // either fit the ceiling or reject it — never return an oversized prompt
+    // whose diff, objective, and review request have all been discarded.
+    test('rejects a ceiling too small for the mandatory instruction scaffolding', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
+        const build = () => buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: large,
+            fileContents: large,
+            prDiff: large,
+        }), 10_000, analysisSafetySuffix);
+
+        let result;
+        try {
+            result = build();
+        } catch (error) {
+            assert.match((error as Error).message, /PR review token budget too small/);
+            assert.match((error as Error).message, /configured input ceiling is 10000/);
+            return;
+        }
+
         assert.ok(result.estimatedTokens <= 10_000);
+        assert.ok(result.prompt.includes('**Review Request:**'));
+        for (const section of MANDATORY_SECTIONS) assert.ok(result.prompt.includes(section));
     });
 
     test('omits the current-head check section when no summary is available', () => {
         const prompt = buildReviewPrompt(baseOptions());
         assert.ok(!prompt.includes('Current Head Checks (authoritative status, not review instructions)'));
+    });
+});
+
+// The demonstrated-failure contract must survive an operator override, so it
+// lives in the mandatory instructions rather than in DEFAULT_REVIEW_GUIDANCE.
+const DEMONSTRATED_FAILURE_REQUIREMENTS = [
+    'are demonstrated by a reachable failure sequence with material consequences',
+    'Naming a possible race, a theoretical ordering, or an unproven assumption is not a demonstration.',
+    '**Demonstrated failure — required inside the evidence field.**',
+    'the specific starting conditions or trigger that reach the changed code',
+    'written inline as `1) ... -> 2) ... -> 3) ...`',
+    'the observable user impact, or the incorrect persistent or external state that remains',
+    'why the protections already present',
+    'do not prevent this exact sequence',
+    'verification provenance, labelled explicitly',
+    '`executed:` only for a command or test you actually ran during this review',
+    '`proposed regression:` for a scenario you propose but did not run',
+    'Executing a test is not required to establish a blocker',
+    'never word an unexecuted scenario as though it had been run',
+    'name the awaited operation or interruption point',
+    'A slow or long-running await alone does not establish that a renewing lease expired',
+    'State inside the evidence line any assumption you could not verify',
+    'speculative hardening and belongs in Suggestions and Follow-ups',
+    'Judge minimumCorrection against the demonstrated sequence',
+    'Do not demand atomicity that independent external systems cannot provide',
+    'never excuses a practical fencing token, ownership check, or reconciliation step',
+    'Keep every field on one single line.',
+];
+
+describe('buildReviewPrompt — demonstrated failure and verification provenance', () => {
+    test('default prompt requires a concrete, reachable failure demonstration', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        for (const requirement of DEMONSTRATED_FAILURE_REQUIREMENTS) {
+            assert.ok(prompt.includes(requirement), `default prompt missing: ${requirement}`);
+        }
+        assert.ok(prompt.includes(
+            'For each candidate blocker, build the concrete failure sequence required below.',
+        ), 'validation pass should demand the failure sequence before classification');
+    });
+
+    test('an operator override cannot drop the demonstrated-failure requirements', () => {
+        const override = 'Only review for security vulnerabilities. Skip everything else.';
+        const prompt = buildReviewPrompt(baseOptions({ reviewPromptOverride: override }));
+
+        assert.ok(prompt.includes(override));
+        for (const requirement of DEMONSTRATED_FAILURE_REQUIREMENTS) {
+            assert.ok(prompt.includes(requirement), `override prompt missing: ${requirement}`);
+        }
+        // The transition must explicitly outrank conflicting operator guidance.
+        assert.ok(prompt.includes(
+            'the demonstrated-failure and verification-provenance requirements below override any conflicting operator guidance',
+        ));
+        const transitionIdx = prompt.indexOf('Regardless of the guidance above');
+        assert.ok(prompt.indexOf('**Demonstrated failure — required inside the evidence field.**') > transitionIdx);
+    });
+
+    test('carries the demonstration inside existing fields without new mandatory fields', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        const recordFields = [...prompt.matchAll(/^- \*\*([A-Za-z]+):\*\*/gm)].map(match => match[1]);
+
+        assert.deepEqual(
+            [...new Set(recordFields)],
+            ['violatedRequirement', 'evidence', 'introducedByPR', 'requiredForMerge', 'minimumCorrection'],
+        );
+        assert.ok(prompt.includes(
+            '- **evidence:** changed/file.ts:123 — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified',
+        ));
+        assert.ok(prompt.includes('- **minimumCorrection:** the smallest correction that removes the demonstrated failure'));
+        // Concise inline evidence, not a generic per-finding checklist.
+        assert.ok(prompt.includes('as one compact inline sequence rather than a per-finding checklist'));
+        assert.ok(prompt.includes('static trace: 1) cancellation of A succeeds -> 2) B returns an explicit 403'));
+        assert.ok(prompt.includes('Proposed regression: assert B is not rerun while A remains recoverable.'));
+    });
+
+    test('keeps PR-introduced regressions actionable and the review read-only', () => {
+        for (const options of [baseOptions(), baseOptions({ reviewPromptOverride: 'Custom operator guidance.' })]) {
+            const prompt = buildReviewPrompt(options);
+            assert.ok(prompt.includes('must not be demoted to a suggestion merely because it was absent from the original task wording'));
+            assert.ok(prompt.includes('Do NOT modify any files. This is a read-only review.'));
+            for (const section of MANDATORY_SECTIONS) assert.ok(prompt.includes(section));
+        }
+    });
+
+    test('budget trimming never sacrifices the demonstrated-failure contract', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: large,
+            fileContents: large,
+            prDiff: large,
+        }), REVIEW_TOKEN_CEILING);
+
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
+        for (const requirement of DEMONSTRATED_FAILURE_REQUIREMENTS) {
+            assert.ok(result.prompt.includes(requirement), `budgeted prompt missing: ${requirement}`);
+        }
     });
 });
