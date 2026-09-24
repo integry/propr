@@ -41,6 +41,22 @@ function fakeClock(startMs = 0): {
     };
 }
 
+/** A promise the test resolves itself, to order two things by hand. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve = (): void => {};
+    const promise = new Promise<void>(settle => {
+        resolve = () => settle();
+    });
+    return { promise, resolve };
+}
+
+/** Lets everything already queued on the event loop run to completion. */
+async function drainEventLoop(): Promise<void> {
+    for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+    }
+}
+
 /** Runs `body` with the SQLite retry environment back at its shipped defaults. */
 async function withDefaultRetryEnv(body: () => Promise<void>): Promise<void> {
     const keys = [
@@ -583,6 +599,50 @@ describe('installSqliteRetry', () => {
         assert.equal(insert.attempts, 1);
     });
 
+    test('abandons a pending retry when its transaction ends first', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        installSqliteRetry(db, {
+            random: () => 1,
+            // A deferred BEGIN is what lets contention land on a statement
+            // inside the callback instead of on the BEGIN before it.
+            immediateTransactions: false,
+            sleep: async () => {
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        const finished = assert.rejects(
+            db.transaction(async trx => {
+                await Promise.all([
+                    trx('widgets').insert({ id: 1 }),
+                    // Whatever else the callback was doing fails once the
+                    // insert is already waiting to try again.
+                    backingOff.promise.then(() => {
+                        throw new Error('callback failed');
+                    })
+                ]);
+            }),
+            /callback failed/
+        );
+
+        // The transaction loses its race, rolls back and hands the connection
+        // back to the pool while the insert is still backing off.
+        await finished;
+
+        // Only now does the lock clear. Replaying the insert here would run it
+        // outside the transaction that was rolled back, on a connection the
+        // transaction no longer owns, and commit it on its own.
+        lockCleared.resolve();
+        await drainEventLoop();
+
+        assert.deepEqual(await db('widgets').pluck('id'), []);
+        assert.equal(insert.attempts, 1);
+    });
+
     test('replays a transaction the caller declared replayable', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');
@@ -682,6 +742,41 @@ describe('installSqliteRetry', () => {
         // undo the write the caller just made.
         await db.raw('PRAGMA busy_timeout = 1234');
         assert.equal(await busyTimeoutMs(db), 1234);
+    });
+
+    test('preserves busy_timeout statements written in any valid form', async () => {
+        const db = await createDatabase();
+        const configured = await busyTimeoutMs(db);
+        installSqliteRetry(db, {
+            random: () => 1,
+            baseDelayMs: 25,
+            maxTotalMs: 100,
+            maxAttempts: 4
+        });
+        pragmas.length = 0;
+
+        // Quoting a name and putting a comment in front of it are both ordinary
+        // SQL, so the limiter has to keep its hands off these too: it would
+        // answer the read with its own internal cap and undo the assignments
+        // when it restored the value it saw.
+        const quotedRead = await db.raw('PRAGMA "busy_timeout"') as Array<
+            Record<string, number>
+        >;
+        assert.equal(
+            Number(quotedRead[0]?.timeout ?? quotedRead[0]?.busy_timeout),
+            configured
+        );
+
+        await db.raw('-- raise the lock wait\nPRAGMA `busy_timeout` = 1234');
+        assert.equal(await busyTimeoutMs(db), 1234);
+
+        await db.raw('/* schema-qualified */ PRAGMA main.[busy_timeout] = 4321');
+        assert.equal(await busyTimeoutMs(db), 4321);
+
+        await db.raw("PRAGMA 'busy_timeout'(2468)");
+        assert.equal(await busyTimeoutMs(db), 2468);
+
+        assert.deepEqual(pragmas.filter(source => source.startsWith('busy_timeout')), []);
     });
 
     test('leaves transactions the caller drives to the caller', async () => {

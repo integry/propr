@@ -21,7 +21,9 @@ import logger from '../utils/logger.js';
  * something this layer may decide on its own. Transactions instead open with
  * `BEGIN IMMEDIATE`, which moves lock acquisition ahead of the callback where
  * the statement retry can replay it harmlessly; callbacks that genuinely are
- * safe to run again opt in through {@link replayableTransaction}.
+ * safe to run again opt in through {@link replayableTransaction}. A replay also
+ * belongs where its statement was issued: one whose transaction ended while it
+ * was backing off is abandoned rather than run outside that transaction.
  *
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
@@ -50,12 +52,26 @@ const SQLITE_CONTENTION_MESSAGE =
 /** knex opens an outermost transaction with a deferred `BEGIN`. */
 const DEFERRED_BEGIN = /^\s*begin\s*;?\s*$/i;
 
+/** Whitespace and comments, which SQLite allows between any two tokens. */
+const TRIVIA = String.raw`(?:\s|--[^\n]*|/\*[\s\S]*?\*/)`;
+
+/** A name, bare or in any of the quoting forms SQLite accepts for one. */
+const quotedName = (name: string): string =>
+    `(?:${name}|"${name}"|\`${name}\`|\\[${name}\\]|'${name}')`;
+
 /**
- * A statement that reads or sets `busy_timeout`, with or without a schema
- * prefix and in either assignment form (`= 5000`, `(5000)`).
+ * A statement that reads or sets `busy_timeout`, in every form SQLite accepts
+ * for it: leading comments, a schema prefix, a quoted name, and either
+ * assignment syntax (`= 5000`, `(5000)`). A form left unrecognized here would
+ * be answered out of the limiter's internal cap, or have its assignment undone
+ * when the limiter puts back the value it saw.
  */
-const BUSY_TIMEOUT_PRAGMA =
-    /^\s*pragma\s+(?:[^\s;=()]+\s*\.\s*)?busy_timeout\s*(?:[=(]|;?\s*$)/i;
+const BUSY_TIMEOUT_PRAGMA = new RegExp(
+    `^${TRIVIA}*pragma(?:${TRIVIA}+|(?=["'\`\\[]))`
+    + `(?:[^\\s;=()]+${TRIVIA}*\\.${TRIVIA}*)?`
+    + `${quotedName('busy_timeout')}${TRIVIA}*(?:[=(]|;?${TRIVIA}*$)`,
+    'i'
+);
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BASE_DELAY_MS = 25;
@@ -134,6 +150,13 @@ interface RetryContext {
     isRetryable?: (error: unknown) => boolean;
     /** Shares this operation's deadline with every retry nested inside it. */
     sharesBudget?: boolean;
+    /**
+     * Whether the work the operation belongs to is still the one it started
+     * in. A statement issued inside a transaction outlives it as soon as that
+     * transaction ends, and replaying it then would run it outside the
+     * transaction that was rolled back — so the replay is given up instead.
+     */
+    stillOwned?: () => boolean;
     /**
      * Runs one attempt with the driver's own blocking wait capped at `limitMs`.
      * The cap is connection-wide state, so it is installed and taken back down
@@ -270,7 +293,9 @@ export function sqliteRetryDelayMs(
  * Every attempt has to fit inside the remaining wall-clock budget: the driver's
  * blocking wait is lowered to an equal share of the budget for the duration of
  * each attempt, the backoff is capped by what is left, and the deadline is
- * rechecked once the wait is over. The final attempt's error is rethrown
+ * rechecked once the wait is over. A replay whose context is gone — a statement
+ * whose transaction ended while it was backing off — is given up rather than
+ * run somewhere it no longer belongs. The final attempt's error is rethrown
  * unchanged so callers keep seeing the SQLite result code and message they
  * expect.
  */
@@ -310,6 +335,18 @@ export async function retryOnSqliteContention<T>(
         );
     };
 
+    // The context a retry belongs to can end while the backoff runs, and it is
+    // the wait — the only point where the rest of the program gets to move —
+    // that has to be rechecked on the other side.
+    const abandoned = (): boolean => {
+        if (context.stillOwned?.() !== false) return false;
+        logger.debug(
+            { operation: context.operation },
+            'SQLite retry abandoned: the transaction it belonged to ended'
+        );
+        return true;
+    };
+
     const giveUp = (error: unknown, attempts: number): void => {
         if (attempts > 1 && isSqliteContentionError(error)) {
             logger.warn({
@@ -328,7 +365,8 @@ export async function retryOnSqliteContention<T>(
             const remainingMs = deadline - resolved.now();
             if (attempt >= resolved.maxAttempts
                 || remainingMs <= 0
-                || !isRetryable(error)) {
+                || !isRetryable(error)
+                || abandoned()) {
                 giveUp(error, attempt);
                 throw error;
             }
@@ -343,8 +381,9 @@ export async function retryOnSqliteContention<T>(
             await resolved.sleep(waitMs);
 
             // The wait itself can spend the rest of the budget, and the
-            // next attempt would block on the lock all over again.
-            if (deadline - resolved.now() <= 0) {
+            // next attempt would block on the lock all over again. It is also
+            // where the transaction this operation belongs to can end.
+            if (deadline - resolved.now() <= 0 || abandoned()) {
                 giveUp(error, attempt);
                 throw error;
             }
@@ -369,6 +408,54 @@ function isInTransaction(connection: unknown): boolean {
     return typeof connection === 'object'
         && connection !== null
         && (connection as SqliteQueryConnection).inTransaction === true;
+}
+
+interface TransactionEpoch {
+    open: boolean;
+    /** Counts the transaction boundaries this connection has crossed. */
+    epoch: number;
+}
+
+/**
+ * What each connection's transaction state was the last time a statement ran on
+ * it. A pending retry compares against this to tell the transaction it was
+ * issued in from whatever owns the connection now.
+ */
+const transactionEpochs = new WeakMap<object, TransactionEpoch>();
+
+/**
+ * Records a connection's transaction state and counts every boundary it
+ * crosses.
+ *
+ * A transaction can only open or close on a statement, and every statement
+ * passes through the patched `_query`, so this is called around each of them
+ * rather than read on demand: a `ROLLBACK` followed by a `BEGIN` leaves the
+ * connection looking exactly as it did before, and a retry that only looked
+ * afterwards would take the new transaction for its own.
+ */
+function observeTransaction(connection: unknown): TransactionEpoch | undefined {
+    if (typeof connection !== 'object' || connection === null) return undefined;
+    const open = isInTransaction(connection);
+    const seen = transactionEpochs.get(connection);
+    if (!seen) {
+        const first: TransactionEpoch = { open, epoch: 0 };
+        transactionEpochs.set(connection, first);
+        return first;
+    }
+    if (seen.open !== open) {
+        seen.open = open;
+        seen.epoch += 1;
+    }
+    return seen;
+}
+
+/**
+ * Identifies the transaction a statement belongs to. A statement issued outside
+ * one has no transaction to outlive, so it has nothing to identify either.
+ */
+function transactionOwnership(connection: unknown): number | undefined {
+    const state = observeTransaction(connection);
+    return state?.open ? state.epoch : undefined;
 }
 
 /**
@@ -471,9 +558,23 @@ function retryStatements(client: RetryableClient): void {
         }
 
         const sql = String(query?.sql ?? '');
+        // The transaction this statement belongs to, read before it runs: a
+        // replay is only its own statement again while that transaction is
+        // still the one open on this connection.
+        const transaction = transactionOwnership(connection);
+
+        const runAttempt = async (): Promise<unknown> => {
+            try {
+                return await runQuery.call(this, connection, obj);
+            } finally {
+                // `BEGIN`, `COMMIT` and `ROLLBACK` all come through here, and
+                // this is where what they did to the connection is visible.
+                observeTransaction(connection);
+            }
+        };
 
         return retryOnSqliteContention(
-            () => runQuery.call(this, connection, obj),
+            runAttempt,
             {
                 operation: sql,
                 // A stale snapshot inside an open transaction can only be
@@ -482,6 +583,14 @@ function retryStatements(client: RetryableClient): void {
                 // fail again.
                 isRetryable: error => isSqliteContentionError(error)
                     && !(isSqliteSnapshotConflict(error) && isInTransaction(connection)),
+                // A transaction can end while one of its statements is backing
+                // off — its callback can reject without awaiting the statement,
+                // and the rollback and the connection release follow. Replaying
+                // it then would run it outside the transaction that was rolled
+                // back, on a connection that already belongs to someone else.
+                ...(transaction === undefined ? {} : {
+                    stillOwned: () => transactionOwnership(connection) === transaction
+                }),
                 // Retrying may not change what the statement it wraps does.
                 // The limiter lowers `busy_timeout` for the duration of the
                 // attempt and puts the old value back afterwards, which would
