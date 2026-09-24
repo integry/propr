@@ -23,7 +23,11 @@ import logger from '../utils/logger.js';
  * the statement retry can replay it harmlessly; callbacks that genuinely are
  * safe to run again opt in through {@link replayableTransaction}. A replay also
  * belongs where its statement was issued: one whose transaction ended while it
- * was backing off is abandoned rather than run outside that transaction.
+ * was backing off is abandoned rather than run outside that transaction. That
+ * holds for nested transactions too, which knex implements as savepoints: a
+ * `ROLLBACK TO SAVEPOINT` undoes the statement's write without closing the
+ * connection's transaction, so replaying it afterwards would restore a write
+ * the rollback undid and let the parent commit it.
  *
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
@@ -70,6 +74,23 @@ const BUSY_TIMEOUT_PRAGMA = new RegExp(
     `^${TRIVIA}*pragma(?:${TRIVIA}+|(?=["'\`\\[]))`
     + `(?:[^\\s;=()]+${TRIVIA}*\\.${TRIVIA}*)?`
     + `${quotedName('busy_timeout')}${TRIVIA}*(?:[=(]|;?${TRIVIA}*$)`,
+    'i'
+);
+
+/** A savepoint name, bare or in any of the quoting forms SQLite accepts. */
+const SAVEPOINT_NAME = String.raw`("[^"]*"|'[^']*'|\`[^\`]*\`|\[[^\]]*\]|[^\s;"'\`\[\]()]+)`;
+
+/**
+ * The three statements that move savepoints on a connection, in the forms
+ * SQLite accepts: `SAVEPOINT name`, `RELEASE [SAVEPOINT] name` and
+ * `ROLLBACK [TRANSACTION] TO [SAVEPOINT] name`. knex opens a nested transaction
+ * with the first and ends it with one of the other two. Groups 1 to 3 tell the
+ * three apart; group 4 is the name.
+ */
+const SAVEPOINT_STATEMENT = new RegExp(
+    `^${TRIVIA}*(?:(savepoint)|(release)(?:${TRIVIA}+savepoint)?`
+    + `|(rollback)(?:${TRIVIA}+transaction)?${TRIVIA}+to(?:${TRIVIA}+savepoint)?)`
+    + `${TRIVIA}+${SAVEPOINT_NAME}`,
     'i'
 );
 
@@ -410,18 +431,31 @@ function isInTransaction(connection: unknown): boolean {
         && (connection as SqliteQueryConnection).inTransaction === true;
 }
 
-interface TransactionEpoch {
+interface TransactionState {
     open: boolean;
     /** Counts the transaction boundaries this connection has crossed. */
     epoch: number;
+    /**
+     * The savepoints open inside the transaction, outermost first. Each is
+     * its own object because identity is what matters: a rollback to a
+     * savepoint keeps its name on the stack but replaces the entry, so a
+     * statement issued under the old entry is no longer owned by anything.
+     */
+    savepoints: Array<{ name: string }>;
 }
+
+/**
+ * The transaction a statement was issued in: the connection's transaction, and
+ * every savepoint that was open inside it at the time.
+ */
+type TransactionOwner = Pick<TransactionState, 'epoch' | 'savepoints'>;
 
 /**
  * What each connection's transaction state was the last time a statement ran on
  * it. A pending retry compares against this to tell the transaction it was
  * issued in from whatever owns the connection now.
  */
-const transactionEpochs = new WeakMap<object, TransactionEpoch>();
+const transactionStates = new WeakMap<object, TransactionState>();
 
 /**
  * Records a connection's transaction state and counts every boundary it
@@ -433,29 +467,68 @@ const transactionEpochs = new WeakMap<object, TransactionEpoch>();
  * connection looking exactly as it did before, and a retry that only looked
  * afterwards would take the new transaction for its own.
  */
-function observeTransaction(connection: unknown): TransactionEpoch | undefined {
+function observeTransaction(connection: unknown): TransactionState | undefined {
     if (typeof connection !== 'object' || connection === null) return undefined;
     const open = isInTransaction(connection);
-    const seen = transactionEpochs.get(connection);
+    const seen = transactionStates.get(connection);
     if (!seen) {
-        const first: TransactionEpoch = { open, epoch: 0 };
-        transactionEpochs.set(connection, first);
+        const first: TransactionState = { open, epoch: 0, savepoints: [] };
+        transactionStates.set(connection, first);
         return first;
     }
     if (seen.open !== open) {
         seen.open = open;
         seen.epoch += 1;
+        // COMMIT and ROLLBACK release every savepoint with the transaction.
+        seen.savepoints = [];
     }
     return seen;
+}
+
+/** The name SQLite matches savepoints by: unquoted, case-insensitively. */
+function savepointName(token: string): string {
+    return token.replace(/^(["'`])([^]*)\1$|^\[([^]*)\]$/, '$2$3').toLowerCase();
+}
+
+/**
+ * Records what a savepoint statement that succeeded did to the connection's
+ * savepoints. The driver does not report those the way it reports whether a
+ * transaction is open, and a statement that failed moved none of them.
+ * `SAVEPOINT` pushes one; `RELEASE` pops the most recent one with that name
+ * and everything above it; `ROLLBACK TO` does the same but leaves a fresh
+ * entry in its place, since the writes made under the old one are gone.
+ */
+function observeSavepoint(connection: unknown, sql: string): void {
+    const state = observeTransaction(connection);
+    const moved = state && SAVEPOINT_STATEMENT.exec(sql);
+    if (!state || !moved) return;
+    const name = savepointName(moved[4]);
+    const depth = moved[1] ? state.savepoints.length : state.savepoints.findLastIndex(s => s.name === name);
+    if (depth < 0) return;
+    state.savepoints.length = depth;
+    if (!moved[2]) state.savepoints.push({ name });
 }
 
 /**
  * Identifies the transaction a statement belongs to. A statement issued outside
  * one has no transaction to outlive, so it has nothing to identify either.
  */
-function transactionOwnership(connection: unknown): number | undefined {
+function transactionOwnership(connection: unknown): TransactionOwner | undefined {
     const state = observeTransaction(connection);
-    return state?.open ? state.epoch : undefined;
+    return state?.open ? { epoch: state.epoch, savepoints: [...state.savepoints] } : undefined;
+}
+
+/**
+ * Whether the transaction a statement was issued in is still the one open on
+ * the connection: the same transaction, with every savepoint the statement
+ * was issued under still open. A savepoint that was released or rolled back
+ * to is a different entry now, so a statement issued under it is disowned
+ * even though the connection's transaction never closed.
+ */
+function stillOwnedBy(connection: unknown, owner: TransactionOwner): boolean {
+    const state = observeTransaction(connection);
+    if (!state?.open || state.epoch !== owner.epoch) return false;
+    return owner.savepoints.every((savepoint, depth) => state.savepoints[depth] === savepoint);
 }
 
 /**
@@ -473,9 +546,7 @@ function transactionOwnership(connection: unknown): number | undefined {
  * configured value is read back each time rather than remembered, so a caller
  * that changed the pragma between two attempts keeps the value it set.
  */
-function blockingWaitLimiter(connection: unknown): Pick<
-    RetryContext, 'withBlockingWaitLimit'
-> {
+function blockingWaitLimiter(connection: unknown): Pick<RetryContext, 'withBlockingWaitLimit'> {
     const pragma = (connection as SqliteQueryConnection | null)?.pragma;
     if (typeof pragma !== 'function') return {};
     const run = pragma.bind(connection as SqliteQueryConnection);
@@ -541,9 +612,7 @@ function retryStatements(client: RetryableClient): void {
         const options = this.config?.[RETRY_OPTIONS] as ResolvedRetryOptions | undefined;
         if (!options) return runQuery.call(this, connection, obj);
 
-        const query = typeof obj === 'object' && obj !== null
-            ? obj as { sql?: unknown }
-            : undefined;
+        const query = typeof obj === 'object' && obj !== null ? obj as { sql?: unknown } : undefined;
 
         // Take the write lock at BEGIN rather than at the callback's first
         // write: contention then lands on a statement with no side effects to
@@ -565,7 +634,11 @@ function retryStatements(client: RetryableClient): void {
 
         const runAttempt = async (): Promise<unknown> => {
             try {
-                return await runQuery.call(this, connection, obj);
+                const result = await runQuery.call(this, connection, obj);
+                // The savepoint statements of a nested transaction come
+                // through here too, and only move savepoints when they ran.
+                observeSavepoint(connection, sql);
+                return result;
             } finally {
                 // `BEGIN`, `COMMIT` and `ROLLBACK` all come through here, and
                 // this is where what they did to the connection is visible.
@@ -588,9 +661,10 @@ function retryStatements(client: RetryableClient): void {
                 // and the rollback and the connection release follow. Replaying
                 // it then would run it outside the transaction that was rolled
                 // back, on a connection that already belongs to someone else.
-                ...(transaction === undefined ? {} : {
-                    stillOwned: () => transactionOwnership(connection) === transaction
-                }),
+                // A nested transaction ends the same way, with a rollback to
+                // its savepoint that leaves the parent open: replaying then
+                // would put the write back for the parent to commit.
+                stillOwned: transaction && (() => stillOwnedBy(connection, transaction)),
                 // Retrying may not change what the statement it wraps does.
                 // The limiter lowers `busy_timeout` for the duration of the
                 // attempt and puts the old value back afterwards, which would
