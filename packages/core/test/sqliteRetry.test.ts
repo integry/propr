@@ -699,6 +699,51 @@ describe('installSqliteRetry', () => {
         assert.equal(insert.attempts, 1);
     });
 
+    for (const [open, rollBack, release] of [
+        // A bare identifier ends where the comment begins, so SQLite names
+        // this savepoint `s`, not `s/*`.
+        ['SAVEPOINT s/* marker */', 'ROLLBACK TO s', 'RELEASE s'],
+        // A doubled quote stands for itself inside a quoted identifier.
+        ['SAVEPOINT "s""q"', 'ROLLBACK TO [s"q]', 'RELEASE `s"q`']
+    ]) {
+        test(`abandons a pending retry under \`${open}\` once \`${rollBack}\` runs`, async () => {
+            const db = await createDatabase();
+            const insert = failStatements(/^insert/i, 1);
+            const backingOff = deferred();
+            const lockCleared = deferred();
+            installSqliteRetry(db, {
+                random: () => 1,
+                immediateTransactions: false,
+                sleep: async () => {
+                    backingOff.resolve();
+                    await lockCleared.promise;
+                }
+            });
+
+            let insertError: unknown;
+            await db.transaction(async trx => {
+                await trx.raw(open);
+                const pending = trx('widgets').insert({ id: 1 }).catch(error => {
+                    insertError = error;
+                });
+                await backingOff.promise;
+                // The rollback names the same savepoint SQLite opened above,
+                // so it undoes everything issued under it, the pending insert
+                // included.
+                await trx.raw(rollBack);
+                await trx.raw(release);
+                // Only now does the lock clear. Replaying the insert here
+                // would put the write back for the transaction to commit.
+                lockCleared.resolve();
+                await pending;
+            });
+
+            assert.match(String(insertError), /database is locked/);
+            assert.equal(insert.attempts, 1);
+            assert.deepEqual(await db('widgets').pluck('id'), []);
+        });
+    }
+
     test('keeps a parent retry pending while a nested transaction completes', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1);

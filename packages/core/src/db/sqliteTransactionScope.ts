@@ -23,8 +23,16 @@
 /** Whitespace and comments, which SQLite allows between any two tokens. */
 export const SQL_TRIVIA = String.raw`(?:\s|--[^\n]*|/\*[\s\S]*?\*/)`;
 
-/** A savepoint name, bare or in any of the quoting forms SQLite accepts. */
-const SAVEPOINT_NAME = String.raw`("[^"]*"|'[^']*'|\`[^\`]*\`|\[[^\]]*\]|[^\s;"'\`\[\]()]+)`;
+/**
+ * A savepoint name, tokenized the way SQLite does. A bare identifier is made
+ * of letters, digits, `_`, `$` and non-ASCII characters, and ends where the
+ * next token — a comment delimiter included — begins, so a name with a block
+ * comment right after it stops before the slash. Inside the `"`, `'` and
+ * backtick quoting forms a doubled delimiter stands for itself; inside
+ * `[...]` nothing does.
+ */
+const SAVEPOINT_NAME = String.raw`("(?:[^"]|"")*"|'(?:[^']|'')*'|\`(?:[^\`]|\`\`)*\`|\[[^\]]*\]`
+    + String.raw`|[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_$\u0080-\uFFFF]*)`;
 
 /**
  * The three statements that move savepoints on a connection, in the forms
@@ -134,9 +142,14 @@ export function observeTransaction(connection: unknown): TransactionState | unde
     return seen;
 }
 
-/** The name SQLite matches savepoints by: unquoted, case-insensitively. */
+/** The name SQLite matches savepoints by: unquoted, with a doubled delimiter unescaped, case-insensitively. */
 function savepointName(token: string): string {
-    return token.replace(/^(["'`])([^]*)\1$|^\[([^]*)\]$/, '$2$3').toLowerCase();
+    const quote = token[0];
+    if (quote === '[') return token.slice(1, -1).toLowerCase();
+    if (quote === '"' || quote === "'" || quote === '`') {
+        return token.slice(1, -1).replaceAll(quote + quote, quote).toLowerCase();
+    }
+    return token.toLowerCase();
 }
 
 /**
