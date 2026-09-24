@@ -20,7 +20,7 @@ import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import { McpError, type McpScope } from './config.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations, type OperationResult, type Operation } from './operations.js';
-import { callWorkflow, redact, type WorkflowHandler } from './adapter.js';
+import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { addTaskSubmissionTools, trackTaskSubmission } from './toolsTaskSubmissions.js';
 import { addPlanningTools } from './toolsPlanning.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
@@ -30,7 +30,6 @@ import { addArtifactTools } from './toolsArtifacts.js';
 import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
-import { presentResult, type PresentedResult } from './presentation.js';
 import { summarizeGoal, summarizeTask } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, TERMINAL_TASK_STATES, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
@@ -374,58 +373,5 @@ export function workflow(tools: McpTool[], definition: Omit<McpTool, 'run'>, han
   } });
 }
 
-async function authorizePlanContext(row: Args, principal: McpPrincipal, policy: McpPolicy): Promise<void> {
-  const context = typeof row.context_config === 'string' ? JSON.parse(row.context_config || '{}') : row.context_config;
-  const repositories = context?.contextRepositories;
-  if (Array.isArray(repositories)) {
-    if (repositories.length > 20) throw new McpError('CONTEXT_LIMIT', 'Plan has too many context repositories. Update it in the browser.');
-    for (const repository of repositories) {
-      if (typeof repository?.repository !== 'string') throw new McpError('INVALID_CONTEXT', 'Invalid plan context repository.');
-      await policy.repository(principal, repository.repository);
-    }
-  }
-}
-
-async function authorizeTarget(tool: McpTool, args: Args, principal: McpPrincipal, deps: ToolDeps): Promise<void> {
-  const target = tool.target!;
-  const row = await deps.db(target.table).where({ [target.column]: args[target.arg] }).first();
-  if (!row || row.repository !== args.repository || (target.owner && row[target.owner] !== principal.user.id)) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
-  if (target.table === 'task_drafts') await authorizePlanContext(row, principal, deps.policy);
-  if (target.table === 'tasks') {
-    const owner = await deps.db('goals').where({ current_task_id: args.taskId }).first('owner_id');
-    if ((row.task_type === 'goal' && !owner) || (owner && owner.owner_id !== principal.user.id)) throw new McpError('NOT_FOUND', 'Task not found.', 404);
-    if (owner && !tool.readOnly) throw new McpError('USE_GOAL_CONTROLS', 'Use the owning goal’s input and cancellation controls.', 409);
-  }
-}
-
-export async function executeTool(tool: McpTool, raw: unknown, principal: McpPrincipal, deps: ToolDeps): Promise<PresentedResult> {
-  const args = tool.schema.parse(raw) as Args;
-  deps.policy.requireScope(principal, tool.scope);
-  if (tool.permission) deps.policy.requirePermission(principal, tool.permission);
-  if (args.repository && tool.name !== 'create_repository_configuration') await deps.policy.repository(principal, args.repository, !tool.readOnly, { includeDisabled: tool.name.endsWith('_repository_configuration'), allowUnconfigured: tool.name === 'remove_repository_configuration' });
-  // A deleted target cannot be reloaded, but its owner/grant-bound receipt can
-  // still be returned after current scope and repository authorization.
-  const deletedReplay = !tool.readOnly && tool.name.startsWith('delete_')
-    ? await new McpOperations(deps.db).replay(principal, tool.name, args) : undefined;
-  if (tool.name === 'send_task_followup' && /^\s*\/(?:merge|review|fix|ultrafix|deploy)\b/im.test(args.message)) throw new McpError('USE_EXPLICIT_TOOL', 'Use the dedicated PR lifecycle tool for slash commands so its scope and head preconditions can be checked.');
-  if (tool.target && !deletedReplay) await authorizeTarget(tool, args, principal, deps);
-  let operationRepository = args.repository;
-  let cancellationReplay: Record<string, unknown> | undefined;
-  if (tool.name === 'cancel_operation') {
-    const source = await new McpOperations(deps.db).get(principal, args.operationId);
-    operationRepository = source.repository;
-    if (operationRepository) await deps.policy.repository(principal, operationRepository, true);
-    if (['generate_plan', 'refine_plan'].includes(source.tool)) deps.policy.requireScope(principal, 'plan');
-    cancellationReplay = await new McpOperations(deps.db).replay(principal, tool.name, args);
-    if (!cancellationReplay) {
-      const sourceResult = source.result ? JSON.parse(source.result) : {};
-      await cancellationTarget(deps, principal, source.repository, sourceResult.continuation || sourceResult);
-    }
-  }
-  const result = deletedReplay ?? cancellationReplay ?? (tool.readOnly
-    ? (await tool.run({ principal, args })).data
-    : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository }, operationId => tool.run({ principal, args, operationId })));
-  const data = redact(result) as Record<string, unknown>;
-  if (Buffer.byteLength(JSON.stringify(data)) > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
-  return { ...presentResult(tool, args, data, deps.policy.config), data };
-}
+/** Dispatch, authorization and access recording for one call live beside the catalog. */
+export { executeTool } from './toolExecution.js';
