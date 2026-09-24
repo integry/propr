@@ -235,7 +235,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
             <h3 className="text-sm font-semibold text-slate-800">To-Dos</h3>
             <p className="text-xs text-slate-500">
               {activeTodos.length} item{activeTodos.length !== 1 ? 's' : ''}
-              {completedTodos.length > 0 && ` • ${completedTodos.length} completed`}
+              {completedTodos.length > 0 && ` · ${completedTodos.length} completed`}
             </p>
           </div>
           <button

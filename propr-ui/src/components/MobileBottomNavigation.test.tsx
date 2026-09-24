@@ -73,21 +73,34 @@ describe('MobileBottomNavigation', () => {
   });
 
   it('renders all five destinations in order with the unread count and route active state', () => {
-    renderNavigation();
+    renderNavigation('/');
 
     const navigation = screen.getByRole('navigation', { name: 'Primary navigation' });
-    const destinations = within(navigation).getAllByText(/^(Inbox|Activity|New Task|Repositories|More)$/);
+    const destinations = within(navigation).getAllByText(/^(Inbox|Dashboard|New Task|Repositories|More)$/);
 
     expect(destinations.map(destination => destination.textContent)).toEqual([
       'Inbox',
-      'Activity',
+      'Dashboard',
       'New Task',
       'Repositories',
       'More',
     ]);
     expect(within(navigation).getByText('7')).toBeInTheDocument();
-    expect(within(navigation).getByRole('link', { name: /Activity/ })).toHaveAttribute('aria-current', 'page');
+    expect(within(navigation).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('aria-current', 'page');
     expect(within(navigation).getByRole('link', { name: /Inbox/ })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('button', { name: 'More' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('names the dashboard tab the way the sidebar does, with no second name for it', () => {
+    renderNavigation('/');
+
+    // One screen, one name: a tab reading "Activity" under a pulse icon sat
+    // beside a sidebar and page that both say Dashboard.
+    const navigation = screen.getByRole('navigation', { name: 'Primary navigation' });
+    const tab = within(navigation).getByRole('link', { name: 'Dashboard' });
+    expect(tab).toHaveAttribute('href', '/');
+    expect(tab.querySelector('svg')).toHaveClass('lucide-layout-dashboard');
+    expect(within(navigation).queryByText('Activity')).not.toBeInTheDocument();
   });
 
   it('opens an accessible More sheet and restores focus after Escape and backdrop close', () => {
@@ -98,7 +111,8 @@ describe('MobileBottomNavigation', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'More' });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('link', { name: 'Dashboard' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Logs' })).toBeInTheDocument();
@@ -133,7 +147,7 @@ describe('MobileBottomNavigation', () => {
     expect(moreButton).toHaveAttribute('aria-current', 'page');
   });
 
-  it.each(['/', '/admin/members'])('marks More active for %s', route => {
+  it.each(['/tasks', '/tasks/task-1', '/admin/members'])('marks More active for %s', route => {
     renderNavigation(route);
 
     expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
@@ -147,7 +161,7 @@ describe('MobileBottomNavigation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'More' }));
 
-    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Tasks' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Access' })).not.toBeInTheDocument();
   });
 

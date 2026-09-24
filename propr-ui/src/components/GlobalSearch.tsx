@@ -304,7 +304,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                         <span className="text-xs text-slate-500">
                           {getRepoName(plan.repository)}
                         </span>
-                        <span className="text-slate-300">•</span>
+                        <span className="text-slate-300">·</span>
                         <span
                           className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(
                             plan.status
@@ -354,7 +354,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                         <span className="text-xs text-slate-500">
                           {task.repository ? getRepoName(task.repository) : 'Unknown'}
                         </span>
-                        <span className="text-slate-300">•</span>
+                        <span className="text-slate-300">·</span>
                         <span
                           className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(
                             task.status
@@ -381,7 +381,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
             <div className="px-4 py-2 bg-slate-50 border-t border-slate-100">
               <p className="text-[10px] text-slate-400">
                 Press <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Enter</kbd> to search all tasks
-                {' '}• <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Esc</kbd> to close
+                {' '}· <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Esc</kbd> to close
               </p>
             </div>
           )}

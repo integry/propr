@@ -6,6 +6,7 @@ import { prepareNativeElectronTest } from './electron-native-test-setup.mjs';
 describe('native Electron test setup', () => {
   it('keeps native probe modules free of eager Electron resolution', async () => {
     const probeSources = await Promise.all([
+      'electron-fixture-runner.mjs',
       'electron-frame-semantics.test.mjs',
       'electron-pairing-zstd.test.mjs',
     ].map(file => readFile(new URL(file, import.meta.url), 'utf8')));

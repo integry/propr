@@ -1,119 +1,51 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+/**
+ * Dashboard composition root.
+ *
+ * The dashboard answers "what needs my attention right now" in four panes:
+ * needs attention, happening now, recent outcomes and historical stats. Live
+ * work gets the space; the deeper charts live on `/analytics`. The page spends
+ * no row of its own on a title or a toolbar: the panes start directly under the
+ * global header, and the repository filter lives in that header.
+ *
+ * This file owns only three things — the shared repository filter, the socket
+ * subscription that keeps every section current, and the responsive layout.
+ * Each section reads its own slice of the dashboard API.
+ *
+ * The layout is a split-pane console, not a tray of cards. There are no boxes,
+ * and a rule is spent only where a pane actually ends: one continuous vertical
+ * rule between the columns, one horizontal rule under each pane header and
+ * between the stacked panes. Everything inside a pane — rows, counts, metrics,
+ * segmented controls — is separated by space and tint instead, because a rule
+ * repeated on every row stops reading as structure and starts reading as
+ * texture. The panes share row lines so the dividers in the two columns land
+ * on the same pixel. The console fills the viewport — the last
+ * grid row absorbs the leftover height — so the pane divider never stops
+ * halfway down the screen above a band of dead white space.
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
-import TaskStatsChart from './TaskStatsChart';
-import RepositoryBreakdown from './RepositoryBreakdown';
-import TopModels from './TopModels';
-import TaskList from './TaskList';
-import ActivitySparkline from './ActivitySparkline';
 import { OnboardingWidget } from './Dashboard/OnboardingWidget';
 import { NoDefaultModelAlert } from './Dashboard/NoDefaultModelAlert';
 import AgentTankDetectionBanner from './AgentTankDetectionBanner';
-import { getQueueStats } from '../api/proprApi';
-import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
-import { Loader2, ChevronRight } from 'lucide-react';
+import { ConnectSoftPromoBanner } from './ConnectPlusBanner';
+import { RepositorySelector, type RepoOption } from './RepositorySelector';
+import { useHeaderScopeSlot } from './headerScopeSlot';
+import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { useSocket } from '../contexts/useSocket';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
-import { ConnectSoftPromoBanner } from './ConnectPlusBanner';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
+import { isDefaultParamValue } from './TaskList/utils';
+import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
+import { HappeningNowSection } from './Dashboard/HappeningNowSection';
+import { RecentOutcomesFeed } from './Dashboard/RecentOutcomesFeed';
+import { HistoricalStatsPanel } from './Dashboard/HistoricalStatsPanel';
+import { RepositoryIconProvider, type RepositoryIconInfo } from './Dashboard/sectionPrimitives';
+import { ALL_REPOSITORIES, REPOSITORY_PARAM } from './Dashboard/sectionState';
 import type { TaskUpdatePayload } from '@propr/shared';
-
-interface QueueStats {
-  active: number;
-  waiting: number;
-  completed: number;
-  failed: number;
-}
-
-// Micro-Card Stat Item for the sidebar stats grid
-interface StatItemProps {
-  label: string;
-  value: string | number;
-  color?: string;
-  isLoading?: boolean;
-}
-
-// Metric values are data, not display type: standard sans-serif, semibold, tabular digits.
-const StatItem: React.FC<StatItemProps> = ({ label, value, color = 'text-slate-900', isLoading }) => (
-  <div className="flex flex-col items-start">
-    <span className="text-[10px] font-bold text-gray-500 uppercase">{label}</span>
-    {isLoading ? (
-      <Loader2 className="w-4 h-4 animate-spin text-gray-400 mt-0.5" />
-    ) : (
-      <span className={`font-sans text-xl font-semibold tabular-nums ${color}`}>{value}</span>
-    )}
-  </div>
-);
-
-// Helper function to calculate success rate
-const calculateSuccessRate = (taskStats: TaskStatsResponse | null): string => {
-  if (!taskStats?.summary) return '0%';
-  const { completed, total } = taskStats.summary;
-  if (total === 0) return '0%';
-  return Math.round((completed / total) * 100) + '%';
-};
-
-// Helper function to format cost
-const formatCost = (overviewStats: StatsOverviewResponse | null): string => {
-  const cost = overviewStats?.usage?.total_cost_usd ?? 0;
-  return `$${cost.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-};
-
-// Stats Grid component for the right sidebar
-interface StatsGridProps {
-  queueStats: QueueStats | null;
-  taskStats: TaskStatsResponse | null;
-  overviewStats: StatsOverviewResponse | null;
-  statsLoading: boolean;
-}
-
-export const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
-  <div className="px-6 py-6 border-b border-slate-200">
-    {/* 2x2 Grid for Active/Success and Total/Failed with crosshair borders */}
-    <div className="grid grid-cols-2">
-      <div className="border-r border-b border-slate-200 pr-4 pb-4">
-        <StatItem
-          label="Active"
-          value={queueStats?.active || 0}
-          color="text-green-600"
-          isLoading={statsLoading && !queueStats}
-        />
-      </div>
-      <div className="border-b border-slate-200 pl-4 pb-4">
-        <StatItem
-          label="Success"
-          value={calculateSuccessRate(taskStats)}
-          isLoading={statsLoading && !taskStats}
-        />
-      </div>
-      <div className="border-r border-slate-200 pr-4 pt-4">
-        <StatItem
-          label="Total"
-          value={taskStats?.summary?.total?.toLocaleString() || 0}
-          isLoading={statsLoading && !taskStats}
-        />
-      </div>
-      <div className="pl-4 pt-4">
-        <StatItem
-          label="Failed"
-          value={taskStats?.summary?.failed || 0}
-          color="text-red-500"
-          isLoading={statsLoading && !taskStats}
-        />
-      </div>
-    </div>
-    {/* Cost - Full width row */}
-    <div className="pt-4 mt-4 border-t border-slate-200">
-      <StatItem
-        label="Total Cost"
-        value={formatCost(overviewStats)}
-        color="text-slate-900"
-        isLoading={statsLoading && !overviewStats}
-      />
-    </div>
-  </div>
-);
 
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
@@ -121,167 +53,205 @@ const Dashboard: React.FC = () => {
   const canManageAgents = userHasPermission(currentUser, 'instance.manage_agents');
   const canManageSettings = userHasPermission(currentUser, 'instance.manage_settings');
 
-  // System readiness state for onboarding
   const { hasAgents, hasDefaultModel, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
   const showOnboarding = canManageSettings && !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
 
-  // Lifted state for KPIs
-  const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
-  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
-  const [overviewStats, setOverviewStats] = useState<StatsOverviewResponse | null>(null);
-  const [statsLoading, setStatsLoading] = useState<boolean>(true);
+  // One repository filter for every section, kept in the URL so it survives
+  // navigation and a reload.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const repository = searchParams.get(REPOSITORY_PARAM) || ALL_REPOSITORIES;
+  const setRepository = useCallback((value: string) => {
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (isDefaultParamValue(value)) next.delete(REPOSITORY_PARAM);
+      else next.set(REPOSITORY_PARAM, value);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
-  // WebSocket for real-time updates
-  const { onTaskUpdate, isConnected } = useSocket();
-  const taskEventFingerprintsRef = React.useRef<Map<string, string>>(new Map());
+  const [repos, setRepos] = useState<RepoOption[]>([]);
+  const [reposLoading, setReposLoading] = useState(true);
 
-  // Fetch all stats
-  const fetchAllStats = useCallback(async (isInitialLoad = false) => {
-    try {
-      if (isInitialLoad) {
-        setStatsLoading(true);
-      }
-      const [tStats, qStats, oStats] = await Promise.all([
-        getTaskStats(),
-        getQueueStats(),
-        getStatsOverview()
-      ]);
-      setTaskStats(tStats);
-      setQueueStats(qStats as QueueStats);
-      setOverviewStats(oStats);
-    } catch (err) {
-      console.error('Failed to fetch stats:', err);
-    } finally {
-      setStatsLoading(false);
-    }
+  useEffect(() => {
+    let active = true;
+    fetchEnabledRepos()
+      .then(loaded => { if (active) setRepos(loaded); })
+      .catch(() => { /* The filter falls back to every repository. */ })
+      .finally(() => { if (active) setReposLoading(false); });
+    return () => { active = false; };
   }, []);
-  const scheduleLiveStatsRefresh = useLiveRefreshScheduler({
+
+  const repoOptions = useMemo<RepoOption[]>(() => [
+    { name: ALL_REPOSITORIES, enabled: true, displayName: 'All Repos' },
+    ...[...repos].sort((left, right) => left.name.localeCompare(right.name)),
+  ], [repos]);
+
+  const repositoryIcons = useMemo(() => {
+    const icons = new Map<string, RepositoryIconInfo>();
+    for (const repo of repos) icons.set(repo.name, { iconPath: repo.iconPath, revision: repo.iconRevision });
+    return icons;
+  }, [repos]);
+
+  // Live updates. One coalesced refresh per burst of task events bumps a token
+  // every section reads, so ten events in a row cost one request per section.
+  const { onTaskUpdate, isConnected } = useSocket();
+  const [refreshToken, setRefreshToken] = useState(0);
+  const taskEventFingerprintsRef = useRef<Map<string, string>>(new Map());
+
+  const scheduleLiveRefresh = useLiveRefreshScheduler({
     isConnected,
-    refresh: () => fetchAllStats(false),
+    refresh: () => setRefreshToken(token => token + 1),
   });
 
-  // Initial load
-  useEffect(() => {
-    fetchAllStats(true);
-  }, [fetchAllStats]);
-
-  // Subscribe to WebSocket events for real-time updates
   useEffect(() => {
     if (!isConnected) return;
-
-    // Handle task updates - refresh stats when any task changes state
     const handleTaskUpdate = (payload: TaskUpdatePayload) => {
       const fingerprint = `${payload.state}\0${payload.repository ?? ''}\0${payload.issueNumber ?? ''}`;
       if (taskEventFingerprintsRef.current.get(payload.taskId) === fingerprint) return;
       taskEventFingerprintsRef.current.set(payload.taskId, fingerprint);
-      scheduleLiveStatsRefresh();
+      scheduleLiveRefresh();
     };
+    return onTaskUpdate(handleTaskUpdate);
+  }, [isConnected, onTaskUpdate, scheduleLiveRefresh]);
 
-    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+  const sectionProps = { repository, refreshToken };
 
-    return () => {
-      unsubscribe();
-    };
-  }, [isConnected, onTaskUpdate, scheduleLiveStatsRefresh]);
-
-  // Format date for sparkline display
-  const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const headerScopeSlot = useHeaderScopeSlot();
+  const showRepositoryFilter = reposLoading || repoOptions.length > 1;
+  const repositoryFilterProps = {
+    repos: repoOptions,
+    selectedRepo: repository,
+    onRepoChange: setRepository,
+    isLoading: reposLoading,
   };
 
-  // Prepare sparkline data from dailyCounts
-  const sparklineData = taskStats?.dailyCounts?.map(item => ({
-    date: item.date,
-    displayDate: formatDate(item.date),
-    count: item.count,
-  })) || [];
-
   return (
-    <div className="bg-white min-h-full">
-      <ConnectSoftPromoBanner />
+    <RepositoryIconProvider icons={repositoryIcons}>
+      {/*
+        The phone gets a gap under the last pane. The app shell already pads
+        the scrolling canvas by exactly the height of the fixed bottom
+        navigation, which clears the bar to the pixel and leaves the final
+        metric row and the daily chart sitting flush against its top rule — the
+        last thing on the page reads as something the navigation is cutting
+        off. A little more than the bar's own height is what makes the end of
+        the console look like the end of the console.
+      */}
+      <div className="flex min-h-full flex-col bg-white pb-6 md:pb-0">
+        {/*
+          The page's name is carried by the highlighted navigation — the
+          sidebar on a desktop, the bottom tab on a phone — so it is not
+          printed again above the console. Assistive technology still gets it.
+        */}
+        <h1 className="sr-only">Dashboard</h1>
 
-      {/* Error alert when no AI agent is configured */}
-      {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
-        <div className="px-6 pt-6">
-          <NoDefaultModelAlert hasAgents={hasAgents} hasDefaultModel={hasDefaultModel} />
-        </div>
-      )}
+        {/*
+          The repository filter scopes every pane, so it goes where scope
+          belongs rather than on a row of its own.
 
-      {/* Onboarding Widget - shown when setup is incomplete */}
-      {showOnboarding && (
-        <div className="px-6 pt-6">
-          <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} hasTasks={hasTasks} />
-        </div>
-      )}
+          From `lg` up the filter mounts in the global toolbar, immediately
+          left of search: the panes then start directly under that toolbar's
+          rule, with no page bar between them. A 36px bar holding a title on
+          the left and this filter on the right spent a full row and 800px of
+          empty width on one control.
 
-      {/* Agent Tank Detection Banner - shown when detected but not enabled */}
-      {canManageAgents && (
-        <div className="px-6 pt-4">
-          <AgentTankDetectionBanner />
-        </div>
-      )}
-
-      {/* Main Content - Studio Split Layout */}
-      <div className="flex flex-col lg:flex-row">
-        {/* Left Column (70%) - Activity Feed */}
-        <div className="flex flex-1 flex-col lg:w-[70%]">
-          {/* Header toolbar */}
-          <div className="flex items-center justify-between px-6 py-4">
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Recent Activity</h3>
-            <Link
-              to="/tasks"
-              className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors"
-            >
-              View All
-              <ChevronRight className="w-3 h-3" />
-            </Link>
-          </div>
-          {/* Task list content - no card, no border */}
-          <div className="flex flex-1 px-6 pb-6">
-            <TaskList
-              limit={10}
-              showViewAll={false}
-              hideFilters={true}
+          On a phone there is no global toolbar, and on a tablet it has no
+          width to spare, so there the filter becomes the title bar itself —
+          centered, full width and sticky, the way a native app's scope
+          switcher is. Nothing sits beside it, so a repository named
+          `payment-gateway` gets the whole row instead of the half a static
+          "Dashboard" label used to leave it.
+        */}
+        {showRepositoryFilter && headerScopeSlot && createPortal(
+          <RepositorySelector
+            {...repositoryFilterProps}
+            variant="default"
+            size="compact"
+            className="w-36 xl:w-48"
+          />,
+          headerScopeSlot,
+        )}
+        {showRepositoryFilter && (
+          <div
+            data-testid="dashboard-scope-bar"
+            className="sticky top-0 z-10 flex h-11 flex-none items-center border-b border-slate-200 bg-white px-3 lg:hidden"
+          >
+            <RepositorySelector
+              {...repositoryFilterProps}
+              variant="default"
+              appearance="title"
+              className="w-full"
             />
           </div>
-        </div>
+        )}
 
-        {/* Vertical Divider - Studio Split */}
-        <div className="hidden lg:block w-px bg-gray-200" />
+        <ConnectSoftPromoBanner />
 
-        {/* Right Column (30%) - Unified Analytics Rail */}
-        <div className="dashboard-metrics-pane lg:w-[30%] border-t lg:border-t-0 border-gray-200 bg-slate-50">
-          {/* Stats Grid - Top of Analytics Column */}
-          <StatsGrid
-            queueStats={queueStats}
-            taskStats={taskStats}
-            overviewStats={overviewStats}
-            statsLoading={statsLoading}
-          />
+        {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
+          <div className="px-4 pt-4 sm:px-6">
+            <NoDefaultModelAlert hasAgents={hasAgents} hasDefaultModel={hasDefaultModel} />
+          </div>
+        )}
 
-          {/* Activity Sparkline Section */}
-          <div className="px-6 py-6 border-b border-slate-200">
-            <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
+        {showOnboarding && (
+          <div className="px-4 pt-4 sm:px-6">
+            <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} hasTasks={hasTasks} />
+          </div>
+        )}
+
+        {canManageAgents && (
+          <div className="px-4 pt-4 sm:px-6">
+            <AgentTankDetectionBanner />
+          </div>
+        )}
+
+        {/*
+          Mobile keeps the DOM order: attention, happening now, recent
+          outcomes, historical stats. Desktop puts running work and outcomes in
+          the main column and the two supporting panels in a narrower right
+          column, in that same order of priority: triage at the top of the
+          rail, background numbers underneath it.
+
+          Every cell is unconditional. An earlier version dropped the attention
+          panel from the desktop grid once its list was empty and moved the
+          stats panel up into row one; the right column then ended where the
+          stats did, roughly a third of the way down, and the rule between the
+          columns carried on alone through the white space below it. A pane
+          that comes and goes with its data is not structure, so the panel
+          stays and says "all clear" instead.
+
+          Placement is explicit rather than nested so that DOM order can serve
+          mobile while the columns stay real columns. Cells stretch, so row one
+          is as tall as the taller of its two panes and the rule beneath it is
+          one continuous line across both columns.
+
+          `flex-1` plus a last row of `minmax(min-content,1fr)` is what makes
+          the vertical divider continuous: the bottom row grows into whatever
+          height is left — and never shrinks below its content, so a long feed
+          still scrolls rather than clipping — so the `lg:border-r` hanging off
+          the main column reaches the bottom of the viewport instead of ending
+          wherever the content happened to stop. The divider hangs off the main
+          column, not the supporting one, because the main column is always the
+          taller of the two.
+        */}
+        <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_minmax(min-content,1fr)]">
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-1">
+            <NeedsAttentionPanel {...sectionProps} />
           </div>
 
-          {/* Task Stats Distribution Section */}
-          <div className="px-6 py-6 border-b border-slate-200">
-            <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-1 lg:border-r">
+            <HappeningNowSection {...sectionProps} />
           </div>
 
-          {/* Repository Breakdown Section */}
-          <div className="px-6 py-6 border-b border-slate-200">
-            <RepositoryBreakdown limit={5} />
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-b-0 lg:border-r">
+            <RecentOutcomesFeed {...sectionProps} />
           </div>
 
-          {/* Top Models Section - No bottom border (last section) */}
-          <div className="px-6 py-6">
-            <TopModels limit={5} />
+          <div className="min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-2 lg:border-b-0">
+            <HistoricalStatsPanel {...sectionProps} />
           </div>
         </div>
       </div>
-    </div>
+    </RepositoryIconProvider>
   );
 };
 

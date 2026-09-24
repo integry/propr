@@ -1,6 +1,9 @@
 import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '../services/previewMediaProjection.js';
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
+import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
+import { loadCritiqueScores } from './critiqueScore.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -17,12 +20,26 @@ export interface TaskQuery {
 // The UI labels in-progress work "Active"/"Implementing" and queued work
 // "Waiting", but task_history only ever stores canonical worker lifecycle
 // states. Filtering on the label directly matched no rows, so map each label
-// onto the worker states it represents.
-const ACTIVE_WORKER_STATES = ['processing', 'claude_execution', 'post_processing', 'active'];
-const WAITING_WORKER_STATES = ['pending', 'queued', 'waiting'];
+// onto the worker states it represents. The dashboard counts the same states,
+// so both read one definition.
+const ACTIVE_WORKER_STATES = [...RUNNING_TASK_STATES];
+const WAITING_WORKER_STATES = [...QUEUED_TASK_STATES];
+
+/**
+ * The attention filter is not a state list.
+ *
+ * "Needs attention" is a judgement, not a lifecycle state: a failure the
+ * system is already retrying is not attention, and a completed run whose pull
+ * request is waiting on a review decision is. Matching states here produced a
+ * list that disagreed with the count that opens it in both directions, so the
+ * filter asks the dashboard projection which tasks those are instead.
+ */
+const ATTENTION_STATUS = 'attention';
+
+const normalizeStatus = (status: string): string => status.trim().toLowerCase();
 
 function resolveStatusStates(status: string): string[] | null {
-  switch (status.trim().toLowerCase()) {
+  switch (normalizeStatus(status)) {
     case 'active':
     case 'implementing':
       return ACTIVE_WORKER_STATES;
@@ -56,7 +73,15 @@ export async function getTasksFromDb(
       )
     `);
 
-  if (status && status !== 'all') {
+  if (normalizeStatus(status) === ATTENTION_STATUS) {
+    // Exactly the work the dashboard's attention count describes, including
+    // plan reviews awaiting a decision and the runs behind decisions that
+    // recorded no task link, and excluding failures under recovery.
+    const attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
+      loadAttentionTaskIds(db, repository));
+    if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit };
+    baseQuery.whereIn('t.task_id', attentionTaskIds);
+  } else if (status && status !== 'all') {
     const lifecycleStates = resolveStatusStates(status);
     if (lifecycleStates) {
       baseQuery.whereIn('h.state', lifecycleStates);
@@ -165,15 +190,10 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
   if (excludeMerged) planIssueQuery.whereNot('status', 'merged');
   const planIssueRows = await planIssueQuery;
 
-  // Fetch only executions belonging to this page. Selecting newest first lets
-  // the loop exactly mirror the old "latest valid outer analysis report"
-  // choice without evaluating SQLite JSON functions over unrelated tasks.
-  const executionRows = await db('llm_executions')
-    .whereIn('task_id', taskIds)
-    .whereNotNull('analysis_report')
-    .select('task_id', 'analysis_report')
-    .orderBy('task_id', 'asc')
-    .orderBy('execution_id', 'desc');
+  // Only executions belonging to this page are read, newest first, so the
+  // "latest valid outer analysis report" choice never evaluates JSON for
+  // unrelated tasks. The dashboard's recent outcomes read the same projection.
+  const critiqueScoreByTask = await loadCritiqueScores(db, taskIds);
 
   // Only rows that may carry a completion comment are read; the helper confirms the parsed shape.
   const commentRows = await db('task_history')
@@ -199,53 +219,7 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
     if (!planStatusByTask.has(taskId)) planStatusByTask.set(taskId, row.status);
   }
 
-  const critiqueScoreByTask = new Map<string, unknown>();
-  const tasksWithValidReport = new Set<string>();
-  for (const row of executionRows as Array<Record<string, unknown>>) {
-    const taskId = String(row.task_id);
-    if (tasksWithValidReport.has(taskId)) continue;
-    const analysisReport = parseAnalysisReport(row.analysis_report);
-    if (!analysisReport.valid) continue;
-    // The old MAX(execution_id) subquery chose the newest valid outer JSON
-    // before checking for $.report, so a valid report-less execution must not
-    // fall back to an older score.
-    tasksWithValidReport.add(taskId);
-    if (analysisReport.report !== null && analysisReport.report !== undefined) {
-      critiqueScoreByTask.set(taskId, extractCritiqueScore(analysisReport.report));
-    }
-  }
-
   return { historyByTask, planStatusByTask, critiqueScoreByTask, commentMetadataByTask };
-}
-
-function parseAnalysisReport(value: unknown): { valid: boolean; report?: unknown } {
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    const report = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>).report
-      : undefined;
-    return { valid: true, report };
-  } catch {
-    return { valid: false };
-  }
-}
-
-function extractCritiqueScore(report: unknown): unknown {
-  const reportText = typeof report === 'string' ? report : JSON.stringify(report);
-  const jsonStart = reportText.indexOf('{');
-  if (jsonStart < 0) return null;
-
-  // Match SQLite RTRIM(..., CHAR(10) || CHAR(13) || ' ' || '`').
-  const cleanJson = reportText.slice(jsonStart).replace(/[\n\r `]+$/g, '');
-  try {
-    const parsed = JSON.parse(cleanJson);
-    if (parsed === null || typeof parsed !== 'object') return null;
-    const score = (parsed as Record<string, unknown>).implementation_critique_score ?? null;
-    // SQLite json_extract represents JSON booleans as integer 1/0.
-    return typeof score === 'boolean' ? Number(score) : score;
-  } catch {
-    return null;
-  }
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {

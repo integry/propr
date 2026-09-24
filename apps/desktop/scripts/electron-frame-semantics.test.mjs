@@ -1,65 +1,38 @@
 import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { before, describe, it } from 'node:test';
+import { linuxProbeArguments, runElectronFixture } from './electron-fixture-runner.mjs';
 import { prepareNativeElectronTest } from './electron-native-test-setup.mjs';
 
 const fixture = resolve(dirname(fileURLToPath(import.meta.url)), 'electron-frame-semantics-probe.cjs');
 
-const runFixture = (command, args) => new Promise((resolveRun, rejectRun) => {
-  const child = spawn(command, args, {
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', value => { stdout += value; });
-  child.stderr.on('data', value => { stderr += value; });
-  const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
-  child.once('error', error => {
-    clearTimeout(timer);
-    rejectRun(error);
-  });
-  child.once('close', (code, signal) => {
-    clearTimeout(timer);
-    if (code !== 0) {
-      rejectRun(new Error(`Electron frame fixture failed (${String(code ?? signal)}): ${stderr.slice(-2_000)}`));
-      return;
-    }
-    const reportLine = stdout.trim().split(/\r?\n/u).findLast(line => line.startsWith('{'));
-    if (!reportLine) {
-      rejectRun(new Error(`Electron frame fixture did not report evidence: ${stderr.slice(-2_000)}`));
-      return;
-    }
-    resolveRun(JSON.parse(reportLine));
-  });
-});
-
 describe('Electron BrowserWindow lifecycle semantics', () => {
   let setup;
-  // A cold Electron download belongs to setup, not the fixture's 25s budget.
+  // A cold Electron download belongs to setup, not the fixture's own budget.
   before(() => {
     setup = prepareNativeElectronTest();
   }, { timeout: 120_000 });
 
+  // The budget covers the runner's bounded relaunch of a worker that killed the
+  // fixture before it reported anything, which costs one 20s launch each.
   it('keeps initial frame identity stable and invalidates the window getter after destruction', {
-    timeout: 25_000,
+    timeout: 50_000,
   }, async context => {
     if ('skipReason' in setup) {
       context.skip(setup.skipReason);
       return;
     }
-    const electronArguments = [
-      ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu'] : []),
-      fixture,
-    ];
-    const report = setup.xvfbRun
-      ? await runFixture(setup.xvfbRun, ['--auto-servernum', setup.electronExecutable, ...electronArguments])
-      : await runFixture(setup.electronExecutable, electronArguments);
+    const report = await runElectronFixture({
+      diagnostic: message => context.diagnostic(message),
+      electronArguments: [
+        ...(process.platform === 'linux' ? linuxProbeArguments : []),
+        fixture,
+      ],
+      name: 'Electron frame fixture',
+      setup,
+      timeout: 20_000,
+    });
 
     assert.deepEqual(report, {
       navigationStarted: {

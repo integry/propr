@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, Cpu, Settings, ShieldCheck, Inbox, LogOut, Target, TriangleAlert } from 'lucide-react';
+import { LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, Cpu, Settings, ShieldCheck, Inbox, LogOut, Target, TriangleAlert } from 'lucide-react';
 import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
@@ -21,6 +21,7 @@ import { DesktopInstanceSelector } from '../desktop/DesktopInstanceSelector';
 import { useDesktop } from '../desktop/DesktopContext';
 import UserAvatar from './UserAvatar';
 import VoiceBriefingControl from './VoiceBriefingControl';
+import { HeaderScopeSlotContext } from './headerScopeSlot';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -57,6 +58,7 @@ function getResourceNavigation(canManageAgents: boolean, canManageMembers: boole
   const navigation: NavItem[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
   if (canManageAgents) navigation.push({ name: 'Coding Agents', href: '/ai-agents', icon: Bot });
   navigation.push(
+    { name: 'Analytics', href: '/analytics', icon: ChartColumn },
     { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
     { name: 'Settings', href: '/settings', icon: Settings },
   );
@@ -184,6 +186,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const desktop = useDesktop();
   const [desktopSidebarHidden, setDesktopSidebarHidden] = useState(false);
   const hideSidebar = desktop && desktopSidebarHidden;
+  // The toolbar's scope slot, handed to the routed page so it can mount its
+  // filter beside search instead of spending a row of its own on it.
+  const [headerScopeSlot, setHeaderScopeSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!desktop) return;
     const handleCommand = (event: Event) => {
@@ -426,12 +431,15 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           MenuIcon={MenuIcon}
           isDemoMode={isDemoMode}
           inboxUnreadCount={unreadCount}
+          scopeSlotRef={setHeaderScopeSlot}
         />
 
         {!isDemoMode && <ConnectCapacityBanner />}
 
         <main className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
-          {children}
+          <HeaderScopeSlotContext.Provider value={headerScopeSlot}>
+            {children}
+          </HeaderScopeSlotContext.Provider>
         </main>
 
         <VoiceBriefingControl />

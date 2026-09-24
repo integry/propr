@@ -356,4 +356,44 @@ describe('buildReviewComment', () => {
         assert.ok(comment.includes('**Tokens:** 113,016 (100,787 in / 12,229 out)'));
         assert.ok(comment.includes('**Cost:** $0.80'));
     });
+    test('publishes a demonstrated-failure evidence line and correction without truncation', () => {
+        const scenarioEvidence = "src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two suspended runs A and B are recoverable; static trace: 1) ProPR cancels A successfully -> 2) the cancel call for B returns an explicit 403 -> 3) B's queued rerun intent still persists -> 4) an operator cancels B independently -> 5) recovery reruns B even though ProPR refused it, so the user sees a rerun they were told would not happen and the stored recovery row keeps pointing at B; the lease guard added at line 61 runs before step 2, so it never observes B's intent. Proposed regression (not executed): assert B is not rerun while A remains recoverable.";
+        const scenarioCorrection = 'Clear the persisted rerun intent for B when its cancel call fails, before returning from the recovery pass.';
+        const response = [
+            '## Overall Evaluation',
+            'One demonstrated recovery failure blocks merge.',
+            '',
+            '## Actionable Findings',
+            '### F1: Refused rerun still replays after an independent cancel',
+            '- **violatedRequirement:** A run ProPR refused to rerun must not be rerun by recovery.',
+            `- **evidence:** ${scenarioEvidence}`,
+            '- **introducedByPR:** true \u2014 this PR added the recovery pass that replays persisted intents.',
+            '- **requiredForMerge:** true',
+            `- **minimumCorrection:** ${scenarioCorrection}`,
+            '',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '',
+            '## Score',
+            'Score: 5/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            { changedFilePaths: ['src/jobs/suspensionRecovery.ts'] },
+        );
+
+        // The whole scenario must reach readers of the public comment verbatim.
+        assert.ok(formatted.includes(`- **Evidence:** ${scenarioEvidence}`));
+        assert.ok(formatted.includes(`- **Minimum fix:** ${scenarioCorrection}`));
+        assert.ok(formatted.includes('Proposed regression (not executed)'));
+
+        const reparsed = parseStructuredReview(formatted);
+        assert.strictEqual(reparsed.status, 'valid_with_blockers');
+        assert.strictEqual(reparsed.actionableFindings.length, 1);
+        assert.strictEqual(reparsed.actionableFindings[0].evidence, scenarioEvidence);
+        assert.strictEqual(reparsed.actionableFindings[0].minimumCorrection, scenarioCorrection);
+    });
 });

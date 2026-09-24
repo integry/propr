@@ -4,7 +4,15 @@ ProPR records every task and every model call. The Web UI turns those records in
 
 ## The Dashboard
 
-The dashboard combines several API sources:
+The dashboard reads its own endpoints, each of which accepts `repository=all` or `repository=owner/repo`:
+
+- `GET /api/dashboard/summary` — the four summary counts (needs attention, running, queued, completed in the last 24 hours)
+- `GET /api/dashboard/attention` — blockers and pending decisions, oldest first, derived from task and plan-issue state and never from notification read or dismissal state
+- `GET /api/dashboard/active` — running work with its lifecycle phase and latest reported progress line, plus a queue summary with the reason work is waiting when the backend knows one
+- `GET /api/dashboard/outcomes` — recent terminal results, including merges and closes recorded after the run finished
+- `GET /api/stats/dashboard?period=7d|30d` — completed, success rate, recorded spend and daily completions, with a previous-period comparison
+
+The analytics page (`/analytics`) and the rest of the UI continue to read the aggregate endpoints:
 
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
@@ -12,14 +20,14 @@ The dashboard combines several API sources:
 - `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens, total cost, and task counts per model
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
-The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
+The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
 
-{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot, cropped to include the analytics rail; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the Recent Activity task list on the left and the analytics rail on the right showing the Active/Success/Total/Failed grid, Total Cost, the activity sparkline, task status distribution, Repository Breakdown, and Top Models. Run a handful of tasks first so all panels have data. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the toolbar with the repository filter, Needs attention, Happening now, Recent outcomes, and Historical stats. Run a handful of tasks first so every section has data. */}
 
 ### Breakdowns the product provides
 
-- **Per repository** — the Repository Breakdown panel (and `GET /api/stats/repositories`) splits totals, completed, failed, in-progress, and success rate per repository.
-- **Per model** — the Top Models panel counts tasks per model; the aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
+- **Per repository** — the Repository Breakdown panel on `/analytics` (and `GET /api/stats/repositories`) splits totals, completed, failed, in-progress, and success rate per repository.
+- **Per model** — the Top Models panel on `/analytics` counts tasks per model; the aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
 - **Per call** — the LLM Log page filters by execution type, model, status, and work type, and records the agent alias for every call.
 
 Three overview numbers approximate outcome quality: success rate (completed tasks over total), average PR iterations (tasks per issue), and total follow-ups. Rising iterations and follow-ups mean humans are spending more effort steering each PR.
@@ -30,11 +38,12 @@ Check these on the dashboard each day:
 
 - Queue depth (waiting and active counts)
 - Active workers and daemon status (header system status)
-- Recent outcomes (Recent Activity list)
-- Long-running jobs (the header activity monitor lists running tasks and plans with elapsed time)
-- Failure spikes (Failed count and status distribution)
-- Top model usage (Top Models panel)
-- Cost trends (Total Cost plus the LLM Log page)
+- Anything blocked or awaiting a decision (the dashboard's Needs attention panel)
+- Recent outcomes (the dashboard's Recent outcomes feed)
+- Long-running jobs (Happening now, and the header activity monitor)
+- Failure spikes (Failed outcomes and the status distribution on `/analytics`)
+- Top model usage (Top Models panel on `/analytics`)
+- Cost trends (Recorded spend plus the LLM Log page)
 
 ## The LLM Log Page
 
@@ -97,7 +106,7 @@ See [Agent Tank Usage Tracking](./agent-tank.md) for how to run it, connect ProP
 Review these signals weekly, and weight trends more heavily than one-off failures:
 
 - **Success rate and failure volume** — the dashboard stats grid and status distribution
-- **Per-repository health** — Repository Breakdown; a repository with a below-average success rate needs attention before more work is routed to it
+- **Per-repository health** — Repository Breakdown on `/analytics`; a repository with a below-average success rate needs attention before more work is routed to it
 - **Time to done** — the average processing time chart (`GET /api/stats/tasks`); individual task records show per-run duration
 - **Human steering effort** — average PR iterations and total follow-ups from the overview stats
 - **Cost** — Total Cost, the per-model and daily breakdowns from `GET /api/llm-metrics`, and the recent high-cost alerts
@@ -133,7 +142,7 @@ Between reviews, the live dashboard flags incidents:
 - Repeated provider rate-limit failures
 - Authentication failures after credential changes (agent health in the header status)
 - Cost spikes (Total Cost and recent high-cost alerts)
-- A specific repository causing disproportionate failures (Repository Breakdown)
+- A specific repository causing disproportionate failures (Repository Breakdown on `/analytics`)
 - Provider capacity pressure ([Agent Tank](./agent-tank.md) usage bars, when enabled)
 
 ## Related Pages

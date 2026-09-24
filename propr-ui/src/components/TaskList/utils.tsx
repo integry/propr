@@ -191,14 +191,30 @@ export const formatRelativeTime = (dateString: string | undefined): string => {
   return date.toLocaleDateString();
 };
 
+/**
+ * Elapsed time in the largest two units it actually needs.
+ *
+ * Seconds matter for a run that started a moment ago and stop mattering long
+ * before minutes run out: `240m 00s` is a raw minute count printed rather than
+ * a duration read, and nobody divides by sixty in their head to learn that a
+ * task has been going for four hours. So each unit hands over once the one
+ * above it is whole — `45m 12s`, then `4h 00m`, then `2d 06h` — and the value
+ * stays two fields wide at every scale, which is what keeps a column of them
+ * straight.
+ */
 export const formatDuration = (startTime: string | null | undefined, endTime: string | null | undefined): string => {
   if (!startTime) return '--';
 
   const end = endTime ? new Date(endTime) : new Date();
-  const duration = end.getTime() - new Date(startTime).getTime();
+  const duration = Math.max(0, end.getTime() - new Date(startTime).getTime());
 
-  const minutes = Math.floor(duration / 60000);
+  const totalMinutes = Math.floor(duration / 60000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const pad = (value: number): string => value.toString().padStart(2, '0');
+
+  if (totalHours >= 24) return `${Math.floor(totalHours / 24)}d ${pad(totalHours % 24)}h`;
+  if (totalMinutes >= 60) return `${totalHours}h ${pad(totalMinutes % 60)}m`;
+
   const seconds = Math.floor((duration % 60000) / 1000);
-
-  return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+  return `${totalMinutes}m ${pad(seconds)}s`;
 };

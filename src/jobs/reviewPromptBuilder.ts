@@ -29,8 +29,10 @@ export interface ReviewPromptOptions {
      * non-empty, this replaces the default high-level review guidance line.
      * The mandatory structured output sections (Overall Evaluation, Actionable
      * Findings, Suggestions and Follow-ups, and the `Score: N/10` line) are
-     * always appended regardless of the override. An empty/undefined value uses
-     * the built-in default.
+     * always appended regardless of the override, together with the
+     * demonstrated-failure and verification-provenance requirements every
+     * blocker must satisfy. An empty/undefined value uses the built-in
+     * default.
      */
     reviewPromptOverride?: string;
 }
@@ -51,7 +53,7 @@ export interface ReviewPromptOptions {
  * inserted when an override is active — the default guidance already states
  * the contract inline.
  */
-const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you MUST use the exact output format specified below. The following four sections (Overall Evaluation, Actionable Findings, Suggestions and Follow-ups, and the final \`Score: N/10\` line) are mandatory and may not be omitted, renamed, or reordered. The semantic blocker boundary and required finding fields below override any conflicting operator guidance.`;
+const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you MUST use the exact output format specified below. The following four sections (Overall Evaluation, Actionable Findings, Suggestions and Follow-ups, and the final \`Score: N/10\` line) are mandatory and may not be omitted, renamed, or reordered. The semantic blocker boundary, the required finding fields, and the demonstrated-failure and verification-provenance requirements below override any conflicting operator guidance.`;
 
 /**
  * Build the review prompt that is sent to the reviewing model.
@@ -64,6 +66,14 @@ const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you
  *
  * These sections are later extracted by `buildReviewComment` to format
  * the GitHub comment, and by the /fix pipeline to gather actionable items.
+ *
+ * Every blocker must also demonstrate its failure — trigger, ordered sequence,
+ * observable consequence, why existing guards do not prevent it, and whether
+ * the verification was executed or is a static trace / proposed regression.
+ * That detail travels inside the existing `evidence` and `minimumCorrection`
+ * fields, so the machine contract the parser, publisher and /fix gatherer
+ * depend on stays unchanged. Field values must stay on a single line because
+ * `extractRecordFields` reads one line per field.
  */
 export function buildReviewPrompt(options: ReviewPromptOptions): string {
     const {
@@ -127,7 +137,8 @@ Before writing the response, silently perform a PR-scoped validation pass:
 1. Derive the intended changed behavior from the original objective, the base-to-head diff, and the supplied surrounding file context.
 2. Trace the changed control and data paths through their relevant callers and consumers. Check boundary inputs, failure propagation, resource or security boundaries, and empty, singleton, and limit cases when those cases apply to the changed logic.
 3. Test each potential finding against the current diff. Passing tests or extensive coverage are evidence, not proof that changed behavior is correct.
-4. Classify only PR-introduced merge requirements as F# findings. Keep pre-existing problems, optional hardening, and adjacent redesigns as S# suggestions.
+4. For each candidate blocker, build the concrete failure sequence required below. A candidate you cannot drive from a reachable trigger to an observable incorrect outcome is not a blocker.
+5. Classify only PR-introduced merge requirements as F# findings. Keep pre-existing problems, optional hardening, and adjacent redesigns as S# suggestions.
 
 Do not print this validation pass or turn it into a generic checklist. Report only verified results in the four required sections.
 
@@ -142,17 +153,30 @@ These positive observations are informational and must not receive F# or S# IDs.
 Report only problems that satisfy **all** of these conditions:
 - introduced or exposed by this PR;
 - violate the immutable original objective or its acceptance criteria, **or** make behavior changed by the PR incorrect, unsafe, or internally inconsistent;
-- are necessary to correct before merge; and
-- have evidence in the actual base-to-head changed code. The evidence field must cite an exact changed-file path from the supplied PR diff; findings supported only by unchanged or adjacent files are rejected by the publisher.
+- are necessary to correct before merge;
+- have evidence in the actual base-to-head changed code. The evidence field must cite an exact changed-file path from the supplied PR diff; findings supported only by unchanged or adjacent files are rejected by the publisher; and
+- are demonstrated by a reachable failure sequence with material consequences. Naming a possible race, a theoretical ordering, or an unproven assumption is not a demonstration.
 
 Use sequential IDs and this exact record shape for every blocker:
 
 ### F1: Short title
 - **violatedRequirement:** The original requirement, acceptance criterion, or correctness/safety invariant of changed behavior that is violated
-- **evidence:** changed/file.ts:123 — concrete evidence in changed code
+- **evidence:** changed/file.ts:123 — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified
 - **introducedByPR:** true — why this PR introduced or exposed the problem
 - **requiredForMerge:** true
-- **minimumCorrection:** the smallest correction necessary to make the PR correct
+- **minimumCorrection:** the smallest correction that removes the demonstrated failure
+
+Keep every field on one single line. The review parser reads one line per field, so a line break, sub-bullet, table, or heading inside a field silently drops the rest of that field.
+
+**Demonstrated failure — required inside the evidence field.** Show the failure instead of naming its possibility, as one compact inline sequence rather than a per-finding checklist. The evidence line must carry: (1) the specific starting conditions or trigger that reach the changed code; (2) the ordered steps that produce the failure, grounded in this diff and the supplied context, written inline as \`1) ... -> 2) ... -> 3) ...\`; (3) the observable user impact, or the incorrect persistent or external state that remains; (4) the exact changed-file path with line or symbol, plus why the protections already present — validation, locks, leases, heartbeats, transactions, retries, existing tests — do not prevent this exact sequence; and (5) verification provenance, labelled explicitly: \`executed:\` only for a command or test you actually ran during this review, \`static trace:\` for reasoning over the supplied code, \`proposed regression:\` for a scenario you propose but did not run. Executing a test is not required to establish a blocker, but never word an unexecuted scenario as though it had been run.
+
+Acceptable density (shape, not content): \`- **evidence:** src/jobs/recovery.ts:88 — static trace: 1) cancellation of A succeeds -> 2) B returns an explicit 403 -> 3) B's new intent remains -> 4) someone independently cancels B -> 5) recovery reruns B despite ProPR's refusal; the existing lease guard runs before step 2, so it never observes B's intent. Proposed regression: assert B is not rerun while A remains recoverable.\`
+
+For a concurrency, race, or interleaving finding, also name the awaited operation or interruption point, what the competing actor does inside that window, and why the interleaving is possible despite the locks, leases, heartbeats, or transactions present in the code. A slow or long-running await alone does not establish that a renewing lease expired or that ownership was lost; do not assume it.
+
+State inside the evidence line any assumption you could not verify. A failure that depends on an unverified assumption, is unreachable from any caller, or has no material consequence is speculative hardening and belongs in Suggestions and Follow-ups.
+
+Judge minimumCorrection against the demonstrated sequence: it must close that specific failure and nothing wider. Do not demand atomicity that independent external systems cannot provide — when two independent external APIs cannot be updated as one transaction, separate the avoidable window this PR can close from the residual external race it cannot. That distinction never excuses a practical fencing token, ownership check, or reconciliation step that would have prevented the demonstrated failure.
 
 Every field is mandatory. If you cannot truthfully supply every field, the item is not actionable and belongs in Suggestions and Follow-ups. A PR-introduced correctness, security, data-loss, or contract regression must not be demoted to a suggestion merely because it was absent from the original task wording. Do not use a broad redesign as the correction when a localized fix can make the current PR correct. If there are no actionable findings, write \`No actionable findings.\`
 
@@ -202,6 +226,11 @@ function estimateReviewPromptTokens(prompt: string): number {
  * is always preserved. Optional scout excerpts are reduced first, then
  * historical comments, changed-file copies, and the diff. Scope and request
  * text are protected until those bulk context sections are gone.
+ *
+ * @throws when the ceiling cannot hold the mandatory instruction scaffolding
+ * even after every trimmable section is removed. The scaffolding is not
+ * reducible, so the only alternatives are an explicit failure or an oversized
+ * prompt whose substantive review inputs have all been discarded.
  */
 export function buildReviewPromptWithinBudget(
     options: ReviewPromptOptions,
@@ -250,9 +279,22 @@ export function buildReviewPromptWithinBudget(
         prompt = buildReviewPrompt(mutable);
     }
 
+    const estimatedTokens = estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`);
+    if (estimatedTokens > maxContextTokens) {
+        // Every trimmable section has already been reduced, so what remains is
+        // the mandatory instruction scaffolding plus the runtime suffix. The
+        // trimmer cannot shrink that, and returning it would hand the reviewer
+        // an oversized prompt with the diff, objective, and review request
+        // stripped out. Fail explicitly instead.
+        throw new Error(
+            `PR review token budget too small: the mandatory review instructions need at least ${estimatedTokens} tokens, `
+            + `but the configured input ceiling is ${maxContextTokens}. Raise the configured PR review context token limit.`,
+        );
+    }
+
     return {
         prompt,
-        estimatedTokens: estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`),
+        estimatedTokens,
         truncatedSections,
         prDiffTruncated,
     };

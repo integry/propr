@@ -48,6 +48,12 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
   }
 
   const isTaskActive = !['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase() || '');
+  // Execution is linear, so exactly one row may read as active. The first in-progress todo owns the
+  // highlight; any further in-progress rows the provider reports, every pending row and every row of
+  // a settled run stay on the neutral canvas until they actually begin.
+  const activeIndex = isTaskActive ? liveDetails.todos.findIndex(todo => todo.status === 'in_progress') : -1;
+  // The "Current" banner would be a second highlight beside that row — it only speaks when no row can.
+  const currentBanner = isTaskActive && activeIndex === -1 ? liveDetails.currentTask : null;
 
   return (
     <div className="border-t border-gray-100 pt-4">
@@ -63,10 +69,10 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
               </span>
             </span>
           </h4>
-          {liveDetails.currentTask && (
+          {currentBanner && (
             <p className="mb-3 p-2 bg-blue-50 rounded text-sm border-l-2 border-blue-500">
               <strong className="text-blue-800">Current:</strong>{' '}
-              <span className="text-blue-700">{liveDetails.currentTask}</span>
+              <span className="text-blue-700">{currentBanner}</span>
             </p>
           )}
         </>
@@ -77,11 +83,12 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
         </h4>
       )}
       <ul className="list-none pl-0 m-0 space-y-1">
-        {liveDetails.todos.map(todo => (
+        {liveDetails.todos.map((todo, index) => (
           <li
             key={todo.id}
+            aria-current={index === activeIndex ? 'step' : undefined}
             className={`flex items-start gap-2 py-1.5 px-2 rounded text-sm transition-colors cursor-pointer hover:bg-gray-50 ${
-              todo.status === 'in_progress' ? 'bg-blue-50' : ''
+              index === activeIndex ? 'bg-blue-50' : ''
             }`}
             onClick={() => scrollToThinkingLog(todo.id, todo.content)}
             onMouseEnter={() => onTodoHover?.(todo.id)}
@@ -94,7 +101,7 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
             <span className={`leading-5 ${
               todo.status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-700'
             } ${
-              todo.status === 'in_progress' ? 'font-medium text-blue-800' : 'font-normal'
+              index === activeIndex ? 'font-medium text-blue-800' : 'font-normal'
             }`}>
               {todo.content}
             </span>

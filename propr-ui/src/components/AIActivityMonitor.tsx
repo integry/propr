@@ -153,7 +153,7 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
                       <span className="text-xs text-slate-500">
                         {getRepoName(item.repository)}
                       </span>
-                      <span className="text-slate-300">•</span>
+                      <span className="text-slate-300">·</span>
                       <span className="px-1.5 py-0.5 bg-blue-50 border border-blue-200 text-xs font-mono text-blue-600">
                         {item.status}
                       </span>

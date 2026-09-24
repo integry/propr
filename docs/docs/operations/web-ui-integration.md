@@ -51,6 +51,8 @@ The frontend uses the dashboard API rather than a mock layer. Common integration
 - `GET /api/queue/stats` for queue depth and throughput
 - `GET /api/tasks` and the `/api/task/:taskId/...` detail endpoints for execution history, live details, file changes, and Docker logs
 - `GET /api/stats/tasks`, `/api/stats/repositories`, and `/api/stats/overview` for dashboard statistics
+- `GET /api/dashboard/summary`, `/api/dashboard/attention`, `/api/dashboard/active`, and `/api/dashboard/outcomes` for what needs attention, what is running, and what just happened; each accepts `repository=all` or `repository=owner/repo`. Attention is derived from task and plan-issue state, never from notification read or dismissal state
+- `GET /api/stats/dashboard?period=7d|30d` for the dashboard's historical section (completed, success rate, recorded spend, daily chart) with a previous-period comparison
 - `GET /api/llm-logs` and `GET /api/llm-metrics` for per-call LLM records and aggregates
 - `GET /api/config/*` routes for repositories, settings, agents, and follow-up configuration
 - `/api/planner/*` routes for Planner Studio drafts, generation, and execution

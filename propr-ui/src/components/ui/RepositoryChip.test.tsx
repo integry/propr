@@ -24,4 +24,12 @@ describe('RepositoryChip', () => {
       'https://raw.githubusercontent.com/integry/propr/main/public/logo.svg',
     );
   });
+
+  it('reports the baseline of its slug, not its border box, so a mixed text row stays on one line', () => {
+    render(<RepositoryChip repository="integry/propr" iconPath="public/logo.svg" revision="main" />);
+
+    // Only the slug takes part in baseline alignment; the mark centres itself and stays out of it.
+    expect(screen.getByTestId('repository-chip')).toHaveClass('items-baseline');
+    expect(screen.getByTestId('repository-icon-image')).toHaveClass('self-center');
+  });
 });

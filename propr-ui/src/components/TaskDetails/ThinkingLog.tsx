@@ -17,10 +17,17 @@ interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
 }
 
+// The entry's first line on the right is 14px text on `leading-relaxed`, i.e. a 1.4219rem line box.
+// The gutter's label row claims exactly that box and centres in it, so `ACTION` and the first line of
+// the entry start on the same horizontal line instead of the label floating a couple of pixels above.
+const gutterLabelRow = 'flex min-h-[1.4219rem] items-center gap-1.5';
+
 interface ThinkingLogProps {
   events: ThinkingLogEvent[];
   todos?: TodoItem[];
   highlightedTodoId?: string | null;
+  /** Surfaces that own the "Implementation log" utility header themselves (and the controls beside it) opt out of this one. */
+  showHeader?: boolean;
 }
 
 // Get category display info for gutter-style output
@@ -132,8 +139,8 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
       <div className="flex items-start gap-3">
         {/* Left Gutter (100px) - Icon, Category Label, Timestamp */}
         <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
-          {/* Icon + Category Label Row */}
-          <div className="flex items-center gap-1.5">
+          {/* Icon + Category Label Row, on the same line box as the entry's first line of text */}
+          <div className={gutterLabelRow}>
             <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
             <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-500">
               {categoryInfo.label}
@@ -216,7 +223,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId }) => {
+const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, showHeader = true }) => {
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
@@ -289,14 +296,16 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
   return (
     <div id="thinking-log-section" className="min-w-0 overflow-hidden">
       {/* Section Header */}
-      <div className="mb-4 flex items-center gap-2">
-        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
-          IMPLEMENTATION LOG
-        </h4>
-        <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
-          {events.length}
+      {showHeader && (
+        <div className="mb-4 flex items-center gap-2">
+          <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
+            IMPLEMENTATION LOG
+          </h4>
+          <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
+            {events.length}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Grouped Events - terminal style log feed */}
       <div className="space-y-3 min-w-0">

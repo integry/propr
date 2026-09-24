@@ -132,6 +132,10 @@ const COMMAND_RESULT_CLASSES = Object.freeze([
   'COMMAND_FAILED', 'COMMAND_SIGNALLED', 'COMMAND_DEADLINE', 'COMMAND_SPAWN_FAILED', 'UNEXPECTED_OUTPUT',
 ]);
 
+// Distinguishes a bundle that really is still registered from an absence proof
+// that never got a readable answer out of `lsregister -dump`.
+export const LAUNCH_SERVICES_STALE_REGISTRATION = 'STALE_REGISTRATION';
+
 export class NativeLifecycleCommandFailure extends Error {
   constructor(resultClass) {
     if (!COMMAND_RESULT_CLASSES.includes(resultClass)) {
@@ -350,9 +354,25 @@ export class NativeLifecycleOperationFailure extends Error {
   }
 }
 
+// A cleanup label alone cannot say why the step failed, so a fixed reason code
+// is carried alongside it when the failure classified itself: that is the one
+// fact separating a flaky probe from a genuinely stale artifact. Only these
+// fixed tokens are ever appended, so the safe errors still carry no child
+// output, arguments, URLs, or profile paths.
+const CLEANUP_RESULT_CLASSES = Object.freeze([
+  ...COMMAND_RESULT_CLASSES,
+  LAUNCH_SERVICES_STALE_REGISTRATION,
+]);
+
+export const describeCleanupFailure = ({ label, error }) => (
+  CLEANUP_RESULT_CLASSES.includes(error?.resultClass)
+    ? `${label} [result:${error.resultClass}]`
+    : label
+);
+
 export class NativeLifecycleFailure extends AggregateError {
   constructor(primaryError, cleanupFailures) {
-    const cleanupLabels = cleanupFailures.map(failure => failure.label).sort();
+    const cleanupLabels = cleanupFailures.map(describeCleanupFailure).sort();
     const classification = primaryError instanceof NativeLifecycleOperationFailure
       ? [
           ` [stage:${primaryError.stage}]`,
@@ -1024,8 +1044,11 @@ export const linuxProtocolDispatch = async ({ application, profile, link, env, p
 const LAUNCH_SERVICES = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 
 // lsregister -u can return before -dump reflects the removal, so absence is
-// re-probed for a bounded window before the copied app is declared stale.
-const LAUNCH_SERVICES_ABSENCE_ATTEMPTS = 10;
+// re-probed for a bounded window before the copied app is declared stale. The
+// window is a deadline rather than a probe count: one -dump costs milliseconds
+// on an idle host and seconds on a loaded CI runner, so counting probes gives
+// the shortest window exactly where LaunchServices is slowest to settle.
+const LAUNCH_SERVICES_ABSENCE_BUDGET_MS = 120_000;
 const LAUNCH_SERVICES_ABSENCE_INTERVAL_MS = 1_000;
 // lsregister -dump emits megabytes, so a dump record is never read back through
 // the shared bounded-output helper: that would reduce the probe to whichever
@@ -1106,18 +1129,41 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
     });
   });
 
+// Carries why the absence proof ended without ever seeing the bundle gone: a
+// dump that kept listing it, or a dump that never produced a usable answer.
+export class LaunchServicesAbsenceFailure extends Error {
+  constructor(probeFailure) {
+    const resultClass = probeFailure === undefined
+      ? LAUNCH_SERVICES_STALE_REGISTRATION
+      : probeFailure instanceof NativeLifecycleCommandFailure
+        ? probeFailure.resultClass
+        : 'COMMAND_FAILED';
+    super(resultClass === LAUNCH_SERVICES_STALE_REGISTRATION
+      ? `Copied application remained registered with LaunchServices [result:${resultClass}]`
+      : `Copied application registration could not be probed [result:${resultClass}]`);
+    this.name = 'LaunchServicesAbsenceFailure';
+    this.resultClass = resultClass;
+  }
+}
+
 export class LaunchServicesAuthority {
   constructor(applicationRoot, environment, {
     runCommand = run,
     scanCommand = scanCommandLinesForMatch,
     wait = delay,
-    absenceAttempts = LAUNCH_SERVICES_ABSENCE_ATTEMPTS,
+    now = Date.now,
+    absenceBudgetMs = LAUNCH_SERVICES_ABSENCE_BUDGET_MS,
+    // The deadline is the production bound; an explicit probe cap only ever
+    // narrows it, so a caller can close the window without waiting out a clock.
+    absenceAttempts = Number.POSITIVE_INFINITY,
   } = {}) {
     this.applicationRoot = applicationRoot;
     this.environment = environment;
     this.runCommand = runCommand;
     this.scanCommand = scanCommand;
     this.wait = wait;
+    this.now = now;
+    this.absenceBudgetMs = absenceBudgetMs;
     this.absenceAttempts = absenceAttempts;
     this.registered = false;
   }
@@ -1152,18 +1198,42 @@ export class LaunchServicesAuthority {
     return matched;
   }
 
+  // Absence is only ever concluded from a probe that ran and reported the
+  // bundle gone. A probe that could not run is not evidence of anything, so it
+  // costs one attempt rather than ending the proof: `lsregister -dump` walks
+  // the whole database, and one slow or interrupted dump on a loaded runner
+  // used to fail the postcondition that this retry window exists for.
   async assertGone() {
-    for (let attempt = 1; await this.isListed(); attempt += 1) {
-      if (attempt >= this.absenceAttempts) {
-        throw new Error('Copied application remained registered with LaunchServices');
+    // The window is a deadline rather than a probe count, and it is only
+    // consulted after a probe answered, so it always closes on evidence rather
+    // than on an unprobed timer.
+    const deadline = this.now() + this.absenceBudgetMs;
+    let lastProbeFailure;
+    for (let attempt = 1; attempt <= this.absenceAttempts; attempt += 1) {
+      try {
+        if (!await this.isListed()) {
+          this.registered = false;
+          return;
+        }
+        lastProbeFailure = undefined;
+      } catch (error) {
+        lastProbeFailure = error;
       }
+      if (attempt === this.absenceAttempts || this.now() >= deadline) break;
       await this.wait(LAUNCH_SERVICES_ABSENCE_INTERVAL_MS);
       // A bundle opened through LaunchServices can be re-registered by the
       // system after -u returns, so each re-probe re-issues the removal instead
-      // of only waiting for the first one to be reflected.
-      await this.unregister();
+      // of only waiting for the first one to be reflected. The first -u already
+      // succeeded, so a re-issue that fails (lsregister exits nonzero once the
+      // record it was racing is gone) is not evidence either way: the next
+      // -dump decides, and the deadline still bounds the proof.
+      try {
+        await this.unregister();
+      } catch {
+        // Absence is concluded only from a dump, never from a -u exit status.
+      }
     }
-    this.registered = false;
+    throw new LaunchServicesAbsenceFailure(lastProbeFailure);
   }
 }
 

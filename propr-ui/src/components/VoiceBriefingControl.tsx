@@ -407,9 +407,9 @@ function EnabledVoiceBriefingControl() {
                     <p className="mt-2 text-sm leading-6 text-slate-200">{voice.briefing.speechText}</p>
                     <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-medium text-slate-300">
                       <span>{voice.briefing.counts.running} running</span>
-                      <span aria-hidden="true">•</span>
+                      <span aria-hidden="true">·</span>
                       <span>{voice.briefing.counts.queued} queued</span>
-                      <span aria-hidden="true">•</span>
+                      <span aria-hidden="true">·</span>
                       <span>{voice.briefing.counts.attention} need attention</span>
                     </div>
                   </div>

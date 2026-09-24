@@ -107,6 +107,9 @@ export interface AgentUsageMetric {
   percent: number;
   resetsIn?: string;
   resetsAt?: string;
+  resetsInSeconds?: number;
+  pace?: number;
+  paceEval?: string;
 }
 
 export interface AgentUsageData {
@@ -115,6 +118,7 @@ export interface AgentUsageData {
     session?: AgentUsageMetric;
     weeklyAll?: AgentUsageMetric;
     weeklySonnet?: AgentUsageMetric;
+    weeklyFable?: AgentUsageMetric;
     weekly?: AgentUsageMetric;
     models?: Array<{ model: string; percentUsed: number; resetsIn?: string }>;
     fiveHour?: { percentUsed: number; resetsIn?: string };

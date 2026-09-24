@@ -63,8 +63,30 @@ const installDesktopHarness = async (page: Page): Promise<void> => {
   });
 };
 
+const runningItem = {
+  id: 'task:startup-task',
+  taskId: task.id,
+  repository: task.repository,
+  issueNumber: task.issueNumber,
+  prNumber: null,
+  title: task.title,
+  state: 'claude_execution',
+  phase: 'Implementing',
+  progressLine: null,
+  createdAt: task.createdAt,
+  updatedAt: task.createdAt,
+};
+
 const fallbackResponses: Record<string, unknown> = {
   '/api/instance/catalog': { agents: [], repositories: [] },
+  '/api/tasks': { tasks: [task], total: 1 },
+  '/api/dashboard/summary': { repository: 'all', needsAttention: 0, running: 1, queued: 0, completedRecently: 0, recentWindowHours: 24 },
+  '/api/dashboard/attention': { repository: 'all', items: [], counts: { blocked: 0, decisions: 0, total: 0 } },
+  '/api/dashboard/outcomes': { repository: 'all', limit: 50, items: [] },
+  '/api/stats/dashboard': {
+    period: '7d', repository: 'all', completed: 0, successRate: null, recordedSpend: null,
+    dailyCompleted: [], previous: { completed: 0, successRate: null, recordedSpend: null },
+  },
   '/api/notifications/unread-count': { unreadCount: 0 },
   '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
   '/api/notifications/config': { enabled: false },
@@ -84,9 +106,22 @@ const fallbackResponses: Record<string, unknown> = {
   '/api/status': { status: 'ok' },
 };
 
+// The dashboard's first useful read is its running-work section; the tasks
+// page's is the task list itself.
 const scenarios = [
-  { name: 'dashboard', path: '/', chunk: 'Dashboard', listLimit: 20 },
-  { name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 100 },
+  {
+    name: 'dashboard', path: '/', chunk: 'Dashboard', listLimit: null,
+    usefulPath: '/api/dashboard/active',
+    usefulBody: {
+      repository: 'all', running: [runningItem], queued: [],
+      queue: { queuedCount: 0, reason: null }, counts: { running: 1, queued: 0 },
+    },
+  },
+  {
+    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 100,
+    usefulPath: '/api/tasks',
+    usefulBody: { tasks: [task], total: 1 },
+  },
 ] as const;
 
 for (const runtime of ['web', 'desktop'] as const) {
@@ -122,12 +157,16 @@ for (const runtime of ['web', 'desktop'] as const) {
       apiRequests.push(`${url.pathname}${url.search}`);
       if (url.pathname === '/api/auth/demo-mode') return record('demoMode', route, { demoMode: false });
       if (url.pathname === '/api/auth/user') return record('currentUser', route, user);
-      if (url.pathname === '/api/tasks') return record('usefulData', route, { tasks: [task], total: 1 });
+      if (url.pathname === scenario.usefulPath) return record('usefulData', route, scenario.usefulBody);
       return route.fulfill({ json: fallbackResponses[url.pathname] ?? {} });
     });
 
     await page.goto(scenario.path);
-    await expect(page.getByRole('table').getByText(task.title)).toBeVisible();
+    await expect(
+      scenario.name === 'dashboard'
+        ? page.getByTestId('happening-now-section').getByText(task.title)
+        : page.getByRole('table').getByText(task.title),
+    ).toBeVisible();
     const firstUsefulRenderMs = performance.now() - epoch;
     const browserResources = await page.evaluate(() => (
       performance.getEntriesByType('resource') as PerformanceResourceTiming[]
@@ -160,8 +199,10 @@ for (const runtime of ['web', 'desktop'] as const) {
     const catalogRequests = apiRequests.filter(request => request === '/api/instance/catalog');
     const statusRequests = apiRequests.filter(request => request === '/api/status');
     const taskConsumers = {
-      list: taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit))
-        .map(({ request }) => request),
+      list: scenario.listLimit === null
+        ? []
+        : taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit))
+          .map(({ request }) => request),
       headerReview: taskRequestParams.filter(({ params }) => params.get('limit') === '30'
         && params.get('forReview') === 'true' && params.get('excludeMerged') === 'true')
         .map(({ request }) => request),
@@ -170,8 +211,10 @@ for (const runtime of ['web', 'desktop'] as const) {
     };
     expect(catalogRequests).toHaveLength(1);
     expect(statusRequests).toHaveLength(1);
-    expect(taskRequests).toHaveLength(3);
-    expect(taskConsumers.list).toHaveLength(1);
+    // The dashboard reads its own endpoints, so only the header review and the
+    // readiness existence probe remain on /api/tasks there.
+    expect(taskRequests).toHaveLength(scenario.listLimit === null ? 2 : 3);
+    expect(taskConsumers.list).toHaveLength(scenario.listLimit === null ? 0 : 1);
     expect(taskConsumers.headerReview).toHaveLength(1);
     expect(taskConsumers.readinessExistence).toHaveLength(1);
 

@@ -48,7 +48,7 @@ const MobileTaskItemWithGroup: React.FC<{
         <PreviewThumbnails media={task.previewMedia} />
         <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
           <span>{formatRelativeTime(task.createdAt)}</span>
-          <span className="text-gray-300">•</span>
+          <span className="text-gray-300">·</span>
           <span className="font-mono">{formatDuration(task.processedAt || task.createdAt, task.completedAt)}</span>
         </div>
       </div>

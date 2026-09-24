@@ -43,6 +43,7 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
                 session: { percent: 17, resetsIn: '2h 14m' },
                 weeklyAll: { percent: 58, resetsIn: '3d 4h' },
                 weeklySonnet: { percent: 82, resetsIn: '3d 4h' },
+                weeklyFable: { percent: 41, resetsIn: '3d 4h' },
               } },
               codex: { name: 'codex', usage: {
                 fiveHour: { percentUsed: 12, resetsIn: '3h 41m' },
@@ -66,6 +67,10 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
           window.agentTankUsage = usage;
           window.renderUsage = ({ width, zoom }) => {
             renderKey += 1;
+            // Expansion state persists to localStorage, so each synthetic layout
+            // run starts from the collapsed default instead of inheriting the
+            // rows the previous case left open.
+            try { window.localStorage.clear(); } catch { /* storage may be unavailable */ }
             root.render(
               <div className="desktop-app desktop-platform-linux" style={{ zoom }}>
                 <aside className="desktop-sidebar bg-white" style={{ width }}>

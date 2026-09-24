@@ -75,24 +75,28 @@ export async function runSingleReview(
         return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg };
     }
 
-    const promptResult = buildReviewPromptWithinBudget({
-        pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-        prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
-        checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
-    }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
-    const reviewPrompt = promptResult.prompt;
-    if (promptResult.truncatedSections.length > 0) {
-        correlatedLogger.warn({
-            pullRequestNumber,
-            model: executionModel,
-            maxContextTokens: ctx.reviewMaxContextTokens,
-            estimatedTokens: promptResult.estimatedTokens,
-            truncatedSections: promptResult.truncatedSections,
-        }, 'Trimmed PR review context to fit token budget');
-    }
-
+    // Built inside the try so a budget too small for the mandatory review
+    // instructions is reported like any other review failure instead of
+    // aborting the remaining reviewers.
+    let reviewPrompt = '';
     try {
+        const promptResult = buildReviewPromptWithinBudget({
+            pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
+            originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
+            prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
+            checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
+        }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
+        reviewPrompt = promptResult.prompt;
+        if (promptResult.truncatedSections.length > 0) {
+            correlatedLogger.warn({
+                pullRequestNumber,
+                model: executionModel,
+                maxContextTokens: ctx.reviewMaxContextTokens,
+                estimatedTokens: promptResult.estimatedTokens,
+                truncatedSections: promptResult.truncatedSections,
+            }, 'Trimmed PR review context to fit token budget');
+        }
+
         const analyzeOptions: AnalyzeOptions = {
             model: executionModel,
             taskId,

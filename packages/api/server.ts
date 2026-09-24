@@ -27,6 +27,7 @@ import {
   createAgentRoutes, createAgentLoginRoutes,
   createAgentVersionRoutes,
   createStatsRoutes,
+  createDashboardRoutes,
   createSummaryBrowserRoutes,
   SUMMARY_PATH_ROUTE_PATH,
   SUMMARY_TREE_ROUTE_PATH,
@@ -346,6 +347,7 @@ function setupRoutes(): void {
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
   const statsRoutes = createStatsRoutes({ db });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
@@ -391,7 +393,9 @@ function setupRoutes(): void {
     ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize], ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
     ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
     ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
-    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
+    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
+    ['get', '/api/dashboard/summary', dashboardRoutes.getSummary], ['get', '/api/dashboard/attention', dashboardRoutes.getAttention], ['get', '/api/dashboard/active', dashboardRoutes.getActive], ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
+    ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
     ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree], ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
     ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
     ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities], ['get', '/api/voice/briefing', voiceRoutes.getBriefing],

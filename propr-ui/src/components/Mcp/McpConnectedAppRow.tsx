@@ -57,13 +57,13 @@ export const McpConnectedAppRow: React.FC<McpConnectedAppRowProps> = ({ app, onR
         <span title={new Date(app.connectedAt).toLocaleString()}>Connected {formatRelativeTime(app.connectedAt)}</span>
         {app.lastUsedAt !== undefined && (
           <>
-            <span aria-hidden="true">•</span>
+            <span aria-hidden="true">·</span>
             {app.lastUsedAt === null
               ? <span>Never used</span>
               : <span title={new Date(app.lastUsedAt).toLocaleString()}>Last used {formatRelativeTime(app.lastUsedAt)}</span>}
           </>
         )}
-        <span aria-hidden="true">•</span>
+        <span aria-hidden="true">·</span>
         <span className="inline-flex min-w-0 max-w-full items-center gap-1">ID: <CodeChip title={app.id}>{app.id}</CodeChip></span>
       </p>
 

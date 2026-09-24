@@ -10,6 +10,7 @@ const preloadable = <Module,>(loadModule: () => Promise<Module>) => {
 
 const loadAiAgentsPage = preloadable(() => import('./pages/AiAgentsPage'));
 const loadAccessManagementPage = preloadable(() => import('./pages/AccessManagementPage'));
+const loadAnalyticsPage = preloadable(() => import('./pages/AnalyticsPage'));
 const loadDashboard = preloadable(() => import('./components/Dashboard'));
 const loadLlmLogsPage = preloadable(() => import('./pages/LlmLogsPage'));
 const loadInboxPage = preloadable(() => import('./pages/InboxPage'));
@@ -26,6 +27,7 @@ const loadGoalsPage = preloadable(() => import('./pages/GoalsPage'));
 
 export const AiAgentsPage = lazy(loadAiAgentsPage);
 export const AccessManagementPage = lazy(loadAccessManagementPage);
+export const AnalyticsPage = lazy(loadAnalyticsPage);
 export const Dashboard = lazy(loadDashboard);
 export const LlmLogsPage = lazy(loadLlmLogsPage);
 export const InboxPage = lazy(loadInboxPage);
@@ -59,6 +61,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/admin/members', load: loadAccessManagementPage },
   { matches: pathname => pathname.startsWith('/summaries/'), load: loadSummaryBrowserPage },
   { matches: pathname => pathname === '/llm-logs', load: loadLlmLogsPage },
+  { matches: pathname => pathname === '/analytics', load: loadAnalyticsPage },
 ];
 
 /**

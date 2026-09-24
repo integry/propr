@@ -8,6 +8,36 @@ import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/si
 // Refresh interval in milliseconds (60 seconds)
 const REFRESH_INTERVAL = 60000;
 
+// Which provider rows are expanded is a preference, not session state: someone
+// watching Claude's weekly quotas wants the same rows open after a reload.
+export const EXPANDED_AGENTS_STORAGE_KEY = 'agent-tank-expanded-agents';
+
+// Storage access throws in private browsing, sandboxed iframes and non-browser
+// renderers, and the stored value can be anything a previous version (or a
+// user) left behind — so both directions fall back to the collapsed default
+// rather than taking the widget down with them.
+function loadExpandedAgents(): Set<string> {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return new Set();
+    const stored = window.localStorage.getItem(EXPANDED_AGENTS_STORAGE_KEY);
+    if (!stored) return new Set();
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((name): name is string => typeof name === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveExpandedAgents(expanded: Set<string>): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(EXPANDED_AGENTS_STORAGE_KEY, JSON.stringify([...expanded]));
+  } catch {
+    // Persistence is a convenience; a storage failure must not break toggling.
+  }
+}
+
 // Visible provider labels keyed by ProPR-facing provider key.
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   antigravity: 'Antigravity',
@@ -20,6 +50,13 @@ const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'antigravity'];
 function getProviderRank(name: string): number {
   const idx = PROVIDER_ORDER.indexOf(name.toLowerCase());
   return idx === -1 ? PROVIDER_ORDER.length : idx;
+}
+
+// Agent Tank reports Antigravity quotas as "<group> · <window> Limit Remaining".
+// Every row in the widget already reads as remaining capacity, so the trailing
+// word is noise that pushes the informative part out of the truncated label.
+function stripRemainingSuffix(name: string): string {
+  return name.replace(/\s+Remaining$/i, '').trim();
 }
 
 // Map Antigravity thinking-level suffixes to compact bold badges.
@@ -111,6 +148,13 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
       resetsIn: agent.usage.weeklySonnet.resetsIn
     });
   }
+  if (agent.usage.weeklyFable) {
+    metrics.push({
+      label: 'Fable',
+      percent: agent.usage.weeklyFable.percent,
+      resetsIn: agent.usage.weeklyFable.resetsIn
+    });
+  }
   // Gemini / Antigravity models
   if (agent.usage.models) {
     const isAntigravity = agent.name.toLowerCase() === 'antigravity';
@@ -118,7 +162,7 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
       if (isAntigravity) {
         // Keep the full model name (incl. "Gemini" prefix and thinking level) for the tooltip,
         // but shorten the visible label.
-        const fullName = getModelDisplayName(model.model);
+        const fullName = stripRemainingSuffix(getModelDisplayName(model.model));
         const { display, plain } = formatAntigravityModelLabel(fullName);
         metrics.push({
           label: plain,
@@ -129,7 +173,7 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
         });
       } else {
         metrics.push({
-          label: getModelDisplayName(model.model, { compactGemini: true }),
+          label: stripRemainingSuffix(getModelDisplayName(model.model, { compactGemini: true })),
           percent: model.percentUsed,
           resetsIn: model.resetsIn
         });
@@ -164,6 +208,16 @@ function getPrimaryMetric(agent: AgentUsageData): UsageMetric | null {
   return metrics.length > 0 ? metrics[0] : null;
 }
 
+// Rows with an explicit tooltip (Antigravity, whose visible label is shortened)
+// must still report their reset countdown — the same "Resets in ..." suffix every
+// other provider's rows get — so the two are composed rather than one replacing
+// the other. Agent Tank omits the countdown for quotas it has no window for.
+function getMetricTooltip(metric: UsageMetric): string {
+  const resets = metric.resetsIn ? `Resets in ${metric.resetsIn}` : null;
+  if (metric.title) return resets ? `${metric.title} · ${resets}` : metric.title;
+  return resets ?? metric.label;
+}
+
 interface MetricRowProps {
   metric: UsageMetric;
   compact?: boolean;
@@ -182,7 +236,7 @@ const MetricRow: React.FC<MetricRowProps> = ({ metric, compact = false }) => (
   <div className={`flex min-w-0 items-center gap-2 ${compact ? 'h-5' : 'py-1'}`}>
     <span
       className="min-w-0 max-w-[100px] flex-1 truncate text-[10px] text-gray-500"
-      title={metric.title ?? (metric.resetsIn ? `Resets in ${metric.resetsIn}` : metric.label)}
+      title={getMetricTooltip(metric)}
     >
       {metric.displayLabel ?? metric.label}
     </span>
@@ -311,7 +365,7 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
   const [data, setData] = useState<AgentTankUsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(() => loadExpandedAgents());
 
   const fetchUsage = useCallback(async (isManualRefresh = false) => {
     if (isManualRefresh) setRefreshing(true);
@@ -345,6 +399,7 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
       } else {
         next.add(agentName);
       }
+      saveExpandedAgents(next);
       return next;
     });
   }, []);

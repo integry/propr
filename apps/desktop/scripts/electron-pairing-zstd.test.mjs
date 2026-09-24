@@ -1,77 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zstdCompressSync } from 'node:zlib';
 import { before, describe, it } from 'node:test';
+import { linuxProbeArguments, runElectronFixture } from './electron-fixture-runner.mjs';
 import { prepareNativeElectronTest } from './electron-native-test-setup.mjs';
 
 const fixture = resolve(dirname(fileURLToPath(import.meta.url)), 'electron-pairing-zstd-probe.cjs');
-
-// The probe makes four sequential pairing requests, each bounded by the
-// protocol's own fixed 8s header deadline. The budget covers all four so a
-// stalled worker is reported as the stall it is, never as an opaque kill.
-const FIXTURE_TIMEOUT_MS = 40_000;
-// A contended shared runner can starve the probe or this server past those
-// deadlines, or fail to bring Chromium up at all, so an attempt ends without
-// the evidence it was launched for. That is a launch or transport outcome
-// rather than a behaviour change, and one clean retry keeps every assertion
-// below strict without failing the shard for the contention.
-const FIXTURE_ATTEMPTS = 2;
-
-// Each request the probe makes, in order, and the key it reports the outcome
-// under.
-const PROBES = [
-  { key: 'valid', path: '/valid' },
-  { key: 'decodedOverLimit', path: '/decoded-over-limit' },
-  { key: 'truncated', path: '/truncated' },
-  { key: 'stacked', path: '/stacked' },
-];
-const PROBE_PATHS = PROBES.map(probe => probe.path);
-
-// Never rejects: an attempt that produced no report is an outcome the caller
-// classifies alongside the requests this server did serve, so the retry
-// decision is made in one place with all of the evidence.
-const runFixture = (command, args) => new Promise(resolveRun => {
-  const child = spawn(command, args, {
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  let stdout = '';
-  let stderr = '';
-  let timedOut = false;
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', value => { stdout += value; });
-  child.stderr.on('data', value => { stderr += value; });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill('SIGKILL');
-  }, FIXTURE_TIMEOUT_MS);
-  child.once('error', error => {
-    clearTimeout(timer);
-    resolveRun({ launchError: error.message, stderr });
-  });
-  child.once('close', (code, signal) => {
-    clearTimeout(timer);
-    if (timedOut) {
-      resolveRun({ timedOut: true, stderr });
-      return;
-    }
-    if (code !== 0) {
-      resolveRun({ exitFailure: String(code ?? signal), stderr });
-      return;
-    }
-    const reportLine = stdout.trim().split(/\r?\n/u).findLast(line => line.startsWith('{'));
-    if (!reportLine) {
-      resolveRun({ missingEvidence: true, stderr });
-      return;
-    }
-    resolveRun({ report: JSON.parse(reportLine), stderr });
-  });
-});
 
 describe('Electron pairing response compression', () => {
   let setup;
@@ -82,8 +18,11 @@ describe('Electron pairing response compression', () => {
     setup = prepareNativeElectronTest({ allowHeadlessLinux: true });
   }, { timeout: 120_000 });
 
+  // The budget covers the probe's own bounded retries of a stalled loopback
+  // request, which each cost the client's fixed header deadline, and the
+  // runner's bounded relaunch of a worker that killed the fixture outright.
   it('negotiates and transparently decodes zstd through defaultSession.fetch', {
-    timeout: 120_000,
+    timeout: 70_000,
   }, async context => {
     if ('skipReason' in setup) {
       context.skip(setup.skipReason);
@@ -95,35 +34,9 @@ describe('Electron pairing response compression', () => {
     const decodedOverLimit = zstdCompressSync(Buffer.from(JSON.stringify({
       value: 'A'.repeat(4_097),
     })));
-    // What each probe's response has to look like, checked wherever the probe
-    // got far enough to produce one.
-    const assertProbeResult = {
-      valid: result => {
-        assert.deepEqual(result, {
-          kind: 'success',
-          responseEncoding: 'zstd',
-          responseLength: String(compressed.byteLength),
-          value: expected,
-        });
-      },
-      decodedOverLimit: result => {
-        assert.equal(result.kind, 'invalid_response');
-        assert.equal(result.responseEncoding, 'zstd');
-        assert.equal(result.responseLength, String(decodedOverLimit.byteLength));
-      },
-      truncated: result => {
-        assert.ok(['invalid_response', 'network'].includes(result.kind));
-        assert.equal(result.responseEncoding, 'zstd');
-        assert.doesNotMatch(result.message, /zstd|decompress|decoder/u);
-      },
-      stacked: result => {
-        assert.equal(result.kind, 'invalid_response');
-        assert.equal(result.responseEncoding, 'zstd, gzip');
-      },
-    };
-    let requests = [];
+    const received = [];
     const server = createServer((request, response) => {
-      requests.push({ url: request.url, acceptEncoding: request.headers['accept-encoding'] });
+      received.push({ acceptEncoding: request.headers['accept-encoding'], path: request.url });
       const body = request.url === '/decoded-over-limit'
         ? decodedOverLimit
         : request.url === '/truncated'
@@ -148,76 +61,53 @@ describe('Electron pairing response compression', () => {
     try {
       const address = server.address();
       assert.ok(address && typeof address === 'object');
-      const electronArguments = [
-        ...(process.platform === 'linux' ? [
-          '--no-sandbox',
-          '--disable-gpu',
-          ...('headlessLinux' in setup ? ['--headless', '--ozone-platform=headless'] : []),
-        ] : []),
-        fixture,
-        `http://127.0.0.1:${address.port}/valid`,
-      ];
+      const report = await runElectronFixture({
+        diagnostic: message => context.diagnostic(message),
+        electronArguments: [
+          ...(process.platform === 'linux' ? [
+            ...linuxProbeArguments,
+            ...('headlessLinux' in setup ? ['--headless', '--ozone-platform=headless'] : []),
+          ] : []),
+          fixture,
+          `http://127.0.0.1:${address.port}/valid`,
+        ],
+        name: 'Electron zstd fixture',
+        setup,
+        timeout: 30_000,
+      });
 
-      for (let attempt = 1; attempt <= FIXTURE_ATTEMPTS; attempt += 1) {
-        requests = [];
-        const outcome = setup.xvfbRun
-          ? await runFixture(setup.xvfbRun, ['--auto-servernum', setup.electronExecutable, ...electronArguments])
-          : await runFixture(setup.electronExecutable, electronArguments);
-        const served = requests.map(request => request.url);
-        const unserved = PROBE_PATHS.filter(path => !served.includes(path));
-        // This server answers every request immediately, so an expired pairing
-        // deadline can only mean the request or its response was held up off
-        // the wire. None of the four expected outcomes below is a timeout.
-        const expiredDeadlines = Object.entries(outcome.report ?? {})
-          .filter(([, result]) => result?.kind === 'timeout')
-          .map(([probe]) => probe);
-        // Only an attempt that produced no complete evidence — Chromium never
-        // started, was killed, died, or left a request unserved — is read as
-        // worker contention. Everything the probe did exchange is asserted
-        // below, on this attempt, so no behaviour difference is retried away.
-        const contention = outcome.launchError !== undefined
-          ? `Electron could not be spawned (${outcome.launchError})`
-          : outcome.timedOut
-            ? `the probe exceeded its ${FIXTURE_TIMEOUT_MS}ms budget after serving ${JSON.stringify(served)}`
-            : outcome.exitFailure !== undefined
-              ? `the probe exited ${outcome.exitFailure} after serving ${JSON.stringify(served)}`
-              : outcome.missingEvidence
-                ? `the probe exited cleanly without reporting evidence after serving ${JSON.stringify(served)}`
-                : unserved.length > 0
-                  ? `${JSON.stringify(unserved)} never reached the test server`
-                  : expiredDeadlines.length > 0
-                    ? `the pairing deadline expired on ${JSON.stringify(expiredDeadlines)}`
-                    : undefined;
-        // Whatever this attempt did observe is judged now, before any retry:
-        // a request that was served and answered without hitting the pairing
-        // deadline is evidence of behaviour, and behaviour that came back
-        // wrong is a failure no second attempt may paper over. Only an
-        // exchange that never completed is left for the retry below.
-        for (const { acceptEncoding } of requests) {
-          assert.match(acceptEncoding ?? '', /(?:^|,\s*)zstd(?:\s*,|$)/u);
-        }
-        for (const { key, path } of PROBES) {
-          const result = outcome.report?.[key];
-          if (!result || result.kind === 'timeout' || !served.includes(path)) continue;
-          assertProbeResult[key](result);
-        }
-
-        if (contention) {
-          if (attempt < FIXTURE_ATTEMPTS) {
-            context.diagnostic(`Retrying the Electron zstd probe: ${contention}`);
-            continue;
-          }
-          assert.fail(`The Electron zstd probe never completed its pairing requests: ${contention}. `
-            + `Probe stderr: ${outcome.stderr.slice(-2_000)}`);
-        }
-
-        // Every probe ran, in order, and each result was asserted above.
-        assert.deepEqual(served, PROBE_PATHS);
-        for (const { key } of PROBES) {
-          assert.ok(outcome.report?.[key], `The probe reported no result for ${key}`);
-        }
-        return;
+      const evidence = JSON.stringify(report);
+      for (const { acceptEncoding, path } of received) {
+        assert.match(
+          acceptEncoding ?? '',
+          /(?:^|,\s*)zstd(?:\s*,|$)/u,
+          `${path} did not negotiate zstd: ${String(acceptEncoding)}`,
+        );
       }
+      // Path coverage rather than a request count: a retried stall repeats one
+      // path, and a missing path names the endpoint that never completed.
+      assert.deepEqual(
+        [...new Set(received.map(({ path }) => path))].sort(),
+        ['/decoded-over-limit', '/stacked', '/truncated', '/valid'],
+        `Electron did not reach every pairing endpoint: ${evidence}`,
+      );
+      if (report.stalls.length > 0) {
+        context.diagnostic(`retried stalled pairing requests: ${report.stalls.join(', ')}`);
+      }
+      assert.deepEqual(report.valid, {
+        kind: 'success',
+        responseEncoding: 'zstd',
+        responseLength: String(compressed.byteLength),
+        value: expected,
+      }, `the valid endpoint did not decode: ${evidence}`);
+      assert.equal(report.decodedOverLimit.kind, 'invalid_response', evidence);
+      assert.equal(report.decodedOverLimit.responseEncoding, 'zstd');
+      assert.equal(report.decodedOverLimit.responseLength, String(decodedOverLimit.byteLength));
+      assert.ok(['invalid_response', 'network'].includes(report.truncated.kind), evidence);
+      assert.equal(report.truncated.responseEncoding, 'zstd');
+      assert.doesNotMatch(report.truncated.message, /zstd|decompress|decoder/u);
+      assert.equal(report.stacked.kind, 'invalid_response', evidence);
+      assert.equal(report.stacked.responseEncoding, 'zstd, gzip');
     } finally {
       // keepAliveTimeout is disabled above, so an idle connection the probe
       // left behind must be closed here for the server to settle.

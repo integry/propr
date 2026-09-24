@@ -25,6 +25,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rebuilt dashboard**: the home page now answers "what needs my attention right
+  now" in five sections — a summary strip of four clickable counts, **Needs
+  attention**, **Happening now**, **Recent outcomes**, and **Historical stats** —
+  with live work taking the main column. A single repository filter applies to every
+  section and is kept in the URL, ordering stays stable while tasks run, and a
+  dropped socket keeps the last known rows on screen under a
+  "Reconnecting · Last updated …" line. Unavailable data renders as "—" rather than
+  as zero, and cost is labelled **Recorded spend**. The Repository Breakdown, Top
+  Models, activity and status-distribution charts moved to a new **Analytics**
+  page (`/analytics`).
+
+  The page is laid out as a split-pane console following the Studio guidelines
+  rather than as cards on a tinted background. No section draws its own box: the
+  two columns are separated by one continuous vertical rule that runs the full
+  height of the canvas, sub-sections are separated by edge-to-edge horizontal
+  rules, and every pane header shares one height so the rules in the two columns
+  land on the same pixel. The summary counts sit in a 40px sub-toolbar anchored
+  above the panes. Repository slugs and issue/PR references are monospace code
+  chips that always name their entity type (`Issue #118`, `PR #2481`); a
+  recorded quality score uses the fixed-width pill (`[ ● 9 ]`) with the
+  out-of-ten scale announced rather than printed; each attention item carries a
+  single fixed-width verb (`Open`, `Review`) so the action column has one left
+  edge; and colour is reserved for work in progress, blockers and failures —
+  completed and merged work is neutral, and the historical chart greys out every
+  settled day.
+
 - **Voice Briefings are opt-in everywhere**: the experimental feature is now off by
   default in the browser, the installed PWA, and the desktop app. Enable
   **Voice briefings · Experimental** in Settings (under *Integrations* for
