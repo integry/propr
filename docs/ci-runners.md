@@ -48,7 +48,7 @@ for consistency across all eligible jobs.
 | `pr-build-check.yml` | `cli-agent-skill-glibc-231` | Hosted Ubuntu; disposable glibc 2.31 container and ordinary-user ownership changes |
 | Native macOS, Windows and ARM64 checks | Existing platform jobs | Matching hosted platforms |
 | Desktop Linux x64 packaging/acceptance | Existing desktop jobs | Hosted: ordinary-user sandbox, desktop/session and clean-environment requirements remain |
-| Aggregate gate and failure reporters | `test`, `comment` | Hosted control/reporting jobs |
+| Change classification, aggregate gate and failure reporters | `classify`, `test`, `comment` | Hosted control/reporting jobs |
 
 Build/lint/docs coverage is unchanged in kind; see
 [Deduplicated validation](#deduplicated-validation) for the invocations that

@@ -700,7 +700,7 @@ describe('workflow wiring', () => {
 
     test('every classifying workflow uses the one shared action', () => {
         for (const [name, workflow] of Object.entries({
-            buildCheck, cliCompatibility, desktopRelease, desktopConnect,
+            buildCheck, fullSuite, cliCompatibility, desktopRelease, desktopConnect,
         })) {
             assert.ok(workflow.includes('uses: ./.github/actions/classify-changes'),
                 `${name} must classify through the shared action`);
@@ -726,6 +726,8 @@ describe('workflow wiring', () => {
             [desktopRelease, 'renderer-axe-boundary', 'desktop'],
             [desktopRelease, 'package', 'desktop'],
             [desktopConnect, 'packaged-connect-discovery', 'desktop'],
+            [fullSuite, 'docs', 'docs'],
+            [fullSuite, 'native-electron', 'desktop'],
         ];
         for (const [workflow, job, surface] of gated) {
             const block = jobBlock(workflow, job);
@@ -751,13 +753,14 @@ describe('workflow wiring', () => {
         }
     });
 
-    test('the full suite still runs unconditionally for every pull request', () => {
-        assert.ok(!fullSuite.includes('classify'),
-            'the full test suite must not be narrowed by the classifier');
-        for (const job of ['shard', 'docs', 'native-electron']) {
-            const block = jobBlock(fullSuite, job);
-            assert.ok(!block.includes('needs.classify'), `${job} must stay unconditional`);
-        }
+    test('the full suite narrows only docs and native Electron, never the backend shards', () => {
+        // Selection and gate semantics are evaluated in
+        // test/ciFullSuiteSelection.test.mjs; this pins the wiring.
+        const shard = jobBlock(fullSuite, 'shard');
+        assert.ok(!shard.includes('classify'), 'backend shards must stay unconditional');
+        assert.ok(!/\n {4}needs:/.test(shard), 'backend shards must not wait for the classifier');
+        assert.ok(jobBlock(fullSuite, 'classify').includes("if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}"),
+            'manual dispatch never consults the classifier');
         assert.ok(fullSuite.includes('--verify-shard-summaries'),
             'exact shard coverage verification must be preserved');
         assert.ok(fullSuite.includes('shard: [1, 2, 3, 4]'), 'the shard matrix must be preserved');

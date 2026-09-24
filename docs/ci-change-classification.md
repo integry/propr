@@ -20,8 +20,8 @@ running more work.
 | `ui` | UI and client checks, PWA and mobile browser smoke |
 | `cli` | Standalone CLI Agent Skill and Node compatibility checks |
 | `connect` | Native Connect discovery and authority proofs (Windows, Darwin) |
-| `desktop` | Desktop packaging, installers and packaged Connect discovery |
-| `docs` | Documentation site typecheck and build |
+| `desktop` | Desktop packaging, installers, packaged Connect discovery and the full suite's hosted native Electron units |
+| `docs` | Documentation site typecheck and build, in the build check and the full suite |
 
 Dependency edges are stated once, in the rule table:
 
@@ -121,6 +121,7 @@ result or an unexplained skip still fails the aggregate:
 | `desktop-release-guard.yml` | `Finalize unsigned validation checksums` |
 | `desktop-connect-discovery-guard.yml` | `Packaged Connect Discovery Guard` |
 | `cli-node-compatibility.yml` | `CLI Node Compatibility Guard` |
+| `pr-test-on-label.yml` | `Run Full Test Suite` |
 
 Each gate script is executed directly by the tests against success, failure,
 cancellation, skip and missing-result inputs, so the semantics are proved rather
@@ -131,13 +132,13 @@ per path, so skipped work is always inspectable.
 
 ## What stays broad on purpose
 
-- **The full test suite (`pr-test-on-label.yml`) is unchanged and still runs
-  unconditionally on every pull request**: all four shards, the discovered-unit
-  coverage verification, the docs/test-preparation job and the hosted native
-  Electron units. It is not narrowed by the classifier, and `test:mcp` did not
-  become a substitute for it. Partitioning the full suite — including its UI and
-  native units — is a separate question that this policy deliberately does not
-  answer.
+- **The full test suite's backend coverage (`pr-test-on-label.yml`) is never
+  narrowed**: all four shards and the discovered-unit exactly-once coverage
+  verification run for every ready pull request and every dispatch, and the
+  shards do not even wait for the classifier. `test:mcp` did not become a
+  substitute for it, and there is no per-file or per-group test selection. Only
+  the two jobs described in [The full test suite](#the-full-test-suite) are
+  gated.
 - **`Validate Changes` in `pr-build-check.yml` runs on every pull request.** It
   classifies inside the job to choose which changed-area sections to run, and it
   passes `require-resolution: true`, so an unresolvable change set fails that job
@@ -148,6 +149,43 @@ per path, so skipped work is always inspectable.
   unchanged.
 - The nightly suite and CodeQL are untouched.
 
+## The full test suite
+
+`pr-test-on-label.yml` classifies once, in a hosted `classify` job that runs
+only for ready (non-draft) pull requests. Manual dispatch never classifies, so
+every job runs. The workflow has no schedule; the scheduled nightly suite is a
+separate workflow that never consults the classifier.
+
+| Job | Gated on | Why that surface covers every input |
+| --- | --- | --- |
+| Four backend shards and coverage verification | never gated | Backend coverage is not narrowed |
+| `Validate Docs Site` (`docs`) | `docs` | The site under `docs/` reads nothing outside `docs/` (a test scans it). Its other inputs — `docs/package-lock.json`, `.propr/setup.sh`, the UI workspace's Playwright pin and `.nvmrc` — are lockfiles, manifests or broad paths |
+| `Full Test Suite Native Electron (hosted)` (`native-electron`) | `desktop` | The units live in `apps/desktop/scripts` and load `packages/client/dist`, which depends on `@propr/shared`; all three select `desktop` (a test follows the units' references and checks each one). The Electron binary comes from the lockfile and the runner from `scripts/`, both broad |
+
+The docs job's `npm ci` and `npm run test:prepare` are only its own
+prerequisites. Every shard runs the same install and workspace build, and
+asserts the built outputs, so skipping the docs job never skips test
+preparation.
+
+`Run Full Test Suite` stays the required check. It accepts a skipped docs or
+native Electron job only when the event is `pull_request`, the classifier job
+succeeded with `status=ok` and `broad=false`, and it explicitly reported that
+job's surface as `false`. Any other skip, a failure or cancellation of any job,
+a skipped or missing shard, or missing coverage evidence fails the check.
+`test/ciFullSuiteSelection.test.mjs` evaluates the workflow's own job
+conditions and gate script for each of these cases.
+
+For PR #2513 (review job sources under `src/jobs/` and their tests under
+`test/`):
+
+| Job | Before | After |
+| --- | --- | --- |
+| Full Test Suite Shard 1–4/4 | runs | runs |
+| Shard coverage verification (exactly once) | runs | runs |
+| Validate Test Preparation and Docs → Validate Docs Site | runs | not applicable (`docs=false`) |
+| Full Test Suite Native Electron (hosted) | runs | not applicable (`desktop=false`) |
+| Run Full Test Suite (required gate) | passes when all of the above pass | passes when the shards and coverage pass and both skips are proved |
+
 ## Before and after, for a pure API/MCP change
 
 Taking the change set of PR #2501 — five files under `packages/api/mcp/`, four
@@ -156,7 +194,8 @@ adds one test file to `scripts.test:mcp`:
 
 | Check | Before | After |
 | --- | --- | --- |
-| Run Full Test Suite (4 shards, docs, native Electron, coverage) | runs | runs |
+| Run Full Test Suite (4 shards, coverage) | runs | runs |
+| Full suite docs site and native Electron jobs | runs | not applicable |
 | Validate Changes (API build/typecheck/lint, security, release metadata, CLI packaging, actionlint, ShellCheck) | runs | runs |
 | PWA and mobile browser smoke | runs | not applicable |
 | Docs typecheck and build | not selected | not applicable |

@@ -777,6 +777,44 @@ describe('native staged artifact lifecycle authority', () => {
     assert.deepEqual(unregisters, ['-u', '-u']);
   });
 
+  test('keeps probing when a re-issued unregister fails instead of ending the absence proof', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    // A re-issued -u that exits nonzero ended the postcondition on a darwin-x64
+    // runner with a bare COMMAND_FAILED, long before the absence window closed.
+    const probes = [true, true, false];
+    const unregisters = [];
+    const authority = new LaunchServicesAuthority(applicationRoot, {}, {
+      runCommand: async (_file, args) => {
+        unregisters.push(args[0]);
+        throw new NativeLifecycleCommandFailure('COMMAND_FAILED');
+      },
+      scanCommand: async () => ({ matched: probes.shift() }),
+      wait: async () => undefined,
+      absenceAttempts: 4,
+    });
+    authority.registered = true;
+
+    await authority.assertGone();
+
+    assert.equal(authority.registered, false);
+    assert.equal(probes.length, 0);
+    assert.deepEqual(unregisters, ['-u', '-u']);
+
+    // A record that never leaves while every re-issued -u fails is named as
+    // the removal failure, since that is the only evidence the window gathered.
+    const stale = new LaunchServicesAuthority(applicationRoot, {}, {
+      runCommand: async () => { throw new NativeLifecycleCommandFailure('COMMAND_FAILED'); },
+      scanCommand: async () => ({ matched: true }),
+      wait: async () => undefined,
+      absenceAttempts: 3,
+    });
+    stale.registered = true;
+    const staleError = await stale.assertGone().catch(error => error);
+    assert.ok(staleError instanceof LaunchServicesAbsenceFailure);
+    assert.equal(staleError.resultClass, LAUNCH_SERVICES_UNREGISTER_FAILED);
+    assert.equal(stale.registered, true);
+  });
+
   test('reports why the absence proof ended and carries that class into cleanup reporting', async () => {
     const applicationRoot = '/private/copied/ProPR Desktop.app';
     const secret = 'https://secret.invalid/private-dump';

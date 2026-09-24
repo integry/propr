@@ -16,8 +16,46 @@ env:
 
 # Four workers, one matrix shard per worker. The opt-in is an activation gate,
 # not an access-control boundary; editable fork workflows require careful approval.
+#
+# Backend coverage is never narrowed: the four shards and their exactly-once
+# coverage verification run for every ready pull request and every dispatch,
+# and do not depend on the classifier. Only the docs site validation and the
+# hosted native Electron units are gated, on the shared classifier's `docs` and
+# `desktop` surfaces. See docs/ci-change-classification.md.
 
 jobs:
+  # The shared classifier (scripts/ci-change-classification.mjs) decides which
+  # surfaces a ready pull request touches. Manual dispatch never consults it,
+  # so the gated jobs below see an empty decision and run.
+  classify:
+    name: Classify changed surfaces
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      docs: ${{ steps.classify.outputs.docs }}
+      desktop: ${{ steps.classify.outputs.desktop }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
+  # Not gated and not dependent on the classifier: every shard installs and
+  # builds the workspace (`npm ci`, `npm run test:prepare`) and asserts the
+  # built outputs, so test preparation is enforced here even when the docs job
+  # below is skipped.
   shard:
     name: Full Test Suite Shard ${{ matrix.shard }}/4
     if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
@@ -198,9 +236,21 @@ jobs:
           git -C "$GITHUB_WORKSPACE" clean -ffdxq
           case "${PROPR_CI_TMPDIR:-}" in /tmp/propr-ci.*) rm -rf -- "$PROPR_CI_TMPDIR" ;; esac
 
+  # Inputs: docs/ (site sources and its own lockfile), .propr/setup.sh, the
+  # propr-ui Playwright version and the Node toolchain. The site imports nothing
+  # from outside docs/; everything else is a lockfile, manifest or broad path,
+  # which selects every surface. The install and workspace build here are only
+  # this job's prerequisites; the shards enforce them unconditionally.
   docs:
-    name: Validate Test Preparation and Docs
-    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
+    name: Validate Docs Site
+    needs: classify
+    # Only an explicit `false` skips. A failed or missing decision (dispatch
+    # never classifies) leaves the output empty, which runs the job.
+    # `!cancelled()` keeps superseded-run cancellation intact.
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) &&
+          needs.classify.outputs.docs != 'false' }}
     # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
     runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
@@ -295,8 +345,17 @@ jobs:
   native-electron:
     # The rootless pilot does not provide the native sandbox/session contract. Require
     # actual native assertions on hosted runners on either shard route.
+    # Inputs: apps/desktop/scripts, packages/client/dist (built from
+    # @propr/client and @propr/shared), the Electron binary from the lockfile and
+    # scripts/run-test-suite.mjs. The classifier's `desktop` surface covers every
+    # one of them; the lockfile and scripts/ select every surface.
     name: Full Test Suite Native Electron (hosted)
-    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
+    needs: classify
+    # Only an explicit `false` skips; see the docs job above.
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) &&
+          needs.classify.outputs.desktop != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -345,7 +404,7 @@ jobs:
     # Required status check. Keep this name stable: it aggregates the shards
     # and docs validation so branch protection keeps the same merge gate.
     name: Run Full Test Suite
-    needs: [shard, docs, native-electron]
+    needs: [classify, shard, docs, native-electron]
     if: >-
       ${{ always() &&
           (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) }}
@@ -388,6 +447,12 @@ jobs:
 
       - name: Enforce shard and docs results
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          CLASSIFY_BROAD: ${{ needs.classify.outputs.broad }}
+          DOCS_DECISION: ${{ needs.classify.outputs.docs }}
+          DESKTOP_DECISION: ${{ needs.classify.outputs.desktop }}
           SHARD_RESULT: ${{ needs.shard.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
           ELECTRON_RESULT: ${{ needs.native-electron.result }}
@@ -400,11 +465,29 @@ jobs:
               status=1
             fi
           }
-          # A matrix result is success only when every shard succeeded.
-          # Missing/skipped native assertions fail closed on either route.
+          # A skip is accepted only when the classifier ran for a pull request,
+          # resolved the change set and explicitly reported the job's surface as
+          # `false`. A failed, fallback or missing classification, a dispatch or
+          # any other result still requires success.
+          surface_gated() {
+            if [ "$2" = skipped ] \
+              && [ "${EVENT_NAME:-}" = pull_request ] \
+              && [ "${CLASSIFY_RESULT:-}" = success ] \
+              && [ "${CLASSIFY_STATUS:-}" = ok ] \
+              && [ "${CLASSIFY_BROAD:-}" = false ] \
+              && [ "$3" = false ]; then
+              echo "::notice::$1 proved inapplicable to this change set; see the classifier job summary for the reasons."
+              echo "$1: not applicable to this change set." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              return
+            fi
+            require "$1" "$2"
+          }
+          # A matrix result is success only when every shard succeeded. The
+          # shards are never gated, so a skipped shard always fails.
           require "Full test suite shards" "$SHARD_RESULT"
-          require "Test preparation and docs validation" "$DOCS_RESULT"
-          require "Hosted native Electron units" "$ELECTRON_RESULT"
+          surface_gated "Docs site validation" "$DOCS_RESULT" "${DOCS_DECISION:-}"
+          # Missing or unexplained skipped native assertions fail closed.
+          surface_gated "Hosted native Electron units" "$ELECTRON_RESULT" "${DESKTOP_DECISION:-}"
           if [ "$COVERAGE_RESULT" != success ]; then
             echo "::error::Shard coverage verification finished with result '$COVERAGE_RESULT'."
             status=1
@@ -416,7 +499,7 @@ jobs:
     # run. Only runs that were not cancelled post a report, so a superseded
     # commit's cancelled shards are not reported as a test failure.
     name: Report Full Test Failure
-    needs: [shard, docs, native-electron, test]
+    needs: [classify, shard, docs, native-electron, test]
     if: >-
       ${{ always() && !cancelled() && github.event_name == 'pull_request' &&
           needs.test.result == 'failure' &&
@@ -445,6 +528,8 @@ jobs:
           INSTALL_RESULT: ${{ needs.docs.outputs.install_result }}
           BUILD_RESULT: ${{ needs.docs.outputs.build_result }}
           DOCS_RESULT: ${{ needs.docs.outputs.docs_result }}
+          DOCS_DECISION: ${{ needs.classify.outputs.docs }}
+          DESKTOP_DECISION: ${{ needs.classify.outputs.desktop }}
           COVERAGE_RESULT: ${{ needs.test.outputs.coverage_result }}
         with:
           script: |
@@ -503,7 +588,10 @@ jobs:
 
             const summary = failedStages.length > 0
               ? `Validation failed during: ${failedStages.join(', ')}.`
-              : `Validation did not complete successfully (shards: ${process.env.SHARD_RESULT || 'unknown'}, docs: ${process.env.DOCS_JOB_RESULT || 'unknown'}).`;
+              : `Validation did not complete successfully (shards: ${process.env.SHARD_RESULT || 'unknown'}, docs: ${process.env.DOCS_JOB_RESULT || 'unknown'}, native Electron: ${process.env.ELECTRON_RESULT || 'unknown'}).`;
+            // A surface-gated job reports the classifier decision that the
+            // aggregate gate judged its skip against.
+            const skipped = (decision) => `skipped (classifier decision: ${decision || 'none'})`;
             // Reserve the footer and truncation notice before adding any content.
             // String.length counts UTF-16 units, conservatively bounding characters.
             const limit = 65536;
@@ -527,9 +615,11 @@ jobs:
               '',
               summary,
               '',
-              ...Object.entries(docsOutcomes).map(([stage, outcome]) => `- ${stage}: ${outcome || 'not run'}`),
+              ...(process.env.DOCS_JOB_RESULT === 'skipped'
+                ? [`- Docs site validation: ${skipped(process.env.DOCS_DECISION)}`]
+                : Object.entries(docsOutcomes).map(([stage, outcome]) => `- ${stage}: ${outcome || 'not run'}`)),
               `- Shard coverage verification: ${process.env.COVERAGE_RESULT || 'not run'}`,
-              ...(process.env.ELECTRON_RESULT && process.env.ELECTRON_RESULT !== 'skipped' ? [`- Hosted native Electron units: ${process.env.ELECTRON_RESULT}`] : []),
+              ...(process.env.ELECTRON_RESULT ? [`- Hosted native Electron units: ${process.env.ELECTRON_RESULT === 'skipped' ? skipped(process.env.DESKTOP_DECISION) : process.env.ELECTRON_RESULT}`] : []),
               ...lines,
               '',
             ];

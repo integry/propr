@@ -48,7 +48,7 @@ function extractRunBlock(block, stepName) {
     return result.join('\n');
 }
 
-function runFailureComment(directory, comment) {
+function runFailureComment(directory, comment, environment = {}) {
     const lines = comment.split('\n');
     const start = lines.findIndex(line => /^\s+script: \|$/.test(line)) + 1;
     const indent = lines[start].match(/^\s*/)[0];
@@ -64,7 +64,7 @@ function runFailureComment(directory, comment) {
     const result = spawnSync(process.execPath, ['harness.cjs', script], {
         cwd: directory,
         encoding: 'utf8',
-        env: { PATH: process.env.PATH, PROPR_TEST_SHARD_COUNT: '4', COVERAGE_RESULT: 'failure', SHARD_RESULT: 'failure' },
+        env: { PATH: process.env.PATH, PROPR_TEST_SHARD_COUNT: '4', COVERAGE_RESULT: 'failure', SHARD_RESULT: 'failure', ...environment },
     });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout;
@@ -462,15 +462,18 @@ describe('PR check routing', () => {
     });
 
     test('keeps four independent shard jobs and a separate docs job', () => {
-        assert.deepEqual(jobNames(fullSuite), ['shard', 'docs', 'native-electron', 'test', 'comment']);
+        assert.deepEqual(jobNames(fullSuite), ['classify', 'shard', 'docs', 'native-electron', 'test', 'comment']);
         const shard = jobBlock(fullSuite, 'shard');
         assert.match(shard, /matrix:\n\s+shard: \[1, 2, 3, 4\]\n/);
         for (const job of ['shard', 'docs']) {
-            const block = jobBlock(fullSuite, job);
-            assert.match(block, /runs-on: \$\{\{ fromJSON\(/, `${job} supports both routes`);
-            assert.match(block, /\n {4}if: \$\{\{ github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft \}\}\n/, `${job} runs for ready PRs and dispatches`);
+            assert.match(jobBlock(fullSuite, job), /runs-on: \$\{\{ fromJSON\(/, `${job} supports both routes`);
         }
-        for (const job of ['native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-latest\n/);
+        assert.match(shard, /\n {4}if: \$\{\{ github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft \}\}\n/, 'shards run for ready PRs and dispatches');
+        // The docs job keeps the same draft handling and is additionally
+        // gated on the shared classifier; test/ciFullSuiteSelection.test.mjs
+        // evaluates the full condition.
+        assert.match(jobBlock(fullSuite, 'docs'), /\n {10}\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\) &&\n/);
+        for (const job of ['classify', 'native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-latest\n/);
         assert.doesNotMatch(fullSuite, /run-local-shards|LOCAL_SHARD/, 'no nested local shard coordinator');
         assert.ok(!existsSync(join(REPOSITORY, 'scripts', 'run-local-shards.mjs')));
         assert.doesNotMatch(fullSuite, /pull_request_target/);
@@ -520,7 +523,7 @@ describe('PR check routing', () => {
 
     test('requires real hosted native Electron assertions on both routes', () => {
         const electron = jobBlock(fullSuite, 'native-electron');
-        assert.match(electron, /if: \$\{\{ github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft \}\}/);
+        assert.match(electron, /\n {10}\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\) &&\n/);
         assert.match(electron, /PROPR_REQUIRE_NATIVE_ELECTRON: '1'/);
         const run = extractRunBlock(electron, 'Run native Electron units without skipping');
         const units = spawnSync('bash', ['-c', `${run.split('\n').filter(line => line.startsWith('mapfile')).join('\n')}\nprintf '%s\\n' "\${files[@]}"`], {
@@ -539,7 +542,7 @@ describe('PR check routing', () => {
     test('fails the required gate closed for shards, docs, coverage and native Electron', () => {
         const gate = jobBlock(fullSuite, 'test');
         assert.match(gate, /name: Run Full Test Suite\n/);
-        assert.match(gate, /needs: \[shard, docs, native-electron\]/);
+        assert.match(gate, /needs: \[classify, shard, docs, native-electron\]/);
         const enforce = extractRunBlock(gate, 'Enforce shard and docs results');
         const runGate = env => spawnSync('bash', ['-e', '-c', enforce], {
             encoding: 'utf8',
@@ -547,9 +550,11 @@ describe('PR check routing', () => {
         });
         const passed = { SHARD_RESULT: 'success', DOCS_RESULT: 'success', ELECTRON_RESULT: 'success', COVERAGE_RESULT: 'success' };
         assert.equal(runGate(passed).status, 0);
+        // Without successful classifier evidence no skip is ever accepted; the
+        // accepted surface skips are covered in test/ciFullSuiteSelection.test.mjs.
         for (const [variable, message] of [
             ['SHARD_RESULT', /shards finished with result/],
-            ['DOCS_RESULT', /docs validation finished with result/],
+            ['DOCS_RESULT', /Docs site validation finished with result/],
             ['ELECTRON_RESULT', /native Electron units finished with result/],
             ['COVERAGE_RESULT', /coverage verification finished with result/],
         ]) {
@@ -559,6 +564,22 @@ describe('PR check routing', () => {
                 assert.match(result.stdout, message);
             }
         }
+    });
+
+    test('reports surface-gated skips with the classifier decision behind them', () => {
+        const comment = jobBlock(fullSuite, 'comment');
+        assert.match(comment, /needs: \[classify, shard, docs, native-electron, test\]/);
+        const skipped = runFailureComment(freshDirectory('report-skips'), comment, {
+            DOCS_JOB_RESULT: 'skipped', DOCS_DECISION: 'false', ELECTRON_RESULT: 'skipped', DESKTOP_DECISION: 'false',
+        });
+        assert.match(skipped, /^- Docs site validation: skipped \(classifier decision: false\)$/m);
+        assert.match(skipped, /^- Hosted native Electron units: skipped \(classifier decision: false\)$/m);
+        assert.doesNotMatch(skipped, /Dependency install: not run/);
+        const unexplained = runFailureComment(freshDirectory('report-unexplained'), comment, {
+            DOCS_JOB_RESULT: 'success', INSTALL_RESULT: 'success', BUILD_RESULT: 'success', DOCS_RESULT: 'success', ELECTRON_RESULT: 'skipped',
+        });
+        assert.match(unexplained, /^- Docs validation: success$/m);
+        assert.match(unexplained, /^- Hosted native Electron units: skipped \(classifier decision: none\)$/m);
     });
 
     test('reports cancelled shards as cancelled and posts no report for a superseded run', () => {
