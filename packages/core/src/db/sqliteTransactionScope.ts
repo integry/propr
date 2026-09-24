@@ -35,6 +35,14 @@ const SAVEPOINT_NAME = String.raw`("(?:[^"]|"")*"|'(?:[^']|'')*'|\`(?:[^\`]|\`\`
     + String.raw`|[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_$\u0080-\uFFFF]*)`;
 
 /**
+ * What separates a keyword from the savepoint name after it. A bare name
+ * needs whitespace or a comment in between, but a quote delimiter starts a
+ * token of its own, so SQLite accepts `ROLLBACK TO"s"` as readily as
+ * `ROLLBACK TO "s"`.
+ */
+const BEFORE_NAME = String.raw`(?:${SQL_TRIVIA}+|(?=["'\`\[]))`;
+
+/**
  * The three statements that move savepoints on a connection, in the forms
  * SQLite accepts: `SAVEPOINT name`, `RELEASE [SAVEPOINT] name` and
  * `ROLLBACK [TRANSACTION] TO [SAVEPOINT] name`. knex opens a nested transaction
@@ -44,7 +52,7 @@ const SAVEPOINT_NAME = String.raw`("(?:[^"]|"")*"|'(?:[^']|'')*'|\`(?:[^\`]|\`\`
 const SAVEPOINT_STATEMENT = new RegExp(
     `^${SQL_TRIVIA}*(?:(savepoint)|(release)(?:${SQL_TRIVIA}+savepoint)?`
     + `|(rollback)(?:${SQL_TRIVIA}+transaction)?${SQL_TRIVIA}+to(?:${SQL_TRIVIA}+savepoint)?)`
-    + `${SQL_TRIVIA}+${SAVEPOINT_NAME}`,
+    + `${BEFORE_NAME}${SAVEPOINT_NAME}`,
     'i'
 );
 
@@ -142,14 +150,24 @@ export function observeTransaction(connection: unknown): TransactionState | unde
     return seen;
 }
 
-/** The name SQLite matches savepoints by: unquoted, with a doubled delimiter unescaped, case-insensitively. */
+/**
+ * Folds case the way SQLite compares savepoint names: ASCII letters only.
+ * `toLowerCase()` would also fold `Ä` onto `ä`, which SQLite keeps distinct,
+ * and two names tracked as one would let a rollback to the outer one be
+ * recorded against the inner one.
+ */
+function foldAsciiCase(name: string): string {
+    return name.replace(/[A-Z]+/g, upper => upper.toLowerCase());
+}
+
+/** The name SQLite matches savepoints by: unquoted, with a doubled delimiter unescaped, ASCII case folded. */
 function savepointName(token: string): string {
     const quote = token[0];
-    if (quote === '[') return token.slice(1, -1).toLowerCase();
+    if (quote === '[') return foldAsciiCase(token.slice(1, -1));
     if (quote === '"' || quote === "'" || quote === '`') {
-        return token.slice(1, -1).replaceAll(quote + quote, quote).toLowerCase();
+        return foldAsciiCase(token.slice(1, -1).replaceAll(quote + quote, quote));
     }
-    return token.toLowerCase();
+    return foldAsciiCase(token);
 }
 
 /**
@@ -176,7 +194,7 @@ export function observeSavepoint(connection: unknown, sql: string, issuedBy?: st
     const replaced = state.savepoints[depth];
     state.savepoints.length = depth;
     if (moved[1]) {
-        const nested = issuedBy !== undefined && name === issuedBy.toLowerCase();
+        const nested = issuedBy !== undefined && name === foldAsciiCase(issuedBy);
         state.savepoints.push(nested ? { name, nested: true } : { name });
     } else if (moved[3]) {
         state.savepoints.push(replaced.nested ? { name, nested: true, rolledBack: true } : { name });

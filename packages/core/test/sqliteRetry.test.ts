@@ -704,7 +704,10 @@ describe('installSqliteRetry', () => {
         // this savepoint `s`, not `s/*`.
         ['SAVEPOINT s/* marker */', 'ROLLBACK TO s', 'RELEASE s'],
         // A doubled quote stands for itself inside a quoted identifier.
-        ['SAVEPOINT "s""q"', 'ROLLBACK TO [s"q]', 'RELEASE `s"q`']
+        ['SAVEPOINT "s""q"', 'ROLLBACK TO [s"q]', 'RELEASE `s"q`'],
+        // A quote delimiter starts a token of its own, so SQLite needs no
+        // whitespace between the keyword and a quoted name.
+        ['SAVEPOINT s', 'ROLLBACK TO"s"', 'RELEASE SAVEPOINT"s"']
     ]) {
         test(`abandons a pending retry under \`${open}\` once \`${rollBack}\` runs`, async () => {
             const db = await createDatabase();
@@ -743,6 +746,47 @@ describe('installSqliteRetry', () => {
             assert.deepEqual(await db('widgets').pluck('id'), []);
         });
     }
+
+    test('tells savepoint names apart the way SQLite does, by ASCII case only', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        installSqliteRetry(db, {
+            random: () => 1,
+            immediateTransactions: false,
+            sleep: async () => {
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        let insertError: unknown;
+        await db.transaction(async trx => {
+            await trx.raw('SAVEPOINT "Ä"');
+            const pending = trx('widgets').insert({ id: 1 }).catch(error => {
+                insertError = error;
+            });
+            await backingOff.promise;
+            // SQLite folds only ASCII letters when it matches savepoint
+            // names, so `"ä"` opens a second savepoint inside `"Ä"` rather
+            // than shadowing it. Rolling back to the outer one undoes the
+            // pending insert and closes the inner one with it.
+            await trx.raw('SAVEPOINT "ä"');
+            await trx.raw('ROLLBACK TO "Ä"');
+            await trx.raw('RELEASE "Ä"');
+            // Only now does the lock clear. Had the two names been tracked as
+            // one, the rollback would have been recorded against the inner
+            // savepoint, leaving the insert owned by the outer one and free
+            // to replay a write the rollback undid.
+            lockCleared.resolve();
+            await pending;
+        });
+
+        assert.match(String(insertError), /database is locked/);
+        assert.equal(insert.attempts, 1);
+        assert.deepEqual(await db('widgets').pluck('id'), []);
+    });
 
     test('keeps a parent retry pending while a nested transaction completes', async () => {
         const db = await createDatabase();
