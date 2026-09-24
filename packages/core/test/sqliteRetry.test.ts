@@ -747,6 +747,47 @@ describe('installSqliteRetry', () => {
         });
     }
 
+    test('abandons a pending retry issued together with the savepoint that is rolled back', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        installSqliteRetry(db, {
+            random: () => 1,
+            immediateTransactions: false,
+            sleep: async () => {
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        let insertError: unknown;
+        await db.transaction(async trx => {
+            // Issued together, the savepoint first: it runs before the insert,
+            // but the insert reaches the retry before the savepoint has been
+            // recorded, so it must not take the connection's savepoints for
+            // its own before the statement ahead of it is accounted for.
+            const opened = trx.raw('SAVEPOINT s').then(() => undefined);
+            const pending = trx('widgets').insert({ id: 1 }).catch(error => {
+                insertError = error;
+            });
+            await opened;
+            await backingOff.promise;
+            // The rollback undoes everything issued under the savepoint, the
+            // pending insert included, and the release closes it.
+            await trx.raw('ROLLBACK TO SAVEPOINT s');
+            await trx.raw('RELEASE SAVEPOINT s');
+            // Only now does the lock clear. Replaying the insert here would
+            // put the write back for the transaction to commit.
+            lockCleared.resolve();
+            await pending;
+        });
+
+        assert.match(String(insertError), /database is locked/);
+        assert.equal(insert.attempts, 1);
+        assert.deepEqual(await db('widgets').pluck('id'), []);
+    });
+
     test('tells savepoint names apart the way SQLite does, by ASCII case only', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1);

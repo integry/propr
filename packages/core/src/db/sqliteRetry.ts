@@ -9,7 +9,8 @@ import {
     observeSavepoint,
     observeTransaction,
     stillOwnedBy,
-    transactionOwnership
+    transactionOwnership,
+    type TransactionOwner
 } from './sqliteTransactionScope.js';
 
 /**
@@ -43,7 +44,15 @@ import {
  * a replay made inside it would hand the parent's write to the nested
  * rollback. A savepoint the caller issued directly closes only when it is
  * released: SQLite keeps it open after `ROLLBACK TO`, so a replay made under
- * it could still be rolled back a second time.
+ * it could still be rolled back a second time. Which scope a statement was
+ * issued in is read when the statement takes its turn on the connection, not
+ * when it was dispatched: the driver runs each statement synchronously, but
+ * what a savepoint statement did is only recorded once its call returns, and
+ * a statement dispatched alongside one would otherwise miss a savepoint that
+ * had already run. Every statement on a connection therefore takes one turn
+ * per attempt — the ownership checks, the driver call and its recording, with
+ * nothing else on that connection in between — and gives it up before backing
+ * off, so the rest of the transaction can move while the statement waits.
  *
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
@@ -183,12 +192,27 @@ interface RetryContext {
      */
     inScope?: () => boolean;
     /**
+     * Runs one attempt, together with the checks that decide whether it may
+     * be made, as one turn on the resource the operation acts on: nothing else
+     * on that resource runs between the checks and the attempt they gate, and
+     * whatever ran before the turn is fully accounted for by the time it is
+     * granted. The turn ends before the backoff, so a pending retry never
+     * keeps the resource from the rest of the program.
+     */
+    takeTurn?: <R>(step: () => Promise<R>) => Promise<R>;
+    /**
      * Runs one attempt with the driver's own blocking wait capped at `limitMs`.
      * The cap is connection-wide state, so it is installed and taken back down
      * around the synchronous driver call alone and never spans an await.
      */
     withBlockingWaitLimit?: <R>(limitMs: number, attempt: () => R) => R;
 }
+
+/** One turn's outcome: an attempt that returned or threw, or one held back. */
+type Attempt<T> =
+    | { made: false }
+    | { made: true; result: T }
+    | { made: true; error: unknown };
 
 function errorCode(error: unknown): string | undefined {
     return typeof error === 'object' && error !== null
@@ -399,17 +423,29 @@ export async function retryOnSqliteContention<T>(
         return true;
     };
 
+    // Whether the attempt is held back and the attempt itself are decided in
+    // one turn: a savepoint that ran on the connection but had not been
+    // recorded when the turn was asked for has been by the time it is granted,
+    // so the check reads the very scope the attempt would run in.
+    const takeTurn = context.takeTurn ?? (step => step());
+    const attemptInTurn = (): Promise<Attempt<T>> => takeTurn(async () => {
+        if (heldBack()) return { made: false };
+        try {
+            return { made: true, result: await attemptOnce() };
+        } catch (caught) {
+            return { made: true, error: caught };
+        }
+    });
+
     let error: unknown;
     for (let attempt = 1; ; attempt += 1) {
-        if (!heldBack()) {
-            try {
-                return await attemptOnce();
-            } catch (caught) {
-                error = caught;
-                if (!isRetryable(error)) {
-                    giveUp(error, attempt);
-                    throw error;
-                }
+        const turn = await attemptInTurn();
+        if (turn.made) {
+            if ('result' in turn) return turn.result;
+            error = turn.error;
+            if (!isRetryable(error)) {
+                giveUp(error, attempt);
+                throw error;
             }
         }
 
@@ -500,6 +536,22 @@ function blockingWaitLimiter(connection: unknown): Pick<RetryContext, 'withBlock
     };
 }
 
+/**
+ * The tail of the queue of turns taken on each connection. A turn starts once
+ * the one before it is over, whichever way that one ended, so the queue never
+ * carries a statement's failure to the statement behind it.
+ */
+const connectionTurns = new WeakMap<object, Promise<void>>();
+
+/** Runs `step` once every turn already queued on `connection` is over. */
+function takeConnectionTurn<R>(connection: unknown, step: () => Promise<R>): Promise<R> {
+    if (typeof connection !== 'object' || connection === null) return step();
+    const previous = connectionTurns.get(connection) ?? Promise.resolve();
+    const turn = previous.then(step);
+    connectionTurns.set(connection, turn.then(() => undefined, () => undefined));
+    return turn;
+}
+
 interface RetryableClient {
     _query(connection: unknown, obj: unknown): Promise<unknown>;
     /**
@@ -546,16 +598,30 @@ function retryStatements(client: RetryableClient): void {
         }
 
         const sql = String(query?.sql ?? '');
-        // The transaction this statement belongs to, read before it runs: a
-        // replay is only its own statement again while that transaction is
-        // still the one open on this connection.
-        const transaction = transactionOwnership(connection);
-        // Read before the statement runs as well: a savepoint named after the
-        // knex transaction that issued it is that transaction's own, which a
-        // caller's savepoint issued through `raw` is not.
+        // Read as the statement is issued: knex writes the id of the
+        // transaction issuing a statement onto the connection before issuing
+        // it, and a savepoint named after that transaction is that
+        // transaction's own, which a caller's savepoint issued through `raw`
+        // is not.
         const issuedBy = knexTransactionId(connection);
+        // The transaction this statement belongs to, read as its first
+        // attempt takes its turn rather than as it is issued: a replay is
+        // only its own statement again while that transaction is still the
+        // one open on this connection, with every savepoint the statement ran
+        // under still open. A statement issued alongside a savepoint runs
+        // under that savepoint, but the savepoint is only recorded once its
+        // driver call returns — so ownership read at issue would miss it, and
+        // a rollback to the savepoint would leave the statement free to
+        // replay a write that rollback undid. Read once every statement ahead
+        // of it is recorded, the ownership is the scope the statement runs in.
+        let transaction: TransactionOwner | undefined;
+        let issued = false;
 
         const runAttempt = async (): Promise<unknown> => {
+            if (!issued) {
+                transaction = transactionOwnership(connection);
+                issued = true;
+            }
             try {
                 const result = await runQuery.call(this, connection, obj);
                 // The savepoint statements of a nested transaction come
@@ -588,12 +654,19 @@ function retryStatements(client: RetryableClient): void {
                 // A nested transaction ends the same way, with a rollback to
                 // its savepoint that leaves the parent open: replaying then
                 // would put the write back for the parent to commit.
-                stillOwned: transaction && (() => stillOwnedBy(connection, transaction)),
+                stillOwned: () => !transaction || stillOwnedBy(connection, transaction),
                 // A nested transaction can also open while the statement is
                 // backing off. Its savepoint would take the replayed write
                 // with it when it rolls back, so the replay waits for the
                 // savepoint to close instead of running inside it.
-                inScope: transaction && (() => atScopeOf(connection, transaction)),
+                inScope: () => !transaction || atScopeOf(connection, transaction),
+                // One turn per attempt on the connection, covering the checks
+                // above, the driver call and the recording of what it did.
+                // Nothing else on the connection runs in between, and a turn
+                // is only granted once the statements ahead of it are
+                // recorded — a savepoint among them included. The turn is
+                // given up before the backoff.
+                takeTurn: step => takeConnectionTurn(connection, step),
                 // Retrying may not change what the statement it wraps does.
                 // The limiter lowers `busy_timeout` for the duration of the
                 // attempt and puts the old value back afterwards, which would
