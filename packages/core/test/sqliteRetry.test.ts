@@ -732,6 +732,110 @@ describe('installSqliteRetry', () => {
         assert.equal(insert.attempts, 3);
     });
 
+    test('holds a parent retry back until the nested transaction it resumed under rolls back', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        const nestedRolledBack = deferred();
+        let sleeps = 0;
+        installSqliteRetry(db, {
+            random: () => 1,
+            immediateTransactions: false,
+            sleep: async () => {
+                sleeps += 1;
+                if (sleeps > 1) {
+                    // Held back: the retry is waiting for the nested
+                    // transaction to close rather than for the lock.
+                    await nestedRolledBack.promise;
+                    return;
+                }
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        let nestedError: unknown;
+        await db.transaction(async trx => {
+            await Promise.all([
+                trx('widgets').insert({ id: 1 }),
+                backingOff.promise
+                    .then(() => trx.transaction(async nested => {
+                        await nested('widgets').insert({ id: 2 });
+                        // The lock clears while the savepoint is still open.
+                        // Resuming the parent's insert here would put its
+                        // write inside the nested transaction, and the
+                        // rollback below would silently take it away from
+                        // the parent's commit.
+                        lockCleared.resolve();
+                        await drainEventLoop();
+                        throw new Error('nested callback failed');
+                    }))
+                    .catch(error => {
+                        nestedError = error;
+                        nestedRolledBack.resolve();
+                    })
+            ]);
+        });
+
+        assert.match(String(nestedError), /nested callback failed/);
+        assert.equal(sleeps, 2);
+        // The replay ran in the parent's own scope, after the savepoint
+        // rolled back, so the parent commits its write and only its write.
+        const rolledBackAt = statements.findIndex(sql => /^rollback to savepoint/i.test(sql));
+        const replayedAt = statements.findLastIndex(sql => /^insert/i.test(sql));
+        assert.ok(rolledBackAt >= 0);
+        assert.ok(replayedAt > rolledBackAt);
+        assert.equal(insert.attempts, 3);
+        assert.deepEqual(await db('widgets').pluck('id'), [1]);
+    });
+
+    test('fails a held-back retry without running it when the savepoint outlives the budget', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        let sleeps = 0;
+        installSqliteRetry(db, {
+            random: () => 1,
+            maxAttempts: 3,
+            immediateTransactions: false,
+            sleep: async () => {
+                sleeps += 1;
+                if (sleeps > 1) return;
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        let nestedError: unknown;
+        await db.transaction(async trx => {
+            // Started now, awaited from inside the nested transaction: the
+            // query only runs once something waits on it.
+            const pending = Promise.resolve(trx('widgets').insert({ id: 1 }));
+            await backingOff.promise;
+            try {
+                await trx.transaction(async () => {
+                    // The nested transaction waits for the parent's pending
+                    // insert, so the lock only clears while its savepoint is
+                    // open — and it stays open until that insert settles.
+                    lockCleared.resolve();
+                    await pending;
+                });
+            } catch (error) {
+                nestedError = error;
+            }
+        });
+
+        // Every remaining attempt found the savepoint still open. The insert
+        // reports the contention it last saw rather than running inside a
+        // scope that is not its own.
+        assert.match(String(nestedError), /database is locked/);
+        assert.equal(sleeps, 2);
+        assert.equal(insert.attempts, 1);
+        assert.deepEqual(await db('widgets').pluck('id'), []);
+    });
+
     test('replays a transaction the caller declared replayable', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');

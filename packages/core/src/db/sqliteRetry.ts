@@ -27,7 +27,11 @@ import logger from '../utils/logger.js';
  * holds for nested transactions too, which knex implements as savepoints: a
  * `ROLLBACK TO SAVEPOINT` undoes the statement's write without closing the
  * connection's transaction, so replaying it afterwards would restore a write
- * the rollback undid and let the parent commit it.
+ * the rollback undid and let the parent commit it. The scope has to match
+ * exactly, not merely still exist: a parent's statement that resumes while a
+ * nested transaction is open is held back until that savepoint closes, since
+ * a replay made inside it would hand the parent's write to the nested
+ * rollback.
  *
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
@@ -178,6 +182,14 @@ interface RetryContext {
      * transaction that was rolled back — so the replay is given up instead.
      */
     stillOwned?: () => boolean;
+    /**
+     * Whether the scope the operation was issued in is the innermost one open
+     * right now. A statement's transaction can open a nested one while the
+     * statement is backing off; a replay made inside that savepoint would let
+     * the nested rollback undo a write that belongs to the parent, so the
+     * replay is held back until the savepoint closes.
+     */
+    inScope?: () => boolean;
     /**
      * Runs one attempt with the driver's own blocking wait capped at `limitMs`.
      * The cap is connection-wide state, so it is installed and taken back down
@@ -379,35 +391,57 @@ export async function retryOnSqliteContention<T>(
         }
     };
 
+    // The scope a retry belongs to can also gain a nested transaction while
+    // the backoff runs. Replaying inside that savepoint would put the write
+    // where the nested rollback undoes it, so the replay is held back until
+    // the savepoint closes. A hold spends an attempt the way a replay would,
+    // which keeps it inside the same budget: a savepoint that outlives the
+    // budget leaves the operation failing with the error it last saw, without
+    // having run again.
+    const heldBack = (): boolean => {
+        if (context.inScope?.() !== false) return false;
+        logger.debug(
+            { operation: context.operation },
+            'SQLite retry held back: a nested transaction is open inside its own'
+        );
+        return true;
+    };
+
+    let error: unknown;
     for (let attempt = 1; ; attempt += 1) {
-        try {
-            return await attemptOnce();
-        } catch (error) {
-            const remainingMs = deadline - resolved.now();
-            if (attempt >= resolved.maxAttempts
-                || remainingMs <= 0
-                || !isRetryable(error)
-                || abandoned()) {
-                giveUp(error, attempt);
-                throw error;
+        if (!heldBack()) {
+            try {
+                return await attemptOnce();
+            } catch (caught) {
+                error = caught;
+                if (!isRetryable(error)) {
+                    giveUp(error, attempt);
+                    throw error;
+                }
             }
+        }
 
-            const waitMs = Math.min(sqliteRetryDelayMs(attempt, resolved), remainingMs);
-            logger.debug({
-                operation: context.operation,
-                attempt,
-                waitMs,
-                code: errorCode(error)
-            }, 'SQLite is locked; retrying');
-            await resolved.sleep(waitMs);
+        const remainingMs = deadline - resolved.now();
+        if (attempt >= resolved.maxAttempts || remainingMs <= 0 || abandoned()) {
+            giveUp(error, attempt);
+            throw error;
+        }
 
-            // The wait itself can spend the rest of the budget, and the
-            // next attempt would block on the lock all over again. It is also
-            // where the transaction this operation belongs to can end.
-            if (deadline - resolved.now() <= 0 || abandoned()) {
-                giveUp(error, attempt);
-                throw error;
-            }
+        const waitMs = Math.min(sqliteRetryDelayMs(attempt, resolved), remainingMs);
+        logger.debug({
+            operation: context.operation,
+            attempt,
+            waitMs,
+            code: errorCode(error)
+        }, 'SQLite is locked; retrying');
+        await resolved.sleep(waitMs);
+
+        // The wait itself can spend the rest of the budget, and the next
+        // attempt would block on the lock all over again. It is also where
+        // the transaction this operation belongs to can end.
+        if (deadline - resolved.now() <= 0 || abandoned()) {
+            giveUp(error, attempt);
+            throw error;
         }
     }
 }
@@ -440,8 +474,12 @@ interface TransactionState {
      * its own object because identity is what matters: a rollback to a
      * savepoint keeps its name on the stack but replaces the entry, so a
      * statement issued under the old entry is no longer owned by anything.
+     * The replacement is marked as rolled back: knex ends a nested
+     * transaction with `ROLLBACK TO` alone and never rolls back to that
+     * savepoint again, so it no longer bounds a scope of its own — the
+     * statements that follow belong to the enclosing one.
      */
-    savepoints: Array<{ name: string }>;
+    savepoints: Array<{ name: string; rolledBack?: boolean }>;
 }
 
 /**
@@ -506,7 +544,7 @@ function observeSavepoint(connection: unknown, sql: string): void {
     const depth = moved[1] ? state.savepoints.length : state.savepoints.findLastIndex(s => s.name === name);
     if (depth < 0) return;
     state.savepoints.length = depth;
-    if (!moved[2]) state.savepoints.push({ name });
+    if (!moved[2]) state.savepoints.push(moved[1] ? { name } : { name, rolledBack: true });
 }
 
 /**
@@ -529,6 +567,23 @@ function stillOwnedBy(connection: unknown, owner: TransactionOwner): boolean {
     const state = observeTransaction(connection);
     if (!state?.open || state.epoch !== owner.epoch) return false;
     return owner.savepoints.every((savepoint, depth) => state.savepoints[depth] === savepoint);
+}
+
+/**
+ * Whether the scope a statement was issued in is the innermost one open on
+ * the connection: it is still owned, and no nested transaction has opened a
+ * savepoint above it since. A statement replayed under such a savepoint would
+ * have its write undone by that savepoint's rollback even though its own
+ * transaction goes on to commit. A savepoint left behind by `ROLLBACK TO`
+ * does not count — its nested transaction is over, and what follows it
+ * belongs to the enclosing scope.
+ */
+function atScopeOf(connection: unknown, owner: TransactionOwner): boolean {
+    if (!stillOwnedBy(connection, owner)) return false;
+    const state = observeTransaction(connection) as TransactionState;
+    return state.savepoints
+        .slice(owner.savepoints.length)
+        .every(savepoint => savepoint.rolledBack === true);
 }
 
 /**
@@ -665,6 +720,11 @@ function retryStatements(client: RetryableClient): void {
                 // its savepoint that leaves the parent open: replaying then
                 // would put the write back for the parent to commit.
                 stillOwned: transaction && (() => stillOwnedBy(connection, transaction)),
+                // A nested transaction can also open while the statement is
+                // backing off. Its savepoint would take the replayed write
+                // with it when it rolls back, so the replay waits for the
+                // savepoint to close instead of running inside it.
+                inScope: transaction && (() => atScopeOf(connection, transaction)),
                 // Retrying may not change what the statement it wraps does.
                 // The limiter lowers `busy_timeout` for the duration of the
                 // attempt and puts the old value back afterwards, which would
