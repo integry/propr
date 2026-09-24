@@ -5,6 +5,7 @@ import {
     SQL_TRIVIA as TRIVIA,
     atScopeOf,
     isInTransaction,
+    knexTransactionId,
     observeSavepoint,
     observeTransaction,
     stillOwnedBy,
@@ -40,7 +41,9 @@ import {
  * exactly, not merely still exist: a parent's statement that resumes while a
  * nested transaction is open is held back until that savepoint closes, since
  * a replay made inside it would hand the parent's write to the nested
- * rollback.
+ * rollback. A savepoint the caller issued directly closes only when it is
+ * released: SQLite keeps it open after `ROLLBACK TO`, so a replay made under
+ * it could still be rolled back a second time.
  *
  * Retries are bounded by a wall-clock budget so they shorten contention rather
  * than multiplying a blocked thread. The budget bounds the asynchronous waits,
@@ -547,13 +550,18 @@ function retryStatements(client: RetryableClient): void {
         // replay is only its own statement again while that transaction is
         // still the one open on this connection.
         const transaction = transactionOwnership(connection);
+        // Read before the statement runs as well: a savepoint named after the
+        // knex transaction that issued it is that transaction's own, which a
+        // caller's savepoint issued through `raw` is not.
+        const issuedBy = knexTransactionId(connection);
 
         const runAttempt = async (): Promise<unknown> => {
             try {
                 const result = await runQuery.call(this, connection, obj);
                 // The savepoint statements of a nested transaction come
-                // through here too, and only move savepoints when they ran.
-                observeSavepoint(connection, sql);
+                // through here too, as do a caller's own, and only move
+                // savepoints when they ran.
+                observeSavepoint(connection, sql, issuedBy);
                 return result;
             } finally {
                 // `BEGIN`, `COMMIT` and `ROLLBACK` all come through here, and

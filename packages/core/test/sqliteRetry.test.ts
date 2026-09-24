@@ -836,6 +836,62 @@ describe('installSqliteRetry', () => {
         assert.deepEqual(await db('widgets').pluck('id'), []);
     });
 
+    test('holds a parent retry back while a savepoint the caller rolled back to stays open', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        const savepointReleased = deferred();
+        let sleeps = 0;
+        installSqliteRetry(db, {
+            random: () => 1,
+            immediateTransactions: false,
+            sleep: async () => {
+                sleeps += 1;
+                if (sleeps > 1) {
+                    // Held back: the savepoint is still open after the
+                    // rollback, and the retry waits for its release.
+                    await savepointReleased.promise;
+                    return;
+                }
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        await db.transaction(async trx => {
+            await Promise.all([
+                trx('widgets').insert({ id: 1 }),
+                (async () => {
+                    await backingOff.promise;
+                    // A savepoint the caller issues itself is not a nested
+                    // transaction: SQLite keeps it open after `ROLLBACK TO`,
+                    // so it can be rolled back to again.
+                    await trx.raw('SAVEPOINT s');
+                    await trx.raw('ROLLBACK TO SAVEPOINT s');
+                    // The lock clears with the savepoint still open. A replay
+                    // made here would land under it, and the second rollback
+                    // would silently take the parent's acknowledged write.
+                    lockCleared.resolve();
+                    await drainEventLoop();
+                    await trx.raw('ROLLBACK TO SAVEPOINT s');
+                    await trx.raw('RELEASE SAVEPOINT s');
+                    savepointReleased.resolve();
+                })()
+            ]);
+        });
+
+        assert.equal(sleeps, 2);
+        // The replay ran only once the savepoint was released, so the
+        // parent's commit keeps its write.
+        const releasedAt = statements.findIndex(sql => /^release savepoint/i.test(sql));
+        const replayedAt = statements.findLastIndex(sql => /^insert/i.test(sql));
+        assert.ok(releasedAt >= 0);
+        assert.ok(replayedAt > releasedAt);
+        assert.equal(insert.attempts, 2);
+        assert.deepEqual(await db('widgets').pluck('id'), [1]);
+    });
+
     test('replays a transaction the caller declared replayable', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');

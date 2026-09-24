@@ -12,7 +12,12 @@
  * nested rollback would take the parent's write with it.
  *
  * The driver reports whether a transaction is open, but not which savepoints
- * are, so the savepoint statements are parsed here as they succeed.
+ * are, so the savepoint statements are parsed here as they succeed. Not every
+ * savepoint bounds a nested transaction, either: a caller can issue one
+ * directly, and SQLite keeps such a savepoint open after `ROLLBACK TO` — it
+ * can be rolled back to again, so it goes on bounding a scope until it is
+ * released. Only a savepoint knex opened for a nested transaction is over
+ * once it is rolled back to, since knex never touches it again.
  */
 
 /** Whitespace and comments, which SQLite allows between any two tokens. */
@@ -37,12 +42,28 @@ const SAVEPOINT_STATEMENT = new RegExp(
 
 type SqliteConnection = {
     inTransaction?: boolean;
+    /** Set by knex to the id of the transaction driving the connection. */
+    __knexTxId?: unknown;
 };
 
 export function isInTransaction(connection: unknown): boolean {
     return typeof connection === 'object'
         && connection !== null
         && (connection as SqliteConnection).inTransaction === true;
+}
+
+/**
+ * The id of the knex transaction driving a connection, which knex writes onto
+ * the connection before issuing any of that transaction's own statements and
+ * uses as the name of a nested transaction's savepoint. Read it before the
+ * statement runs: it identifies the transaction that issued the statement,
+ * not whichever one owns the connection once the statement is done.
+ */
+export function knexTransactionId(connection: unknown): string | undefined {
+    const id = typeof connection === 'object' && connection !== null
+        ? (connection as SqliteConnection).__knexTxId
+        : undefined;
+    return typeof id === 'string' ? id : undefined;
 }
 
 interface TransactionState {
@@ -54,12 +75,22 @@ interface TransactionState {
      * its own object because identity is what matters: a rollback to a
      * savepoint keeps its name on the stack but replaces the entry, so a
      * statement issued under the old entry is no longer owned by anything.
-     * The replacement is marked as rolled back: knex ends a nested
-     * transaction with `ROLLBACK TO` alone and never rolls back to that
-     * savepoint again, so it no longer bounds a scope of its own — the
-     * statements that follow belong to the enclosing one.
+     * A savepoint SQLite keeps open after `ROLLBACK TO` can be rolled back
+     * to again, so the replacement bounds a scope of its own — unless knex
+     * opened the savepoint for a nested transaction. knex ends one with
+     * `ROLLBACK TO` alone and never rolls back to that savepoint again, so
+     * the replacement is marked as rolled back and the statements that
+     * follow belong to the enclosing scope.
      */
-    savepoints: Array<{ name: string; rolledBack?: boolean }>;
+    savepoints: Savepoint[];
+}
+
+interface Savepoint {
+    name: string;
+    /** Opened by knex for a nested transaction rather than by the caller. */
+    nested?: boolean;
+    /** The nested transaction ended with `ROLLBACK TO`; nothing is undone by it now. */
+    rolledBack?: boolean;
 }
 
 /**
@@ -115,16 +146,28 @@ function savepointName(token: string): string {
  * `SAVEPOINT` pushes one; `RELEASE` pops the most recent one with that name
  * and everything above it; `ROLLBACK TO` does the same but leaves a fresh
  * entry in its place, since the writes made under the old one are gone.
+ *
+ * `issuedBy` is the knex transaction the statement was issued from, read
+ * before it ran. A savepoint named after that transaction is the one knex
+ * opened for it, which is what tells a nested transaction's savepoint from
+ * one the caller issued: the first is over once it is rolled back to, the
+ * second stays open until it is released.
  */
-export function observeSavepoint(connection: unknown, sql: string): void {
+export function observeSavepoint(connection: unknown, sql: string, issuedBy?: string): void {
     const state = observeTransaction(connection);
     const moved = state && SAVEPOINT_STATEMENT.exec(sql);
     if (!state || !moved) return;
     const name = savepointName(moved[4]);
     const depth = moved[1] ? state.savepoints.length : state.savepoints.findLastIndex(s => s.name === name);
     if (depth < 0) return;
+    const replaced = state.savepoints[depth];
     state.savepoints.length = depth;
-    if (!moved[2]) state.savepoints.push(moved[1] ? { name } : { name, rolledBack: true });
+    if (moved[1]) {
+        const nested = issuedBy !== undefined && name === issuedBy.toLowerCase();
+        state.savepoints.push(nested ? { name, nested: true } : { name });
+    } else if (moved[3]) {
+        state.savepoints.push(replaced.nested ? { name, nested: true, rolledBack: true } : { name });
+    }
 }
 
 /**
@@ -154,9 +197,11 @@ export function stillOwnedBy(connection: unknown, owner: TransactionOwner): bool
  * the connection: it is still owned, and no nested transaction has opened a
  * savepoint above it since. A statement replayed under such a savepoint would
  * have its write undone by that savepoint's rollback even though its own
- * transaction goes on to commit. A savepoint left behind by `ROLLBACK TO`
- * does not count — its nested transaction is over, and what follows it
- * belongs to the enclosing scope.
+ * transaction goes on to commit. A nested transaction's savepoint left
+ * behind by `ROLLBACK TO` does not count — that transaction is over, and
+ * what follows it belongs to the enclosing scope. A savepoint the caller
+ * rolled back to does: SQLite keeps it open, and a further rollback to it
+ * would take a replayed write with it.
  */
 export function atScopeOf(connection: unknown, owner: TransactionOwner): boolean {
     if (!stillOwnedBy(connection, owner)) return false;
