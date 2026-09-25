@@ -365,11 +365,29 @@ export const RowTitle: React.FC<{
  * three. Only the clamp is applied. Nothing on the dashboard unfolds this line
  * any more: the row links to the work, which carries it whole.
  */
-export const RowDetail: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <span className="mt-0.5 line-clamp-1 break-words text-xs leading-5 text-slate-500">
-    {children}
-  </span>
-);
+export const RowDetail: React.FC<{
+  children: React.ReactNode;
+  /**
+   * Short facts pinned to the end of the line. They are never clipped: the
+   * sentence gives way to them, because a clamp that ate them would hide the
+   * one part of the line that says how fresh the rest of it is.
+   */
+  trailing?: React.ReactNode;
+  'data-testid'?: string;
+}> = ({ children, trailing, 'data-testid': testId }) => {
+  const line = 'line-clamp-1 break-words';
+  if (!trailing) {
+    return <span data-testid={testId} className={`mt-0.5 ${line} text-xs leading-5 text-slate-500`}>{children}</span>;
+  }
+  return (
+    <span data-testid={testId} className="mt-0.5 flex min-w-0 items-baseline gap-x-3 text-xs leading-5 text-slate-500">
+      <span className={`min-w-0 flex-1 ${line}`}>{children}</span>
+      <span className="flex shrink-0 items-baseline gap-x-3 whitespace-nowrap text-[11px] tabular-nums text-slate-400">
+        {trailing}
+      </span>
+    </span>
+  );
+};
 
 /** One row destination, whether it lives in the app or on GitHub. */
 export const RowLink: React.FC<{

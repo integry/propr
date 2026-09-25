@@ -167,6 +167,18 @@ export function primaryClause(text: string): string {
   return match ? text.slice(0, match.index).trim() : text;
 }
 
+/**
+ * How long ago an agent last produced output, as a lower-case phrase.
+ *
+ * `just now` and `18 mins ago` answer different questions on a row whose
+ * timer says 26 minutes: the first says the run is alive, the second says it
+ * has gone quiet. Neither is a verdict — a long test run is quiet too.
+ */
+export function lastOutputLabel(at: string): string {
+  const relative = formatRelativeTime(at);
+  return relative.charAt(0).toLowerCase() + relative.slice(1);
+}
+
 /** Precise elapsed time for running work, where minutes and seconds both matter. */
 export const elapsedRunning = (since: string): string => formatDuration(since, null);
 

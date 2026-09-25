@@ -59,6 +59,12 @@ export interface ActiveItem {
   phase: string | null;
   /** Latest meaningful progress line, or null when the backend does not know one. */
   progressLine: string | null;
+  /** The agent's latest action, from its most recent tool call; null when unknown. */
+  activity?: string | null;
+  /** Position in the agent's own plan; null when it keeps none. */
+  step?: { current: number; total: number } | null;
+  /** When the agent last produced output; null when the stream shows none. */
+  lastActivityAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

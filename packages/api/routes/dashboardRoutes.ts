@@ -25,6 +25,12 @@ import {
 } from './dashboardQueries.js';
 import { loadDashboardWork } from './dashboardWorkQueries.js';
 import { loadCompletedRows, type CompletedRow } from './dashboardOutcomeQueries.js';
+import {
+  EMPTY_LIVE_ACTIVITY,
+  summariseLiveActivity,
+  type LiveActivity,
+  type LiveDetailsSnapshot,
+} from './dashboardLiveActivity.js';
 
 /** Running work we will pay for a live-details projection on in one request. */
 const MAX_LIVE_DETAIL_LOOKUPS = 20;
@@ -40,7 +46,7 @@ export interface DashboardRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Pick<Queue, 'isPaused' | 'getActiveCount'>;
   /** Seam for tests; production resolves the shared live-details projection. */
-  liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>;
+  liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>;
   now?: () => Date;
 }
 
@@ -57,6 +63,12 @@ export interface ActiveItem {
   phase: string | null;
   /** Latest meaningful progress line; null whenever the backend does not know one. */
   progressLine: string | null;
+  /** The agent's latest action, from its most recent tool call; null when unknown. */
+  activity: string | null;
+  /** Position in the agent's own plan; null when it keeps none. */
+  step: { current: number; total: number } | null;
+  /** When the agent last produced output; null when the stream shows none. */
+  lastActivityAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -160,7 +172,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
   }
 
-  function toActiveItem(row: DashboardTaskRow, progressLine: string | null): ActiveItem {
+  function toActiveItem(row: DashboardTaskRow, live: LiveActivity): ActiveItem {
     return {
       id: `task:${row.taskId}`,
       taskId: row.taskId,
@@ -171,20 +183,21 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
       title: row.title,
       state: row.state,
       phase: phaseLabel(row.state),
-      progressLine,
+      progressLine: live.progressLine,
+      activity: live.activity,
+      step: live.step,
+      lastActivityAt: live.lastActivityAt,
       createdAt: row.createdAt,
       updatedAt: row.stateTimestamp,
     };
   }
 
-  async function progressLineFor(taskId: string): Promise<string | null> {
+  async function liveActivityFor(taskId: string): Promise<LiveActivity> {
     try {
-      const live = await liveDetails(taskId);
-      const currentTask = live?.currentTask;
-      return typeof currentTask === 'string' && currentTask.trim() ? currentTask : null;
+      return summariseLiveActivity(await liveDetails(taskId));
     } catch {
-      // An unreadable projection is an unknown progress line, not a failure.
-      return null;
+      // An unreadable projection is unknown progress, not a failure.
+      return EMPTY_LIVE_ACTIVITY;
     }
   }
 
@@ -237,14 +250,14 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
       const work = await timeApiStage('dashboard.active', () =>
         loadDashboardWork(db, repository, { now: now() }));
 
-      const progressLines = new Map<string, string | null>();
+      const liveActivity = new Map<string, LiveActivity>();
       for (const row of work.running.slice(0, MAX_LIVE_DETAIL_LOOKUPS)) {
-        progressLines.set(row.taskId, await progressLineFor(row.taskId));
+        liveActivity.set(row.taskId, await liveActivityFor(row.taskId));
       }
 
-      const running = work.running.map(row => toActiveItem(row, progressLines.get(row.taskId) ?? null));
-      // Queued work has no execution to project a progress line from.
-      const queued = work.queued.map(row => toActiveItem(row, null));
+      const running = work.running.map(row => toActiveItem(row, liveActivity.get(row.taskId) ?? EMPTY_LIVE_ACTIVITY));
+      // Queued work has no execution to project progress from.
+      const queued = work.queued.map(row => toActiveItem(row, EMPTY_LIVE_ACTIVITY));
 
       res.json({
         repository,

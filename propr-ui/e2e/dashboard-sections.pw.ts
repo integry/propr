@@ -11,11 +11,11 @@ const running = [
   // expand control only appears — and only has to be tested — past that.
   { id: 'task:run-7', taskId: 'run-7', repository: 'example/design-system', issueNumber: 119, prNumber: null, taskType: 'issue', title: 'New Issue: Unify the empty and unavailable states across panels', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(1), updatedAt: minutesAgo(1) },
   { id: 'task:run-6', taskId: 'run-6', repository: 'example/docs', issueNumber: 62, prNumber: null, taskType: 'issue', title: 'Explain the attention rules in the operations guide', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(2), updatedAt: minutesAgo(1) },
-  { id: 'task:run-5', taskId: 'run-5', repository: 'example/docs', issueNumber: 61, prNumber: null, taskType: 'issue', title: 'Document the dashboard data contracts', state: 'claude_execution', phase: 'Implementing', progressLine: null, createdAt: minutesAgo(4), updatedAt: minutesAgo(1) },
-  { id: 'task:run-4', taskId: 'run-4', repository: 'example/workspace', issueNumber: 2455, prNumber: 2456, taskType: 'pr-comment', title: 'Review PR #2456: Cache repository icons across dashboard sections', state: 'claude_execution', phase: 'Implementing', progressLine: 'Running tests', createdAt: minutesAgo(7), updatedAt: minutesAgo(1) },
+  { id: 'task:run-5', taskId: 'run-5', repository: 'example/docs', issueNumber: 61, prNumber: null, taskType: 'issue', title: 'Document the dashboard data contracts', state: 'claude_execution', phase: 'Implementing', progressLine: null, activity: 'Reading dashboardApi.ts', step: null, lastActivityAt: minutesAgo(0.2), createdAt: minutesAgo(4), updatedAt: minutesAgo(1) },
+  { id: 'task:run-4', taskId: 'run-4', repository: 'example/workspace', issueNumber: 2455, prNumber: 2456, taskType: 'pr-comment', title: 'Review PR #2456: Cache repository icons across dashboard sections', state: 'claude_execution', phase: 'Implementing', progressLine: 'Running tests', activity: 'Running npx vitest run src/components/Dashboard', step: { current: 3, total: 5 }, lastActivityAt: minutesAgo(0.1), createdAt: minutesAgo(7), updatedAt: minutesAgo(1) },
   { id: 'task:run-3', taskId: 'run-3', repository: 'example/design-system', issueNumber: 118, prNumber: null, taskType: 'issue', title: 'Align the score badge with the completed feed', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(9), updatedAt: minutesAgo(3) },
   { id: 'task:run-2', taskId: 'run-2', repository: 'example/workspace', issueNumber: 2480, prNumber: 2481, taskType: 'pr-comment', title: 'Fix PR #2481: keep the queue summary honest when no reason is known', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(14), updatedAt: minutesAgo(2) },
-  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2479, prNumber: null, taskType: 'issue', title: 'Followup: [2479 by Claude Opus 4.6] Rebuild the dashboard into five sections with a shared repository filter', state: 'claude_execution', phase: 'Implementing', progressLine: 'Editing propr-ui/src/components/Dashboard.tsx', createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
+  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2479, prNumber: null, taskType: 'issue', title: 'Followup: [2479 by Claude Opus 4.6] Rebuild the dashboard into five sections with a shared repository filter', state: 'claude_execution', phase: 'Implementing', progressLine: 'Editing propr-ui/src/components/Dashboard.tsx', activity: 'Editing Dashboard.tsx', step: { current: 2, total: 6 }, lastActivityAt: minutesAgo(18), createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
 ];
 
 // Newest first, whatever the kind.
@@ -181,6 +181,14 @@ test('desktop shows every section with running work in the main column', async (
   const happeningNow = page.getByTestId('happening-now-section');
   await expect(happeningNow).not.toContainText('Implementing');
   await expect(happeningNow.locator('.animate-spin')).toHaveCount(0);
+  // No spinner, but no blank row either: every running row says what it is
+  // doing now, so a hung agent is not indistinguishable from a busy one.
+  const rows = happeningNow.getByTestId('happening-now-list').locator('li');
+  const subPhases = happeningNow.getByTestId('running-sub-phase');
+  await expect(subPhases).toHaveCount(await rows.count());
+  for (const text of await subPhases.allInnerTexts()) expect(text.trim()).not.toBe('');
+  await expect(rows.nth(2).getByTestId('running-last-output')).toHaveText('last output just now');
+  await expect(rows.nth(3).getByTestId('running-step')).toHaveText('step 3/5');
   await expect(happeningNow.getByTestId('work-type-badge').first()).toHaveText('Implement');
   await expect(happeningNow).not.toContainText('New Issue:');
   await expect(page.getByTestId('queue-summary')).toContainText('All agents are busy');

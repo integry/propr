@@ -2,6 +2,7 @@ import type { Request, Response as ExpressResponse } from 'express';
 import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
+import type { LiveDetailsSnapshot } from '../routes/dashboardLiveActivity.js';
 
 export const NOW = new Date('2026-09-23T12:00:00.000Z');
 export const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -122,7 +123,7 @@ export interface QueueStub {
 export function createTestDashboardRoutes(
   database: Knex,
   queue: QueueStub = {},
-  liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>,
+  liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>,
 ): ReturnType<typeof createDashboardRoutes> {
   const workerIds = Array.from({ length: queue.workers ?? 1 }, (_, index) => `worker:${index}`);
   const capacityPerWorker = queue.capacityPerWorker === undefined ? 1 : queue.capacityPerWorker;

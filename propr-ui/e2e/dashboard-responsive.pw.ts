@@ -37,7 +37,7 @@ const LONG_PROGRESS_LINE =
 const SHORT_PROGRESS_LINE = 'Editing …/HappeningNowSection.tsx';
 
 const running = [
-  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2480, prNumber: null, taskType: null, title: LONG_TITLE, state: 'claude_execution', phase: 'Implementing', progressLine: LONG_PROGRESS_LINE, createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
+  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2480, prNumber: null, taskType: null, title: LONG_TITLE, state: 'claude_execution', phase: 'Implementing', progressLine: LONG_PROGRESS_LINE, activity: 'Editing HappeningNowSection.tsx', step: { current: 2, total: 6 }, lastActivityAt: minutesAgo(18), createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
   { id: 'task:run-2', taskId: 'run-2', repository: 'example/design-system', issueNumber: 118, prNumber: 119, taskType: 'pr-comment', title: 'Fix PR #119: Align the score badge with the completed feed', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(9), updatedAt: minutesAgo(2) },
 ];
 

@@ -2,11 +2,11 @@
  * Happening now: the operational view of work in flight, newest first.
  *
  * Rows show only facts the system actually has — what kind of work it is,
- * elapsed time and the latest progress line the agent reported. Every row in
- * this list is running, so there is no per-row status badge repeating it; the
- * pane's heading already says so. There is no synthesised
- * percentage, and a run with no recent chat message is not called stalled:
- * missing progress means the progress is unknown, not that the work is stuck.
+ * elapsed time and what the agent is doing right now. Every row in this list
+ * is running, so there is no per-row status badge or spinner repeating it; the
+ * pane's heading already says so. There is no synthesised percentage, and a
+ * quiet run is not called stalled: the row says when the agent last produced
+ * output and leaves the judgement to the person reading it.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -30,6 +30,7 @@ import {
   type DashboardSectionProps,
   elapsedRunning,
   filteredTasksHref,
+  lastOutputLabel,
   primaryClause,
   shortenPaths,
   useDashboardSection,
@@ -56,6 +57,37 @@ const itemKey = (item: ActiveItem): string => item.id;
 const fallbackTitle = (item: ActiveItem): string =>
   item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work';
 
+/** States in which the agent itself is running, so its stream is current. */
+const AGENT_STATES = new Set(['claude_execution', 'active']);
+
+/**
+ * The lifecycle phase, said as what the system is doing.
+ *
+ * Only for the stretches either side of the agent, where there is no agent
+ * stream to read. "Implementing" is not here on purpose: the type badge and
+ * the pane already say that, and the agent's own line says more.
+ */
+const LIFECYCLE_LINES: Record<string, string> = {
+  processing: 'Setting up the workspace',
+  post_processing: 'Publishing the results',
+};
+
+/**
+ * The live sub-phase: what this run is doing right now.
+ *
+ * The agent's own plan step comes first — it is the line the agent chose to
+ * describe its work with. Without one, the latest tool call it made says what
+ * it is actually touching. A tool call is only read while the agent is the one
+ * running: during publishing the last call is history, not the current phase.
+ * An agent with nothing in its stream yet says exactly that, which is the case
+ * a row needs to make visible rather than paper over.
+ */
+function subPhase(item: ActiveItem): string {
+  if (item.progressLine) return item.progressLine;
+  if (AGENT_STATES.has(item.state)) return item.activity ?? 'Waiting for the agent\'s first output';
+  return LIFECYCLE_LINES[item.state] ?? item.phase ?? 'Starting';
+}
+
 /**
  * One running row: the whole row is the link to the work it names.
  *
@@ -68,6 +100,10 @@ const fallbackTitle = (item: ActiveItem): string =>
  */
 const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
   const work = splitWorkTitle(item.title, item.taskType);
+  const line = subPhase(item);
+  const agentRunning = AGENT_STATES.has(item.state);
+  const lastOutputAt = agentRunning ? item.lastActivityAt ?? null : null;
+  const step = agentRunning ? item.step ?? null : null;
   return (
     <li>
       <RowLink href={workHref(item)} className="block min-w-0 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
@@ -86,20 +122,43 @@ const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
         />
         <RowTitle type={work.type}>{work.title ?? fallbackTitle(item)}</RowTitle>
         {/*
-          The progress line is a sentence with a repository path in it, and on a
-          phone the path is most of the sentence: 110 characters of
+          Every running row carries this line; a row without it is a title and
+          a ticking timer, which cannot tell a working agent from a hung one.
+
+          The line is a sentence with a repository path in it, and on a phone
+          the path is most of the sentence: 110 characters of
           `propr-ui/src/components/…` wrapped to three lines of the densest text
           on the screen. Someone triaging on a phone needs the file, not the
           route to it, so the directories collapse below `sm` and come back
           whole where there is width for them — and the sentence stops at its
           first clause rather than being cut mid-word by the clamp.
+
+          The plan step and the time since the agent last produced output ride
+          at the end of the line, and the sentence gives way to them.
         */}
-        {item.progressLine && (
-          <RowDetail>
-            <span className="sm:hidden">{shortenPaths(primaryClause(item.progressLine))}</span>
-            <span className="hidden sm:inline">{item.progressLine}</span>
-          </RowDetail>
-        )}
+        <RowDetail
+          data-testid="running-sub-phase"
+          trailing={(step || lastOutputAt) && (
+            <>
+              {step && (
+                <span data-testid="running-step" title="Step in the agent's own plan">
+                  step {step.current}/{step.total}
+                </span>
+              )}
+              {lastOutputAt && (
+                <span data-testid="running-last-output" title={`Last agent output ${new Date(lastOutputAt).toLocaleString()}`}>
+                  <span className="hidden sm:inline">last output </span>
+                  {lastOutputLabel(lastOutputAt)}
+                </span>
+              )}
+            </>
+          )}
+        >
+          <span className="sm:hidden">{shortenPaths(primaryClause(line))}</span>
+          <span className="hidden sm:inline" title={item.activity && item.activity !== line ? `Latest action: ${item.activity}` : undefined}>
+            {line}
+          </span>
+        </RowDetail>
       </RowLink>
     </li>
   );
