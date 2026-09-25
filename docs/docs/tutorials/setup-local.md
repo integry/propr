@@ -99,7 +99,7 @@ If you take the own-App path, register the App with these repository permissions
 | Metadata | Read-only |
 | Issues | Read and write |
 | Pull Requests | Read and write |
-| Actions | Read-only (optional; used to read CI check results) |
+| Actions | Read-only (optional; used to read CI check results). Read and write is required only for the per-repository "Cancel CI while follow-up implementation is in progress" option |
 
 **3. Edit the rest of `.env`.** The relevant local-stack values:
 

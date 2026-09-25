@@ -143,7 +143,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
       const comment: UnprocessedComment = { id: commentId, body: `/${commandMode}`, author: 'fixture-user', type: 'issue',
         commandMode, ...(workEpoch === undefined ? {} : { ultrafixMeta: { workEpoch } as UnprocessedComment['ultrafixMeta'] }) };
       pendingComments.set(key, [JSON.stringify(comment)]);
-      await cleanupJob({ stateManager, lockKey: 'lock:pr:acme:repo:42', lockToken: 'fixture-lock',
+      await cleanupJob({ stateManager, taskId, lockKey: 'lock:pr:acme:repo:42', lockToken: 'fixture-lock',
         localRepoPath: undefined, worktreeInfo: undefined, repoOwner: 'acme', repoName: 'repo', pullRequestNumber: 42,
         jobBranchName: 'fixture', jobLlm: undefined, correlatedLogger, redisClient: deps.redisClient as never });
       const queued = issueJobs.at(-1)!;

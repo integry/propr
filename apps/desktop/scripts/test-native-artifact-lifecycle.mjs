@@ -1230,10 +1230,12 @@ export class LaunchServicesAuthority {
       await this.wait(LAUNCH_SERVICES_ABSENCE_INTERVAL_MS);
       // A bundle opened through LaunchServices can be re-registered by the
       // system after -u returns, so each re-probe re-issues the removal instead
-      // of only waiting for the first one to be reflected. The first -u already
-      // succeeded, so a re-issue that fails (lsregister exits nonzero once the
-      // record it was racing is gone) is not evidence either way: the next
-      // -dump decides, and the deadline still bounds the proof.
+      // of only waiting for the first one to be reflected. The re-issue is
+      // never evidence either way: the first removal already ran as its own
+      // cleanup step, and only the next dump decides anything. So a re-issue
+      // that exits non-zero on a busy runner (lsregister also exits nonzero
+      // once the record it was racing is gone) costs this attempt rather than
+      // ending the proof, and the deadline still bounds the proof.
       try {
         await this.unregister();
       } catch {

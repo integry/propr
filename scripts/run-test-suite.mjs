@@ -13,6 +13,10 @@
 // PROPR_TEST_SUMMARY_FILE receives per-unit status and timing as JSON.
 // PROPR_TEST_TIMEOUT_MS bounds every unit; units that pass but already use
 // most of that budget are reported before they start timing out.
+// PROPR_DESKTOP_TEST_FSYNC defaults to 'off' for every unit: the desktop
+// profile-store suites then skip native fsync, which the shared-disk runner
+// serves too slowly for that budget. The native durability jobs run those
+// files directly and keep real fsync. An explicit value is passed through.
 
 import { appendFileSync, existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -549,6 +553,7 @@ export async function runSuite(argv = process.argv.slice(2), env = process.env) 
             const result = await runTestProcess(command, args, {
                 cwd: ROOT,
                 env: {
+                    PROPR_DESKTOP_TEST_FSYNC: 'off',
                     ...env,
                     NODE_ENV: 'test',
                     DATA_DIR: testDataDirectory,

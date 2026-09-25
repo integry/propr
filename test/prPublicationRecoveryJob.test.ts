@@ -225,6 +225,8 @@ const octokit = {
     },
 };
 const modules: Record<string, Record<string, unknown>> = {
+    // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
+    followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
     prCommentJobHelpers: {
         validateAndFilterComments: async (comments: unknown) => skipValidation ? [] : comments,
         filterUnprocessedComments: (comments: unknown) => comments,

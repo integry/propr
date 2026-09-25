@@ -18,6 +18,8 @@ import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
 import { releasePRProcessingLock } from './prProcessingLock.js';
+import { releaseFollowupCiSuspensionsForTask } from './followupCiSuspension.js';
+import type { CiSuspensionOctokit } from './followupCiSuspensionRuns.js';
 import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.js';
 
 export async function fetchOriginalContributionDiscussion(
@@ -327,6 +329,8 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 
 export interface CleanupOptions {
     stateManager: WorkerStateManager; lockKey: string; lockToken: string;
+    /** Owner of any follow-up CI suspension released together with the lock. */
+    taskId: string; octokit?: CiSuspensionOctokit;
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
@@ -337,6 +341,13 @@ export interface CleanupOptions {
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    // Implementation is over: a published replacement keeps its own CI, anything
+    // else gets the validation of the still-current head back. This runs before the
+    // lease is released so the next request for the same PR cannot cancel the runs
+    // being restored right now.
+    await releaseFollowupCiSuspensionsForTask({ taskId: options.taskId }, { octokit: options.octokit, log: correlatedLogger })
+        .catch(error => correlatedLogger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Failed to release follow-up CI suspension; reconciliation will retry it'));
+
     if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }

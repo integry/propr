@@ -365,6 +365,61 @@ describe('useRepositoryManagement', () => {
     expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true]);
   });
 
+  it('round-trips the validation workflow selection and shares it across branch entries', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        {
+          id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: [' pr-build-check.yml ', 'PR-Build-Check.yml']
+        },
+        // An entry written before the selection existed carries none of its own.
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release', cancelCiDuringFollowup: true },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.cancelCiDuringFollowupWorkflows)).toEqual([['pr-build-check.yml'], [], []]);
+    // Both branch entries of the repository show the one selection it has.
+    expect(result.current.filteredRepos.map(repo => repo.cancelCiDuringFollowupWorkflows))
+      .toEqual([['pr-build-check.yml'], ['pr-build-check.yml'], []]);
+
+    act(() => result.current.handleUpdateCancelCiWorkflows('repo-release', ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml']));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.cancelCiDuringFollowupWorkflows)).toEqual([
+      ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml'],
+      ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml'],
+      []
+    ]);
+  });
+
+  it('displays the whole repository-wide selection the worker may cancel, not just the first entry\u2019s', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        {
+          id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['a.yml']
+        },
+        {
+          id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['b.yml', 'A.YML']
+        },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The worker cancels the union of both entries, so the settings must show it.
+    expect(result.current.filteredRepos.map(repo => repo.cancelCiDuringFollowupWorkflows))
+      .toEqual([['a.yml', 'b.yml'], ['a.yml', 'b.yml'], []]);
+  });
+
   it('preserves per-entry automatic CI follow-up state while displaying duplicate branches consistently', async () => {
     mockGetRepoConfig.mockResolvedValue({
       repos_to_monitor: [

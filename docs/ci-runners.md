@@ -308,6 +308,16 @@ nightly suite with no earlier signal, so the timing report now also lists the
 units that passed while using 60% or more of that budget, and each one becomes
 a run annotation. A unit listed there is the next one to split.
 
+The shared runner's disk serves fsync slowly, and the desktop profile-store
+suites perform several hundred per run; `apps/desktop/src/profile-store.test.ts`
+took 90-124s there before crossing the budget. The runner therefore sets
+`PROPR_DESKTOP_TEST_FSYNC=off` for every unit, and those suites (with their
+crash fixtures) turn file-handle fsync into a no-op for the process. Their
+assertions cover write ordering through the store's hooks and crash recovery
+after SIGKILL, which the page cache preserves. Native fsync stays in force for
+`desktop:test`, the `test:native-durability` matrix and any direct `tsx --test`
+run, and an explicit value of the variable is passed through unchanged.
+
 The required **Run Full Test Suite** name stays unchanged. Its gate requires
 all shards, docs, complete summary verification, and the hosted native Electron
 job to succeed. Electron runs on hosted Ubuntu on both routes with

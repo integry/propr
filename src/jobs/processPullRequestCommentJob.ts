@@ -47,6 +47,7 @@ import { loadOriginalContributionDiscussion } from './prContributionDiscussion.j
 import { PullRequestPublication } from './prPublication.js';
 import { recoverPendingPublication, type ProcessingState, type ExecuteProcessingParams } from './prPublicationRecovery.js';
 import { findPRContinuation, type Contribution } from './prContinuation.js';
+import { suspendObsoleteValidationForImplementation } from './followupCiSuspension.js';
 import { deferredUltrafixReviewRecap, stoppedReviewRecap } from './notificationRecap.js';
 
 const redisClient = new Redis({
@@ -244,16 +245,18 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
     await ensureGitRepository(correlatedLogger);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const prepared = state.worktreeInfo ? { localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo }
-        : await publication.prepare(`pr-${pullRequestNumber}-followup-${timestamp}`);
+    const prepared = state.worktreeInfo ? { localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo } : await publication.prepare(`pr-${pullRequestNumber}-followup-${timestamp}`);
     state.localRepoPath = prepared.localRepoPath;
     state.worktreeInfo = prepared.worktreeInfo;
     const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, gitTarget: publication.target, destination: publication.status }, 'Prepared PR publication destination');
 
-    const requestBody = isFixMode
-        ? (fixSelection.remainingInstructions || 'Apply only the selected review finding records below.')
-        : combinedCommentBody;
+    // Implementation is authorized and the publication destination is resolved, so
+    // the validation of the head this task is about to replace is now obsolete.
+    // Opt-in per repository; a failure there never stops the implementation.
+    await suspendObsoleteValidationForImplementation({ ref: context, continuation: publication.continuation, taskId, correlationId }, { octokit: state.octokit, log: correlatedLogger });
+
+    const requestBody = isFixMode ? (fixSelection.remainingInstructions || 'Apply only the selected review finding records below.') : combinedCommentBody;
     const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
     let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
     if (job.data.ultrafixMeta) {
@@ -451,6 +454,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await cleanupJob({ stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
     }
 }

@@ -17,8 +17,23 @@ import type { Job } from 'bullmq';
 
 after(closeConnection);
 const input = { user_id: 'alice', submission_key: 'request-1', payload_hash: 'hash', repository: 'owner/repo', payload: '{}', attachments: '[]' };
+// File-backed fixtures prove cross-process exclusion, not durability. Every
+// autocommit would otherwise fsync the journal and the database on the shared
+// rootless CI host's disk, and those synchronous waits are the only part of
+// the cross-process test that neither CPU contention nor the child handshake
+// bounds: run 36055786425 blocked it for 40s against a 20s budget while the
+// rest of the unit ran at its usual speed. Locking and visibility are
+// unaffected by skipping fsync.
+function skipFsync(connection: { pragma: (statement: string) => unknown }, done: (error: Error | null, connection?: unknown) => void) {
+  try {
+    connection.pragma('synchronous = OFF');
+    done(null, connection);
+  } catch (error) {
+    done(error as Error);
+  }
+}
 async function fixture(filename = ':memory:') {
-  const database = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true });
+  const database = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true, pool: { afterCreate: skipFsync } });
   await up(database);
   await identityMigration(database);
   return database;
@@ -294,7 +309,8 @@ test('a terminated dispatch owner releases exclusion so concurrent retries resum
     child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
       import knex from 'knex';
       import { resumeTaskSubmission } from './packages/core/src/services/taskSubmissionService.ts';
-      const database = knex({ client: 'better-sqlite3', connection: { filename: process.env.SUBMISSION_TEST_DB }, useNullAsDefault: true });
+      const database = knex({ client: 'better-sqlite3', connection: { filename: process.env.SUBMISSION_TEST_DB }, useNullAsDefault: true,
+        pool: { afterCreate: (connection, done) => { connection.pragma('synchronous = OFF'); done(null, connection); } } });
       await resumeTaskSubmission(database, process.env.SUBMISSION_TEST_ID, {
         createIssue: async () => { throw new Error('must not create'); },
         reconcileIssue: async () => null,

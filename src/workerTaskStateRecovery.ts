@@ -46,6 +46,8 @@ export interface WorkerTaskStateRecoveryOptions {
     timeBudgetMs?: number;
     /** Additional native-goal reconciliation under the same process-wide lease. */
     recoverGoals?: () => Promise<unknown>;
+    /** Follow-up CI suspensions that outlived their task, under the same lease. */
+    reconcileCiSuspensions?: () => Promise<unknown>;
 }
 
 class RecoveryOperationTimeoutError extends Error {
@@ -270,6 +272,15 @@ export async function startWorkerTaskStateRecovery(
                     controller.signal,
                 );
                 logger.info(goalResult, 'Reconciled nonterminal native goals');
+            }
+            if (options.reconcileCiSuspensions) {
+                const suspensionResult = await runWithinDeadline(
+                    'Follow-up CI suspension reconciliation',
+                    options.reconcileCiSuspensions,
+                    deadline - leaseReleaseBudgetMs,
+                    controller.signal,
+                );
+                logger.info(suspensionResult as Record<string, unknown>, 'Reconciled follow-up CI suspensions');
             }
             return true;
         } catch (error) {

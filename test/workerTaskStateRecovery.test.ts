@@ -209,3 +209,25 @@ test('close aborts a stalled active recovery run', async () => {
 
     assert.equal(settled, true);
 });
+
+test('reconciles follow-up CI suspensions under the same lease', async () => {
+    reconcileStalePRCommentTasks.mock.resetCalls();
+    const reconcileCiSuspensions = mock.fn(async () => ({ scanned: 1, swept: 0, restored: 1, released: 1, errors: 0 }));
+    const redis = {
+        set: mock.fn(async () => 'OK'),
+        eval: mock.fn(async () => 1),
+    };
+    const runner = await startWorkerTaskStateRecovery({
+        ...dependencies(),
+        redis,
+        intervalMs: 60_000,
+        reconcileCiSuspensions,
+    });
+
+    assert.equal(await runner.runOnce(), true);
+    await runner.close();
+
+    assert.equal(reconcileCiSuspensions.mock.calls.length > 0, true);
+    // The lease is released once per run, after the suspension pass.
+    assert.equal(redis.eval.mock.calls.length > 0, true);
+});

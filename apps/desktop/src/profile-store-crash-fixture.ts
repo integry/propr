@@ -1,6 +1,10 @@
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ProfileStore, type EncryptionProvider, type ProfileStoreDurabilityStep } from './profile-store';
+import { applyDesktopTestFsyncPolicy } from './profile-store-test-fsync';
+
+// Inherited from the spawning test process; native fsync unless it is 'off'.
+await applyDesktopTestFsyncPolicy();
 
 const [directory, requestedStep] = process.argv.slice(2) as [string, string];
 const crashStep = requestedStep.split(':').at(-1) as ProfileStoreDurabilityStep;

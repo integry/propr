@@ -309,7 +309,8 @@ export type {
 export {
     getReposFromEnv,
     getRepos,
-    isMonitoredRepository, isAutoCiFollowupEnabledForRepository,
+    isMonitoredRepository, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
+    getCancelCiDuringFollowupWorkflowsForRepository,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,

@@ -46,7 +46,7 @@ test('GET repository config returns false for legacy entries with a missing opti
       id: 'repo-1',
       name: 'integry/propr',
       enabled: true,
-      autoFollowupOnFailedCi: false,
+      autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [],
       notificationsEnabled: true,
       visualPreview: { enabled: false, types: ['image'], githubAttachmentPlan: 'auto', githubAttachmentCapacity: resolveGitHubAttachmentCapacity() }
     }]
@@ -90,7 +90,7 @@ test('POST repository config persists an enabled option without enabling other r
       id: 'repo-1',
       name: 'integry/propr',
       enabled: true,
-      autoFollowupOnFailedCi: true,
+      autoFollowupOnFailedCi: true, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [],
       notificationsEnabled: true,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
@@ -101,7 +101,7 @@ test('POST repository config persists an enabled option without enabling other r
       id: 'repo-2',
       name: 'integry/other',
       enabled: true,
-      autoFollowupOnFailedCi: false,
+      autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [],
       notificationsEnabled: true,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,

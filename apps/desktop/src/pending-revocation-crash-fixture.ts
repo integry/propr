@@ -1,5 +1,9 @@
 import { DesktopCredentialService } from './credential-service';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { applyDesktopTestFsyncPolicy } from './profile-store-test-fsync';
+
+// Inherited from the spawning test process; native fsync unless it is 'off'.
+await applyDesktopTestFsyncPolicy();
 
 const [directory, mode] = process.argv.slice(2) as [string, 'during-revoke' | 'after-remote-success'];
 const encryption: EncryptionProvider = {

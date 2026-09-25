@@ -540,6 +540,12 @@ describe('change resolution', () => {
 // --- command line -----------------------------------------------------------
 
 describe('classifier command line', () => {
+    // The runner's own event (a nightly run is `schedule`) and any classifier
+    // inputs must not leak into the child, or it validates every surface.
+    const AMBIENT = /^(GITHUB_EVENT_NAME|PROPR_CLASSIFY_.*)$/;
+    const hermeticEnvironment = () => Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !AMBIENT.test(name)));
+
     const runClassifier = (args, { cwd = REPOSITORY, environment = {} } = {}) => {
         const directory = freshDirectory('cli-run');
         const outputFile = join(directory, 'output.txt');
@@ -550,7 +556,7 @@ describe('classifier command line', () => {
             cwd,
             encoding: 'utf8',
             env: {
-                ...process.env,
+                ...hermeticEnvironment(),
                 GITHUB_OUTPUT: outputFile,
                 GITHUB_STEP_SUMMARY: summaryFile,
                 ...environment,
@@ -630,6 +636,18 @@ describe('classifier command line', () => {
         assert.equal(result.status, 0, result.stderr);
         assert.equal(result.outputs.desktop, 'true');
         assert.equal(result.outputs.api, 'false');
+    });
+
+    test('falls back to the GitHub event name and validates every surface for a schedule', () => {
+        const { directory, base } = repositoryWithBranch('cli-schedule');
+        const head = commit(directory, { 'packages/api/mcp/tools.ts': 'export const a = 1;\n' }, 'feature');
+        const result = runClassifier(
+            ['--base', base, '--head', head, '--repo', directory, '--github-output', '--no-fetch'],
+            { environment: { GITHUB_EVENT_NAME: 'schedule' } },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.outputs.broad, 'true');
+        for (const surface of SURFACES) assert.equal(result.outputs[surface], 'true', surface);
     });
 
     test('the summary names every surface and the reason for each path', () => {

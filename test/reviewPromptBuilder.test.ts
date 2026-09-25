@@ -163,6 +163,19 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes('Do not print this validation pass or turn it into a generic checklist'));
     });
 
+    test('requires a related-path completeness audit even with custom review guidance', () => {
+        for (const options of [baseOptions(), baseOptions({ reviewPromptOverride: 'Focus on correctness.' })]) {
+            const prompt = buildReviewPrompt(options);
+            assert.ok(prompt.includes('Derive the key correctness invariants'));
+            assert.ok(prompt.includes('inspect sibling implementations and callers'));
+            assert.ok(prompt.includes('without a finding-count limit or quota'));
+            assert.ok(prompt.includes('Group occurrences that share a root cause and correction'));
+            assert.ok(prompt.includes('state that limitation rather than implying exhaustive coverage'));
+            assert.ok(prompt.includes('does not expand the original review boundary'));
+            assert.ok(prompt.includes('Do not demand atomicity that independent external systems cannot provide'));
+        }
+    });
+
     test('makes blocker and merge-ready score bands mutually consistent', () => {
         const prompt = buildReviewPrompt(baseOptions());
         assert.ok(prompt.includes('**8–10:** no actionable findings and no known current-head check failure'));

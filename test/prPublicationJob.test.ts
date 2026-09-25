@@ -54,6 +54,9 @@ const modules: Record<string, Record<string, unknown>> = {
         updateTaskTitleForPR: noOp, resolvePrReasoningLevelOverride: () => undefined,
     },
     issueJobHelpers: { localizeContentImages: noOp },
+    // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
+    followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
+
     prCommentJobUtils: {
         buildCombinedComment: () => ({ combinedCommentBody: 'Implement', commentAuthors: ['contributor'] }),
         extractModelFromLabels: () => 'model', fetchAllComments: async () => [], buildPrompt: () => '',

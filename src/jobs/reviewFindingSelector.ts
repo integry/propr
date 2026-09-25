@@ -179,7 +179,14 @@ export function formatReviewCommentsSection(
     const lines = ['**Selected Review Finding Records:**', ''];
     if (actionable.length > 0) {
         const ids = selectedComments.flatMap(comment => comment.actionableFindings.map(finding => finding.id));
-        lines.push(`Address actionable finding${ids.length === 1 ? '' : 's'} ${ids.join(', ')} only.`, '', ...actionable);
+        lines.push(`Address actionable finding${ids.length === 1 ? '' : 's'} ${ids.join(', ')} only.`,
+            '', 'For each selected finding, inspect sibling implementations and callers for the same invalid assumption. '
+            + 'Correct verified occurrences of that same defect within PR-changed behavior, and add focused regressions for the affected paths. '
+            + 'For asynchronous stateful code, check relevant awaited boundaries, mutation authority, and evidence used to release durable obligations. '
+            + 'This is a completeness check for the selected correction, not authorization to implement unselected findings, suggestions, '
+            + 'pre-existing problems, or unrelated redesigns. Report independent discoveries separately. '
+            + 'Distinguish avoidable stale-state windows from unavoidable races between external APIs; do not pursue impossible atomicity.',
+            '', ...actionable);
     } else {
         lines.push('No actionable findings were selected.');
     }

@@ -29,6 +29,11 @@ export interface RepoToMonitor {
     name: string;            // owner/repo
     enabled: boolean;
     autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
+    cancelCiDuringFollowup?: boolean; // Defaults to false; cancels obsolete PR validation while a follow-up implements
+    // Exactly which validation workflows that option may cancel: workflow file
+    // paths, file names, display names or numeric workflow IDs. Nothing is
+    // cancelled while this is empty; eligibility is never inferred from a name.
+    cancelCiDuringFollowupWorkflows?: string[];
     notificationsEnabled?: boolean; // Defaults to true; undefined (legacy configurations) reads as enabled
     visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
     alias?: string;          // Optional display name

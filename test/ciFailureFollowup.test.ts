@@ -4,6 +4,7 @@ import { closeConnection } from '../packages/core/src/db/connection.js';
 import {
     buildCiFailureDedupeKey,
     buildCiFailureFollowupMarker,
+    extractCheckRunFailure,
     extractStatusFailure,
     isCiFailureFollowupComment,
     postCiFailureFollowup,
@@ -108,6 +109,30 @@ describe('automatic failed-CI follow-up', () => {
 
         assert.strictEqual(isCiFailureFollowupComment(body), true);
         assert.strictEqual(stripCiFailureFollowupMarker(body), 'Please fix the failing test.');
+    });
+
+    test('treats an intentionally cancelled check run as no failure at all', () => {
+        // ProPR cancels obsolete pull request validation while a follow-up
+        // implements. That cancellation must never become a corrective task.
+        const payload = {
+            action: 'completed',
+            repository: { full_name: 'integry/propr' },
+            check_run: {
+                id: 42,
+                name: 'desktop-validation',
+                conclusion: 'cancelled',
+                head_sha: '0123456789abcdef0123456789abcdef01234567',
+                details_url: 'https://github.com/integry/propr/actions/runs/35915670035',
+                html_url: 'https://github.com/integry/propr/actions/runs/35915670035',
+                output: { title: null, summary: null, text: null, annotations_count: 0 },
+            },
+        };
+
+        assert.strictEqual(extractCheckRunFailure(payload as never), null);
+        assert.notStrictEqual(extractCheckRunFailure({
+            ...payload,
+            check_run: { ...payload.check_run, conclusion: 'failure' },
+        } as never), null);
     });
 
     test('extracts failure and error legacy statuses but not pending statuses', () => {

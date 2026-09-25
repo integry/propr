@@ -17,6 +17,10 @@ import type { ConnectStatusDocument } from '@propr/cli/desktop-discovery';
 import { DesktopCredentialService, type DesktopCredentialDecision } from './credential-service';
 import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
+import { applyDesktopTestFsyncPolicy } from './profile-store-test-fsync';
+
+// The sharded full suite runs this file without native fsync; see the helper.
+await applyDesktopTestFsyncPolicy();
 
 const temporaryDirectories: string[] = [];
 const credentialServices: DesktopCredentialService[] = [];
@@ -2219,11 +2223,16 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
     await store.removeCredential(profile.id);
     let bodyCancelled = false;
+    const startedAt = Date.now();
     const service = createCredentialService({
       profiles: store,
       clientName: 'Slowloris terminal contract test',
       openPairingBrowser: async () => undefined,
-      revocationDeadlines: { headerMs: 50, bodyMs: 25, recordMs: 75, aggregateMs: 100 },
+      // Only the body deadline is tightened. Reading the pending revocation is
+      // real filesystem and key-derivation work, so record/aggregate budgets
+      // small enough to race it end the attempt before the body is ever read on
+      // a slow runner, which would assert nothing about the body bound.
+      revocationDeadlines: { headerMs: 8_000, bodyMs: 50, recordMs: 10_000, aggregateMs: 12_000 },
       fetch: async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
         cancel() { bodyCancelled = true; },
@@ -2231,9 +2240,13 @@ describe('main-process desktop credential service', () => {
     });
 
     const initialized = await service.initialize();
+    // The startup race resolves on the aggregate deadline too, so settle the
+    // background retry before observing what the body deadline did.
+    await service.awaitIdle();
 
     assert.deepEqual(initialized, { status: 'degraded', retryPending: true });
     assert.equal(bodyCancelled, true);
+    assert.ok(Date.now() - startedAt < 5_000, 'the stalled body is cut by its own deadline');
     assert.equal((await store.pendingRevocations()).length, 1);
   });
 

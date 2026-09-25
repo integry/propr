@@ -504,6 +504,10 @@ describe('/fix structured finding selection', () => {
         const selected = selectReviewFeedback(all, parseFixFindingSelection(''));
         const section = formatSelectedReviewRecords(selected);
         assert.match(section, /Address actionable finding F1 only/);
+        assert.match(section, /inspect sibling implementations and callers/);
+        assert.match(section, /within PR-changed behavior/);
+        assert.match(section, /not authorization to implement unselected findings/);
+        assert.match(section, /do not pursue impossible atomicity/);
         assert.doesNotMatch(section, /S1/);
         assert.ok(!section.includes('Consider a durable publication outbox'));
         assert.ok(!section.includes('Score: 7/10'));
@@ -1239,6 +1243,10 @@ describe('demonstrated-failure findings survive publication and /fix gathering',
         const selected = selectReviewFeedback(gathered, parseFixFindingSelection(''));
         const section = formatSelectedReviewRecords(selected);
         assert.match(section, /Address actionable finding F1 only/);
+        assert.match(section, /inspect sibling implementations and callers/);
+        assert.match(section, /within PR-changed behavior/);
+        assert.match(section, /not authorization to implement unselected findings/);
+        assert.match(section, /do not pursue impossible atomicity/);
         assert.ok(section.includes(`- **Changed-code evidence:** ${SCENARIO_EVIDENCE}`));
         assert.ok(section.includes(`- **Minimum necessary correction:** ${SCENARIO_CORRECTION}`));
         assert.ok(section.includes('Proposed regression (not executed)'));

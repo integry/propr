@@ -455,6 +455,51 @@ describe('release test-suite runner', () => {
         }
     });
 
+    test('hands every unit the desktop fsync opt-out unless the caller set it explicitly', () => {
+        const probeDirectory = mkdtempSync(join(tmpdir(), 'propr-runner-fsync-'));
+        const recordFile = join(probeDirectory, 'fsync-variable.txt');
+        const probeFile = join(probeDirectory, 'env-probe.test.mjs');
+        // The probe is a fixed source string: it learns where to record from
+        // its environment rather than having the temp path spliced into code.
+        writeFileSync(probeFile, [
+            "import { writeFileSync } from 'node:fs';",
+            "import { test } from 'node:test';",
+            "test('records the fsync variable', () => writeFileSync(process.env.PROPR_FSYNC_PROBE_RECORD_FILE, String(process.env.PROPR_DESKTOP_TEST_FSYNC)));",
+            '',
+        ].join('\n'));
+        const baseEnv = {
+            ...process.env,
+            PROPR_FSYNC_PROBE_RECORD_FILE: recordFile,
+            PROPR_TEST_SHARD_INDEX: '',
+            PROPR_TEST_SHARD_COUNT: '',
+            PROPR_TEST_REDIS_ISOLATION: '',
+            PROPR_TEST_SUMMARY_FILE: '',
+            GITHUB_STEP_SUMMARY: '',
+            GITHUB_ACTIONS: '',
+        };
+        delete baseEnv.NODE_TEST_CONTEXT;
+        delete baseEnv.PROPR_DESKTOP_TEST_FSYNC;
+        const runProbe = env => {
+            rmSync(recordFile, { force: true });
+            const run = spawnSync(process.execPath, ['scripts/run-test-suite.mjs', probeFile], {
+                cwd: new URL('..', import.meta.url),
+                encoding: 'utf8',
+                env,
+            });
+            assert.equal(run.status, 0, run.stderr);
+            return readFileSync(recordFile, 'utf8');
+        };
+        try {
+            // The shared runner's disk makes native fsync too slow for the
+            // desktop profile-store suites; the full suite opts them out.
+            assert.equal(runProbe(baseEnv), 'off');
+            // The native durability jobs and any explicit choice win.
+            assert.equal(runProbe({ ...baseEnv, PROPR_DESKTOP_TEST_FSYNC: 'native' }), 'native');
+        } finally {
+            rmSync(probeDirectory, { recursive: true, force: true });
+        }
+    });
+
     test('keeps the four-shard matrix complete and isolated on either route', () => {
         const workflow = readFileSync(new URL('../.github/workflows/pr-test-on-label.yml', import.meta.url), 'utf8');
         const shardCount = Number(workflow.match(/PROPR_TEST_SHARD_COUNT: '(\d+)'/)[1]);
