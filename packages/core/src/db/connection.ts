@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import { applyDatabaseMigrations } from './migrationGate.js';
+import { installSqliteRetry } from './sqliteRetry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -133,6 +134,10 @@ try {
     ensureDataDirectory(dbFilename);
 
     db = knex(config);
+
+    // A locked database is contention, not a failure: retry every query rather
+    // than surfacing SQLITE_BUSY to callers.
+    installSqliteRetry(db);
 
     // Test connection
     db.raw('SELECT 1')

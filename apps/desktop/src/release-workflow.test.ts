@@ -382,6 +382,28 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(nativeArtifactLifecycle, /xattr|spctl|--no-sandbox|--disable-sandbox/);
   });
 
+  test('retries the unsigned validation target upload once after a transient artifact-service failure', () => {
+    const validation = job('package', 'finalize');
+    const uploadStep = /- name: Upload unsigned validation target\n\s+id: upload-validation-target\n\s+continue-on-error: true\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v6\n\s+with:\n\s+name: propr-desktop-validation-\$\{\{ matrix\.artifact_group \}\}-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}-\$\{\{ github\.run_id \}\}\n\s+path: desktop-release-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}\n\s+if-no-files-found: error\n\s+retention-days: 14\n/;
+    assert.match(validation, uploadStep, 'first upload attempt must tolerate a transient failure so the retry can run');
+    assert.match(
+      validation,
+      /- name: Pause before retrying the unsigned validation target upload\n\s+if: steps\.upload-validation-target\.outcome == 'failure'\n\s+shell: bash\n\s+run: \|\n[^\n]*\n\s+sleep 30\n/,
+      'retry must wait before re-running the upload',
+    );
+    const retryStep = /- name: Retry unsigned validation target upload after a transient artifact-service failure\n\s+if: steps\.upload-validation-target\.outcome == 'failure'\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v6\n\s+with:\n\s+name: propr-desktop-validation-\$\{\{ matrix\.artifact_group \}\}-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}-\$\{\{ github\.run_id \}\}\n\s+path: desktop-release-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}\n\s+if-no-files-found: error\n\s+retention-days: 14\n(?:\s+#[^\n]*\n)*\s+overwrite: true\n/;
+    assert.match(validation, retryStep, 'retry must upload the same staged directory under the same name and replace any remnant');
+    // The retry is the last line of defence: it must not itself be tolerated,
+    // otherwise a genuinely broken upload would leave finalize without a fragment.
+    const retryIndex = validation.indexOf('Retry unsigned validation target upload');
+    const retrySection = validation.slice(retryIndex, validation.indexOf('\n      - name:', retryIndex + 1));
+    assert.doesNotMatch(retrySection, /continue-on-error/);
+    assert.equal(validation.match(/continue-on-error: true/g)?.length, 1,
+      'only the first upload attempt may tolerate failure in the packaging job');
+    assert.equal(validation.match(/uses: actions\/upload-artifact@/g)?.length, 3,
+      'packaging job uploads: Linux acceptance evidence, validation target, validation target retry');
+  });
+
 
   test('keeps standalone native Windows durability assertions paused but ready for re-enablement', () => {
     const section = job('native-windows-durability', 'validation-version');

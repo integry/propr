@@ -93,6 +93,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"database is locked" errors**: a query that raced another process for
+  SQLite's write lock failed the whole operation — a running goal could die on a
+  heartbeat update. Every query on the shared database now waits on an
+  asynchronous timer and retries with jittered backoff while the lock is held,
+  including statements inside transactions. Transactions open with
+  `BEGIN IMMEDIATE`, so the race for the write lock is settled by a replayable
+  statement before the transaction callback runs; a callback itself is replayed
+  only when the caller declares it safe with `replayableTransaction()`, because a
+  rollback undoes its SQL and not its other effects. Retrying is bounded by a
+  wall-clock budget that caps the backoff, the driver's own blocking wait and any
+  retry nested inside a retried transaction, so a query can still not take longer
+  than SQLite's own `busy_timeout`. Each attempt blocks for at most its share of
+  that budget, so a lock held for the full timeout is retried rather than
+  spending the budget on one blocked attempt. Tune with `SQLITE_RETRY_MAX_ATTEMPTS`,
+  `SQLITE_RETRY_BASE_DELAY_MS`, `SQLITE_RETRY_MAX_DELAY_MS`,
+  `SQLITE_RETRY_MAX_TOTAL_MS`, `SQLITE_RETRY_IMMEDIATE_TRANSACTIONS=0`, and
+  `SQLITE_RETRY_TRANSACTIONS=1`.
+
 - **Cost for alias-configured agents**: an agent whose model is stored as an alias
   (`fable`, `fable51`, `opus55`, ...) priced its runs against OpenRouter's generic
   rates instead of the provider's published API rates, because the pricing lookup

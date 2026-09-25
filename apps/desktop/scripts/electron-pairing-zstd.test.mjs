@@ -55,6 +55,10 @@ describe('Electron pairing response compression', () => {
       });
       response.end(body);
     });
+    // The probe sends all four requests over one keep-alive connection. Closing
+    // it on the default idle timeout would race a request that a busy worker
+    // delayed, losing it for a reason that has nothing to do with zstd.
+    server.keepAliveTimeout = 0;
     await new Promise((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', resolveListen);
@@ -123,6 +127,9 @@ describe('Electron pairing response compression', () => {
       assert.equal(report.stacked.kind, 'invalid_response', evidence);
       assert.equal(report.stacked.responseEncoding, 'zstd, gzip');
     } finally {
+      // keepAliveTimeout is disabled above, so an idle connection the probe
+      // left behind must be closed here for the server to settle.
+      server.closeAllConnections();
       await new Promise((resolveClose, rejectClose) => {
         server.close(error => error ? rejectClose(error) : resolveClose());
       });

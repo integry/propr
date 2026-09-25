@@ -1,25 +1,42 @@
-import { pino, Logger } from 'pino';
+import { pino, Logger, LoggerOptions } from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import { redactVisualPreviewValue } from '../services/visualPreviewPaths.js';
 
 const logLevel: string = process.env.LOG_LEVEL ?? 'info';
 
-const baseLogger: Logger = pino({
+// node:test gives the child process's stdout to a v8 deserializer, while pino
+// writes from its own transport worker thread. A log line that lands inside a
+// half-written report frame leaves the runner unable to deserialize it and the
+// whole file fails with an uncaught "Unable to deserialize cloned data". Under
+// the runner (NODE_TEST_CONTEXT is set only there) every log therefore goes to
+// stderr, which the runner forwards verbatim.
+const logFileDescriptor: 1 | 2 = process.env.NODE_TEST_CONTEXT === undefined ? 1 : 2;
+
+const baseOptions: LoggerOptions = {
     hooks: {
         streamWrite: line => /(?:\.propr|propr-previews)/i.test(line)
             ? JSON.stringify(redactVisualPreviewValue(JSON.parse(line))) + '\n'
             : line,
     },
     level: logLevel,
-    transport: process.env.NODE_ENV !== 'production' ? {
-        target: 'pino-pretty',
-        options: {
-            colorize: true,
-            translateTime: 'SYS:standard',
-            ignore: 'pid,hostname',
+};
+
+const baseLogger: Logger = process.env.NODE_ENV !== 'production'
+    ? pino({
+        ...baseOptions,
+        transport: {
+            target: 'pino-pretty',
+            options: {
+                colorize: true,
+                translateTime: 'SYS:standard',
+                ignore: 'pid,hostname',
+                destination: logFileDescriptor,
+            },
         },
-    } : undefined,
-});
+    })
+    : logFileDescriptor === 1
+        ? pino(baseOptions)
+        : pino(baseOptions, pino.destination(logFileDescriptor));
 
 /**
  * Creates a child logger with correlation ID
