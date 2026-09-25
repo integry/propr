@@ -2,8 +2,8 @@
  * Dashboard read APIs.
  *
  * The dashboard answers four questions — what needs attention, what is
- * running, what just happened, and are things generally going well — from
- * three sources of truth: task state, outcome events and aggregated execution
+ * running, what was completed, and are things generally going well — from
+ * three sources of truth: task state, completion events and aggregated execution
  * data. The first three live here; the historical stats section is served by
  * `getDashboardStats` in `statsRoutes.ts` so there is no fourth parallel stats
  * system.
@@ -17,19 +17,14 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { validatePositiveInteger, validateRepositoryFilter } from './validation.js';
+import { validatePositiveInteger, validateRepositoryFilter, validateStringLength } from './validation.js';
 import {
   phaseLabel,
   RECENT_COMPLETION_WINDOW_HOURS,
   type DashboardTaskRow,
 } from './dashboardQueries.js';
 import { loadDashboardWork } from './dashboardWorkQueries.js';
-import {
-  loadOutcomeRows,
-  loadPlanIssueOutcomes,
-  type OutcomeRow,
-  type PlanIssueOutcomeRow,
-} from './dashboardOutcomeQueries.js';
+import { loadCompletedRows, type CompletedRow } from './dashboardOutcomeQueries.js';
 
 /** Running work we will pay for a live-details projection on in one request. */
 const MAX_LIVE_DETAIL_LOOKUPS = 20;
@@ -38,6 +33,7 @@ const WORKER_SET_KEY = 'system:status:workers';
 const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
 const DEFAULT_OUTCOME_LIMIT = 20;
 const MAX_OUTCOME_LIMIT = 100;
+const MAX_OUTCOME_SEARCH_LENGTH = 200;
 
 export interface DashboardRoutesDeps {
   db: Knex;
@@ -54,6 +50,8 @@ export interface ActiveItem {
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type (`issue`, `pr-comment`, `review`…), when known. */
+  taskType: string | null;
   title: string | null;
   state: string;
   phase: string | null;
@@ -63,17 +61,21 @@ export interface ActiveItem {
   updatedAt: string;
 }
 
+/** One successfully completed run. Failures are attention items, not outcomes. */
 export interface OutcomeItem {
   id: string;
-  kind: 'completed' | 'failed' | 'cancelled' | 'merged' | 'closed';
-  taskId: string | null;
+  taskId: string;
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  taskType: string | null;
   title: string | null;
+  /**
+   * What the run produced — for a review, what it found. Null when nothing
+   * was recorded beyond the fact that it finished.
+   */
   detail: string | null;
-  planIssueStatus: string | null;
-  /** Implementation critique score out of 10; null whenever none was recorded. */
+  /** Review score out of 10. Only reviews are scored; null for everything else. */
   score: number | null;
   occurredAt: string;
 }
@@ -88,41 +90,17 @@ function readRepositoryFilter(req: Request, res: Response): string | null {
   return repository || 'all';
 }
 
-const outcomeKind = (state: string): OutcomeItem['kind'] =>
-  state === 'completed' ? 'completed' : state === 'failed' ? 'failed' : 'cancelled';
-
-/**
- * A merge or a close is recorded after the implementation run already ended,
- * so it is its own outcome rather than a duplicate of that run's completion.
- */
-function toPlanIssueOutcomeItem(row: PlanIssueOutcomeRow): OutcomeItem {
+function toOutcomeItem(row: CompletedRow): OutcomeItem {
   return {
-    id: `plan-issue:${row.id}:${row.status}`,
-    kind: row.status === 'merged' ? 'merged' : 'closed',
+    id: `task:${row.taskId}:completed`,
     taskId: row.taskId,
     repository: row.repository,
     issueNumber: row.issueNumber,
     prNumber: row.prNumber,
+    taskType: row.taskType,
     title: row.title,
-    detail: row.status === 'merged' ? 'Pull request merged' : 'Closed without merging',
-    planIssueStatus: row.status,
-    score: null,
-    occurredAt: row.occurredAt,
-  };
-}
-
-function toOutcomeItem(row: OutcomeRow): OutcomeItem {
-  return {
-    id: `task:${row.taskId}:${row.state}`,
-    kind: outcomeKind(row.state),
-    taskId: row.taskId,
-    repository: row.repository,
-    issueNumber: row.issueNumber,
-    prNumber: row.prNumber,
-    title: row.title,
-    detail: row.reason,
-    planIssueStatus: row.planIssueStatus,
-    score: row.score,
+    detail: row.recap,
+    score: row.reviewScore,
     occurredAt: row.stateTimestamp,
   };
 }
@@ -189,6 +167,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
       repository: row.repository,
       issueNumber: row.issueNumber,
       prNumber: row.prNumber,
+      taskType: row.taskType,
       title: row.title,
       state: row.state,
       phase: phaseLabel(row.state),
@@ -294,18 +273,20 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
     const limit = limitValidation.value || DEFAULT_OUTCOME_LIMIT;
 
+    const searchValidation = validateStringLength(req.query.search, 'Search', { maxLength: MAX_OUTCOME_SEARCH_LENGTH });
+    if (!searchValidation.valid) {
+      res.status(400).json({ error: searchValidation.error });
+      return;
+    }
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
     try {
-      const [taskRows, planIssueRows] = await timeApiStage('dashboard.outcomes', () => Promise.all([
-        loadOutcomeRows(db, repository, { limit }),
-        loadPlanIssueOutcomes(db, repository, { limit }),
-      ]));
-      const items = [...taskRows.map(toOutcomeItem), ...planIssueRows.map(toPlanIssueOutcomeItem)]
-        .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
-        .slice(0, limit);
-      res.json({ repository, limit, items });
+      const rows = await timeApiStage('dashboard.outcomes', () =>
+        loadCompletedRows(db, repository, { limit, search }));
+      res.json({ repository, limit, search, items: rows.map(toOutcomeItem) });
     } catch (error) {
       console.error('Error in /api/dashboard/outcomes:', error);
-      res.status(500).json({ error: 'Failed to fetch recent outcomes' });
+      res.status(500).json({ error: 'Failed to fetch completed work' });
     }
   }
 

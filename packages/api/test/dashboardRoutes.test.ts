@@ -165,7 +165,7 @@ test('a failure superseded by a later successful run is not attention', async ()
   assert.deepEqual(attention.body.counts, { blocked: 0, decisions: 0, total: 0 });
 });
 
-test('attention lists blocking problems before pending decisions, oldest first in each group', async () => {
+test('attention lists every item newest first, whatever its kind', async () => {
   await seedTask({ taskId: 'blocked-new', issueNumber: 41, states: [{ state: 'failed', timestamp: minutesAgo(10), reason: 'Newer failure' }] });
   await seedTask({ taskId: 'blocked-old', issueNumber: 42, states: [{ state: 'failed', timestamp: minutesAgo(120), reason: 'Older failure' }] });
   await seedTask({ taskId: 'needs-human', issueNumber: 43, states: [{ state: 'action_required', timestamp: minutesAgo(60), reason: 'Credentials expired' }] });
@@ -177,12 +177,23 @@ test('attention lists blocking problems before pending decisions, oldest first i
   ]);
 
   const attention = await call(routes().getAttention, { repository: 'all' });
-  const items = attention.body.items as Array<{ id: string; category: string; kind: string }>;
-  assert.deepEqual(items.map(item => item.category), ['blocked', 'blocked', 'blocked', 'decision', 'decision']);
+  const items = attention.body.items as Array<{ id: string; category: string; kind: string; taskType: string | null }>;
   assert.deepEqual(items.map(item => item.id), [
-    'task:blocked-old', 'task:needs-human', 'task:blocked-new', 'plan-issue:2', 'plan-issue:1',
+    'task:blocked-new', 'plan-issue:1', 'task:needs-human', 'task:blocked-old', 'plan-issue:2',
   ]);
+  assert.deepEqual(items.map(item => item.taskType), ['issue', null, 'issue', 'issue', null]);
   assert.deepEqual(attention.body.counts, { blocked: 3, decisions: 2, total: 5 });
+});
+
+test('running work is listed newest first', async () => {
+  await seedTask({ taskId: 'run-old', issueNumber: 45, createdAt: minutesAgo(90), states: [{ state: 'claude_execution', timestamp: minutesAgo(1) }] });
+  await seedTask({ taskId: 'run-new', issueNumber: 46, createdAt: minutesAgo(5), states: [{ state: 'processing', timestamp: minutesAgo(4) }] });
+  await seedTask({ taskId: 'run-mid', issueNumber: 47, createdAt: minutesAgo(30), states: [{ state: 'post_processing', timestamp: minutesAgo(20) }] });
+
+  const active = await call(routes().getActive, { repository: 'all' });
+  const running = active.body.running as Array<{ taskId: string; taskType: string | null }>;
+  assert.deepEqual(running.map(item => item.taskId), ['run-new', 'run-mid', 'run-old']);
+  assert.deepEqual(running.map(item => item.taskType), ['issue', 'issue', 'issue']);
 });
 
 test('a review decision is titled by the work behind it, never by its own chip', async () => {
@@ -207,10 +218,10 @@ test('a review decision is titled by the work behind it, never by its own chip',
   // run on its thread. Leaving it null left the UI to print `Pull request
   // #720` beside a `PR #720` chip, which tells a reviewer nothing.
   assert.deepEqual(decisions.map(item => item.title), [
-    'Cache repository icons across dashboard sections',
     'feature/icon-cache',
+    'Cache repository icons across dashboard sections',
   ]);
-  assert.deepEqual(decisions.map(item => item.taskId), ['titled-run', 'untitled-run']);
+  assert.deepEqual(decisions.map(item => item.taskId), ['untitled-run', 'titled-run']);
 });
 
 test('dismissing every notification for a failed task leaves the task in attention', async () => {
@@ -310,7 +321,7 @@ test('queue reason stays null when nothing is queued', async () => {
   assert.deepEqual(active.body.queue, { queuedCount: 0, reason: null });
 });
 
-test('outcomes collapse one result per task and exclude non-outcome history entries', async () => {
+test('outcomes list completed runs only, one per task, newest first', async () => {
   await seedTask({
     taskId: 'shipped', issueNumber: 101, prNumber: 900, title: 'Ship the thing',
     states: [
@@ -319,11 +330,15 @@ test('outcomes collapse one result per task and exclude non-outcome history entr
       // Heartbeat-style progress and indexing entries must never become outcomes.
       { state: 'indexing_update', timestamp: minutesAgo(70) },
       { state: 'post_processing', timestamp: minutesAgo(65) },
+      { state: 'completed', timestamp: minutesAgo(62) },
       { state: 'completed', timestamp: minutesAgo(60) },
     ],
   });
+  await seedTask({ taskId: 'shipped-later', issueNumber: 105, states: [{ state: 'completed', timestamp: minutesAgo(15) }] });
+  // Failures belong to attention; cancellations and skipped jobs are bookkeeping.
   await seedTask({ taskId: 'broke', issueNumber: 102, states: [{ state: 'failed', timestamp: minutesAgo(30), reason: 'Lint failed' }] });
-  await seedTask({ taskId: 'stopped', issueNumber: 103, states: [{ state: 'cancelled', timestamp: minutesAgo(20) }] });
+  await seedTask({ taskId: 'stopped', issueNumber: 103, states: [{ state: 'cancelled', timestamp: minutesAgo(20), reason: 'PR comment job rescheduled: pr_locked_by_other_job' }] });
+  await seedTask({ taskId: 'skipped', issueNumber: 106, states: [{ state: 'completed', timestamp: minutesAgo(12), reason: 'PR comment job skipped: nothing to do' }] });
   await seedTask({ taskId: 'still-running', issueNumber: 104, states: [{ state: 'claude_execution', timestamp: minutesAgo(10) }] });
   await database('plan_issues').insert({
     draft_id: 'draft-2', repository: 'integry/propr', issue_number: 101, pr_number: 900,
@@ -332,41 +347,71 @@ test('outcomes collapse one result per task and exclude non-outcome history entr
 
   const outcomes = await call(routes().getOutcomes, { repository: 'all' });
   const items = outcomes.body.items as Array<Record<string, unknown>>;
-  // The merge is a later, separate outcome; the run itself collapses to one entry.
-  assert.deepEqual(items.map(item => item.kind), ['merged', 'cancelled', 'failed', 'completed']);
-  assert.deepEqual(items.map(item => item.taskId), ['shipped', 'stopped', 'broke', 'shipped']);
-  assert.equal(items.filter(item => item.kind === 'completed' && item.taskId === 'shipped').length, 1);
-  assert.equal(items[3].planIssueStatus, 'merged');
-  assert.equal(items[3].title, 'Ship the thing');
-  assert.equal(items[2].detail, 'Lint failed');
-  // The merge has no title of its own, so it takes the one from the run it
-  // merged. Left null, the feed printed `Pull request #900` next to a
-  // `PR #900` chip and named the work nowhere.
-  assert.equal(items[0].title, 'Ship the thing');
+  assert.deepEqual(items.map(item => item.taskId), ['shipped-later', 'shipped']);
+  assert.equal(new Set(items.map(item => item.id)).size, items.length);
+  assert.equal(items[1].title, 'Ship the thing');
+  assert.equal(items[1].taskType, 'issue');
+  assert.equal(items[1].occurredAt, minutesAgo(60));
 
-  const limited = await call(routes().getOutcomes, { repository: 'all', limit: '2' });
-  assert.deepEqual((limited.body.items as Array<Record<string, unknown>>).map(item => item.kind), ['merged', 'cancelled']);
+  const limited = await call(routes().getOutcomes, { repository: 'all', limit: '1' });
+  assert.deepEqual((limited.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['shipped-later']);
 });
 
-test('outcomes carry a recorded critique score and stay null when none was recorded', async () => {
-  await seedTask({ taskId: 'scored', issueNumber: 201, states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
-  await seedTask({ taskId: 'unscored', issueNumber: 202, states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
-  await database('llm_executions').insert([
-    {
-      task_id: 'scored',
-      start_time: minutesAgo(35),
-      cost_usd: 0.5,
-      analysis_report: JSON.stringify({ report: JSON.stringify({ implementation_critique_score: 8 }) }),
-    },
-    { task_id: 'unscored', start_time: minutesAgo(25), cost_usd: 0.5, analysis_report: null },
-  ]);
+test('outcomes carry the recorded recap as detail, never a bare "completed successfully"', async () => {
+  await seedTask({ taskId: 'plain', issueNumber: 211, states: [{ state: 'completed', timestamp: minutesAgo(40), reason: 'Issue processing completed successfully' }] });
+  await seedTask({ taskId: 'recapped', issueNumber: 212, states: [{ state: 'completed', timestamp: minutesAgo(30), reason: 'Issue processing completed successfully' }] });
+  await seedTask({ taskId: 'generic', issueNumber: 213, taskType: 'pr-comment', states: [{ state: 'completed', timestamp: minutesAgo(20), reason: 'PR comment job completed' }] });
+  await database('task_history').where({ task_id: 'recapped' })
+    .update({ metadata: JSON.stringify({ prResult: { notificationRecap: 'Added retries across 3 files and opened a pull request.' } }) });
+  await database('task_history').where({ task_id: 'generic' })
+    .update({ metadata: JSON.stringify({ notificationRecap: 'Completed the pull request follow-up.' }) });
 
   const outcomes = await call(routes().getOutcomes, { repository: 'all' });
-  const items = outcomes.body.items as Array<Record<string, unknown>>;
-  assert.equal(items.find(item => item.taskId === 'scored')?.score, 8);
-  assert.equal(items.find(item => item.taskId === 'unscored')?.score, null);
+  const detail = new Map((outcomes.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item.detail]));
+  assert.equal(detail.get('plain'), null);
+  assert.equal(detail.get('recapped'), 'Added retries across 3 files and opened a pull request.');
+  assert.equal(detail.get('generic'), null);
 });
 
+test('only reviews carry a score, taken from the review recap', async () => {
+  await seedTask({ taskId: 'implementation', issueNumber: 201, states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  await seedTask({ taskId: 'review', issueNumber: 202, taskType: 'pr-comment', title: 'Review PR #202: Add retries', states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
+  await seedTask({ taskId: 'double-review', issueNumber: 203, taskType: 'pr-comment', title: 'Add caching', states: [{ state: 'completed', timestamp: minutesAgo(10) }] });
+  // An implementation critique score is not a review result and is not shown.
+  await database('llm_executions').insert({
+    task_id: 'implementation',
+    start_time: minutesAgo(35),
+    cost_usd: 0.5,
+    analysis_report: JSON.stringify({ report: JSON.stringify({ implementation_critique_score: 8 }) }),
+  });
+  await database('task_history').where({ task_id: 'review' })
+    .update({ metadata: JSON.stringify({ commandMode: 'review', notificationRecap: 'Score 8/10 · 2 issues found: Missing test; Leaky timer' }) });
+  await database('task_history').where({ task_id: 'double-review' })
+    .update({ metadata: JSON.stringify({ commandMode: 'review', notificationRecap: 'Scores 9/10, 6/10 · 0 issues found' }) });
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
+  const byTask = new Map((outcomes.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item]));
+  assert.equal(byTask.get('implementation')?.score, null);
+  assert.equal(byTask.get('review')?.score, 8);
+  assert.equal(byTask.get('review')?.detail, '2 issues found: Missing test; Leaky timer');
+  assert.equal(byTask.get('double-review')?.score, 6);
+  assert.equal(byTask.get('double-review')?.detail, '0 issues found');
+});
+
+test('outcomes can be searched by title', async () => {
+  await seedTask({ taskId: 'match', issueNumber: 221, title: 'Fix PR #221: Cache repository icons', states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  await seedTask({ taskId: 'miss', issueNumber: 222, title: 'Add retries', states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
+  // The word appears in the job data, but not in the title.
+  await database('tasks').where({ task_id: 'miss' })
+    .update({ initial_job_data: JSON.stringify({ title: 'Add retries', body: 'Also mention the icons cache' }) });
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all', search: '  ICONS ' });
+  assert.equal(outcomes.status, 200);
+  assert.deepEqual((outcomes.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['match']);
+
+  const tooLong = await call(routes().getOutcomes, { repository: 'all', search: 'x'.repeat(201) });
+  assert.equal(tooLong.status, 400);
+});
 
 test('the attention count opens a list of exactly the work it counted', async () => {
   // A failure the system is already retrying: counted by neither side.
@@ -399,39 +444,20 @@ test('the attention count opens a list of exactly the work it counted', async ()
   assert.equal(await taskPageTotal('attention', 'integry/propr'), summary.body.needsAttention);
 });
 
-test('a recorded failure survives the retry that follows it', async () => {
-  // The run failed, and a retry of the same task has already started.
+test('a recorded completion survives the follow-up run that starts after it', async () => {
   await seedTask({
-    taskId: 'retried-run', issueNumber: 401,
+    taskId: 'followed-up', issueNumber: 401,
     states: [
       { state: 'claude_execution', timestamp: minutesAgo(120) },
-      { state: 'failed', timestamp: minutesAgo(100), reason: 'Tests failed' },
+      { state: 'completed', timestamp: minutesAgo(100) },
       { state: 'pending', timestamp: minutesAgo(10) },
     ],
   });
   await seedTask({ taskId: 'clean-run', issueNumber: 402, states: [{ state: 'completed', timestamp: minutesAgo(90) }] });
 
   const outcomes = await call(routes().getOutcomes, { repository: 'all' });
-  const items = outcomes.body.items as Array<Record<string, unknown>>;
-  // The failure is an event that happened; the task moving on does not unhappen it.
-  assert.deepEqual(items.map(item => [item.taskId, item.kind]), [
-    ['clean-run', 'completed'],
-    ['retried-run', 'failed'],
-  ]);
-  assert.equal(items[1].detail, 'Tests failed');
-  assert.equal(new Set(items.map(item => item.id)).size, items.length);
-
-  // A run that failed and was then retried to success keeps both outcomes.
-  await database('task_history').insert([
-    { task_id: 'retried-run', state: 'claude_execution', timestamp: minutesAgo(8), metadata: '{}' },
-    { task_id: 'retried-run', state: 'completed', timestamp: minutesAgo(5), metadata: '{}' },
-  ]);
-  const after = await call(routes().getOutcomes, { repository: 'all' });
-  assert.deepEqual((after.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item.kind]), [
-    ['retried-run', 'completed'],
-    ['clean-run', 'completed'],
-    ['retried-run', 'failed'],
-  ]);
+  // The completion is an event that happened; the task moving on does not unhappen it.
+  assert.deepEqual((outcomes.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['clean-run', 'followed-up']);
 });
 
 test('the recent-completion row limit never hides running work or shrinks a count', async () => {

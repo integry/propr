@@ -1,124 +1,179 @@
 /**
- * Recorded outcome events — the dashboard's second source of truth.
+ * Recorded completions — the dashboard's second source of truth.
  *
- * Outcomes are recorded events, so they are read from task history rather than
- * from a task's current state: a run that failed and is now being retried still
- * failed, and dropping that record would rewrite both the feed and the success
- * rate the moment the retry starts.
+ * The "Completed" feed lists runs that finished successfully, newest first.
+ * Completions are recorded events, so they are read from task history rather
+ * than from a task's current state: a run that completed and is now being
+ * followed up still completed.
+ *
+ * Failures are not listed here: an unresolved failure is something a person
+ * has to act on, so it belongs in the attention list. Cancellations and jobs
+ * that were skipped or rescheduled are bookkeeping, not results, and appear in
+ * neither.
  */
 
 import type { Knex } from 'knex';
-import { loadCritiqueScores, toScoreNumber } from './critiqueScore.js';
 import {
-  loadThreadWork,
+  chunk,
   mapTaskRow,
   TASK_COLUMNS,
-  threadTitle,
   terminalTransitionQuery,
-  TERMINAL_TASK_STATES,
-  toIso,
   type DashboardTaskRow,
   type RawTaskRow,
 } from './dashboardQueries.js';
 
-export interface OutcomeRow extends DashboardTaskRow {
-  planIssueStatus: string | null;
-  /** Implementation critique score out of 10, or null when none was recorded. */
-  score: number | null;
+export interface CompletedRow extends DashboardTaskRow {
+  /**
+   * What the run actually produced, from the recap recorded on its completion,
+   * or null when the only thing recorded is that it finished.
+   */
+  recap: string | null;
+  /** Review score out of 10; only reviews carry one, and only when recorded. */
+  reviewScore: number | null;
+}
+
+/** Rows scanned for a title search before the title itself is matched. */
+const MAX_SEARCH_SCAN = 1000;
+
+/**
+ * A completion recorded for a job that decided there was nothing to do. It is
+ * stored as `completed` so the run is not retried, but nothing was produced.
+ */
+const SKIPPED_REASON_PATTERN = 'PR comment job skipped%';
+
+/** Recaps that only restate that the run finished, which the feed already says. */
+const GENERIC_RECAPS = new Set([
+  'completed the pull request follow-up.',
+]);
+
+/** `Score 8/10` or `Scores 8/10, 6/10`, as written by the review recap. */
+const REVIEW_SCORE_PART = /^Scores?\s+(.+)$/i;
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function recapFrom(metadata: Record<string, unknown>): string | null {
+  const direct = metadata.notificationRecap;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const prResult = parseJsonObject(metadata.prResult).notificationRecap;
+  return typeof prResult === 'string' && prResult.trim() ? prResult.trim() : null;
+}
+
+interface CompletionDetails {
+  recap: string | null;
+  commandMode: string | null;
 }
 
 /**
- * Recent recorded outcomes, newest first.
+ * The newest recap and command mode recorded on each task's completions.
  *
- * Each terminal state is read separately and merged, so one long run of
- * completions cannot crowd the failures out of the feed before the limit is
- * applied to the merged, ordered result.
+ * A task can record more than one completion ("implementation completed",
+ * then "PR ready"), and the recap is not always on the newest one, so every
+ * completion of the listed tasks is read and the newest that says something
+ * wins.
  */
-export async function loadOutcomeRows(
+async function loadCompletionDetails(db: Knex, taskIds: readonly string[]): Promise<Map<string, CompletionDetails>> {
+  const details = new Map<string, CompletionDetails>();
+  for (const batch of chunk(taskIds)) {
+    const rows = await db('task_history')
+      .whereIn('task_id', batch)
+      .where('state', 'completed')
+      .select('task_id', 'metadata')
+      .orderBy('timestamp', 'desc') as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const taskId = String(row.task_id);
+      const metadata = parseJsonObject(row.metadata);
+      const current = details.get(taskId) ?? { recap: null, commandMode: null };
+      const commandMode = typeof metadata.commandMode === 'string' ? metadata.commandMode : null;
+      details.set(taskId, {
+        recap: current.recap ?? recapFrom(metadata),
+        commandMode: current.commandMode ?? commandMode,
+      });
+    }
+  }
+  return details;
+}
+
+function isReviewRun(row: DashboardTaskRow, commandMode: string | null): boolean {
+  return commandMode === 'review' || row.taskType === 'review' || /^Review PR #\d+:/i.test(row.title ?? '');
+}
+
+/**
+ * A review recap split into its score and the part worth reading.
+ *
+ * The recap reads `Score 8/10 · 2 issues found: …`. The score becomes the
+ * row's score badge — with more than one reviewer, the lowest, because that is
+ * the one that decides whether the pull request is ready — and what remains is
+ * the detail line.
+ */
+function splitReviewRecap(recap: string | null): { score: number | null; detail: string | null } {
+  if (!recap) return { score: null, detail: null };
+  let score: number | null = null;
+  const rest: string[] = [];
+  for (const part of recap.split(' · ')) {
+    const scorePart = REVIEW_SCORE_PART.exec(part.trim());
+    if (scorePart) {
+      const scores = [...scorePart[1].matchAll(/(\d+(?:\.\d+)?)\s*\/\s*10/g)].map(match => Number(match[1]));
+      if (scores.length > 0) score = Math.min(...scores);
+      continue;
+    }
+    rest.push(part);
+  }
+  const detail = rest.join(' · ').trim();
+  return { score, detail: detail || null };
+}
+
+function meaningfulRecap(recap: string | null): string | null {
+  if (!recap) return null;
+  return GENERIC_RECAPS.has(recap.toLowerCase()) ? null : recap;
+}
+
+/**
+ * Recent completions, newest first, optionally narrowed to titles containing
+ * `search`.
+ *
+ * The title is resolved from the job data a run was queued with, so the
+ * search first narrows candidates in SQL by that job data and then matches the
+ * resolved title itself: a word that only appears in an issue body must not
+ * make an unrelated run look like a title match.
+ */
+export async function loadCompletedRows(
   db: Knex,
   repository: string,
-  options: { limit?: number; since?: Date } = {},
-): Promise<OutcomeRow[]> {
+  options: { limit?: number; search?: string } = {},
+): Promise<CompletedRow[]> {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
-  const perState = await Promise.all(TERMINAL_TASK_STATES.map(state =>
-    terminalTransitionQuery(db, repository, state, { from: options.since })
-      .select(TASK_COLUMNS)
-      .orderBy('h.timestamp', 'desc')
-      .limit(limit) as unknown as Promise<RawTaskRow[]>));
+  const search = options.search?.trim().toLowerCase() ?? '';
 
-  const mapped = perState.flat()
+  const query = terminalTransitionQuery(db, repository, 'completed')
+    .where(function (this: Knex.QueryBuilder) {
+      this.whereNull('h.reason').orWhereNot('h.reason', 'like', SKIPPED_REASON_PATTERN);
+    })
+    .select(TASK_COLUMNS)
+    .orderBy('h.timestamp', 'desc')
+    .limit(search ? MAX_SEARCH_SCAN : limit);
+  if (search) query.where('t.initial_job_data', 'like', `%${search}%`);
+
+  const mapped = (await query as unknown as RawTaskRow[])
     .map(mapTaskRow)
-    .sort((a, b) => Date.parse(b.stateTimestamp) - Date.parse(a.stateTimestamp))
+    .filter(row => !search || (row.title ?? '').toLowerCase().includes(search))
     .slice(0, limit);
   if (mapped.length === 0) return [];
 
-  // One task can carry two outcomes (it failed, then a retry completed), so the
-  // enrichment reads each task once.
-  const taskIds = [...new Set(mapped.map(row => row.taskId))];
-  const [planRows, scores] = await Promise.all([
-    db('plan_issues')
-      .whereIn('task_id', taskIds)
-      .whereNotNull('task_id')
-      .select('task_id', 'status')
-      .orderBy('id', 'asc') as unknown as Promise<Array<Record<string, unknown>>>,
-    loadCritiqueScores(db, taskIds),
-  ]);
-  const statusByTask = new Map<string, string>();
-  for (const row of planRows) statusByTask.set(String(row.task_id), String(row.status));
-
-  return mapped.map(row => ({
-    ...row,
-    planIssueStatus: statusByTask.get(row.taskId) ?? null,
-    score: toScoreNumber(scores.get(row.taskId)),
-  }));
-}
-
-export interface PlanIssueOutcomeRow {
-  id: number;
-  repository: string;
-  issueNumber: number;
-  prNumber: number | null;
-  status: string;
-  /** What was merged or closed, from the run behind it. */
-  title: string | null;
-  taskId: string | null;
-  occurredAt: string;
-}
-
-/**
- * Review results recorded against plan issues, newest first.
- *
- * A merge or a close happens after the implementation run finished, so it is a
- * separate outcome from that run's completion rather than a duplicate of it.
- */
-export async function loadPlanIssueOutcomes(
-  db: Knex,
-  repository: string,
-  options: { limit?: number } = {},
-): Promise<PlanIssueOutcomeRow[]> {
-  const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
-  const query = db('plan_issues')
-    .whereIn('status', ['merged', 'closed'])
-    .select('id', 'repository', 'issue_number', 'pr_number', 'status', 'task_id', 'updated_at')
-    .orderBy('updated_at', 'desc')
-    .limit(limit);
-  if (repository && repository !== 'all') query.where('repository', repository);
-
-  const rows = await query as Array<Record<string, unknown>>;
-  const outcomes = rows.map(row => ({
-    id: Number(row.id),
-    repository: String(row.repository),
-    issueNumber: Number(row.issue_number),
-    prNumber: row.pr_number === null || row.pr_number === undefined ? null : Number(row.pr_number),
-    status: String(row.status),
-    title: null,
-    taskId: row.task_id === null || row.task_id === undefined ? null : String(row.task_id),
-    occurredAt: toIso(row.updated_at),
-  }));
-
-  // A plan issue has no title of its own, so a merge row is named by the run
-  // it merged. Without it the feed printed `Pull request #2467` beside a
-  // `PR #2467` chip — the identifier twice, and the work not at all.
-  const threads = await loadThreadWork(db, repository, outcomes.map(row => row.issueNumber));
-  return outcomes.map(outcome => ({ ...outcome, title: threadTitle(threads, outcome) }));
+  const details = await loadCompletionDetails(db, mapped.map(row => row.taskId));
+  return mapped.map(row => {
+    const detail = details.get(row.taskId) ?? { recap: null, commandMode: null };
+    if (isReviewRun(row, detail.commandMode)) {
+      const review = splitReviewRecap(detail.recap);
+      return { ...row, recap: meaningfulRecap(review.detail), reviewScore: review.score };
+    }
+    return { ...row, recap: meaningfulRecap(detail.recap), reviewScore: null };
+  });
 }

@@ -34,6 +34,7 @@ export const attentionItem = (over: Partial<AttentionItem> = {}): AttentionItem 
   repository: 'acme/app',
   issueNumber: 42,
   prNumber: null,
+  taskType: 'issue',
   title: 'Checkout retries never fire',
   state: 'failed',
   detail: 'Lint failed',
@@ -53,6 +54,7 @@ export const activeItem = (over: Partial<ActiveItem> = {}): ActiveItem => ({
   repository: 'acme/app',
   issueNumber: 7,
   prNumber: null,
+  taskType: 'issue',
   title: 'Add retry budget',
   state: 'claude_execution',
   phase: 'Implementing',
@@ -72,14 +74,13 @@ export const activeResponse = (running: ActiveItem[] = [], queued: ActiveItem[] 
 
 export const outcomeItem = (over: Partial<OutcomeItem> = {}): OutcomeItem => ({
   id: 'task:done-1:completed',
-  kind: 'completed',
   taskId: 'done-1',
   repository: 'acme/app',
   issueNumber: 9,
   prNumber: 100,
+  taskType: 'issue',
   title: 'Ship the retry budget',
   detail: null,
-  planIssueStatus: null,
   score: null,
   occurredAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
   ...over,
@@ -88,6 +89,7 @@ export const outcomeItem = (over: Partial<OutcomeItem> = {}): OutcomeItem => ({
 export const outcomesResponse = (items: OutcomeItem[] = []): DashboardOutcomesResponse => ({
   repository: 'all',
   limit: 50,
+  search: '',
   items,
 });
 

@@ -1,14 +1,15 @@
 /**
- * Happening now: the operational view of work in flight.
+ * Happening now: the operational view of work in flight, newest first.
  *
- * Rows show only facts the system actually has — lifecycle phase, elapsed time
- * and the latest progress line the agent reported. There is no synthesised
+ * Rows show only facts the system actually has — what kind of work it is,
+ * elapsed time and the latest progress line the agent reported. Every row in
+ * this list is running, so there is no per-row status badge repeating it; the
+ * pane's heading already says so. There is no synthesised
  * percentage, and a run with no recent chat message is not called stalled:
  * missing progress means the progress is unknown, not that the work is stuck.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { getDashboardActive, type ActiveItem, type DashboardActiveResponse } from '../../api/dashboardApi';
 import {
   RepositoryLabel,
@@ -36,6 +37,7 @@ import {
   useStableOrder,
   workHref,
 } from './sectionState';
+import { splitWorkTitle } from './workTitle';
 
 /** Active rows shown before the list has to be expanded. */
 const VISIBLE_ITEMS = 5;
@@ -51,8 +53,8 @@ const OVERFLOW_SLACK = 1;
 
 const itemKey = (item: ActiveItem): string => item.id;
 
-const itemTitle = (item: ActiveItem): string =>
-  item.title || (item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work');
+const fallbackTitle = (item: ActiveItem): string =>
+  item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work';
 
 /**
  * One running row: the whole row is the link to the work it names.
@@ -64,51 +66,44 @@ const itemTitle = (item: ActiveItem): string =>
  * different behaviours, and on a phone the arrow also sat two pixels from the
  * elapsed time it was crowding. The row has one behaviour and the space back.
  */
-const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => (
-  <li>
-    <RowLink href={workHref(item)} className="block min-w-0 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
-      <RowMetaLines
-        /*
-          A spinner, not a dot: a filled circle reads as a status light, and a
-          green one reads as "done". Motion is unambiguous about work in flight.
-        */
-        status={(
-          <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-teal-700">
-            <Loader2 className="h-3 w-3 flex-none animate-spin" aria-hidden="true" />
-            <span className="truncate">{item.phase || 'Running'}</span>
-          </span>
+const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
+  const work = splitWorkTitle(item.title, item.taskType);
+  return (
+    <li>
+      <RowLink href={workHref(item)} className="block min-w-0 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
+        <RowMetaLines
+          entities={(
+            <>
+              <RepositoryLabel repository={item.repository} />
+              <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
+            </>
+          )}
+          trailing={(
+            <span title={`Started ${new Date(item.createdAt).toLocaleString()}${item.phase ? ` · ${item.phase}` : ''}`}>
+              {elapsedRunning(item.createdAt)}
+            </span>
+          )}
+        />
+        <RowTitle type={work.type}>{work.title ?? fallbackTitle(item)}</RowTitle>
+        {/*
+          The progress line is a sentence with a repository path in it, and on a
+          phone the path is most of the sentence: 110 characters of
+          `propr-ui/src/components/…` wrapped to three lines of the densest text
+          on the screen. Someone triaging on a phone needs the file, not the
+          route to it, so the directories collapse below `sm` and come back
+          whole where there is width for them — and the sentence stops at its
+          first clause rather than being cut mid-word by the clamp.
+        */}
+        {item.progressLine && (
+          <RowDetail>
+            <span className="sm:hidden">{shortenPaths(primaryClause(item.progressLine))}</span>
+            <span className="hidden sm:inline">{item.progressLine}</span>
+          </RowDetail>
         )}
-        entities={(
-          <>
-            <RepositoryLabel repository={item.repository} />
-            <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
-          </>
-        )}
-        trailing={(
-          <span title={`Started ${new Date(item.createdAt).toLocaleString()}`}>
-            {elapsedRunning(item.createdAt)}
-          </span>
-        )}
-      />
-      <RowTitle>{itemTitle(item)}</RowTitle>
-      {/*
-        The progress line is a sentence with a repository path in it, and on a
-        phone the path is most of the sentence: 110 characters of
-        `propr-ui/src/components/…` wrapped to three lines of the densest text
-        on the screen. Someone triaging on a phone needs the file, not the
-        route to it, so the directories collapse below `sm` and come back
-        whole where there is width for them — and the sentence stops at its
-        first clause rather than being cut mid-word by the clamp.
-      */}
-      {item.progressLine && (
-        <RowDetail>
-          <span className="sm:hidden">{shortenPaths(primaryClause(item.progressLine))}</span>
-          <span className="hidden sm:inline">{item.progressLine}</span>
-        </RowDetail>
-      )}
-    </RowLink>
-  </li>
-);
+      </RowLink>
+    </li>
+  );
+};
 
 /**
  * The one footer under the running list.

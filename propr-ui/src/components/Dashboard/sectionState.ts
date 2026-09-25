@@ -90,9 +90,13 @@ export function useDashboardSection<T>(
 /**
  * Display order that survives live updates.
  *
- * Server order decides where a row first appears; after that a row keeps its
+ * Server order decides where rows first appear; after that a row keeps its
  * position for as long as it exists. Running work changes state constantly, and
  * a list that re-sorted on every update would move the row under the pointer.
+ *
+ * The server lists newest first, so a row that arrives after the first read is
+ * the newest thing in the list and goes on top, in server order, above the
+ * rows already on screen.
  */
 export function useStableOrder<T>(items: T[], getKey: (item: T) => string): T[] {
   const orderRef = useRef<string[]>([]);
@@ -101,8 +105,8 @@ export function useStableOrder<T>(items: T[], getKey: (item: T) => string): T[] 
     for (const item of items) byKey.set(getKey(item), item);
     const retained = orderRef.current.filter(key => byKey.has(key));
     const seen = new Set(retained);
-    const appended = [...byKey.keys()].filter(key => !seen.has(key));
-    const order = [...retained, ...appended];
+    const arrived = [...byKey.keys()].filter(key => !seen.has(key));
+    const order = [...arrived, ...retained];
     orderRef.current = order;
     return order.map(key => byKey.get(key) as T);
   }, [items, getKey]);

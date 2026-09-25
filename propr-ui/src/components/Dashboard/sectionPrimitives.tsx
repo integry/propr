@@ -244,24 +244,62 @@ export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
  * they separate.
  */
 export const RowMetaLines: React.FC<{
-  status: React.ReactNode;
+  /**
+   * What state the row is in. Omitted where every row in the list is in the
+   * same state — a column that repeats one word down a feed says nothing — and
+   * then the entities and the time share the one line at every width.
+   */
+  status?: React.ReactNode;
   entities: React.ReactNode;
   trailing?: React.ReactNode;
-}> = ({ status, entities, trailing }) => (
-  <span className="flex flex-col gap-1 text-xs sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-1">
-    <span className="flex items-center justify-between gap-2 sm:contents">
-      <span className="flex min-w-0 items-center sm:order-1">{status}</span>
-      {trailing && (
-        <span className="flex-none whitespace-nowrap text-gray-500 sm:order-3">{trailing}</span>
-      )}
+}> = ({ status, entities, trailing }) => {
+  const time = trailing && (
+    <span className="flex-none whitespace-nowrap text-gray-500 sm:order-3">{trailing}</span>
+  );
+  if (!status) {
+    return (
+      <span className="flex items-center justify-between gap-2 text-xs sm:justify-start">
+        <span className="flex min-w-0 items-center gap-1.5 sm:order-2">{entities}</span>
+        {time}
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-col gap-1 text-xs sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-1">
+      <span className="flex items-center justify-between gap-2 sm:contents">
+        <span className="flex min-w-0 items-center sm:order-1">{status}</span>
+        {time}
+      </span>
+      <span className="flex min-w-0 items-center gap-1.5 sm:order-2">{entities}</span>
     </span>
-    <span className="flex min-w-0 items-center gap-1.5 sm:order-2">{entities}</span>
+  );
+};
+
+/**
+ * The task type in front of a title: `Fix`, `Review`, `Issue`.
+ *
+ * It is the first thing on the title line so a column of rows can be scanned
+ * by kind without reading a single title, and it is drawn in the task list's
+ * own type-badge vocabulary so a row means the same thing on both pages.
+ */
+export const WorkTypeBadge: React.FC<{ type: string }> = ({ type }) => (
+  <span
+    data-testid="work-type-badge"
+    className="mr-1.5 inline-flex -translate-y-px items-center whitespace-nowrap rounded-sm border border-slate-200 bg-slate-100 px-1.5 align-middle font-mono text-[11px] font-medium leading-4 text-slate-700"
+  >
+    {type}
   </span>
 );
 
 /** Titles wrap to two lines rather than being cut off mid-word. */
-export const RowTitle: React.FC<{ children: React.ReactNode; strong?: boolean }> = ({ children, strong = true }) => (
+export const RowTitle: React.FC<{
+  children: React.ReactNode;
+  strong?: boolean;
+  /** Task type drawn as a badge in front of the title. */
+  type?: string | null;
+}> = ({ children, strong = true, type }) => (
   <span className={`mt-1 line-clamp-2 block break-words text-sm leading-5 ${strong ? 'font-medium text-slate-900' : 'text-slate-700'}`}>
+    {type && <WorkTypeBadge type={type} />}
     {children}
   </span>
 );

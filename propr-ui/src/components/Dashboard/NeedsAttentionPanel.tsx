@@ -1,5 +1,8 @@
 /**
- * Needs attention: the short list of things only a person can resolve.
+ * Needs attention: the short list of things only a person can resolve, newest
+ * first. Runs that failed and were not recovered land here rather than in the
+ * completed feed; cancelled and rescheduled runs are bookkeeping and land in
+ * neither.
  *
  * The list is derived from work state, never from notification state, so
  * dismissing something in the inbox does not make a blocker disappear here.
@@ -36,6 +39,7 @@ import {
   useNowTick,
   workHref,
 } from './sectionState';
+import { splitWorkTitle, type WorkTitle } from './workTitle';
 
 /** How many items the panel shows before handing off to the full list. */
 const VISIBLE_ITEMS = 3;
@@ -93,13 +97,18 @@ function actionHref(item: AttentionItem): string {
  * the run is on when there is no title yet. What is left when even that is
  * unknown is the state the item is in, which is at least a fact about the
  * work: `Pull request is awaiting review`.
+ *
+ * The title is split like every other dashboard title: the task type moves
+ * into a badge in front of it, and the entity number and model tag go.
  */
-function itemTitle(item: AttentionItem): string {
-  return item.title || item.detail || 'Untitled work';
+function itemTitle(item: AttentionItem): WorkTitle & { title: string } {
+  const work = splitWorkTitle(item.title, item.taskType);
+  return { type: work.type, title: work.title || item.detail || 'Untitled work' };
 }
 
 const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
   const href = actionHref(item);
+  const work = itemTitle(item);
   const external = isExternalHref(href);
   return (
     <li>
@@ -153,7 +162,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
           {actionLabel(item)}
         </RowLink>
         <span className="col-span-2 min-w-0 lg:col-start-1 lg:row-start-2">
-          <RowTitle>{itemTitle(item)}</RowTitle>
+          <RowTitle type={work.type}>{work.title}</RowTitle>
         </span>
       </div>
     </li>
