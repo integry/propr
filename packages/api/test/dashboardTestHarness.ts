@@ -1,5 +1,7 @@
 import type { Request, Response as ExpressResponse } from 'express';
 import knex, { type Knex } from 'knex';
+import type { RedisClientType } from 'redis';
+import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 
 export const NOW = new Date('2026-09-23T12:00:00.000Z');
 export const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -106,6 +108,40 @@ export async function seedTask(database: Knex, seed: TaskSeed): Promise<void> {
     reason: entry.reason ?? null,
     metadata: '{}',
   })));
+}
+
+export interface QueueStub {
+  paused?: boolean;
+  activeCount?: number;
+  workers?: number;
+  /** Concurrency each live worker publishes; null models a worker that publishes none. */
+  capacityPerWorker?: number | null;
+}
+
+/** Dashboard routes over the test database, with a stubbed queue and worker fleet. */
+export function createTestDashboardRoutes(
+  database: Knex,
+  queue: QueueStub = {},
+  liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>,
+): ReturnType<typeof createDashboardRoutes> {
+  const workerIds = Array.from({ length: queue.workers ?? 1 }, (_, index) => `worker:${index}`);
+  const capacityPerWorker = queue.capacityPerWorker === undefined ? 1 : queue.capacityPerWorker;
+  const redisClient = {
+    sMembers: async () => workerIds,
+    hGetAll: async () => (capacityPerWorker === null
+      ? {}
+      : Object.fromEntries(workerIds.map(id => [id, String(capacityPerWorker)]))),
+  } as unknown as RedisClientType;
+  return createDashboardRoutes({
+    db: database,
+    redisClient,
+    taskQueue: {
+      isPaused: async () => queue.paused ?? false,
+      getActiveCount: async () => queue.activeCount ?? 0,
+    } as never,
+    liveDetails: liveDetails ?? (async () => null),
+    now: () => NOW,
+  });
 }
 
 function jsonResponse(): {
