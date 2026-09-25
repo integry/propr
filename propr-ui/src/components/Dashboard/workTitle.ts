@@ -27,8 +27,12 @@ const TITLE_PREFIXES: ReadonlyArray<[RegExp, string]> = [
   [/^Continue\s+#\d+\s*:\s*/i, 'Continue'],
 ];
 
-/** `[870 by Claude Opus]`, `[Fix by Claude Opus 4.6]`, `[Goal by GPT-5]` at the start of a title. */
-const MODEL_TAGS = /^(?:\[[^\]]*\bby\s+[^\]]+\]\s*)+/i;
+/**
+ * `[870 by Claude Opus]`, `[Fix by Claude Opus 4.6]`, `[Goal by GPT-5]` at the start of a title.
+ * Only an issue number or a workflow name may come before `by`, so an ordinary
+ * bracketed title such as `[Search by filename]` is left alone.
+ */
+const MODEL_TAGS = /^(?:\[(?:\d+|Goal|Fix|Review|Follow-?up|Ultrafix|Merge)\s+by\s+[^\]]+\]\s*)+/i;
 
 /** Labels for the recorded task type, used when the title carries no verb. */
 const TASK_TYPE_LABELS: Record<string, string> = {

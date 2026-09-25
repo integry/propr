@@ -17,6 +17,13 @@ describe('splitWorkTitle', () => {
     expect(splitWorkTitle('Continue #12: Finish the migration', null)).toEqual({ type: 'Continue', title: 'Finish the migration' });
   });
 
+  it('keeps ordinary bracketed text that is not a generated model tag', () => {
+    expect(splitWorkTitle('New Issue: [Search by filename]', 'issue')).toEqual({ type: 'Implement', title: '[Search by filename]' });
+    expect(splitWorkTitle('[Sort by date] Newest first', null)).toEqual({ type: null, title: '[Sort by date] Newest first' });
+    expect(splitWorkTitle('Fix PR #12: [Group by repo] Dashboard', null)).toEqual({ type: 'Fix', title: '[Group by repo] Dashboard' });
+    expect(splitWorkTitle('[Goal by GPT-5] Ship the dashboard', 'goal')).toEqual({ type: 'Goal', title: 'Ship the dashboard' });
+  });
+
   it('falls back to the recorded task type and leaves a plain title alone', () => {
     expect(splitWorkTitle('Cache repository icons', 'pr-comment')).toEqual({ type: 'PR comment', title: 'Cache repository icons' });
     expect(splitWorkTitle('Cache repository icons', 'data_import')).toEqual({ type: 'Data import', title: 'Cache repository icons' });
