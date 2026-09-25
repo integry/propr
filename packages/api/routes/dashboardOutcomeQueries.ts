@@ -192,10 +192,10 @@ export async function loadCompletedRows(
   const search = options.search?.trim().toLowerCase() ?? '';
 
   const candidates = (after: RawTaskRow | null, pageSize: number): Knex.QueryBuilder => {
-    const query = terminalTransitionQuery(db, repository, 'completed')
-      .where(function (this: Knex.QueryBuilder) {
-        this.whereNull('h.reason').orWhereNot('h.reason', 'like', SKIPPED_REASON_PATTERN);
-      })
+    // Skipped completions are left out before each task's latest completion is
+    // chosen: a follow-up that found nothing to do must not hide the earlier
+    // run that did the work.
+    const query = terminalTransitionQuery(db, repository, 'completed', { excludeReasonLike: SKIPPED_REASON_PATTERN })
       .select(TASK_COLUMNS)
       .orderBy([{ column: 'h.timestamp', order: 'desc' }, { column: 't.task_id', order: 'desc' }])
       .limit(pageSize);

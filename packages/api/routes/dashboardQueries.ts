@@ -284,22 +284,29 @@ export function threadTitle(
  * keeps an event that happened inside it from being displaced by a later one
  * outside it. Heartbeats, indexing updates and CI entries never reach this set
  * because only terminal task lifecycle states are read.
+ *
+ * `excludeReasonLike` drops matching transitions before the latest is chosen,
+ * so a newer excluded entry cannot displace an older one that qualifies.
  */
 export function terminalTransitionQuery(
   db: Knex,
   repository: string,
   state: string,
-  window: { from?: Date; to?: Date } = {},
+  filter: { from?: Date; to?: Date; excludeReasonLike?: string } = {},
 ): Knex.QueryBuilder {
   const bindings: unknown[] = [state];
-  let windowSql = '';
-  if (window.from) {
-    windowSql += ' AND lh.timestamp >= ?';
-    bindings.push(window.from.toISOString());
+  let filterSql = '';
+  if (filter.from) {
+    filterSql += ' AND lh.timestamp >= ?';
+    bindings.push(filter.from.toISOString());
   }
-  if (window.to) {
-    windowSql += ' AND lh.timestamp < ?';
-    bindings.push(window.to.toISOString());
+  if (filter.to) {
+    filterSql += ' AND lh.timestamp < ?';
+    bindings.push(filter.to.toISOString());
+  }
+  if (filter.excludeReasonLike !== undefined) {
+    filterSql += ' AND (lh.reason IS NULL OR lh.reason NOT LIKE ?)';
+    bindings.push(filter.excludeReasonLike);
   }
 
   const query = db('tasks as t')
@@ -310,7 +317,7 @@ export function terminalTransitionQuery(
       JOIN task_history AS h ON h.history_id = (
         SELECT lh.history_id
         FROM task_history AS lh
-        WHERE lh.task_id = t.task_id AND lh.state = ?${windowSql}
+        WHERE lh.task_id = t.task_id AND lh.state = ?${filterSql}
         ORDER BY lh.timestamp DESC
         LIMIT 1
       )

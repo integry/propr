@@ -159,6 +159,32 @@ test('a recorded completion survives the follow-up run that starts after it', as
   assert.deepEqual((outcomes.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['clean-run', 'followed-up']);
 });
 
+test('a follow-up that was skipped does not hide the completion before it', async () => {
+  await seedTask({
+    taskId: 'skipped-follow-up', issueNumber: 403, title: 'Add retries',
+    states: [
+      { state: 'claude_execution', timestamp: minutesAgo(120) },
+      { state: 'completed', timestamp: minutesAgo(100) },
+      // Followed up under the same id, and the follow-up found nothing to do.
+      { state: 'pending', timestamp: minutesAgo(20) },
+      { state: 'completed', timestamp: minutesAgo(15), reason: 'PR comment job skipped: nothing to do' },
+    ],
+  });
+  await seedTask({ taskId: 'only-skipped', issueNumber: 404, title: 'Add retries', states: [
+    { state: 'completed', timestamp: minutesAgo(5), reason: 'PR comment job skipped: nothing to do' },
+  ] });
+  await database('task_history').where({ task_id: 'skipped-follow-up', timestamp: minutesAgo(100) })
+    .update({ metadata: JSON.stringify({ notificationRecap: 'Added retries across 3 files and opened a pull request.' }) });
+
+  for (const query of [{ repository: 'all' }, { repository: 'all', search: 'retries' }]) {
+    const items = (await call(routes().getOutcomes, query)).body.items as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      items.map(item => [item.taskId, item.occurredAt, item.detail]),
+      [['skipped-follow-up', minutesAgo(100), 'Added retries across 3 files and opened a pull request.']],
+    );
+  }
+});
+
 test('a completion shows its own run\'s recap and score, never an earlier run\'s', async () => {
   await seedTask({
     taskId: 'rereviewed', issueNumber: 411, taskType: 'pr-comment', title: 'Review PR #411: Add retries',
