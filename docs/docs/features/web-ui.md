@@ -77,6 +77,23 @@ Administrators can switch the configuration pane to **Synthetic Pools** to combi
 
 **LLM Log** (`/llm-logs`) shows every model call with expandable rows and filters by execution type, model, status, and work type. What each record contains and how to use the page for cost analysis is covered in [Metrics](../operations/metrics.md).
 
+## MCP access log
+
+Every MCP call a connected app makes — tool invocations, resource reads, prompt
+fetches and authentication failures — is recorded in the durable MCP access log.
+It is read through `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`,
+both of which require the `instance.manage_settings` instance permission, the
+same permission as the other administrative MCP routes. A row carries the
+surface and tool name, the connected app and grant, the repository, scope,
+status, outcome, error code, duration, result size and the durable operation
+handle of a mutation; it deliberately carries no tool arguments, message bodies
+or result payloads. The connected-apps page at `/mcp/apps` summarizes the same
+data per app as a last-used time and a 24-hour request count.
+
+There is no **MCP Log** entry in the sidebar yet — the sidebar navigation listed
+above ends at **LLM Log**, and this log is an API-only operator surface. See [Authenticated MCP](https://github.com/integry/propr/blob/main/docs/mcp.md)
+for the operator walkthrough and the log's filters.
+
 ## Settings
 
 **Settings** (`/settings`) is administrator-only, auto-saves, and is organized in two columns.

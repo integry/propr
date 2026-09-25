@@ -19,18 +19,24 @@ remain separate gates.
 | Identity, instance, permissions, setup | `get_connection`, `get_setup_status` |
 | Configured repositories and enabled agent models | `list_repositories`, `list_models` |
 | Exact/fuzzy reference lookup | `resolve_reference`; ambiguous names return candidates |
+| Cross-repository “what is happening now” | `get_current_activity`; running tasks, active goals, plans being generated, queued work and blockers waiting on a human, for every repository in the grant at once. Optional exact `repository`; `includeRoutine` keeps filtered Inbox noise; `activity` resource |
+| “What has been done recently” | `get_recent_activity`; one merged newest-first timeline of terminal tasks, opened/merged pull requests, finished goals, published plans, reviews, ultrafix loops and blocking notifications. `sinceMinutes` or `since`/`until`, default 60 minutes and at most seven days; `activity/recent` resource |
 | Draft list/read/create/update/delete | `list_plans`, `get_plan`, `create_plan`, `update_plan`, `delete_plan` |
 | Generate/refine a plan | `generate_plan`, `refine_plan` |
 | Publish GitHub issues | `publish_plan`; publication does not start implementation |
 | Selected issues, model, epic, bounded ultrafix and explicit auto-merge | `implement_plan` |
 | Plan scheduling | `pause_plan`, `resume_plan` |
-| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `get_agent_activity`, `send_goal_input` |
+| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `list_goal_inputs`, `get_agent_activity`, `send_goal_input`; `list_goals` takes an optional `repository` and a `state` filter (`active`/`completed`/`failed`/`all`), `get_goal` adds newest narration, task progress, checkpoint state, `pendingInput` and the pull requests the goal produced, and `send_goal_input` takes a `kind` (`instruction` or `question`) that distinguishes the request without changing the single durable goal input this backend persists |
 | Goal controls/model changes | `pause_goal`, `resume_goal`, `cancel_goal`, `set_goal_model` |
 | Start one-off work through a new GitHub issue | `create_task`, `get_task_submission`, `retry_task_submission`; ordinary issue execution without a plan or goal |
-| Task progress, narrated agent activity, history and bounded execution logs | `list_tasks`, `get_task`, `get_agent_activity`, `get_task_events`, `get_task_logs` |
+| Task progress, narrated agent activity, history and bounded execution logs | `list_tasks`, `get_task`, `get_agent_activity`, `get_task_events`, `get_task_logs`; `list_tasks` takes an optional `repository` and the same `state` filter, and `get_task` adds recent events, newest narration, execution timing, `changesSummary` counts and its linked pull request |
 | File changes and followup | `get_task_changes`, `send_task_followup` |
 | Task/operation cancellation and receipts | `cancel_task`, `get_operation`, `cancel_operation` |
 | Delete inactive task history | `delete_task`; bulk cleanup uses explicit individual handles |
+| Pull request inventory across the grant | `list_pull_requests`; newest-first, with ProPR task/goal/plan correlation, `openedWithinMinutes`/`updatedWithinMinutes` recency filters, an optional newest comment and `propr.ultrafixActive`. Omit `repository` to cover the grant; `repositories/{owner}/{repo}/pulls` resource |
+| Ordinary PR follow-up comment | `comment_on_pull_request`; exact `expectedHead`, natural-language message only. A message that starts a slash command is rejected with `USE_EXPLICIT_TOOL` |
+| PR model routing by managed label | `set_pull_request_model`; converges the labels the repository already defines onto exactly one enabled agent model. No label is ever created |
+| Stopping an ultrafix loop | `stop_ultrafix`; removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
 | PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; exact comment/F# selection, reviewed head, partial coverage and consumed findings |
 | Update branch (`/merge`) | `update_pull_request_branch` |
 | Guarded PR merge | `merge_pull_request` |
@@ -54,6 +60,7 @@ remain separate gates.
 | Runtime package configuration/build | `get_runtime_configuration`, `update_runtime_configuration` |
 | Instance membership administration | `list_instance_members`, `add_instance_member`, `set_instance_member_role`, `remove_instance_member`, `get_instance_role_audit`; existing last-admin guards |
 | Shared repository chat history | `get_repository_chat`, `save_repository_chat_message`, `delete_repository_chat_message` |
+| MCP access observability | Durable `mcp_access_log` row per tool call, resource read, prompt fetch and authentication failure; `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`, both behind the existing `instance.manage_settings` permission; last-used and 24-hour request counts per connected app on `/mcp/apps`. Only names, identifiers, counts, sizes and outcomes are stored, and no MCP tool reads the log |
 | GitHub credentials, provider login, agent secrets, push subscription | Browser settings/login links from connection/setup; never collect secrets through tools |
 | Deployment/release | Existing operator CLI/scripts only. No corresponding deployment backend was found; no fictitious deployment tool is advertised. `deploy` is reserved and confers no operation by itself. |
 
@@ -77,6 +84,15 @@ remain separate gates.
   receipts, bounded polling, explicit uncertain external outcomes.
 - [x] Fixed tool schemas, annotations, bounded results and credential redaction.
 - [x] Resources and mutation-free workflow prompts; durable text/voice handles.
+- [x] Cross-repository activity digest and recent-activity timeline, with the
+  Inbox noise filter applied inside the bounded scan.
+- [x] Repository-optional goal/task listing with a lifecycle filter, one-call
+  goal and task detail, and the persisted operator-input history behind it.
+- [x] Pull request inventory with ProPR correlation, newest-first discussion,
+  ordinary follow-up comments, managed model-label routing and clearing the
+  ultrafix circuit breaker.
+- [x] Durable MCP access log with its bounded retention sweep, the
+  permission-guarded admin read/stats API, and per-app last-used activity.
 - [x] Direct/Connect operator docs, wire contract, rollback and capability mapping.
 
 ## Verification checklist and known limits
@@ -94,6 +110,13 @@ remain separate gates.
   online validation, proof/key/instance/installation/repository restrictions,
   encrypted credential handoff and membership/revocation denial.
 - [x] SQLite file reopen and concurrent durable dedup test.
+- [x] One end-to-end operator-surface regression drives the real catalog through
+  `get_current_activity` → `get_goal`/`get_task` → `list_pull_requests` →
+  `get_pull_request_discussion` → `comment_on_pull_request` →
+  `set_pull_request_model` → `stop_ultrafix`, then asserts the access log
+  recorded every invocation, including a scope denial and a forbidden-repository
+  denial, and reads that session back through the admin log API
+  (`packages/api/test/mcpOperatorSurface.test.ts`, wired into `test:mcp`).
 - [x] Browser consent/revocation test, CSRF denial and mobile overflow check.
 - [ ] A live end-to-end agent run through generation → publication →
   implementation → followup → review/fix → guarded merge. Local tests do not
@@ -368,3 +391,93 @@ SHA and with explicit `MCP_ROUTING_REVISION=0c8ca02044c88b181395ca8e15425c0821e5
 These are local results on uncommitted core changes; the paired runner reports
 the base `coreHead` plus an implementation digest. They are not hosted CI results
 for the future system-generated commit.
+
+
+## Operator surface reconciliation (2026-09-25)
+
+The rows above were re-read against `packages/api/mcp/` on the epic branch rather
+than against any earlier specification: every tool name, argument, resource URI
+and prompt named here exists in `tools.ts`, `toolsActivity.ts`,
+`toolsPullRequests.ts`, `goalTaskDetail.ts`, `pullRequestInventory.ts`,
+`accessLog.ts` and `server.ts`. `docs/mcp.md` carries the operator walkthrough.
+
+What this surface deliberately does **not** claim:
+
+- **Bounded scans, not exhaustive ones.** The digest fans out over at most 20
+  configured repositories in the grant, resolves live narration for at most 10
+  goals, and the recent-activity timeline merges at most 500 collected rows
+  within a window of at most seven days. `repositoriesTruncated`, a section's
+  `truncated`, and `scanTruncated` say a scan stopped early; they never mean the
+  remainder is empty. The inventory scans at most four GraphQL pages of 50 pull
+  requests per repository and attaches the newest comment to at most 10 results.
+- **A repository the credential lost access to is skipped, not failed.** The
+  cross-repository fan-outs drop a repository that answers 403, exactly as
+  `list_repositories` does. Naming that repository explicitly is denied with
+  `REPOSITORY_FORBIDDEN`, and the denial is recorded.
+- **Narration and change counts are evidence, not guarantees.** Agent narration
+  is best-effort context: an unresolvable live session reports no entries rather
+  than failing the read. `changesSummary` is `null` when no file-change data is
+  persisted for that task; it never reports zero for unknown. Raw provider
+  reasoning, tool inputs and tool results stay excluded.
+- **Delivering a correction is not the agent acting on it.** `send_goal_input`
+  accepts a correction into the durable goal-input queue; `kind` only
+  distinguishes the request, because this backend persists exactly one operator
+  input kind. Reusing an idempotency key with a different `kind` is an
+  `IDEMPOTENCY_CONFLICT`, not a second correction. Confirm with `get_goal` or `list_goal_inputs`; `pendingInput` reports
+  undelivered corrections so a second one is not sent blindly.
+- **Cancellation acceptance is still not proof of stopping.** The existing
+  cancellation receipts are unchanged: `accepted` means the request was
+  recorded, and only a confirmed stop resolves it.
+- **Clearing the ultrafix circuit breaker does not abort an in-flight cycle.**
+  `stop_ultrafix` removes the `ultrafix` label so the loop starts no further
+  cycle, requires review scope, and says so in its own message. A cycle already
+  running may still finish, and inspecting the pull request is the only proof.
+  `propr.ultrafixActive` is `null`, not `false`, when the label list GitHub
+  returned was truncated: the breaker is undetermined, not absent.
+- **Model routing uses labels the repository already defines.** A model with no
+  managed label fails with `MODEL_LABEL_MISSING`; an incomplete label read fails
+  with `MODEL_LABEL_LOOKUP_INCOMPLETE` rather than claiming absence. No label is
+  created, and adding the new label precedes removing superseded ones so routing
+  is never dropped.
+- **Pull request titles, labels and comment prose remain untrusted data.**
+  `comment_on_pull_request` posts ordinary prose only and rejects a message that
+  starts a slash command with `USE_EXPLICIT_TOOL`, so scope and head
+  preconditions are always checked by the dedicated command tool.
+- **The access log deliberately stores no argument or payload content.** One row
+  per tool call, resource read, prompt fetch and authentication failure records
+  the surface, the name, the grant and client identity, the repository, scope,
+  status, outcome, error code, duration, result size and durable operation
+  handle. Tool arguments, message bodies, plan/goal text, comment prose,
+  credentials and result payloads never reach the table. A write that fails is
+  swallowed, so logging can never change a result, a status code or a response
+  body — which also means the log is operational observability, not a
+  tamper-proof audit store. Rows are pruned to a 30-day window and a 200,000-row
+  ceiling by an opportunistic sweep.
+- **The log is an operator surface only.** No MCP tool reads it. It is served by
+  `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`, both behind the
+  existing `instance.manage_settings` instance permission, and summarized per
+  connected app on `/mcp/apps` as a last-used time and a 24-hour request count.
+  A dedicated **MCP Log** page is not part of the web UI sidebar on this branch;
+  see `docs/docs/features/web-ui.md`.
+
+Local validation of this working tree:
+
+```sh
+npm run test:mcp
+# 93 tests passed, 0 failed, 0 skipped (including the new end-to-end
+# packages/api/test/mcpOperatorSurface.test.ts).
+
+npm run typecheck -w @propr/api
+npm run build
+# Both passed.
+
+npx eslint --config packages/api/eslint.config.js packages/api/test/mcpOperatorSurface.test.ts
+# 0 errors, 0 warnings.
+```
+
+The new regression drives the real tool catalog, schemas, authorization,
+persistence and access recording against in-memory SQLite with the repository's
+existing migrations. The GitHub API, the configured repository list and the
+agent registry are the only fixtures: no live GitHub, no provider credits, no
+real merge, and no production configuration was changed. These are local
+results, not hosted CI results for the resulting commit.

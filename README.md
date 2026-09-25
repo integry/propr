@@ -56,6 +56,7 @@ ProPR is a set of stages you can adopt independently — use one or all:
 - **CLI control plane**: scaffold, verify, start, and stop the local Docker stack — and drive plans, issues, tasks, and repos against the backend
 - **GitHub PR automation**: slash commands, automatic state labels, and PR follow-ups
 - **Deterministic git workflow**: isolated worktrees, model-specific branches, and a strict setup → implement → finalize pipeline
+- **MCP operator surface**: connect a chat client over authenticated MCP and ask what is running right now, drill into a goal, task or PR, send a correction, reroute a model, or stop an ultrafix loop — with every call recorded in an admin-readable access log ([docs/mcp.md](docs/mcp.md))
 - **Production-ready**: Docker-isolated agent execution, Redis-backed job state, retries with backoff, and Agent Tank subscription capacity/rate-limit tracking
 
 ## Quick start (recommended: CLI)
@@ -152,6 +153,7 @@ State labels are derived from the trigger label, so an issue labeled `AI` moves 
 | GitHub authentication | https://docs.propr.dev/docs/operations/github-auth |
 | Deployment | https://docs.propr.dev/docs/operations/deployment |
 | Architecture | https://docs.propr.dev/docs/architecture/overview |
+| Authenticated MCP | [docs/mcp.md](docs/mcp.md) |
 
 The docs site also ships inside the stack — run `propr docs` to open the bundled copy.
 

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP operator surface**: a connected agent can now run an instance rather than
+  only read and write one object at a time. `get_current_activity` answers "what
+  is happening right now" across every repository in the grant — running tasks,
+  active goals, plans being generated, queued work and the blockers waiting on a
+  human — and `get_recent_activity` merges one newest-first timeline of what
+  finished in a window of up to seven days, with routine Inbox noise filtered
+  out. `list_goals` and `list_tasks` take an optional `repository` and a `state`
+  filter, `get_goal` and `get_task` answer current activity and completed
+  progress in one call, and `list_goal_inputs` shows the corrections already sent
+  to a running goal. `list_pull_requests` inventories pull requests across the
+  grant with the ProPR task, goal and plan that produced each one;
+  `comment_on_pull_request` sends an ordinary follow-up at an exact head,
+  `set_pull_request_model` reroutes a PR by converging the managed `llm-*` labels
+  the repository already defines, and `stop_ultrafix` clears the ultrafix circuit
+  breaker so the loop starts no further cycle — a cycle already running may still
+  finish, and the receipt says so. Every MCP tool call, resource read, prompt
+  fetch and authentication failure is recorded in a new durable access log, read
+  by administrators through `GET /api/admin/mcp/logs` and
+  `/api/admin/mcp/logs/stats` (both behind `instance.manage_settings`) and
+  summarized per connected app on `/mcp/apps`; the log stores names, identities,
+  outcomes, sizes and durations, never tool arguments or payload content. See
+  [docs/mcp.md](docs/mcp.md) and [docs/mcp-coverage.md](docs/mcp-coverage.md).
 - **Claude Opus 5.5**: added to the Claude model catalog (`llm-claude-opus55`, 1M
   context) and made the default Claude model and the target of the plain `opus`
   alias. The bundled Claude Code CLI moves to 2.1.280, which is the first release

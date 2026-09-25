@@ -16,10 +16,14 @@ The delivered capabilities are:
 3. **Pull request surface** — PR inventory with ProPR task/goal correlation,
    newest-first discussion, ordinary follow-up comments, model routing by
    managed label, and starting and stopping ultrafix.
-4. **Access observability** — a durable MCP access log and its admin read API.
-5. **MCP Log UI** — a Logs navigation group holding the existing LLM Log and
-   the new MCP Log.
+4. **Access observability** — a durable MCP access log, its admin read and
+   stats API behind `instance.manage_settings`, and per-app last-used activity
+   on the connected-apps page. The **MCP Log** navigation entry planned for the
+   web UI has not landed on this branch: the sidebar still ends at **LLM Log**,
+   and the access log is read through `GET /api/admin/mcp/logs`.
 
 Each capability lands as its own pull request against this branch. The
-authoritative capability mapping stays in `docs/mcp-coverage.md`, which is
-reconciled against the shipped code before this epic merges.
+authoritative capability mapping is `docs/mcp-coverage.md` and the operator
+walkthrough is `docs/mcp.md`; both were reconciled against the shipped code in
+`packages/api/mcp/` on 2026-09-25, and
+`packages/api/test/mcpOperatorSurface.test.ts` exercises the surface end to end.

@@ -46,8 +46,14 @@ it('pairs two users through the production bridge, fences late A traffic, logs B
       transform(chunk, controller) { controller.enqueue(Uint8Array.from(chunk)); },
     })), { status: response.status, headers: response.headers });
   };
+  // Every pairing request, response and validation stays real; only the wait
+  // between polls is removed. The protocol floor is one second per pairing and
+  // this regression pairs three times, which is dead wall clock inside the
+  // budget and buys nothing here. Poll pacing itself is covered by the pairing
+  // protocol tests in apps/desktop.
   const service = () => new DesktopCredentialService({ profiles: store, fetch: mainFetch,
-    clientName: 'Synthetic combined regression', openPairingBrowser: async () => {}, confirmAccount: async () => true });
+    clientName: 'Synthetic combined regression', openPairingBrowser: async () => {}, confirmAccount: async () => true,
+    pairingTiming: { sleep: async () => undefined } });
   let credentials = service();
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const event = { senderFrame: { url: 'propr-renderer://app/index.html' } };
@@ -217,4 +223,11 @@ it('pairs two users through the production bridge, fences late A traffic, logs B
     ipc.dispose(); await credentials.dispose(); await store.close();
     await fixture.close(); await rm(directory, { recursive: true, force: true });
   }
-}, 30_000);
+  // This regression is CPU bound, and the shard it runs in oversubscribes CPU
+  // on purpose: rootless workers share a two-CPU quota while Vitest keeps two
+  // jsdom workers busy. Measured on a two-CPU quota: ~2s alone, ~8s with four
+  // Vitest processes competing, which is already harsher than CI. The budget
+  // is sized for that tail, not for the unloaded run. A genuine hang costs the
+  // propr-ui shard unit at most this long on top of its ~30s of other files,
+  // which keeps it under run-test-suite's 108s timeout-risk warning.
+}, 45_000);
