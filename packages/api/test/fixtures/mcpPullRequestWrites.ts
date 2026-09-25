@@ -10,6 +10,27 @@ export interface PullRequestFixture {
 export interface CommentFixture { id: number; pullRequest: number; repository: string; body: string; createdAt: string; author: string }
 export type Args = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
+/**
+ * The Redis surface the MCP tools read, plus the SET NX / compare-and-delete
+ * pair a per-pull-request lease needs. Leases behave as a single Redis would.
+ */
+export function leaseRedis() {
+  const leases = new Map<string, string>();
+  return {
+    get: async () => null, sMembers: async () => [],
+    set: async (key: string, value: string, options?: { NX?: boolean }) => {
+      if (options?.NX && leases.has(key)) return null;
+      leases.set(key, value);
+      return 'OK';
+    },
+    eval: async (_script: string, { keys, arguments: [token] }: { keys: string[]; arguments: string[] }) => {
+      if (leases.get(keys[0]) !== token) return 0;
+      leases.delete(keys[0]);
+      return 1;
+    },
+  };
+}
+
 interface WriteFixture {
   t: TestContext;
   call: (name: string, args: Args, actor?: McpPrincipal) => Promise<Args>;
@@ -142,5 +163,26 @@ export async function verifyPullRequestWrites(
     const undetermined = await mutate('set_pull_request_model', { ...pull, model: 'gpt-5.6' });
     assert.equal(undetermined.state, 'failed');
     assert.equal(undetermined.result.error.code, 'MODEL_LABEL_LOOKUP_INCOMPLETE');
+  });
+
+  await t.test('concurrent model routings of one pull request still converge on one managed label', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const live = findPullRequest('acme/repo', 42);
+    live.labels = live.labels.filter(name => !name.startsWith('llm-'));
+    // Different idempotency keys, different models, same head: both would read an
+    // unlabelled pull request and each add its own label without serialization.
+    const [opus, sonnet] = await Promise.all([
+      mutate('set_pull_request_model', { ...pull, model: 'claude-opus-5' }),
+      mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' }),
+    ]);
+    assert.equal(opus.state, 'completed');
+    assert.equal(sonnet.state, 'completed');
+    const managed = findPullRequest('acme/repo', 42).labels.filter(name => name.startsWith('llm-'));
+    assert.equal(managed.length, 1, `expected one managed label, found ${managed.join(', ')}`);
+    // The later routing read the earlier one's label and superseded it.
+    const [later, earlier] = managed[0] === opus.result.label ? [opus, sonnet] : [sonnet, opus];
+    assert.deepEqual(later.result.removedLabels, [earlier.result.label]);
+    assert.deepEqual(earlier.result.removedLabels, []);
+    assert.deepEqual(later.result.labels.filter((name: string) => name.startsWith('llm-')), [later.result.label]);
   });
 }

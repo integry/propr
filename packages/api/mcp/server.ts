@@ -93,6 +93,20 @@ function visibleTools(principal: McpPrincipal, catalog: McpTool[]): McpTool[] {
 }
 
 /**
+ * Record a resource read no registered resource matched. Every registered
+ * resource records its own read, so one that reaches here matched none. The URI
+ * is client input and is never stored.
+ */
+async function recordRejectedResourceRead({ principal, deps }: McpDispatch, uri: unknown, startedAt: number): Promise<void> {
+  const malformed = typeof uri !== 'string';
+  await recordMcpAccess(deps.db, {
+    ...accessPrincipal(principal), kind: 'resource', name: 'unknown', scope: null, readOnly: true,
+    status: malformed ? 400 : 404, outcome: 'denied', errorCode: malformed ? 'INVALID_INPUT' : 'NOT_FOUND',
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+/**
  * Record a call the protocol SDK rejected before dispatching the callback that
  * records invocations: arguments failing the registered input schema, a prompt
  * request over its argument limit, or a name this grant cannot see. Only the
@@ -126,7 +140,9 @@ export async function serveMcpRequest(dispatch: McpDispatch, req: express.Reques
     try { await toNodeHandler(handler)(req, res, req.body); }
     finally { await handler.close(); }
   });
-  if (!recorded) await recordRejectedDispatch(dispatch, req.body, startedAt);
+  if (recorded) return;
+  if (req.body?.method === 'resources/read') await recordRejectedResourceRead(dispatch, req.body.params?.uri, startedAt);
+  else await recordRejectedDispatch(dispatch, req.body, startedAt);
 }
 
 export const mcpResponseHeaders: RequestHandler = (_req, res, next) => {

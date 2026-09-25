@@ -83,6 +83,31 @@ test('current activity fans out across the grant, skips a forbidden repository a
   assert.deepEqual(scoped.repositories, ['acme/alpha']);
 });
 
+test('a repository configured for several base branches counts once against the repository cap', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  const others = Array.from({ length: 19 }, (_, index) => `acme/repo-${index}`);
+  // Twenty distinct repositories, alpha configured three times.
+  configuredRepositories.current = [
+    { id: 'alpha-main', name: 'acme/alpha', enabled: true, baseBranch: 'main' },
+    { id: 'alpha-release', name: 'acme/alpha', enabled: true, baseBranch: 'release' },
+    { id: 'alpha-case', name: 'ACME/Alpha', enabled: true, baseBranch: 'hotfix' },
+    ...others.map(name => ({ id: name, name, enabled: true, baseBranch: 'main' })),
+  ];
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha', ...others]);
+  await insertTask(db, { taskId: 'run-alpha', repository: 'acme/alpha', createdAt: at(3_600_000) });
+  await insertHistory(db, { taskId: 'run-alpha', state: 'claude_execution', timestamp: at(600_000) });
+
+  for (const name of ['get_current_activity', 'get_recent_activity'] as const) {
+    const digest = await callTool(deps, principal, name);
+    assert.deepEqual(digest.repositories, ['acme/alpha', ...others], name);
+    assert.equal(digest.repositoriesTruncated, false, name);
+  }
+  const current = await callTool(deps, principal, 'get_current_activity');
+  assert.deepEqual(ids(current.sections.runningTasks.items, task => task.taskId), ['run-alpha']);
+});
+
 test('current activity paginates sections and reports truncation', async t => {
   const db = await createActivityDatabase();
   t.after(() => db.destroy());
@@ -150,6 +175,8 @@ test('plans in progress and blocked goals reach the right sections', async t => 
   ]);
   await insertTask(db, { taskId: 'failed-goal-task', repository: 'acme/alpha', createdAt: at(3_600_000), taskType: 'goal' });
   await insertTask(db, { taskId: 'paused-goal-task', repository: 'acme/alpha', createdAt: at(3_600_000), taskType: 'goal' });
+  await insertTask(db, { taskId: 'resuming-goal-task', repository: 'acme/alpha', createdAt: at(3_600_000), taskType: 'goal' });
+  await insertTask(db, { taskId: 'pausing-goal-task', repository: 'acme/alpha', createdAt: at(3_600_000), taskType: 'goal' });
   await insertGoal(db, {
     goal_id: '33333333-3333-4333-8333-333333333333', repository: 'acme/alpha', current_task_id: 'failed-goal-task',
     title: 'Broken goal', result_state: 'failed', failure_reason: 'Agent exited early',
@@ -157,7 +184,19 @@ test('plans in progress and blocked goals reach the right sections', async t => 
   });
   await insertGoal(db, {
     goal_id: '44444444-4444-4444-8444-444444444444', repository: 'acme/alpha', current_task_id: 'paused-goal-task',
-    title: 'Waiting goal', desired_state: 'paused', created_at: at(3_600_000), updated_at: at(300_000),
+    title: 'Waiting goal', desired_state: 'paused', pause_confirmed_at: at(400_000),
+    created_at: at(3_600_000), updated_at: at(300_000),
+  });
+  // Still paused, but a resume is queued: get_goal says it is not waiting, so neither may the digest.
+  await insertGoal(db, {
+    goal_id: '55555555-5555-4555-8555-555555555555', repository: 'acme/alpha', current_task_id: 'resuming-goal-task', title: 'Resuming goal',
+    desired_state: 'paused', pause_confirmed_at: at(400_000), resume_requested: true,
+    created_at: at(3_600_000), updated_at: at(200_000),
+  });
+  // A pause the runner has not confirmed yet is not the operator's turn either.
+  await insertGoal(db, {
+    goal_id: '66666666-6666-4666-8666-666666666666', repository: 'acme/alpha', current_task_id: 'pausing-goal-task', title: 'Pausing goal',
+    desired_state: 'paused', created_at: at(3_600_000), updated_at: at(100_000),
   });
 
   const digest = await callTool(deps, principal, 'get_current_activity');
@@ -171,6 +210,7 @@ test('plans in progress and blocked goals reach the right sections', async t => 
   ]);
   assert.match(blockers[0].summary, /^Goal paused, awaiting input — Waiting goal$/);
   assert.match(blockers[1].summary, /^Goal failed — Broken goal — Agent exited early$/);
+  assert.doesNotMatch(JSON.stringify(digest.sections.blockers), /Resuming goal|Pausing goal/);
 });
 
 test('the noise filter keeps critical notifications and includeRoutine restores the rest', async t => {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
-import { verifyPullRequestWrites } from './fixtures/mcpPullRequestWrites.js';
+import { leaseRedis, verifyPullRequestWrites } from './fixtures/mcpPullRequestWrites.js';
 import type { Args, CommentFixture, PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
 
 const NOW = Date.now();
@@ -233,7 +233,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     const config = { origin: 'https://instance.example', resource: 'https://instance.example/api/mcp', instanceId: 'fixture-instance', encryptionKey: randomBytes(32) };
     const policy = new McpPolicy(new McpOAuthProvider(new McpStore(db, config.encryptionKey), config), config);
     const deps: ToolDeps = { db, policy, taskQueue: {} as never, runtimeBuildQueue: {} as never,
-      redisClient: { get: async () => null, sMembers: async () => [] } as never };
+      redisClient: leaseRedis() as never };
     const catalog = createToolCatalog(deps);
     const scopes = ['read', 'plan', 'publish', 'execute', 'review', 'merge', 'manage'] as const;
     const grantedRepositories = ['acme/repo', 'acme/other', 'acme/bulk', 'acme/deep', 'acme/wide', 'acme/disabled', 'acme/forbidden'];
@@ -376,6 +376,16 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     });
 
     await verifyPullRequestWrites({ t, call, mutate, principal, findPullRequest, restCalls, comments });
+
+    await t.test('a repository configured for several base branches is scanned and listed once', async () => {
+      await core.saveMonitoredRepos([['acme/repo', 'main'], ['acme/repo', 'release'], ['ACME/Repo', 'hotfix'], ['acme/other', 'main']]
+        .map(([name, baseBranch]) => ({ id: randomUUID(), name, enabled: true, baseBranch })) as never);
+      const from = graphqlCalls.length;
+      const listed = await call('list_pull_requests', {});
+      assert.deepEqual(listed.repositories, ['acme/repo', 'acme/other']);
+      assert.deepEqual(listed.pullRequests.map((pull: Args) => `${pull.repository}#${pull.number}`), ['acme/repo#42', 'acme/other#7', 'acme/other#6']);
+      assert.equal(graphqlCalls.slice(from).filter(args => `${args.owner}/${args.repo}`.toLowerCase() === 'acme/repo').length, 1);
+    });
 
     await t.test('a full first page is not the end of the inventory', async () => {
       // Registered only here: the grant-wide assertions above pin the configured set.

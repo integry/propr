@@ -349,6 +349,44 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
   }
 });
 
+test('goal progress counts every related task, not just the bounded detail rows', async () => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+    const { goalDetail } = await import('../mcp/goalTaskDetail.js');
+    const goal = {
+      goal_id: runningGoalId, owner_id: ownerId, repository, current_task_id: 'goal-task-running',
+      desired_state: 'running', result_state: null, pause_confirmed_at: null, resume_requested: false,
+      final_pr_number: null, started_at: '2026-09-01 12:00:00', created_at: '2026-09-01 12:00:00', completed_at: null,
+      checkpoint_interval_minutes: null, last_checkpoint_at: null, last_checkpoint_commit_sha: null,
+      checkpoint_count: 0, checkpoint_error: null,
+    };
+    await db('goals').insert({ ...goalDefaults, goal_id: goal.goal_id, repository, current_task_id: goal.current_task_id,
+      created_at: goal.created_at, updated_at: goal.created_at, started_at: goal.started_at });
+    // The running task is the oldest; a hundred newer completed children would push
+    // it past a creation-ordered limit.
+    await db('tasks').insert({ task_id: 'goal-task-running', repository, task_type: 'goal', correlation_id: goal.goal_id,
+      pr_number: 9, created_at: '2026-09-01 12:00:00' });
+    await db('task_history').insert({ task_id: 'goal-task-running', state: 'processing', timestamp: '2026-09-01 12:00:01' });
+    const children = Array.from({ length: 100 }, (_, index) => `goal-child-${String(index).padStart(3, '0')}`);
+    await db('tasks').insert(children.map((taskId, index) => ({ task_id: taskId, repository, task_type: 'issue',
+      correlation_id: goal.goal_id, created_at: `2026-09-01 13:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}` })));
+    for (let start = 0; start < children.length; start += 50) {
+      await db('task_history').insert(children.slice(start, start + 50)
+        .map(taskId => ({ task_id: taskId, state: 'completed', timestamp: '2026-09-01 14:00:00' })));
+    }
+    await db('task_history').insert({ task_id: 'goal-child-099', state: 'failed', timestamp: '2026-09-01 14:00:01' });
+
+    const detail = await goalDetail({ db, redisClient: {} as RedisClientType }, goal as never, async () => {});
+    assert.deepEqual(detail.progress.tasks, { total: 101, active: 1, completed: 99, failed: 1, cancelled: 0 });
+    assert.equal(detail.progress.recentTerminalTransitions.length, 5);
+    // The current task stays inside the bounded detail rows, so its pull request is reported.
+    assert.ok(detail.pullRequests.some((pull: Json) => pull.number === 9 && pull.taskId === 'goal-task-running'));
+  } finally {
+    await db.destroy();
+  }
+});
+
 after(async () => {
   const { closeConnection } = await import('@propr/core');
   await closeConnection();

@@ -457,14 +457,15 @@ What this surface deliberately does **not** claim:
   `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`, both behind the
   existing `instance.manage_settings` instance permission, and summarized per
   connected app on `/mcp/apps` as a last-used time and a 24-hour request count.
-  A dedicated **MCP Log** page is not part of the web UI sidebar on this branch;
-  see `docs/docs/features/web-ui.md`.
+  In the web UI it is the **MCP Log** page (`/mcp-logs`), under the sidebar's
+  **Logs** group next to **LLM Log**; the entry and the page require the same
+  `instance.manage_settings` permission. See `docs/docs/features/web-ui.md`.
 
 Local validation of this working tree:
 
 ```sh
 npm run test:mcp
-# 93 tests passed, 0 failed, 0 skipped (including the new end-to-end
+# 99 tests passed, 0 failed, 0 skipped (including the new end-to-end
 # packages/api/test/mcpOperatorSurface.test.ts).
 
 npm run typecheck -w @propr/api

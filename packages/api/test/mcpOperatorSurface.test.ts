@@ -9,7 +9,7 @@ import { createAdminMcpRoutes } from '../routes/adminMcpRoutes.js';
 import type { McpAccessLogRow } from '../mcp/accessLog.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
-import type { Args, CommentFixture, PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
+import { leaseRedis, type Args, type CommentFixture, type PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
 import {
   at, configuredRepositories, createActivityDatabase, insertGoal, insertHistory, insertTask,
   owner, repositories,
@@ -248,7 +248,7 @@ test('the MCP operator surface answers what is happening, drills in, acts on the
   policy.repository = async (_principal, target) => {
     if (target === forbiddenRepository) throw new McpError('REPOSITORY_FORBIDDEN', 'Denied', 403);
   };
-  const redisClient = { get: async () => null, sMembers: async () => [] } as unknown as RedisClientType;
+  const redisClient = leaseRedis() as unknown as RedisClientType;
   const deps: ToolDeps = { db, policy, redisClient, taskQueue: {} as never, runtimeBuildQueue: {} as never,
     goalServices: { loadVisualPreviewSettings: async () => ({ enabled: false, types: ['image'] }),
       processAttachments: async () => [], uploadIdentity: async () => [],

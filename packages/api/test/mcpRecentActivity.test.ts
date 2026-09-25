@@ -245,6 +245,25 @@ test('recent activity merges a bounded newest-first timeline and paginates it', 
   await assert.rejects(tool.run({ principal, args: tool.schema.parse({ since: at(8 * 24 * 3_600_000) }) }), /at most seven days/);
 });
 
+test('a merged pull request with several plan relations points at the newest one', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  repositories('acme/alpha');
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha']);
+
+  await db('notification_pull_request_state').insert({ repository: 'acme/alpha', pr_number: 42, merged_at: at(300_000) });
+  for (const [draft, issue, task] of [['plan-old', 10, 'task-old'], ['plan-middle', 11, 'task-middle'], ['plan-new', 12, 'task-new']] as const) {
+    await db('task_drafts').insert({ draft_id: draft, user_id: owner, repository: 'acme/alpha', name: draft,
+      status: 'draft', created_at: at(4_000_000), updated_at: at(4_000_000) });
+    await db('plan_issues').insert({ draft_id: draft, repository: 'acme/alpha', issue_number: issue, task_id: task, pr_number: 42, status: 'merged' });
+  }
+
+  const timeline = await callTool(deps, principal, 'get_recent_activity');
+  assert.deepEqual(timeline.events.map((event: Record<string, unknown>) => event.reference),
+    [{ pullRequest: 42, taskId: 'task-new', planId: 'plan-new', issueNumber: 12 }]);
+});
+
 test('recent activity records opened pull requests and blocking notifications', async t => {
   const db = await createActivityDatabase();
   t.after(() => db.destroy());
@@ -276,6 +295,43 @@ test('recent activity records opened pull requests and blocking notifications', 
 
   const routine = await callTool(deps, principal, 'get_recent_activity', { includeRoutine: true });
   assert.deepEqual(ids(routine.events, event => event.kind), ['pull_request', 'notification', 'notification']);
+});
+
+test('a dismissed Inbox card stays in the historical timeline but not among current blockers', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  repositories('acme/alpha', 'acme/beta');
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(['acme/alpha']);
+
+  await insertNotification(db, {
+    id: 'pr-open', kind: 'pull_request', severity: 'info',
+    target: { type: 'pull_request', repository: 'acme/alpha', prNumber: 77 },
+    title: 'PR #77 ready for review', body: 'PR #77 is ready for review.', occurredAt: at(300_000),
+  });
+  await insertNotification(db, {
+    id: 'index-error', kind: 'indexing', severity: 'error',
+    target: { type: 'indexing', repository: 'acme/alpha' },
+    title: 'Repository indexing failed', body: 'Indexing stopped before completion.', occurredAt: at(500_000),
+  });
+  // Dismissed, but outside the grant: dismissal must not widen the repository scope.
+  await insertNotification(db, {
+    id: 'beta-open', kind: 'pull_request', severity: 'info',
+    target: { type: 'pull_request', repository: 'acme/beta', prNumber: 5 },
+    title: 'PR #5 ready for review', body: 'PR #5 is ready for review.', occurredAt: at(200_000),
+  });
+  // Another user's dismissed receipt for the same event must not leak either.
+  await db('notification_user_states').insert({ event_id: 'index-error', user_id: 'someone-else', inbox_enabled: true,
+    push_enabled: false, created_at: at(500_000), dismissed_at: at(100_000) });
+  await db('notification_user_states').where({ user_id: owner }).update({ dismissed_at: at(100_000) });
+
+  const timeline = await callTool(deps, principal, 'get_recent_activity');
+  assert.deepEqual(ids(timeline.events, event => `${event.kind}:${event.outcome}`), ['pull_request:opened', 'notification:error']);
+  assert.equal(timeline.events[0].reference.pullRequest, 77);
+  assert.equal(timeline.scanTruncated, false);
+
+  const current = await callTool(deps, principal, 'get_current_activity');
+  assert.deepEqual(current.sections.blockers.items, []);
 });
 
 test('both activity resources resolve through the registered MCP server', async t => {

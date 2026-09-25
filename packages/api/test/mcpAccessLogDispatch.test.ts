@@ -85,6 +85,9 @@ test('a call the protocol SDK rejects before dispatch is still recorded once', a
       // Rejected by the prompt argument schema, before the prompt callback runs.
       await client.getPrompt({ name: 'plan_change', arguments: { request: 'Improve reliability' } });
       await assert.rejects(client.getPrompt({ name: 'plan_change', arguments: { request: 'x'.repeat(4097) } }));
+      // A URI no registered resource matches never reaches a resource callback.
+      await client.readResource({ uri: 'propr://instances/test-instance/connection' });
+      await assert.rejects(client.readResource({ uri: 'propr://instances/test-instance/private-token-abc123/whatever' }));
     } finally {
       await client.close();
     }
@@ -97,9 +100,12 @@ test('a call the protocol SDK rejects before dispatch is still recorded once', a
     ['tool', 'no_such_tool', 'denied', 'NOT_FOUND', 404],
     ['prompt', 'plan_change', 'success', null, 200],
     ['prompt', 'plan_change', 'denied', 'INVALID_INPUT', 400],
+    ['resource', 'connection', 'success', null, 200],
+    ['resource', 'unknown', 'denied', 'NOT_FOUND', 404],
   ]);
-  // The rejected arguments themselves never reach the table.
+  // The rejected arguments and resource URIs themselves never reach the table.
   assert.ok(!JSON.stringify(recorded).includes('x'.repeat(64)));
+  assert.ok(!JSON.stringify(recorded).includes('private-token-abc123'));
   for (const row of recorded) assert.equal(row.owner_id, '123');
 });
 

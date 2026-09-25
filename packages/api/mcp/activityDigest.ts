@@ -410,6 +410,11 @@ export interface InboxOptions {
   limit: number;
   /** Everything the caller will actually use, applied before the limit. */
   accept?: (notification: InboxRow) => boolean;
+  /**
+   * Read dismissed receipts too. Dismissal clears a card from the Inbox; it does
+   * not undo the event, so a historical timeline keeps it. Current blockers do not.
+   */
+  includeDismissed?: boolean;
 }
 
 function inboxRow(row: Row, accessible: Set<string>, options: InboxOptions): InboxRow | null {
@@ -440,7 +445,7 @@ function inboxPage(
   const query = db('notification_user_states as receipt')
     .join('notification_events as event', 'event.event_id', 'receipt.event_id')
     .where({ 'receipt.user_id': owner, 'receipt.inbox_enabled': true })
-    .whereNull('receipt.dismissed_at')
+    .where(builder => { if (!options.includeDismissed) builder.whereNull('receipt.dismissed_at'); })
     .where(builder => {
       if (accessible.length) {
         builder.whereRaw(`(${RECEIPT_REPOSITORY}) in (${accessible.map(() => '?').join(', ')})`, accessible);
@@ -456,7 +461,7 @@ function inboxPage(
 }
 
 /**
- * Active Inbox receipts for one user, restricted to the digest's repositories
+ * Inbox receipts for one user (active ones unless `includeDismissed`), restricted to the digest's repositories
  * and to what the caller will use. The Inbox is shared by every repository and
  * dominated by routine chatter, so the scan pages through it until it has
  * `limit` matching receipts or its budget runs out, and reports that budget

@@ -113,7 +113,10 @@ export function managedModelLabels(labels: string[]): string[] {
  */
 export async function inventoryRepositories(principal: McpPrincipal, policy: McpPolicy, repository?: string): Promise<{ repositories: string[]; truncated: boolean }> {
   if (repository) return { repositories: [repository], truncated: false };
-  const configured = (await loadMonitoredReposRaw()).filter(repo => repo.enabled);
+  // One repository can be configured once per base branch; scan it once.
+  const seen = new Set<string>();
+  const configured = (await loadMonitoredReposRaw())
+    .filter(repo => repo.enabled && !seen.has(repo.name.toLowerCase()) && !!seen.add(repo.name.toLowerCase()));
   const repositories: string[] = [];
   let truncated = false;
   for (const repo of configured) {

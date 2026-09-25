@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import type { RedisClientType } from 'redis';
 import { type ReviewComment, projectDiscussionComment, readDiscussionComment, readNewestComments } from './reviewDiscussion.js';
 import { z } from 'zod';
 import { McpError } from './config.js';
@@ -8,6 +10,34 @@ import { ULTRAFIX_LABEL, type InventoryOptions, findRepositoryModelLabel, hasUlt
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
 const SLASH_COMMAND = /^\s*\/(?:merge|review|fix|ultrafix|deploy|use|switch)\b/im;
+
+const MODEL_LABEL_LEASE_MS = 60_000;
+const MODEL_LABEL_WAIT_MS = 15_000;
+const RELEASE_LEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0`;
+
+/**
+ * Serialize model-label convergence per pull request across API processes, so two
+ * routings cannot both read "no managed label" and each add their own. The caller
+ * reads labels inside the lease. Label edits made outside ProPR remain a race no
+ * lease can close.
+ */
+async function withModelLabelLease<T>(redis: RedisClientType, repository: string, pullRequest: number, run: () => Promise<T>): Promise<T> {
+  const key = `mcp:pull-request-model:${repository.toLowerCase()}#${pullRequest}`;
+  const token = randomUUID();
+  const deadline = Date.now() + MODEL_LABEL_WAIT_MS;
+  while (await redis.set(key, token, { NX: true, PX: MODEL_LABEL_LEASE_MS }) !== 'OK') {
+    if (Date.now() >= deadline) throw new McpError('PULL_REQUEST_BUSY', 'Another model change for this pull request is still running. Read the pull request again, then retry.', 409);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const release = () => redis.eval(RELEASE_LEASE, { keys: [key], arguments: [token] });
+  let result: T;
+  try { result = await run(); }
+  catch (error) { await release().catch(() => undefined); throw error; }
+  // A lease that expired mid-convergence no longer proves exclusivity, so the
+  // outcome is reported as uncertain rather than as a converged label set.
+  if (Number(await release()) !== 1) throw new Error('Model label lease expired before convergence completed.');
+  return result;
+}
 
 export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
   const tasks = createTaskRoutes({ db: deps.db, taskQueue: deps.taskQueue });
@@ -81,7 +111,8 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, state: 'posted' } };
     } });
   tools.push({ name: 'set_pull_request_model', description: 'Route an open PR to exactly one enabled model by converging its managed llm-* labels. Only labels the repository already defines are used; none are created.', scope: 'execute',
-    schema: z.object({ ...mutation, model: idSchema }).strict(), run: async ({ principal, args }) => {
+    schema: z.object({ ...mutation, model: idSchema }).strict(), run: async ({ principal, args }) => withModelLabelLease(deps.redisClient, args.repository, args.pullRequest, async () => {
+      // Read inside the lease: labels a concurrent routing added must be seen here.
       const { owner, repo, pr } = await pull(principal, args);
       if (pr.state !== 'open' || pr.merged) throw new McpError('PRECONDITION_FAILED', 'Pull request is not open.', 409);
       const choice = await resolveEnabledModel(args.model);
@@ -100,7 +131,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       for (const name of superseded) await principal.github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { owner, repo, issue_number: args.pullRequest, name });
       return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, agentAlias: choice.agentAlias, model: choice.model, label: target,
         previousLabels, removedLabels: superseded, labels: [...previousLabels.filter(name => !superseded.includes(name)), ...(managed.includes(target) ? [] : [target])], state: 'updated' });
-    } });
+    }) });
   tools.push({ name: 'stop_ultrafix', description: 'Clear the ultrafix circuit breaker by removing the ultrafix label, so the loop starts no further cycle. A cycle already running may still finish; this does not claim the loop stopped. Requires review scope.', scope: 'execute',
     schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
       deps.policy.requireScope(principal, 'review');

@@ -37,7 +37,8 @@ const LOG_FILTER_PATTERNS = {
   ownerId: /^[A-Za-z0-9._-]{1,64}$/,
   clientId: /^[^\s]{1,255}$/,
   repository: REPOSITORY_REGEX,
-  name: /^[A-Za-z0-9._:-]{1,128}$/,
+  // Resource names are recorded as their path, e.g. `activity/recent`.
+  name: /^[A-Za-z0-9._:/-]{1,128}$/,
 } as const;
 
 interface AccessLogFilters {

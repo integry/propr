@@ -87,7 +87,8 @@ export async function currentActivity(
   }
 }
 
-function relatedTaskQuery(db: Knex, goal: GoalDetailRow) {
+/** Every task the goal ran or is running, joined to its newest history row. */
+function relatedTasks(db: Knex, goal: GoalDetailRow) {
   const latestHistoryId = db('task_history').select('history_id')
     .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
   return db('tasks')
@@ -96,25 +97,40 @@ function relatedTaskQuery(db: Knex, goal: GoalDetailRow) {
       builder.where('tasks.correlation_id', goal.goal_id);
       if (goal.current_task_id) builder.orWhere('tasks.task_id', goal.current_task_id);
     })
-    .leftJoin('task_history as latest_history', 'latest_history.history_id', db.raw('(?)', [latestHistoryId]))
+    .leftJoin('task_history as latest_history', 'latest_history.history_id', db.raw('(?)', [latestHistoryId]));
+}
+
+/** The bounded detail rows, newest first, with the current task always among them. */
+function relatedTaskQuery(db: Knex, goal: GoalDetailRow) {
+  return relatedTasks(db, goal)
     .select('tasks.task_id', 'tasks.pr_number', 'latest_history.state',
       'latest_history.timestamp as state_timestamp', 'latest_history.reason as state_reason')
+    .orderByRaw('case when tasks.task_id = ? then 0 else 1 end', [goal.current_task_id ?? ''])
     .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').limit(RELATED_TASK_LIMIT);
+}
+
+/** Counts over every related task; only the detail arrays are bounded. */
+async function taskCounts(db: Knex, goal: GoalDetailRow): Promise<Record<string, number>> {
+  const rows = await relatedTasks(db, goal).select('latest_history.state')
+    .count({ count: '*' }).groupBy('latest_history.state') as Array<{ state: unknown; count: unknown }>;
+  const counts = { total: 0, active: 0, completed: 0, failed: 0, cancelled: 0 };
+  for (const row of rows) {
+    const count = Number(row.count) || 0;
+    counts.total += count;
+    if (row.state === 'completed' || row.state === 'failed' || row.state === 'cancelled') counts[row.state] += count;
+    else counts.active += count;
+  }
+  return counts;
 }
 
 function transitionOrder(left: JsonObject, right: JsonObject): number {
   return (timestampMs(right.at) ?? 0) - (timestampMs(left.at) ?? 0);
 }
 
-function taskProgress(rows: JsonObject[]): JsonObject {
-  const counts = { total: rows.length, active: 0, completed: 0, failed: 0, cancelled: 0 };
+function taskProgress(rows: JsonObject[], counts: Record<string, number>): JsonObject {
   const transitions: JsonObject[] = [];
   for (const row of rows) {
     const state = typeof row.state === 'string' ? row.state : 'pending';
-    if (state === 'completed') counts.completed += 1;
-    else if (state === 'failed') counts.failed += 1;
-    else if (state === 'cancelled') counts.cancelled += 1;
-    else counts.active += 1;
     if ((TERMINAL_TASK_STATES as readonly string[]).includes(state)) {
       transitions.push({ taskId: row.task_id, state, at: row.state_timestamp ?? null,
         reason: compactText(row.state_reason, REASON_LIMIT) });
@@ -136,9 +152,22 @@ function goalCheckpoint(goal: GoalDetailRow): JsonObject | null {
 }
 
 /**
- * Whether the goal is persisted as blocked on the operator, and what it is blocked on. A confirmed
- * pause without a queued resume is the only durable "your turn" signal; queued-but-undelivered
- * operator corrections are reported alongside it so a second correction is not sent blindly.
+ * A confirmed pause without a queued resume is the only durable "your turn" signal. `get_goal` and
+ * the activity digest both decide it here, so they cannot disagree about a goal that is resuming.
+ */
+export function isAwaitingOperator(goal: Pick<GoalDetailRow, 'result_state' | 'desired_state' | 'pause_confirmed_at' | 'resume_requested'>): boolean {
+  return !goal.result_state && goal.desired_state === 'paused' && Boolean(goal.pause_confirmed_at) && !goal.resume_requested;
+}
+
+/** `isAwaitingOperator` as a query predicate over the `goals` table. */
+export function whereAwaitingOperator(builder: Knex.QueryBuilder): Knex.QueryBuilder {
+  return builder.whereNull('result_state').where('desired_state', 'paused').whereNotNull('pause_confirmed_at')
+    .where(resume => resume.whereNull('resume_requested').orWhere('resume_requested', false));
+}
+
+/**
+ * Whether the goal is persisted as blocked on the operator, and what it is blocked on. Queued but
+ * undelivered operator corrections are reported alongside it so a second correction is not sent blindly.
  */
 async function pendingInput(db: Knex, goal: GoalDetailRow): Promise<JsonObject> {
   const [undelivered] = await db('goal_inputs')
@@ -147,8 +176,7 @@ async function pendingInput(db: Knex, goal: GoalDetailRow): Promise<JsonObject> 
   const latest = await db('goal_inputs')
     .where({ goal_id: goal.goal_id, owner_id: goal.owner_id, kind: 'input' })
     .orderBy('sequence', 'desc').first('created_at', 'delivered_at');
-  const waiting = !goal.result_state && goal.desired_state === 'paused'
-    && Boolean(goal.pause_confirmed_at) && !goal.resume_requested;
+  const waiting = isAwaitingOperator(goal);
   return {
     waitingForOperator: waiting,
     reason: waiting ? 'paused_awaiting_resume_or_input' : null,
@@ -182,13 +210,13 @@ export async function goalDetail(
   markMerged: (repository: string, items: JsonObject[], fields: { number: string; state: string }) => Promise<void>,
   now = Date.now(),
 ): Promise<JsonObject> {
-  const rows = await relatedTaskQuery(deps.db, goal) as JsonObject[];
+  const [rows, counts] = await Promise.all([relatedTaskQuery(deps.db, goal) as Promise<JsonObject[]>, taskCounts(deps.db, goal)]);
   const pullRequests = pullRequestReferences(goal, rows);
   await markMerged(goal.repository, pullRequests, { number: 'number', state: 'state' });
   return {
     currentActivity: await currentActivity(deps, { repository: goal.repository, goalId: goal.goal_id }, goal.owner_id),
     progress: {
-      ...taskProgress(rows),
+      ...taskProgress(rows, counts),
       startedAt: goal.started_at ?? null,
       elapsedSeconds: elapsedSeconds(goal.started_at ?? goal.created_at, goal.completed_at, now),
       checkpoint: goalCheckpoint(goal),

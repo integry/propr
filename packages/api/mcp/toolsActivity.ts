@@ -4,6 +4,7 @@ import { loadMonitoredReposRaw } from '@propr/core';
 import { McpError } from './config.js';
 import type { McpPrincipal } from './policy.js';
 import { getAgentActivity } from './agentActivity.js';
+import { whereAwaitingOperator } from './goalTaskDetail.js';
 import { compactText, summarizeGoal, summarizeTask } from './listSummaries.js';
 import { applyTaskVisibility, ok, repositorySchema, type McpTool, type ToolDeps } from './tools.js';
 import {
@@ -58,8 +59,12 @@ async function digestRepositories(
 ): Promise<{ repositories: string[]; truncated: boolean }> {
   if (repository) return { repositories: [repository], truncated: false };
   const granted = new Set(principal.grant.repositories.map(name => name.toLowerCase()));
+  // One repository can be configured once per base branch; it counts once
+  // against the cap and is read once.
+  const seen = new Set<string>();
   const configured = (await loadMonitoredReposRaw())
-    .filter(repo => repo.enabled && granted.has(repo.name.toLowerCase()));
+    .filter(repo => repo.enabled && granted.has(repo.name.toLowerCase())
+      && !seen.has(repo.name.toLowerCase()) && !!seen.add(repo.name.toLowerCase()));
   const repositories: string[] = [];
   for (const repo of configured.slice(0, MAX_DIGEST_REPOSITORIES)) {
     try {
@@ -207,8 +212,8 @@ function blockerItems(failed: Row[], goals: Row[], inbox: InboxRow[], now: numbe
   const stopped = goals.map(row => ({
     id: String(row.goal_id), occurredAt: isoTimestamp(row.updated_at) ?? '',
     kind: 'goal', repository: row.repository,
-    // ProPR persists no `awaiting_input` goal state; a goal paused with no
-    // result is the persisted shape of a goal waiting on its operator.
+    // ProPR persists no `awaiting_input` goal state; a confirmed pause with no
+    // queued resume is the persisted shape of a goal waiting on its operator.
     summary: line(row.result_state === 'failed' ? 'Goal failed' : 'Goal paused, awaiting input',
       compactText(row.title ?? row.objective, DIGEST_TEXT_LIMIT),
       compactText(row.failure_reason, DIGEST_TEXT_LIMIT)),
@@ -258,7 +263,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
           .select(ACTIVE_GOAL_COLUMNS), 'started_at')
           .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
         orderByNewest(blocked.where(builder => builder.where('result_state', 'failed')
-          .orWhere(paused => paused.where('desired_state', 'paused').whereNull('result_state')))
+          .orWhere(paused => whereAwaitingOperator(paused)))
           .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state',
             'current_task_id', 'failure_reason', 'updated_at'), 'updated_at')
           .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
@@ -332,7 +337,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
       // cannot hide the blocking card behind them and the budget this call
       // spends buys `budget` receipts it will actually merge.
       const inbox = await readInbox(db, owner, {
-        repositories, scoped: Boolean(args.repository), window, limit: budget,
+        repositories, scoped: Boolean(args.repository), window, limit: budget, includeDismissed: true,
         accept: notification => isTimelineNotification(notification, { includeRoutine }),
       });
       const entries = [...sources.flat(), ...inboxEntries(inbox.notifications, { includeRoutine })]

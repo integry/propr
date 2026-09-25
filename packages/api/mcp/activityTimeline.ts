@@ -111,8 +111,12 @@ export async function collectMergedPullRequests(scope: TimelineScope): Promise<T
     .whereIn('repository', scope.repositories).whereIn('pr_number', numbers)
     .select('repository', 'pr_number', 'issue_number', 'task_id', 'draft_id')
     .orderBy('id', 'desc').limit(MAX_TIMELINE_ROWS) as Row[] : [];
-  const byPullRequest = new Map(issues.map(issue =>
-    [`${String(issue.repository).toLowerCase()}#${issue.pr_number}`, issue]));
+  const byPullRequest = new Map<string, Row>();
+  // Relations arrive newest-first; the first one for a pull request wins, as in the inventory.
+  for (const issue of issues) {
+    const key = `${String(issue.repository).toLowerCase()}#${issue.pr_number}`;
+    if (!byPullRequest.has(key)) byPullRequest.set(key, issue);
+  }
   return rows.map(row => {
     const pullRequest = Number(row.pr_number);
     const issue = byPullRequest.get(`${String(row.repository).toLowerCase()}#${pullRequest}`);

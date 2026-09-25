@@ -314,6 +314,10 @@ test('the access log list endpoint paginates newest-first and validates every fi
       assert.equal(rejected.body.code, 'INVALID_INPUT', query);
     }
     assert.equal((await get('?limit=200')).status, 200);
+
+    // A resource row carries its path as its name, and that name must be filterable.
+    await recordMcpAccess(db, { occurredAt: base + 7000, kind: 'resource', name: 'activity/recent', status: 200, outcome: 'success', durationMs: 5 });
+    assert.deepEqual((await get('?name=activity%2Frecent')).body.data.map(row => [row.kind, row.name]), [['resource', 'activity/recent']]);
   });
 });
 

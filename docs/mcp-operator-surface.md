@@ -18,9 +18,11 @@ The delivered capabilities are:
    managed label, and starting and stopping ultrafix.
 4. **Access observability** — a durable MCP access log, its admin read and
    stats API behind `instance.manage_settings`, and per-app last-used activity
-   on the connected-apps page. The **MCP Log** navigation entry planned for the
-   web UI has not landed on this branch: the sidebar still ends at **LLM Log**,
-   and the access log is read through `GET /api/admin/mcp/logs`.
+   on the connected-apps page. The web UI reads the log on the **MCP Log** page
+   (`/mcp-logs`), reached from the sidebar's collapsible **Logs** group next to
+   **LLM Log** (and from **More** on mobile). The entry and the page are shown
+   only to users with the `instance.manage_settings` permission; the page reads
+   `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`.
 
 Each capability lands as its own pull request against this branch. The
 authoritative capability mapping is `docs/mcp-coverage.md` and the operator
