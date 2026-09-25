@@ -185,12 +185,12 @@ export interface PlanIssueDecisionRow {
   updatedAt: string;
 }
 
-/** Plan issues waiting on a human decision, oldest first. */
+/** Plan issues waiting on a human decision, newest first. */
 export async function loadPlanIssueDecisions(db: Knex, repository: string): Promise<PlanIssueDecisionRow[]> {
   const query = db('plan_issues')
     .whereIn('status', [...HUMAN_DECISION_PLAN_ISSUE_STATUSES])
     .select('id', 'repository', 'issue_number', 'pr_number', 'status', 'task_id', 'updated_at')
-    .orderBy('updated_at', 'asc')
+    .orderBy('updated_at', 'desc')
     .limit(MAX_WORK_ROWS);
   if (repository && repository !== 'all') query.where('repository', repository);
 
@@ -229,6 +229,8 @@ export interface AttentionItem {
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type, when the item is backed by a task row. */
+  taskType: string | null;
   title: string | null;
   state: string;
   detail: string | null;
@@ -294,6 +296,7 @@ export function projectDashboardWork(
       repository: row.repository,
       issueNumber: row.issueNumber,
       prNumber: row.prNumber,
+      taskType: row.taskType,
       title: row.title,
       state: row.state,
       detail: row.reason,
@@ -313,6 +316,7 @@ export function projectDashboardWork(
       repository: row.repository,
       issueNumber: row.issueNumber,
       prNumber: row.prNumber,
+      taskType: row.taskType,
       title: row.title,
       state: row.state,
       detail: row.reason,
@@ -328,6 +332,7 @@ export function projectDashboardWork(
     repository: issue.repository,
     issueNumber: issue.issueNumber,
     prNumber: issue.prNumber,
+    taskType: null,
     // What the pull request is about, resolved from the run that produced it.
     // The identifier is already on the row as a chip; the title must not be it.
     title: issue.title,
@@ -336,16 +341,20 @@ export function projectDashboardWork(
     since: issue.updatedAt,
   }));
 
-  const oldestFirst = (a: AttentionItem, b: AttentionItem): number =>
-    Date.parse(a.since) - Date.parse(b.since);
-  // Blocking problems first, then pending decisions; oldest first within each.
-  const attention = [...blocked.sort(oldestFirst), ...decisions.sort(oldestFirst)];
+  // Newest first, whatever the kind: the item that just started needing a
+  // person is the one they have not seen yet.
+  const attention = [...blocked, ...decisions].sort((a, b) => Date.parse(b.since) - Date.parse(a.since));
 
+  // Running work is listed newest first, by when the run was created; the
+  // queue keeps its own order, oldest first, because that is the order it
+  // will be picked up in.
+  const byNewestRun = (a: DashboardTaskRow, b: DashboardTaskRow): number =>
+    Date.parse(b.createdAt) - Date.parse(a.createdAt);
   const byOldest = (a: DashboardTaskRow, b: DashboardTaskRow): number =>
     Date.parse(a.stateTimestamp) - Date.parse(b.stateTimestamp);
 
   return {
-    running: [...running].sort(byOldest),
+    running: [...running].sort(byNewestRun),
     queued: [...queued].sort(byOldest),
     attention,
     recentlyCompleted: rows.recentlyCompleted,

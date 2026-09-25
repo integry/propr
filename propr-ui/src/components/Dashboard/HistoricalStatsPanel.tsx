@@ -11,6 +11,11 @@
  * broken grid rather than as a heading. The qualification the longer label
  * carried — that only executions which reported a cost contribute — is a
  * footnote about the number, so it lives in the metric's tooltip.
+ *
+ * The numbers stand alone, without a change against the preceding period: a
+ * bare `+65` under a count, explained by a footnote in a smaller grey, was
+ * more ink than information in a panel this narrow. The trend is the chart's
+ * job.
  */
 
 import React, { useCallback, useState } from 'react';
@@ -32,7 +37,6 @@ import {
 } from './sectionState';
 
 const PERIOD_LABELS: Record<DashboardStatsPeriod, string> = { '7d': '7 days', '30d': '30 days' };
-const PERIOD_DAYS: Record<DashboardStatsPeriod, number> = { '7d': 7, '30d': 30 };
 
 /** The one string the panel uses for anything it cannot report. */
 const UNAVAILABLE = '—';
@@ -48,22 +52,12 @@ const formatSpend = (value: number | null): string =>
     ? UNAVAILABLE
     : `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-/** A comparison needs both sides; without them it is simply not shown. */
-function comparison(current: number | null, previous: number | null, suffix = ''): string | null {
-  if (current === null || previous === null || current === undefined || previous === undefined) return null;
-  const delta = Number((current - previous).toFixed(2));
-  if (delta === 0) return 'No change';
-  const rounded = Math.abs(delta) % 1 === 0 ? Math.abs(delta).toString() : Math.abs(delta).toFixed(2);
-  return `${delta > 0 ? '+' : '−'}${rounded}${suffix}`;
-}
-
 const Metric: React.FC<{
   label: string;
   hint?: string;
   value: string;
-  change: string | null;
   testId: string;
-}> = ({ label, hint, value, change, testId }) => (
+}> = ({ label, hint, value, testId }) => (
   <div className="min-w-0">
     {/*
       No `truncate`: a structural label in a data grid must never end in an
@@ -78,7 +72,6 @@ const Metric: React.FC<{
     >
       {value}
     </div>
-    {change && <div className="truncate text-[11px] text-slate-500">{change}</div>}
   </div>
 );
 
@@ -90,8 +83,6 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
     `${repository}::${period}`,
     refreshToken,
   );
-
-  const days = PERIOD_DAYS[period];
 
   return (
     <section
@@ -127,24 +118,20 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
               label="Completed"
               hint="Runs that finished successfully in the period"
               value={formatCount(data.completed)}
-              change={comparison(data.completed, data.previous.completed)}
             />
             <Metric
               testId="stat-success-rate"
               label="Success"
               hint="Share of finished runs that succeeded"
               value={formatRate(data.successRate)}
-              change={comparison(data.successRate, data.previous.successRate, '%')}
             />
             <Metric
               testId="stat-spend"
               label="Spend"
               hint="Recorded spend: only executions that reported a cost contribute"
               value={formatSpend(data.recordedSpend)}
-              change={comparison(data.recordedSpend, data.previous.recordedSpend)}
             />
           </div>
-          <p className="mt-2 text-[11px] text-slate-400">Compared with the preceding {days} days</p>
           <DailyCompletionsChart data={data.dailyCompleted} />
           <div className="mt-2 text-right text-xs">
             <Link to="/analytics" className="font-medium text-gray-500 transition-colors hover:text-gray-800">

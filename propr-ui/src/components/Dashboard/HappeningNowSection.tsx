@@ -1,14 +1,15 @@
 /**
- * Happening now: the operational view of work in flight.
+ * Happening now: the operational view of work in flight, newest first.
  *
- * Rows show only facts the system actually has — lifecycle phase, elapsed time
- * and the latest progress line the agent reported. There is no synthesised
- * percentage, and a run with no recent chat message is not called stalled:
- * missing progress means the progress is unknown, not that the work is stuck.
+ * Rows show only facts the system actually has — what kind of work it is,
+ * elapsed time and what the agent is doing right now. Every row in this list
+ * is running, so there is no per-row status badge or spinner repeating it; the
+ * pane's heading already says so. There is no synthesised percentage, and a
+ * quiet run is not called stalled: the row says when the agent last produced
+ * output and leaves the judgement to the person reading it.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { getDashboardActive, type ActiveItem, type DashboardActiveResponse } from '../../api/dashboardApi';
 import {
   RepositoryLabel,
@@ -29,6 +30,7 @@ import {
   type DashboardSectionProps,
   elapsedRunning,
   filteredTasksHref,
+  lastOutputLabel,
   primaryClause,
   shortenPaths,
   useDashboardSection,
@@ -36,6 +38,7 @@ import {
   useStableOrder,
   workHref,
 } from './sectionState';
+import { splitWorkTitle } from './workTitle';
 
 /** Active rows shown before the list has to be expanded. */
 const VISIBLE_ITEMS = 5;
@@ -51,8 +54,49 @@ const OVERFLOW_SLACK = 1;
 
 const itemKey = (item: ActiveItem): string => item.id;
 
-const itemTitle = (item: ActiveItem): string =>
-  item.title || (item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work');
+/** The server's order for running work: newest run first, by when it was created. */
+const newestRunFirst = (a: ActiveItem, b: ActiveItem): number =>
+  Date.parse(b.createdAt) - Date.parse(a.createdAt);
+
+const fallbackTitle = (item: ActiveItem): string =>
+  item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work';
+
+/** States in which the agent itself is running, so its stream is current. */
+const AGENT_STATES = new Set(['claude_execution', 'active']);
+
+/**
+ * The lifecycle phase, said as what the system is doing.
+ *
+ * Only for the stretches either side of the agent, where there is no agent
+ * stream to read. "Implementing" is not here on purpose: the type badge and
+ * the pane already say that, and the agent's own line says more.
+ */
+const LIFECYCLE_LINES: Record<string, string> = {
+  processing: 'Setting up the workspace',
+  post_processing: 'Publishing the results',
+};
+
+/**
+ * The live sub-phase: what this run is doing right now.
+ *
+ * Setting up and publishing are said as the lifecycle phase, whatever the
+ * stream holds: the agent has not started, or has finished, and its last plan
+ * step or tool call is history rather than the current phase. While the agent
+ * is the one running, its own plan step comes first — it is the line the agent
+ * chose to describe its work with — and without one, the latest tool call it
+ * made says what it is actually touching.
+ *
+ * An agent with nothing in its stream yet says exactly that, but only when the
+ * stream was read and found empty. A stream that could not be read, or output
+ * that names no action (the agent thinking, say), is an unknown action, not a
+ * run waiting to start.
+ */
+function subPhase(item: ActiveItem): string {
+  if (!AGENT_STATES.has(item.state)) return LIFECYCLE_LINES[item.state] ?? item.phase ?? 'Starting';
+  if (item.progressLine) return item.progressLine;
+  if (item.activity) return item.activity;
+  return item.awaitingFirstOutput ? 'Waiting for the agent\'s first output' : 'Current action not reported';
+}
 
 /**
  * One running row: the whole row is the link to the work it names.
@@ -64,51 +108,71 @@ const itemTitle = (item: ActiveItem): string =>
  * different behaviours, and on a phone the arrow also sat two pixels from the
  * elapsed time it was crowding. The row has one behaviour and the space back.
  */
-const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => (
-  <li>
-    <RowLink href={workHref(item)} className="block min-w-0 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
-      <RowMetaLines
-        /*
-          A spinner, not a dot: a filled circle reads as a status light, and a
-          green one reads as "done". Motion is unambiguous about work in flight.
-        */
-        status={(
-          <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-teal-700">
-            <Loader2 className="h-3 w-3 flex-none animate-spin" aria-hidden="true" />
-            <span className="truncate">{item.phase || 'Running'}</span>
+const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
+  const work = splitWorkTitle(item.title, item.taskType);
+  const line = subPhase(item);
+  const agentRunning = AGENT_STATES.has(item.state);
+  const lastOutputAt = agentRunning ? item.lastActivityAt ?? null : null;
+  const step = agentRunning ? item.step ?? null : null;
+  return (
+    <li>
+      <RowLink href={workHref(item)} className="block min-w-0 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
+        <RowMetaLines
+          entities={(
+            <>
+              <RepositoryLabel repository={item.repository} />
+              <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
+            </>
+          )}
+          trailing={(
+            <span title={`Started ${new Date(item.createdAt).toLocaleString()}${item.phase ? ` · ${item.phase}` : ''}`}>
+              {elapsedRunning(item.createdAt)}
+            </span>
+          )}
+        />
+        <RowTitle type={work.type}>{work.title ?? fallbackTitle(item)}</RowTitle>
+        {/*
+          Every running row carries this line; a row without it is a title and
+          a ticking timer, which cannot tell a working agent from a hung one.
+
+          The line is a sentence with a repository path in it, and on a phone
+          the path is most of the sentence: 110 characters of
+          `propr-ui/src/components/…` wrapped to three lines of the densest text
+          on the screen. Someone triaging on a phone needs the file, not the
+          route to it, so the directories collapse below `sm` and come back
+          whole where there is width for them — and the sentence stops at its
+          first clause rather than being cut mid-word by the clamp.
+
+          The plan step and the time since the agent last produced output ride
+          at the end of the line, and the sentence gives way to them.
+        */}
+        <RowDetail
+          data-testid="running-sub-phase"
+          trailing={(step || lastOutputAt) && (
+            <>
+              {step && (
+                <span data-testid="running-step" title="Step in the agent's own plan">
+                  step {step.current}/{step.total}
+                </span>
+              )}
+              {lastOutputAt && (
+                <span data-testid="running-last-output" title={`Last agent output ${new Date(lastOutputAt).toLocaleString()}`}>
+                  <span className="hidden sm:inline">last output </span>
+                  {lastOutputLabel(lastOutputAt)}
+                </span>
+              )}
+            </>
+          )}
+        >
+          <span className="sm:hidden">{shortenPaths(primaryClause(line))}</span>
+          <span className="hidden sm:inline" title={agentRunning && item.activity && item.activity !== line ? `Latest action: ${item.activity}` : undefined}>
+            {line}
           </span>
-        )}
-        entities={(
-          <>
-            <RepositoryLabel repository={item.repository} />
-            <WorkReference issueNumber={item.issueNumber} prNumber={item.prNumber} />
-          </>
-        )}
-        trailing={(
-          <span title={`Started ${new Date(item.createdAt).toLocaleString()}`}>
-            {elapsedRunning(item.createdAt)}
-          </span>
-        )}
-      />
-      <RowTitle>{itemTitle(item)}</RowTitle>
-      {/*
-        The progress line is a sentence with a repository path in it, and on a
-        phone the path is most of the sentence: 110 characters of
-        `propr-ui/src/components/…` wrapped to three lines of the densest text
-        on the screen. Someone triaging on a phone needs the file, not the
-        route to it, so the directories collapse below `sm` and come back
-        whole where there is width for them — and the sentence stops at its
-        first clause rather than being cut mid-word by the clamp.
-      */}
-      {item.progressLine && (
-        <RowDetail>
-          <span className="sm:hidden">{shortenPaths(primaryClause(item.progressLine))}</span>
-          <span className="hidden sm:inline">{item.progressLine}</span>
         </RowDetail>
-      )}
-    </RowLink>
-  </li>
-);
+      </RowLink>
+    </li>
+  );
+};
 
 /**
  * The one footer under the running list.
@@ -164,7 +228,7 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
   useNowTick();
 
   const running = useMemo(() => data?.running ?? [], [data]);
-  const orderedRunning = useStableOrder(running, itemKey);
+  const orderedRunning = useStableOrder(running, itemKey, newestRunFirst);
   // One row over the limit is drawn, not folded: see OVERFLOW_SLACK.
   const canCollapse = orderedRunning.length > VISIBLE_ITEMS + OVERFLOW_SLACK;
   const collapsedLimit = canCollapse ? VISIBLE_ITEMS : orderedRunning.length;

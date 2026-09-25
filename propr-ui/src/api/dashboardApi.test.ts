@@ -36,6 +36,7 @@ describe('dashboard reads', () => {
     await getDashboardAttention('integry/propr');
     await getDashboardActive('all');
     await getDashboardOutcomes('all', 5);
+    await getDashboardOutcomes('all', 5, '  retry budget ');
     await getDashboardStats('integry/propr', '30d');
 
     expect(fetchSpy.mock.calls.map(requestedUrl)).toEqual([
@@ -43,6 +44,7 @@ describe('dashboard reads', () => {
       '/api/dashboard/attention?repository=integry%2Fpropr',
       '/api/dashboard/active?repository=all',
       '/api/dashboard/outcomes?repository=all&limit=5',
+      '/api/dashboard/outcomes?repository=all&limit=5&search=retry%20budget',
       '/api/stats/dashboard?repository=integry%2Fpropr&period=30d',
     ]);
   });

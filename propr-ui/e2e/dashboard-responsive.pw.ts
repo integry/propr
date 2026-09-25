@@ -37,19 +37,19 @@ const LONG_PROGRESS_LINE =
 const SHORT_PROGRESS_LINE = 'Editing …/HappeningNowSection.tsx';
 
 const running = [
-  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2480, prNumber: null, title: LONG_TITLE, state: 'claude_execution', phase: 'Implementing', progressLine: LONG_PROGRESS_LINE, createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
-  { id: 'task:run-2', taskId: 'run-2', repository: 'example/design-system', issueNumber: 118, prNumber: 119, title: 'Align the score badge with the outcome feed', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(9), updatedAt: minutesAgo(2) },
+  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2480, prNumber: null, taskType: null, title: LONG_TITLE, state: 'claude_execution', phase: 'Implementing', progressLine: LONG_PROGRESS_LINE, activity: 'Editing HappeningNowSection.tsx', step: { current: 2, total: 6 }, lastActivityAt: minutesAgo(18), createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
+  { id: 'task:run-2', taskId: 'run-2', repository: 'example/design-system', issueNumber: 118, prNumber: 119, taskType: 'pr-comment', title: 'Fix PR #119: Align the score badge with the completed feed', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(9), updatedAt: minutesAgo(2) },
 ];
 
 const attention = [
-  { id: 'task:blocked-1', category: 'blocked', kind: 'task_failed', taskId: 'blocked-1', repository: 'example/workspace', issueNumber: 2470, prNumber: null, title: 'Retry budget never applies to post-processing', state: 'failed', detail: 'Lint failed', since: minutesAgo(190) },
-  { id: 'plan-issue:31', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/docs', issueNumber: 58, prNumber: 59, title: null, state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(20) },
+  { id: 'plan-issue:31', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/docs', issueNumber: 58, prNumber: 59, taskType: null, title: null, state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(20) },
+  { id: 'task:blocked-1', category: 'blocked', kind: 'task_failed', taskId: 'blocked-1', repository: 'example/workspace', issueNumber: 2470, prNumber: null, taskType: 'issue', title: 'Retry budget never applies to post-processing', state: 'failed', detail: 'Lint failed', since: minutesAgo(190) },
 ];
 
-/** The first outcome carries a score; the second deliberately does not. */
+/** The first completion is a scored review; the second deliberately carries no score. */
 const outcomes = [
-  { id: 'task:done-1:completed', kind: 'completed', taskId: 'done-1', repository: 'example/workspace', issueNumber: 2466, prNumber: 2467, title: 'Show corrective operator messages in the goal timeline', detail: null, planIssueStatus: null, score: 9, occurredAt: minutesAgo(46) },
-  { id: 'task:done-2:failed', kind: 'failed', taskId: 'done-2', repository: 'example/design-system', issueNumber: 115, prNumber: null, title: 'Tighten the reference chip contrast', detail: 'Typecheck failed', planIssueStatus: null, score: null, occurredAt: minutesAgo(88) },
+  { id: 'task:done-1:completed', taskId: 'done-1', repository: 'example/workspace', issueNumber: 2466, prNumber: 2467, taskType: 'pr-comment', title: 'Review PR #2467: Show corrective operator messages in the goal timeline', detail: '1 issue found: Missing timeline test', score: 9, occurredAt: minutesAgo(46) },
+  { id: 'task:done-2:completed', taskId: 'done-2', repository: 'example/design-system', issueNumber: 115, prNumber: null, taskType: 'issue', title: 'Tighten the reference chip contrast', detail: null, score: null, occurredAt: minutesAgo(88) },
 ];
 
 const SCORED_OUTCOMES = outcomes.filter(outcome => outcome.score !== null).length;
@@ -150,7 +150,7 @@ async function openDashboard(page: Page, width: number, attentionItems = attenti
   await fixture(page, attentionItems);
   await page.goto('/');
   await expect(page.getByTestId('happening-now-list')).toBeVisible();
-  await expect(page.getByTestId('recent-outcomes-list')).toBeVisible();
+  await expect(page.getByTestId('completed-list')).toBeVisible();
   await expect(page.getByTestId('historical-stats-section')).toBeVisible();
 }
 
@@ -180,7 +180,7 @@ async function horizontalOverflow(page: Page) {
 }
 
 /** The four panes, and the phone's scope bar above them, in priority order. */
-const PANES = ['needs-attention-panel', 'happening-now-section', 'recent-outcomes-section', 'historical-stats-section'];
+const PANES = ['needs-attention-panel', 'happening-now-section', 'completed-section', 'historical-stats-section'];
 const SECTIONS = ['dashboard-scope-bar', ...PANES];
 
 /** The scope bar and panes in the order the document lists them. */
@@ -232,9 +232,9 @@ test('the wide layout keeps live work in the main column and the supporting pane
 
   const columns = await sectionBoxes(page, PANES);
 
-  // Running work and outcomes share the wide column, stacked.
-  expect(columns['happening-now-section'].left).toBe(columns['recent-outcomes-section'].left);
-  expect(columns['happening-now-section'].width).toBe(columns['recent-outcomes-section'].width);
+  // Running work and completed work share the wide column, stacked.
+  expect(columns['happening-now-section'].left).toBe(columns['completed-section'].left);
+  expect(columns['happening-now-section'].width).toBe(columns['completed-section'].width);
 
   // Attention and stats share the narrow column, to the right of it.
   expect(columns['needs-attention-panel'].left).toBe(columns['historical-stats-section'].left);
@@ -288,9 +288,9 @@ test('an empty attention list holds the right column instead of collapsing it', 
   const boxes = await sectionBoxes(page, PANES);
 
   // One horizon per row across both columns: attention beside running work,
-  // stats beside the outcome feed.
+  // stats beside the completed feed.
   expect(boxes['needs-attention-panel'].top).toBe(boxes['happening-now-section'].top);
-  expect(boxes['historical-stats-section'].top).toBe(boxes['recent-outcomes-section'].top);
+  expect(boxes['historical-stats-section'].top).toBe(boxes['completed-section'].top);
   // The supporting column is still one column, and stats are still under it.
   expect(boxes['historical-stats-section'].left).toBe(boxes['needs-attention-panel'].left);
   expect(boxes['historical-stats-section'].top).toBeGreaterThan(boxes['needs-attention-panel'].top);
@@ -300,13 +300,13 @@ test('an empty attention list holds the right column instead of collapsing it', 
   await capture(page, 'dashboard-responsive-1440-no-attention');
 });
 
-test('an outcome without a score reserves no score column on mobile', async ({ page }) => {
+test('a completion without a score reserves no score column on mobile', async ({ page }) => {
   await openDashboard(page, 390);
 
   // The badge is rendered only where a score exists.
-  await expect(page.getByTestId('outcome-score')).toHaveCount(SCORED_OUTCOMES);
+  await expect(page.getByTestId('completed-score')).toHaveCount(SCORED_OUTCOMES);
 
-  const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid="recent-outcomes-list"] > li')]
+  const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid="completed-list"] > li')]
     .map(row => {
       const link = row.querySelector('a') as HTMLElement;
       const content = link.firstElementChild as HTMLElement;
@@ -314,7 +314,7 @@ test('an outcome without a score reserves no score column on mobile', async ({ p
       const innerRight = link.getBoundingClientRect().right
         - parseFloat(window.getComputedStyle(link).paddingRight);
       return {
-        scored: row.querySelector('[data-testid="outcome-score"]') !== null,
+        scored: row.querySelector('[data-testid="completed-score"]') !== null,
         contentRight: Math.round(content.getBoundingClientRect().right),
         innerRight: Math.round(innerRight),
       };
@@ -385,35 +385,35 @@ test('a long title wraps to two lines while the secondary line gives way first',
 });
 
 for (const width of NARROW_WIDTHS) {
-  test(`a running item spends two metadata lines, not four, at ${width}px`, async ({ page }) => {
+  test(`a running item spends one metadata line, not four, at ${width}px`, async ({ page }) => {
     await openDashboard(page, width);
 
     const row = page.getByTestId('happening-now-list').locator('li').first();
 
-    // Row one: what it is on the left, how long it has been on the right. Row
-    // two: the entities. A naive wrap used to spread the same four facts over
-    // three lines before the title was even reached.
+    // Every row in the pane is running, so there is no status word to place:
+    // the entities on the left, how long it has been on the right, and then
+    // the title. A naive wrap used to spread four facts over three lines
+    // before the title was even reached.
     const geometry = await row.evaluate(node => {
       const box = (selector: string) => {
         const rect = (node.querySelector(selector) as HTMLElement).getBoundingClientRect();
-        return { top: Math.round(rect.top), left: Math.round(rect.left), right: Math.round(rect.right) };
+        return { top: Math.round(rect.top), left: Math.round(rect.left), right: Math.round(rect.right), middle: Math.round(rect.top + rect.height / 2) };
       };
       return {
-        status: box('[class*="sm:order-1"]'),
+        hasStatus: node.querySelector('[class*="sm:order-1"]') !== null,
         elapsed: box('[class*="sm:order-3"]'),
         entities: box('[class*="sm:order-2"]'),
         title: (node.querySelector('.line-clamp-2') as HTMLElement).getBoundingClientRect().top,
       };
     });
 
-    // Status and elapsed share a line; the elapsed time is flush right of it.
-    expect(geometry.status.top).toBe(geometry.elapsed.top);
-    expect(geometry.elapsed.left).toBeGreaterThan(geometry.status.right);
-    // The entities are the next line down, and the title follows them.
-    expect(geometry.entities.top).toBeGreaterThan(geometry.status.top);
+    expect(geometry.hasStatus).toBe(false);
+    // Entities and elapsed share a centre line (the chips are taller than the
+    // time, so tops differ), and the elapsed time is flush right of them.
+    expect(geometry.entities.middle).toBe(geometry.elapsed.middle);
+    expect(geometry.elapsed.left).toBeGreaterThan(geometry.entities.right);
+    // The title follows on the next line.
     expect(geometry.title).toBeGreaterThan(geometry.entities.top);
-    // Both metadata lines start on the row's own left edge.
-    expect(geometry.entities.left).toBe(geometry.status.left);
 
     // The owner is dropped here for the same reason it is in the right rail.
     // `useInnerText` because the full slug is still in the DOM for wider
@@ -422,7 +422,7 @@ for (const width of NARROW_WIDTHS) {
 
     // No typed separator survives to wrap onto a line of its own.
     expect(await page.getByTestId('happening-now-section').textContent()).not.toContain('•');
-    expect(await page.getByTestId('recent-outcomes-section').textContent()).not.toContain('•');
+    expect(await page.getByTestId('completed-section').textContent()).not.toContain('•');
   });
 
   test(`no disclosure control crowds the elapsed time at ${width}px`, async ({ page }) => {
@@ -446,11 +446,11 @@ for (const width of NARROW_WIDTHS) {
     expect(clearance).toBe(0);
   });
 
-  test(`every section stacks the same three lines at ${width}px`, async ({ page }) => {
+  test(`every section stacks its lines in the same order at ${width}px`, async ({ page }) => {
     await openDashboard(page, width);
 
-    // Status opposite time, entities opposite whatever acts on the row, then
-    // the title. Three sections with three hierarchies made the reading plane
+    // Metadata first, time at the right end of the first line, then the
+    // title. Three sections with three hierarchies made the reading plane
     // jump at every heading as the page scrolled.
     const schema = await page.evaluate(() => {
       const box = (node: Element) => {
@@ -473,7 +473,6 @@ for (const width of NARROW_WIDTHS) {
           title: box(attentionRow.querySelector('.line-clamp-2') as HTMLElement),
         },
         active: {
-          status: box(activeRow.querySelector('[class*="sm:order-1"]') as HTMLElement),
           time: box(activeRow.querySelector('[class*="sm:order-3"]') as HTMLElement),
           entities: box(activeRow.querySelector('[class*="sm:order-2"]') as HTMLElement),
           title: box(activeRow.querySelector('.line-clamp-2') as HTMLElement),
@@ -481,19 +480,24 @@ for (const width of NARROW_WIDTHS) {
       };
     });
 
-    for (const section of [schema.attention, schema.active]) {
-      // Line one: what it is, and how long it has been, at opposite ends.
-      expect(section.status.top).toBe(section.time.top);
-      expect(section.time.left).toBeGreaterThan(section.status.right);
-      // Line two: the entities, starting on the row's own left edge.
-      expect(section.entities.top).toBeGreaterThan(section.status.top);
-      expect(section.entities.left).toBe(section.status.left);
-      // Line three: the title.
-      expect(section.title.top).toBeGreaterThan(section.entities.top);
-    }
+    // A running row has no status word — every row in the pane is running —
+    // so its entities take line one, opposite the time, and the title follows.
+    expect(schema.active.entities.middle).toBe(schema.active.time.middle);
+    expect(schema.active.time.left).toBeGreaterThan(schema.active.entities.right);
+    expect(schema.active.title.top).toBeGreaterThan(schema.active.entities.top);
+
+    // An attention row keeps its status, since it says why the item waits.
+    // Line one: what it is, and how long it has been, at opposite ends.
+    expect(schema.attention.status.top).toBe(schema.attention.time.top);
+    expect(schema.attention.time.left).toBeGreaterThan(schema.attention.status.right);
+    // Line two: the entities, starting on the row's own left edge.
+    expect(schema.attention.entities.top).toBeGreaterThan(schema.attention.status.top);
+    expect(schema.attention.entities.left).toBe(schema.attention.status.left);
+    // Line three: the title.
+    expect(schema.attention.title.top).toBeGreaterThan(schema.attention.entities.top);
 
     // The attention row's action is the right-hand end of line two, where the
-    // outcome feed puts its score. It is a 32px tap target beside a 20px chip,
+    // completed feed puts its score. It is a 32px tap target beside a 20px chip,
     // so the two share a centre line rather than a top edge.
     expect(schema.attention.action.middle).toBe(schema.attention.entities.middle);
     expect(schema.attention.action.left).toBeGreaterThan(schema.attention.entities.right);

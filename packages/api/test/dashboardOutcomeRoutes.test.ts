@@ -54,9 +54,10 @@ test('outcomes exclude operational handoffs without letting them consume the res
   });
   const outcomes = await call(dashboard.getOutcomes, { repository: 'all', limit: '2' });
   const items = outcomes.body.items as Array<Record<string, unknown>>;
-  assert.deepEqual(items.map(item => item.taskId), ['user-cancelled', 'meaningful-completion']);
-  assert.deepEqual(items.map(item => item.kind), ['cancelled', 'completed']);
-  assert.deepEqual(items.map(item => item.prNumber), [2507, 2506]);
+  // Only completions are outcomes: neither the handoffs nor the user's
+  // cancellation is listed, and the handoffs do not use up the limit.
+  assert.deepEqual(items.map(item => item.taskId), ['meaningful-completion']);
+  assert.deepEqual(items.map(item => item.prNumber), [2506]);
 });
 
 test('outcomes identify issue-typed historical PR-comment tasks by their task ID', async () => {

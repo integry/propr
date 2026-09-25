@@ -21,7 +21,6 @@ import {
 } from '../api/dashboardApi';
 import {
   CURRENT_DAY_FILL,
-  PAST_DAY_FILL,
   dailyPointFill,
   utcToday,
 } from './Dashboard/chartPalette';
@@ -123,7 +122,7 @@ describe('Dashboard studio design rules', () => {
 
     for (const testId of [
       'happening-now-section',
-      'recent-outcomes-section',
+      'completed-section',
       'historical-stats-section',
     ]) {
       const section = screen.getByTestId(testId);
@@ -150,56 +149,60 @@ describe('Dashboard studio design rules', () => {
     expect(screen.queryByText('#2481')).toBeNull();
   });
 
-  it('styles repository slugs and entity ids as monospace code chips', async () => {
+  it('draws the repository as a muted chip and the entity id as bare monospace text', async () => {
     renderDashboard();
     await waitForSections();
 
     const repoChip = (await screen.findAllByTitle('acme/app'))[0];
     expect(repoChip.className).toMatch(/font-mono/);
     expect(repoChip.className).toMatch(/bg-slate-100/);
-    expect(repoChip.className).toMatch(/border-slate-200/);
+    expect(repoChip.className).not.toMatch(/\bborder\b/);
 
-    const entityChip = (await screen.findAllByTitle('Issue #7'))[0];
-    expect(entityChip.className).toMatch(/font-mono/);
-    expect(entityChip.className).toMatch(/bg-slate-100/);
+    // Two identical boxes side by side read as one wall of gray bricks; the
+    // identifier is text, not a second chip.
+    const entity = (await screen.findAllByTitle('Issue #7'))[0];
+    expect(entity.className).toMatch(/font-mono/);
+    expect(entity.className).not.toMatch(/\bbg-/);
+    expect(entity.className).not.toMatch(/\bborder\b/);
   });
 
-  it('keeps every successful end state quiet and identical', async () => {
-    mockOutcomes.mockResolvedValue(outcomesResponse([
-      outcomeItem({ id: 'merged-row', kind: 'merged', title: 'Merged work' }),
-      outcomeItem({ id: 'completed-row', taskId: 'done-2', kind: 'completed', title: 'Completed work' }),
+  it('puts the task type in front of a title as a badge and drops the prefix, number and model', async () => {
+    mockActive.mockResolvedValue(activeResponse([
+      activeItem({ title: 'Followup: [870 by Claude Opus 4.6] Implement feature gating', taskType: 'pr-comment' }),
     ]));
 
     renderDashboard();
     await waitForSections();
 
-    // "Completed" also labels a historical metric, so scope to the feed.
-    const feed = await screen.findByTestId('recent-outcomes-section');
-    const merged = await within(feed).findByText('Merged');
-    const completed = await within(feed).findByText('Completed');
-    // Two successful end states must not be told apart by colour.
-    expect(merged.className).toBe(completed.className);
-    for (const label of [merged, completed]) {
-      expect(label.className).not.toMatch(/text-(?:green|emerald|teal)-/);
-    }
+    const section = screen.getByTestId('happening-now-section');
+    const badge = await within(section).findByTestId('work-type-badge');
+    expect(badge).toHaveTextContent('Follow-up');
+    // A micro-label with a neutral glyph, not a third boxed chip.
+    expect(badge.className).toMatch(/uppercase/);
+    expect(badge.className).not.toMatch(/\bbg-|\bborder\b|font-mono/);
+    expect(badge.querySelector('svg')).not.toBeNull();
+    expect(section).toHaveTextContent('Implement feature gating');
+    expect(section).not.toHaveTextContent('Followup:');
+    expect(section).not.toHaveTextContent('Claude Opus');
   });
 
-  it('marks active work with motion, not with a green status light', async () => {
+  it('gives running work no status badge, since every row in the pane is running', async () => {
     renderDashboard();
     await waitForSections();
 
     const section = screen.getByTestId('happening-now-section');
-    expect(section).toHaveTextContent('Implementing');
-    expect(section.querySelector('.animate-spin')).not.toBeNull();
+    expect(await within(section).findByText('Add retry budget')).toBeInTheDocument();
+    expect(section).not.toHaveTextContent('Implementing');
+    expect(section.querySelector('.animate-spin')).toBeNull();
     expect(section.innerHTML).not.toMatch(/bg-(?:green|emerald)-/);
   });
 
-  it('colours only the in-progress day of the historical chart', () => {
+  it('marks only the in-progress day of the historical chart', () => {
     const today = utcToday();
     expect(dailyPointFill(today, today)).toBe(CURRENT_DAY_FILL);
-    expect(dailyPointFill('2026-09-17', today)).toBe(PAST_DAY_FILL);
-    // A settled day stays neutral no matter how many completions it holds.
-    expect(dailyPointFill('2020-01-01', today)).toBe(PAST_DAY_FILL);
+    expect(dailyPointFill('2026-09-17', today)).toBeNull();
+    // A settled day carries no marker, however many completions it holds.
+    expect(dailyPointFill('2020-01-01', today)).toBeNull();
   });
 
   it('spends no row on a page bar: the filter sits in the global toolbar and the console starts at the top', async () => {
@@ -270,7 +273,7 @@ describe('Dashboard studio design rules', () => {
     // An interpunct is an inline separator. When the line wrapped it went with
     // the fact after it and started the next line as an orphaned bullet, which
     // reads as an unparsed template string. Space and borders separate instead.
-    for (const testId of ['happening-now-section', 'recent-outcomes-section', 'needs-attention-panel']) {
+    for (const testId of ['happening-now-section', 'completed-section', 'needs-attention-panel']) {
       expect(screen.getByTestId(testId).textContent).not.toMatch(/•/);
     }
   });
@@ -315,7 +318,7 @@ describe('Dashboard studio design rules', () => {
     // spent on pane edges and pane headers only.
     const lists = [
       await screen.findByTestId('happening-now-list'),
-      await screen.findByTestId('recent-outcomes-list'),
+      await screen.findByTestId('completed-list'),
       screen.getByTestId('needs-attention-panel').querySelector('ul'),
     ];
     for (const list of lists) {
@@ -361,7 +364,7 @@ describe('Dashboard studio design rules', () => {
 
     // A section with a segmented control must not sit taller than one without,
     // or the rules under the two columns stop lining up.
-    const headings = ['happening-now-heading', 'needs-attention-heading', 'recent-outcomes-heading', 'historical-stats-heading']
+    const headings = ['happening-now-heading', 'needs-attention-heading', 'completed-heading', 'historical-stats-heading']
       .map(id => document.getElementById(id)?.parentElement);
     expect(headings.filter(Boolean)).toHaveLength(4);
     for (const heading of headings) {
@@ -370,44 +373,23 @@ describe('Dashboard studio design rules', () => {
     }
   });
 
-  it('draws a recorded score as the fixed-width quality pill, never as /10 prose', async () => {
+  it('draws a review score as the fixed-width quality pill, never as /10 prose', async () => {
     mockOutcomes.mockResolvedValue(outcomesResponse([
-      outcomeItem({ id: 'nine', score: 9 }),
-      outcomeItem({ id: 'seven', taskId: 'done-2', score: 7 }),
+      outcomeItem({ id: 'nine', title: 'Review PR #100: Retry budget', score: 9 }),
+      outcomeItem({ id: 'seven', taskId: 'done-2', title: 'Review PR #101: Queue', score: 7 }),
     ]));
 
     renderDashboard();
     await waitForSections();
 
-    const scores = await screen.findAllByTestId('outcome-score');
+    const scores = await screen.findAllByTestId('completed-score');
     expect(scores).toHaveLength(2);
     for (const score of scores) {
       // Variable-width prose beside a fixed badge is what made the rail move.
       expect(score.textContent).not.toMatch(/\/10/);
-      const pill = score.querySelector('span[title^="Code Quality Score"]');
+      const pill = score.querySelector('span[title^="Review Score"]');
       expect(pill?.className).toMatch(/w-12/);
       expect(pill?.textContent).toMatch(/^\[\d+\]$/);
-    }
-  });
-
-  it('gives every outcome state an icon, not only the successful ones', async () => {
-    mockOutcomes.mockResolvedValue(outcomesResponse([
-      outcomeItem({ id: 'out-merged', kind: 'merged' }),
-      outcomeItem({ id: 'out-completed', taskId: 'done-2', kind: 'completed' }),
-      outcomeItem({ id: 'out-failed', taskId: 'done-3', kind: 'failed' }),
-      outcomeItem({ id: 'out-cancelled', taskId: 'done-4', kind: 'cancelled' }),
-      outcomeItem({ id: 'out-closed', taskId: 'done-5', kind: 'closed' }),
-    ]));
-
-    renderDashboard();
-    await waitForSections();
-
-    // Iconography is symmetrical down the status column: a glyph on some rows
-    // and bare text on others reads as a missing asset, not as a distinction.
-    const feed = await screen.findByTestId('recent-outcomes-list');
-    for (const label of ['Merged', 'Completed', 'Failed', 'Cancelled', 'Closed']) {
-      const status = await within(feed).findByText(label);
-      expect(status.querySelector('svg')).not.toBeNull();
     }
   });
 

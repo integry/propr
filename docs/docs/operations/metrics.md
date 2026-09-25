@@ -22,7 +22,7 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
 
-{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the toolbar with the repository filter, Needs attention, Happening now, Recent outcomes, and Historical stats. Run a handful of tasks first so every section has data. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the toolbar with the repository filter, Needs attention, Happening now, Completed, and Historical stats. Run a handful of tasks first so every section has data. */}
 
 ### Breakdowns the product provides
 
@@ -39,9 +39,9 @@ Check these on the dashboard each day:
 - Queue depth (waiting and active counts)
 - Active workers and daemon status (header system status)
 - Anything blocked or awaiting a decision (the dashboard's Needs attention panel)
-- Recent outcomes (the dashboard's Recent outcomes feed)
+- Completed work (the dashboard's Completed feed)
 - Long-running jobs (Happening now, and the header activity monitor)
-- Failure spikes (Failed outcomes and the status distribution on `/analytics`)
+- Failure spikes (failed runs in Needs attention and the status distribution on `/analytics`)
 - Top model usage (Top Models panel on `/analytics`)
 - Cost trends (Recorded spend plus the LLM Log page)
 
