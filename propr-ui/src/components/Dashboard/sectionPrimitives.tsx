@@ -9,8 +9,19 @@
 
 import React, { createContext, useContext } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  CornerDownRight,
+  Eye,
+  GitMerge,
+  MessageSquare,
+  RotateCw,
+  Sparkles,
+  Target,
+  Wrench,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react';
 import { RepositoryIcon } from '../RepositoryIcon';
-import { ReferenceChip } from '../TaskList/ReferenceChips';
 import { SystemAlert } from '../ui/SystemAlert';
 import { isExternalHref } from './sectionState';
 
@@ -30,11 +41,15 @@ export const RepositoryIconProvider: React.FC<{
 );
 
 /**
- * Repository slug as a monospace code chip.
+ * Repository slug as a muted monospace chip.
  *
- * A repository is a technical entity, so it gets the same chip treatment as an
- * issue or a pull request rather than reading as prose. The icon rides inside
- * the chip so the two never separate when the metadata line wraps.
+ * The repository is the one boxed fact on a row. The identifier beside it is
+ * bare text and the task type is a micro-label, so the three read as three
+ * different kinds of data rather than a wall of identical gray bricks — the
+ * shape tells them apart, not colour. The chip is a tint without a border and
+ * a step smaller and lighter than the identifier, so it recedes behind the
+ * number that actually varies from row to row. The icon rides inside the chip
+ * so the two never separate when the metadata line wraps.
  *
  * The chip draws the repository name without its owner, in every section and
  * at every width. The owner is the constant: the filter above the console is
@@ -52,7 +67,7 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
   const name = repository.slice(repository.lastIndexOf('/') + 1);
   return (
     <span
-      className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] leading-4 text-slate-800"
+      className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600"
       title={repository}
     >
       <RepositoryIcon
@@ -67,18 +82,33 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
 };
 
 /**
- * Issue or pull request reference, using the task list's code chip.
+ * Issue or pull request reference, as bare monospace text.
+ *
+ * No border and no background: boxed next to the repository chip it was a
+ * second identical brick, and the eye had nothing to tell the two apart by.
+ * Monospace in the row's darkest metadata ink keeps it reading as an
+ * identifier, and it underlines under the pointer like the link it sits in.
+ * It is not an anchor of its own — the whole row already is one.
  *
  * The entity type is always spelled out. A bare `#2479` leaves the reader
  * guessing whether it is an issue or a pull request, so the prefix is not
- * optional — the chip is either `PR #n` or `Issue #n`.
+ * optional — the reference is either `PR #n` or `Issue #n`.
  */
+const WorkReferenceText: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <span
+    className="whitespace-nowrap font-mono text-[12px] leading-4 text-slate-800 hover:underline"
+    title={title}
+  >
+    {children}
+  </span>
+);
+
 export const WorkReference: React.FC<{ issueNumber?: number | null; prNumber?: number | null }> = ({
   issueNumber,
   prNumber,
 }) => {
-  if (prNumber) return <ReferenceChip title={`Pull request #${prNumber}`}>PR #{prNumber}</ReferenceChip>;
-  if (issueNumber) return <ReferenceChip title={`Issue #${issueNumber}`}>Issue #{issueNumber}</ReferenceChip>;
+  if (prNumber) return <WorkReferenceText title={`Pull request #${prNumber}`}>PR #{prNumber}</WorkReferenceText>;
+  if (issueNumber) return <WorkReferenceText title={`Issue #${issueNumber}`}>Issue #{issueNumber}</WorkReferenceText>;
   return null;
 };
 
@@ -240,8 +270,8 @@ export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
  * Nothing here is separated by a typed delimiter. The app's one separator
  * glyph is the interpunct `·`, but an inline separator that can wrap
  * eventually does, and it starts the next line as an orphan; space and the
- * chips' own borders say the same thing here and cannot wrap away from what
- * they separate.
+ * facts' own distinct shapes say the same thing here and cannot wrap away
+ * from what they separate.
  */
 export const RowMetaLines: React.FC<{
   /**
@@ -276,20 +306,43 @@ export const RowMetaLines: React.FC<{
 };
 
 /**
- * The task type in front of a title: `Fix`, `Review`, `Implement`.
+ * One silhouette per task type. The type is taxonomy, not state, so it never
+ * gets a colour: the shape of the glyph is the anchor the eye finds while
+ * scrolling. A type with no glyph of its own is drawn as the label alone.
+ */
+const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
+  review: Eye,
+  fix: Wrench,
+  ultrafix: Zap,
+  implement: Sparkles,
+  'follow-up': CornerDownRight,
+  continue: RotateCw,
+  merge: GitMerge,
+  goal: Target,
+  'pr comment': MessageSquare,
+};
+
+/**
+ * The task type in front of a title: `FIX`, `REVIEW`, `IMPLEMENT`.
  *
  * It is the first thing on the title line so a column of rows can be scanned
- * by kind without reading a single title, and it is drawn in the task list's
- * own type-badge vocabulary so a row means the same thing on both pages.
+ * by kind without reading a single title. It is not a chip: it is set in the
+ * utility-header micro type the section headings use, behind a neutral icon,
+ * so it cannot be mistaken for the repository chip or the identifier on the
+ * line above.
  */
-export const WorkTypeBadge: React.FC<{ type: string }> = ({ type }) => (
-  <span
-    data-testid="work-type-badge"
-    className="mr-1.5 inline-flex -translate-y-px items-center whitespace-nowrap rounded-sm border border-slate-200 bg-slate-100 px-1.5 align-middle font-mono text-[11px] font-medium leading-4 text-slate-700"
-  >
-    {type}
-  </span>
-);
+export const WorkTypeBadge: React.FC<{ type: string }> = ({ type }) => {
+  const Icon = WORK_TYPE_ICONS[type.toLowerCase()];
+  return (
+    <span
+      data-testid="work-type-badge"
+      className="mr-2 inline-flex -translate-y-px items-center gap-1 whitespace-nowrap align-middle text-[10px] font-bold uppercase leading-4 tracking-wider text-slate-600"
+    >
+      {Icon && <Icon className="h-3 w-3 flex-none" strokeWidth={2.25} aria-hidden="true" />}
+      {type}
+    </span>
+  );
+};
 
 /** Titles wrap to two lines rather than being cut off mid-word. */
 export const RowTitle: React.FC<{

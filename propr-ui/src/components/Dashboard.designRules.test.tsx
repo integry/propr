@@ -149,18 +149,21 @@ describe('Dashboard studio design rules', () => {
     expect(screen.queryByText('#2481')).toBeNull();
   });
 
-  it('styles repository slugs and entity ids as monospace code chips', async () => {
+  it('draws the repository as a muted chip and the entity id as bare monospace text', async () => {
     renderDashboard();
     await waitForSections();
 
     const repoChip = (await screen.findAllByTitle('acme/app'))[0];
     expect(repoChip.className).toMatch(/font-mono/);
     expect(repoChip.className).toMatch(/bg-slate-100/);
-    expect(repoChip.className).toMatch(/border-slate-200/);
+    expect(repoChip.className).not.toMatch(/\bborder\b/);
 
-    const entityChip = (await screen.findAllByTitle('Issue #7'))[0];
-    expect(entityChip.className).toMatch(/font-mono/);
-    expect(entityChip.className).toMatch(/bg-slate-100/);
+    // Two identical boxes side by side read as one wall of gray bricks; the
+    // identifier is text, not a second chip.
+    const entity = (await screen.findAllByTitle('Issue #7'))[0];
+    expect(entity.className).toMatch(/font-mono/);
+    expect(entity.className).not.toMatch(/\bbg-/);
+    expect(entity.className).not.toMatch(/\bborder\b/);
   });
 
   it('puts the task type in front of a title as a badge and drops the prefix, number and model', async () => {
@@ -174,7 +177,10 @@ describe('Dashboard studio design rules', () => {
     const section = screen.getByTestId('happening-now-section');
     const badge = await within(section).findByTestId('work-type-badge');
     expect(badge).toHaveTextContent('Follow-up');
-    expect(badge.className).toMatch(/font-mono/);
+    // A micro-label with a neutral glyph, not a third boxed chip.
+    expect(badge.className).toMatch(/uppercase/);
+    expect(badge.className).not.toMatch(/\bbg-|\bborder\b|font-mono/);
+    expect(badge.querySelector('svg')).not.toBeNull();
     expect(section).toHaveTextContent('Implement feature gating');
     expect(section).not.toHaveTextContent('Followup:');
     expect(section).not.toHaveTextContent('Claude Opus');
