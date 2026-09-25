@@ -65,6 +65,11 @@ export interface ActiveItem {
   step?: { current: number; total: number } | null;
   /** When the agent last produced output; null when the stream shows none. */
   lastActivityAt?: string | null;
+  /**
+   * The stream was read and holds no agent output yet. Absent or false when
+   * the stream is unknown — unread or unreadable — which is not the same.
+   */
+  awaitingFirstOutput?: boolean;
   createdAt: string;
   updatedAt: string;
 }

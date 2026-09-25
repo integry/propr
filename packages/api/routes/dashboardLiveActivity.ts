@@ -29,13 +29,21 @@ export interface LiveActivity {
   step: { current: number; total: number } | null;
   /** When the agent last produced any output. */
   lastActivityAt: string | null;
+  /**
+   * True only when the stream was read and the agent has produced nothing in
+   * it yet. A stream that could not be read, or was not read at all, is
+   * unknown rather than empty, and says false.
+   */
+  awaitingFirstOutput: boolean;
 }
 
+/** Nothing known about the stream: it was not read, or could not be. */
 export const EMPTY_LIVE_ACTIVITY: LiveActivity = {
   progressLine: null,
   activity: null,
   step: null,
   lastActivityAt: null,
+  awaitingFirstOutput: false,
 };
 
 const MAX_ACTIVITY_LENGTH = 120;
@@ -178,13 +186,22 @@ function planStep(todos: LiveDetailsSnapshot['todos']): LiveActivity['step'] {
   return { current: Math.min(completed + 1, todos.length), total: todos.length };
 }
 
+/**
+ * A stream that was read, reduced to what a row can carry.
+ *
+ * `null` is a read that found no projection at all — the agent has written
+ * nothing yet — so it is an empty stream, not an unknown one. Callers that
+ * could not read the stream use `EMPTY_LIVE_ACTIVITY` instead.
+ */
 export function summariseLiveActivity(live: LiveDetailsSnapshot | null | undefined): LiveActivity {
-  if (!live) return EMPTY_LIVE_ACTIVITY;
-  const events = live.events ?? [];
+  const events = live?.events ?? [];
+  const progressLine = typeof live?.currentTask === 'string' && live.currentTask.trim() ? live.currentTask : null;
+  const todos = live?.todos ?? [];
   return {
-    progressLine: typeof live.currentTask === 'string' && live.currentTask.trim() ? live.currentTask : null,
+    progressLine,
     activity: latestAction(events),
-    step: planStep(live.todos),
+    step: planStep(todos),
     lastActivityAt: latestTimestamp(events),
+    awaitingFirstOutput: events.length === 0 && todos.length === 0 && progressLine === null,
   };
 }

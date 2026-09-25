@@ -54,6 +54,10 @@ const OVERFLOW_SLACK = 1;
 
 const itemKey = (item: ActiveItem): string => item.id;
 
+/** The server's order for running work: newest run first, by when it was created. */
+const newestRunFirst = (a: ActiveItem, b: ActiveItem): number =>
+  Date.parse(b.createdAt) - Date.parse(a.createdAt);
+
 const fallbackTitle = (item: ActiveItem): string =>
   item.prNumber ? `Pull request #${item.prNumber}` : item.issueNumber ? `Issue #${item.issueNumber}` : 'Untitled work';
 
@@ -75,17 +79,23 @@ const LIFECYCLE_LINES: Record<string, string> = {
 /**
  * The live sub-phase: what this run is doing right now.
  *
- * The agent's own plan step comes first — it is the line the agent chose to
- * describe its work with. Without one, the latest tool call it made says what
- * it is actually touching. A tool call is only read while the agent is the one
- * running: during publishing the last call is history, not the current phase.
- * An agent with nothing in its stream yet says exactly that, which is the case
- * a row needs to make visible rather than paper over.
+ * Setting up and publishing are said as the lifecycle phase, whatever the
+ * stream holds: the agent has not started, or has finished, and its last plan
+ * step or tool call is history rather than the current phase. While the agent
+ * is the one running, its own plan step comes first — it is the line the agent
+ * chose to describe its work with — and without one, the latest tool call it
+ * made says what it is actually touching.
+ *
+ * An agent with nothing in its stream yet says exactly that, but only when the
+ * stream was read and found empty. A stream that could not be read, or output
+ * that names no action (the agent thinking, say), is an unknown action, not a
+ * run waiting to start.
  */
 function subPhase(item: ActiveItem): string {
+  if (!AGENT_STATES.has(item.state)) return LIFECYCLE_LINES[item.state] ?? item.phase ?? 'Starting';
   if (item.progressLine) return item.progressLine;
-  if (AGENT_STATES.has(item.state)) return item.activity ?? 'Waiting for the agent\'s first output';
-  return LIFECYCLE_LINES[item.state] ?? item.phase ?? 'Starting';
+  if (item.activity) return item.activity;
+  return item.awaitingFirstOutput ? 'Waiting for the agent\'s first output' : 'Current action not reported';
 }
 
 /**
@@ -155,7 +165,7 @@ const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
           )}
         >
           <span className="sm:hidden">{shortenPaths(primaryClause(line))}</span>
-          <span className="hidden sm:inline" title={item.activity && item.activity !== line ? `Latest action: ${item.activity}` : undefined}>
+          <span className="hidden sm:inline" title={agentRunning && item.activity && item.activity !== line ? `Latest action: ${item.activity}` : undefined}>
             {line}
           </span>
         </RowDetail>
@@ -218,7 +228,7 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
   useNowTick();
 
   const running = useMemo(() => data?.running ?? [], [data]);
-  const orderedRunning = useStableOrder(running, itemKey);
+  const orderedRunning = useStableOrder(running, itemKey, newestRunFirst);
   // One row over the limit is drawn, not folded: see OVERFLOW_SLACK.
   const canCollapse = orderedRunning.length > VISIBLE_ITEMS + OVERFLOW_SLACK;
   const collapsedLimit = canCollapse ? VISIBLE_ITEMS : orderedRunning.length;

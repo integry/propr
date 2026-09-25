@@ -94,22 +94,36 @@ export function useDashboardSection<T>(
  * position for as long as it exists. Running work changes state constantly, and
  * a list that re-sorted on every update would move the row under the pointer.
  *
- * The server lists newest first, so a row that arrives after the first read is
- * the newest thing in the list and goes on top, in server order, above the
- * rows already on screen.
+ * A row that arrives after the first read is not necessarily the newest thing
+ * in the list — a task queued before the running ones only becomes visible when
+ * it starts — so it is placed by `compare`, the server's own ordering, among
+ * the rows already on screen: ahead of the first one it sorts before, and
+ * behind any it ties with. Arrivals keep server order among themselves, which
+ * on the first read is simply the server's list.
  */
-export function useStableOrder<T>(items: T[], getKey: (item: T) => string): T[] {
+export function useStableOrder<T>(
+  items: T[],
+  getKey: (item: T) => string,
+  compare: (a: T, b: T) => number,
+): T[] {
   const orderRef = useRef<string[]>([]);
   return useMemo(() => {
     const byKey = new Map<string, T>();
     for (const item of items) byKey.set(getKey(item), item);
     const retained = orderRef.current.filter(key => byKey.has(key));
     const seen = new Set(retained);
-    const arrived = [...byKey.keys()].filter(key => !seen.has(key));
-    const order = [...arrived, ...retained];
+    // `before[i]` holds the arrivals placed ahead of `retained[i]`; the last
+    // slot, those placed after every retained row.
+    const before: string[][] = Array.from({ length: retained.length + 1 }, () => []);
+    for (const [key, item] of byKey) {
+      if (seen.has(key)) continue;
+      const at = retained.findIndex(other => compare(item, byKey.get(other) as T) < 0);
+      before[at === -1 ? retained.length : at].push(key);
+    }
+    const order = [...retained.flatMap((key, index) => [...before[index], key]), ...before[retained.length]];
     orderRef.current = order;
     return order.map(key => byKey.get(key) as T);
-  }, [items, getKey]);
+  }, [items, getKey, compare]);
 }
 
 /** Re-renders on an interval so elapsed times stay honest without polling. */

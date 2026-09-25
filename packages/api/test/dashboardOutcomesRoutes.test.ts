@@ -113,6 +113,36 @@ test('outcomes can be searched by title', async () => {
   assert.equal(tooLong.status, 400);
 });
 
+test('a title search matches the decoded title, including characters JSON escapes', async () => {
+  await seedTask({ taskId: 'quoted', issueNumber: 231, title: 'Handle "retry budget" failures', states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
+  await seedTask({ taskId: 'pathed', issueNumber: 232, title: 'Move C:\\temp\\cache under /var/cache', states: [{ state: 'completed', timestamp: minutesAgo(25) }] });
+  await seedTask({ taskId: 'unrelated', issueNumber: 233, title: 'Add retries', states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
+
+  const quoted = await call(routes().getOutcomes, { repository: 'all', search: '"retry budget"' });
+  assert.deepEqual((quoted.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['quoted']);
+  const pathed = await call(routes().getOutcomes, { repository: 'all', search: 'c:\\temp\\cache under /var' });
+  assert.deepEqual((pathed.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['pathed']);
+});
+
+test('a title search reaches past newer runs that match only in their bodies', async () => {
+  const bodyOnly = Array.from({ length: 1100 }, (_, index) => ({
+    task_id: `body-${index}`, repository: 'integry/propr', issue_number: 1000 + index, task_type: 'issue',
+    created_at: minutesAgo(10), initial_job_data: JSON.stringify({ title: `Run ${index}`, body: 'Touches the icons cache' }),
+  }));
+  for (let start = 0; start < bodyOnly.length; start += 100) {
+    const batch = bodyOnly.slice(start, start + 100);
+    await database('tasks').insert(batch);
+    await database('task_history').insert(batch.map(row => ({ task_id: row.task_id, state: 'completed', timestamp: minutesAgo(10), metadata: '{}' })));
+  }
+  await seedTask({ taskId: 'older-match', issueNumber: 241, title: 'Cache repository icons', states: [{ state: 'completed', timestamp: daysAgo(3) }] });
+  await seedTask({ taskId: 'quoted-match', issueNumber: 242, title: 'Rename "icons" folder', states: [{ state: 'completed', timestamp: daysAgo(4) }] });
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all', search: 'icons' });
+  assert.deepEqual((outcomes.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['older-match', 'quoted-match']);
+  const quoted = await call(routes().getOutcomes, { repository: 'all', search: '"icons"' });
+  assert.deepEqual((quoted.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['quoted-match']);
+});
+
 test('a recorded completion survives the follow-up run that starts after it', async () => {
   await seedTask({
     taskId: 'followed-up', issueNumber: 401,

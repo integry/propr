@@ -68,7 +68,43 @@ test('a raw-output fallback has no event time, and an empty projection reports n
     events: [{ type: 'thought', content: 'raw', rawFallback: true, timestamp: '2026-09-23T11:59:00.000Z' }],
   });
   assert.equal(summary.lastActivityAt, null);
-  assert.deepEqual(summariseLiveActivity(null), { progressLine: null, activity: null, step: null, lastActivityAt: null });
+  assert.equal(summary.awaitingFirstOutput, false);
+  // A read that found no projection: the agent has written nothing yet.
+  assert.deepEqual(
+    summariseLiveActivity(null),
+    { progressLine: null, activity: null, step: null, lastActivityAt: null, awaitingFirstOutput: true },
+  );
+  assert.equal(summariseLiveActivity({ events: [] }).awaitingFirstOutput, true);
+});
+
+test('output that names no action is not an empty stream', () => {
+  const summary = summariseLiveActivity({
+    events: [{ type: 'thought', content: 'Reading the issue', timestamp: '2026-09-23T11:59:00.000Z' }],
+  });
+  assert.deepEqual(
+    [summary.progressLine, summary.activity, summary.lastActivityAt, summary.awaitingFirstOutput],
+    [null, null, '2026-09-23T11:59:00.000Z', false],
+  );
+});
+
+test('only a stream that was read and found empty is awaiting first output', async () => {
+  // 21 running tasks: the oldest is past the live-details lookup cap.
+  for (let index = 0; index < 21; index += 1) {
+    await seedTask(database, { taskId: `run-${index}`, issueNumber: 300 + index, states: [{ state: 'claude_execution', timestamp: minutesAgo(60 - index) }] });
+  }
+  const dashboard = createTestDashboardRoutes(database, {}, async taskId => {
+    if (taskId === 'run-20') return null;
+    if (taskId === 'run-19') throw new Error('unreadable stream');
+    return { events: [{ type: 'thought', content: 'Thinking', timestamp: minutesAgo(1) }] };
+  });
+  const active = await call(dashboard.getActive, { repository: 'all' });
+  const byTask = new Map((active.body.running as Array<Record<string, unknown>>).map(item => [item.taskId, item]));
+
+  assert.equal(byTask.get('run-20')?.awaitingFirstOutput, true);
+  assert.equal(byTask.get('run-19')?.awaitingFirstOutput, false);
+  assert.deepEqual([byTask.get('run-10')?.activity, byTask.get('run-10')?.awaitingFirstOutput], [null, false]);
+  // Never read: past the cap is unknown, not empty.
+  assert.equal(byTask.get('run-0')?.awaitingFirstOutput, false);
 });
 
 test('active carries each running agent\'s latest action, plan step and last output time', async () => {

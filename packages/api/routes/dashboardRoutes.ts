@@ -69,6 +69,8 @@ export interface ActiveItem {
   step: { current: number; total: number } | null;
   /** When the agent last produced output; null when the stream shows none. */
   lastActivityAt: string | null;
+  /** The stream was read and holds no agent output yet; false when unknown. */
+  awaitingFirstOutput: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -187,6 +189,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
       activity: live.activity,
       step: live.step,
       lastActivityAt: live.lastActivityAt,
+      awaitingFirstOutput: live.awaitingFirstOutput,
       createdAt: row.createdAt,
       updatedAt: row.stateTimestamp,
     };

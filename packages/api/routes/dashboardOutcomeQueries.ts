@@ -32,8 +32,19 @@ export interface CompletedRow extends DashboardTaskRow {
   reviewScore: number | null;
 }
 
-/** Rows scanned for a title search before the title itself is matched. */
-const MAX_SEARCH_SCAN = 1000;
+/** Candidates read per page while a title search looks for its matches. */
+const SEARCH_PAGE_SIZE = 500;
+
+/**
+ * Searches whose every character appears verbatim wherever it is serialised.
+ *
+ * JSON escapes quotes, backslashes and control characters, some encoders also
+ * escape `/`, `'`, `<`, `>` and `&` or everything outside ASCII, and `%` and
+ * `_` are `LIKE` wildcards. A title containing a search made only of the
+ * characters below therefore contains it in the raw job data too, so the raw
+ * text can narrow the candidates without dropping a title that matches.
+ */
+const VERBATIM_SEARCH = /^[a-z0-9 .,:;!?()#@+=*~^$|{}[\]`-]+$/;
 
 /**
  * A completion recorded for a job that decided there was nothing to do. It is
@@ -139,10 +150,14 @@ function meaningfulRecap(recap: string | null): string | null {
  * Recent completions, newest first, optionally narrowed to titles containing
  * `search`.
  *
- * The title is resolved from the job data a run was queued with, so the
- * search first narrows candidates in SQL by that job data and then matches the
- * resolved title itself: a word that only appears in an issue body must not
- * make an unrelated run look like a title match.
+ * The title is resolved from the job data a run was queued with, so it is
+ * matched after decoding rather than in SQL: a word that only appears in an
+ * issue body must not make an unrelated run look like a title match, and an
+ * escaped quote in the stored JSON must not hide one that does. The raw job
+ * data only narrows the candidates when that cannot drop a match (see
+ * `VERBATIM_SEARCH`), and candidates are read page by page until the limit is
+ * filled or history runs out, so runs that match only in their bodies cannot
+ * crowd an older title match out of the result.
  */
 export async function loadCompletedRows(
   db: Knex,
@@ -152,19 +167,43 @@ export async function loadCompletedRows(
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const search = options.search?.trim().toLowerCase() ?? '';
 
-  const query = terminalTransitionQuery(db, repository, 'completed')
-    .where(function (this: Knex.QueryBuilder) {
-      this.whereNull('h.reason').orWhereNot('h.reason', 'like', SKIPPED_REASON_PATTERN);
-    })
-    .select(TASK_COLUMNS)
-    .orderBy('h.timestamp', 'desc')
-    .limit(search ? MAX_SEARCH_SCAN : limit);
-  if (search) query.where('t.initial_job_data', 'like', `%${search}%`);
+  const candidates = (after: RawTaskRow | null, pageSize: number): Knex.QueryBuilder => {
+    const query = terminalTransitionQuery(db, repository, 'completed')
+      .where(function (this: Knex.QueryBuilder) {
+        this.whereNull('h.reason').orWhereNot('h.reason', 'like', SKIPPED_REASON_PATTERN);
+      })
+      .select(TASK_COLUMNS)
+      .orderBy([{ column: 'h.timestamp', order: 'desc' }, { column: 't.task_id', order: 'desc' }])
+      .limit(pageSize);
+    if (search && VERBATIM_SEARCH.test(search)) query.where('t.initial_job_data', 'like', `%${search}%`);
+    if (after) {
+      query.where(function (this: Knex.QueryBuilder) {
+        this.where('h.timestamp', '<', after.state_timestamp)
+          .orWhere(function (this: Knex.QueryBuilder) {
+            this.where('h.timestamp', '=', after.state_timestamp).andWhere('t.task_id', '<', after.task_id);
+          });
+      });
+    }
+    return query;
+  };
 
-  const mapped = (await query as unknown as RawTaskRow[])
-    .map(mapTaskRow)
-    .filter(row => !search || (row.title ?? '').toLowerCase().includes(search))
-    .slice(0, limit);
+  let mapped: DashboardTaskRow[];
+  if (!search) {
+    mapped = (await candidates(null, limit) as unknown as RawTaskRow[]).map(mapTaskRow);
+  } else {
+    mapped = [];
+    let after: RawTaskRow | null = null;
+    while (mapped.length < limit) {
+      const page = await candidates(after, SEARCH_PAGE_SIZE) as unknown as RawTaskRow[];
+      for (const row of page) {
+        const mappedRow = mapTaskRow(row);
+        if ((mappedRow.title ?? '').toLowerCase().includes(search)) mapped.push(mappedRow);
+      }
+      if (page.length < SEARCH_PAGE_SIZE) break;
+      after = page[page.length - 1];
+    }
+    mapped = mapped.slice(0, limit);
+  }
   if (mapped.length === 0) return [];
 
   const details = await loadCompletionDetails(db, mapped.map(row => row.taskId));
