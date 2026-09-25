@@ -122,7 +122,7 @@ test('groups the log destinations in the sidebar and lists MCP requests', async 
 
   // The group is open because the current page is one of its children, and it
   // holds both log destinations.
-  const group = page.getByRole('button', { name: 'Logs' });
+  const group = page.getByRole('navigation').getByRole('button', { name: 'Logs' });
   await expect(group).toHaveAttribute('aria-expanded', 'true');
   const panel = page.locator(`#${await group.getAttribute('aria-controls')}`);
   await expect(panel.getByRole('link', { name: 'LLM Log' })).toHaveAttribute('href', '/llm-logs');
