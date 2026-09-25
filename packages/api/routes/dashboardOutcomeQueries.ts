@@ -28,6 +28,30 @@ export interface OutcomeRow extends DashboardTaskRow {
 }
 
 /**
+ * A rescheduled/requeued attempt handed its work to a replacement job. It is
+ * useful in task history, but it is not a user-facing outcome and can otherwise
+ * fill the entire feed while one pull request remains locked.
+ *
+ * New rows carry a structured jobResultStatus. The reason fallback covers
+ * rows written before that metadata was introduced.
+ */
+function excludeOperationalHandoffs(query: Knex.QueryBuilder): Knex.QueryBuilder {
+  return query.whereRaw(`
+    NOT (
+      COALESCE(
+        CASE WHEN json_valid(h.metadata)
+          THEN json_extract(h.metadata, '$.jobResultStatus')
+          ELSE NULL
+        END,
+        ''
+      ) IN (?, ?)
+      OR LOWER(COALESCE(h.reason, '')) LIKE ?
+      OR LOWER(COALESCE(h.reason, '')) LIKE ?
+    )
+  `, ['rescheduled', 'requeued', '%job rescheduled%', '%job requeued%']);
+}
+
+/**
  * Recent recorded outcomes, newest first.
  *
  * Each terminal state is read separately and merged, so one long run of
@@ -40,11 +64,14 @@ export async function loadOutcomeRows(
   options: { limit?: number; since?: Date } = {},
 ): Promise<OutcomeRow[]> {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
-  const perState = await Promise.all(TERMINAL_TASK_STATES.map(state =>
-    terminalTransitionQuery(db, repository, state, { from: options.since })
+  const perState = await Promise.all(TERMINAL_TASK_STATES.map(state => {
+    const query = terminalTransitionQuery(db, repository, state, { from: options.since });
+    if (state === 'cancelled') excludeOperationalHandoffs(query);
+    return query
       .select(TASK_COLUMNS)
       .orderBy('h.timestamp', 'desc')
-      .limit(limit) as unknown as Promise<RawTaskRow[]>));
+      .limit(limit) as unknown as Promise<RawTaskRow[]>;
+  }));
 
   const mapped = perState.flat()
     .map(mapTaskRow)

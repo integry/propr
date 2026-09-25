@@ -29,6 +29,7 @@ interface AIModelSelectionSettings {
   pr_review_context_enabled: boolean;
   pr_review_context_model: string;
   pr_review_max_context_tokens: number;
+  pr_review_context_budget_percent: number;
 }
 
 interface AIModelSelectionSectionProps {
@@ -41,8 +42,9 @@ interface AIModelSelectionSectionProps {
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
   onReviewContextEnabledChange: (enabled: boolean) => void;
-  onReviewMaxContextTokensChange: (value: number) => void;
-  onReviewMaxContextTokensBlur: () => void;
+  onReviewContextBudgetPercentChange: (percent: number) => void;
+  onReviewContextBudgetPercentCommit: (percent: number) => void;
+  onRemoveLegacyReviewCap: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
   onSummarizationFallbackModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
@@ -72,8 +74,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onReviewPromptChange,
   onReviewPromptBlur,
   onReviewContextEnabledChange,
-  onReviewMaxContextTokensChange,
-  onReviewMaxContextTokensBlur,
+  onReviewContextBudgetPercentChange,
+  onReviewContextBudgetPercentCommit,
+  onRemoveLegacyReviewCap,
   onSummarizationModelChange,
   onSummarizationFallbackModelChange,
   onDefaultAgentChange,
@@ -285,10 +288,13 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         <ReviewContextSettings
           settings={settings}
           agents={modelAgents}
+          budgetAgents={agents}
+          catalogAgents={catalogAgents}
           onSettingChange={onSettingChange}
           onEnabledChange={onReviewContextEnabledChange}
-          onMaxContextTokensChange={onReviewMaxContextTokensChange}
-          onMaxContextTokensBlur={onReviewMaxContextTokensBlur}
+          onBudgetPercentChange={onReviewContextBudgetPercentChange}
+          onBudgetPercentCommit={onReviewContextBudgetPercentCommit}
+          onRemoveLegacyCap={onRemoveLegacyReviewCap}
         />
 
         <SettingsField

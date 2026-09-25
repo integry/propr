@@ -33,7 +33,12 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   await addModelSpecificDelay(modelName);
 
   try {
-    await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef, correlationId);
+    await stateManager.createTaskState(
+      taskId,
+      { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
+      correlationId,
+      jobId === undefined ? null : String(jobId),
+    );
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
   }

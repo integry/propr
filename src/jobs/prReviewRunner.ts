@@ -3,8 +3,10 @@ import { buildAnalysisSafetySuffix, getAuthenticatedOctokit } from '@propr/core'
 import type { AgentRegistry, AnalysisResult, AnalyzeOptions, SyntheticRoutingSession } from '@propr/core';
 import type { ReasoningLevel } from '@propr/shared';
 import type { Redis } from 'ioredis';
-import { calculateReviewCost } from './reviewContextHelpers.js';
+import { calculateReviewCost, resolveReviewerBudget, type ReviewBudgetSettings } from './reviewContextHelpers.js';
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
+import type { PreparedPRDiff } from './prDiffFormatting.js';
+import { ReviewTokenEstimator, type ReviewTokenStatsCache } from './reviewTokenEstimator.js';
 import { buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
 
@@ -15,7 +17,7 @@ export interface ReviewAssignment {
     agentAlias: string;
     model: string;
     label: string;
-    /** Physical route selected before the shared review budget was calculated. */
+    /** Physical route selected before this reviewer's own input budget is resolved. */
     routingSession?: SyntheticRoutingSession;
     physicalAgentAlias?: string;
     physicalModel?: string;
@@ -43,8 +45,10 @@ export interface RunReviewsContext {
     commentHistory: string;
     originalTaskSpec: string;
     commandInstructions?: string;
-    prDiff: string;
-    omittedDiffFiles: string[];
+    /** Untrimmed diff; each reviewer selects the files that fit its own budget. */
+    preparedDiff: PreparedPRDiff;
+    /** Tokenizer statistics shared by every reviewer of this job. */
+    tokenStats: ReviewTokenStatsCache;
     changedFilePaths: string[];
     findingStartNumber: number;
     redisClient: Redis;
@@ -53,7 +57,7 @@ export interface RunReviewsContext {
     checkSummary: string;
     hasCurrentCheckFailure: boolean;
     reviewPromptOverride: string;
-    reviewMaxContextTokens: number;
+    reviewBudgetSettings: ReviewBudgetSettings;
     reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
 }
@@ -80,21 +84,51 @@ export async function runSingleReview(
     // aborting the remaining reviewers.
     let reviewPrompt = '';
     try {
+        const { capacity, ceiling } = resolveReviewerBudget({
+            agentType: agent.config.type,
+            model: executionModel,
+            runtimeEnv: agent.config.envVars,
+        }, ctx.reviewBudgetSettings);
         const promptResult = buildReviewPromptWithinBudget({
             pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
             originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-            prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
+            fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
             checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
-        }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
+        }, ceiling.ceiling, REVIEW_ANALYSIS_SAFETY_SUFFIX, {
+            preparedDiff: ctx.preparedDiff,
+            estimator: new ReviewTokenEstimator(capacity.tokenizerProfile, ctx.tokenStats),
+        });
         reviewPrompt = promptResult.prompt;
-        if (promptResult.truncatedSections.length > 0) {
+        // Sizes and reasons only: prompt text stays out of ordinary logs.
+        const budgetLog = {
+            pullRequestNumber,
+            agentAlias: executionAgentAlias,
+            agentType: agent.config.type,
+            model: executionModel,
+            capacitySource: capacity.source,
+            contextWindow: capacity.contextWindow,
+            outputReserve: capacity.outputReserve,
+            runtimeOverheadReserve: capacity.runtimeOverheadReserve,
+            safeInputTokens: capacity.safeInputTokens,
+            budgetPercent: ceiling.percent,
+            legacyMaxContextTokens: ceiling.legacyMaxContextTokens,
+            ceilingLimitedBy: ceiling.limitedBy,
+            maxContextTokens: ceiling.ceiling,
+            tokenizerProfile: capacity.tokenizerProfile,
+            estimatedTokens: promptResult.estimatedTokens,
+            sectionTokens: promptResult.sectionTokens,
+            missingPatchFileCount: promptResult.missingPatchFiles.length,
+            ioGuardOmittedFileCount: promptResult.ioGuardOmittedFiles.length,
+            budgetOmittedFileCount: promptResult.budgetOmittedFiles.length,
+        };
+        if (promptResult.trimmedSections.length > 0) {
             correlatedLogger.warn({
-                pullRequestNumber,
-                model: executionModel,
-                maxContextTokens: ctx.reviewMaxContextTokens,
-                estimatedTokens: promptResult.estimatedTokens,
-                truncatedSections: promptResult.truncatedSections,
+                ...budgetLog,
+                truncatedSections: promptResult.trimmedSections,
+                trimReason: ceiling.limitedBy === 'legacy-cap' ? 'legacy token cap' : 'review context budget',
             }, 'Trimmed PR review context to fit token budget');
+        } else {
+            correlatedLogger.info(budgetLog, 'PR review context fits token budget');
         }
 
         const analyzeOptions: AnalyzeOptions = {
@@ -119,7 +153,14 @@ export async function runSingleReview(
         const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
             assignment, analysisResult, taskUrl, {
                 reviewedHead: ctx.reviewedHead, taskId,
-                omittedDiffFiles: ctx.omittedDiffFiles,
+                omittedDiffFiles: [
+                    ...promptResult.missingPatchFiles,
+                    ...promptResult.ioGuardOmittedFiles,
+                    ...promptResult.budgetOmittedFiles,
+                ],
+                missingPatchFiles: promptResult.missingPatchFiles,
+                ioGuardOmittedFiles: promptResult.ioGuardOmittedFiles,
+                budgetOmittedFiles: promptResult.budgetOmittedFiles,
                 prDiffTruncated: promptResult.prDiffTruncated,
                 costUsd,
                 hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,

@@ -5,7 +5,8 @@ import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment, fetchOriginalContributionDiscussion } from './prCommentJobUtils.js';
-import { fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
+import { fetchReviewContext, type PRData } from './reviewContextHelpers.js';
+import { ReviewTokenStatsCache } from './reviewTokenEstimator.js';
 import { resolvePullRequestGitTarget } from './prGitTarget.js';
 import { prepareRelatedReviewContext } from './reviewContextScout.js';
 import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
@@ -243,25 +244,19 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reviewContextModel,
         fastAnalysisModel,
         configuredReviewMaxContextTokens,
+        reviewContextBudgetPercent,
     } = await loadReviewRuntimeSettings(correlatedLogger);
-    // Route each available physical reviewer before deriving the shared diff/prompt budget.
+    // Route each available physical reviewer first; every routed reviewer is
+    // later fitted to its own capacity from the shared, untrimmed inputs.
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const routingOutcomes = await routeReviewAssignments(registry, assignments, pullRequestNumber, correlatedLogger);
     const routedAssignments = routingOutcomes.flatMap(outcome =>
         outcome.status === 'routed' ? [outcome.assignment] : []
     );
-    const reviewBudgetModels = routedAssignments.map(assignment => `${assignment.physicalAgentAlias}:${assignment.physicalModel}`);
-    const reviewMaxContextTokens = resolveReviewContextTokenBudget(
-        reviewBudgetModels,
-        configuredReviewMaxContextTokens,
-    );
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, changedFilePaths, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
-        state.octokit, prData!, {
-            repoOwner, repoName, pullRequestNumber, models: reviewBudgetModels,
-            maxContextTokens: reviewMaxContextTokens, correlationId, correlatedLogger,
-        }
+    const { allComments, commentHistory, linkedIssueResult, prDiff, preparedDiff, changedFilePaths, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
+        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger }
     );
     const originalDiscussion = job.data.ultrafixMeta ? '' : await fetchOriginalContributionDiscussion(state.octokit, context, correlationId);
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
@@ -355,14 +350,17 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         commentHistory: (job.data.ultrafixMeta ? '' : commentHistory) + originalDiscussion,
         originalTaskSpec,
         commandInstructions: job.data.commandInstructions,
-        prDiff,
-        omittedDiffFiles,
+        preparedDiff,
+        tokenStats: new ReviewTokenStatsCache(),
         changedFilePaths,
         findingStartNumber: 1,
         redisClient,
         fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
-        reviewMaxContextTokens,
+        reviewBudgetSettings: {
+            percent: reviewContextBudgetPercent,
+            legacyMaxContextTokens: configuredReviewMaxContextTokens,
+        },
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
     };

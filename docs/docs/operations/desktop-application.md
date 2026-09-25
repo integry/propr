@@ -75,7 +75,7 @@ Commands run for this follow-up (from the repository root):
 
 ```sh
 npm --workspace propr-ui test -- src/desktop/account-switching.integration.test.tsx src/api/apiClient.accounts.test.ts src/api/proprApi.logout.test.ts src/api/demoMode.test.ts src/desktop/DesktopExperience.transport.test.tsx src/contexts/SocketProvider.test.tsx
-npx tsx --test apps/desktop/src/credential-service.test.ts apps/desktop/src/profile-store.test.ts apps/desktop/src/saved-accounts.test.ts apps/desktop/src/ipc-lifecycle.test.ts apps/desktop/src/preload-bridge.test.ts
+npx tsx --test apps/desktop/src/credential-service.test.ts apps/desktop/src/profile-store.test.ts apps/desktop/src/profile-store.crash-recovery.test.ts apps/desktop/src/saved-accounts.test.ts apps/desktop/src/ipc-lifecycle.test.ts apps/desktop/src/preload-bridge.test.ts
 DISPLAY=:93 node apps/desktop/scripts/smoke-two-accounts.mjs
 npx tsx --test test/agentVersionManagement.test.ts test/goalExecutionMode.test.ts
 npm run desktop:typecheck

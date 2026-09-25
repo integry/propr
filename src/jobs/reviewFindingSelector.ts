@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 import type { CommentJobData } from '@propr/core';
 import { formatActionableFindings, gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
 import type { AIReviewComment, ActionableFinding } from './reviewCommentGatherer.js';
+import { formatRecordFields } from './reviewRecordFields.js';
 
 export interface FixFindingSelection {
     actionableIds: Set<string> | null;
@@ -162,11 +163,13 @@ export async function prepareFixReviewFeedback(params: {
 function formatActionableRecord(finding: ActionableFinding, commentId: number): string {
     return [
         `### ${finding.id}: ${finding.title}`,
-        `- **Source review comment:** ${commentId}`,
-        `- **Violated requirement:** ${finding.violatedRequirement}`,
-        `- **Changed-code evidence:** ${finding.evidence}`,
-        `- **Why introduced by this PR:** ${finding.introducedByPRExplanation}`,
-        `- **Minimum necessary correction:** ${finding.minimumCorrection}`,
+        formatRecordFields([
+            ['Source review comment', String(commentId)],
+            ['Violated requirement', finding.violatedRequirement],
+            ['Changed-code evidence', finding.evidence],
+            ['Why introduced by this PR', finding.introducedByPRExplanation],
+            ['Minimum necessary correction', finding.minimumCorrection],
+        ]),
     ].join('\n');
 }
 
@@ -186,7 +189,7 @@ export function formatReviewCommentsSection(
             + 'This is a completeness check for the selected correction, not authorization to implement unselected findings, suggestions, '
             + 'pre-existing problems, or unrelated redesigns. Report independent discoveries separately. '
             + 'Distinguish avoidable stale-state windows from unavoidable races between external APIs; do not pursue impossible atomicity.',
-            '', ...actionable);
+            '', actionable.join('\n\n'));
     } else {
         lines.push('No actionable findings were selected.');
     }

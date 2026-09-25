@@ -45,6 +45,7 @@ async function installSettingsFixture(page: Page): Promise<void> {
         pr_review_context_enabled: true,
         pr_review_context_model: '',
         pr_review_max_context_tokens: 0,
+        pr_review_context_budget_percent: 100,
         github_user_whitelist: ['octocat', 'hubot'],
       },
       '/api/config/followup-keywords': { followup_keywords: ['PROPR', 'FIXIT'] },

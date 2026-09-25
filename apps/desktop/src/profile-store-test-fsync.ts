@@ -35,8 +35,6 @@ type FileHandlePrototype = {
   datasync(): Promise<void>;
 };
 
-const noop = async (): Promise<void> => undefined;
-
 export async function applyDesktopTestFsyncPolicy(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<DesktopTestFsyncPolicy> {

@@ -56,6 +56,8 @@ const AdminSettingsPage: React.FC = () => {
     triggerSettingsSave,
     handleModelSelectionChange,
     handleReviewContextEnabledChange,
+    handleReviewContextBudgetPercentCommit,
+    handleRemoveLegacyReviewCap,
     addWhitelistItem,
     removeWhitelistItem,
     addPrimaryLabel,
@@ -105,7 +107,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'model-selection',
       category: 'models',
-      searchText: 'model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context token limit',
+      searchText: 'model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
       content: (
         <AIModelSelectionSection
           settings={{
@@ -118,7 +120,8 @@ const AdminSettingsPage: React.FC = () => {
             pr_review_prompt: settings.pr_review_prompt,
             pr_review_context_enabled: settings.pr_review_context_enabled,
             pr_review_context_model: settings.pr_review_context_model,
-            pr_review_max_context_tokens: settings.pr_review_max_context_tokens
+            pr_review_max_context_tokens: settings.pr_review_max_context_tokens,
+            pr_review_context_budget_percent: settings.pr_review_context_budget_percent
           }}
           summarizationSettings={summarizationSettings}
           agents={agents}
@@ -127,8 +130,9 @@ const AdminSettingsPage: React.FC = () => {
           onReviewPromptChange={(event) => setSettings(previous => ({ ...previous, pr_review_prompt: event.target.value }))}
           onReviewPromptBlur={triggerSettingsSave}
           onReviewContextEnabledChange={handleReviewContextEnabledChange}
-          onReviewMaxContextTokensChange={(value) => setSettings(previous => ({ ...previous, pr_review_max_context_tokens: value }))}
-          onReviewMaxContextTokensBlur={triggerSettingsSave}
+          onReviewContextBudgetPercentChange={(percent) => setSettings(previous => ({ ...previous, pr_review_context_budget_percent: percent }))}
+          onReviewContextBudgetPercentCommit={handleReviewContextBudgetPercentCommit}
+          onRemoveLegacyReviewCap={handleRemoveLegacyReviewCap}
           onSummarizationModelChange={handleSummarizationModelChange}
           onSummarizationFallbackModelChange={handleSummarizationFallbackModelChange}
           onDefaultAgentChange={handleDefaultAgentChange}

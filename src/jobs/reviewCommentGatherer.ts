@@ -21,6 +21,7 @@ import {
     parseStructuredReview,
     stripReviewBoilerplate,
 } from './reviewOutputParser.js';
+import { formatRecordFields } from './reviewRecordFields.js';
 import type {
     ActionableFinding,
     ReviewOutputStatus,
@@ -115,11 +116,13 @@ const PARTIAL_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\bpartial\s*=\s*[
 export function formatActionableFindings(findings: ActionableFinding[]): string {
     return findings.map(finding => [
         `### ${finding.id}: ${finding.title}`,
-        `- **violatedRequirement:** ${finding.violatedRequirement}`,
-        `- **evidence:** ${finding.evidence}`,
-        `- **introducedByPR:** true — ${finding.introducedByPRExplanation}`,
-        `- **requiredForMerge:** true`,
-        `- **minimumCorrection:** ${finding.minimumCorrection}`,
+        formatRecordFields([
+            ['violatedRequirement', finding.violatedRequirement],
+            ['evidence', finding.evidence],
+            ['introducedByPR', `true — ${finding.introducedByPRExplanation}`],
+            ['requiredForMerge', 'true'],
+            ['minimumCorrection', finding.minimumCorrection],
+        ]),
     ].join('\n')).join('\n\n');
 }
 

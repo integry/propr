@@ -8,6 +8,7 @@ import { expect, it, vi } from 'vitest';
 import { TASK_UPDATE } from '@propr/shared';
 import { DesktopCredentialService } from '../../../apps/desktop/src/credential-service';
 import { ProfileStore } from '../../../apps/desktop/src/profile-store';
+import { applyDesktopTestFsyncPolicy } from '../../../apps/desktop/src/profile-store-test-fsync';
 import { createDesktopBridge } from '../../../apps/desktop/src/preload-bridge';
 import { registerIpcHandlers } from '../../../apps/desktop/src/ipc';
 // @ts-expect-error Shared executable HTTP fixture has no declaration file.
@@ -27,6 +28,10 @@ import { DESKTOP_LOGGED_OUT_EVENT } from './types';
 vi.mock('../config/runtimeMode', async importOriginal => ({
   ...await importOriginal<typeof import('../config/runtimeMode')>(), isDesktopRuntime: () => true,
 }));
+
+// The sharded full suite runs this file without native fsync; see the helper.
+// Every pairing, activation and logout here is a durable profile-store write.
+await applyDesktopTestFsyncPolicy();
 
 it('pairs two users through the production bridge, fences late A traffic, logs B out offline and preserves identity after reload', async () => {
   const fixture = await createTwoAccountFixture();

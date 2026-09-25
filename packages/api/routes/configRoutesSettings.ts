@@ -2,6 +2,30 @@ import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 import type { Knex } from 'knex';
+import {
+  REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
+  isValidLegacyReviewMaxContextTokens,
+  isValidReviewContextBudgetPercent,
+  normalizeLegacyReviewMaxContextTokens,
+  normalizeReviewContextBudgetPercent,
+} from '@propr/shared';
+
+/**
+ * Review context budget fields for the settings response. A missing or legacy
+ * `0` percentage reads as automatic (100%); a retained legacy absolute cap is
+ * returned unchanged so clients can explain it (the lower of the two applies).
+ */
+export function reviewContextBudgetSettingsResponse(settings: Record<string, unknown>): {
+  pr_review_max_context_tokens: number;
+  pr_review_context_budget_percent: number;
+} {
+  return {
+    pr_review_max_context_tokens: normalizeLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens),
+    pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settings.pr_review_context_budget_percent),
+  };
+}
 
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
@@ -157,11 +181,15 @@ async function normalizePrReviewContextSettings(settings: Record<string, unknown
     normalized = { ...settings, pr_review_context_model: model };
   }
 
-  if ('pr_review_max_context_tokens' in settings) {
-    const value = settings.pr_review_max_context_tokens;
-    if (!Number.isSafeInteger(value) || (value !== 0 && ((value as number) < 10_000 || (value as number) > 2_000_000))) {
-      throw new ConfigRouteError(400, { error: 'pr_review_max_context_tokens must be 0 (automatic) or an integer between 10000 and 2000000' });
-    }
+  if ('pr_review_max_context_tokens' in settings && !isValidLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens)) {
+    throw new ConfigRouteError(400, {
+      error: `pr_review_max_context_tokens must be 0 (no legacy cap) or an integer between ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN} and ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX}`,
+    });
+  }
+  if ('pr_review_context_budget_percent' in settings && !isValidReviewContextBudgetPercent(settings.pr_review_context_budget_percent)) {
+    throw new ConfigRouteError(400, {
+      error: `pr_review_context_budget_percent must be one of ${REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS.join(', ')}`,
+    });
   }
   return normalized;
 }

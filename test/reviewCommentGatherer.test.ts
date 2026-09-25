@@ -1252,9 +1252,9 @@ describe('demonstrated-failure findings survive publication and /fix gathering',
         assert.ok(section.includes('Proposed regression (not executed)'));
     });
 
-    // Why the prompt insists every field stays on one line: the record parser
-    // reads one line per field, so a wrapped evidence line loses its tail.
-    test('a wrapped evidence field silently loses the rest of the failure sequence', () => {
+    // Fields used to be read one line at a time, so a wrapped evidence line
+    // lost its tail. Indented continuation lines now stay with the field.
+    test('a wrapped evidence field keeps the rest of the failure sequence', () => {
         const multiLine = SCENARIO_REVIEW.replace(
             `- **evidence:** ${SCENARIO_EVIDENCE}`,
             '- **evidence:** src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two recoverable runs\n  1) ProPR cancels A -> 2) the cancel call for B returns 403',
@@ -1262,11 +1262,11 @@ describe('demonstrated-failure findings survive publication and /fix gathering',
 
         assert.strictEqual(
             extractStructuredActionableFindings(multiLine)[0].evidence,
-            'src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two recoverable runs',
+            'src/jobs/suspensionRecovery.ts:88 \u2014 trigger: two recoverable runs\n1) ProPR cancels A -> 2) the cancel call for B returns 403',
         );
         const published = renderPublicReview(multiLine, undefined, {
             changedFilePaths: ['src/jobs/suspensionRecovery.ts'],
         });
-        assert.ok(published && !published.includes('the cancel call for B returns 403'));
+        assert.ok(published?.includes('\n  1) ProPR cancels A -> 2) the cancel call for B returns 403'));
     });
 });

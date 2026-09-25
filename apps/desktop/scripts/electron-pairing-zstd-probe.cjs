@@ -68,18 +68,46 @@ app.whenReady().then(async () => {
 
   // A saturated CI worker does not stall one loopback request — it stalls the
   // loopback path outright and then recovers: a shared worker ran five straight
-  // requests into the deadline over ~40s and served the sixth immediately. That
-  // is a worker outage rather than a compression result, so a stalled path is
-  // retried until one shared wall-clock budget is spent, and every stall is
-  // reported so the test can surface it. A counted retry budget cannot express
-  // that: the first path to stall spends it, and the endpoints after it are
-  // then reported as failures of an outage they never got to outlive.
+  // requests into the deadline over ~40s and served the sixth immediately. A
+  // freshly launched Electron can also wait more than 40s for the default
+  // session's network stack to start before its first request lands. Neither
+  // is a compression result, so both draw on one shared wall-clock budget: the
+  // default session must first reach the loopback server with a plain request,
+  // and only then are the pairing requests measured, a stalled path being
+  // retried until the same budget is spent. Every stall is reported so the
+  // test can surface it. A counted retry budget cannot express that: the first
+  // path to stall spends it, and the endpoints after it are then reported as
+  // failures of an outage they never got to outlive.
   //
   // Only a stall is retried. Every other outcome, decode failures included, is
   // the result this probe exists to report. Each stalled attempt costs at least
   // the header deadline above, so the budget also bounds the attempt count.
-  const stalls = [];
   const stallDeadline = Date.now() + stallBudgetMs;
+  const readinessAttemptMs = 15_000;
+  const awaitReadiness = async () => {
+    const started = Date.now();
+    const elapsed = () => Date.now() - started;
+    let attempts = 0;
+    let lastFailure = '';
+    while (Date.now() < stallDeadline) {
+      attempts += 1;
+      try {
+        const response = await electronFetch(new URL('/ready', endpoint).href, {
+          signal: AbortSignal.timeout(Math.max(1, Math.min(readinessAttemptMs, stallDeadline - Date.now()))),
+        });
+        await response.arrayBuffer();
+        if (response.ok) return { attempts, elapsedMs: elapsed(), ready: true };
+        lastFailure = `status ${response.status}`;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : String(error);
+      }
+      // A refused connection fails at once; do not spin on it.
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 250));
+    }
+    return { attempts, elapsedMs: elapsed(), lastFailure, ready: false };
+  };
+
+  const stalls = [];
   const request = async path => {
     for (;;) {
       const attempt = await requestOnce(path);
@@ -89,13 +117,15 @@ app.whenReady().then(async () => {
     }
   };
 
-  process.stdout.write(`${JSON.stringify({
+  const readiness = await awaitReadiness();
+  process.stdout.write(`${JSON.stringify(readiness.ready ? {
+    readiness,
     valid: await request('/valid'),
     decodedOverLimit: await request('/decoded-over-limit'),
     truncated: await request('/truncated'),
     stacked: await request('/stacked'),
     stalls,
-  })}\n`);
+  } : { readiness })}\n`);
   app.quit();
 }).catch(error => {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);

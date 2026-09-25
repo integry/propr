@@ -232,6 +232,30 @@ export {
 // Export the default review guidance (the overridable part of the /review prompt)
 export { DEFAULT_REVIEW_GUIDANCE } from './reviewPrompt.js';
 
+export {
+  REVIEW_CONTEXT_BUDGET_PERCENT_MIN,
+  REVIEW_CONTEXT_BUDGET_PERCENT_MAX,
+  REVIEW_CONTEXT_BUDGET_PERCENT_STEP,
+  DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
+  REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX,
+  REVIEW_OUTPUT_TOKEN_RESERVE,
+  REVIEW_FALLBACK_CONTEXT_WINDOW,
+  isValidReviewContextBudgetPercent,
+  normalizeReviewContextBudgetPercent,
+  isValidLegacyReviewMaxContextTokens,
+  normalizeLegacyReviewMaxContextTokens,
+  resolveReviewInputCapacity,
+  resolveReviewInputCeiling,
+  type ReviewCapacitySource,
+  type ReviewTokenizerProfile,
+  type ReviewRouteDescriptor,
+  type ReviewInputCapacity,
+  type ReviewInputCeiling,
+  type ReviewInputCeilingLimit,
+} from './reviewContextBudget.js';
+
 // Export the owner/repo slug parser shared by the CLI and API
 export { parseProjectSlug } from './projectSlug.js';
 

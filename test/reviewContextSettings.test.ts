@@ -38,8 +38,19 @@ describe('PR review context setting validation', () => {
             ...unusedDependencies,
         });
         assert.equal(result.status, 400);
-        assert.match(String(result.body.error), /must be 0 \(automatic\)/);
+        assert.match(String(result.body.error), /must be 0 \(no legacy cap\)/);
     });
+
+    for (const invalid of [0, 5, 15, 110, 50.5, '50', null]) {
+        test(`rejects review context budget percentage ${JSON.stringify(invalid)} before persistence`, async () => {
+            const result = await saveSettingsWithRollback({
+                settings: { pr_review_context_budget_percent: invalid },
+                ...unusedDependencies,
+            });
+            assert.equal(result.status, 400);
+            assert.match(String(result.body.error), /pr_review_context_budget_percent must be one of 10, 20, 30, 40, 50, 60, 70, 80, 90, 100/);
+        });
+    }
 
     test('reports context-scout model validation errors using the context setting name', async () => {
         const result = await saveSettingsWithRollback({

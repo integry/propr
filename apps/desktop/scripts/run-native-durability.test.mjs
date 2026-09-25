@@ -15,7 +15,8 @@ const harness = `
     assert.equal(executable, process.execPath);
     assert.deepEqual(args.slice(1), [
       '--test', '--test-concurrency=1',
-      'src/profile-store.test.ts', 'src/credential-service.test.ts',
+      'src/profile-store.test.ts', 'src/profile-store.crash-recovery.test.ts',
+      'src/credential-service.test.ts',
       'src/pairing-response-lifecycle.test.ts',
       'src/credential-service.pairing-browser.test.ts',
     ]);
@@ -37,7 +38,8 @@ const harness = `
 
 const suiteCounts = [
   ['main-process desktop credential service', 87],
-  ['desktop profile store', 37],
+  ['desktop profile store', 33],
+  ['desktop profile store crash recovery', 4],
   ['desktop pairing service IPC native shutdown lifecycle', 10],
   ['DesktopCredentialService pairing browser sink', 7],
 ];
@@ -85,7 +87,8 @@ test('accepts the exact 141-test inventory after both child pipes drain', () => 
 for (const [name, from, to] of [
   ['stale credential inventory', '1..87', '1..86'],
   ['extra credential test', '1..87', '1..88'],
-  ['wrong suite distribution', '1..37', '1..36'],
+  ['wrong suite distribution', '1..33', '1..32'],
+  ['wrong profile store split', '1..4\nok 3', '1..3\nok 3'],
   ['missing executed test', '# tests 141', '# tests 140'],
   ['extra executed test', '# tests 141', '# tests 142'],
   ['missing passing test', '# pass 141', '# pass 140'],

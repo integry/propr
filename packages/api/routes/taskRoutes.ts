@@ -5,6 +5,7 @@ import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCo
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { ACTIVE_TASK_LIFECYCLE_STATES } from '@propr/shared';
 import { getTasksFromDb } from './taskHelpers.js';
+import { isPullRequestTask } from './pullRequestTaskIdentity.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
 
@@ -26,10 +27,10 @@ interface TaskRecord {
  * to the task's pull request; implementation tasks keep their source issue in
  * issue_number and the created PR in pr_number.
  */
-function resolveFollowupThread(task: TaskRecord, targetsPullRequest: boolean): { number?: number; error: string } {
+export function resolveFollowupThread(task: TaskRecord, targetsPullRequest: boolean): { number?: number; error: string } {
   return targetsPullRequest
     // PR comment tasks record their pull request as the issue number; other tasks must have a PR of their own.
-    ? { number: task.pr_number ?? (task.task_type === 'pr-comment' ? task.issue_number : undefined), error: 'Task does not have a valid GitHub pull request' }
+    ? { number: task.pr_number ?? (isPullRequestTask(task) ? task.issue_number : undefined), error: 'Task does not have a valid GitHub pull request' }
     : { number: task.issue_number, error: 'Task does not have valid GitHub issue information' };
 }
 
@@ -362,7 +363,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       // Get branch name for PR-based tasks
       let branchName: string | undefined;
-      if (targetsPullRequest || task.task_type === 'pr-comment') {
+      if (targetsPullRequest || isPullRequestTask(task)) {
         try {
           const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner: repoOwner,

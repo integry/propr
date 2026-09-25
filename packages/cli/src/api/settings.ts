@@ -7,7 +7,15 @@
  */
 
 import { ApiClient, createApiClient } from "./client.js";
-import { REASONING_LEVELS, normalizeModelReasoningLevel } from "@propr/shared";
+import {
+  REASONING_LEVELS,
+  REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
+  isValidLegacyReviewMaxContextTokens,
+  isValidReviewContextBudgetPercent,
+  normalizeModelReasoningLevel,
+} from "@propr/shared";
 
 /**
  * Maximum allowed length for the free-form `pr_review_prompt` setting.
@@ -85,8 +93,14 @@ export interface SystemSettings {
   /** Model used by the read-only PR review context scout. */
   pr_review_context_model: string;
 
-  /** Maximum PR review input context in tokens; 0 selects the model-aware automatic limit. */
+  /**
+   * Legacy absolute PR review input token cap; 0 means no cap. When positive,
+   * the lower of this cap and the percentage budget applies.
+   */
   pr_review_max_context_tokens: number;
+
+  /** Review context budget: percentage (10-100, steps of 10) of each reviewer's safe input capacity. */
+  pr_review_context_budget_percent: number;
 
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
@@ -205,8 +219,11 @@ export interface UpdateSettingsOptions {
   /** Model used by the read-only PR review context scout. */
   pr_review_context_model?: string;
 
-  /** Maximum PR review input context in tokens; 0 selects the model-aware automatic limit. */
+  /** Legacy absolute PR review input token cap; 0 removes it. */
   pr_review_max_context_tokens?: number;
+
+  /** Review context budget percentage (10-100, steps of 10). */
+  pr_review_context_budget_percent?: number;
 
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
@@ -267,6 +284,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "pr_review_context_enabled",
   "pr_review_context_model",
   "pr_review_max_context_tokens",
+  "pr_review_context_budget_percent",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -340,12 +358,16 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "pr_review_max_context_tokens": {
-      if (!/^\d+$/.test(value)) {
-        throw new Error(`Invalid value for ${key}: must be 0 or an integer between 10000 and 2000000`);
+      const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+      if (!isValidLegacyReviewMaxContextTokens(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be 0 (no legacy cap) or an integer between ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN} and ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX}`);
       }
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed) || (parsed !== 0 && (parsed < 10000 || parsed > 2000000))) {
-        throw new Error(`Invalid value for ${key}: must be 0 or an integer between 10000 and 2000000`);
+      return parsed;
+    }
+    case "pr_review_context_budget_percent": {
+      const parsed = /^\d+%?$/.test(value) ? Number(value.replace(/%$/, "")) : Number.NaN;
+      if (!isValidReviewContextBudgetPercent(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be one of ${REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS.join(", ")}`);
       }
       return parsed;
     }

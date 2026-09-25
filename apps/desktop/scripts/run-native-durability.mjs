@@ -5,7 +5,8 @@ const EXPECTED = Object.freeze({
   // Includes active-work v3 goal-count coverage, scoped logout/recovery, and
   // the 11 credential regressions from #2299.
   'credential-service': 87,
-  'profile-store': 37,
+  'profile-store': 33,
+  'profile-store-crash-recovery': 4,
   'pairing-shutdown': 10,
   'pairing-browser': 7,
 });
@@ -16,6 +17,7 @@ const child = spawn(process.execPath, [
   '--test',
   '--test-concurrency=1',
   'src/profile-store.test.ts',
+  'src/profile-store.crash-recovery.test.ts',
   'src/credential-service.test.ts',
   'src/pairing-response-lifecycle.test.ts',
   'src/credential-service.pairing-browser.test.ts',
@@ -43,10 +45,12 @@ const result = await new Promise((resolve, reject) => {
   child.once('close', (code, signal) => resolve({ code, signal }));
 });
 
+// Suite names are matched to the end of the line: 'desktop profile store' is a
+// prefix of 'desktop profile store crash recovery'.
 const plannedForSuite = (suiteName) => {
   const escaped = suiteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = output.match(new RegExp(
-    `# Subtest: ${escaped}[\\s\\S]*?\\n    1\\.\\.(\\d+)\\n(?:ok|not ok) \\d+ - ${escaped}`,
+    `# Subtest: ${escaped}(?=\\r?\\n)[\\s\\S]*?\\n    1\\.\\.(\\d+)\\n(?:ok|not ok) \\d+ - ${escaped}(?=\\r?\\n|$)`,
   ));
   return match ? Number(match[1]) : 0;
 };
@@ -54,6 +58,7 @@ const plannedForSuite = (suiteName) => {
 const executed = {
   'credential-service': plannedForSuite('main-process desktop credential service'),
   'profile-store': plannedForSuite('desktop profile store'),
+  'profile-store-crash-recovery': plannedForSuite('desktop profile store crash recovery'),
   'pairing-shutdown': plannedForSuite('desktop pairing service IPC native shutdown lifecycle'),
   'pairing-browser': plannedForSuite('DesktopCredentialService pairing browser sink'),
 };

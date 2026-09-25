@@ -79,6 +79,31 @@ Focus on security and error handling.
 
 Reviews are read-only — the agent is instructed to leave files untouched.
 
+### Review Context Budget
+
+**Settings → AI & Models → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
+
+| Runtime | Context window used | Source |
+|---|---|---|
+| Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.280 |
+| Codex | 272K for every listed model, including GPT-6 Astra | `context_window` in the models catalog bundled with Codex CLI 0.154.0; larger windows are opt-in through `model_context_window`, which ProPR does not set |
+| Other runtimes | ProPR model catalog window, with a runtime reserve of 10% of the window (minimum 16K) | Catalog only; the runtime limit is not verified |
+| Unknown model | 200K (Codex: its historical 272K) | Conservative fallback |
+
+Prompt size is estimated from token counts, not bytes. Text is tokenized with `o200k_base`; Codex routes use that count plus a 10% margin, Claude applies a calibrated 1.84× ratio, and other runtimes 1.85×. Non-ASCII characters always count at least two tokens each. The fully assembled request, including the runtime's analysis suffix, is measured before it is sent. If it still exceeds the ceiling the review is trimmed again, and if the mandatory instructions alone do not fit the review fails with an explicit error. An oversized prompt is never sent.
+
+When a review does not fit, sections are trimmed in this order: related unchanged context, comment history, full changed-file contents, then whole diff files (lockfiles, generated and binary changes first). The original objective, review request and instructions are only trimmed once everything else is gone.
+
+**Precedence with older settings:**
+
+- A missing percentage or the old `pr_review_max_context_tokens: 0` means automatic (100%).
+- A positive `pr_review_max_context_tokens` is kept as a *legacy absolute cap*. Each review uses the lower of the cap and the percentage allowance, so neither a model change nor the percentage can raise it. Settings shows the cap with a **Remove legacy cap** action; the slider never clears it silently.
+- `PR_REVIEW_DIFF_MAX_CHARS` is a memory/I/O guard for the fetched diff (default 4,000,000 characters, clamped to 100,000–16,000,000). It applies before any per-reviewer budget and is logged separately from context limits.
+
+A review whose diff is incomplete is marked partial (`partial="true"`), and the comment separates the reasons. **No patch content from GitHub** means GitHub did not return a patch for the file, and a larger budget cannot recover it. The other reasons are **did not fit the review context budget** and **exceeded the diff size safety guard**. Worker logs record the routed model and runtime, capacity source, window, reserves, percentage, effective ceiling, estimated tokens, per-section token sizes and trim reasons. Prompt text is never logged.
+
+The same setting is available as `propr setting update pr_review_context_budget_percent 60` and through the MCP `update_execution_settings` tool.
+
 ### Review Output Format
 
 Every `/review` comment follows a fixed structure:

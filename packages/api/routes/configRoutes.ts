@@ -8,7 +8,7 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { saveSettingsWithRollback } from './configRoutesSettings.js';
+import { reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
@@ -281,7 +281,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         pr_review_prompt: typeof settings.pr_review_prompt === 'string' ? settings.pr_review_prompt : '',
         pr_review_context_enabled: typeof settings.pr_review_context_enabled === 'boolean' ? settings.pr_review_context_enabled : true,
         pr_review_context_model: typeof settings.pr_review_context_model === 'string' ? settings.pr_review_context_model : '',
-        pr_review_max_context_tokens: typeof settings.pr_review_max_context_tokens === 'number' ? settings.pr_review_max_context_tokens : 0,
+        ...reviewContextBudgetSettingsResponse(settings),
         auto_followup_score_threshold: autoFollowup.value,
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         model_reasoning_level: modelReasoningLevel,

@@ -11,7 +11,9 @@ export interface Settings {
   pr_review_prompt: string;
   pr_review_context_enabled: boolean;
   pr_review_context_model: string;
+  /** Retained legacy absolute cap; 0 when none. */
   pr_review_max_context_tokens: number;
+  pr_review_context_budget_percent: number;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;

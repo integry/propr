@@ -8,7 +8,7 @@
  * `## Suggestions and Follow-ups` sections alongside evaluation and score.
  *
  * `reviewPromptBuilder.ts` only depends on `@propr/shared` (for the default
- * review guidance), which CI builds before running the test suite, so it can be
+ * review guidance) and pure local helpers, which CI builds before running the test suite, so it can be
  * imported directly without building the heavier `@propr/core` package.
  */
 import { test, describe } from 'node:test';
@@ -17,6 +17,7 @@ import { getEncoding } from 'js-tiktoken';
 import { buildAnalysisSafetySuffix } from '../packages/core/src/agents/impl/utils/analysisPromptSafety.js';
 
 const { buildReviewPrompt, buildReviewPromptWithinBudget } = await import('../src/jobs/reviewPromptBuilder.js');
+const { ReviewTokenEstimator } = await import('../src/jobs/reviewTokenEstimator.js');
 
 function baseOptions(overrides: Record<string, unknown> = {}) {
     return {
@@ -224,11 +225,14 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
         const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), REVIEW_TOKEN_CEILING, analysisSafetySuffix);
         const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
-        const conservativeFullyComposedTokens = Buffer.byteLength(fullyComposedRequest, 'utf8');
+        const tokenizedRequestLength = getEncoding('o200k_base').encode(fullyComposedRequest).length;
 
-        assert.equal(result.estimatedTokens, conservativeFullyComposedTokens);
-        assert.ok(conservativeFullyComposedTokens <= REVIEW_TOKEN_CEILING);
-        assert.ok(Buffer.byteLength(result.prompt, 'utf8') < result.estimatedTokens);
+        // The estimate covers the analysis suffix and is a calibrated token
+        // estimate, not a byte count.
+        assert.equal(result.estimatedTokens, new ReviewTokenEstimator('generic-calibrated').estimate(fullyComposedRequest));
+        assert.ok(result.estimatedTokens <= REVIEW_TOKEN_CEILING);
+        assert.ok(tokenizedRequestLength <= result.estimatedTokens);
+        assert.ok(Buffer.byteLength(fullyComposedRequest, 'utf8') > result.estimatedTokens);
     });
 
     test('conservatively caps token-dense Unicode review input', () => {
@@ -301,7 +305,8 @@ const DEMONSTRATED_FAILURE_REQUIREMENTS = [
     'Naming a possible race, a theoretical ordering, or an unproven assumption is not a demonstration.',
     '**Demonstrated failure — required inside the evidence field.**',
     'the specific starting conditions or trigger that reach the changed code',
-    'written inline as `1) ... -> 2) ... -> 3) ...`',
+    'Start with a concise code reference — the exact changed-file path with line or symbol',
+    'written as an indented numbered list (`1.`, `2.`, `3.`) beneath the code reference',
     'the observable user impact, or the incorrect persistent or external state that remains',
     'why the protections already present',
     'do not prevent this exact sequence',
@@ -312,12 +317,13 @@ const DEMONSTRATED_FAILURE_REQUIREMENTS = [
     'never word an unexecuted scenario as though it had been run',
     'name the awaited operation or interruption point',
     'A slow or long-running await alone does not establish that a renewing lease expired',
-    'State inside the evidence line any assumption you could not verify',
+    'State inside the evidence field any assumption you could not verify',
     'speculative hardening and belongs in Suggestions and Follow-ups',
     'Judge minimumCorrection against the demonstrated sequence',
     'Do not demand atomicity that independent external systems cannot provide',
     'never excuses a practical fencing token, ownership check, or reconciliation step',
-    'Keep every field on one single line.',
+    'indent every continuation line by two spaces',
+    'makes the whole review invalid, so never outdent continuation text',
 ];
 
 describe('buildReviewPrompt — demonstrated failure and verification provenance', () => {
@@ -356,13 +362,46 @@ describe('buildReviewPrompt — demonstrated failure and verification provenance
             ['violatedRequirement', 'evidence', 'introducedByPR', 'requiredForMerge', 'minimumCorrection'],
         );
         assert.ok(prompt.includes(
-            '- **evidence:** changed/file.ts:123 — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified',
+            '- **evidence:** `changed/file.ts:123` — trigger, ordered failure sequence, observable consequence, why existing protections do not prevent it, and how it was verified',
         ));
         assert.ok(prompt.includes('- **minimumCorrection:** the smallest correction that removes the demonstrated failure'));
-        // Concise inline evidence, not a generic per-finding checklist.
-        assert.ok(prompt.includes('as one compact inline sequence rather than a per-finding checklist'));
-        assert.ok(prompt.includes('static trace: 1) cancellation of A succeeds -> 2) B returns an explicit 403'));
-        assert.ok(prompt.includes('Proposed regression: assert B is not rerun while A remains recoverable.'));
+        // Readable evidence, not a generic per-finding checklist or padding.
+        assert.ok(prompt.includes('not a per-finding checklist of headings'));
+        assert.ok(prompt.includes('A simple finding may need only a one-line reference, a short sequence, and one sentence; do not pad it.'));
+        assert.ok(!prompt.includes('Keep every field on one single line.'));
+        assert.ok(prompt.includes([
+            '- **evidence:** `src/jobs/recovery.ts:88`, `recoverSuspendedRuns`',
+            '',
+            '  Static trace:',
+            '  1. Cancellation of A succeeds.',
+        ].join('\n')));
+        assert.ok(prompt.includes('  The existing lease guard runs before step 2, so it never observes B\'s intent. Proposed regression: assert B is not rerun while A remains recoverable.'));
+    });
+
+    test('the multiline evidence example satisfies the parser the publisher uses', async () => {
+        const { parseStructuredReview } = await import('../src/jobs/reviewOutputParser.js');
+        const prompt = buildReviewPrompt(baseOptions());
+        const exampleStart = prompt.indexOf('- **evidence:** `src/jobs/recovery.ts:88`');
+        const exampleEnd = prompt.indexOf('\n\n', prompt.indexOf('Proposed regression: assert B', exampleStart));
+        const example = prompt.slice(exampleStart, exampleEnd);
+        const review = [
+            '## Overall Evaluation',
+            'One blocker.',
+            '## Actionable Findings',
+            '### F1: Refused rerun replays',
+            '- **violatedRequirement:** A refused rerun stays refused.',
+            example,
+            '- **introducedByPR:** true — this PR added recovery.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Clear B\'s intent on refusal.',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '## Score',
+            'Score: 5/10',
+        ].join('\n');
+        const [finding] = parseStructuredReview(review).actionableFindings;
+        assert.ok(finding.evidence.startsWith('`src/jobs/recovery.ts:88`, `recoverSuspendedRuns`\n\nStatic trace:\n1. Cancellation of A succeeds.'));
+        assert.ok(finding.evidence.endsWith('Proposed regression: assert B is not rerun while A remains recoverable.'));
     });
 
     test('keeps PR-introduced regressions actionable and the review read-only', () => {

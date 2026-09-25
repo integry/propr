@@ -38,7 +38,7 @@ describe('AIModelSelectionSection', () => {
           pr_review_prompt: '',
           pr_review_context_enabled: true,
           pr_review_context_model: '',
-          pr_review_max_context_tokens: 0
+          pr_review_max_context_tokens: 0, pr_review_context_budget_percent: 100
         }}
         summarizationSettings={{ enabled: true, agent_alias: '' }}
         agents={[]}
@@ -46,8 +46,9 @@ describe('AIModelSelectionSection', () => {
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
         onReviewContextEnabledChange={vi.fn()}
-        onReviewMaxContextTokensChange={vi.fn()}
-        onReviewMaxContextTokensBlur={vi.fn()}
+        onReviewContextBudgetPercentChange={vi.fn()}
+        onReviewContextBudgetPercentCommit={vi.fn()}
+        onRemoveLegacyReviewCap={vi.fn()}
         onSummarizationModelChange={vi.fn()}
         onSummarizationFallbackModelChange={vi.fn()}
         onDefaultAgentChange={vi.fn()}
@@ -78,7 +79,7 @@ describe('AIModelSelectionSection', () => {
         settings={{
           analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
           default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
-          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0
+          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0, pr_review_context_budget_percent: 100
         }}
         summarizationSettings={{ enabled: true, agent_alias: '' }}
         agents={[]}
@@ -86,8 +87,9 @@ describe('AIModelSelectionSection', () => {
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
         onReviewContextEnabledChange={onEnabledChange}
-        onReviewMaxContextTokensChange={vi.fn()}
-        onReviewMaxContextTokensBlur={vi.fn()}
+        onReviewContextBudgetPercentChange={vi.fn()}
+        onReviewContextBudgetPercentCommit={vi.fn()}
+        onRemoveLegacyReviewCap={vi.fn()}
         onSummarizationModelChange={vi.fn()}
         onSummarizationFallbackModelChange={vi.fn()}
         onDefaultAgentChange={vi.fn()}
@@ -107,7 +109,7 @@ describe('AIModelSelectionSection', () => {
         settings={{
           analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
           default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
-          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0
+          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0, pr_review_context_budget_percent: 100
         }}
         summarizationSettings={{ enabled: true, agent_alias: '' }}
         agents={[]}
@@ -122,8 +124,9 @@ describe('AIModelSelectionSection', () => {
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
         onReviewContextEnabledChange={vi.fn()}
-        onReviewMaxContextTokensChange={vi.fn()}
-        onReviewMaxContextTokensBlur={vi.fn()}
+        onReviewContextBudgetPercentChange={vi.fn()}
+        onReviewContextBudgetPercentCommit={vi.fn()}
+        onRemoveLegacyReviewCap={vi.fn()}
         onSummarizationModelChange={vi.fn()}
         onSummarizationFallbackModelChange={vi.fn()}
         onDefaultAgentChange={vi.fn()}

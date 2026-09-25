@@ -5,7 +5,12 @@
  * fields. GitHub comments use a smaller public contract whose section and F#
  * heading carry those policy meanings. Both forms remain parseable so /fix can
  * consume new comments while older comments continue to work.
+ *
+ * Record fields may span several lines using the continuation grammar in
+ * `reviewRecordFields.ts`; older single-line records parse unchanged.
  */
+
+import { extractRecordFields, formatRecordFields, hasRecordFieldHeader } from './reviewRecordFields.js';
 
 export type ReviewOutputStatus = 'valid_with_blockers' | 'valid_clean' | 'invalid';
 
@@ -77,20 +82,6 @@ function extractMarkdownSection(body: string, heading: string): string {
     return (nextHeading ? rest.slice(0, nextHeading.index) : rest).trim();
 }
 
-function extractRecordFields(block: string): Map<string, string> {
-    const fields = new Map<string, string>();
-    for (const line of block.split('\n')) {
-        const bold = line.match(/^[-*]\s+\*\*([^*]+)\*\*\s*(.*)$/);
-        const plain = line.match(/^[-*]\s+([A-Za-z][A-Za-z0-9 -]*):\s*(.*)$/);
-        const rawKey = bold?.[1] ?? plain?.[1];
-        if (!rawKey) continue;
-        const key = rawKey.replace(/:$/, '').replace(/[\s-]/g, '').toLowerCase();
-        const value = (bold?.[2] ?? plain?.[2] ?? '').replace(/^:\s*/, '').trim();
-        fields.set(key, value);
-    }
-    return fields;
-}
-
 interface MarkdownRecord {
     id: string;
     title: string;
@@ -147,13 +138,24 @@ function hasSequentialRecordHeadings(
         && records.every((record, index) => record.id === `${prefix}${firstNumber + index}`);
 }
 
+const MACHINE_FINDING_FIELDS: ReadonlySet<string> = new Set([
+    'violatedrequirement',
+    'evidence',
+    'introducedbypr',
+    'requiredformerge',
+    'minimumcorrection',
+]);
+
+const PUBLIC_FINDING_FIELDS: ReadonlySet<string> = new Set(['requiredbehavior', 'evidence', 'minimumfix']);
+
 function parseMachineActionableRecords(section: string): ActionableFinding[] | null {
     const records = extractMarkdownRecords(section, 'F');
     if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'F', { requireFirstId: 1 })) return null;
 
     const findings: ActionableFinding[] = [];
     for (const record of records) {
-        const fields = extractRecordFields(record.body);
+        const fields = extractRecordFields(record.body, MACHINE_FINDING_FIELDS);
+        if (!fields) return null;
         const violatedRequirement = fields.get('violatedrequirement') ?? '';
         const evidence = fields.get('evidence') ?? '';
         const introducedByPR = fields.get('introducedbypr') ?? '';
@@ -190,7 +192,8 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
 
     const findings: ActionableFinding[] = [];
     for (const record of records) {
-        const fields = extractRecordFields(record.body);
+        const fields = extractRecordFields(record.body, PUBLIC_FINDING_FIELDS);
+        if (!fields) return null;
         const violatedRequirement = fields.get('requiredbehavior') ?? '';
         const evidence = fields.get('evidence') ?? '';
         const minimumCorrection = fields.get('minimumfix') ?? '';
@@ -220,7 +223,7 @@ function parseSuggestionRecords(
         records.length === 0
         || !hasSequentialRecordHeadings(section, records, 'S', { requireFirstId: 1 })
         || records.some(record => options.requireDescription && record.body === '')
-        || records.some(record => extractRecordFields(record.body).size > 0)
+        || records.some(record => hasRecordFieldHeader(record.body))
         || records.some(record => /^#{1,6}[ \t]+/m.test(record.body))
     ) return null;
     return records.map(record => ({
@@ -334,9 +337,11 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
     if (findings.length === 0) return 'No merge blockers.';
     return findings.map(finding => [
         `### ${finding.id}: 🔴 ${finding.title}`,
-        `- **Required behavior:** ${finding.violatedRequirement}`,
-        `- **Evidence:** ${finding.evidence}`,
-        `- **Minimum fix:** ${finding.minimumCorrection}`,
+        formatRecordFields([
+            ['Required behavior', finding.violatedRequirement],
+            ['Evidence', finding.evidence],
+            ['Minimum fix', finding.minimumCorrection],
+        ]),
     ].join('\n')).join('\n\n');
 }
 
@@ -355,7 +360,7 @@ function evidenceReferencesChangedFile(evidence: string, changedFilePaths: reado
     return changedFilePaths.some(rawPath => {
         const path = rawPath.replace(/\\/g, '/');
         const escapedPath = escapeRegExp(path);
-        return new RegExp(`(?:^|[\\s\`'"(\\[])${escapedPath}(?=[:#\\s\`'",)\\]])`).test(normalizedEvidence);
+        return new RegExp(`(?:^|[\\s\`'"(\\[])${escapedPath}(?=[:#\\s\`'",)\\]]|$)`).test(normalizedEvidence);
     });
 }
 

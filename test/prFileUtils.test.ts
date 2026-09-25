@@ -97,7 +97,7 @@ describe('formatPRDiff', () => {
         assert.ok(diff.includes('1 file was omitted'), 'should report omitted files');
         assert.ok(diff.includes('**Files omitted from review diff:**'), 'should include omitted file list for the prompt');
         assert.ok(diff.includes('- package-lock.json'), 'should identify omitted lockfile');
-        assert.ok(diff.includes('patch content was unavailable from GitHub or did not fit'));
+        assert.ok(diff.includes('Did not fit the review context budget (1):'));
         assert.ok(diff.includes('Large, binary, generated, and lockfile changes are deprioritized'));
     });
 
@@ -115,6 +115,8 @@ describe('formatPRDiff', () => {
         assert.ok(!result.diff.includes('## src/large-change.ts'));
         assert.ok(result.diff.includes('Review diff is partial'));
         assert.ok(result.diff.includes('- src/large-change.ts'));
+        assert.ok(result.diff.includes('GitHub supplied no patch content; a larger review budget cannot recover these (1):'));
+        assert.ok(!result.diff.includes('Did not fit the review context budget'));
     });
 
     test('does not treat a recognized binary file as missing text coverage', () => {

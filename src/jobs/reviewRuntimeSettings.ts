@@ -1,4 +1,5 @@
 import { loadSettings } from '@propr/core';
+import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, normalizeLegacyReviewMaxContextTokens, normalizeReviewContextBudgetPercent } from '@propr/shared';
 import type { Logger } from 'pino';
 
 export interface ReviewRuntimeSettings {
@@ -6,7 +7,10 @@ export interface ReviewRuntimeSettings {
     reviewContextEnabled: boolean;
     reviewContextModel: string;
     fastAnalysisModel: string;
+    /** Retained legacy absolute token cap (`pr_review_max_context_tokens`); 0 = none. */
     configuredReviewMaxContextTokens: number;
+    /** Percentage of each reviewer's safe input capacity; missing/legacy 0 = 100. */
+    reviewContextBudgetPercent: number;
 }
 
 export async function loadReviewRuntimeSettings(correlatedLogger: Logger): Promise<ReviewRuntimeSettings> {
@@ -17,6 +21,7 @@ export async function loadReviewRuntimeSettings(correlatedLogger: Logger): Promi
         reviewContextModel: '',
         fastAnalysisModel: fastAnalysisModelDefault,
         configuredReviewMaxContextTokens: 0,
+        reviewContextBudgetPercent: DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
     };
     try {
         const configured = await loadSettings() as Record<string, unknown>;
@@ -27,9 +32,8 @@ export async function loadReviewRuntimeSettings(correlatedLogger: Logger): Promi
             fastAnalysisModel: typeof configured.analysis_model_fast === 'string'
                 ? configured.analysis_model_fast
                 : fastAnalysisModelDefault,
-            configuredReviewMaxContextTokens: typeof configured.pr_review_max_context_tokens === 'number' && Number.isInteger(configured.pr_review_max_context_tokens)
-                ? configured.pr_review_max_context_tokens
-                : 0,
+            configuredReviewMaxContextTokens: normalizeLegacyReviewMaxContextTokens(configured.pr_review_max_context_tokens),
+            reviewContextBudgetPercent: normalizeReviewContextBudgetPercent(configured.pr_review_context_budget_percent),
         };
     } catch (error) {
         correlatedLogger.warn({ error: (error as Error).message }, 'Failed to load review settings, using defaults');

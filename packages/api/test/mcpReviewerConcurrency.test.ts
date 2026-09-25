@@ -72,7 +72,7 @@ test('real MCP catalog and shared persistence reject stale repository and agent 
     const denied = await call('create_repository_configuration', { repository: 'outside/grant', baseBranch: 'main' });
     assert.equal(denied.state, 'browser_required'); assert.equal(denied.result.changed, false);
     assert.ok(!(await core.loadMonitoredReposRaw()).some(repo => repo.name === 'outside/grant'));
-    const settings = { worker_concurrency: 7, analysis_model_fast: 'one:test-model', planner_context_model: 'one:test-model', pr_review_prompt: 'Require evidence', pr_review_context_enabled: false, pr_review_context_model: '', pr_review_max_context_tokens: 12000 };
+    const settings = { worker_concurrency: 7, analysis_model_fast: 'one:test-model', planner_context_model: 'one:test-model', pr_review_prompt: 'Require evidence', pr_review_context_enabled: false, pr_review_context_model: '', pr_review_max_context_tokens: 12000, pr_review_context_budget_percent: 60 };
     assert.equal((await call('update_execution_settings', { settings })).state, 'completed');
     const read = await call('get_execution_settings', {});
     for (const [key, value] of Object.entries(settings)) assert.equal(read[key], value);

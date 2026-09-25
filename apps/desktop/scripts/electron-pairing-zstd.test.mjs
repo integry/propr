@@ -12,9 +12,11 @@ const fixture = resolve(dirname(fileURLToPath(import.meta.url)), 'electron-pairi
 // A shared CI worker can take the whole loopback path away and give it back:
 // one run stalled every request for ~40s and then served the next one at once.
 // The probe waits that outage out inside the budget it is given, so a budget
-// sizes an outage rather than any single request. A healthy worker spends none
-// of it — these launches take about a second, and one that rides out a 40s
-// outage still lands well inside the numbers below.
+// sizes an outage rather than any single request. The probe's wait for the
+// default session's network stack to start draws on the same budget, so a slow
+// start-up and a later outage cannot each claim a full budget of their own. A
+// healthy worker spends none of it — these launches take about a second, and
+// one that rides out a 40s outage still lands well inside the numbers below.
 //
 // `scripts/run-test-suite.mjs` bounds this whole unit at 180s and the Electron
 // download in `before` draws on the same ceiling, so the two launches are
@@ -51,13 +53,19 @@ describe('Electron pairing response compression', () => {
     setup = prepareNativeElectronTest({ allowHeadlessLinux: true });
   }, { timeout: 120_000 });
 
-  // `stalledRequests` leading requests are accepted and never answered, which
-  // is what a worker whose loopback path has briefly gone away looks like from
-  // the probe. They are not recorded: only a served request is coverage.
+  // `stalledRequests` leading pairing requests are accepted and never
+  // answered, which is what a worker whose loopback path has briefly gone away
+  // looks like from the probe. They are not recorded: only a served request is
+  // coverage.
   const runProbe = async ({ budgetMs, context, stalledRequests = 0 }) => {
     const received = [];
     let handled = 0;
     const server = createServer((request, response) => {
+      // The probe's readiness request only proves the network stack is up.
+      if (request.url === '/ready') {
+        response.writeHead(204).end();
+        return;
+      }
       handled += 1;
       if (handled <= stalledRequests) return;
       received.push({ acceptEncoding: request.headers['accept-encoding'], path: request.url });
@@ -94,9 +102,22 @@ describe('Electron pairing response compression', () => {
         timeout: launchTimeout(budgetMs),
       });
 
-      // Reported before any assertion: a worker that ran out of budget fails
-      // the coverage assertion below, and the stall counts are what say whether
-      // the endpoint or the worker was at fault.
+      const evidence = JSON.stringify(report);
+      assert.equal(
+        report.readiness?.ready,
+        true,
+        `Electron's default session never reached the loopback server: ${evidence}`,
+      );
+      // A start-up slower than the probe's header deadline would have stalled
+      // a measured request without the readiness wait.
+      if (report.readiness.attempts > 1 || report.readiness.elapsedMs >= 2_000) {
+        context.diagnostic(
+          `default session needed ${report.readiness.attempts} requests and ${report.readiness.elapsedMs}ms to reach the loopback server`,
+        );
+      }
+      // Reported before any assertion on the pairing results: a worker that ran
+      // out of budget fails the coverage assertion in the caller, and the stall
+      // counts are what say whether the endpoint or the worker was at fault.
       if (report.stalls.length > 0) {
         const counts = new Map();
         for (const path of report.stalls) counts.set(path, (counts.get(path) ?? 0) + 1);
@@ -104,7 +125,7 @@ describe('Electron pairing response compression', () => {
           .map(([path, count]) => `${path} x${count}`)
           .join(', ')}`);
       }
-      return { evidence: JSON.stringify(report), received, report };
+      return { evidence, received, report };
     } finally {
       // A stalled request is still holding its socket, and `close` alone waits
       // for it.

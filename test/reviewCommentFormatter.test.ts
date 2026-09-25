@@ -328,8 +328,51 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(comment.includes('**Review scope:** Partial'));
-        assert.ok(comment.includes('PR diff files or ranges were unavailable from GitHub or omitted'));
+        assert.ok(comment.includes('PR diff ranges were omitted by the review context budget'));
         assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
+    });
+
+    test('explains missing GitHub patches separately from budget omissions', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'codex', model: 'gpt-6-astra', label: 'Astra' },
+            {
+                response: '## Overall Evaluation\nPartial review.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 7/10',
+                modelUsed: 'gpt-6-astra',
+                executionTimeMs: 1200,
+                success: true,
+            },
+            undefined,
+            {
+                omittedDiffFiles: ['src/huge.ts', 'src/budget.ts'],
+                missingPatchFiles: ['src/huge.ts'],
+                budgetOmittedFiles: ['src/budget.ts'],
+                prDiffTruncated: true,
+            },
+        );
+
+        assert.ok(comment.includes('1 changed file has no patch content from GitHub, which a larger review budget cannot recover'));
+        assert.ok(comment.includes('1 file was omitted by the review context budget'));
+        assert.ok(comment.includes('**No patch content from GitHub (a larger review budget cannot recover these)**'));
+        assert.ok(comment.includes('**Did not fit the review context budget**'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="gpt-6-astra" partial="true" -->'));
+    });
+
+    test('keeps a review with only missing GitHub patches partial without blaming the budget', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'codex', model: 'gpt-6-astra', label: 'Astra' },
+            {
+                response: '## Overall Evaluation\nPartial review.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 7/10',
+                modelUsed: 'gpt-6-astra',
+                executionTimeMs: 1200,
+                success: true,
+            },
+            undefined,
+            { omittedDiffFiles: ['src/huge.ts'], missingPatchFiles: ['src/huge.ts'], budgetOmittedFiles: [] },
+        );
+
+        assert.ok(comment.includes('**Review scope:** Partial — 1 changed file has no patch content from GitHub'));
+        assert.ok(!comment.includes('omitted by the review context budget'));
+        assert.ok(comment.includes('partial="true"'));
     });
 
     test('counts cache tokens as input tokens and includes cost', () => {

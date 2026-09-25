@@ -18,7 +18,7 @@ import {
   AgentConfig,
   SummarizationSettings
 } from '../../api/proprApi';
-import type { InstanceCatalogAgent } from '@propr/shared';
+import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import {
   getAgentTankSettings,
   updateAgentTankSettings,
@@ -76,6 +76,7 @@ export function useSettingsState() {
     pr_review_context_enabled: true,
     pr_review_context_model: '',
     pr_review_max_context_tokens: 0,
+    pr_review_context_budget_percent: DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60
@@ -160,6 +161,7 @@ export function useSettingsState() {
         pr_review_context_enabled: settingsToSave.pr_review_context_enabled,
         pr_review_context_model: settingsToSave.pr_review_context_model,
         pr_review_max_context_tokens: settingsToSave.pr_review_max_context_tokens,
+        pr_review_context_budget_percent: settingsToSave.pr_review_context_budget_percent,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
@@ -306,6 +308,20 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleReviewContextBudgetPercentCommit = useCallback((percent: number) => {
+    const newSettings = { ...settings, pr_review_context_budget_percent: percent };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
+  // Removing a legacy absolute cap is always an explicit action; moving the
+  // slider never clears it.
+  const handleRemoveLegacyReviewCap = useCallback(() => {
+    const newSettings = { ...settings, pr_review_max_context_tokens: 0 };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
   const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
     setSummarizationSettings(newSettings);
     if (summarizationSaveTimeoutRef.current) clearTimeout(summarizationSaveTimeoutRef.current);
@@ -414,6 +430,7 @@ export function useSettingsState() {
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
     triggerSettingsSave, handleModelSelectionChange, handleReviewContextEnabledChange,
+    handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
