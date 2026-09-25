@@ -404,7 +404,7 @@ test('connected apps show last-seen and recent request counts from the access lo
   await recordMcpAccess(db, { occurredAt: now - 2 * 3_600_000, grantId: 'grant-1', kind: 'tool', name: 'list_goals', status: 200, outcome: 'success' });
   await recordMcpAccess(db, { occurredAt: now - 40 * 3_600_000, grantId: 'grant-1', kind: 'tool', name: 'list_goals', status: 200, outcome: 'success' });
 
-  const activity = await loadMcpGrantActivity(db, ['grant-1', 'grant-2'], now);
+  const activity = (await loadMcpGrantActivity(db, ['grant-1', 'grant-2'], now))!;
   assert.equal(activity.get('grant-1')!.lastSeenAt, now - 2 * 3_600_000);
   assert.equal(activity.get('grant-1')!.recentRequests, 1);
   assert.equal(activity.get('grant-2'), undefined);
@@ -418,12 +418,23 @@ test('connected apps show last-seen and recent request counts from the access lo
   assert.match(used, /Last used 2h ago/);
   assert.match(used, /1 request in the last 24h/);
   assert.match(renderConnectedApp(grant, '', { lastSeenAt: now, recentRequests: 4 }), /4 requests in the last 24h/);
-  assert.match(renderConnectedApp(grant, ''), /Never used/);
-  assert.doesNotMatch(renderConnectedApp(grant, ''), /Last used/);
+  // No retained rows (history predating the log, or pruned) is not proof of non-use.
+  const unrecorded = renderConnectedApp(grant, '', activity.get('grant-2'));
+  assert.match(unrecorded, /No recorded activity/);
+  assert.doesNotMatch(unrecorded, /Never used|Last used/);
 
-  // A missing table degrades to "never used" instead of failing the page.
+  // Pruning a grant's last retained row leaves no evidence either way.
+  assert.equal(await pruneMcpAccessLog(db, { now, retentionMs: 3_600_000 }), 2);
+  const pruned = (await loadMcpGrantActivity(db, ['grant-1'], now))!;
+  assert.equal(pruned.size, 0);
+  assert.match(renderConnectedApp(grant, '', pruned.get('grant-1')), /No recorded activity/);
+
+  // A log that cannot be read is reported as unavailable, not as an empty result.
   await db.schema.dropTable('mcp_access_log');
-  assert.equal((await loadMcpGrantActivity(db, ['grant-1'], now)).size, 0);
+  assert.equal(await loadMcpGrantActivity(db, ['grant-1'], now), null);
+  const unavailable = renderConnectedApp(grant, '', null);
+  assert.match(unavailable, /Activity unavailable/);
+  assert.doesNotMatch(unavailable, /No recorded activity|Never used|Last used/);
 });
 
 test('resource reads and prompt fetches are recorded once, under their own surface', async t => {

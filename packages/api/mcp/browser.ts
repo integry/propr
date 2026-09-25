@@ -85,15 +85,21 @@ const chipList = (repositories: readonly string[]): string =>
 /** Hours behind the per-app request count, matching the access log's recent window. */
 const RECENT_HOURS = Math.round(MCP_ACCESS_LOG_RECENT_MS / 3_600_000);
 
-/** Activity is derived from the MCP access log; a grant with no rows has never been used. */
-function activityMeta(activity?: McpGrantActivity): string {
-  if (!activity?.lastSeenAt) return '<span aria-hidden="true">•</span><span>Never used</span>';
+/**
+ * Activity is derived from the MCP access log. No retained rows only means no
+ * recorded activity (rows are pruned, and use before the log existed is not
+ * there); `null` means the log could not be read at all.
+ */
+function activityMeta(activity: McpGrantActivity | null | undefined): string {
+  if (activity === null) return '<span aria-hidden="true">•</span><span>Activity unavailable</span>';
+  if (!activity?.lastSeenAt) return '<span aria-hidden="true">•</span><span>No recorded activity</span>';
   const requests = activity.recentRequests;
   return `<span aria-hidden="true">•</span><span title="${new Date(activity.lastSeenAt).toISOString()}">Last used ${relativeTime(activity.lastSeenAt)}</span>`
     + `<span aria-hidden="true">•</span><span>${requests} ${requests === 1 ? 'request' : 'requests'} in the last ${RECENT_HOURS}h</span>`;
 }
 
-export function renderConnectedApp(grant: McpGrant, csrfField: string, activity?: McpGrantActivity): string {
+/** `activity` is `undefined` when the access log holds no rows for the grant, `null` when it could not be read. */
+export function renderConnectedApp(grant: McpGrant, csrfField: string, activity?: McpGrantActivity | null): string {
   const seen = new Set<string>();
   const repositories = grant.repositories.filter(repo => !seen.has(repo.toLowerCase()) && !!seen.add(repo.toLowerCase()));
   const hidden = repositories.slice(REPOSITORY_PREVIEW_LIMIT);
@@ -199,7 +205,7 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
     rows.splice(50);
     const grants = rows.map(row => oauth.store.unseal<McpGrant>(row.value)).filter(grant => grant.ownerId === req.user!.id && !grant.revoked && grant.expiresAt > Date.now());
     const activity = await loadMcpGrantActivity(oauth.store.db, grants.map(grant => grant.id));
-    res.type('html').send(renderMcpPage('Your connected apps', `<p>These apps can act with your ProPR permissions. Revoking an app immediately invalidates its access and refresh tokens.</p>${grants.length ? `<ul class="apps">${grants.map(grant => renderConnectedApp(grant, csrf(req), activity.get(grant.id))).join('')}</ul>` : '<p class="empty" role="status">No connected apps.</p>'}${next ? `<p><a href="/mcp/apps?after=${encodeURIComponent(next)}">Next page</a></p>` : ''}`, undefined, { flat: true }));
+    res.type('html').send(renderMcpPage('Your connected apps', `<p>These apps can act with your ProPR permissions. Revoking an app immediately invalidates its access and refresh tokens.</p>${grants.length ? `<ul class="apps">${grants.map(grant => renderConnectedApp(grant, csrf(req), activity ? activity.get(grant.id) : null)).join('')}</ul>` : '<p class="empty" role="status">No connected apps.</p>'}${next ? `<p><a href="/mcp/apps?after=${encodeURIComponent(next)}">Next page</a></p>` : ''}`, undefined, { flat: true }));
   });
   app.post('/mcp/apps/revoke', async (req: Request, res: Response) => {
     if (typeof req.body.grant === 'string') await oauth.revokeGrant(req.body.grant, req.user!.id);

@@ -291,8 +291,13 @@ export async function pruneMcpAccessLog(
 
 export interface McpGrantActivity { lastSeenAt: number | null; recentRequests: number }
 
-/** Last-seen timestamp and recent request count per grant, for the connected-apps view. */
-export async function loadMcpGrantActivity(db: Knex, grantIds: string[], now = Date.now()): Promise<Map<string, McpGrantActivity>> {
+/**
+ * Last-seen timestamp and recent request count per grant, for the connected-apps
+ * view. A grant with no entry has no retained rows, which is not proof it was
+ * never used: rows are pruned and history predates the table. Resolves `null`
+ * when the log cannot be read, so callers can tell that apart from no rows.
+ */
+export async function loadMcpGrantActivity(db: Knex, grantIds: string[], now = Date.now()): Promise<Map<string, McpGrantActivity> | null> {
   const activity = new Map<string, McpGrantActivity>();
   const ids = [...new Set(grantIds)].filter(Boolean).slice(0, 200);
   if (!ids.length) return activity;
@@ -310,6 +315,7 @@ export async function loadMcpGrantActivity(db: Knex, grantIds: string[], now = D
     }
   } catch (error) {
     warnAccessLogFailure('read', error);
+    return null;
   }
   return activity;
 }
