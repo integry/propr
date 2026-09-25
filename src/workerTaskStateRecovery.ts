@@ -1,20 +1,28 @@
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import {
+    db,
+    getEventPublisher,
     getIssueQueue,
     getStateManager,
     logger,
     type WorkerStateManager,
 } from '@propr/core';
 import {
+    DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS,
     DEFAULT_RECONCILIATION_STALE_MS,
     DEFAULT_RECONCILIATION_TIME_BUDGET_MS,
-    reconcileStalePRCommentTasks,
+    reconcileStaleTaskStates,
     type ReconciliationQueue,
     type ReconciliationStateManager,
     type TaskStateReconciliationResult,
 } from './taskStateReconciler.js';
+import {
+    createPersistedTaskStateStore,
+    type PersistedTaskStateStore,
+} from './persistedTaskStateStore.js';
 
+// Keep the original key so mixed-version workers still share one lease during rolling deploys.
 const RECONCILIATION_LEASE_KEY = 'lock:worker:pr-task-state-reconciliation';
 const RELEASE_LEASE_SCRIPT = `
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -38,10 +46,12 @@ export interface WorkerTaskStateRecovery {
 export interface WorkerTaskStateRecoveryOptions {
     queue?: ReconciliationQueue;
     stateManager?: ReconciliationStateManager;
+    store?: PersistedTaskStateStore;
     redis?: ReconciliationLeaseRedis;
     intervalMs?: number;
     leaseTtlMs?: number;
     staleMs?: number;
+    orphanGraceMs?: number;
     batchSize?: number;
     timeBudgetMs?: number;
     /** Additional native-goal reconciliation under the same process-wide lease. */
@@ -168,10 +178,12 @@ function createLeaseRedis(): InstanceType<typeof Redis> {
 async function resolveDependencies(options: WorkerTaskStateRecoveryOptions): Promise<{
     queue: ReconciliationQueue;
     stateManager: ReconciliationStateManager;
+    store: PersistedTaskStateStore;
 }> {
     return {
         queue: options.queue ?? await getIssueQueue(),
         stateManager: options.stateManager ?? getStateManager() as WorkerStateManager,
+        store: options.store ?? createPersistedTaskStateStore(db, getEventPublisher()),
     };
 }
 
@@ -189,6 +201,12 @@ export async function startWorkerTaskStateRecovery(
         DEFAULT_RECONCILIATION_STALE_MS,
         60_000,
         7 * 24 * 60 * 60 * 1000,
+    );
+    const orphanGraceMs = options.orphanGraceMs ?? boundedInteger(
+        process.env.TASK_STATE_RECONCILIATION_ORPHAN_GRACE_MS,
+        DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS,
+        10_000,
+        24 * 60 * 60 * 1000,
     );
     const batchSize = options.batchSize ?? boundedInteger(
         process.env.TASK_STATE_RECONCILIATION_BATCH_SIZE,
@@ -250,11 +268,12 @@ export async function startWorkerTaskStateRecovery(
                 throw new RecoveryOperationTimeoutError('Task state reconciliation');
             }
             const result = await runUntilAborted(
-                () => reconcileStalePRCommentTasks({
+                () => reconcileStaleTaskStates({
                     ...dependencies,
                     cursor,
                     backlog,
                     staleMs,
+                    orphanGraceMs,
                     batchSize,
                     timeBudgetMs: reconciliationBudgetMs,
                     signal: controller.signal,
@@ -263,7 +282,7 @@ export async function startWorkerTaskStateRecovery(
             );
             cursor = result.nextCursor;
             backlog = result.backlog ?? [];
-            logger.info(result.summary, 'Reconciled stale PR comment task states');
+            logger.info(result.summary, 'Reconciled stale persisted task states');
             if (options.recoverGoals) {
                 const goalResult = await runWithinDeadline(
                     'Native goal recovery',
@@ -285,7 +304,7 @@ export async function startWorkerTaskStateRecovery(
             return true;
         } catch (error) {
             if (!closed) {
-                logger.error({ error: (error as Error).message }, 'Failed to reconcile stale PR comment task states');
+                logger.error({ error: (error as Error).message }, 'Failed to reconcile stale persisted task states');
             }
             return false;
         } finally {

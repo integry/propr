@@ -17,7 +17,15 @@ type StatusRoutesDeps = {
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
   loadSyntheticAgents?: () => Promise<SyntheticAgentConfig[]>;
-  getIndexingQueue?: () => Promise<{ getJobCounts: (...statuses: string[]) => Promise<Record<string, number>> }>;
+  getIndexingQueue?: () => Promise<{
+    getJobCounts: (...statuses: string[]) => Promise<Record<string, number>>;
+    getJobs: (
+      statuses: string[],
+      start?: number,
+      end?: number,
+      asc?: boolean,
+    ) => Promise<Array<{ finishedOn?: number; timestamp?: number }>>;
+  }>;
   agentStatusCacheTtlMs?: number;
   agentStatusCacheMaxAgeMs?: number;
   agentHealthTimeoutMs?: number;
@@ -116,9 +124,14 @@ function createRedisClient() {
   };
 }
 
-function createIndexingQueue(counts: Record<string, number> = {}) {
+function createIndexingQueue(
+  counts: Record<string, number> = {},
+  jobs: Partial<Record<'completed' | 'failed', Array<{ finishedOn?: number; timestamp?: number }>>> = {},
+) {
   return {
     getJobCounts: async () => counts,
+    getJobs: async (statuses: string[]) => statuses.flatMap(status =>
+      jobs[status as 'completed' | 'failed'] ?? []),
   };
 }
 
@@ -570,6 +583,7 @@ test('/api/status serves stale measurements while one bounded refresh runs', asy
     })]),
     getIndexingQueue: async () => ({
       getJobCounts: async () => { indexingReads += 1; return {}; },
+      getJobs: async () => [],
     }),
     loadSummarizationRuntimeState: async () => {
       warningReads += 1;
@@ -742,6 +756,7 @@ test('/api/status runs independent config, health, indexing, and warning work co
     agentRegistry: createRegistry([directAgent, syntheticAgent]),
     getIndexingQueue: async () => ({
       getJobCounts: async () => { starts.add('indexing'); await blocked; return {}; },
+      getJobs: async () => [],
     }),
     loadSummarizationRuntimeState: async () => {
       starts.add('warnings');
@@ -889,6 +904,39 @@ test('/api/status marks an unavailable synthetic pool degraded without downgradi
   assert.deepEqual(body.agents, [
     { id: direct.id, type: direct.type, alias: direct.alias, status: 'connected' },
     { id: syntheticConfig.id, type: 'synthetic', alias: syntheticConfig.alias, status: 'degraded' },
+  ]);
+});
+
+test('/api/status probes an unregistered synthetic pool through configured direct agents', async () => {
+  const direct = createAgentConfig();
+  const syntheticConfig: SyntheticAgentConfig = {
+    id: '33333333-3333-4333-8333-333333333333',
+    alias: 'fallback-pool',
+    enabled: true,
+    defaultModel: 'balanced',
+    models: [{
+      id: 'balanced',
+      enabled: true,
+      strategy: 'round_robin',
+      members: [{
+        id: '44444444-4444-4444-8444-444444444444',
+        directAgentAlias: direct.alias,
+        model: direct.supportedModels[0],
+        enabled: true,
+        priority: 100,
+      }],
+    }],
+  };
+  const body = await readStatus({
+    loadAgents: async () => [direct],
+    loadSyntheticAgents: async () => [syntheticConfig],
+    // The API registry is intentionally empty until an execution route needs it.
+    agentRegistry: createRegistry(),
+  });
+
+  assert.deepEqual(body.agents, [
+    { id: direct.id, type: direct.type, alias: direct.alias, status: 'connected' },
+    { id: syntheticConfig.id, type: 'synthetic', alias: syntheticConfig.alias, status: 'connected' },
   ]);
 });
 
@@ -1239,20 +1287,76 @@ test('/api/status reports demo auth mode in demo mode', async () => {
 });
 
 test('/api/status maps indexing queue states', async () => {
-  const cases: Array<[Record<string, number>, string]> = [
-    [{ active: 1, waiting: 0, delayed: 0, failed: 0 }, 'active'],
-    [{ active: 0, waiting: 1, delayed: 0, failed: 0 }, 'queued'],
-    [{ active: 0, waiting: 0, delayed: 1, failed: 0 }, 'queued'],
-    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'failed'],
-    [{ active: 0, waiting: 0, delayed: 0, failed: 0 }, 'idle'],
+  const now = Date.UTC(2026, 8, 25, 12);
+  const cases: Array<[
+    Record<string, number>,
+    Partial<Record<'completed' | 'failed', Array<{ finishedOn?: number; timestamp?: number }>>>,
+    string,
+  ]> = [
+    [{ active: 1, waiting: 0, delayed: 0, failed: 0 }, {}, 'active'],
+    [{ active: 0, waiting: 1, delayed: 0, failed: 0 }, {}, 'queued'],
+    [{ active: 0, waiting: 0, delayed: 1, failed: 0 }, {}, 'queued'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, { failed: [{ finishedOn: now - 1_000 }] }, 'failed'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, {
+      failed: [{ finishedOn: now - 2_000 }],
+      completed: [{ finishedOn: now - 1_000 }],
+    }, 'idle'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, {
+      failed: [{ finishedOn: now - (25 * 60 * 60 * 1_000) }],
+    }, 'idle'],
+    // Enqueue timestamps are not terminal outcomes: missing or invalid
+    // finishedOn metadata cannot establish that a failure expired or recovered.
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, {
+      failed: [{ timestamp: now - (25 * 60 * 60 * 1_000) }],
+    }, 'failed'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, {
+      failed: [{ finishedOn: Number.NaN, timestamp: now - (25 * 60 * 60 * 1_000) }],
+    }, 'failed'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, {
+      failed: [{ finishedOn: now - 2_000 }],
+      completed: [{ timestamp: now - 1_000 }],
+    }, 'failed'],
+    [{ active: 0, waiting: 0, delayed: 0, failed: 0 }, {}, 'idle'],
   ];
 
-  for (const [counts, expected] of cases) {
+  for (const [counts, jobs, expected] of cases) {
     const body = await readStatus({
-      getIndexingQueue: async () => createIndexingQueue(counts),
+      getIndexingQueue: async () => createIndexingQueue(counts, jobs),
+      now: () => now,
     });
     assert.equal(body.indexing, expected);
   }
+});
+
+test('/api/status preserves confirmed indexing failures when outcome metadata stalls', async () => {
+  for (const stalled of ['failed', 'completed'] as const) {
+    const startedAt = performance.now();
+    const body = await readStatus({
+      getIndexingQueue: async () => ({
+        getJobCounts: async () => ({ active: 0, waiting: 0, delayed: 0, failed: 1 }),
+        getJobs: async (statuses: string[]) => (statuses.includes(stalled)
+          ? new Promise<Array<{ finishedOn?: number }>>(() => undefined)
+          : []),
+      }),
+      statusDependencyTimeoutMs: 25,
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    assert.equal(body.indexing, 'failed', `stalled ${stalled} lookup`);
+    assert.ok(elapsedMs >= 10 && elapsedMs < 200, `bounded indexing read took ${elapsedMs.toFixed(1)}ms`);
+  }
+});
+
+test('/api/status reports indexing disconnected when queue counts stall', async () => {
+  const body = await readStatus({
+    getIndexingQueue: async () => ({
+      getJobCounts: async () => new Promise<Record<string, number>>(() => undefined),
+      getJobs: async () => [],
+    }),
+    statusDependencyTimeoutMs: 25,
+  });
+
+  assert.equal(body.indexing, 'disconnected');
 });
 
 test('/api/status caps summarization cooldown warnings', async () => {

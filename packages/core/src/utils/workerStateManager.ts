@@ -61,27 +61,42 @@ export class WorkerStateManager {
      * @param taskId - Unique task identifier
      * @param issueRef - GitHub issue reference
      * @param correlationId - Correlation ID for tracking
+     * @param jobId - BullMQ job identifier used for durable recovery
      * @returns Task state data
      */
-    async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+    async createTaskState(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        jobId: string | null = null,
+    ): Promise<TaskStateData> {
         const state = this.buildInitialTaskState(taskId, issueRef, correlationId);
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-        await this.persistTaskStateCreation(state);
+        await this.persistTaskStateCreation(state, jobId);
         return state;
     }
 
     /**
      * Creates a task state entry only when no state already exists.
+     * @param taskId - Unique task identifier
+     * @param issueRef - GitHub issue reference
+     * @param correlationId - Correlation ID for tracking
+     * @param jobId - BullMQ job identifier used for durable recovery
      * @returns The created state, or the concurrently-created state when present
      */
-    async createTaskStateIfAbsent(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData | null> {
+    async createTaskStateIfAbsent(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        jobId: string | null = null,
+    ): Promise<TaskStateData | null> {
         const state = this.buildInitialTaskState(taskId, issueRef, correlationId);
         const key = this.getTaskKey(taskId);
         const created = await this.redis.set(key, JSON.stringify(state), 'EX', this.stateExpiry, 'NX');
         if (created !== 'OK') return this.getTaskState(taskId);
 
-        await this.persistTaskStateCreation(state);
+        await this.persistTaskStateCreation(state, jobId);
         return state;
     }
 
@@ -95,7 +110,7 @@ export class WorkerStateManager {
         };
     }
 
-    private async persistTaskStateCreation(state: TaskStateData): Promise<void> {
+    private async persistTaskStateCreation(state: TaskStateData, jobId: string | null): Promise<void> {
         const { taskId, issueRef } = state;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
@@ -109,12 +124,20 @@ export class WorkerStateManager {
             const repoName = issueRef.repoName ?? 'unknown';
             const repository = `${repoOwner}/${repoName}`;
             const taskData = {
-                task_id: taskId, job_id: null, correlation_id: state.correlationId,
+                task_id: taskId, job_id: jobId, correlation_id: state.correlationId,
                 repository,
                 issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
                 model_name: issueRef.modelName ?? null, created_at: state.createdAt,
                 initial_job_data: JSON.stringify(issueRef)
             };
+            if (jobId !== null) {
+                // Deterministic BullMQ IDs (for example issue child jobs) are
+                // reused once the previous job is removed. The ID now belongs
+                // to this task; unlinking the older row keeps UNIQUE(job_id)
+                // from rejecting this insert and keeps the older row from
+                // adopting the new job's outcome during reconciliation.
+                await db('tasks').where({ job_id: jobId }).whereNot({ task_id: taskId }).update({ job_id: null });
+            }
             await db('tasks').insert(taskData).onConflict('task_id').ignore();
             const historyData = {
                 task_id: taskId, state: TaskStates.PENDING,

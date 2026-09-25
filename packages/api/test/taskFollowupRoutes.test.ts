@@ -13,7 +13,7 @@ process.env.NODE_ENV = 'test';
 process.env.DB_FILENAME = path.join(isolatedDbDir, 'propr.sqlite');
 
 const { closeConnection } = await import('@propr/core');
-const { createTaskRoutes } = await import('../routes/taskRoutes.js');
+const { createTaskRoutes, resolveFollowupThread } = await import('../routes/taskRoutes.js');
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 await database.schema.createTable('tasks', table => {
@@ -70,5 +70,20 @@ test('does not post a pull request command onto the issue of an issue task witho
   assert.deepEqual(await postFollowup({ body: '/review', target: 'pull_request' }, 'issue-task-without-pr'), {
     status: 400,
     json: { error: 'Task does not have a valid GitHub pull request' },
+  });
+});
+
+test('resolves historical PR-comment task IDs whose stored task type is issue', () => {
+  const task = {
+    task_id: 'pr-comments-batch-integry-propr-2506-5831013617-2026-09-25T10-37-33Z-87ecb969a008',
+    repository: 'integry/propr',
+    issue_number: 2506,
+    pr_number: null,
+    task_type: 'issue',
+  };
+
+  assert.deepEqual(resolveFollowupThread(task, true), {
+    number: 2506,
+    error: 'Task does not have a valid GitHub pull request',
   });
 });

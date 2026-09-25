@@ -13,6 +13,7 @@ import {
 } from '@propr/shared';
 import {
   AgentRegistry,
+  SyntheticRoutingService,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
   loadSyntheticAgents as loadSyntheticAgentConfigs,
@@ -45,7 +46,15 @@ interface StatusRoutesDeps {
 
 interface IndexingStatusQueue {
   getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
+  getJobs(
+    statuses: Array<'completed' | 'failed'>,
+    start?: number,
+    end?: number,
+    asc?: boolean,
+  ): Promise<Array<{ finishedOn?: number; timestamp?: number }>>;
 }
+
+const INDEXING_FAILURE_STATUS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
   createAgentFromConfig(config: AgentConfig): Agent;
@@ -191,9 +200,16 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     maxAgeMs: agentStatusCacheMaxAgeMs,
   });
   const indexingStatusCache = createBoundedFreshCache({
-    load: () => timeApiStage('status.indexing', () => withTimeout(
-      getIndexingStatus(getIndexingQueue), statusDependencyTimeoutMs, 'disconnected',
-    )),
+    load: () => timeApiStage('status.indexing', () => {
+      const progress: IndexingStatusProgress = { failuresConfirmed: false };
+      // Once counts confirm failures, a stalled recency lookup must not turn
+      // that evidence into a queue-disconnection report.
+      return withLazyTimeout(
+        getIndexingStatus(getIndexingQueue, now, progress),
+        statusDependencyTimeoutMs,
+        () => (progress.failuresConfirmed ? 'failed' : 'disconnected'),
+      );
+    }),
     now,
     freshForMs: agentStatusCacheTtlMs,
     maxAgeMs: agentStatusCacheMaxAgeMs,
@@ -598,30 +614,57 @@ async function getAgentStatusSnapshot({
     ? legacyClaudeAgent
     : undefined;
 
+  // Build the same read-only fallback runtimes used by direct status probes once,
+  // then make them available to synthetic routing as well. The API intentionally
+  // does not initialize its execution registry from this diagnostic endpoint, so
+  // requiring a registered synthetic facade here would make every configured pool
+  // look degraded until another API route happened to initialize the registry.
+  const directProbeAgents = new Map<string, Agent>();
+  for (const config of configuredAgents.filter(agent => agent.enabled)) {
+    const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
+    if (registeredAgent) {
+      if (registeredAgentMatchesConfig(registeredAgent, config)) {
+        directProbeAgents.set(config.alias, registeredAgent);
+      }
+      continue;
+    }
+    try {
+      directProbeAgents.set(config.alias, registry.createAgentFromConfig(config));
+    } catch (error) {
+      console.error('Error creating configured agent status probe:', error);
+    }
+  }
+
   const directStatusesPromise = Promise.all(configuredAgents
     .filter(agent => agent.enabled)
-    .map(async (config) => {
-      const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
-      if (!registeredAgent) {
-        return buildConfiguredAgentStatus(config, registry, healthTimeoutMs);
-      }
-      if (!registeredAgentMatchesConfig(registeredAgent, config)) {
-        // The persisted change reached this process before its live registry
-        // refresh. Report the new identity conservatively instead of probing an
-        // old credential path/runtime and presenting that result as the new one.
-        return buildDisconnectedAgentStatus(config);
-      }
-      return buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs, config);
+    .map(config => {
+      const probeAgent = directProbeAgents.get(config.alias);
+      // A persisted change can reach this process before its live registry
+      // refresh. Never attribute the old registered runtime to the new config.
+      return probeAgent
+        ? buildRegisteredAgentStatus(probeAgent, healthTimeoutMs, config)
+        : Promise.resolve(buildDisconnectedAgentStatus(config));
     }));
+
+  const syntheticFallbackRouting = new SyntheticRoutingService({
+    loadSyntheticConfigs: async () => syntheticAgents,
+    getDirectAgent: alias => directProbeAgents.get(alias),
+  });
 
   const syntheticStatusesPromise = Promise.all(syntheticAgents
     .filter(pool => pool.enabled)
     .map(async pool => {
       const registered = registeredById.get(pool.id) ?? registeredByAlias.get(pool.alias);
-      if (!registered) return { id: pool.id, type: 'synthetic' as const, alias: pool.alias, status: 'degraded' as const };
       let healthy = false;
       try {
-        healthy = await withTimeout(registered.healthCheck(), healthTimeoutMs, false);
+        const healthCheck = registered
+          ? registered.healthCheck()
+          : syntheticFallbackRouting.healthCheck(syntheticFallbackRouting.begin({
+            requestedAgentAlias: pool.alias,
+            requestedModel: pool.defaultModel,
+            requiredTokens: 0,
+          }));
+        healthy = await withTimeout(healthCheck, healthTimeoutMs, false);
       } catch {
         healthy = false;
       }
@@ -686,19 +729,6 @@ function registeredAgentMatchesConfig(agent: Agent, config: AgentConfig): boolea
   return fingerprint(agent.config) === fingerprint(config);
 }
 
-async function buildConfiguredAgentStatus(
-  config: AgentConfig,
-  registry: StatusAgentRegistry,
-  healthTimeoutMs: number
-): Promise<AgentStatus> {
-  try {
-    return await buildRegisteredAgentStatus(registry.createAgentFromConfig(config), healthTimeoutMs);
-  } catch (error) {
-    console.error('Error checking configured agent status:', error);
-    return buildDisconnectedAgentStatus(config);
-  }
-}
-
 async function buildRegisteredAgentStatus(
   agent: Agent,
   healthTimeoutMs: number,
@@ -722,12 +752,16 @@ async function buildRegisteredAgentStatus(
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return withLazyTimeout(promise, timeoutMs, () => fallback);
+}
+
+async function withLazyTimeout<T>(promise: Promise<T>, timeoutMs: number, getFallback: () => T): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>(resolve => {
-        timeout = setTimeout(() => resolve(fallback), timeoutMs);
+        timeout = setTimeout(() => resolve(getFallback()), timeoutMs);
       })
     ]);
   } finally {
@@ -744,13 +778,52 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   };
 }
 
-async function getIndexingStatus(getIndexingQueue: () => Promise<IndexingStatusQueue>): Promise<ServiceStatus> {
+interface IndexingStatusProgress {
+  failuresConfirmed: boolean;
+}
+
+// Only the terminal timestamp describes when an outcome happened; the enqueue
+// timestamp says nothing about when a failure occurred or a recovery finished.
+function indexingJobFinishedAt(job: { finishedOn?: number } | undefined): number | undefined {
+  const value = job?.finishedOn;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+async function getIndexingStatus(
+  getIndexingQueue: () => Promise<IndexingStatusQueue>,
+  now: () => number,
+  progress: IndexingStatusProgress,
+): Promise<ServiceStatus> {
   try {
     const indexingQueue = await getIndexingQueue();
     const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed', 'failed');
     if ((counts.active ?? 0) > 0) return 'active';
     if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) return 'queued';
-    if ((counts.failed ?? 0) > 0) return 'failed';
+    if ((counts.failed ?? 0) > 0) {
+      progress.failuresConfirmed = true;
+      try {
+        const [failedJobs, completedJobs] = await Promise.all([
+          indexingQueue.getJobs(['failed'], 0, 0, false),
+          indexingQueue.getJobs(['completed'], 0, 0, false),
+        ]);
+        const latestFailureAt = indexingJobFinishedAt(failedJobs[0]);
+        const latestCompletionAt = indexingJobFinishedAt(completedJobs[0]);
+
+        // Failed BullMQ entries are retained for diagnostics and age-based
+        // removal is lazy. They must not permanently poison current service
+        // health after newer successful work or after the incident is stale.
+        if (latestFailureAt !== undefined
+          && latestCompletionAt !== undefined
+          && latestCompletionAt >= latestFailureAt) return 'idle';
+        if (latestFailureAt !== undefined
+          && now() - latestFailureAt > INDEXING_FAILURE_STATUS_MAX_AGE_MS) return 'idle';
+        return 'failed';
+      } catch {
+        // Counts were readable and confirm failures, but their recency could not
+        // be established. Preserve the conservative legacy result.
+        return 'failed';
+      }
+    }
     return 'idle';
   } catch {
     return 'disconnected';

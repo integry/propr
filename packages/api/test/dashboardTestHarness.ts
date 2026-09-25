@@ -86,7 +86,12 @@ export interface TaskSeed {
   taskType?: string;
   title?: string;
   createdAt?: string;
-  states: Array<{ state: string; timestamp: string; reason?: string }>;
+  states: Array<{
+    state: string;
+    timestamp: string;
+    reason?: string;
+    metadata?: Record<string, unknown> | string;
+  }>;
 }
 
 export async function seedTask(database: Knex, seed: TaskSeed): Promise<void> {
@@ -107,7 +112,9 @@ export async function seedTask(database: Knex, seed: TaskSeed): Promise<void> {
     state: entry.state,
     timestamp: entry.timestamp,
     reason: entry.reason ?? null,
-    metadata: '{}',
+    metadata: typeof entry.metadata === 'string'
+      ? entry.metadata
+      : JSON.stringify(entry.metadata ?? {}),
   })));
 }
 

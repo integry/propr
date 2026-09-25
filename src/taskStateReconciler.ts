@@ -1,18 +1,37 @@
 import {
     executeDockerCommand,
+    inspectLegacyDockerContainerLivenessForTask,
+    inspectTaskContainerLivenessForTask,
     logger,
     taskStateExpectation,
-    type JobResult,
+    TaskStates,
+    type TaskState,
     type TaskStateData,
+    type UpdateMetadata,
     type WorkerStateManager,
 } from '@propr/core';
+import type {
+    PersistedTaskStateCandidate,
+    PersistedTaskStateStore,
+    PersistedTaskTerminalTransition,
+} from './persistedTaskStateStore.js';
 import {
-    finalizeCompletedPRCommentTask,
-    finalizeFailedPRCommentTask,
-} from './jobs/prCommentTaskFinalizer.js';
+    completedJobTransition,
+    failedTaskTransition,
+    redisTerminalTransition,
+} from './taskReconciliationTransitions.js';
+import {
+    abortReason,
+    deadlineWasExhausted,
+    ReconciliationDeadlineExceededError,
+    runWithinRemainingBudget,
+} from './taskReconciliationBudget.js';
+import { taskAgeMs } from './taskReconciliationTime.js';
 
 export const DEFAULT_RECONCILIATION_STALE_MS = 15 * 60 * 1000;
+export const DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS = 60 * 1000;
 export const DEFAULT_RECONCILIATION_TIME_BUDGET_MS = 30 * 1000;
+const LEGACY_UNLINKED_TASK_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface ReconciliationJob {
     failedReason?: string;
@@ -21,12 +40,12 @@ export interface ReconciliationJob {
 }
 
 export interface ReconciliationQueue {
-    getJob(taskId: string): Promise<ReconciliationJob | undefined | null>;
+    getJob(jobId: string): Promise<ReconciliationJob | undefined | null>;
 }
 
 export type ReconciliationStateManager = Pick<
     WorkerStateManager,
-    'scanNonTerminalTasks' | 'getTaskState' | 'updateTaskStateIfCurrentDetailed'
+    'getTaskState' | 'updateTaskStateIfCurrentDetailed'
 >;
 
 export type TaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
@@ -35,6 +54,7 @@ export interface TaskStateReconciliationSummary {
     scanned: number;
     stale: number;
     live: number;
+    suspected: number;
     recovered: number;
     skipped: number;
     errors: number;
@@ -43,19 +63,21 @@ export interface TaskStateReconciliationSummary {
 export interface TaskStateReconciliationOptions {
     queue: ReconciliationQueue;
     stateManager: ReconciliationStateManager;
+    store: PersistedTaskStateStore;
     cursor?: string;
     batchSize?: number;
     staleMs?: number;
+    orphanGraceMs?: number;
     timeBudgetMs?: number;
     now?: number;
     inspectContainer?: (taskId: string) => Promise<TaskContainerLiveness>;
-    backlog?: TaskStateData[];
+    backlog?: PersistedTaskStateCandidate[];
     signal?: AbortSignal;
 }
 
 export interface TaskStateReconciliationResult {
     nextCursor: string;
-    backlog: TaskStateData[];
+    backlog: PersistedTaskStateCandidate[];
     summary: TaskStateReconciliationSummary;
 }
 
@@ -67,106 +89,30 @@ const LIVE_JOB_STATES = new Set([
     'waiting-children',
     'paused',
 ]);
+const TERMINAL_TASK_STATES = new Set<TaskState>([
+    TaskStates.COMPLETED,
+    TaskStates.FAILED,
+    TaskStates.CANCELLED,
+]);
 
-class ReconciliationDeadlineExceededError extends Error {
-    constructor() {
-        super('Task state reconciliation time budget was exhausted');
-        this.name = 'ReconciliationDeadlineExceededError';
-    }
-}
-
-function abortReason(signal: AbortSignal): unknown {
-    return signal.reason ?? new Error('Task state reconciliation was aborted');
-}
-
-function deadlineWasExhausted(error: unknown, signal: AbortSignal): boolean {
-    return error instanceof ReconciliationDeadlineExceededError
-        || (signal.aborted && abortReason(signal) instanceof ReconciliationDeadlineExceededError);
-}
-
-async function runWithinRemainingBudget<T>(
-    operation: () => Promise<T>,
-    deadline: number,
-    signal: AbortSignal,
-): Promise<T> {
-    if (Date.now() >= deadline) throw new ReconciliationDeadlineExceededError();
-    signal.throwIfAborted();
-
-    return new Promise<T>((resolve, reject) => {
-        const onAbort = (): void => {
-            cleanup();
-            reject(abortReason(signal));
-        };
-        const cleanup = (): void => signal.removeEventListener('abort', onAbort);
-        signal.addEventListener('abort', onAbort, { once: true });
-        if (signal.aborted) {
-            onAbort();
-            return;
-        }
-
-        let pending: Promise<T>;
-        try {
-            pending = operation();
-        } catch (error) {
-            cleanup();
-            reject(error);
-            return;
-        }
-        pending.then(
-            value => {
-                cleanup();
-                resolve(value);
-            },
-            error => {
-                cleanup();
-                reject(error);
-            },
-        );
-    });
-}
-
-function isPRCommentTask(task: TaskStateData): boolean {
-    if (task.issueRef.type !== undefined) return task.issueRef.type === 'pr_comment';
-    return task.taskId.startsWith('pr-comment-')
-        || task.taskId.startsWith('pr-comments-');
-}
-
-export function taskAgeMs(updatedAt: string, now = Date.now()): number | null {
-    const timestamp = Date.parse(updatedAt);
-    if (!Number.isFinite(timestamp) || timestamp > now) return null;
-    return now - timestamp;
-}
-
-function asJobResult(value: unknown): JobResult | undefined {
-    return value !== null && typeof value === 'object'
-        ? value as JobResult
-        : undefined;
+function taskIdIsQueueJobId(candidate: PersistedTaskStateCandidate): boolean {
+    return candidate.taskType === 'pr-comment'
+        || candidate.taskType === 'review'
+        || candidate.taskType === 'merge_conflict'
+        || candidate.taskId.startsWith('pr-comment-')
+        || candidate.taskId.startsWith('pr-comments-');
 }
 
 export async function inspectLegacyTaskContainerLiveness(
     taskId: string,
     executor: typeof executeDockerCommand = executeDockerCommand,
 ): Promise<TaskContainerLiveness> {
-    const shortTaskId = taskId.slice(-8);
-    if (!shortTaskId) return 'not_found';
-    const escapedSuffix = shortTaskId.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
-    try {
-        const result = await executor('docker', [
-            'ps',
-            '--filter', `name=${escapedSuffix}$`,
-            '--format', '{{.ID}}',
-        ], { timeout: 10_000 });
-        if (result.exitCode !== 0) {
-            logger.warn({ taskId, stderr: result.stderr }, 'Docker liveness check failed during task reconciliation');
-            return 'unavailable';
-        }
-        return result.stdout.split('\n').some(line => line.trim())
-            ? 'running'
-            : 'not_found';
-    } catch (error) {
-        logger.warn({ taskId, error: (error as Error).message }, 'Docker liveness check was unavailable during task reconciliation');
-        return 'unavailable';
-    }
+    const exact = await inspectTaskContainerLivenessForTask(taskId, executor);
+    if (exact.liveness === 'running') return 'running';
+    if (exact.liveness === 'unavailable') return 'unavailable';
+
+    // Pre-label containers can only be checked by their historical name suffix.
+    return inspectLegacyDockerContainerLivenessForTask(taskId, executor);
 }
 
 interface ReconciliationRunContext {
@@ -174,85 +120,120 @@ interface ReconciliationRunContext {
     summary: TaskStateReconciliationSummary;
     deadline: number;
     signal: AbortSignal;
+    now: number;
 }
 
-async function finalizeFromJob(
-    task: TaskStateData,
+async function finalizeCandidate(
+    candidate: PersistedTaskStateCandidate,
+    transition: PersistedTaskTerminalTransition,
+    current: TaskStateData | null,
+    context: ReconciliationRunContext,
+): Promise<void> {
+    const { options, summary, deadline, signal, now } = context;
+    // Candidates can be carried across runs while a reused BullMQ job ID moves
+    // to a newer task. Revalidate after the outcome was read so neither the
+    // Redis nor the durable path attributes another task's result to this one.
+    const ownsJob = await runWithinRemainingBudget(
+        () => options.store.ownsJobAssignment(candidate),
+        deadline,
+        signal,
+    );
+    if (!ownsJob) {
+        logger.warn({ taskId: candidate.taskId, jobId: candidate.jobId },
+            'Skipped stale task whose persisted queue job assignment changed');
+        summary.skipped++;
+        return;
+    }
+    if (current && !TERMINAL_TASK_STATES.has(current.state)) {
+        const metadata: UpdateMetadata = {
+            reason: transition.reason,
+            error: transition.state === TaskStates.FAILED
+                ? transition.metadata.error as UpdateMetadata['error']
+                : undefined,
+            historyMetadata: transition.metadata,
+        };
+        const updated = await runWithinRemainingBudget(
+            () => options.stateManager.updateTaskStateIfCurrentDetailed(
+                candidate.taskId,
+                taskStateExpectation(current),
+                transition.state,
+                metadata,
+            ),
+            deadline,
+            signal,
+        );
+        if (!updated) {
+            summary.skipped++;
+            return;
+        }
+        if (updated.publication.historyPersisted) {
+            await runWithinRemainingBudget(() => options.store.clearMissing(candidate.taskId), deadline, signal);
+            summary.recovered++;
+            if (!updated.publication.eventPublished) summary.errors++;
+            return;
+        }
+    }
+
+    const persisted = await runWithinRemainingBudget(
+        () => options.store.finalizeIfCurrent(
+            candidate,
+            transition,
+            new Date(now).toISOString(),
+        ),
+        deadline,
+        signal,
+    );
+    if (persisted.stateChanged) {
+        summary.recovered++;
+        if (!persisted.eventPublished) summary.errors++;
+    } else {
+        summary.skipped++;
+    }
+}
+
+async function reconcileQueueJob(
+    candidate: PersistedTaskStateCandidate,
+    current: TaskStateData | null,
     job: ReconciliationJob,
     context: ReconciliationRunContext,
 ): Promise<void> {
     const { options, summary, deadline, signal } = context;
+    const queueJobId = candidate.jobId ?? candidate.taskId;
     const jobState = await runWithinRemainingBudget(() => job.getState(), deadline, signal);
-    const finalizationOptions = {
-        expectation: taskStateExpectation(task),
-        signal,
-    };
     if (LIVE_JOB_STATES.has(jobState)) {
+        await runWithinRemainingBudget(() => options.store.clearMissing(candidate.taskId), deadline, signal);
         summary.live++;
         return;
     }
     if (jobState === 'completed') {
-        const result = await runWithinRemainingBudget(
-            () => finalizeCompletedPRCommentTask(
-                task.taskId,
-                asJobResult(job.returnvalue),
-                options.stateManager,
-                finalizationOptions,
-            ),
-            deadline,
-            signal,
-        );
-        if (result.stateChanged) summary.recovered++;
-        else summary.skipped++;
+        await finalizeCandidate(candidate, completedJobTransition(job.returnvalue), current, context);
         return;
     }
     if (jobState === 'failed') {
-        const result = await runWithinRemainingBudget(
-            () => finalizeFailedPRCommentTask(
-                task.taskId,
-                new Error(job.failedReason || 'PR comment job failed before task finalization'),
-                options.stateManager,
-                finalizationOptions,
-            ),
-            deadline,
-            signal,
-        );
-        if (result.stateChanged) summary.recovered++;
-        else summary.skipped++;
+        await finalizeCandidate(candidate, failedTaskTransition(
+            job.failedReason || 'Task job failed before task finalization',
+            'bullmq_failed_reconciliation',
+        ), current, context);
         return;
     }
-    logger.warn({ taskId: task.taskId, jobState }, 'Skipped stale task with an unrecognized BullMQ state');
+    logger.warn({ taskId: candidate.taskId, queueJobId, jobState },
+        'Skipped stale task with an unrecognized BullMQ state');
     summary.skipped++;
 }
 
-async function reconcileTask(
-    task: TaskStateData,
+async function reconcileMissingJob(
+    candidate: PersistedTaskStateCandidate,
+    current: TaskStateData | null,
     context: ReconciliationRunContext,
 ): Promise<void> {
-    const { options, summary, deadline, signal } = context;
-    const age = taskAgeMs(task.updatedAt, options.now);
-    if (!isPRCommentTask(task) || age === null || age < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
-        summary.skipped++;
-        return;
-    }
-    summary.stale++;
-
-    const job = await runWithinRemainingBudget(
-        () => options.queue.getJob(task.taskId),
-        deadline,
-        signal,
-    );
-    if (job) {
-        await finalizeFromJob(task, job, context);
-        return;
-    }
-
+    const { options, summary, deadline, signal, now } = context;
     const liveness = await runWithinRemainingBudget(
-        () => (options.inspectContainer ?? inspectLegacyTaskContainerLiveness)(task.taskId),
+        () => (options.inspectContainer ?? inspectLegacyTaskContainerLiveness)(candidate.taskId),
         deadline,
         signal,
     );
     if (liveness === 'running') {
+        await runWithinRemainingBudget(() => options.store.clearMissing(candidate.taskId), deadline, signal);
         summary.live++;
         return;
     }
@@ -261,30 +242,88 @@ async function reconcileTask(
         return;
     }
 
-    const result = await runWithinRemainingBudget(
-        () => finalizeFailedPRCommentTask(
-            task.taskId,
-            new Error('PR comment task was orphaned after worker restart; BullMQ job outcome is unavailable'),
-            options.stateManager,
-            {
-                expectation: taskStateExpectation(task),
-                signal,
-            },
-        ),
+    // Old workers did not persist issue-job IDs. A still-present Redis state is
+    // insufficient evidence that such a job is gone because taskId != job.id.
+    if (current && !candidate.jobId && !taskIdIsQueueJobId(candidate)) {
+        logger.warn({ taskId: candidate.taskId },
+            'Deferred stale task without a durable queue job ID while Redis state still exists');
+        summary.skipped++;
+        return;
+    }
+    const candidateAge = taskAgeMs(candidate.updatedAt, now);
+    if (!candidate.jobId
+        && !taskIdIsQueueJobId(candidate)
+        && (candidateAge === null || candidateAge < LEGACY_UNLINKED_TASK_MIN_AGE_MS)) {
+        logger.warn({ taskId: candidate.taskId, candidateAge },
+            'Deferred legacy task without a durable queue job ID until the Redis retention window elapses');
+        summary.skipped++;
+        return;
+    }
+
+    const observation = await runWithinRemainingBudget(
+        () => options.store.recordMissing(candidate, new Date(now).toISOString()),
         deadline,
         signal,
     );
-    if (result.stateChanged) summary.recovered++;
-    else summary.skipped++;
+    const observationAge = taskAgeMs(observation.firstMissingAt, now);
+    if (observation.observations < 2
+        || observationAge === null
+        || observationAge < (options.orphanGraceMs ?? DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS)) {
+        summary.suspected++;
+        return;
+    }
+
+    await finalizeCandidate(candidate, failedTaskTransition(
+        'Task was orphaned after worker restart; no BullMQ job or running task container was found',
+        'orphan_reconciliation',
+    ), current, context);
 }
 
-export async function reconcileStalePRCommentTasks(
+async function reconcileCandidate(
+    candidate: PersistedTaskStateCandidate,
+    context: ReconciliationRunContext,
+): Promise<void> {
+    const { options, summary, deadline, signal, now } = context;
+    const age = taskAgeMs(candidate.updatedAt, now);
+    if (age === null || age < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
+        summary.skipped++;
+        return;
+    }
+    summary.stale++;
+
+    const current = await runWithinRemainingBudget(
+        () => options.stateManager.getTaskState(candidate.taskId),
+        deadline,
+        signal,
+    );
+    if (current && TERMINAL_TASK_STATES.has(current.state)) {
+        await finalizeCandidate(candidate, redisTerminalTransition(current), current, context);
+        return;
+    }
+    const redisAge = current ? taskAgeMs(current.updatedAt, now) : null;
+    if (current && redisAge !== null && redisAge < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
+        await runWithinRemainingBudget(() => options.store.clearMissing(candidate.taskId), deadline, signal);
+        summary.live++;
+        return;
+    }
+
+    const queueJobId = candidate.jobId ?? candidate.taskId;
+    const job = await runWithinRemainingBudget(
+        () => options.queue.getJob(queueJobId),
+        deadline,
+        signal,
+    );
+    if (job) {
+        await reconcileQueueJob(candidate, current, job, context);
+        return;
+    }
+    await reconcileMissingJob(candidate, current, context);
+}
+
+export async function reconcileStaleTaskStates(
     options: TaskStateReconciliationOptions,
 ): Promise<TaskStateReconciliationResult> {
-    const timeBudgetMs = Math.max(
-        0,
-        options.timeBudgetMs ?? DEFAULT_RECONCILIATION_TIME_BUDGET_MS,
-    );
+    const timeBudgetMs = Math.max(0, options.timeBudgetMs ?? DEFAULT_RECONCILIATION_TIME_BUDGET_MS);
     const deadline = Date.now() + timeBudgetMs;
     const controller = new AbortController();
     const abortFromParent = (): void => controller.abort(options.signal?.reason);
@@ -300,7 +339,7 @@ export async function reconcileStalePRCommentTasks(
         const page = carriedBacklog.length > 0
             ? { tasks: carriedBacklog, nextCursor: options.cursor ?? '0' }
             : await runWithinRemainingBudget(
-                () => options.stateManager.scanNonTerminalTasks(
+                () => options.store.scanNonTerminalTasks(
                     options.cursor ?? '0',
                     options.batchSize ?? 100,
                 ),
@@ -311,6 +350,7 @@ export async function reconcileStalePRCommentTasks(
             scanned: page.tasks.length,
             stale: 0,
             live: 0,
+            suspected: 0,
             recovered: 0,
             skipped: 0,
             errors: 0,
@@ -321,6 +361,7 @@ export async function reconcileStalePRCommentTasks(
             summary,
             deadline,
             signal: controller.signal,
+            now: options.now ?? Date.now(),
         };
 
         for (let index = 0; index < page.tasks.length; index++) {
@@ -329,19 +370,17 @@ export async function reconcileStalePRCommentTasks(
                 break;
             }
             try {
-                await reconcileTask(page.tasks[index], context);
+                await reconcileCandidate(page.tasks[index], context);
             } catch (error) {
                 if (deadlineWasExhausted(error, controller.signal)) {
                     backlogStart = index;
                     break;
                 }
-                if (controller.signal.aborted) {
-                    throw abortReason(controller.signal);
-                }
+                if (controller.signal.aborted) throw abortReason(controller.signal);
                 logger.error({
                     taskId: page.tasks[index].taskId,
                     error: (error as Error).message,
-                }, 'Failed to reconcile stale PR comment task');
+                }, 'Failed to reconcile stale task');
                 summary.errors++;
             }
         }
