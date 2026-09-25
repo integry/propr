@@ -186,17 +186,23 @@ function planStep(todos: LiveDetailsSnapshot['todos']): LiveActivity['step'] {
   return { current: Math.min(completed + 1, todos.length), total: todos.length };
 }
 
+/** A stream that was read and holds no output yet. */
+export const EMPTY_LIVE_DETAILS: LiveDetailsSnapshot = Object.freeze({ currentTask: null, todos: [], events: [] });
+
 /**
  * A stream that was read, reduced to what a row can carry.
  *
- * `null` is a read that found no projection at all — the agent has written
- * nothing yet — so it is an empty stream, not an unknown one. Callers that
- * could not read the stream use `EMPTY_LIVE_ACTIVITY` instead.
+ * Only a snapshot says anything about the stream. `null` is a projection that
+ * produced nothing — which the shared projector also returns when its read
+ * failed — so it is unknown, not empty: saying the agent has not written
+ * anything yet would be a claim no read established. A caller that read the
+ * stream and found nothing passes `EMPTY_LIVE_DETAILS`.
  */
 export function summariseLiveActivity(live: LiveDetailsSnapshot | null | undefined): LiveActivity {
-  const events = live?.events ?? [];
-  const progressLine = typeof live?.currentTask === 'string' && live.currentTask.trim() ? live.currentTask : null;
-  const todos = live?.todos ?? [];
+  if (!live) return EMPTY_LIVE_ACTIVITY;
+  const events = live.events ?? [];
+  const progressLine = typeof live.currentTask === 'string' && live.currentTask.trim() ? live.currentTask : null;
+  const todos = live.todos ?? [];
   return {
     progressLine,
     activity: latestAction(events),

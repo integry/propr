@@ -158,3 +158,42 @@ test('a recorded completion survives the follow-up run that starts after it', as
   // The completion is an event that happened; the task moving on does not unhappen it.
   assert.deepEqual((outcomes.body.items as Array<Record<string, unknown>>).map(item => item.taskId), ['clean-run', 'followed-up']);
 });
+
+test('a completion shows its own run\'s recap and score, never an earlier run\'s', async () => {
+  await seedTask({
+    taskId: 'rereviewed', issueNumber: 411, taskType: 'pr-comment', title: 'Review PR #411: Add retries',
+    states: [
+      { state: 'claude_execution', timestamp: minutesAgo(200) },
+      { state: 'completed', timestamp: minutesAgo(180) },
+      // Followed up: the same task runs again and completes without a recap.
+      { state: 'pending', timestamp: minutesAgo(60) },
+      { state: 'claude_execution', timestamp: minutesAgo(50) },
+      { state: 'completed', timestamp: minutesAgo(30) },
+    ],
+  });
+  await seedTask({
+    taskId: 'two-step', issueNumber: 412,
+    states: [
+      { state: 'claude_execution', timestamp: minutesAgo(100) },
+      { state: 'completed', timestamp: minutesAgo(90) },
+      { state: 'completed', timestamp: minutesAgo(80) },
+      // A later run has started, but has not completed yet.
+      { state: 'pending', timestamp: minutesAgo(10) },
+    ],
+  });
+  await database('task_history').where({ task_id: 'rereviewed', timestamp: minutesAgo(180) })
+    .update({ metadata: JSON.stringify({ commandMode: 'review', notificationRecap: 'Score 9/10 · 0 issues found' }) });
+  // The recap sits on the first of the run's two completions.
+  await database('task_history').where({ task_id: 'two-step', timestamp: minutesAgo(90) })
+    .update({ metadata: JSON.stringify({ notificationRecap: 'Added retries across 3 files and opened a pull request.' }) });
+
+  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
+  const byTask = new Map((outcomes.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item]));
+  const rereviewed = byTask.get('rereviewed');
+  assert.deepEqual([rereviewed?.occurredAt, rereviewed?.score, rereviewed?.detail], [minutesAgo(30), null, null]);
+  const twoStep = byTask.get('two-step');
+  assert.deepEqual(
+    [twoStep?.occurredAt, twoStep?.detail],
+    [minutesAgo(80), 'Added retries across 3 files and opened a pull request.'],
+  );
+});

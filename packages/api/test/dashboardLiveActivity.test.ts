@@ -1,20 +1,28 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
-import { describeToolUse, summariseLiveActivity } from '../routes/dashboardLiveActivity.js';
+import type { RedisClientType } from 'redis';
+import { closeConnection } from '@propr/core';
+import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
+import { describeToolUse, EMPTY_LIVE_DETAILS, summariseLiveActivity } from '../routes/dashboardLiveActivity.js';
 import {
   call,
   clearDashboardTestDatabase,
   createDashboardTestDatabase,
   createTestDashboardRoutes,
   minutesAgo,
+  NOW,
   seedTask,
 } from './dashboardTestHarness.js';
 
 let database: Knex;
 
 before(async () => { database = await createDashboardTestDatabase(); });
-after(async () => database.destroy());
+after(async () => {
+  await database.destroy();
+  // The production projector's module opens the shared core connection.
+  await closeConnection();
+});
 beforeEach(async () => clearDashboardTestDatabase(database));
 
 test('a tool call is described as the action it performs, by file name rather than host path', () => {
@@ -69,12 +77,17 @@ test('a raw-output fallback has no event time, and an empty projection reports n
   });
   assert.equal(summary.lastActivityAt, null);
   assert.equal(summary.awaitingFirstOutput, false);
-  // A read that found no projection: the agent has written nothing yet.
+  // A read that found the stream empty: the agent has written nothing yet.
   assert.deepEqual(
-    summariseLiveActivity(null),
+    summariseLiveActivity(EMPTY_LIVE_DETAILS),
     { progressLine: null, activity: null, step: null, lastActivityAt: null, awaitingFirstOutput: true },
   );
   assert.equal(summariseLiveActivity({ events: [] }).awaitingFirstOutput, true);
+  // No projection is unknown, not empty: the shared projector also returns null when its read failed.
+  assert.deepEqual(
+    summariseLiveActivity(null),
+    { progressLine: null, activity: null, step: null, lastActivityAt: null, awaitingFirstOutput: false },
+  );
 });
 
 test('output that names no action is not an empty stream', () => {
@@ -93,8 +106,9 @@ test('only a stream that was read and found empty is awaiting first output', asy
     await seedTask(database, { taskId: `run-${index}`, issueNumber: 300 + index, states: [{ state: 'claude_execution', timestamp: minutesAgo(60 - index) }] });
   }
   const dashboard = createTestDashboardRoutes(database, {}, async taskId => {
-    if (taskId === 'run-20') return null;
+    if (taskId === 'run-20') return EMPTY_LIVE_DETAILS;
     if (taskId === 'run-19') throw new Error('unreadable stream');
+    if (taskId === 'run-18') return null;
     return { events: [{ type: 'thought', content: 'Thinking', timestamp: minutesAgo(1) }] };
   });
   const active = await call(dashboard.getActive, { repository: 'all' });
@@ -102,9 +116,46 @@ test('only a stream that was read and found empty is awaiting first output', asy
 
   assert.equal(byTask.get('run-20')?.awaitingFirstOutput, true);
   assert.equal(byTask.get('run-19')?.awaitingFirstOutput, false);
+  assert.equal(byTask.get('run-18')?.awaitingFirstOutput, false);
   assert.deepEqual([byTask.get('run-10')?.activity, byTask.get('run-10')?.awaitingFirstOutput], [null, false]);
   // Never read: past the cap is unknown, not empty.
   assert.equal(byTask.get('run-0')?.awaitingFirstOutput, false);
+});
+
+test('the production projector reports an empty stream only when its persisted fallback was read', async () => {
+  await seedTask(database, { taskId: 'silent-task', issueNumber: 81, states: [{ state: 'claude_execution', timestamp: minutesAgo(3) }] });
+  await seedTask(database, { taskId: 'unreadable-task', issueNumber: 82, states: [{ state: 'claude_execution', timestamp: minutesAgo(2) }] });
+  // No active Redis output for either task, so both fall back to persisted
+  // output; that database read fails for one of them.
+  let failPersistedRead = false;
+  const redisClient = {
+    get: async (key: string) => {
+      failPersistedRead = key === 'agent:output:unreadable-task';
+      return null;
+    },
+    sMembers: async () => ['worker:0'],
+    hGetAll: async () => ({ 'worker:0': '1' }),
+  } as unknown as RedisClientType;
+  const db = new Proxy(database, {
+    apply(target, thisArg, args: unknown[]) {
+      if (failPersistedRead && args[0] === 'task_history') throw new Error('database unavailable');
+      return Reflect.apply(target, thisArg, args);
+    },
+  });
+  const dashboard = createDashboardRoutes({
+    db,
+    redisClient,
+    taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 } as never,
+    now: () => NOW,
+  });
+
+  const active = await call(dashboard.getActive, { repository: 'all' });
+  const byTask = new Map((active.body.running as Array<Record<string, unknown>>).map(item => [item.taskId, item]));
+  assert.equal(byTask.get('silent-task')?.awaitingFirstOutput, true);
+  assert.deepEqual(
+    [byTask.get('unreadable-task')?.activity, byTask.get('unreadable-task')?.awaitingFirstOutput],
+    [null, false],
+  );
 });
 
 test('active carries each running agent\'s latest action, plan step and last output time', async () => {

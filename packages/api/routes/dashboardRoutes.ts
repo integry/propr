@@ -27,6 +27,7 @@ import { loadDashboardWork } from './dashboardWorkQueries.js';
 import { loadCompletedRows, type CompletedRow } from './dashboardOutcomeQueries.js';
 import {
   EMPTY_LIVE_ACTIVITY,
+  EMPTY_LIVE_DETAILS,
   summariseLiveActivity,
   type LiveActivity,
   type LiveDetailsSnapshot,
@@ -45,7 +46,11 @@ export interface DashboardRoutesDeps {
   db: Knex;
   redisClient: RedisClientType;
   taskQueue: Pick<Queue, 'isPaused' | 'getActiveCount'>;
-  /** Seam for tests; production resolves the shared live-details projection. */
+  /**
+   * Seam for tests; production resolves the shared live-details projection.
+   * Null is a stream that was not read, which is unknown rather than empty; a
+   * stream read and found empty is an empty snapshot.
+   */
   liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>;
   now?: () => Date;
 }
@@ -123,10 +128,12 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   const { db, redisClient, taskQueue } = deps;
   const now = deps.now ?? (() => new Date());
   // Loaded lazily so a dashboard read only reaches the live-details module
-  // (and its provider parsers) when there is running work to project.
-  const liveDetails = deps.liveDetails ?? (async (taskId: string) => {
+  // (and its provider parsers) when there is running work to project. A read
+  // that fails rejects, and one that succeeds but finds no output at all is an
+  // empty stream, so only a stream actually read can be reported as empty.
+  const liveDetails = deps.liveDetails ?? (async (taskId: string): Promise<LiveDetailsSnapshot> => {
     const { projectTaskLiveDetails } = await import('./liveDetailsRoutes.js');
-    return projectTaskLiveDetails(redisClient, db, taskId);
+    return await projectTaskLiveDetails(redisClient, db, taskId, { rethrowReadErrors: true }) ?? EMPTY_LIVE_DETAILS;
   });
 
   /**

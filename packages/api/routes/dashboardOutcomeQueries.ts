@@ -16,8 +16,11 @@ import type { Knex } from 'knex';
 import {
   chunk,
   mapTaskRow,
+  QUEUED_TASK_STATES,
+  RUNNING_TASK_STATES,
   TASK_COLUMNS,
   terminalTransitionQuery,
+  toIso,
   type DashboardTaskRow,
   type RawTaskRow,
 } from './dashboardQueries.js';
@@ -83,24 +86,45 @@ interface CompletionDetails {
 }
 
 /**
- * The newest recap and command mode recorded on each task's completions.
- *
- * A task can record more than one completion ("implementation completed",
- * then "PR ready"), and the recap is not always on the newest one, so every
- * completion of the listed tasks is read and the newest that says something
- * wins.
+ * States that open a run. A completion is terminal, so a task that records one
+ * of these after completing has been started again, and what it records from
+ * then on belongs to the new run.
  */
-async function loadCompletionDetails(db: Knex, taskIds: readonly string[]): Promise<Map<string, CompletionDetails>> {
+const RUN_START_STATES: readonly string[] = [...QUEUED_TASK_STATES, ...RUNNING_TASK_STATES];
+
+/**
+ * The newest recap and command mode recorded by the run each row's completion
+ * belongs to.
+ *
+ * A run can record more than one completion ("implementation completed",
+ * then "PR ready"), and the recap is not always on the newest one, so every
+ * completion of that run is read and the newest that says something wins. The
+ * run's history is read back from the listed completion and stops where the
+ * run started: a task that is followed up runs again under the same id, and a
+ * recap or review score from an earlier run must not be shown as the result of
+ * a later one that recorded none.
+ */
+async function loadCompletionDetails(db: Knex, rows: readonly DashboardTaskRow[]): Promise<Map<string, CompletionDetails>> {
   const details = new Map<string, CompletionDetails>();
-  for (const batch of chunk(taskIds)) {
-    const rows = await db('task_history')
+  const completedAt = new Map(rows.map(row => [row.taskId, Date.parse(row.stateTimestamp)]));
+  const runStarted = new Set<string>();
+  for (const batch of chunk(rows.map(row => row.taskId))) {
+    const history = await db('task_history')
       .whereIn('task_id', batch)
-      .where('state', 'completed')
-      .select('task_id', 'metadata')
-      .orderBy('timestamp', 'desc') as Array<Record<string, unknown>>;
-    for (const row of rows) {
-      const taskId = String(row.task_id);
-      const metadata = parseJsonObject(row.metadata);
+      .whereIn('state', ['completed', ...RUN_START_STATES])
+      .select('task_id', 'state', 'timestamp', 'metadata')
+      .orderBy([{ column: 'timestamp', order: 'desc' }, { column: 'history_id', order: 'desc' }]) as Array<Record<string, unknown>>;
+    for (const entry of history) {
+      const taskId = String(entry.task_id);
+      if (runStarted.has(taskId)) continue;
+      // Anything after the listed completion belongs to a later run, including
+      // a restart recorded in the same millisecond, which sorts before it.
+      if (Date.parse(toIso(entry.timestamp)) > (completedAt.get(taskId) ?? Number.NEGATIVE_INFINITY)) continue;
+      if (entry.state !== 'completed') {
+        if (details.has(taskId)) runStarted.add(taskId);
+        continue;
+      }
+      const metadata = parseJsonObject(entry.metadata);
       const current = details.get(taskId) ?? { recap: null, commandMode: null };
       const commandMode = typeof metadata.commandMode === 'string' ? metadata.commandMode : null;
       details.set(taskId, {
@@ -206,7 +230,7 @@ export async function loadCompletedRows(
   }
   if (mapped.length === 0) return [];
 
-  const details = await loadCompletionDetails(db, mapped.map(row => row.taskId));
+  const details = await loadCompletionDetails(db, mapped);
   return mapped.map(row => {
     const detail = details.get(row.taskId) ?? { recap: null, commandMode: null };
     if (isReviewRun(row, detail.commandMode)) {
