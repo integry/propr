@@ -156,6 +156,28 @@ describe('McpLogsPage', () => {
     expect(within(await screen.findByRole('table')).getByText('propr_list_tasks')).toBeInTheDocument();
   });
 
+  it('offers to clear a filter the API rejected instead of only retrying it', async () => {
+    mockGetLogs.mockRejectedValue(new Error('repository must be owner/repo'));
+    renderPage('/mcp-logs?repository=integry');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('repository must be owner/repo');
+
+    mockGetLogs.mockResolvedValue({ data: [entry()], pagination: pagination(), filters: {} });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+
+    expect(within(await screen.findByRole('table')).getByText('propr_list_tasks')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).not.toHaveTextContent('repository=');
+    expect(mockGetLogs).toHaveBeenLastCalledWith(expect.not.objectContaining({ repository: expect.anything() }));
+  });
+
+  it('bounds the summary window with one clock reading so 30 days stays within retention', async () => {
+    renderPage('/mcp-logs?window=30d');
+
+    await waitFor(() => expect(mockGetStats).toHaveBeenCalled());
+    const { since, until } = mockGetStats.mock.calls[0][0]!;
+    expect(until! - since!).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
   it('shows a distinct empty state', async () => {
     mockGetLogs.mockResolvedValue({ data: [], pagination: pagination({ total: 0, totalPages: 0 }), filters: {} });
     renderPage();

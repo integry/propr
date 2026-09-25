@@ -156,7 +156,10 @@ const McpLogsPage: React.FC = () => {
     let cancelled = false;
     void (async () => {
       try {
-        const response = await getMcpAccessLogStats({ since: resolveWindowSince(filters.window, Date.now()) });
+        // Both ends come from one clock reading: left open, `until` would default
+        // to the server's later clock and push a 30-day window past retention.
+        const now = Date.now();
+        const response = await getMcpAccessLogStats({ since: resolveWindowSince(filters.window, now), until: now });
         if (cancelled || requestId !== statsRequestIdRef.current) return;
         setStats(response.data ?? null);
         setStatsError(null);
@@ -196,6 +199,8 @@ const McpLogsPage: React.FC = () => {
         kind={state.kind}
         message={state.kind === 'loading' ? undefined : state.message}
         onRetry={state.kind === 'error' ? () => setReloadToken(token => token + 1) : undefined}
+        // A rejected filter would fail again on Retry, so offer a way out of it.
+        onClearFilters={state.kind === 'error' && hasActiveMcpLogFilters(filters) ? clearFilters : undefined}
       />
     );
   }

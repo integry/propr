@@ -77,6 +77,19 @@ async function installFixture(page: Page, { empty = false } = {}): Promise<void>
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const { pathname, searchParams } = new URL(route.request().url());
+    // The two input checks the real routes enforce, so a request the API would
+    // reject is rejected here too instead of passing silently.
+    const repository = searchParams.get('repository');
+    if (pathname === '/api/admin/mcp/logs' && repository && !repository.includes('/')) {
+      return route.fulfill({ status: 400, json: { error: 'repository is not a valid filter value', code: 'INVALID_INPUT' } });
+    }
+    if (pathname === '/api/admin/mcp/logs/stats') {
+      const since = Number(searchParams.get('since'));
+      const until = Number(searchParams.get('until') ?? Date.now());
+      if (until - since > 30 * 24 * 60 * 60 * 1000) {
+        return route.fulfill({ status: 400, json: { error: 'The stats window must not exceed 30 days', code: 'INVALID_INPUT' } });
+      }
+    }
     const rows = empty ? [] : matchingRows(searchParams);
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: false },
@@ -148,6 +161,24 @@ test('groups the log destinations in the sidebar and lists MCP requests', async 
   await group.click();
   await expect(group).toHaveAttribute('aria-expanded', 'false');
   await expect(panel.getByRole('link', { name: 'MCP Log' })).toBeHidden();
+});
+
+test('summarises the widest window and recovers from a rejected filter', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installFixture(page);
+  await page.goto('/mcp-logs?window=30d');
+
+  // The 30-day summary is inside the retention the stats endpoint enforces.
+  await expect(page.getByRole('group', { name: 'MCP access summary' }).getByText('1,284')).toBeVisible();
+
+  await page.getByLabel('Repository').fill('integry');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(page.getByRole('alert')).toContainText('repository is not a valid filter value');
+  await capture(page, 'mcp-log-rejected-filter');
+
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(page).not.toHaveURL(/repository=/);
+  await expect(page.getByRole('table')).toBeVisible();
 });
 
 test('renders a legible empty state', async ({ page }) => {

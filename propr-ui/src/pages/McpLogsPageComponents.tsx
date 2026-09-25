@@ -111,7 +111,8 @@ export const McpLogsBlockingState: React.FC<{
   kind: 'loading' | 'error' | 'denied';
   message?: string;
   onRetry?: () => void;
-}> = ({ kind, message, onRetry }) => (
+  onClearFilters?: () => void;
+}> = ({ kind, message, onRetry, onClearFilters }) => (
   <div className="flex h-full flex-col">
     <div className="flex-shrink-0 border-b border-gray-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
       <h1 className="text-lg font-bold text-gray-800 sm:text-2xl">MCP Log</h1>
@@ -143,6 +144,15 @@ export const McpLogsBlockingState: React.FC<{
               className="mt-3 inline-flex items-center rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-500"
             >
               Retry
+            </button>
+          )}
+          {onClearFilters && (
+            <button
+              type="button"
+              onClick={onClearFilters}
+              className="ml-2 mt-3 inline-flex items-center rounded-md px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:text-teal-900 focus:outline-none focus:ring-2 focus:ring-teal-500"
+            >
+              Clear filters
             </button>
           )}
         </div>
