@@ -137,9 +137,6 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
     } });
   tools.push({ name: 'set_pull_request_model', description: 'Route an open PR to exactly one enabled model by converging its managed llm-* labels. Only labels the repository already defines are used; none are created.', scope: 'execute',
     schema: z.object({ ...mutation, model: idSchema }).strict(), run: async ({ principal, args }) => withModelLabelLease(deps.redisClient, args.repository, args.pullRequest, async lease => {
-      // Read inside the lease: labels a concurrent routing added must be seen here.
-      const { owner, repo, pr } = await pull(principal, args);
-      if (pr.state !== 'open' || pr.merged) throw new McpError('PRECONDITION_FAILED', 'Pull request is not open.', 409);
       const choice = await resolveEnabledModel(args.model);
       const { labels: defined, complete } = await repositoryModelLabels(principal, args.repository);
       // An incomplete label read cannot conclude absence: fall back to a targeted
@@ -148,6 +145,12 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         ?? (complete ? null : await lookupRepositoryModelLabel(principal, args.repository, choice));
       if (!target && !complete) throw new McpError('MODEL_LABEL_LOOKUP_INCOMPLETE', `This repository defines more labels than one read covers, so whether it has a managed label for ${choice.agentAlias}:${choice.model} could not be established. Name that label llm-${choice.model} so it can be found directly, then retry.`, 409);
       if (!target) throw new McpError('MODEL_LABEL_MISSING', `This repository defines no managed label for ${choice.agentAlias}:${choice.model}. Create that label in GitHub first; ProPR will not invent one. Managed labels defined here: ${defined.join(', ') || 'none'}.`, 409);
+      // Read after discovery and inside the lease, immediately before convergence: the
+      // lease does not govern implementation pushes, so the head and open state checked
+      // here must not predate the slow model and label reads. Labels a concurrent
+      // routing added must be seen here too.
+      const { owner, repo, pr } = await pull(principal, args);
+      if (pr.state !== 'open' || pr.merged) throw new McpError('PRECONDITION_FAILED', 'Pull request is not open.', 409);
       const previousLabels = labelNames(pr.labels);
       const managed = managedModelLabels(previousLabels);
       // Add before removing so the pull request is never left without model routing.

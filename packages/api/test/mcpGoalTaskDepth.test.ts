@@ -130,6 +130,7 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
   const { McpError } = await import('../mcp/config.js');
   const { McpPolicy } = await import('../mcp/policy.js');
   const { McpStore } = await import('../mcp/store.js');
+  const { McpOperations } = await import('../mcp/operations.js');
   const { McpOAuthProvider } = await import('../mcp/oauth.js');
   const { createToolCatalog, executeTool } = await import('../mcp/tools.js');
 
@@ -326,6 +327,16 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     await assert.rejects(() => call('send_goal_input', { repository, goalId: runningGoalId,
       message: 'Correction instruction', kind: 'question', idempotencyKey: 'depth-input-0' }),
     /already used with different arguments/);
+
+    // A receipt created before `kind` existed replays for the identical retry: an
+    // omitted kind must stay absent from the arguments the idempotency hash covers.
+    const legacyArgs = { repository, goalId: runningGoalId, message: 'Legacy correction', idempotencyKey: 'depth-input-legacy' };
+    const legacy = await new McpOperations(db).run(principal, { tool: 'send_goal_input', args: legacyArgs, repository },
+      async () => ({ status: 200, data: { replayed: 'legacy' } }));
+    const replayed = await call('send_goal_input', legacyArgs);
+    assert.equal(replayed.operationId, legacy.operationId, JSON.stringify(replayed));
+    assert.deepEqual(replayed.result, { replayed: 'legacy' });
+    assert.equal(await db('goal_inputs').where({ goal_id: runningGoalId, message: 'Legacy correction' }).first(), undefined);
 
     // Every new path keeps owner scoping and the private-goal-task visibility rules.
     for (const args of [{ repository, goalId: strangerGoalId }]) {

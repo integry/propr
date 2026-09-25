@@ -134,6 +134,29 @@ export async function verifyPullRequestWrites(
     assert.deepEqual(findPullRequest('acme/repo', 42).labels.filter(name => name.startsWith('llm-')), ['llm-claude-opus-5']);
   });
 
+  await t.test('set_pull_request_model checks the head and open state after label discovery', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const live = findPullRequest('acme/repo', 42);
+    const before = [...live.labels];
+    const writes = () => restCalls.filter(item => item.route.includes('/issues/{issue_number}/labels')).length;
+    const baseline = writes();
+    // The running implementation pushes a new head while repository labels are still
+    // being discovered; the model lease does not govern that push.
+    interceptRest(principal, 'GET /repos/{owner}/{repo}/labels', async () => { live.head = 'b'.repeat(40); });
+    const pushed = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
+    live.head = 'a'.repeat(40);
+    assert.equal(pushed.state, 'failed');
+    assert.equal(pushed.result.error.code, 'STALE_HEAD');
+    // The pull request closes during discovery instead.
+    interceptRest(principal, 'GET /repos/{owner}/{repo}/labels', async () => { live.state = 'CLOSED'; });
+    const closed = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
+    live.state = 'OPEN';
+    assert.equal(closed.state, 'failed');
+    assert.equal(closed.result.error.code, 'PRECONDITION_FAILED');
+    assert.equal(writes(), baseline, 'no label may be written after the precondition changed');
+    assert.deepEqual(live.labels, before);
+  });
+
   await t.test('get_pull_request reports the ultrafix circuit breaker', async () => {
     const read = await call('get_pull_request', { repository: 'acme/repo', pullRequest: 42 });
     assert.deepEqual(read.ultrafix, { active: true });

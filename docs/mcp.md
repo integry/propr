@@ -311,9 +311,11 @@ Before sending a correction, read what has already been sent with
 ```
 
 `send_goal_input` queues the correction durably. `kind` distinguishes the
-request; both kinds persist the same durable goal input this backend supports,
-and reusing an idempotency key with a different `kind` returns
-`IDEMPOTENCY_CONFLICT` rather than sending a second correction. Acceptance means
+request and an omitted `kind` means an instruction; both kinds persist the same
+durable goal input this backend supports. A retry must repeat its original
+arguments exactly, including leaving `kind` out when it was omitted: reusing an
+idempotency key with a different `kind` returns `IDEMPOTENCY_CONFLICT` rather
+than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
 
