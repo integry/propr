@@ -14,6 +14,7 @@ import {
   ListTodo,
   LogOut,
   MoreHorizontal,
+  Plug,
   ScrollText,
   Settings,
   Target,
@@ -54,6 +55,7 @@ const getNavigationState = (pathname: string) => {
     more: (pathMatches(pathname, '/tasks') && !newPlan) || pathMatches(pathname, '/plans') ||
       (pathMatches(pathname, '/studio') && !newPlan) ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
+      pathMatches(pathname, '/mcp-logs') ||
       pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
   };
 };
@@ -67,7 +69,11 @@ const getMoreItems = (user: CurrentUser | null) => [
   ...(userHasPermission(user, 'instance.manage_agents')
     ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
     : []),
-  { label: 'Logs', to: '/llm-logs', icon: Cpu },
+  { label: 'LLM Log', to: '/llm-logs', icon: Cpu },
+  // Mirrors the sidebar's Logs group, including its operator-only entry.
+  ...(userHasPermission(user, 'instance.manage_settings')
+    ? [{ label: 'MCP Log', to: '/mcp-logs', icon: Plug }]
+    : []),
   { label: 'Settings', to: '/settings', icon: Settings },
   ...(userHasPermission(user, 'instance.manage_members')
     ? [{ label: 'Access', to: '/admin/members', icon: ShieldCheck }]
