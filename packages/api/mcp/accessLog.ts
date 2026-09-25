@@ -203,10 +203,21 @@ export async function withMcpDispatch(run: () => Promise<void>): Promise<boolean
   return dispatch.recorded;
 }
 
+/** Serialized size of a surface response, or 0 when it cannot be serialized. */
+function serializedBytes(value: unknown): number {
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? 0 : Buffer.byteLength(json);
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Record one resource read or prompt fetch. The invocation it performs claims
  * the surface, so a resource backed by a tool still produces exactly one row;
- * a failure before that claim is recorded here instead.
+ * a failure before that claim, or a response no tool produced, is recorded here
+ * instead. Resource reads and prompt fetches never mutate, so both are read-only.
  */
 export async function withMcpSurface<T>(
   db: Knex, principal: Pick<McpPrincipal, 'user' | 'grant'>, { kind, name }: { kind: McpAccessKind; name: string }, run: () => Promise<T>,
@@ -217,12 +228,15 @@ export async function withMcpSurface<T>(
   try {
     const value = await accessContext.run({ ...parent, surface }, run);
     if (!surface.recorded) {
-      await recordMcpAccess(db, { ...accessPrincipal(principal), kind, name, status: 200, outcome: 'success', durationMs: Date.now() - startedAt });
+      await recordMcpAccess(db, {
+        ...accessPrincipal(principal), kind, name, readOnly: true, status: 200, outcome: 'success',
+        durationMs: Date.now() - startedAt, resultBytes: serializedBytes(value),
+      });
     }
     return value;
   } catch (error) {
     if (!surface.recorded) {
-      await recordMcpAccess(db, { ...accessPrincipal(principal), kind, name, ...classifyMcpFailure(error), durationMs: Date.now() - startedAt });
+      await recordMcpAccess(db, { ...accessPrincipal(principal), kind, name, readOnly: true, ...classifyMcpFailure(error), durationMs: Date.now() - startedAt });
     }
     throw error;
   }

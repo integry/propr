@@ -135,6 +135,14 @@ const McpLogsPage: React.FC = () => {
           buildMcpLogQuery(filters, { page: currentPage, limit: PAGE_SIZE, now: Date.now() }),
         );
         if (cancelled || requestId !== requestIdRef.current) return;
+        // Older rows leave the rolling window, so a saved page can outrun the
+        // log. Move to the last page that still exists, keeping every filter,
+        // rather than presenting an empty page as an empty log.
+        const lastPage = Math.max(1, response.pagination?.totalPages ?? 1);
+        if (!response.data?.length && currentPage > lastPage) {
+          updateSearchParams({ page: String(lastPage) });
+          return;
+        }
         setEntries(response.data ?? []);
         setPagination(response.pagination ?? null);
         setLoadedScope(queryScope);
@@ -147,7 +155,7 @@ const McpLogsPage: React.FC = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [canRead, currentPage, filters, queryScope, reloadToken]);
+  }, [canRead, currentPage, filters, queryScope, reloadToken, updateSearchParams]);
 
   useEffect(() => {
     if (!canRead) return;

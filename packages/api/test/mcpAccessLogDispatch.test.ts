@@ -14,7 +14,7 @@ import { McpOAuthProvider } from '../mcp/oauth.js';
 import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
 import { serveMcpRequest } from '../mcp/server.js';
 import { createToolCatalog, executeTool, type McpTool, type ToolDeps } from '../mcp/tools.js';
-import { pruneMcpAccessLog, MCP_ACCESS_LOG_RETENTION_MS, type McpAccessLogRow } from '../mcp/accessLog.js';
+import { pruneMcpAccessLog, withMcpSurface, MCP_ACCESS_LOG_RETENTION_MS, type McpAccessLogRow } from '../mcp/accessLog.js';
 
 after(async () => closeConnection());
 
@@ -103,10 +103,43 @@ test('a call the protocol SDK rejects before dispatch is still recorded once', a
     ['resource', 'connection', 'success', null, 200],
     ['resource', 'unknown', 'denied', 'NOT_FOUND', 404],
   ]);
+  // Prompt fetches and resource reads never mutate, whether they succeed or are
+  // rejected before dispatch; a prompt answered without a tool still has a size.
+  assert.deepEqual(recorded.map(row => !!row.read_only), [true, true, false, true, true, true, true]);
+  assert.ok(recorded[3].result_bytes > 0);
+  assert.equal(recorded[4].result_bytes, 0);
   // The rejected arguments and resource URIs themselves never reach the table.
   assert.ok(!JSON.stringify(recorded).includes('x'.repeat(64)));
   assert.ok(!JSON.stringify(recorded).includes('private-token-abc123'));
   for (const row of recorded) assert.equal(row.owner_id, '123');
+});
+
+// Resource reads and prompt fetches never mutate. A prompt answers without
+// invoking a tool, so its size is measured from the response itself.
+test('resource reads and prompt fetches are recorded as read-only, with the size of a standalone response', async t => {
+  const db = await createDatabase();
+  t.after(() => db.destroy());
+  const deps = createDeps(db);
+  const tool = createToolCatalog(deps).find(candidate => candidate.name === 'list_goals')!;
+  const prompt = { messages: [{ role: 'user', content: { type: 'text', text: 'Resolve the repository.' } }] };
+
+  await withMcpSurface(db, principal(), { kind: 'resource', name: 'goals' }, async () => executeTool(tool, { repository: 'acme/repo' }, principal(), deps));
+  await withMcpSurface(db, principal(), { kind: 'prompt', name: 'plan_change' }, async () => prompt);
+  await assert.rejects(withMcpSurface(db, principal(), { kind: 'resource', name: 'plans' }, async () => {
+    throw new McpError('NOT_FOUND', 'Resource not found.', 404);
+  }));
+  await assert.rejects(withMcpSurface(db, principal(), { kind: 'prompt', name: 'implement_plan' }, async () => {
+    throw new Error('boom');
+  }));
+
+  const recorded = await rows(db);
+  assert.deepEqual(recorded.map(row => [row.kind, row.name, row.outcome, !!row.read_only, row.result_bytes > 0]), [
+    ['resource', 'goals', 'success', true, true],
+    ['prompt', 'plan_change', 'success', true, true],
+    ['resource', 'plans', 'denied', true, false],
+    ['prompt', 'implement_plan', 'error', true, false],
+  ]);
+  assert.equal(recorded[1].result_bytes, Buffer.byteLength(JSON.stringify(prompt)));
 });
 
 // A mutation answers with a durable receipt instead of throwing, so its access

@@ -255,4 +255,39 @@ describe('McpLogsPage', () => {
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=2'));
     await waitFor(() => expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })));
   });
+
+  it('moves a saved page past the end of the window back to the last page, keeping the filters', async () => {
+    // Older rows left the rolling window: page 3 is now empty, but 50 records remain.
+    mockGetLogs.mockImplementation(async params => (params?.page === 3
+      ? { data: [], pagination: pagination({ page: 3, offset: 100, total: 50, totalPages: 1, hasPreviousPage: true }), filters: {} }
+      : { data: [entry()], pagination: pagination({ total: 50 }), filters: {} }));
+    renderPage('/mcp-logs?window=7d&outcome=denied&page=3');
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=1'));
+    expect(screen.getByTestId('location')).toHaveTextContent('window=7d');
+    expect(screen.getByTestId('location')).toHaveTextContent('outcome=denied');
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, outcome: 'denied' }));
+    expect(screen.queryByText(/No MCP requests/)).not.toBeInTheDocument();
+  });
+
+  it('moves to the last remaining page, not the first, when later pages emptied', async () => {
+    mockGetLogs.mockImplementation(async params => (params?.page === 5
+      ? { data: [], pagination: pagination({ page: 5, offset: 200, total: 120, totalPages: 3, hasPreviousPage: true }), filters: {} }
+      : { data: [entry()], pagination: pagination({ page: params?.page ?? 1, total: 120, totalPages: 3, hasPreviousPage: true }), filters: {} }));
+    renderPage('/mcp-logs?page=5');
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=3'));
+    expect(await screen.findByRole('button', { name: 'Previous' })).toBeInTheDocument();
+    expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 3 }));
+  });
+
+  it('shows the empty state once a stale page resolves to a window with no records', async () => {
+    mockGetLogs.mockResolvedValue({ data: [], pagination: pagination({ total: 0, totalPages: 0 }), filters: {} });
+    renderPage('/mcp-logs?page=4');
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=1'));
+    expect(await screen.findByText(/No MCP requests/)).toBeInTheDocument();
+    expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 }));
+  });
 });

@@ -121,8 +121,9 @@ async function recordRejectedDispatch(
   const name = typeof body?.params?.name === 'string' ? body.params.name : null;
   const tool = kind === 'tool' && name ? visibleTools(principal, catalog).find(candidate => candidate.name === name) : undefined;
   const known = kind === 'tool' ? !!tool : !!name && Object.hasOwn(prompts, name);
+  // A prompt fetch never mutates, whether or not it names a registered prompt.
   await recordMcpAccess(deps.db, {
-    ...accessPrincipal(principal), kind, name: name ?? 'unknown', scope: tool?.scope ?? null, readOnly: !!tool?.readOnly,
+    ...accessPrincipal(principal), kind, name: name ?? 'unknown', scope: tool?.scope ?? null, readOnly: kind === 'prompt' || !!tool?.readOnly,
     status: known ? 400 : 404, outcome: 'denied', errorCode: known ? 'INVALID_INPUT' : 'NOT_FOUND',
     durationMs: Date.now() - startedAt,
   });
