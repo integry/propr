@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Knex } from 'knex';
 import logger from '../utils/logger.js';
 import {
+    SQL_STATEMENT_START as STATEMENT_START,
     SQL_TRIVIA as TRIVIA,
     atScopeOf,
     isInTransaction,
@@ -87,13 +88,13 @@ const quotedName = (name: string): string =>
 
 /**
  * A statement that reads or sets `busy_timeout`, in every form SQLite accepts
- * for it: leading comments, a schema prefix, a quoted name, and either
- * assignment syntax (`= 5000`, `(5000)`). A form left unrecognized here would
- * be answered out of the limiter's internal cap, or have its assignment undone
- * when the limiter puts back the value it saw.
+ * for it: leading comments and empty statements, a schema prefix, a quoted
+ * name, and either assignment syntax (`= 5000`, `(5000)`). A form left
+ * unrecognized here would be answered out of the limiter's internal cap, or
+ * have its assignment undone when the limiter puts back the value it saw.
  */
 const BUSY_TIMEOUT_PRAGMA = new RegExp(
-    `^${TRIVIA}*pragma(?:${TRIVIA}+|(?=["'\`\\[]))`
+    `^${STATEMENT_START}pragma(?:${TRIVIA}+|(?=["'\`\\[]))`
     + `(?:[^\\s;=()]+${TRIVIA}*\\.${TRIVIA}*)?`
     + `${quotedName('busy_timeout')}${TRIVIA}*(?:[=(]|;?${TRIVIA}*$)`,
     'i'

@@ -707,7 +707,10 @@ describe('installSqliteRetry', () => {
         ['SAVEPOINT "s""q"', 'ROLLBACK TO [s"q]', 'RELEASE `s"q`'],
         // A quote delimiter starts a token of its own, so SQLite needs no
         // whitespace between the keyword and a quoted name.
-        ['SAVEPOINT s', 'ROLLBACK TO"s"', 'RELEASE SAVEPOINT"s"']
+        ['SAVEPOINT s', 'ROLLBACK TO"s"', 'RELEASE SAVEPOINT"s"'],
+        // A bare `;` is an empty statement, which SQLite skips, so each of
+        // these is still the savepoint statement after it.
+        ['; SAVEPOINT s', ';; ROLLBACK TO s', '; /* done */ ; RELEASE s']
     ]) {
         test(`abandons a pending retry under \`${open}\` once \`${rollBack}\` runs`, async () => {
             const db = await createDatabase();
@@ -1154,6 +1157,23 @@ describe('installSqliteRetry', () => {
 
         await db.raw("PRAGMA 'busy_timeout'(2468)");
         assert.equal(await busyTimeoutMs(db), 2468);
+
+        // A bare `;` is an empty statement, which SQLite skips, so these are
+        // the pragma too. The limiter would otherwise put the value it saw
+        // back over the assignment.
+        await db.raw('; PRAGMA busy_timeout = 0');
+        assert.equal(await busyTimeoutMs(db), 0);
+
+        await db.raw(';; /* two empty statements */ PRAGMA busy_timeout = 1357');
+        assert.equal(await busyTimeoutMs(db), 1357);
+
+        const emptyPrefixedRead = await db.raw('; PRAGMA busy_timeout') as Array<
+            Record<string, number>
+        >;
+        assert.equal(
+            Number(emptyPrefixedRead[0]?.timeout ?? emptyPrefixedRead[0]?.busy_timeout),
+            1357
+        );
 
         assert.deepEqual(pragmas.filter(source => source.startsWith('busy_timeout')), []);
     });

@@ -24,6 +24,14 @@
 export const SQL_TRIVIA = String.raw`(?:\s|--[^\n]*|/\*[\s\S]*?\*/)`;
 
 /**
+ * What may come before the first keyword of a statement: trivia, and any
+ * number of empty statements. A bare `;` is a statement of its own to SQLite,
+ * one that does nothing, so `; SAVEPOINT s` is the savepoint statement and
+ * has to be recognized as one.
+ */
+export const SQL_STATEMENT_START = `(?:${SQL_TRIVIA}|;)*`;
+
+/**
  * A savepoint name, tokenized the way SQLite does. A bare identifier is made
  * of letters, digits, `_`, `$` and non-ASCII characters, and ends where the
  * next token — a comment delimiter included — begins, so a name with a block
@@ -50,7 +58,7 @@ const BEFORE_NAME = String.raw`(?:${SQL_TRIVIA}+|(?=["'\`\[]))`;
  * three apart; group 4 is the name.
  */
 const SAVEPOINT_STATEMENT = new RegExp(
-    `^${SQL_TRIVIA}*(?:(savepoint)|(release)(?:${SQL_TRIVIA}+savepoint)?`
+    `^${SQL_STATEMENT_START}(?:(savepoint)|(release)(?:${SQL_TRIVIA}+savepoint)?`
     + `|(rollback)(?:${SQL_TRIVIA}+transaction)?${SQL_TRIVIA}+to(?:${SQL_TRIVIA}+savepoint)?)`
     + `${BEFORE_NAME}${SAVEPOINT_NAME}`,
     'i'
