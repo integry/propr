@@ -55,7 +55,7 @@ export const InboxClearAllButton: React.FC<InboxClearAllButtonProps> = ({ onConf
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="inline-flex h-8 items-center rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-wait disabled:opacity-60"
+        className="inline-flex items-center rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-wait disabled:opacity-60"
       >
         Clear all
       </button>

@@ -43,6 +43,13 @@ describe('Notification follow-up commands', () => {
     expect(notificationFollowupCommand(notification({}))).toBeNull();
     expect(notificationFollowupCommand(review)?.commands).toEqual(['/fix']);
     expect(notificationFollowupCommand(notification({ ...review, actions: ['dismiss'] }))).toBeNull();
+    // A clean review has nothing to fix; a failed reviewer still leaves /fix available.
+    expect(notificationFollowupCommand(notification({ ...review, body: 'Score 9/10 · 0 issues found' }))).toBeNull();
+    expect(notificationFollowupCommand(notification({
+      ...review, body: 'Score 9/10 · 0 issues found · 1 reviewer failed',
+    }))?.commands).toEqual(['/fix']);
+    expect(notificationFollowupCommand(notification({ ...review, body: 'Score 6/10 · 2 issues found: A; B' }))?.commands)
+      .toEqual(['/fix']);
     expect(notificationFollowupCommand(notification({
       kind: 'pull_request',
       severity: 'info',

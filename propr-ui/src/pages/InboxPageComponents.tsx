@@ -14,11 +14,13 @@ import NotificationActions from '../components/Inbox/NotificationActions';
 import { ReferenceChip } from '../components/TaskList/ReferenceChips';
 import {
   formatRelativeTime,
+  notificationDisplayTitle,
   notificationHref,
   notificationKindLabel,
   notificationReference,
   notificationRepository,
   notificationStatus,
+  repositoryParts,
   type NotificationStatusShape,
 } from './inboxUtils';
 
@@ -29,11 +31,13 @@ const Dot: React.FC = () => (
 
 function DetailLink({
   notification,
+  label,
   className,
   children,
   onOpen,
 }: {
   notification: Notification;
+  label: string;
   className: string;
   children: React.ReactNode;
   onOpen: (id: string) => void;
@@ -42,15 +46,15 @@ function DetailLink({
   const handleClick = () => onOpen(notification.id);
   if (/^https?:\/\//i.test(href)) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" onClick={handleClick} className={className}>
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={handleClick} aria-label={label} className={className}>
         {children}
       </a>
     );
   }
-  return <Link to={href} onClick={handleClick} className={className}>{children}</Link>;
+  return <Link to={href} onClick={handleClick} aria-label={label} className={className}>{children}</Link>;
 }
 
-/** System cards have no better destination, so clicking expands the full message. */
+/** System rows have no better destination, so clicking expands the full message. */
 function expandsInPlace(notification: Notification): boolean {
   return notification.target.type === 'system_failure';
 }
@@ -150,6 +154,28 @@ const StatusMark: React.FC<{ notification: Notification; unread: boolean }> = ({
   );
 };
 
+/** "integry/propr" in full on desktop; phones drop the owner rather than truncate the name. */
+const RepositoryName: React.FC<{ repository: string }> = ({ repository }) => {
+  const { owner, name } = repositoryParts(repository);
+  return (
+    <span className="min-w-0 truncate" title={repository}>
+      {owner && <span className="hidden sm:inline">{owner}</span>}
+      {name}
+    </span>
+  );
+};
+
+/*
+ * Each row is one grid, so every element renders once and only moves between
+ * layouts. Phones stack status and time, the title and summary (two lines
+ * each), then the PR chip and repository beside the commands. Desktop keeps
+ * status · chip · repository · time above the title and summary, with the
+ * commands in a fixed-width right rail so every row's text ends on the same
+ * edge. The rail fits a preview thumbnail and two commands.
+ */
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,1fr)_auto_15rem_2rem]';
+const TEXT_SPAN = 'col-start-1 col-span-2 min-w-0 pl-[18px] sm:col-span-3';
+
 export const InboxCard: React.FC<{
   notification: Notification;
   onDismiss: (id: string) => Promise<void>;
@@ -163,45 +189,11 @@ export const InboxCard: React.FC<{
   const swipe = useSwipeToDismiss(canDismiss, dismiss);
   const inPlace = expandsInPlace(notification);
   const reference = notificationReference(notification);
-  // A button may only hold phrasing content, so in-place rows keep the title
-  // as text; the article is still named by it.
-  const Title = inPlace ? 'span' : 'h3';
-
-  const content = (
-    <>
-      <span className="flex min-w-0 items-center gap-x-1.5 text-xs leading-5 text-slate-500">
-        <StatusMark notification={notification} unread={unread} />
-        <span className="flex-none font-medium text-slate-700">{notificationKindLabel(notification)}</span>
-        {reference && (
-          <>
-            <Dot />
-            <span className="flex-none"><ReferenceChip title={reference.title}>{reference.label}</ReferenceChip></span>
-          </>
-        )}
-        <Dot />
-        <span className="min-w-0 truncate">{notificationRepository(notification)}</span>
-        <Dot />
-        <time dateTime={notification.occurredAt} title={new Date(notification.occurredAt).toLocaleString()} className="flex-none whitespace-nowrap">
-          {formatRelativeTime(notification.occurredAt)}
-        </time>
-      </span>
-      <span className={`mt-0.5 flex min-w-0 pl-[18px] text-sm leading-5 ${
-        expanded ? 'flex-col' : 'flex-col sm:flex-row sm:items-baseline sm:gap-2'
-      }`}>
-        <Title className={`block min-w-0 ${expanded ? 'break-words' : 'truncate sm:max-w-[60%] sm:flex-none'} ${
-          unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'
-        }`}>
-          {notification.title}
-        </Title>
-        <span className={`block min-w-0 text-slate-500 ${expanded ? 'whitespace-pre-line break-words' : 'truncate'}`}>
-          {notification.body}
-        </span>
-      </span>
-    </>
-  );
-  const contentClass = `block min-w-0 flex-1 py-2.5 pl-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 sm:pl-6 ${
-    canDismiss ? 'pr-11 sm:pr-3' : 'pr-4 sm:pr-3'
-  }`;
+  // The title link stretches over the whole row; commands and dismiss sit above it.
+  const targetClass = 'text-left after:absolute after:inset-0 after:content-[""] focus:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-teal-500';
+  const title = notificationDisplayTitle(notification);
+  // System rows are grouped under the System heading, so their titles are not headings.
+  const Title = inPlace ? 'div' : 'h3';
 
   return (
     <div
@@ -212,39 +204,72 @@ export const InboxCard: React.FC<{
       <article
         aria-label={notification.title}
         style={{ transform: `translate3d(${swipe.offset}px, 0, 0)` }}
-        className={`relative flex min-w-0 flex-col bg-white transition-transform hover:bg-slate-50 sm:flex-row sm:items-center sm:pr-3 ${
+        className={`relative ${ROW_GRID} min-w-0 items-center bg-white py-2 pl-4 pr-4 transition-transform hover:bg-slate-50 sm:pl-6 ${
           swipe.dragging ? 'duration-0' : 'duration-200 ease-out'
         }`}
       >
-        {inPlace ? (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            onClick={() => { setExpanded(value => !value); onOpen(notification.id); }}
-            className={contentClass}
-          >
-            {content}
-          </button>
-        ) : (
-          <DetailLink notification={notification} onOpen={onOpen} className={contentClass}>
-            {content}
-          </DetailLink>
-        )}
-        <div className="flex flex-none items-center gap-2 pb-2.5 pl-[34px] pr-4 empty:hidden sm:py-2 sm:pl-0 sm:pr-0">
-          {isNotificationPreviewEligible(notification) && (
-            <PreviewThumbnails media={notification.previewMedia} limit={1} size="micro" />
+        <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-x-1.5 text-xs leading-5 text-slate-500">
+          <StatusMark notification={notification} unread={unread} />
+          <span className="min-w-0 truncate font-medium text-slate-700">{notificationKindLabel(notification)}</span>
+        </span>
+        <time
+          dateTime={notification.occurredAt}
+          title={new Date(notification.occurredAt).toLocaleString()}
+          className={`col-start-2 row-start-1 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-4 ${canDismiss ? 'mr-8' : ''}`}
+        >
+          {formatRelativeTime(notification.occurredAt)}
+        </time>
+        <Title className={`${TEXT_SPAN} row-start-2 mt-1 break-words text-sm leading-5 sm:mt-0.5 sm:pr-0 ${canDismiss ? 'pr-8' : ''} ${
+          expanded ? '' : 'line-clamp-2 sm:line-clamp-1'
+        } ${unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
+          {inPlace ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => { setExpanded(value => !value); onOpen(notification.id); }}
+              className={targetClass}
+            >
+              {title}
+            </button>
+          ) : (
+            <DetailLink notification={notification} onOpen={onOpen} label={notification.title} className={targetClass}>
+              {title}
+            </DetailLink>
           )}
-          <NotificationActions
-            notification={notification}
-            mutationsEnabled={mutationsEnabled}
-            onCommandSent={() => onDismiss(notification.id)}
-          />
+        </Title>
+        <p className={`${TEXT_SPAN} row-start-3 mt-0.5 break-words text-xs leading-4 text-slate-500 ${
+          expanded ? 'whitespace-pre-line' : 'line-clamp-2 sm:line-clamp-1'
+        }`}>
+          {notification.body}
+        </p>
+        {/* Phones wrap the commands under the chip rather than squeeze the repository; desktop grids both cells. */}
+        <div className="col-start-1 col-span-2 row-start-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 sm:contents">
+          <span className="flex min-w-0 max-w-full items-center gap-x-1.5 pl-[18px] text-xs leading-5 text-slate-500 sm:col-start-2 sm:row-start-1 sm:pl-1.5">
+            {reference && (
+              <>
+                <span className="hidden sm:inline"><Dot /></span>
+                <span className="flex-none"><ReferenceChip title={reference.title}>{reference.label}</ReferenceChip></span>
+              </>
+            )}
+            <span className="hidden sm:inline"><Dot /></span>
+            <RepositoryName repository={notificationRepository(notification)} />
+          </span>
+          <div className="relative z-10 ml-auto flex items-center justify-end gap-2 empty:hidden sm:col-start-4 sm:row-span-3 sm:row-start-1 sm:ml-0">
+            {isNotificationPreviewEligible(notification) && (
+              <PreviewThumbnails media={notification.previewMedia} limit={1} size="micro" />
+            )}
+            <NotificationActions
+              notification={notification}
+              mutationsEnabled={mutationsEnabled}
+              onCommandSent={() => onDismiss(notification.id)}
+            />
+          </div>
         </div>
         {canDismiss && (
           <button
             type="button"
             onClick={dismiss}
-            className="absolute right-2 top-2 inline-flex h-8 w-8 flex-none items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:static sm:ml-1"
+            className="absolute right-0 top-0 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:relative sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100"
             aria-label={`Dismiss ${notification.title}`}
             title="Dismiss"
           >

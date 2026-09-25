@@ -3,12 +3,14 @@ import { notificationSchema, type Notification } from '@propr/shared';
 import {
   isSystemNotification,
   mergeNotifications,
+  notificationDisplayTitle,
   notificationHref,
   notificationKindLabel,
   notificationPullRequestUrl,
   notificationReference,
   notificationReviewOutcome,
   notificationStatus,
+  repositoryParts,
 } from './inboxUtils';
 
 function item(overrides: Record<string, unknown>): Notification {
@@ -63,6 +65,26 @@ describe('Inbox notification presentation', () => {
     expect(colour(pullRequest)).toBe('bg-teal-500');
     expect(colour({ ...pullRequest, metadata: { completionType: 'merge' } })).toBe('bg-slate-400');
     expect(colour({ ...pullRequest, metadata: { completionType: 'fix' } })).toBe('bg-slate-400');
+  });
+
+  test('drops the PR or issue number from generated titles because the chip already shows it', () => {
+    const pullRequest = { kind: 'pull_request', severity: 'info', target: { type: 'pull_request', repository: 'i/p', prNumber: 2498 } };
+    const title = (overrides: Record<string, unknown>) => notificationDisplayTitle(item(overrides));
+    expect(title({ ...pullRequest, title: 'PR #2498 ready for review' })).toBe('Ready for review');
+    expect(title({ ...pullRequest, title: 'Fix run completed for PR #2498' })).toBe('Fix run completed');
+    expect(title({ target: { type: 'task', repository: 'i/p', taskId: 't', issueNumber: 12 }, title: 'Issue #12 implementation completed' }))
+      .toBe('Implementation completed');
+    expect(title({ ...pullRequest, title: 'Guard Inbox recaps against empty metadata' }))
+      .toBe('Guard Inbox recaps against empty metadata');
+    // Another PR's number is real content, and titles without a chip keep their number.
+    expect(title({ ...pullRequest, title: 'Follow-up to PR #2400' })).toBe('Follow-up to PR #2400');
+    expect(title({ title: 'PR #2498 ready for review' })).toBe('PR #2498 ready for review');
+    expect(title({ ...pullRequest, title: 'PR #2498' })).toBe('PR #2498');
+  });
+
+  test('splits the repository owner off so phones can show just the name', () => {
+    expect(repositoryParts('integry/propr')).toEqual({ owner: 'integry/', name: 'propr' });
+    expect(repositoryParts('System · redis')).toEqual({ owner: '', name: 'System · redis' });
   });
 
   test('marks reviews by score and findings instead of calling every review green', () => {

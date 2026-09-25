@@ -22,6 +22,36 @@ export function notificationReference(notification: Notification): NotificationR
   return { label: `Issue #${target.issueNumber}`, title: `Issue #${target.issueNumber}` };
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The title shown in the row. Generated titles such as "PR #2498 ready for
+ * review" or "Fix run completed for PR #2498" repeat the reference chip beside
+ * them, so the echo is dropped: "Ready for review", "Fix run completed".
+ */
+export function notificationDisplayTitle(notification: Notification): string {
+  const reference = notificationReference(notification);
+  if (!reference) return notification.title;
+  const label = escapeRegExp(reference.label);
+  const stripped = notification.title
+    .replace(new RegExp(`^${label}\\s+(?:is\\s+)?`, 'i'), '')
+    .replace(new RegExp(`\\s+(?:for|of|on)\\s+${label}$`, 'i'), '')
+    .trim();
+  if (!stripped || stripped === notification.title) return notification.title;
+  return `${stripped.charAt(0).toUpperCase()}${stripped.slice(1)}`;
+}
+
+/**
+ * Splits "integry/propr" into its "integry/" owner prefix and "propr", so narrow
+ * screens can drop the owner without truncating the name.
+ */
+export function repositoryParts(repository: string): { owner: string; name: string } {
+  const slash = repository.indexOf('/');
+  return { owner: repository.slice(0, slash + 1), name: repository.slice(slash + 1) };
+}
+
 export interface ReviewOutcome {
   /** Lowest score across the review's reviewers, when any reported one. */
   score: number | null;
@@ -204,13 +234,21 @@ export interface NotificationFollowupCommand {
   commands: readonly string[];
 }
 
+/** A review whose reviewers all reported and found nothing, so there is nothing to /fix. */
+function isIssueFreeReview(notification: Notification): boolean {
+  const outcome = notificationReviewOutcome(notification);
+  return outcome !== null && !outcome.reviewerFailed && /\b0 issues found\b/.test(notification.body);
+}
+
 /**
  * The only buttons an Inbox card offers: the common next command after a
- * finished review (/fix) or a finished PR run (/review, /ultrafix).
+ * review with findings (/fix) or a finished PR run (/review, /ultrafix). A
+ * clean review offers nothing; the row still links to the pull request.
  */
 export function notificationFollowupCommand(notification: Notification): NotificationFollowupCommand | null {
   if (!notification.actions.includes('follow_up')) return null;
   if (notification.target.type === 'review' && notification.target.taskId) {
+    if (isIssueFreeReview(notification)) return null;
     return {
       taskId: notification.target.taskId,
       prNumber: notification.target.prNumber,
