@@ -79,6 +79,31 @@ describe('Notification follow-up commands', () => {
     expect(screen.getByText('Sent /fix to PR #12.')).toBeInTheDocument();
   });
 
+  test('keeps the first command inline and sends the others from the overflow menu', async () => {
+    vi.mocked(postTaskFollowup).mockResolvedValue({ success: true, message: 'Posted' });
+    const onCommandSent = vi.fn().mockResolvedValue(undefined);
+    const pullRequest = notification({
+      kind: 'pull_request',
+      severity: 'info',
+      target: { type: 'pull_request', repository: 'integry/propr', prNumber: 12 },
+      metadata: { completedImplementationTaskId: 'task-implementation' },
+    });
+    render(
+      <ToastProvider>
+        <NotificationActions notification={pullRequest} mutationsEnabled onCommandSent={onCommandSent} />
+      </ToastProvider>,
+    );
+
+    const more = screen.getByRole('button', { name: 'More commands for PR #12' });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Send /ultrafix to PR #12' }));
+
+    await waitFor(() => expect(onCommandSent).toHaveBeenCalledTimes(1));
+    expect(postTaskFollowup).toHaveBeenCalledWith('task-implementation', '/ultrafix', 'pull_request');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
   test('renders nothing in read-only mode', () => {
     render(
       <ToastProvider>

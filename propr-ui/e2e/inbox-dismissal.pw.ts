@@ -245,7 +245,7 @@ test('header offers a labelled Clear all with confirmation, and System sits in a
   await capture(page, 'inbox-header-system-desktop.png');
 });
 
-test('desktop rows stack title over summary and end their text on one rail whatever the commands', async ({ page }) => {
+test('desktop rows stack title over summary, cluster time with the metadata, and end their text on one rail', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openTriageInbox(page);
   const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
@@ -262,19 +262,25 @@ test('desktop rows stack title over summary and end their text on one rail whate
   await expect(clean.getByRole('button')).toHaveText(['']);
   await expect(page.getByRole('article', { name: /^\[Epic\]/ }).getByRole('button')).toHaveText(['/fix', '']);
 
+  const thumbnail = (await ready.getByTitle('Inbox rows').boundingBox())!;
+  expect([thumbnail.width, thumbnail.height]).toEqual([48, 32]);
+
   const articles = await page.getByRole('article').all();
   expect(articles).toHaveLength(5);
-  const edges = new Set<number>();
+  const titleEdges = new Set<number>();
   for (const article of articles) {
     const title = (await article.getByRole('heading', { level: 3 }).boundingBox())!;
     const summary = (await article.locator('p').boundingBox())!;
+    const repository = (await article.getByTitle('integry/propr').boundingBox())!;
     const time = (await article.locator('time').boundingBox())!;
     // The summary sits on its own line under the title, not after it.
     expect(summary.y).toBeGreaterThanOrEqual(title.y + title.height - 1);
-    edges.add(Math.round(time.x + time.width));
+    // The time follows the repository in the left cluster instead of floating mid-row.
+    expect(time.x - (repository.x + repository.width)).toBeLessThan(24);
+    titleEdges.add(Math.round(title.x + title.width));
     expect((await article.boundingBox())!.height).toBeLessThanOrEqual(80);
   }
-  expect([...edges]).toHaveLength(1);
+  expect([...titleEdges]).toHaveLength(1);
 
   const dismiss = clean.getByRole('button', { name: /^Dismiss/ });
   const dismissBox = (await dismiss.boundingBox())!;
@@ -283,7 +289,7 @@ test('desktop rows stack title over summary and end their text on one rail whate
   await capture(page, 'inbox-rail-desktop.png');
 });
 
-test('phones keep status and time on line one, wrap titles, and give dismiss a 44px target', async ({ page }) => {
+test('phones keep one command line per row, with extra commands in a menu and a clear dismiss target', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openTriageInbox(page);
   const epic = page.getByRole('article', { name: /^\[Epic\]/ });
@@ -299,17 +305,29 @@ test('phones keep status and time on line one, wrap titles, and give dismiss a 4
   expect(chip.y).toBeGreaterThan(time.y + 30);
   expect(Math.abs(chip.y + chip.height / 2 - (fix.y + fix.height / 2))).toBeLessThan(3);
   await expect(epic.getByTitle('integry/propr')).toHaveText('propr', { useInnerText: true });
-  // A thumbnail and two commands don't fit beside the chip, so they wrap rather than truncate the name.
+  expect(fix.height).toBeGreaterThanOrEqual(40);
+  // Dismiss is a 32px target on line one that stays clear of the time.
+  expect([dismiss.width, dismiss.height]).toEqual([32, 32]);
+  expect(Math.abs(dismiss.y + dismiss.height / 2 - (time.y + time.height / 2))).toBeLessThan(3);
+  expect(dismiss.x - (time.x + time.width)).toBeGreaterThanOrEqual(8);
+
+  // Two commands: /review stays inline beside the chip and /ultrafix moves to the overflow menu.
   const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
+  await expect(ready.getByRole('button', { name: /ultrafix/ })).toHaveCount(0);
+  const readyChip = (await ready.getByTitle('Pull request #2498').boundingBox())!;
+  const review = (await ready.getByRole('button', { name: 'Send /review to PR #2498' }).boundingBox())!;
+  const more = ready.getByRole('button', { name: 'More commands for PR #2498' });
+  const moreBox = (await more.boundingBox())!;
+  const thumbnail = (await ready.getByTitle('Inbox rows').boundingBox())!;
+  for (const box of [review, moreBox, thumbnail]) {
+    expect(Math.abs(box.y + box.height / 2 - (readyChip.y + readyChip.height / 2))).toBeLessThan(3);
+  }
   const readyRepository = ready.getByTitle('integry/propr');
   expect(await readyRepository.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  expect((await ready.getByRole('button', { name: /ultrafix/ }).boundingBox())!.y)
-    .toBeGreaterThan((await readyRepository.boundingBox())!.y + 20);
+  // The shared chip and command line is the row's last line, so two commands don't add a fifth.
+  const readyBox = (await ready.boundingBox())!;
+  expect(readyBox.y + readyBox.height - (review.y + review.height)).toBeLessThanOrEqual(9);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  expect(fix.height).toBeGreaterThanOrEqual(40);
-  expect(dismiss.width).toBeGreaterThanOrEqual(44);
-  expect(dismiss.height).toBeGreaterThanOrEqual(44);
-  expect(dismiss.x + dismiss.width / 2 - 8 - (time.x + time.width)).toBeGreaterThanOrEqual(12);
 
   // The long title wraps to a second line rather than cutting off after a few words.
   const titleBox = (await epic.getByRole('heading', { level: 3 }).boundingBox())!;
@@ -317,4 +335,22 @@ test('phones keep status and time on line one, wrap titles, and give dismiss a 4
   await expect(page.getByRole('article', { name: /^Dashboard cleanup/ }).getByRole('button', { name: /^Send/ }))
     .toHaveCount(0);
   await capture(page, 'inbox-triage-mobile.png');
+
+  await more.click();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await expect(ready.getByRole('menuitem', { name: 'Send /ultrafix to PR #2498' })).toBeVisible();
+  await capture(page, 'inbox-overflow-menu-mobile.png');
+  await page.keyboard.press('Escape');
+  await expect(ready.getByRole('menu')).toHaveCount(0);
+});
+
+test('a preview image that fails to load leaves no placeholder beside the commands', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await stubInbox(page, triageNotifications);
+  await page.route('https://github.com/user-attachments/assets/**', route => route.abort());
+  await page.goto('/inbox');
+  const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
+  await expect(ready.getByRole('button', { name: 'Send /review to PR #2498' })).toBeVisible();
+  await expect(ready.getByRole('group', { name: 'Published visual previews' })).toBeHidden();
+  await expect(ready.getByRole('img', { name: /image unavailable/ })).toHaveCount(0);
 });

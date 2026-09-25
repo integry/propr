@@ -167,14 +167,14 @@ const RepositoryName: React.FC<{ repository: string }> = ({ repository }) => {
 
 /*
  * Each row is one grid, so every element renders once and only moves between
- * layouts. Phones stack status and time, the title and summary (two lines
- * each), then the PR chip and repository beside the commands. Desktop keeps
- * status · chip · repository · time above the title and summary, with the
- * commands in a fixed-width right rail so every row's text ends on the same
- * edge. The rail fits a preview thumbnail and two commands.
+ * layouts. Phones stack status, time and dismiss, the title and summary (two
+ * lines each), then the PR chip and repository beside the commands. Desktop
+ * clusters status · chip · repository · time on the left above the title and
+ * summary; the fixed-width right rail holds only the preview, commands and
+ * dismiss, so every row's text ends on the same edge.
  */
-const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,1fr)_auto_15rem_2rem]';
-const TEXT_SPAN = 'col-start-1 col-span-2 min-w-0 pl-[18px] sm:col-span-3';
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,auto)_minmax(0,1fr)_16rem_2rem]';
+const TEXT_SPAN = 'col-start-1 col-span-3 min-w-0 pl-[18px]';
 
 export const InboxCard: React.FC<{
   notification: Notification;
@@ -212,14 +212,13 @@ export const InboxCard: React.FC<{
           <StatusMark notification={notification} unread={unread} />
           <span className="min-w-0 truncate font-medium text-slate-700">{notificationKindLabel(notification)}</span>
         </span>
-        <time
-          dateTime={notification.occurredAt}
-          title={new Date(notification.occurredAt).toLocaleString()}
-          className={`col-start-2 row-start-1 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-4 ${canDismiss ? 'mr-8' : ''}`}
-        >
-          {formatRelativeTime(notification.occurredAt)}
-        </time>
-        <Title className={`${TEXT_SPAN} row-start-2 mt-1 break-words text-sm leading-5 sm:mt-0.5 sm:pr-0 ${canDismiss ? 'pr-8' : ''} ${
+        <span className={`col-start-2 row-start-1 flex items-center gap-x-1.5 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-0 sm:justify-self-start sm:pl-1.5 ${canDismiss ? 'mr-3' : ''}`}>
+          <span className="hidden sm:inline"><Dot /></span>
+          <time dateTime={notification.occurredAt} title={new Date(notification.occurredAt).toLocaleString()}>
+            {formatRelativeTime(notification.occurredAt)}
+          </time>
+        </span>
+        <Title className={`${TEXT_SPAN} row-start-2 mt-1 break-words text-sm leading-5 sm:mt-0.5 ${
           expanded ? '' : 'line-clamp-2 sm:line-clamp-1'
         } ${unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
           {inPlace ? (
@@ -242,9 +241,9 @@ export const InboxCard: React.FC<{
         }`}>
           {notification.body}
         </p>
-        {/* Phones wrap the commands under the chip rather than squeeze the repository; desktop grids both cells. */}
-        <div className="col-start-1 col-span-2 row-start-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 sm:contents">
-          <span className="flex min-w-0 max-w-full items-center gap-x-1.5 pl-[18px] text-xs leading-5 text-slate-500 sm:col-start-2 sm:row-start-1 sm:pl-1.5">
+        {/* Phones keep the chip and commands on one line, truncating the repository if they must; desktop grids both cells. */}
+        <div className="col-start-1 col-span-3 row-start-4 mt-2 flex items-center gap-x-3 sm:contents">
+          <span className="flex min-w-0 items-center gap-x-1.5 pl-[18px] text-xs leading-5 text-slate-500 sm:col-start-2 sm:row-start-1 sm:pl-1.5">
             {reference && (
               <>
                 <span className="hidden sm:inline"><Dot /></span>
@@ -254,9 +253,9 @@ export const InboxCard: React.FC<{
             <span className="hidden sm:inline"><Dot /></span>
             <RepositoryName repository={notificationRepository(notification)} />
           </span>
-          <div className="relative z-10 ml-auto flex items-center justify-end gap-2 empty:hidden sm:col-start-4 sm:row-span-3 sm:row-start-1 sm:ml-0">
+          <div className="relative z-10 ml-auto flex flex-none items-center justify-end gap-2 empty:hidden sm:col-start-4 sm:row-span-3 sm:row-start-1 sm:ml-0">
             {isNotificationPreviewEligible(notification) && (
-              <PreviewThumbnails media={notification.previewMedia} limit={1} size="micro" />
+              <PreviewThumbnails media={notification.previewMedia} limit={1} size="rail" />
             )}
             <NotificationActions
               notification={notification}
@@ -269,7 +268,7 @@ export const InboxCard: React.FC<{
           <button
             type="button"
             onClick={dismiss}
-            className="absolute right-0 top-0 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:relative sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100"
+            className="relative z-10 col-start-3 row-start-1 -my-1.5 -mr-2 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:my-0 sm:mr-0 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100"
             aria-label={`Dismiss ${notification.title}`}
             title="Dismiss"
           >
