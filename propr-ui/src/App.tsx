@@ -38,6 +38,7 @@ import {
   InboxPage,
   LlmLogsPage,
   LoginPage,
+  McpLogsPage,
   PlansPage,
   PlanStudioPage,
   RepositoriesPage,
@@ -285,6 +286,16 @@ const AppContent: React.FC = () => {
                       element={
                         <Layout>
                           <LlmLogsPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/mcp-logs"
+                      element={
+                        <Layout>
+                          <PermissionRequired permission="instance.manage_settings">
+                            <McpLogsPage />
+                          </PermissionRequired>
                         </Layout>
                       }
                     />

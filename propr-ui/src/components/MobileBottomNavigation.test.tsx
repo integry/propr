@@ -115,7 +115,7 @@ describe('MobileBottomNavigation', () => {
     expect(within(dialog).getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'LLM Log' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Access' })).toBeInTheDocument();
     expect(screen.getByText('System health')).toBeInTheDocument();
@@ -147,10 +147,25 @@ describe('MobileBottomNavigation', () => {
     expect(moreButton).toHaveAttribute('aria-current', 'page');
   });
 
-  it.each(['/tasks', '/tasks/task-1', '/admin/members'])('marks More active for %s', route => {
+  it.each(['/tasks', '/tasks/task-1', '/admin/members', '/llm-logs', '/mcp-logs'])('marks More active for %s', route => {
     renderNavigation(route);
 
     expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('offers the MCP log only to operators who may read it', () => {
+    renderNavigation('/tasks', vi.fn(), { ...user, permissions: ['instance.manage_settings'] });
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(screen.getByRole('link', { name: 'MCP Log' })).toHaveAttribute('href', '/mcp-logs');
+  });
+
+  it('hides the MCP log without the settings permission', () => {
+    renderNavigation('/tasks', vi.fn(), { ...user, permissions: ['instance.manage_agents'] });
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(screen.getByRole('link', { name: 'LLM Log' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'MCP Log' })).not.toBeInTheDocument();
   });
 
   it('hides Access without member management permission', () => {

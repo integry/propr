@@ -13,6 +13,7 @@ const loadAccessManagementPage = preloadable(() => import('./pages/AccessManagem
 const loadAnalyticsPage = preloadable(() => import('./pages/AnalyticsPage'));
 const loadDashboard = preloadable(() => import('./components/Dashboard'));
 const loadLlmLogsPage = preloadable(() => import('./pages/LlmLogsPage'));
+const loadMcpLogsPage = preloadable(() => import('./pages/McpLogsPage'));
 const loadInboxPage = preloadable(() => import('./pages/InboxPage'));
 const loadLoginPage = preloadable(() => import('./pages/LoginPage'));
 const loadDesktopPairingPage = preloadable(() => import('./pages/DesktopPairingPage'));
@@ -30,6 +31,7 @@ export const AccessManagementPage = lazy(loadAccessManagementPage);
 export const AnalyticsPage = lazy(loadAnalyticsPage);
 export const Dashboard = lazy(loadDashboard);
 export const LlmLogsPage = lazy(loadLlmLogsPage);
+export const McpLogsPage = lazy(loadMcpLogsPage);
 export const InboxPage = lazy(loadInboxPage);
 export const LoginPage = lazy(loadLoginPage);
 export const DesktopPairingPage = lazy(loadDesktopPairingPage);
@@ -61,6 +63,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/admin/members', load: loadAccessManagementPage },
   { matches: pathname => pathname.startsWith('/summaries/'), load: loadSummaryBrowserPage },
   { matches: pathname => pathname === '/llm-logs', load: loadLlmLogsPage },
+  { matches: pathname => pathname === '/mcp-logs', load: loadMcpLogsPage },
   { matches: pathname => pathname === '/analytics', load: loadAnalyticsPage },
 ];
 

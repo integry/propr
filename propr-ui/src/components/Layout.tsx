@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, Cpu, Settings, ShieldCheck, Inbox, LogOut, Target, TriangleAlert } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
@@ -22,154 +22,10 @@ import { useDesktop } from '../desktop/DesktopContext';
 import UserAvatar from './UserAvatar';
 import VoiceBriefingControl from './VoiceBriefingControl';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
+import { SidebarNavigation, type NavigationState } from './SidebarNavigation';
 
 interface LayoutProps {
   children: React.ReactNode;
-}
-
-interface NavItem {
-  name: string;
-  href: string;
-  // All nav icons come from lucide so a shared strokeWidth keeps line weights uniform.
-  icon: React.FC<{ className?: string; strokeWidth?: number | string }>;
-}
-
-interface NavigationState {
-  currentPath: string;
-  desktop: boolean;
-  hasAgents: boolean;
-  hasRepos: boolean;
-  hasTasks: boolean;
-  taskCount: number;
-  goalCount: number;
-  generatingPlansCount: number;
-  unreadCount: number | null;
-}
-
-const CORE_NAVIGATION: NavItem[] = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Inbox', href: '/inbox', icon: Inbox },
-  { name: 'Tasks', href: '/tasks', icon: ListTodo },
-  { name: 'Goals', href: '/goals', icon: Target },
-  { name: 'Plans', href: '/plans', icon: ScrollText },
-];
-
-function getResourceNavigation(canManageAgents: boolean, canManageMembers: boolean): NavItem[] {
-  const navigation: NavItem[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
-  if (canManageAgents) navigation.push({ name: 'Coding Agents', href: '/ai-agents', icon: Bot });
-  navigation.push(
-    { name: 'Analytics', href: '/analytics', icon: ChartColumn },
-    { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
-    { name: 'Settings', href: '/settings', icon: Settings },
-  );
-  if (canManageMembers) navigation.push({ name: 'Access', href: '/admin/members', icon: ShieldCheck });
-  return navigation;
-}
-
-function isNavigationItemActive(currentPath: string, itemPath: string): boolean {
-  // Dashboard should only be active on exact match.
-  if (itemPath === '/') return currentPath === '/';
-
-  // Plans also owns studio routes.
-  if (itemPath === '/plans') {
-    return currentPath === '/plans' || currentPath.startsWith('/plans/') || currentPath.startsWith('/studio');
-  }
-
-  // Repository content browsing includes summaries routes.
-  if (itemPath === '/repositories') {
-    return currentPath === '/repositories' || currentPath.startsWith('/repositories/') || currentPath.startsWith('/summaries');
-  }
-
-  return currentPath === itemPath || currentPath.startsWith(itemPath + '/');
-}
-
-// Single badge component for all nav counts: forms a circle for one digit and
-// stretches horizontally for wider content (e.g. "99+") with the same radius and padding.
-// The parent nav row is `flex items-center justify-between`, which keeps the badge on
-// the same horizontal center line as the label.
-//
-// The digits are centered by the flex box alone: `leading-none` collapses the line
-// box onto the glyphs (digits have no descender, so their ink already centers on the
-// em box), and no vertical nudge is applied on top of it — a nudge is what made the
-// numbers sit low in the pill.
-function NavBadge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex h-4 min-w-4 flex-none items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-bold leading-none text-white">
-      {children}
-    </span>
-  );
-}
-
-function WorkCountBadge({ name, taskCount, goalCount }: { name: string; taskCount: number; goalCount: number }) {
-  const count = name === 'Tasks' ? taskCount : name === 'Goals' ? goalCount : 0;
-  if (count <= 0) return null;
-  return <NavBadge>{count}</NavBadge>;
-}
-
-function getReadinessMessage(name: string, state: NavigationState): string | null {
-  if (name === 'Repositories' && !state.hasRepos) return 'No repositories configured';
-  if (name === 'Coding Agents' && !state.hasAgents) return 'No AI agents configured';
-  if (name === 'Tasks' && state.taskCount === 0 && !state.hasTasks && state.hasAgents && state.hasRepos) {
-    return 'No tasks created yet';
-  }
-  return null;
-}
-
-function ReadinessIndicator({ message, desktop }: { message: string | null; desktop: boolean }) {
-  if (!message) return null;
-  if (!desktop) return <span className="w-2 h-2 flex-none rounded-full bg-amber-500" title={message} />;
-  return (
-    <span className="flex h-4 w-4 flex-none items-center justify-center text-amber-600" role="img" aria-label={message} title={message}>
-      <TriangleAlert className={`${SIDEBAR_ICON_STROKE_CLASS} h-3.5 w-3.5`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} aria-hidden="true" />
-    </span>
-  );
-}
-
-function InboxBadge({ name, unreadCount }: { name: string; unreadCount: number | null }) {
-  if (name !== 'Inbox' || unreadCount === null || unreadCount <= 0) return null;
-  return <NavBadge>{unreadCount > 99 ? '99+' : unreadCount}</NavBadge>;
-}
-
-function PlansBadge({ name, count }: { name: string; count: number }) {
-  if (name !== 'Plans' || count <= 0) return null;
-  return <NavBadge>{count}</NavBadge>;
-}
-
-function getNavigationItemClassName(desktop: boolean, active: boolean): string {
-  const dimensions = desktop
-    ? 'mx-2 rounded-[6px] border-0 px-2 py-1.5 tracking-tight'
-    : 'border-l-4 px-4 py-2';
-  if (active) {
-    return `${dimensions} ${desktop
-      ? 'bg-black/5 font-normal text-slate-900'
-      : 'bg-slate-50 font-medium text-slate-900 border-primary-600'}`;
-  }
-  return `${dimensions} ${desktop
-    ? 'font-normal text-slate-600 hover:bg-slate-900/5 hover:text-slate-900'
-    : 'font-normal text-gray-600 hover:bg-gray-50 hover:text-gray-900 border-transparent'}`;
-}
-
-function NavigationItem({ item, state }: { item: NavItem; state: NavigationState }) {
-  const readinessMessage = getReadinessMessage(item.name, state);
-  const active = isNavigationItemActive(state.currentPath, item.href);
-  return (
-    <Link
-      to={item.href}
-      className={`flex items-center justify-between text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, active)}`}
-    >
-      <span className="flex min-w-0 items-center">
-        <item.icon className={`${SIDEBAR_ICON_STROKE_CLASS} mr-2.5 h-4 w-4 flex-none`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} />
-        <span className="truncate">{item.name}</span>
-      </span>
-      {/* Counts and readiness indicators share the trailing rail. */}
-      <span className="flex flex-none items-center justify-end gap-1.5">
-        <ReadinessIndicator message={readinessMessage} desktop={state.desktop} />
-        <WorkCountBadge name={item.name} taskCount={state.taskCount} goalCount={state.goalCount} />
-        <InboxBadge name={item.name} unreadCount={state.unreadCount} />
-        <PlansBadge name={item.name} count={state.generatingPlansCount} />
-      </span>
-    </Link>
-  );
 }
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
@@ -214,10 +70,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const displayTaskCount = Math.max(0, activeQueueCount - generatingPlansCount - activeGoalCount);
 
   const canManageAgents = userHasPermission(user, 'instance.manage_agents');
-  const resourceNavigation = getResourceNavigation(
+  const navigationPermissions = {
     canManageAgents,
-    userHasPermission(user, 'instance.manage_members'),
-  );
+    canManageMembers: userHasPermission(user, 'instance.manage_members'),
+    // The MCP access log needs the permission its admin endpoints require.
+    canReadMcpLog: userHasPermission(user, 'instance.manage_settings'),
+  };
   const navigationState: NavigationState = {
     currentPath: location.pathname,
     desktop: Boolean(desktop),
@@ -344,16 +202,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {desktop && <DesktopInstanceSelector transportReady={isConnected && user !== null} />}
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Whitespace separates navigation from the workspace control. */}
-          <nav className="flex min-h-0 flex-col overflow-y-auto pt-2 pb-1">
-            <div className="flex flex-col gap-0.5">
-              {CORE_NAVIGATION.map(item => <NavigationItem key={item.name} item={item} state={navigationState} />)}
-            </div>
-            {/* Whitespace spacer (no divider) between the core-workflow and
-                technical-resources zones. */}
-            <div className="mt-6 flex flex-col gap-0.5">
-              {resourceNavigation.map(item => <NavigationItem key={item.name} item={item} state={navigationState} />)}
-            </div>
-          </nav>
+          <SidebarNavigation state={navigationState} permissions={navigationPermissions} />
           {/* Usage and account information stay at the bottom, with metadata
               last. mt-auto absorbs the space below navigation. */}
           <div className="mt-auto flex flex-none flex-col">
