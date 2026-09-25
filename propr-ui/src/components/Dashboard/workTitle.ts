@@ -21,7 +21,7 @@ const PR_WORKFLOW_PREFIX = /^(Follow-?up|Fix|Review|Ultrafix|Merge)\s+PR\s+#\d+\
 
 /** Other prefixes the backend writes into a run title, with the type each one names. */
 const TITLE_PREFIXES: ReadonlyArray<[RegExp, string]> = [
-  [/^New Issue:\s*/i, 'Issue'],
+  [/^New Issue:\s*/i, 'Implement'],
   [/^Follow-?up:\s*/i, 'Follow-up'],
   [/^Auto-followup for PR #\d+\s*:?\s*/i, 'Follow-up'],
   [/^Continue\s+#\d+\s*:\s*/i, 'Continue'],
@@ -32,12 +32,12 @@ const MODEL_TAGS = /^(?:\[[^\]]*\bby\s+[^\]]+\]\s*)+/i;
 
 /** Labels for the recorded task type, used when the title carries no verb. */
 const TASK_TYPE_LABELS: Record<string, string> = {
-  issue: 'Issue',
+  issue: 'Implement',
   'pr-comment': 'PR comment',
   pr_comment: 'PR comment',
   review: 'Review',
   goal: 'Goal',
-  implementation: 'Issue',
+  implementation: 'Implement',
 };
 
 function workflowLabel(raw: string): string {

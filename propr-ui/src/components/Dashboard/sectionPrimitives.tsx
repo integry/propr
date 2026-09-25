@@ -276,7 +276,7 @@ export const RowMetaLines: React.FC<{
 };
 
 /**
- * The task type in front of a title: `Fix`, `Review`, `Issue`.
+ * The task type in front of a title: `Fix`, `Review`, `Implement`.
  *
  * It is the first thing on the title line so a column of rows can be scanned
  * by kind without reading a single title, and it is drawn in the task list's

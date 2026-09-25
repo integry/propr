@@ -181,7 +181,7 @@ test('desktop shows every section with running work in the main column', async (
   const happeningNow = page.getByTestId('happening-now-section');
   await expect(happeningNow).not.toContainText('Implementing');
   await expect(happeningNow.locator('.animate-spin')).toHaveCount(0);
-  await expect(happeningNow.getByTestId('work-type-badge').first()).toHaveText('Issue');
+  await expect(happeningNow.getByTestId('work-type-badge').first()).toHaveText('Implement');
   await expect(happeningNow).not.toContainText('New Issue:');
   await expect(page.getByTestId('queue-summary')).toContainText('All agents are busy');
   // The completed feed names no state, prints no bare "completed" line, and

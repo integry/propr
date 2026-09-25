@@ -12,8 +12,8 @@ describe('splitWorkTitle', () => {
   it('drops the model tag along with the legacy prefixes', () => {
     expect(splitWorkTitle('Followup: [Fix by Claude Opus 4.6] Implement Feature Gating', 'issue'))
       .toEqual({ type: 'Follow-up', title: 'Implement Feature Gating' });
-    expect(splitWorkTitle('New Issue: Add retries', 'issue')).toEqual({ type: 'Issue', title: 'Add retries' });
-    expect(splitWorkTitle('[870 by Claude Opus] Update checkout', 'issue')).toEqual({ type: 'Issue', title: 'Update checkout' });
+    expect(splitWorkTitle('New Issue: Add retries', 'issue')).toEqual({ type: 'Implement', title: 'Add retries' });
+    expect(splitWorkTitle('[870 by Claude Opus] Update checkout', 'issue')).toEqual({ type: 'Implement', title: 'Update checkout' });
     expect(splitWorkTitle('Continue #12: Finish the migration', null)).toEqual({ type: 'Continue', title: 'Finish the migration' });
   });
 
@@ -25,6 +25,6 @@ describe('splitWorkTitle', () => {
 
   it('returns no title when nothing is left once the prefix is gone', () => {
     expect(splitWorkTitle('Auto-followup for PR #88', null)).toEqual({ type: 'Follow-up', title: null });
-    expect(splitWorkTitle(null, 'issue')).toEqual({ type: 'Issue', title: null });
+    expect(splitWorkTitle(null, 'issue')).toEqual({ type: 'Implement', title: null });
   });
 });
