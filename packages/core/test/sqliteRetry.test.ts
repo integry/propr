@@ -23,6 +23,18 @@ interface PreparingConnection {
     pragma(source: string, options?: { simple?: boolean }): unknown;
 }
 
+/** A statement the driver only finishes once the test lets it. */
+interface Stall {
+    pattern: RegExp;
+    until: Promise<void>;
+}
+
+interface PreparedStatement {
+    reader: boolean;
+    all(...args: unknown[]): unknown;
+    run(...args: unknown[]): unknown;
+}
+
 /** A clock that only moves when the retry loop waits on it. */
 function fakeClock(startMs = 0): {
     now: () => number;
@@ -82,6 +94,7 @@ let database: Knex | undefined;
 // queueing a query behind the one that is retrying on it.
 let connectionUnderTest: PreparingConnection | undefined;
 let faults: Fault[] = [];
+let stalls: Stall[] = [];
 let statements: string[] = [];
 let pragmas: string[] = [];
 
@@ -108,7 +121,23 @@ function injectFaults(connection: PreparingConnection): void {
             fault.attempts += 1;
             if (fault.attempts <= fault.failures) throw contention(fault.code);
         }
-        return prepare(sql);
+        const statement = prepare(sql) as PreparedStatement;
+        const stall = stalls.find(candidate => candidate.pattern.test(sql));
+        if (!stall) return statement;
+        // knex awaits the statement's result, so one that resolves later
+        // keeps the statement's turn on the connection open until then —
+        // which is what lets a test dispatch statements behind it.
+        return {
+            reader: statement.reader,
+            all: async (...args: unknown[]) => {
+                await stall.until;
+                return statement.all(...args);
+            },
+            run: async (...args: unknown[]) => {
+                await stall.until;
+                return statement.run(...args);
+            }
+        };
     };
     connection.pragma = (source: string, options?: { simple?: boolean }) => {
         pragmas.push(source);
@@ -121,6 +150,13 @@ function failStatements(pattern: RegExp, failures: number, code = 'SQLITE_BUSY')
     const fault: Fault = { pattern, failures, code, attempts: 0 };
     faults.push(fault);
     return fault;
+}
+
+/** Keeps statements matching `pattern` running on the driver until released. */
+function stallStatements(pattern: RegExp): { release: () => void } {
+    const released = deferred();
+    stalls.push({ pattern, until: released.promise });
+    return { release: released.resolve };
 }
 
 async function createDatabase(): Promise<Knex> {
@@ -158,6 +194,7 @@ afterEach(async () => {
     database = undefined;
     connectionUnderTest = undefined;
     faults = [];
+    stalls = [];
     statements = [];
     pragmas = [];
 });
@@ -1025,6 +1062,63 @@ describe('installSqliteRetry', () => {
         assert.deepEqual(await db('widgets').pluck('id'), [1]);
     });
 
+    test('holds an autocommit retry back while a transaction is open on its connection', async () => {
+        const db = await createDatabase();
+        const insert = failStatements(/^insert/i, 1);
+        const backingOff = deferred();
+        const lockCleared = deferred();
+        const rolledBack = deferred();
+        let sleeps = 0;
+        installSqliteRetry(db, {
+            random: () => 1,
+            sleep: async () => {
+                sleeps += 1;
+                if (sleeps > 1) {
+                    // Held back: the retry is waiting for the transaction
+                    // that opened on its connection to close, not for the lock.
+                    await rolledBack.promise;
+                    return;
+                }
+                backingOff.resolve();
+                await lockCleared.promise;
+            }
+        });
+
+        // Issued on the connection directly rather than through the pool,
+        // the insert does not keep the connection to itself: the transaction
+        // below takes it from the pool while the insert is backing off.
+        const connection = connectionUnderTest as PreparingConnection;
+        const pending = Promise.resolve(db('widgets').connection(connection).insert({ id: 1 }));
+        await backingOff.promise;
+
+        let callbackError: unknown;
+        await db.transaction(async trx => {
+            await trx('widgets').insert({ id: 2 });
+            // The lock clears while the transaction is open. Resuming the
+            // insert here would put its write inside a transaction it was
+            // never part of, and the rollback below would silently take the
+            // row away after the insert had reported success.
+            lockCleared.resolve();
+            await drainEventLoop();
+            throw new Error('callback failed');
+        }).catch(error => {
+            callbackError = error;
+            rolledBack.resolve();
+        });
+        await pending;
+
+        assert.match(String(callbackError), /callback failed/);
+        assert.equal(sleeps, 2);
+        // The replay ran in autocommit mode, after the transaction rolled
+        // back, so its write is the one that persists.
+        const rolledBackAt = statements.findIndex(sql => /^rollback;?$/i.test(sql));
+        const replayedAt = statements.findLastIndex(sql => /^insert/i.test(sql));
+        assert.ok(rolledBackAt >= 0, statements.join('\n'));
+        assert.ok(replayedAt > rolledBackAt, statements.join('\n'));
+        assert.equal(insert.attempts, 3);
+        assert.deepEqual(await db('widgets').pluck('id'), [1]);
+    });
+
     test('replays a transaction the caller declared replayable', async () => {
         const db = await createDatabase();
         const insert = failStatements(/^insert/i, 1, 'SQLITE_BUSY_SNAPSHOT');
@@ -1194,6 +1288,42 @@ describe('installSqliteRetry', () => {
         assert.deepEqual(ids, [3]);
         assert.ok(statements.some(sql => /^BEGIN;?$/i.test(sql)), statements.join('\n'));
         assert.ok(!statements.some(sql => /^BEGIN IMMEDIATE/i.test(sql)), statements.join('\n'));
+    });
+
+    test('decides how to open a transaction once the statements ahead of it have run', async () => {
+        const db = await createDatabase();
+        installSqliteRetry(db, instantRetries);
+        await db('widgets').insert({ id: 3 });
+        const connection = connectionUnderTest as PreparingConnection;
+        statements.length = 0;
+
+        // A statement that holds its turn on the connection until released,
+        // so the two dispatched behind it are queued rather than run.
+        const stalled = stallStatements(/^select `id`/i);
+        const ahead = Promise.resolve(db('widgets').connection(connection).select('id'));
+        await drainEventLoop();
+
+        // The pragma is dispatched first and the transaction right behind
+        // it, both on the same connection. Whether the connection is read-only
+        // is decided by the pragma, which has not run when the BEGIN is
+        // issued — so the decision has to wait for the BEGIN's own turn.
+        const readOnly = Promise.resolve(db.raw('PRAGMA query_only = ON'));
+        await drainEventLoop();
+        const ids = db.transaction(trx => trx('widgets').pluck('id'), { connection });
+        await drainEventLoop();
+        assert.deepEqual(statements, ['select `id` from `widgets`']);
+
+        stalled.release();
+        await Promise.all([ahead, readOnly]);
+
+        assert.deepEqual(await ids, [3]);
+        assert.deepEqual(statements, [
+            'select `id` from `widgets`',
+            'PRAGMA query_only = ON',
+            'BEGIN;',
+            'select `id` from `widgets`',
+            'COMMIT;'
+        ]);
     });
 
     test('leaves transactions the caller drives to the caller', async () => {

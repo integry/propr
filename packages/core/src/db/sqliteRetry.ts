@@ -599,19 +599,6 @@ function retryStatements(client: RetryableClient): void {
         if (!options) return runQuery.call(this, connection, obj);
 
         const query = typeof obj === 'object' && obj !== null ? obj as { sql?: unknown } : undefined;
-
-        // Take the write lock at BEGIN rather than at the callback's first
-        // write: contention then lands on a statement with no side effects to
-        // undo, which the retry below simply repeats, and the callback does not
-        // start until the lock is held.
-        if (options.immediateTransactions
-            && query
-            && DEFERRED_BEGIN.test(String(query.sql ?? ''))
-            && !isInTransaction(connection)
-            && !isReadonlyConnection(connection)) {
-            query.sql = 'BEGIN IMMEDIATE;';
-        }
-
         const sql = String(query?.sql ?? '');
         // Read as the statement is issued: knex writes the id of the
         // transaction issuing a statement onto the connection before issuing
@@ -619,10 +606,11 @@ function retryStatements(client: RetryableClient): void {
         // transaction's own, which a caller's savepoint issued through `raw`
         // is not.
         const issuedBy = knexTransactionId(connection);
-        // The transaction this statement belongs to, read as its first
+        // The scope this statement belongs to — the transaction open on the
+        // connection, or autocommit mode when none is — read as its first
         // attempt takes its turn rather than as it is issued: a replay is
-        // only its own statement again while that transaction is still the
-        // one open on this connection, with every savepoint the statement ran
+        // only its own statement again while that scope is still the one
+        // open on this connection, with every savepoint the statement ran
         // under still open. A statement issued alongside a savepoint runs
         // under that savepoint, but the savepoint is only recorded once its
         // driver call returns — so ownership read at issue would miss it, and
@@ -632,11 +620,24 @@ function retryStatements(client: RetryableClient): void {
         let transaction: TransactionOwner | undefined;
         let issued = false;
 
-        const runAttempt = async (): Promise<unknown> => {
-            if (!issued) {
-                transaction = transactionOwnership(connection);
-                issued = true;
+        // Take the write lock at BEGIN rather than at the callback's first
+        // write: contention then lands on a statement with no side effects to
+        // undo, which the retry below simply repeats, and the callback does not
+        // start until the lock is held. Whether to is decided in the same
+        // turn, for the same reason: a transaction already open on the
+        // connection, or a `PRAGMA query_only` that forbids the write lock,
+        // may both have been dispatched just ahead of the BEGIN and not have
+        // run yet when it is issued.
+        const rewritesBegin = options.immediateTransactions && DEFERRED_BEGIN.test(sql);
+        const issue = (): void => {
+            transaction = transactionOwnership(connection);
+            if (rewritesBegin && query && !transaction?.open && !isReadonlyConnection(connection)) {
+                query.sql = 'BEGIN IMMEDIATE;';
             }
+            issued = true;
+        };
+
+        const runAttempt = async (): Promise<unknown> => {
             try {
                 const result = await runQuery.call(this, connection, obj);
                 // The savepoint statements of a nested transaction come
@@ -673,15 +674,24 @@ function retryStatements(client: RetryableClient): void {
                 // A nested transaction can also open while the statement is
                 // backing off. Its savepoint would take the replayed write
                 // with it when it rolls back, so the replay waits for the
-                // savepoint to close instead of running inside it.
+                // savepoint to close instead of running inside it. So can a
+                // transaction on a connection the statement shares with it,
+                // when the statement was issued in autocommit mode: the
+                // transaction's rollback would take an acknowledged write
+                // with it, so the replay waits for the transaction to close.
                 inScope: () => !transaction || atScopeOf(connection, transaction),
                 // One turn per attempt on the connection, covering the checks
                 // above, the driver call and the recording of what it did.
                 // Nothing else on the connection runs in between, and a turn
                 // is only granted once the statements ahead of it are
-                // recorded — a savepoint among them included. The turn is
-                // given up before the backoff.
-                takeTurn: step => takeConnectionTurn(connection, step),
+                // recorded — a savepoint among them included. The first turn
+                // opens by reading the scope the statement is issued in, so
+                // the checks that gate the first attempt see it too. The
+                // turn is given up before the backoff.
+                takeTurn: step => takeConnectionTurn(connection, () => {
+                    if (!issued) issue();
+                    return step();
+                }),
                 // Retrying may not change what the statement it wraps does.
                 // The limiter lowers `busy_timeout` for the duration of the
                 // attempt and puts the old value back afterwards, which would

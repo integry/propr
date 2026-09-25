@@ -9,7 +9,12 @@
  * restore a write the rollback undid and let the parent commit it. The scope
  * also has to match exactly: a parent's statement that resumes while a nested
  * transaction is open has to be held back until that savepoint closes, or the
- * nested rollback would take the parent's write with it.
+ * nested rollback would take the parent's write with it. A statement issued
+ * outside any transaction is scoped just as much: it belongs to the connection
+ * in autocommit mode, and one that resumes while a transaction has since
+ * opened on the connection has to be held back until that transaction closes,
+ * or a rollback of a transaction it was never part of would take its
+ * acknowledged write away.
  *
  * The driver reports whether a transaction is open, but not which savepoints
  * are, so the savepoint statements are parsed here as they succeed. Not every
@@ -118,10 +123,12 @@ interface Savepoint {
 }
 
 /**
- * The transaction a statement was issued in: the connection's transaction, and
- * every savepoint that was open inside it at the time.
+ * The scope a statement was issued in: whether a transaction was open on the
+ * connection, which one, and every savepoint that was open inside it at the
+ * time. A statement issued with no transaction open is owned by autocommit
+ * mode — an owner of its own, not the absence of one.
  */
-export type TransactionOwner = Pick<TransactionState, 'epoch' | 'savepoints'>;
+export type TransactionOwner = Pick<TransactionState, 'open' | 'epoch' | 'savepoints'>;
 
 /**
  * What each connection's transaction state was the last time a statement ran on
@@ -210,12 +217,13 @@ export function observeSavepoint(connection: unknown, sql: string, issuedBy?: st
 }
 
 /**
- * Identifies the transaction a statement belongs to. A statement issued outside
- * one has no transaction to outlive, so it has nothing to identify either.
+ * Identifies the scope a statement belongs to: the transaction open on the
+ * connection, or autocommit mode when none is.
  */
 export function transactionOwnership(connection: unknown): TransactionOwner | undefined {
     const state = observeTransaction(connection);
-    return state?.open ? { epoch: state.epoch, savepoints: [...state.savepoints] } : undefined;
+    if (!state) return undefined;
+    return { open: state.open, epoch: state.epoch, savepoints: [...state.savepoints] };
 }
 
 /**
@@ -223,11 +231,15 @@ export function transactionOwnership(connection: unknown): TransactionOwner | un
  * the connection: the same transaction, with every savepoint the statement
  * was issued under still open. A savepoint that was released or rolled back
  * to is a different entry now, so a statement issued under it is disowned
- * even though the connection's transaction never closed.
+ * even though the connection's transaction never closed. A statement issued
+ * in autocommit mode has no transaction to outlive: however many opened and
+ * closed on the connection since, autocommit mode is where it belongs.
  */
 export function stillOwnedBy(connection: unknown, owner: TransactionOwner): boolean {
     const state = observeTransaction(connection);
-    if (!state?.open || state.epoch !== owner.epoch) return false;
+    if (!state) return false;
+    if (!owner.open) return true;
+    if (!state.open || state.epoch !== owner.epoch) return false;
     return owner.savepoints.every((savepoint, depth) => state.savepoints[depth] === savepoint);
 }
 
@@ -240,11 +252,16 @@ export function stillOwnedBy(connection: unknown, owner: TransactionOwner): bool
  * behind by `ROLLBACK TO` does not count — that transaction is over, and
  * what follows it belongs to the enclosing scope. A savepoint the caller
  * rolled back to does: SQLite keeps it open, and a further rollback to it
- * would take a replayed write with it.
+ * would take a replayed write with it. For a statement issued in autocommit
+ * mode the innermost scope is the connection with no transaction open: one
+ * that opened since would take the replayed write with it when it rolls
+ * back, so the statement waits for the connection to be back in autocommit
+ * mode.
  */
 export function atScopeOf(connection: unknown, owner: TransactionOwner): boolean {
     if (!stillOwnedBy(connection, owner)) return false;
     const state = observeTransaction(connection) as TransactionState;
+    if (!owner.open) return !state.open;
     return state.savepoints
         .slice(owner.savepoints.length)
         .every(savepoint => savepoint.rolledBack === true);
