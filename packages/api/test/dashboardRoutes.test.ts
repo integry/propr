@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
-import type { RedisClientType } from 'redis';
-import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
 import { MAX_WORK_ROWS } from '../routes/dashboardQueries.js';
@@ -11,9 +9,11 @@ import {
   call,
   clearDashboardTestDatabase,
   createDashboardTestDatabase,
+  createTestDashboardRoutes,
   daysAgo,
   minutesAgo,
   seedTask as seedTaskInto,
+  type QueueStub,
   type TaskSeed,
 } from './dashboardTestHarness.js';
 
@@ -24,35 +24,8 @@ after(async () => database.destroy());
 beforeEach(async () => clearDashboardTestDatabase(database));
 
 const seedTask = (seed: TaskSeed): Promise<void> => seedTaskInto(database, seed);
-
-interface QueueStub {
-  paused?: boolean;
-  activeCount?: number;
-  workers?: number;
-  /** Concurrency each live worker publishes; null models a worker that publishes none. */
-  capacityPerWorker?: number | null;
-}
-
-function routes(queue: QueueStub = {}, liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>) {
-  const workerIds = Array.from({ length: queue.workers ?? 1 }, (_, index) => `worker:${index}`);
-  const capacityPerWorker = queue.capacityPerWorker === undefined ? 1 : queue.capacityPerWorker;
-  const redisClient = {
-    sMembers: async () => workerIds,
-    hGetAll: async () => (capacityPerWorker === null
-      ? {}
-      : Object.fromEntries(workerIds.map(id => [id, String(capacityPerWorker)]))),
-  } as unknown as RedisClientType;
-  return createDashboardRoutes({
-    db: database,
-    redisClient,
-    taskQueue: {
-      isPaused: async () => queue.paused ?? false,
-      getActiveCount: async () => queue.activeCount ?? 0,
-    } as never,
-    liveDetails: liveDetails ?? (async () => null),
-    now: () => NOW,
-  });
-}
+const routes = (queue?: QueueStub, liveDetails?: Parameters<typeof createTestDashboardRoutes>[2]) =>
+  createTestDashboardRoutes(database, queue, liveDetails);
 
 test('summary returns four integer counts that match the active endpoint for the same filter', async () => {
   await seedTask({ taskId: 'running-1', issueNumber: 11, states: [{ state: 'claude_execution', timestamp: minutesAgo(10) }] });
@@ -165,7 +138,7 @@ test('a failure superseded by a later successful run is not attention', async ()
   assert.deepEqual(attention.body.counts, { blocked: 0, decisions: 0, total: 0 });
 });
 
-test('attention lists blocking problems before pending decisions, oldest first in each group', async () => {
+test('attention lists every item newest first, whatever its kind', async () => {
   await seedTask({ taskId: 'blocked-new', issueNumber: 41, states: [{ state: 'failed', timestamp: minutesAgo(10), reason: 'Newer failure' }] });
   await seedTask({ taskId: 'blocked-old', issueNumber: 42, states: [{ state: 'failed', timestamp: minutesAgo(120), reason: 'Older failure' }] });
   await seedTask({ taskId: 'needs-human', issueNumber: 43, states: [{ state: 'action_required', timestamp: minutesAgo(60), reason: 'Credentials expired' }] });
@@ -177,12 +150,23 @@ test('attention lists blocking problems before pending decisions, oldest first i
   ]);
 
   const attention = await call(routes().getAttention, { repository: 'all' });
-  const items = attention.body.items as Array<{ id: string; category: string; kind: string }>;
-  assert.deepEqual(items.map(item => item.category), ['blocked', 'blocked', 'blocked', 'decision', 'decision']);
+  const items = attention.body.items as Array<{ id: string; category: string; kind: string; taskType: string | null }>;
   assert.deepEqual(items.map(item => item.id), [
-    'task:blocked-old', 'task:needs-human', 'task:blocked-new', 'plan-issue:2', 'plan-issue:1',
+    'task:blocked-new', 'plan-issue:1', 'task:needs-human', 'task:blocked-old', 'plan-issue:2',
   ]);
+  assert.deepEqual(items.map(item => item.taskType), ['issue', null, 'issue', 'issue', null]);
   assert.deepEqual(attention.body.counts, { blocked: 3, decisions: 2, total: 5 });
+});
+
+test('running work is listed newest first', async () => {
+  await seedTask({ taskId: 'run-old', issueNumber: 45, createdAt: minutesAgo(90), states: [{ state: 'claude_execution', timestamp: minutesAgo(1) }] });
+  await seedTask({ taskId: 'run-new', issueNumber: 46, createdAt: minutesAgo(5), states: [{ state: 'processing', timestamp: minutesAgo(4) }] });
+  await seedTask({ taskId: 'run-mid', issueNumber: 47, createdAt: minutesAgo(30), states: [{ state: 'post_processing', timestamp: minutesAgo(20) }] });
+
+  const active = await call(routes().getActive, { repository: 'all' });
+  const running = active.body.running as Array<{ taskId: string; taskType: string | null }>;
+  assert.deepEqual(running.map(item => item.taskId), ['run-new', 'run-mid', 'run-old']);
+  assert.deepEqual(running.map(item => item.taskType), ['issue', 'issue', 'issue']);
 });
 
 test('a review decision is titled by the work behind it, never by its own chip', async () => {
@@ -207,10 +191,10 @@ test('a review decision is titled by the work behind it, never by its own chip',
   // run on its thread. Leaving it null left the UI to print `Pull request
   // #720` beside a `PR #720` chip, which tells a reviewer nothing.
   assert.deepEqual(decisions.map(item => item.title), [
-    'Cache repository icons across dashboard sections',
     'feature/icon-cache',
+    'Cache repository icons across dashboard sections',
   ]);
-  assert.deepEqual(decisions.map(item => item.taskId), ['titled-run', 'untitled-run']);
+  assert.deepEqual(decisions.map(item => item.taskId), ['untitled-run', 'titled-run']);
 });
 
 test('dismissing every notification for a failed task leaves the task in attention', async () => {
@@ -310,64 +294,6 @@ test('queue reason stays null when nothing is queued', async () => {
   assert.deepEqual(active.body.queue, { queuedCount: 0, reason: null });
 });
 
-test('outcomes collapse one result per task and exclude non-outcome history entries', async () => {
-  await seedTask({
-    taskId: 'shipped', issueNumber: 101, prNumber: 900, title: 'Ship the thing',
-    states: [
-      { state: 'pending', timestamp: minutesAgo(90) },
-      { state: 'claude_execution', timestamp: minutesAgo(80) },
-      // Heartbeat-style progress and indexing entries must never become outcomes.
-      { state: 'indexing_update', timestamp: minutesAgo(70) },
-      { state: 'post_processing', timestamp: minutesAgo(65) },
-      { state: 'completed', timestamp: minutesAgo(60) },
-    ],
-  });
-  await seedTask({ taskId: 'broke', issueNumber: 102, states: [{ state: 'failed', timestamp: minutesAgo(30), reason: 'Lint failed' }] });
-  await seedTask({ taskId: 'stopped', issueNumber: 103, states: [{ state: 'cancelled', timestamp: minutesAgo(20) }] });
-  await seedTask({ taskId: 'still-running', issueNumber: 104, states: [{ state: 'claude_execution', timestamp: minutesAgo(10) }] });
-  await database('plan_issues').insert({
-    draft_id: 'draft-2', repository: 'integry/propr', issue_number: 101, pr_number: 900,
-    status: 'merged', task_id: 'shipped', created_at: daysAgo(2), updated_at: minutesAgo(10),
-  });
-
-  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
-  const items = outcomes.body.items as Array<Record<string, unknown>>;
-  // The merge is a later, separate outcome; the run itself collapses to one entry.
-  assert.deepEqual(items.map(item => item.kind), ['merged', 'cancelled', 'failed', 'completed']);
-  assert.deepEqual(items.map(item => item.taskId), ['shipped', 'stopped', 'broke', 'shipped']);
-  assert.equal(items.filter(item => item.kind === 'completed' && item.taskId === 'shipped').length, 1);
-  assert.equal(items[3].planIssueStatus, 'merged');
-  assert.equal(items[3].title, 'Ship the thing');
-  assert.equal(items[2].detail, 'Lint failed');
-  // The merge has no title of its own, so it takes the one from the run it
-  // merged. Left null, the feed printed `Pull request #900` next to a
-  // `PR #900` chip and named the work nowhere.
-  assert.equal(items[0].title, 'Ship the thing');
-
-  const limited = await call(routes().getOutcomes, { repository: 'all', limit: '2' });
-  assert.deepEqual((limited.body.items as Array<Record<string, unknown>>).map(item => item.kind), ['merged', 'cancelled']);
-});
-
-test('outcomes carry a recorded critique score and stay null when none was recorded', async () => {
-  await seedTask({ taskId: 'scored', issueNumber: 201, states: [{ state: 'completed', timestamp: minutesAgo(30) }] });
-  await seedTask({ taskId: 'unscored', issueNumber: 202, states: [{ state: 'completed', timestamp: minutesAgo(20) }] });
-  await database('llm_executions').insert([
-    {
-      task_id: 'scored',
-      start_time: minutesAgo(35),
-      cost_usd: 0.5,
-      analysis_report: JSON.stringify({ report: JSON.stringify({ implementation_critique_score: 8 }) }),
-    },
-    { task_id: 'unscored', start_time: minutesAgo(25), cost_usd: 0.5, analysis_report: null },
-  ]);
-
-  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
-  const items = outcomes.body.items as Array<Record<string, unknown>>;
-  assert.equal(items.find(item => item.taskId === 'scored')?.score, 8);
-  assert.equal(items.find(item => item.taskId === 'unscored')?.score, null);
-});
-
-
 test('the attention count opens a list of exactly the work it counted', async () => {
   // A failure the system is already retrying: counted by neither side.
   await seedTask({ taskId: 'recovering-run', issueNumber: 301, createdAt: minutesAgo(120), states: [{ state: 'failed', timestamp: minutesAgo(110), reason: 'Flaky' }] });
@@ -397,41 +323,6 @@ test('the attention count opens a list of exactly the work it counted', async ()
   assert.deepEqual(page.ids.slice().sort(), counted.slice().sort());
   assert.equal(page.total, summary.body.needsAttention);
   assert.equal(await taskPageTotal('attention', 'integry/propr'), summary.body.needsAttention);
-});
-
-test('a recorded failure survives the retry that follows it', async () => {
-  // The run failed, and a retry of the same task has already started.
-  await seedTask({
-    taskId: 'retried-run', issueNumber: 401,
-    states: [
-      { state: 'claude_execution', timestamp: minutesAgo(120) },
-      { state: 'failed', timestamp: minutesAgo(100), reason: 'Tests failed' },
-      { state: 'pending', timestamp: minutesAgo(10) },
-    ],
-  });
-  await seedTask({ taskId: 'clean-run', issueNumber: 402, states: [{ state: 'completed', timestamp: minutesAgo(90) }] });
-
-  const outcomes = await call(routes().getOutcomes, { repository: 'all' });
-  const items = outcomes.body.items as Array<Record<string, unknown>>;
-  // The failure is an event that happened; the task moving on does not unhappen it.
-  assert.deepEqual(items.map(item => [item.taskId, item.kind]), [
-    ['clean-run', 'completed'],
-    ['retried-run', 'failed'],
-  ]);
-  assert.equal(items[1].detail, 'Tests failed');
-  assert.equal(new Set(items.map(item => item.id)).size, items.length);
-
-  // A run that failed and was then retried to success keeps both outcomes.
-  await database('task_history').insert([
-    { task_id: 'retried-run', state: 'claude_execution', timestamp: minutesAgo(8), metadata: '{}' },
-    { task_id: 'retried-run', state: 'completed', timestamp: minutesAgo(5), metadata: '{}' },
-  ]);
-  const after = await call(routes().getOutcomes, { repository: 'all' });
-  assert.deepEqual((after.body.items as Array<Record<string, unknown>>).map(item => [item.taskId, item.kind]), [
-    ['retried-run', 'completed'],
-    ['clean-run', 'completed'],
-    ['retried-run', 'failed'],
-  ]);
 });
 
 test('the recent-completion row limit never hides running work or shrinks a count', async () => {

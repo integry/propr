@@ -297,12 +297,18 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
     : null;
 }
 
-/** Provider-aware local projection shared by task details and goal summaries. */
+/**
+ * Provider-aware local projection shared by task details and goal summaries.
+ *
+ * Null means no output was found, or, unless `rethrowReadErrors` is set, that
+ * the persisted fallback could not be read. A caller that must tell an empty
+ * stream from an unreadable one sets it and treats a rejection as unknown.
+ */
 export async function projectTaskLiveDetails(
   redisClient: RedisClientType,
   db: Knex,
   taskId: string,
-  { sessionId, ...options }: AgentStreamParseOptions & { sessionId?: string | null } = {},
+  { sessionId, rethrowReadErrors = false, ...options }: AgentStreamParseOptions & { sessionId?: string | null; rethrowReadErrors?: boolean } = {},
 ): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
   const active = await parseActiveExecutionOutput(redisClient, db, taskId, options);
   if (active) return active;
@@ -310,7 +316,8 @@ export async function projectTaskLiveDetails(
     const details = sessionId ? await parseExecutionDetailsFromDb(db, taskId, sessionId) : null;
     if (details) return details;
     return await parsePersistedGoalOutput(db, taskId);
-  } catch {
+  } catch (error) {
+    if (rethrowReadErrors) throw error;
     return null;
   }
 }

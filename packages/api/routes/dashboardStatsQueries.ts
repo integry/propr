@@ -3,7 +3,7 @@
  *
  * This is the third dashboard source of truth. It counts finished runs from
  * the outcome transitions recorded in task history — the same projection the
- * recent-outcomes feed reads — rather than from what each task happens to be
+ * completed feed reads — rather than from what each task happens to be
  * doing now, so a retry starting does not erase the failure that caused it.
  */
 

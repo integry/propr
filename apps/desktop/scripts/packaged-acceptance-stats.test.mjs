@@ -22,7 +22,7 @@ const headerStatsSource = readSource('../../../propr-ui/src/hooks/useHeaderStats
 const headerStatsHelpersSource = readSource('../../../propr-ui/src/hooks/useHeaderStatsHelpers.ts');
 const needsAttentionSource = readSource('../../../propr-ui/src/components/Dashboard/NeedsAttentionPanel.tsx');
 const happeningNowSource = readSource('../../../propr-ui/src/components/Dashboard/HappeningNowSection.tsx');
-const recentOutcomesSource = readSource('../../../propr-ui/src/components/Dashboard/RecentOutcomesFeed.tsx');
+const completedSource = readSource('../../../propr-ui/src/components/Dashboard/CompletedFeed.tsx');
 const historicalStatsSource = readSource('../../../propr-ui/src/components/Dashboard/HistoricalStatsPanel.tsx');
 
 const fixturePayload = pathname => {
@@ -171,7 +171,6 @@ describe('packaged acceptance stats fixtures', () => {
     assert.match(happeningNowSource, /data\?\.counts\.running/);
     assert.match(happeningNowSource, /data\.queue\.queuedCount/);
     assert.match(happeningNowSource, /data\.queue\.reason/);
-    assert.match(historicalStatsSource, /data\.previous\.completed/);
     assert.match(historicalStatsSource, /<DailyCompletionsChart data=\{data\.dailyCompleted\} \/>/);
     assert.equal(typeof active.counts.running, 'number');
     assert.equal(typeof active.queue.queuedCount, 'number');
@@ -180,7 +179,7 @@ describe('packaged acceptance stats fixtures', () => {
 
     // The remaining sections map their rows, which have to arrive as arrays.
     assert.match(needsAttentionSource, /data\?\.items \?\? \[\]/);
-    assert.match(recentOutcomesSource, /\(data\?\.items \?\? \[\]\)\.filter/);
+    assert.match(completedSource, /data\?\.items \?\? \[\]/);
     for (const rows of [attention.items, active.running, active.queued, outcomes.items]) {
       assert.ok(Array.isArray(rows), 'dashboard rows must be synchronously iterable');
     }

@@ -2,8 +2,7 @@
  * Implementation critique scores recorded on LLM executions.
  *
  * The score lives inside a JSON report stored on `llm_executions.analysis_report`,
- * so reading it means parsing the outer envelope and then the report body. Both
- * the task list and the dashboard's recent outcomes show the score, so the
+ * so reading it means parsing the outer envelope and then the report body. The
  * parsing rules live here rather than being reimplemented per consumer.
  */
 
@@ -69,11 +68,4 @@ export async function loadCritiqueScores(db: Knex, taskIds: string[]): Promise<M
     }
   }
   return scores;
-}
-
-/** Coerces a stored score into a number the UI can render, or null. */
-export function toScoreNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  const score = typeof value === 'number' ? value : parseFloat(String(value));
-  return Number.isFinite(score) ? score : null;
 }

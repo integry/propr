@@ -205,7 +205,7 @@ describe('Dashboard consistency rules', () => {
     // constant the filter above the console already establishes, so it goes
     // everywhere rather than only where a chip would otherwise truncate — and
     // it stays in the tooltip.
-    for (const testId of ['needs-attention-panel', 'happening-now-section', 'recent-outcomes-section']) {
+    for (const testId of ['needs-attention-panel', 'happening-now-section', 'completed-section']) {
       const chip = within(await screen.findByTestId(testId)).getAllByTitle('acme/app')[0];
       expect(chip).toHaveTextContent(/^app$/);
       expect(chip.textContent).not.toMatch(/acme/);

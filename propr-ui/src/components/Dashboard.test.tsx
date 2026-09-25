@@ -217,7 +217,7 @@ describe('Dashboard', () => {
     await waitFor(() => {
       expect(mockAttention).toHaveBeenLastCalledWith('acme/web');
       expect(mockActive).toHaveBeenLastCalledWith('acme/web');
-      expect(mockOutcomes).toHaveBeenLastCalledWith('acme/web', 50);
+      expect(mockOutcomes).toHaveBeenLastCalledWith('acme/web', 50, '');
       expect(mockStats).toHaveBeenLastCalledWith('acme/web', '7d');
     });
     // The filtered lists behind the pane links carry the same filter.
@@ -281,7 +281,7 @@ describe('Dashboard', () => {
     });
     await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(2));
 
-    const titles = screen.getAllByText(/(Alpha|Beta) work/).map(node => node.textContent);
+    const titles = screen.getAllByText(/(Alpha|Beta) work/).map(node => /(Alpha|Beta) work/.exec(node.textContent ?? '')?.[0]);
     expect(titles).toEqual(['Alpha work', 'Beta work']);
   });
 
@@ -373,20 +373,52 @@ describe('Dashboard', () => {
     expect(queue).toHaveTextContent('All agents are busy');
   });
 
-  it('shows a recorded score as the quality pill and omits the element entirely without one', async () => {
+  it('shows a review score as the quality pill and omits the element entirely without one', async () => {
     mockOutcomes.mockResolvedValue(outcomesResponse([
-      outcomeItem({ id: 'scored', score: 8 }),
+      outcomeItem({ id: 'scored', title: 'Review PR #100: Ship the retry budget', taskType: 'pr-comment', score: 8, detail: '2 issues found: Missing test; Leaky timer' }),
       outcomeItem({ id: 'unscored', taskId: 'done-2', title: 'No score here' }),
     ]));
 
     renderDashboard();
     await waitForSections();
 
-    const scores = await screen.findAllByTestId('outcome-score');
+    const scores = await screen.findAllByTestId('completed-score');
     expect(scores).toHaveLength(1);
     expect(scores[0]).toHaveTextContent('8');
     // The scale reaches assistive technology without being drawn on screen.
-    expect(scores[0]).toHaveTextContent('Code quality score 8 out of 10');
+    expect(scores[0]).toHaveTextContent('Review score 8 out of 10');
     expect(scores[0].textContent).not.toMatch(/\/10/);
+    // What the review found is the row's detail line.
+    expect(screen.getByText('2 issues found: Missing test; Leaky timer')).toBeInTheDocument();
+  });
+
+  it('titles the completed feed "Completed" and never repeats the state on its rows', async () => {
+    mockOutcomes.mockResolvedValue(outcomesResponse([
+      outcomeItem({ id: 'a', title: 'Fix PR #2494: [Epic] MCP operator surface', taskType: 'pr-comment' }),
+    ]));
+
+    renderDashboard();
+    await waitForSections();
+
+    const feed = await screen.findByTestId('completed-section');
+    expect(within(feed).getByRole('heading', { name: 'Completed' })).toBeInTheDocument();
+    const list = await within(feed).findByTestId('completed-list');
+    expect(list).not.toHaveTextContent(/Completed/);
+    expect(within(feed).queryByRole('group', { name: 'Outcome window' })).toBeNull();
+    expect(within(list).getByTestId('work-type-badge')).toHaveTextContent('Fix');
+    expect(list).toHaveTextContent('[Epic] MCP operator surface');
+    expect(list).not.toHaveTextContent('Fix PR #2494');
+  });
+
+  it('filters completed work by title through the heading search box', async () => {
+    renderDashboard();
+    await waitForSections();
+    await waitFor(() => expect(mockOutcomes).toHaveBeenCalledWith('all', 50, ''));
+
+    mockOutcomes.mockResolvedValue(outcomesResponse([outcomeItem({ id: 'hit', title: 'Cache repository icons' })]));
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter completed work by title' }), { target: { value: ' icons ' } });
+
+    await waitFor(() => expect(mockOutcomes).toHaveBeenCalledWith('all', 50, 'icons'));
+    expect(await screen.findByText('Cache repository icons')).toBeInTheDocument();
   });
 });

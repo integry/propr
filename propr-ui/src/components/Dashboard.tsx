@@ -2,7 +2,7 @@
  * Dashboard composition root.
  *
  * The dashboard answers "what needs my attention right now" in four panes:
- * needs attention, happening now, recent outcomes and historical stats. Live
+ * needs attention, happening now, completed and historical stats. Live
  * work gets the space; the deeper charts live on `/analytics`. The page spends
  * no row of its own on a title or a toolbar: the panes start directly under the
  * global header, and the repository filter lives in that header.
@@ -41,7 +41,7 @@ import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import { isDefaultParamValue } from './TaskList/utils';
 import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
 import { HappeningNowSection } from './Dashboard/HappeningNowSection';
-import { RecentOutcomesFeed } from './Dashboard/RecentOutcomesFeed';
+import { CompletedFeed } from './Dashboard/CompletedFeed';
 import { HistoricalStatsPanel } from './Dashboard/HistoricalStatsPanel';
 import { RepositoryIconProvider, type RepositoryIconInfo } from './Dashboard/sectionPrimitives';
 import { ALL_REPOSITORIES, REPOSITORY_PARAM } from './Dashboard/sectionState';
@@ -205,8 +205,8 @@ const Dashboard: React.FC = () => {
         )}
 
         {/*
-          Mobile keeps the DOM order: attention, happening now, recent
-          outcomes, historical stats. Desktop puts running work and outcomes in
+          Mobile keeps the DOM order: attention, happening now, completed,
+          historical stats. Desktop puts running work and completed work in
           the main column and the two supporting panels in a narrower right
           column, in that same order of priority: triage at the top of the
           rail, background numbers underneath it.
@@ -243,7 +243,7 @@ const Dashboard: React.FC = () => {
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-b-0 lg:border-r">
-            <RecentOutcomesFeed {...sectionProps} />
+            <CompletedFeed {...sectionProps} />
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-2 lg:border-b-0">

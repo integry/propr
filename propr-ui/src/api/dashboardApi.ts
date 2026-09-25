@@ -1,7 +1,7 @@
-// Dashboard data layer: attention, active work, outcomes and historical stats.
+// Dashboard data layer: attention, active work, completed work and historical stats.
 //
 // The dashboard reads three sources of truth: task state (what needs attention
-// and what is running), outcome events (what just happened) and aggregated
+// and what is running), completion events (what was finished) and aggregated
 // execution data (are things generally going well). Attention never reflects
 // notification read or dismissal state — dismissing a notification in the inbox
 // must not resolve a blocker.
@@ -30,10 +30,12 @@ export interface AttentionItem {
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type (`issue`, `pr-comment`, `review`…), when known. */
+  taskType: string | null;
   title: string | null;
   state: string;
   detail: string | null;
-  /** When the item started needing attention; the list is ordered oldest first. */
+  /** When the item started needing attention; the list is ordered newest first. */
   since: string;
 }
 
@@ -49,12 +51,25 @@ export interface ActiveItem {
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type (`issue`, `pr-comment`, `review`…), when known. */
+  taskType: string | null;
   title: string | null;
   state: string;
   /** Phase label from real lifecycle state. There is no percentage progress. */
   phase: string | null;
   /** Latest meaningful progress line, or null when the backend does not know one. */
   progressLine: string | null;
+  /** The agent's latest action, from its most recent tool call; null when unknown. */
+  activity?: string | null;
+  /** Position in the agent's own plan; null when it keeps none. */
+  step?: { current: number; total: number } | null;
+  /** When the agent last produced output; null when the stream shows none. */
+  lastActivityAt?: string | null;
+  /**
+   * The stream was read and holds no agent output yet. Absent or false when
+   * the stream is unknown — unread or unreadable — which is not the same.
+   */
+  awaitingFirstOutput?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,20 +88,25 @@ export interface DashboardActiveResponse {
   counts: { running: number; queued: number };
 }
 
-/** Run results plus the later review results recorded against a plan issue. */
-export type OutcomeKind = 'completed' | 'failed' | 'cancelled' | 'merged' | 'closed';
-
+/**
+ * One successfully completed run, newest first. Failures are attention items,
+ * and cancelled or skipped runs are not listed at all.
+ */
 export interface OutcomeItem {
   id: string;
-  kind: OutcomeKind;
-  taskId: string | null;
+  taskId: string;
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type (`issue`, `pr-comment`, `review`…), when known. */
+  taskType: string | null;
   title: string | null;
+  /**
+   * What the run produced — for a review, what it found. Null when nothing was
+   * recorded beyond the fact that it finished.
+   */
   detail: string | null;
-  planIssueStatus: string | null;
-  /** Implementation critique score out of 10; null whenever none was recorded. */
+  /** Review score out of 10. Only reviews are scored; null for everything else. */
   score: number | null;
   occurredAt: string;
 }
@@ -94,6 +114,8 @@ export interface OutcomeItem {
 export interface DashboardOutcomesResponse {
   repository: RepositoryFilter;
   limit: number;
+  /** The title search the items were narrowed by; empty for none. */
+  search?: string;
   items: OutcomeItem[];
 }
 
@@ -140,12 +162,14 @@ export const getDashboardActive = (repository: RepositoryFilter = 'all'): Promis
 export const getDashboardOutcomes = (
   repository: RepositoryFilter = 'all',
   limit?: number,
+  search = '',
 ): Promise<DashboardOutcomesResponse> => {
-  const query = limit === undefined
-    ? repositoryQuery(repository)
-    : `${repositoryQuery(repository)}&limit=${encodeURIComponent(String(limit))}`;
-  return shareInFlightApiRead(`dashboard-outcomes:${repository}:${limit ?? 'default'}`, signal =>
-    readJson<DashboardOutcomesResponse>(`/api/dashboard/outcomes?${query}`, signal));
+  const params = [repositoryQuery(repository)];
+  if (limit !== undefined) params.push(`limit=${encodeURIComponent(String(limit))}`);
+  const term = search.trim();
+  if (term) params.push(`search=${encodeURIComponent(term)}`);
+  return shareInFlightApiRead(`dashboard-outcomes:${repository}:${limit ?? 'default'}:${term}`, signal =>
+    readJson<DashboardOutcomesResponse>(`/api/dashboard/outcomes?${params.join('&')}`, signal));
 };
 
 export const getDashboardStats = (

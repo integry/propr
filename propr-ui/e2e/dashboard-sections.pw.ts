@@ -5,37 +5,36 @@ import path from 'node:path';
 const now = Date.parse('2026-09-23T12:00:00Z');
 const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
 
+// Newest first, as the API lists running work.
 const running = [
-  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2479, prNumber: null, title: 'Rebuild the dashboard into five sections with a shared repository filter', state: 'claude_execution', phase: 'Implementing', progressLine: 'Editing propr-ui/src/components/Dashboard.tsx', createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
-  { id: 'task:run-2', taskId: 'run-2', repository: 'example/workspace', issueNumber: 2480, prNumber: 2481, title: 'Fix PR #2481: keep the queue summary honest when no reason is known', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(14), updatedAt: minutesAgo(2) },
-  { id: 'task:run-3', taskId: 'run-3', repository: 'example/design-system', issueNumber: 118, prNumber: null, title: 'Align the score badge with the outcome feed', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(9), updatedAt: minutesAgo(3) },
-  { id: 'task:run-4', taskId: 'run-4', repository: 'example/workspace', issueNumber: 2455, prNumber: null, title: 'Cache repository icons across dashboard sections', state: 'claude_execution', phase: 'Implementing', progressLine: 'Running tests', createdAt: minutesAgo(7), updatedAt: minutesAgo(1) },
-  { id: 'task:run-5', taskId: 'run-5', repository: 'example/docs', issueNumber: 61, prNumber: null, title: 'Document the dashboard data contracts', state: 'claude_execution', phase: 'Implementing', progressLine: null, createdAt: minutesAgo(4), updatedAt: minutesAgo(1) },
-  { id: 'task:run-6', taskId: 'run-6', repository: 'example/docs', issueNumber: 62, prNumber: null, title: 'Explain the attention rules in the operations guide', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(2), updatedAt: minutesAgo(1) },
   // Seven, not six: one row over the visible five is simply drawn, so the
   // expand control only appears — and only has to be tested — past that.
-  { id: 'task:run-7', taskId: 'run-7', repository: 'example/design-system', issueNumber: 119, prNumber: null, title: 'Unify the empty and unavailable states across panels', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(1), updatedAt: minutesAgo(1) },
+  { id: 'task:run-7', taskId: 'run-7', repository: 'example/design-system', issueNumber: 119, prNumber: null, taskType: 'issue', title: 'New Issue: Unify the empty and unavailable states across panels', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(1), updatedAt: minutesAgo(1) },
+  { id: 'task:run-6', taskId: 'run-6', repository: 'example/docs', issueNumber: 62, prNumber: null, taskType: 'issue', title: 'Explain the attention rules in the operations guide', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(2), updatedAt: minutesAgo(1) },
+  { id: 'task:run-5', taskId: 'run-5', repository: 'example/docs', issueNumber: 61, prNumber: null, taskType: 'issue', title: 'Document the dashboard data contracts', state: 'claude_execution', phase: 'Implementing', progressLine: null, activity: 'Reading dashboardApi.ts', step: null, lastActivityAt: minutesAgo(0.2), createdAt: minutesAgo(4), updatedAt: minutesAgo(1) },
+  { id: 'task:run-4', taskId: 'run-4', repository: 'example/workspace', issueNumber: 2455, prNumber: 2456, taskType: 'pr-comment', title: 'Review PR #2456: Cache repository icons across dashboard sections', state: 'claude_execution', phase: 'Implementing', progressLine: 'Running tests', activity: 'Running npx vitest run src/components/Dashboard', step: { current: 3, total: 5 }, lastActivityAt: minutesAgo(0.1), createdAt: minutesAgo(7), updatedAt: minutesAgo(1) },
+  { id: 'task:run-3', taskId: 'run-3', repository: 'example/design-system', issueNumber: 118, prNumber: null, taskType: 'issue', title: 'Align the score badge with the completed feed', state: 'processing', phase: 'Preparing', progressLine: null, createdAt: minutesAgo(9), updatedAt: minutesAgo(3) },
+  { id: 'task:run-2', taskId: 'run-2', repository: 'example/workspace', issueNumber: 2480, prNumber: 2481, taskType: 'pr-comment', title: 'Fix PR #2481: keep the queue summary honest when no reason is known', state: 'post_processing', phase: 'Finishing up', progressLine: 'Pushing branch', createdAt: minutesAgo(14), updatedAt: minutesAgo(2) },
+  { id: 'task:run-1', taskId: 'run-1', repository: 'example/workspace', issueNumber: 2479, prNumber: null, taskType: 'issue', title: 'Followup: [2479 by Claude Opus 4.6] Rebuild the dashboard into five sections with a shared repository filter', state: 'claude_execution', phase: 'Implementing', progressLine: 'Editing propr-ui/src/components/Dashboard.tsx', activity: 'Editing Dashboard.tsx', step: { current: 2, total: 6 }, lastActivityAt: minutesAgo(18), createdAt: minutesAgo(26), updatedAt: minutesAgo(1) },
 ];
 
+// Newest first, whatever the kind.
 const attention = [
-  { id: 'task:blocked-1', category: 'blocked', kind: 'task_failed', taskId: 'blocked-1', repository: 'example/workspace', issueNumber: 2470, prNumber: null, title: 'Retry budget never applies to post-processing', state: 'failed', detail: 'Lint failed on propr-ui/src/api/dashboardApi.ts', since: minutesAgo(190) },
-  { id: 'task:blocked-2', category: 'blocked', kind: 'task_action_required', taskId: 'blocked-2', repository: 'example/design-system', issueNumber: 117, prNumber: null, title: 'Choose between the compact and comfortable row density', state: 'action_required', detail: 'Waiting for a decision on row density', since: minutesAgo(95) },
+  { id: 'plan-issue:32', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/docs', issueNumber: 58, prNumber: 59, taskType: null, title: 'feature/icon-cache', state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(20) },
   // A review decision carries the title of the run behind it, and where that
   // run recorded no title, the branch it works on. Neither row may fall back
   // to `Pull request #2469`, which is the chip beside it read twice.
-  { id: 'plan-issue:31', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/workspace', issueNumber: 2468, prNumber: 2469, title: 'Cache repository icons across dashboard sections', state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(52) },
-  { id: 'plan-issue:32', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/docs', issueNumber: 58, prNumber: 59, title: 'feature/icon-cache', state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(20) },
+  { id: 'plan-issue:31', category: 'decision', kind: 'plan_review', taskId: null, repository: 'example/workspace', issueNumber: 2468, prNumber: 2469, taskType: null, title: 'New Issue: Cache repository icons across dashboard sections', state: 'under_review', detail: 'Pull request is awaiting review', since: minutesAgo(52) },
+  { id: 'task:blocked-2', category: 'blocked', kind: 'task_action_required', taskId: 'blocked-2', repository: 'example/design-system', issueNumber: 117, prNumber: null, taskType: 'issue', title: 'Choose between the compact and comfortable row density', state: 'action_required', detail: 'Waiting for a decision on row density', since: minutesAgo(95) },
+  { id: 'task:blocked-1', category: 'blocked', kind: 'task_failed', taskId: 'blocked-1', repository: 'example/workspace', issueNumber: 2470, prNumber: 2471, taskType: 'pr-comment', title: 'Fix PR #2471: Retry budget never applies to post-processing', state: 'failed', detail: 'Lint failed on propr-ui/src/api/dashboardApi.ts', since: minutesAgo(190) },
 ];
 
+// Completed runs only, newest first. Only the review carries a score.
 const outcomes = [
-  // A merge is recorded against a plan issue, which has no title of its own:
-  // the API names it after the run it merged rather than after its own chip.
-  { id: 'plan-issue:30:merged', kind: 'merged', taskId: 'done-1', repository: 'example/workspace', issueNumber: 2466, prNumber: 2467, title: 'Show corrective operator messages verbatim in the goal timeline', detail: 'Pull request merged', planIssueStatus: 'merged', score: null, occurredAt: minutesAgo(18) },
-  { id: 'task:done-1:completed', kind: 'completed', taskId: 'done-1', repository: 'example/workspace', issueNumber: 2466, prNumber: 2467, title: 'Show corrective operator messages verbatim in the goal timeline', detail: null, planIssueStatus: 'merged', score: 9, occurredAt: minutesAgo(46) },
-  { id: 'task:done-2:failed', kind: 'failed', taskId: 'done-2', repository: 'example/design-system', issueNumber: 115, prNumber: null, title: 'Tighten the reference chip contrast', detail: 'Typecheck failed', planIssueStatus: null, score: null, occurredAt: minutesAgo(88) },
-  { id: 'task:done-3:completed', kind: 'completed', taskId: 'done-3', repository: 'example/docs', issueNumber: 57, prNumber: 60, title: 'Describe the recorded-spend metric', detail: null, planIssueStatus: null, score: 7, occurredAt: minutesAgo(140) },
-  { id: 'task:done-4:completed', kind: 'completed', taskId: 'done-4', repository: 'example/workspace', issueNumber: 2460, prNumber: null, title: 'Reduce duplicate startup reads on the dashboard route', detail: null, planIssueStatus: null, score: 8, occurredAt: minutesAgo(300) },
-  { id: 'task:done-5:cancelled', kind: 'cancelled', taskId: 'done-5', repository: 'example/workspace', issueNumber: 2452, prNumber: null, title: 'Prototype a percentage progress bar', detail: 'Cancelled by operator', planIssueStatus: null, score: null, occurredAt: minutesAgo(420) },
+  { id: 'task:done-1:completed', taskId: 'done-1', repository: 'example/workspace', issueNumber: 2466, prNumber: 2467, taskType: 'pr-comment', title: 'Review PR #2467: Show corrective operator messages verbatim in the goal timeline', detail: '2 issues found: Missing timeline test; Unescaped operator markup', score: 8, occurredAt: minutesAgo(5) },
+  { id: 'task:done-2:completed', taskId: 'done-2', repository: 'example/workspace', issueNumber: 2494, prNumber: 2494, taskType: 'pr-comment', title: 'Fix PR #2494: [Epic] MCP Operator Surface: Activity, Control And Observability', detail: 'Applied the requested review fixes across 4 files.', score: null, occurredAt: minutesAgo(6) },
+  { id: 'task:done-3:completed', taskId: 'done-3', repository: 'example/docs', issueNumber: 57, prNumber: 60, taskType: 'issue', title: 'New Issue: Describe the recorded-spend metric', detail: null, score: null, occurredAt: minutesAgo(140) },
+  { id: 'task:done-4:completed', taskId: 'done-4', repository: 'example/workspace', issueNumber: 2460, prNumber: null, taskType: 'issue', title: 'Reduce duplicate startup reads on the dashboard route', detail: 'Implemented the requested work across 3 files and opened a pull request.', score: null, occurredAt: minutesAgo(300) },
 ];
 
 /**
@@ -177,9 +176,34 @@ test('desktop shows every section with running work in the main column', async (
   await expect(page.getByTestId('dashboard-scope-bar')).toBeHidden();
   await expect(page.getByTestId('summary-strip')).toHaveCount(0);
   await expect(page.getByTestId('needs-attention-panel')).toBeVisible();
-  await expect(page.getByTestId('happening-now-section')).toContainText('Implementing');
+  // Every running row is running, so no row carries a phase badge; the type
+  // badge leads the title instead, and the backend prefix is gone from it.
+  const happeningNow = page.getByTestId('happening-now-section');
+  await expect(happeningNow).not.toContainText('Implementing');
+  await expect(happeningNow.locator('.animate-spin')).toHaveCount(0);
+  // No spinner, but no blank row either: every running row says what it is
+  // doing now, so a hung agent is not indistinguishable from a busy one.
+  const rows = happeningNow.getByTestId('happening-now-list').locator('li');
+  const subPhases = happeningNow.getByTestId('running-sub-phase');
+  await expect(subPhases).toHaveCount(await rows.count());
+  for (const text of await subPhases.allInnerTexts()) expect(text.trim()).not.toBe('');
+  await expect(rows.nth(2).getByTestId('running-last-output')).toHaveText('last output just now');
+  await expect(rows.nth(3).getByTestId('running-step')).toHaveText('step 3/5');
+  await expect(happeningNow.getByTestId('work-type-badge').first()).toHaveText('Implement');
+  await expect(happeningNow).not.toContainText('New Issue:');
   await expect(page.getByTestId('queue-summary')).toContainText('All agents are busy');
-  await expect(page.getByTestId('recent-outcomes-section')).toContainText('Merged');
+  // The completed feed names no state, prints no bare "completed" line, and
+  // shows a score only on the review.
+  const completed = page.getByTestId('completed-section');
+  await expect(completed.getByRole('heading')).toHaveText('Completed');
+  await expect(completed.getByTestId('completed-list')).not.toContainText('Completed');
+  await expect(completed.getByTestId('completed-score')).toHaveCount(1);
+  await expect(completed).toContainText('2 issues found: Missing timeline test');
+  await expect(completed).not.toContainText('Fix PR #2494');
+  await expect(completed.getByRole('searchbox', { name: 'Filter completed work by title' })).toBeVisible();
+  await expect(completed.getByRole('button', { name: /Last 24 hours|Last 7 days/ })).toHaveCount(0);
+  // The stats panel shows the numbers alone, without a change line or its footnote.
+  await expect(page.getByTestId('historical-stats-section')).not.toContainText('Compared with');
   // One word per metric label: `RECORDED SPEND` does not fit a third of this
   // column, and a heading cut to `RECORDED SP…` reads as a broken grid.
   await expect(page.getByTestId('historical-stats-section')).toContainText('Spend');
@@ -240,7 +264,7 @@ test('the queue footer floors the running pane when the column beside it is tall
       slack: Math.round(footer.top - row.bottom),
       floorGap: Math.round(section.bottom - footer.bottom),
       paneHeight: Math.round(section.height),
-      outcomesTop: Math.round(box('recent-outcomes-section').top),
+      completedTop: Math.round(box('completed-section').top),
       footerBottom: Math.round(footer.bottom),
     };
   });
@@ -248,7 +272,7 @@ test('the queue footer floors the running pane when the column beside it is tall
   // The bar closes the pane: nothing of the pane is left below it, and the
   // rule under it is the top of the next section.
   expect(geometry.floorGap).toBe(0);
-  expect(geometry.outcomesTop).toBeGreaterThanOrEqual(geometry.footerBottom);
+  expect(geometry.completedTop).toBeGreaterThanOrEqual(geometry.footerBottom);
   // The empty space is above the bar, in the list area, rather than below it:
   // this is the 260px hole the bar used to hang over.
   expect(geometry.paneHeight).toBeGreaterThan(300);
@@ -283,7 +307,7 @@ test('an empty attention list keeps the panel in place with an all-clear line', 
     .toHaveText('All tasks operational — no attention required');
 
   const geometry = await page.evaluate(() => Object.fromEntries(
-    ['needs-attention-panel', 'happening-now-section', 'recent-outcomes-section', 'historical-stats-section'].map(id => {
+    ['needs-attention-panel', 'happening-now-section', 'completed-section', 'historical-stats-section'].map(id => {
       const rect = (document.querySelector(`[data-testid="${id}"]`) as HTMLElement).getBoundingClientRect();
       return [id, { top: Math.round(rect.top), bottom: Math.round(rect.bottom) }];
     }),
@@ -292,7 +316,7 @@ test('an empty attention list keeps the panel in place with an all-clear line', 
   // Row one starts on one horizon and row two starts on one horizon, so the
   // rule between them is a single line across both columns rather than a step.
   expect(geometry['needs-attention-panel'].top).toBe(geometry['happening-now-section'].top);
-  expect(geometry['historical-stats-section'].top).toBe(geometry['recent-outcomes-section'].top);
+  expect(geometry['historical-stats-section'].top).toBe(geometry['completed-section'].top);
   // Stats stay in the second tier; triage keeps the top of the rail.
   expect(geometry['historical-stats-section'].top)
     .toBeGreaterThan(geometry['needs-attention-panel'].bottom - 1);
@@ -323,11 +347,15 @@ test('the historical chart carries a scale rather than seven unlabelled shapes',
   await expect(grid).toHaveCount(2);
   expect(await grid.first().getAttribute('stroke-dasharray')).toBe('3 3');
 
+  // Only the day still in progress carries a marker; settled days are the
+  // line alone.
+  const markers = chart.locator('.recharts-area-dots circle');
+  await expect(markers).toHaveCount(1);
+
   // The marker for the latest day is filled and ringed, and it is plotted on
   // the right edge of the plot area: without a margin the size of its own
   // radius, half of it hangs past the vertical that the period toggle and the
   // analytics link sit on.
-  const markers = chart.locator('.recharts-area-dots circle');
   const lastMarker = await markers.last().boundingBox();
   const plot = await chart.boundingBox();
   const railRight = await page.getByTestId('historical-stats-section')

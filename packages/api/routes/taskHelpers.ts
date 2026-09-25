@@ -192,7 +192,7 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
 
   // Only executions belonging to this page are read, newest first, so the
   // "latest valid outer analysis report" choice never evaluates JSON for
-  // unrelated tasks. The dashboard's recent outcomes read the same projection.
+  // unrelated tasks.
   const critiqueScoreByTask = await loadCritiqueScores(db, taskIds);
 
   // Only rows that may carry a completion comment are read; the helper confirms the parsed shape.

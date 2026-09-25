@@ -477,13 +477,40 @@ jobs:
               "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
           fi
 
+      # Hosted runners occasionally lose name resolution to the artifact
+      # service for a moment right at CreateArtifact (ENOTFOUND). That is
+      # runner infrastructure, not a packaging defect, so the first attempt
+      # tolerates the failure and a single paused retry re-uploads the same
+      # staged directory. A second failure still fails the leg: nothing here
+      # skips or weakens the upload, it only survives one transient outage.
       - name: Upload unsigned validation target
+        id: upload-validation-target
+        continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-desktop-validation-${{ matrix.artifact_group }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
           path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Pause before retrying the unsigned validation target upload
+        if: steps.upload-validation-target.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::First unsigned validation target upload failed; retrying once after a short pause."
+          sleep 30
+
+      - name: Retry unsigned validation target upload after a transient artifact-service failure
+        if: steps.upload-validation-target.outcome == 'failure'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-validation-${{ matrix.artifact_group }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          # The first attempt may have registered the artifact name before the
+          # transfer broke; overwrite lets the retry replace that remnant.
+          overwrite: true
 
       - name: Clean pinned Windows ARM64 WiX binaries
         if: always() && matrix.platform == 'win32' && matrix.arch == 'arm64'

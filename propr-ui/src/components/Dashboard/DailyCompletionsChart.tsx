@@ -13,9 +13,10 @@
  * curve to within a completion or two, and the exact figure is still one hover
  * away.
  *
- * Finished days are history and are drawn in neutral slate. Only the day still
- * in progress takes brand teal, so the eye lands on the day that can still
- * change rather than on a wall of colour reporting last week.
+ * Finished days carry no marker at all: a grey dot on every day was texture,
+ * not information, and the exact figure for any day is one hover away. Only
+ * the day still in progress is marked, in brand teal, so the eye lands on the
+ * day that can still change.
  */
 
 import React from 'react';
@@ -38,24 +39,20 @@ interface DotRenderProps {
   payload?: DailyCompletion;
 }
 
-/**
- * One marker per day, so the line is readable as seven discrete readings
- * rather than as a smooth invention between them. The day still accumulating
- * gets the larger, coloured marker.
- */
+/** A marker on the day still accumulating, and on no other day. */
 const renderDot = (today: string) => (props: unknown) => {
   const { cx, cy, payload } = props as DotRenderProps;
-  if (cx === undefined || cy === undefined || !payload) return <g />;
-  const current = payload.date === today;
+  const fill = payload ? dailyPointFill(payload.date, today) : null;
+  if (cx === undefined || cy === undefined || !payload || !fill) return <g key={payload?.date} />;
   return (
     <circle
       key={payload.date}
       cx={cx}
       cy={cy}
-      r={current ? 3.5 : 2}
-      fill={dailyPointFill(payload.date, today)}
+      r={3.5}
+      fill={fill}
       stroke="#FFFFFF"
-      strokeWidth={current ? 1.5 : 0}
+      strokeWidth={1.5}
     />
   );
 };

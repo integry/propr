@@ -90,22 +90,40 @@ export function useDashboardSection<T>(
 /**
  * Display order that survives live updates.
  *
- * Server order decides where a row first appears; after that a row keeps its
+ * Server order decides where rows first appear; after that a row keeps its
  * position for as long as it exists. Running work changes state constantly, and
  * a list that re-sorted on every update would move the row under the pointer.
+ *
+ * A row that arrives after the first read is not necessarily the newest thing
+ * in the list — a task queued before the running ones only becomes visible when
+ * it starts — so it is placed by `compare`, the server's own ordering, among
+ * the rows already on screen: ahead of the first one it sorts before, and
+ * behind any it ties with. Arrivals keep server order among themselves, which
+ * on the first read is simply the server's list.
  */
-export function useStableOrder<T>(items: T[], getKey: (item: T) => string): T[] {
+export function useStableOrder<T>(
+  items: T[],
+  getKey: (item: T) => string,
+  compare: (a: T, b: T) => number,
+): T[] {
   const orderRef = useRef<string[]>([]);
   return useMemo(() => {
     const byKey = new Map<string, T>();
     for (const item of items) byKey.set(getKey(item), item);
     const retained = orderRef.current.filter(key => byKey.has(key));
     const seen = new Set(retained);
-    const appended = [...byKey.keys()].filter(key => !seen.has(key));
-    const order = [...retained, ...appended];
+    // `before[i]` holds the arrivals placed ahead of `retained[i]`; the last
+    // slot, those placed after every retained row.
+    const before: string[][] = Array.from({ length: retained.length + 1 }, () => []);
+    for (const [key, item] of byKey) {
+      if (seen.has(key)) continue;
+      const at = retained.findIndex(other => compare(item, byKey.get(other) as T) < 0);
+      before[at === -1 ? retained.length : at].push(key);
+    }
+    const order = [...retained.flatMap((key, index) => [...before[index], key]), ...before[retained.length]];
     orderRef.current = order;
     return order.map(key => byKey.get(key) as T);
-  }, [items, getKey]);
+  }, [items, getKey, compare]);
 }
 
 /** Re-renders on an interval so elapsed times stay honest without polling. */
@@ -161,6 +179,18 @@ const CLAUSE_BREAK = /(?:,|;| and | then | while | before | after )\s*/i;
 export function primaryClause(text: string): string {
   const match = CLAUSE_BREAK.exec(text);
   return match ? text.slice(0, match.index).trim() : text;
+}
+
+/**
+ * How long ago an agent last produced output, as a lower-case phrase.
+ *
+ * `just now` and `18 mins ago` answer different questions on a row whose
+ * timer says 26 minutes: the first says the run is alive, the second says it
+ * has gone quiet. Neither is a verdict — a long test run is quiet too.
+ */
+export function lastOutputLabel(at: string): string {
+  const relative = formatRelativeTime(at);
+  return relative.charAt(0).toLowerCase() + relative.slice(1);
 }
 
 /** Precise elapsed time for running work, where minutes and seconds both matter. */

@@ -2,8 +2,8 @@
  * Dashboard read APIs.
  *
  * The dashboard answers four questions — what needs attention, what is
- * running, what just happened, and are things generally going well — from
- * three sources of truth: task state, outcome events and aggregated execution
+ * running, what was completed, and are things generally going well — from
+ * three sources of truth: task state, completion events and aggregated execution
  * data. The first three live here; the historical stats section is served by
  * `getDashboardStats` in `statsRoutes.ts` so there is no fourth parallel stats
  * system.
@@ -17,19 +17,21 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { validatePositiveInteger, validateRepositoryFilter } from './validation.js';
+import { validatePositiveInteger, validateRepositoryFilter, validateStringLength } from './validation.js';
 import {
   phaseLabel,
   RECENT_COMPLETION_WINDOW_HOURS,
   type DashboardTaskRow,
 } from './dashboardQueries.js';
 import { loadDashboardWork } from './dashboardWorkQueries.js';
+import { loadCompletedRows, type CompletedRow } from './dashboardOutcomeQueries.js';
 import {
-  loadOutcomeRows,
-  loadPlanIssueOutcomes,
-  type OutcomeRow,
-  type PlanIssueOutcomeRow,
-} from './dashboardOutcomeQueries.js';
+  EMPTY_LIVE_ACTIVITY,
+  EMPTY_LIVE_DETAILS,
+  summariseLiveActivity,
+  type LiveActivity,
+  type LiveDetailsSnapshot,
+} from './dashboardLiveActivity.js';
 
 /** Running work we will pay for a live-details projection on in one request. */
 const MAX_LIVE_DETAIL_LOOKUPS = 20;
@@ -38,13 +40,18 @@ const WORKER_SET_KEY = 'system:status:workers';
 const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
 const DEFAULT_OUTCOME_LIMIT = 20;
 const MAX_OUTCOME_LIMIT = 100;
+const MAX_OUTCOME_SEARCH_LENGTH = 200;
 
 export interface DashboardRoutesDeps {
   db: Knex;
   redisClient: RedisClientType;
   taskQueue: Pick<Queue, 'isPaused' | 'getActiveCount'>;
-  /** Seam for tests; production resolves the shared live-details projection. */
-  liveDetails?: (taskId: string) => Promise<{ currentTask?: string | null } | null>;
+  /**
+   * Seam for tests; production resolves the shared live-details projection.
+   * Null is a stream that was not read, which is unknown rather than empty; a
+   * stream read and found empty is an empty snapshot.
+   */
+  liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>;
   now?: () => Date;
 }
 
@@ -54,26 +61,40 @@ export interface ActiveItem {
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  /** The task's recorded type (`issue`, `pr-comment`, `review`…), when known. */
+  taskType: string | null;
   title: string | null;
   state: string;
   phase: string | null;
   /** Latest meaningful progress line; null whenever the backend does not know one. */
   progressLine: string | null;
+  /** The agent's latest action, from its most recent tool call; null when unknown. */
+  activity: string | null;
+  /** Position in the agent's own plan; null when it keeps none. */
+  step: { current: number; total: number } | null;
+  /** When the agent last produced output; null when the stream shows none. */
+  lastActivityAt: string | null;
+  /** The stream was read and holds no agent output yet; false when unknown. */
+  awaitingFirstOutput: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+/** One successfully completed run. Failures are attention items, not outcomes. */
 export interface OutcomeItem {
   id: string;
-  kind: 'completed' | 'failed' | 'cancelled' | 'merged' | 'closed';
-  taskId: string | null;
+  taskId: string;
   repository: string;
   issueNumber: number | null;
   prNumber: number | null;
+  taskType: string | null;
   title: string | null;
+  /**
+   * What the run produced — for a review, what it found. Null when nothing
+   * was recorded beyond the fact that it finished.
+   */
   detail: string | null;
-  planIssueStatus: string | null;
-  /** Implementation critique score out of 10; null whenever none was recorded. */
+  /** Review score out of 10. Only reviews are scored; null for everything else. */
   score: number | null;
   occurredAt: string;
 }
@@ -88,41 +109,17 @@ function readRepositoryFilter(req: Request, res: Response): string | null {
   return repository || 'all';
 }
 
-const outcomeKind = (state: string): OutcomeItem['kind'] =>
-  state === 'completed' ? 'completed' : state === 'failed' ? 'failed' : 'cancelled';
-
-/**
- * A merge or a close is recorded after the implementation run already ended,
- * so it is its own outcome rather than a duplicate of that run's completion.
- */
-function toPlanIssueOutcomeItem(row: PlanIssueOutcomeRow): OutcomeItem {
+function toOutcomeItem(row: CompletedRow): OutcomeItem {
   return {
-    id: `plan-issue:${row.id}:${row.status}`,
-    kind: row.status === 'merged' ? 'merged' : 'closed',
+    id: `task:${row.taskId}:completed`,
     taskId: row.taskId,
     repository: row.repository,
     issueNumber: row.issueNumber,
     prNumber: row.prNumber,
+    taskType: row.taskType,
     title: row.title,
-    detail: row.status === 'merged' ? 'Pull request merged' : 'Closed without merging',
-    planIssueStatus: row.status,
-    score: null,
-    occurredAt: row.occurredAt,
-  };
-}
-
-function toOutcomeItem(row: OutcomeRow): OutcomeItem {
-  return {
-    id: `task:${row.taskId}:${row.state}`,
-    kind: outcomeKind(row.state),
-    taskId: row.taskId,
-    repository: row.repository,
-    issueNumber: row.issueNumber,
-    prNumber: row.prNumber,
-    title: row.title,
-    detail: row.reason,
-    planIssueStatus: row.planIssueStatus,
-    score: row.score,
+    detail: row.recap,
+    score: row.reviewScore,
     occurredAt: row.stateTimestamp,
   };
 }
@@ -131,10 +128,12 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   const { db, redisClient, taskQueue } = deps;
   const now = deps.now ?? (() => new Date());
   // Loaded lazily so a dashboard read only reaches the live-details module
-  // (and its provider parsers) when there is running work to project.
-  const liveDetails = deps.liveDetails ?? (async (taskId: string) => {
+  // (and its provider parsers) when there is running work to project. A read
+  // that fails rejects, and one that succeeds but finds no output at all is an
+  // empty stream, so only a stream actually read can be reported as empty.
+  const liveDetails = deps.liveDetails ?? (async (taskId: string): Promise<LiveDetailsSnapshot> => {
     const { projectTaskLiveDetails } = await import('./liveDetailsRoutes.js');
-    return projectTaskLiveDetails(redisClient, db, taskId);
+    return await projectTaskLiveDetails(redisClient, db, taskId, { rethrowReadErrors: true }) ?? EMPTY_LIVE_DETAILS;
   });
 
   /**
@@ -182,30 +181,33 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
   }
 
-  function toActiveItem(row: DashboardTaskRow, progressLine: string | null): ActiveItem {
+  function toActiveItem(row: DashboardTaskRow, live: LiveActivity): ActiveItem {
     return {
       id: `task:${row.taskId}`,
       taskId: row.taskId,
       repository: row.repository,
       issueNumber: row.issueNumber,
       prNumber: row.prNumber,
+      taskType: row.taskType,
       title: row.title,
       state: row.state,
       phase: phaseLabel(row.state),
-      progressLine,
+      progressLine: live.progressLine,
+      activity: live.activity,
+      step: live.step,
+      lastActivityAt: live.lastActivityAt,
+      awaitingFirstOutput: live.awaitingFirstOutput,
       createdAt: row.createdAt,
       updatedAt: row.stateTimestamp,
     };
   }
 
-  async function progressLineFor(taskId: string): Promise<string | null> {
+  async function liveActivityFor(taskId: string): Promise<LiveActivity> {
     try {
-      const live = await liveDetails(taskId);
-      const currentTask = live?.currentTask;
-      return typeof currentTask === 'string' && currentTask.trim() ? currentTask : null;
+      return summariseLiveActivity(await liveDetails(taskId));
     } catch {
-      // An unreadable projection is an unknown progress line, not a failure.
-      return null;
+      // An unreadable projection is unknown progress, not a failure.
+      return EMPTY_LIVE_ACTIVITY;
     }
   }
 
@@ -258,14 +260,14 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
       const work = await timeApiStage('dashboard.active', () =>
         loadDashboardWork(db, repository, { now: now() }));
 
-      const progressLines = new Map<string, string | null>();
+      const liveActivity = new Map<string, LiveActivity>();
       for (const row of work.running.slice(0, MAX_LIVE_DETAIL_LOOKUPS)) {
-        progressLines.set(row.taskId, await progressLineFor(row.taskId));
+        liveActivity.set(row.taskId, await liveActivityFor(row.taskId));
       }
 
-      const running = work.running.map(row => toActiveItem(row, progressLines.get(row.taskId) ?? null));
-      // Queued work has no execution to project a progress line from.
-      const queued = work.queued.map(row => toActiveItem(row, null));
+      const running = work.running.map(row => toActiveItem(row, liveActivity.get(row.taskId) ?? EMPTY_LIVE_ACTIVITY));
+      // Queued work has no execution to project progress from.
+      const queued = work.queued.map(row => toActiveItem(row, EMPTY_LIVE_ACTIVITY));
 
       res.json({
         repository,
@@ -294,18 +296,20 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
     const limit = limitValidation.value || DEFAULT_OUTCOME_LIMIT;
 
+    const searchValidation = validateStringLength(req.query.search, 'Search', { maxLength: MAX_OUTCOME_SEARCH_LENGTH });
+    if (!searchValidation.valid) {
+      res.status(400).json({ error: searchValidation.error });
+      return;
+    }
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
     try {
-      const [taskRows, planIssueRows] = await timeApiStage('dashboard.outcomes', () => Promise.all([
-        loadOutcomeRows(db, repository, { limit }),
-        loadPlanIssueOutcomes(db, repository, { limit }),
-      ]));
-      const items = [...taskRows.map(toOutcomeItem), ...planIssueRows.map(toPlanIssueOutcomeItem)]
-        .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
-        .slice(0, limit);
-      res.json({ repository, limit, items });
+      const rows = await timeApiStage('dashboard.outcomes', () =>
+        loadCompletedRows(db, repository, { limit, search }));
+      res.json({ repository, limit, search, items: rows.map(toOutcomeItem) });
     } catch (error) {
       console.error('Error in /api/dashboard/outcomes:', error);
-      res.status(500).json({ error: 'Failed to fetch recent outcomes' });
+      res.status(500).json({ error: 'Failed to fetch completed work' });
     }
   }
 
