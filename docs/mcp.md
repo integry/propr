@@ -368,6 +368,10 @@ converging the managed `llm-*` labels the repository already defines:
 It never creates a label: an undefined one fails with `MODEL_LABEL_MISSING`, and
 a label list too long to read completely fails with
 `MODEL_LABEL_LOOKUP_INCOMPLETE` rather than claiming the label is absent.
+Concurrent routings of one pull request are serialized; a routing that loses
+that serialization to another before writing fails with
+`MODEL_LABEL_LEASE_LOST` instead of adding a second label. Read the pull
+request labels again before retrying.
 
 `stop_ultrafix` clears the ultrafix circuit breaker by removing the `ultrafix`
 label, so the loop starts no further cycle. It is listed under execute scope,

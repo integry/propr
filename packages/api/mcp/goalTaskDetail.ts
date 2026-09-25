@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { stripGoalAttachmentSection } from '../services/goalAttachmentService.js';
+import { orderByNewest } from './activityDigest.js';
 import { getAgentActivity } from './agentActivity.js';
 import { compactText, summarizeTask } from './listSummaries.js';
 
@@ -100,11 +101,10 @@ function relatedTasks(db: Knex, goal: GoalDetailRow) {
     .leftJoin('task_history as latest_history', 'latest_history.history_id', db.raw('(?)', [latestHistoryId]));
 }
 
-/** The bounded detail rows, newest first, with the current task always among them. */
+/** The bounded pull request source rows, newest first, with the current task always among them. */
 function relatedTaskQuery(db: Knex, goal: GoalDetailRow) {
   return relatedTasks(db, goal)
-    .select('tasks.task_id', 'tasks.pr_number', 'latest_history.state',
-      'latest_history.timestamp as state_timestamp', 'latest_history.reason as state_reason')
+    .select('tasks.task_id', 'tasks.pr_number')
     .orderByRaw('case when tasks.task_id = ? then 0 else 1 end', [goal.current_task_id ?? ''])
     .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').limit(RELATED_TASK_LIMIT);
 }
@@ -123,20 +123,19 @@ async function taskCounts(db: Knex, goal: GoalDetailRow): Promise<Record<string,
   return counts;
 }
 
-function transitionOrder(left: JsonObject, right: JsonObject): number {
-  return (timestampMs(right.at) ?? 0) - (timestampMs(left.at) ?? 0);
-}
-
-function taskProgress(rows: JsonObject[], counts: Record<string, number>): JsonObject {
-  const transitions: JsonObject[] = [];
-  for (const row of rows) {
-    const state = typeof row.state === 'string' ? row.state : 'pending';
-    if ((TERMINAL_TASK_STATES as readonly string[]).includes(state)) {
-      transitions.push({ taskId: row.task_id, state, at: row.state_timestamp ?? null,
-        reason: compactText(row.state_reason, REASON_LIMIT) });
-    }
-  }
-  return { tasks: counts, recentTerminalTransitions: transitions.sort(transitionOrder).slice(0, TRANSITION_LIMIT) };
+/**
+ * The newest terminal transitions across every related task. They are selected by their own
+ * query, ordered by when the task finished, because the bounded detail rows are chosen by task
+ * creation and would drop an old task that failed last.
+ */
+async function recentTerminalTransitions(db: Knex, goal: GoalDetailRow): Promise<JsonObject[]> {
+  const query = relatedTasks(db, goal).whereIn('latest_history.state', [...TERMINAL_TASK_STATES])
+    .select('tasks.task_id', 'latest_history.state', 'latest_history.timestamp as state_timestamp',
+      'latest_history.reason as state_reason');
+  const rows = await orderByNewest(query, 'latest_history.timestamp')
+    .orderBy('latest_history.history_id', 'desc').limit(TRANSITION_LIMIT) as JsonObject[];
+  return rows.map(row => ({ taskId: row.task_id, state: row.state, at: row.state_timestamp ?? null,
+    reason: compactText(row.state_reason, REASON_LIMIT) }));
 }
 
 function goalCheckpoint(goal: GoalDetailRow): JsonObject | null {
@@ -210,13 +209,15 @@ export async function goalDetail(
   markMerged: (repository: string, items: JsonObject[], fields: { number: string; state: string }) => Promise<void>,
   now = Date.now(),
 ): Promise<JsonObject> {
-  const [rows, counts] = await Promise.all([relatedTaskQuery(deps.db, goal) as Promise<JsonObject[]>, taskCounts(deps.db, goal)]);
+  const [rows, counts, transitions] = await Promise.all([relatedTaskQuery(deps.db, goal) as Promise<JsonObject[]>,
+    taskCounts(deps.db, goal), recentTerminalTransitions(deps.db, goal)]);
   const pullRequests = pullRequestReferences(goal, rows);
   await markMerged(goal.repository, pullRequests, { number: 'number', state: 'state' });
   return {
     currentActivity: await currentActivity(deps, { repository: goal.repository, goalId: goal.goal_id }, goal.owner_id),
     progress: {
-      ...taskProgress(rows, counts),
+      tasks: counts,
+      recentTerminalTransitions: transitions,
       startedAt: goal.started_at ?? null,
       elapsedSeconds: elapsedSeconds(goal.started_at ?? goal.created_at, goal.completed_at, now),
       checkpoint: goalCheckpoint(goal),

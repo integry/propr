@@ -11,25 +11,37 @@ export interface CommentFixture { id: number; pullRequest: number; repository: s
 export type Args = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 /**
- * The Redis surface the MCP tools read, plus the SET NX / compare-and-delete
- * pair a per-pull-request lease needs. Leases behave as a single Redis would.
+ * The Redis surface the MCP tools read, plus the SET NX PX / compare-and-delete /
+ * compare-and-pexpire trio a per-pull-request lease needs. Leases behave as a single
+ * Redis would, including expiry; `advance` moves the lease clock forward.
  */
 export function leaseRedis() {
-  const leases = new Map<string, string>();
+  const leases = new Map<string, { token: string; expiresAt: number }>();
+  let clock = 0;
+  const held = (key: string) => {
+    const lease = leases.get(key);
+    if (lease && lease.expiresAt <= clock) leases.delete(key);
+    return leases.get(key);
+  };
   return {
     get: async () => null, sMembers: async () => [],
-    set: async (key: string, value: string, options?: { NX?: boolean }) => {
-      if (options?.NX && leases.has(key)) return null;
-      leases.set(key, value);
+    set: async (key: string, value: string, options?: { NX?: boolean; PX?: number }) => {
+      if (options?.NX && held(key)) return null;
+      leases.set(key, { token: value, expiresAt: options?.PX ? clock + options.PX : Infinity });
       return 'OK';
     },
-    eval: async (_script: string, { keys, arguments: [token] }: { keys: string[]; arguments: string[] }) => {
-      if (leases.get(keys[0]) !== token) return 0;
-      leases.delete(keys[0]);
+    eval: async (script: string, { keys, arguments: [token, ttl] }: { keys: string[]; arguments: string[] }) => {
+      const lease = held(keys[0]);
+      if (lease?.token !== token) return 0;
+      if (script.includes('pexpire')) lease.expiresAt = clock + Number(ttl);
+      else leases.delete(keys[0]);
       return 1;
     },
+    advance: (ms: number) => { clock += ms; },
   };
 }
+
+export type LeaseRedis = ReturnType<typeof leaseRedis>;
 
 interface WriteFixture {
   t: TestContext;
@@ -39,6 +51,23 @@ interface WriteFixture {
   findPullRequest: (repository: string, number: number) => PullRequestFixture;
   restCalls: Array<{ route: string; args: Args }>;
   comments: CommentFixture[];
+  redis: LeaseRedis;
+}
+
+type GitHubRequest = (route: string, args: Args) => Promise<unknown>;
+
+/** Run `hook` once, before the next GitHub request to `route` is answered. */
+function interceptRest(principal: McpPrincipal, route: string, hook: () => Promise<void>): void {
+  const github = principal.github as unknown as { request: GitHubRequest };
+  const next = github.request;
+  let pending = true;
+  github.request = async (called, args) => {
+    if (pending && called === route) {
+      pending = false;
+      await hook();
+    }
+    return next(called, args);
+  };
 }
 
 /**
@@ -47,7 +76,7 @@ interface WriteFixture {
  * state each subtest leaves behind is the state the next one reads.
  */
 export async function verifyPullRequestWrites(
-  { t, call, mutate, principal, findPullRequest, restCalls, comments }: WriteFixture,
+  { t, call, mutate, principal, findPullRequest, restCalls, comments, redis }: WriteFixture,
 ): Promise<void> {
   await t.test('comment_on_pull_request rejects slash commands and enforces the expected head', async () => {
     const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
@@ -184,5 +213,35 @@ export async function verifyPullRequestWrites(
     assert.deepEqual(later.result.removedLabels, [earlier.result.label]);
     assert.deepEqual(earlier.result.removedLabels, []);
     assert.deepEqual(later.result.labels.filter((name: string) => name.startsWith('llm-')), [later.result.label]);
+  });
+  await t.test('a routing whose lease lapsed during label discovery writes no label', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const live = findPullRequest('acme/repo', 42);
+    live.labels = live.labels.filter(name => !name.startsWith('llm-'));
+    let takeover: Args | undefined;
+    // The first routing has read an unlabelled pull request; its discovery then stalls
+    // past the lease TTL, and a second routing acquires, labels and releases meanwhile.
+    interceptRest(principal, 'GET /repos/{owner}/{repo}/labels', async () => {
+      redis.advance(61_000);
+      takeover = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
+    });
+    const stale = await mutate('set_pull_request_model', { ...pull, model: 'claude-opus-5' });
+    assert.equal(takeover?.state, 'completed');
+    assert.equal(takeover?.result.label, 'llm-claude-sonnet-5');
+    assert.equal(stale.state, 'failed');
+    assert.equal(stale.result.error.code, 'MODEL_LABEL_LEASE_LOST');
+    assert.deepEqual(findPullRequest('acme/repo', 42).labels.filter(name => name.startsWith('llm-')), ['llm-claude-sonnet-5']);
+  });
+
+  await t.test('a routing that outlasts one lease TTL renews it and still converges', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    // Each stage stays inside the TTL, but together they exceed it.
+    interceptRest(principal, 'GET /repos/{owner}/{repo}/labels', async () => { redis.advance(50_000); });
+    interceptRest(principal, 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels', async () => { redis.advance(50_000); });
+    interceptRest(principal, 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', async () => { redis.advance(50_000); });
+    const routed = await mutate('set_pull_request_model', { ...pull, model: 'claude-opus-5' });
+    assert.equal(routed.state, 'completed');
+    assert.deepEqual(routed.result.removedLabels, ['llm-claude-sonnet-5']);
+    assert.deepEqual(findPullRequest('acme/repo', 42).labels.filter(name => name.startsWith('llm-')), ['llm-claude-opus-5']);
   });
 }

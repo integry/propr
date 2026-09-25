@@ -375,7 +375,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
-    await verifyPullRequestWrites({ t, call, mutate, principal, findPullRequest, restCalls, comments });
+    await verifyPullRequestWrites({ t, call, mutate, principal, findPullRequest, restCalls, comments, redis: deps.redisClient as never });
 
     await t.test('a repository configured for several base branches is scanned and listed once', async () => {
       await core.saveMonitoredRepos([['acme/repo', 'main'], ['acme/repo', 'release'], ['ACME/Repo', 'hotfix'], ['acme/other', 'main']]

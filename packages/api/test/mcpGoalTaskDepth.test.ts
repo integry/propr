@@ -375,11 +375,17 @@ test('goal progress counts every related task, not just the bounded detail rows'
       await db('task_history').insert(children.slice(start, start + 50)
         .map(taskId => ({ task_id: taskId, state: 'completed', timestamp: '2026-09-01 14:00:00' })));
     }
-    await db('task_history').insert({ task_id: 'goal-child-099', state: 'failed', timestamp: '2026-09-01 14:00:01' });
+    // The oldest child fails after every other child completed. It sits outside the
+    // creation-ordered detail rows, yet it is the newest terminal transition.
+    await db('task_history').insert({ task_id: 'goal-child-000', state: 'failed', timestamp: '2026-09-01 14:00:01',
+      reason: 'Oldest child failed last' });
 
     const detail = await goalDetail({ db, redisClient: {} as RedisClientType }, goal as never, async () => {});
     assert.deepEqual(detail.progress.tasks, { total: 101, active: 1, completed: 99, failed: 1, cancelled: 0 });
     assert.equal(detail.progress.recentTerminalTransitions.length, 5);
+    assert.deepEqual(detail.progress.recentTerminalTransitions[0],
+      { taskId: 'goal-child-000', state: 'failed', at: '2026-09-01 14:00:01', reason: 'Oldest child failed last' });
+    assert.ok(detail.progress.recentTerminalTransitions.slice(1).every((transition: Json) => transition.state === 'completed'));
     // The current task stays inside the bounded detail rows, so its pull request is reported.
     assert.ok(detail.pullRequests.some((pull: Json) => pull.number === 9 && pull.taskId === 'goal-task-running'));
   } finally {
