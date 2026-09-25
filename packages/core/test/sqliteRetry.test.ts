@@ -1178,6 +1178,24 @@ describe('installSqliteRetry', () => {
         assert.deepEqual(pragmas.filter(source => source.startsWith('busy_timeout')), []);
     });
 
+    test('keeps deferred transactions on connections with query_only set', async () => {
+        const db = await createDatabase();
+        installSqliteRetry(db, instantRetries);
+        await db('widgets').insert({ id: 3 });
+
+        // `query_only` forbids writes on a connection to a writable file without
+        // touching the driver's `readonly` flag, and `BEGIN IMMEDIATE` is a
+        // write it rejects with SQLITE_READONLY — which no retry can clear.
+        await db.raw('PRAGMA query_only = ON');
+        statements.length = 0;
+
+        const ids = await db.transaction(trx => trx('widgets').pluck('id'));
+
+        assert.deepEqual(ids, [3]);
+        assert.ok(statements.some(sql => /^BEGIN;?$/i.test(sql)), statements.join('\n'));
+        assert.ok(!statements.some(sql => /^BEGIN IMMEDIATE/i.test(sql)), statements.join('\n'));
+    });
+
     test('leaves transactions the caller drives to the caller', async () => {
         const db = await createDatabase();
         installSqliteRetry(db, instantRetries);

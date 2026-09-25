@@ -480,11 +480,25 @@ type SqliteQueryConnection = {
     pragma?: (source: string, options?: { simple?: boolean }) => unknown;
 };
 
-/** A read-only connection cannot take the write lock `BEGIN IMMEDIATE` asks for. */
+/**
+ * A read-only connection cannot take the write lock `BEGIN IMMEDIATE` asks
+ * for. Read-only is a property of the connection rather than of the file: a
+ * database opened writable is still off limits to writes on a connection with
+ * `PRAGMA query_only` set, and that pragma leaves the driver's `readonly` flag
+ * alone. A deferred `BEGIN` opens a valid read transaction on either kind of
+ * connection, whereas SQLITE_READONLY is not contention and no retry clears it.
+ */
 function isReadonlyConnection(connection: unknown): boolean {
-    return typeof connection === 'object'
-        && connection !== null
-        && (connection as SqliteQueryConnection).readonly === true;
+    if (typeof connection !== 'object' || connection === null) return false;
+    const sqlite = connection as SqliteQueryConnection;
+    if (sqlite.readonly === true) return true;
+    if (typeof sqlite.pragma !== 'function') return false;
+    try {
+        return Number(sqlite.pragma.call(sqlite, 'query_only', { simple: true })) !== 0;
+    } catch {
+        // A driver without the pragma answers for itself when `BEGIN` runs.
+        return false;
+    }
 }
 
 /**
