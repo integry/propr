@@ -128,14 +128,18 @@ test('desktop shows one newest-first list titled by PR, with only System collaps
   const [review, fix, plan] = [articles.nth(0), articles.nth(1), articles.nth(2)];
   await expect(review).toHaveAccessibleName(prTitle);
   await expect(review).toContainText('Review completed');
-  await expect(review.getByTitle('Pull Request #81')).toHaveText('PR81');
-  await expect(review.getByRole('button')).toHaveText(['', '/fix']);
+  await expect(review.getByTitle('Pull request #81')).toHaveText('PR #81');
+  await expect(review.getByRole('img', { name: 'Unread · Score 8/10 · 2 issues' })).toBeVisible();
+  await expect(review.getByRole('button')).toHaveText(['/fix', '']);
   await expect(fix).toContainText('Fix completed');
-  await expect(fix.getByRole('button')).toHaveText(['', '/review', '/ultrafix']);
+  await expect(fix.getByRole('button')).toHaveText(['/review', '/ultrafix', '']);
   await expect(plan).toHaveAccessibleName('Improve Inbox notifications');
   await expect(plan.getByRole('button')).toHaveCount(1);
   for (const article of await articles.all()) {
     await expect(article).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await expect(article).toHaveCSS('border-radius', '0px');
+    // Two-line rows with the commands in the right rail, not a card per item.
+    expect((await article.boundingBox())!.height).toBeLessThanOrEqual(64);
   }
   await capture(page, 'inbox-cards-desktop.png');
 
@@ -148,13 +152,19 @@ test('desktop shows one newest-first list titled by PR, with only System collaps
   await expect(page.getByText('Notification dismissed.')).toHaveCount(0);
 });
 
-test('header keeps only an icon Clear all, and System sits in a grey panel below the feed', async ({ page }) => {
+test('header offers a labelled Clear all with confirmation, and System sits in a grey band below the feed', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await stubInbox(page);
   await page.goto('/inbox');
   await expect(page.getByText('Fixed 2 review findings in 3 files; tests pass.')).toBeVisible();
   await expect(page.getByRole('button', { name: /Refresh/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Clear all' })).toHaveText('');
+  const clearAll = page.getByRole('button', { name: 'Clear all' });
+  await expect(clearAll).toHaveText('Clear all');
+  await clearAll.click();
+  await expect(page.getByRole('dialog', { name: 'Clear all notifications?' })).toBeVisible();
+  await capture(page, 'inbox-clear-all-confirmation-desktop.png');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByText(/in one place/)).toHaveCount(0);
 
   const systemToggle = page.getByRole('button', { name: 'System 1' });

@@ -57,7 +57,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
           type="button"
           disabled={pendingCommand !== null}
           onClick={() => void send(command)}
-          className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 font-mono text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50"
+          className="inline-flex min-h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 font-mono text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50"
           aria-label={`Send ${command} to PR #${followup.prNumber}`}
         >
           {pendingCommand === command

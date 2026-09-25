@@ -11,26 +11,86 @@ export interface NotificationReference {
   title: string;
 }
 
-/** The PR or issue a notification is about, labelled like the task context strip chips. */
+/** The PR or issue a notification is about, labelled like the task list reference chips. */
 export function notificationReference(notification: Notification): NotificationReference | null {
   const { target } = notification;
-  if (target.type === 'review' || target.type === 'pull_request') {
-    return { label: `PR${target.prNumber}`, title: `Pull Request #${target.prNumber}` };
-  }
-  if (target.type !== 'task') return null;
-  if (target.prNumber !== undefined) {
-    return { label: `PR${target.prNumber}`, title: `Pull Request #${target.prNumber}` };
-  }
-  return target.issueNumber === undefined
-    ? null
-    : { label: `#${target.issueNumber}`, title: `Issue #${target.issueNumber}` };
+  const prNumber = target.type === 'review' || target.type === 'pull_request' || target.type === 'task'
+    ? target.prNumber
+    : undefined;
+  if (prNumber !== undefined) return { label: `PR #${prNumber}`, title: `Pull request #${prNumber}` };
+  if (target.type !== 'task' || target.issueNumber === undefined) return null;
+  return { label: `Issue #${target.issueNumber}`, title: `Issue #${target.issueNumber}` };
 }
 
-/** Unread indicator colour: failures red, warnings orange, everything else teal. */
-export function notificationIndicatorClass(notification: Notification): string {
-  if (notification.severity === 'error') return 'bg-red-500';
-  if (notification.severity === 'warning') return 'bg-orange-500';
-  return 'bg-teal-500';
+export interface ReviewOutcome {
+  /** Lowest score across the review's reviewers, when any reported one. */
+  score: number | null;
+  issueCount: number;
+  reviewerFailed: boolean;
+}
+
+/**
+ * Reads the score and finding count from a review recap such as
+ * "Score 6/10 · 2 issues found: …" or "Scores 6/10, 8/10 · 1 issue found".
+ */
+export function notificationReviewOutcome(notification: Notification): ReviewOutcome | null {
+  if (notification.kind !== 'review') return null;
+  const body = notification.body;
+  const scoreText = /\bScores? ((?:\d+(?:\.\d+)?\/10(?:, )?)+)/.exec(body)?.[1] ?? '';
+  const scores = [...scoreText.matchAll(/(\d+(?:\.\d+)?)\/10/g)].map(match => Number(match[1]));
+  const issueCount = Number(/\b(\d+) issues? found\b/.exec(body)?.[1] ?? 0);
+  return {
+    score: scores.length > 0 ? Math.min(...scores) : null,
+    issueCount,
+    reviewerFailed: /\breviewers? failed\b/.test(body),
+  };
+}
+
+export type NotificationStatusShape = 'circle' | 'diamond' | 'square' | 'triangle';
+
+export interface NotificationStatus {
+  shape: NotificationStatusShape;
+  /** Background colour of the status mark. */
+  className: string;
+  label: string;
+}
+
+const STATUS = {
+  failed: { shape: 'triangle', className: 'bg-red-500', label: 'Failed' },
+  attention: { shape: 'square', className: 'bg-amber-500', label: 'Needs attention' },
+  action: { shape: 'circle', className: 'bg-teal-500', label: 'Ready for you' },
+  done: { shape: 'circle', className: 'bg-slate-400', label: 'Completed' },
+} as const satisfies Record<string, NotificationStatus>;
+
+/**
+ * Review marks follow the quality shapes from the design guidelines: 9-10 teal
+ * circle, 7-8 slate diamond, 5-6 amber square, 0-4 red triangle. Any finding
+ * or failed reviewer is at least amber, because a human has to act on it.
+ */
+function reviewStatus(outcome: ReviewOutcome): NotificationStatus {
+  const { score, issueCount, reviewerFailed } = outcome;
+  const scoreLabel = score === null ? 'Review' : `Score ${score}/10`;
+  const issues = issueCount > 0 ? ` · ${issueCount} ${issueCount === 1 ? 'issue' : 'issues'}` : '';
+  const label = `${scoreLabel}${issues}${reviewerFailed ? ' · reviewer failed' : ''}`;
+  if (score !== null && score <= 4) return { ...STATUS.failed, label };
+  if ((score !== null && score <= 6) || issueCount > 0 || reviewerFailed) return { ...STATUS.attention, label };
+  if (score !== null && score <= 8) return { shape: 'diamond', className: 'bg-slate-500', label };
+  return score === null ? { ...STATUS.done, label } : { ...STATUS.action, label };
+}
+
+/**
+ * Status mark for a notification. Colour is kept for what needs a human:
+ * failures red, blockers amber, work waiting on the user teal. Finished runs
+ * (merges, fixes, completed tasks) stay quiet grey.
+ */
+export function notificationStatus(notification: Notification): NotificationStatus {
+  if (notification.severity === 'error') return STATUS.failed;
+  if (notification.severity === 'warning') return STATUS.attention;
+  const review = notificationReviewOutcome(notification);
+  if (review) return reviewStatus(review);
+  if (notification.kind === 'plan') return STATUS.action;
+  if (notification.kind === 'pull_request' && notification.metadata?.completionType === undefined) return STATUS.action;
+  return STATUS.done;
 }
 
 export function notificationKindLabel(notification: Notification): string {

@@ -4,10 +4,11 @@ import {
   isSystemNotification,
   mergeNotifications,
   notificationHref,
-  notificationIndicatorClass,
   notificationKindLabel,
   notificationPullRequestUrl,
   notificationReference,
+  notificationReviewOutcome,
+  notificationStatus,
 } from './inboxUtils';
 
 function item(overrides: Record<string, unknown>): Notification {
@@ -49,26 +50,52 @@ describe('Inbox notification presentation', () => {
     expect(notifications.map(isSystemNotification)).toEqual([false, false, false, false, true, true]);
   });
 
-  test('colours the unread indicator by severity', () => {
-    expect(notificationIndicatorClass(item({
+  test('keeps colour for what needs a human and quiets finished runs', () => {
+    const colour = (overrides: Record<string, unknown>) => notificationStatus(item(overrides)).className;
+    expect(colour({
       kind: 'system_failure', severity: 'error', target: { type: 'system_failure', component: 'redis' },
-    }))).toBe('bg-red-500');
-    expect(notificationIndicatorClass(item({ severity: 'warning' }))).toBe('bg-orange-500');
-    expect(notificationIndicatorClass(item({
-      kind: 'review', severity: 'success', target: { type: 'review', repository: 'i/p', prNumber: 81 },
-    }))).toBe('bg-teal-500');
+    })).toBe('bg-red-500');
+    expect(colour({ severity: 'warning' })).toBe('bg-amber-500');
+    expect(colour({ severity: 'success' })).toBe('bg-slate-400');
+    expect(colour({ kind: 'plan', severity: 'info', target: { type: 'plan', repository: 'i/p', draftId: 'd1' } }))
+      .toBe('bg-teal-500');
+    const pullRequest = { kind: 'pull_request', severity: 'info', target: { type: 'pull_request', repository: 'i/p', prNumber: 2 } };
+    expect(colour(pullRequest)).toBe('bg-teal-500');
+    expect(colour({ ...pullRequest, metadata: { completionType: 'merge' } })).toBe('bg-slate-400');
+    expect(colour({ ...pullRequest, metadata: { completionType: 'fix' } })).toBe('bg-slate-400');
+  });
+
+  test('marks reviews by score and findings instead of calling every review green', () => {
+    const review = (body: string) => item({
+      kind: 'review', severity: 'success', body, target: { type: 'review', repository: 'i/p', prNumber: 81 },
+    });
+    const status = (body: string) => {
+      const { shape, className, label } = notificationStatus(review(body));
+      return { shape, className, label };
+    };
+    expect(notificationReviewOutcome(review('Scores 6/10, 8/10 · 3 issues found: A; B · 1 reviewer failed')))
+      .toEqual({ score: 6, issueCount: 3, reviewerFailed: true });
+    expect(status('Score 6/10 · 2 issues found: Check the head')).toEqual({
+      shape: 'square', className: 'bg-amber-500', label: 'Score 6/10 · 2 issues',
+    });
+    expect(status('Score 3/10 · 4 issues found')).toMatchObject({ shape: 'triangle', className: 'bg-red-500' });
+    expect(status('Score 8/10 · 1 issue found: Guard metadata')).toMatchObject({ className: 'bg-amber-500' });
+    expect(status('Score 8/10 · 0 issues found')).toMatchObject({ shape: 'diamond', className: 'bg-slate-500' });
+    expect(status('Score 10/10 · 0 issues found')).toMatchObject({ shape: 'circle', className: 'bg-teal-500' });
+    expect(status('Review of PR #81 completed; open details for the full findings.'))
+      .toMatchObject({ className: 'bg-slate-400' });
   });
 
   test('keeps the PR or issue number visible as a reference chip', () => {
     expect(notificationReference(item({
       kind: 'review', severity: 'success', target: { type: 'review', repository: 'i/p', prNumber: 81 },
-    }))).toEqual({ label: 'PR81', title: 'Pull Request #81' });
+    }))).toEqual({ label: 'PR #81', title: 'Pull request #81' });
     expect(notificationReference(item({
       target: { type: 'task', repository: 'i/p', taskId: 't', issueNumber: 12, prNumber: 42 },
-    }))).toEqual({ label: 'PR42', title: 'Pull Request #42' });
+    }))).toEqual({ label: 'PR #42', title: 'Pull request #42' });
     expect(notificationReference(item({
       target: { type: 'task', repository: 'i/p', taskId: 't', issueNumber: 12 },
-    }))).toEqual({ label: '#12', title: 'Issue #12' });
+    }))).toEqual({ label: 'Issue #12', title: 'Issue #12' });
     expect(notificationReference(item({
       kind: 'plan', target: { type: 'plan', repository: 'i/p', draftId: 'd1' },
     }))).toBeNull();

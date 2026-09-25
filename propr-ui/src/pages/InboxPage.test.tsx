@@ -136,8 +136,8 @@ describe('Inbox page', () => {
     ]);
     const reviewCard = screen.getByRole('article', { name: 'Add swipe dismissal' });
     expect(reviewCard).toHaveTextContent('Review completed');
-    expect(screen.getByTitle('Pull Request #81')).toHaveTextContent('PR81');
-    expect(screen.getByTitle('Issue #12')).toHaveTextContent('#12');
+    expect(screen.getByTitle('Pull request #81')).toHaveTextContent('PR #81');
+    expect(screen.getByTitle('Issue #12')).toHaveTextContent('Issue #12');
     for (const article of screen.getAllByRole('article')) {
       expect(article.className).toContain('bg-white');
       expect(article.className).not.toMatch(/bg-(teal|red|amber|emerald)-/);
@@ -342,14 +342,22 @@ describe('Inbox page', () => {
     });
     const clearRequest = deferred<Awaited<ReturnType<typeof dismissAllNotifications>>>();
     vi.mocked(dismissAllNotifications).mockReturnValue(clearRequest.promise);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     renderInbox();
 
     const clearAll = await screen.findByRole('button', { name: 'Clear all' });
     fireEvent.click(clearAll);
+    expect(screen.getByRole('dialog', { name: 'Clear all notifications?' })).toHaveTextContent(/including ones not loaded yet/);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(dismissAllNotifications).not.toHaveBeenCalled();
 
     fireEvent.click(clearAll);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(dismissAllNotifications).not.toHaveBeenCalled();
+
+    fireEvent.click(clearAll);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Inbox' }));
     expect(dismissAllNotifications).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(clearAll).toBeDisabled());
     await act(async () => clearRequest.resolve({ unreadCount: 0 }));
@@ -359,7 +367,6 @@ describe('Inbox page', () => {
     expect(screen.getByText('All notifications cleared.')).toBeInTheDocument();
     expect(commitUnreadCount).toHaveBeenCalledWith(0);
     expect(refreshUnreadCount).toHaveBeenCalledTimes(1);
-    confirm.mockRestore();
   });
 
   test('keeps notifications visible when clearing the Inbox fails', async () => {
@@ -368,15 +375,14 @@ describe('Inbox page', () => {
       notifications: [notification], unreadCount: 1, nextCursor: null,
     });
     vi.mocked(dismissAllNotifications).mockRejectedValue(new Error('Network unavailable'));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderInbox();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Clear all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Inbox' }));
 
     expect(await screen.findByText(/Couldn't clear the Inbox.*Network unavailable/)).toBeInTheDocument();
     expect(screen.getByText('Task remains visible')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
-    confirm.mockRestore();
   });
 
   test('marks an unread card read while following its deep link', async () => {
@@ -513,7 +519,7 @@ describe('Inbox page', () => {
     await waitFor(() => expect(markNotificationRead).toHaveBeenCalledWith('event-read-race'));
     await act(async () => staleRefresh.resolve({ notifications: [notification], unreadCount: 9, nextCursor: null }));
 
-    await waitFor(() => expect(screen.queryByRole('img', { name: 'Unread' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('img', { name: /^Unread/ })).not.toBeInTheDocument());
     expect(commitUnreadCount).not.toHaveBeenCalledWith(9);
   });
 
@@ -530,7 +536,7 @@ describe('Inbox page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
     await screen.findByText('Older page item');
     expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear all' })).not.toHaveTextContent(/\S/);
+    expect(screen.getByRole('button', { name: 'Clear all' })).toHaveTextContent('Clear all');
     expect(screen.queryByText(/in one place/)).not.toBeInTheDocument();
 
     fireEvent.focus(window);
