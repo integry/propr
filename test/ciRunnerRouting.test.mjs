@@ -533,6 +533,7 @@ describe('PR check routing', () => {
         assert.deepEqual(units, [
             'apps/desktop/scripts/electron-frame-semantics.test.mjs',
             'apps/desktop/scripts/electron-pairing-zstd.test.mjs',
+            'apps/desktop/scripts/published-preview-electron.test.mjs',
         ]);
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
