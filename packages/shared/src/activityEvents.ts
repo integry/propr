@@ -98,14 +98,16 @@ export interface ActivityUpdatePayload {
  * the goal is over either way, and the cleanup that follows is not a state a
  * client can act on.
  */
-export type GoalActivityState =
-  | 'queued'
-  | 'running'
-  | 'paused'
-  | 'blocked'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+export const GOAL_ACTIVITY_STATES = [
+  'queued',
+  'running',
+  'paused',
+  'blocked',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+export type GoalActivityState = (typeof GOAL_ACTIVITY_STATES)[number];
 
 export interface GoalUpdatePayload {
   eventType: typeof GOAL_UPDATE;
@@ -123,7 +125,8 @@ export interface GoalUpdatePayload {
   revision?: number;
 }
 
-export type NotificationChange = 'created' | 'read' | 'dismissed' | 'dismissed_all';
+export const NOTIFICATION_CHANGES = ['created', 'read', 'dismissed', 'dismissed_all'] as const;
+export type NotificationChange = (typeof NOTIFICATION_CHANGES)[number];
 
 export interface NotificationUpdatePayload {
   eventType: typeof NOTIFICATION_UPDATE;
@@ -150,9 +153,13 @@ export interface NotificationUpdatePayload {
  * places to keep authorized. The client re-reads on the event, so the timer
  * still goes away.
  */
+/** The capacity readings that can trigger a usage refresh. Additive. */
+export const USAGE_SOURCES = ['agent-tank'] as const;
+export type UsageSource = (typeof USAGE_SOURCES)[number];
+
 export interface UsageUpdatePayload {
   eventType: typeof USAGE_UPDATE;
-  source: 'agent-tank';
+  source: UsageSource;
   occurredAt: string;
 }
 
@@ -161,15 +168,92 @@ export function isActivityTimestamp(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
+/** A required identifier. An empty string addresses no record, so it is not one. */
+const isIdentifier = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+/** `owner/repo` when the change is repository-scoped, else an explicit null. */
+const isRepositoryScope = (value: unknown): value is string | null =>
+  value === null || isIdentifier(value);
+
+/**
+ * An absent revision is legitimate - most domains have no counter - but a
+ * present one is compared against the last revision a consumer acted on, so
+ * anything that is not a whole non-negative number would make that comparison
+ * silently meaningless.
+ */
+const isOptionalRevision = (value: unknown): boolean =>
+  value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+
+const isMember = (values: readonly string[], value: unknown): boolean =>
+  typeof value === 'string' && values.includes(value);
+
+/**
+ * Validate at the trust boundary: these frames are decoded from Redis and
+ * re-emitted to browsers, so a malformed publish must be dropped rather than
+ * forwarded and crash a consumer's switch statement.
+ */
 export function isActivityUpdatePayload(value: unknown): value is ActivityUpdatePayload {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<ActivityUpdatePayload>;
-  // Validate at the trust boundary: these frames are decoded from Redis and
-  // re-emitted to browsers, so a malformed publish must be dropped rather than
-  // forwarded and crash a consumer's switch statement.
-  return candidate.eventType === ACTIVITY_UPDATE
-    && typeof candidate.entityId === 'string'
-    && isActivityTimestamp(candidate.occurredAt)
-    && (ACTIVITY_DOMAINS as readonly string[]).includes(candidate.domain as string)
-    && (ACTIVITY_CHANGES as readonly string[]).includes(candidate.change as string);
+  if (candidate.eventType !== ACTIVITY_UPDATE) return false;
+  if (!isIdentifier(candidate.entityId)) return false;
+  if (!isActivityTimestamp(candidate.occurredAt)) return false;
+  if (!isMember(ACTIVITY_DOMAINS, candidate.domain)) return false;
+  if (!isMember(ACTIVITY_CHANGES, candidate.change)) return false;
+  // A repository a consumer cannot filter on - a number, an object, a missing
+  // key - is worse than no repository: the dashboard would compare it against
+  // its selected repo and silently keep or drop the wrong frames.
+  if (!isRepositoryScope(candidate.repository)) return false;
+  if (!isOptionalRevision(candidate.revision)) return false;
+  // `terminal` is precomputed so consumers do not re-derive it. A flag that
+  // disagrees with its own change means producer and consumer would read the
+  // same event differently, which is malformed rather than merely redundant.
+  return candidate.terminal === isTerminalActivityChange(candidate.change as ActivityChange);
+}
+
+/**
+ * The producer guards below exist for the same reason as the one above: the
+ * goal, notification and usage frames are decoded from Redis and forwarded to
+ * browsers unchanged, so each one is validated whole - identifiers, enum
+ * values, repository scope, revision - before either it or anything derived
+ * from it is emitted.
+ */
+export function isGoalUpdatePayload(value: unknown): value is GoalUpdatePayload {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<GoalUpdatePayload>;
+  if (candidate.eventType !== GOAL_UPDATE) return false;
+  if (!isIdentifier(candidate.goalId)) return false;
+  // A goal is always repository-scoped, unlike the generic envelope.
+  if (!isIdentifier(candidate.repository)) return false;
+  if (!isMember(GOAL_ACTIVITY_STATES, candidate.state)) return false;
+  if (!(candidate.currentTaskId === undefined
+    || candidate.currentTaskId === null
+    || isIdentifier(candidate.currentTaskId))) return false;
+  if (!isOptionalRevision(candidate.revision)) return false;
+  return isActivityTimestamp(candidate.occurredAt);
+}
+
+export function isNotificationUpdatePayload(value: unknown): value is NotificationUpdatePayload {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<NotificationUpdatePayload>;
+  if (candidate.eventType !== NOTIFICATION_UPDATE) return false;
+  if (!isMember(NOTIFICATION_CHANGES, candidate.change)) return false;
+  // `dismissed_all` is the one bulk change with no subject; every other change
+  // names the event it happened to, and a consumer keyed by that id cannot
+  // reconcile a frame that omits it.
+  if (candidate.change === 'dismissed_all'
+    ? candidate.eventId !== null
+    : !isIdentifier(candidate.eventId)) return false;
+  if (!Array.isArray(candidate.recipientIds)) return false;
+  if (!isRepositoryScope(candidate.repository)) return false;
+  return isActivityTimestamp(candidate.occurredAt);
+}
+
+export function isUsageUpdatePayload(value: unknown): value is UsageUpdatePayload {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<UsageUpdatePayload>;
+  return candidate.eventType === USAGE_UPDATE
+    && isMember(USAGE_SOURCES, candidate.source)
+    && isActivityTimestamp(candidate.occurredAt);
 }

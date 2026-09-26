@@ -288,6 +288,46 @@ describe('activity broadcast derivation', () => {
     for (const warning of warnings) assert.match(warning, /occurredAt/);
   });
 
+  test('a malformed producer frame emits nothing at all, not even its own event', () => {
+    const malformed: Array<[string, unknown]> = [
+      // A repository the dashboard cannot filter on, on both frames.
+      ['goal repository', { ...goalPayload, repository: 42 }],
+      ['goal without an id', { ...goalPayload, goalId: undefined }],
+      ['goal in an unknown state', { ...goalPayload, state: 'finished' }],
+      ['goal with a non-numeric revision', { ...goalPayload, revision: 'next' }],
+      ['notification change', { ...notificationPayload, change: 'archived' }],
+      ['notification without a subject', { ...notificationPayload, eventId: null }],
+      ['notification recipient list', { ...notificationPayload, recipientIds: 'user-a' }],
+      ['notification repository', { ...notificationPayload, repository: 42 }],
+      ['usage source', { ...usagePayload, source: 'guesswork' }],
+    ];
+
+    for (const [label, payload] of malformed) {
+      const { frames, warnings, io, log } = recorder();
+      const broadcaster = new ActivityBroadcaster(io, log);
+      broadcaster.goalUpdated(payload);
+      broadcaster.notificationUpdated(payload);
+      broadcaster.usageUpdated(payload);
+
+      assert.deepEqual(frames, [], `${label} reached a browser`);
+      assert.equal(warnings.length, 3, `${label} was dropped without being reported`);
+    }
+  });
+
+  test('a task whose repository is not a repository derives no envelope', () => {
+    const { frames, warnings, io, log } = recorder();
+    new ActivityBroadcaster(io, log).taskUpdated({
+      eventType: TASK_UPDATE,
+      taskId: 'task-1',
+      state: 'completed',
+      repository: 42 as unknown as string,
+      timestamp: '2026-09-26T10:08:00.000Z',
+    });
+
+    assert.deepEqual(frames, []);
+    assert.equal(warnings.length, 1);
+  });
+
   test('a malformed recipient list delivers to nobody rather than crashing', () => {
     const { frames, io, log } = recorder();
     new ActivityBroadcaster(io, log).notificationUpdated({

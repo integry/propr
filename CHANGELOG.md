@@ -36,8 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded too — one timeout pauses publishing briefly instead of being charged
   again per event, and a notification cleanup stops announcing once its flush
   budget is spent — so closing a hundred notifications cannot cost a hundred
-  timeouts. No client change is required by this step: with nothing subscribed,
-  behaviour is unchanged.
+  timeouts. Every frame decoded from Redis is validated against its whole
+  published contract — identifiers, states, repository scope, revisions and the
+  precomputed `terminal` flag — before the producer event or the activity
+  envelope derived from it is emitted, so a malformed publish is dropped and
+  reported instead of reaching a browser. No client change is required by this
+  step: with nothing subscribed, behaviour is unchanged.
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,

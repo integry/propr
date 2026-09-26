@@ -5,7 +5,10 @@ import {
   USAGE_UPDATE,
   isActivityTimestamp,
   isActivityUpdatePayload,
+  isGoalUpdatePayload,
+  isNotificationUpdatePayload,
   isTerminalActivityChange,
+  isUsageUpdatePayload,
   type ActivityChange,
   type ActivityUpdatePayload,
   type DraftUpdatePayload,
@@ -182,11 +185,31 @@ export class ActivityBroadcaster {
     this.io.to(room).emit(ACTIVITY_UPDATE, payload);
   }
 
-  /** A producer frame without a usable timestamp cannot be ordered, so it is dropped. */
-  private isTimestamped(payload: { occurredAt: unknown }, event: string): boolean {
-    if (isActivityTimestamp(payload.occurredAt)) return true;
-    this.log.warn(`[activity] Dropped ${event} frame without a parseable occurredAt`);
-    return false;
+  /**
+   * Accept a producer frame only if it satisfies its whole published contract.
+   *
+   * The Redis decode hands `handleEvent` an untyped object that a cast claims
+   * is a payload, so this is the only place the claim is checked. A frame that
+   * fails here is dropped before either the producer's own event or anything
+   * derived from it reaches a browser: forwarding half a contract is what turns
+   * one bad publish into a consumer reading `undefined.state`.
+   */
+  private accepts<T>(
+    payload: unknown,
+    guard: (value: unknown) => value is T,
+    event: string,
+  ): payload is T {
+    // Reported separately because an unorderable frame is the failure an
+    // operator is most likely to see from a clock or serialization bug.
+    if (!isActivityTimestamp((payload as { occurredAt?: unknown } | null)?.occurredAt)) {
+      this.log.warn(`[activity] Dropped ${event} frame without a parseable occurredAt`);
+      return false;
+    }
+    if (!guard(payload)) {
+      this.log.warn(`[activity] Dropped malformed ${event} frame`);
+      return false;
+    }
+    return true;
   }
 
   /** Derive activity from a task update that has already passed its ordering gate. */
@@ -210,8 +233,8 @@ export class ActivityBroadcaster {
    * the dashboard and a summary widget want. Both describe the same transition;
    * exactly one of each is emitted per published transition.
    */
-  goalUpdated(payload: GoalUpdatePayload): void {
-    if (!this.isTimestamped(payload, GOAL_UPDATE)) return;
+  goalUpdated(payload: unknown): void {
+    if (!this.accepts(payload, isGoalUpdatePayload, GOAL_UPDATE)) return;
     this.io.to(ACTIVITY_ROOM).emit(GOAL_UPDATE, payload);
     this.emitActivity(activityFromGoal(payload));
   }
@@ -230,12 +253,14 @@ export class ActivityBroadcaster {
    * someone else. A notification is the one activity domain whose audience is
    * its recipients, so that is the only audience its activity has.
    */
-  notificationUpdated(payload: NotificationUpdatePayload): void {
-    if (!this.isTimestamped(payload, NOTIFICATION_UPDATE)) return;
+  notificationUpdated(payload: unknown): void {
+    if (!this.accepts(payload, isNotificationUpdatePayload, NOTIFICATION_UPDATE)) return;
     const { recipientIds, ...forClient } = payload;
-    const recipients = Array.isArray(recipientIds)
-      ? recipientIds.filter((userId): userId is string => typeof userId === 'string' && userId !== '')
-      : [];
+    // The list is an array by now, but a single unusable entry addresses no
+    // room and must not cost the other recipients their frame.
+    const recipients = recipientIds.filter(
+      (userId): userId is string => typeof userId === 'string' && userId !== '',
+    );
     const envelope = activityFromNotification(payload);
     for (const userId of new Set(recipients)) {
       this.io.to(userRoom(userId)).emit(NOTIFICATION_UPDATE, {
@@ -253,8 +278,8 @@ export class ActivityBroadcaster {
    * than a unit of work, and a summary consumer regenerating on it would be
    * reacting to nothing having happened.
    */
-  usageUpdated(payload: UsageUpdatePayload): void {
-    if (!this.isTimestamped(payload, USAGE_UPDATE)) return;
+  usageUpdated(payload: unknown): void {
+    if (!this.accepts(payload, isUsageUpdatePayload, USAGE_UPDATE)) return;
     this.io.to(ACTIVITY_ROOM).emit(USAGE_UPDATE, payload);
   }
 }

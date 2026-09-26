@@ -56,9 +56,15 @@ export {
   USAGE_UPDATE,
   ACTIVITY_DOMAINS,
   ACTIVITY_CHANGES,
+  GOAL_ACTIVITY_STATES,
+  NOTIFICATION_CHANGES,
+  USAGE_SOURCES,
   isActivityTimestamp,
   isActivityUpdatePayload,
+  isGoalUpdatePayload,
+  isNotificationUpdatePayload,
   isTerminalActivityChange,
+  isUsageUpdatePayload,
   type ActivityChange,
   type ActivityDomain,
   type ActivityUpdatePayload,
@@ -66,6 +72,7 @@ export {
   type GoalUpdatePayload,
   type NotificationChange,
   type NotificationUpdatePayload,
+  type UsageSource,
   type UsageUpdatePayload,
 } from './activityEvents.js';
 

@@ -20,10 +20,7 @@ import {
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
-  type QueueStatsUpdatePayload,
-  type GoalUpdatePayload,
-  type NotificationUpdatePayload,
-  type UsageUpdatePayload
+  type QueueStatsUpdatePayload
 } from '@propr/shared';
 import { ActivityBroadcaster } from './activityBroadcast.js';
 import { QueueBroadcaster } from './queueBroadcaster.js';
@@ -253,14 +250,17 @@ export class SocketService {
       case QUEUE_STATS_UPDATE:
         this.handleQueueStatsUpdate(payload as QueueStatsUpdatePayload);
         break;
+      // Passed unvalidated: the broadcaster checks each producer contract at
+      // runtime, so a cast here would only hide that the decoded Redis message
+      // has not been proven to be one of these payloads yet.
       case GOAL_UPDATE:
-        this.activity.goalUpdated(payload as GoalUpdatePayload);
+        this.activity.goalUpdated(payload);
         break;
       case NOTIFICATION_UPDATE:
-        this.activity.notificationUpdated(payload as NotificationUpdatePayload);
+        this.activity.notificationUpdated(payload);
         break;
       case USAGE_UPDATE:
-        this.activity.usageUpdated(payload as UsageUpdatePayload);
+        this.activity.usageUpdated(payload);
         break;
       default:
         console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
