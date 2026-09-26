@@ -35,9 +35,9 @@ await mock.module('../src/jobs/prCommentJobUtils.js', {
 const renderCalls: Array<Record<string, unknown>> = [];
 await mock.module('../src/jobs/reviewFindingNumberAllocator.js', {
     namedExports: {
-        buildReviewCommentWithReservedFindingRange: mock.fn(async (_assignment: unknown, _result: unknown, _url: unknown, options: Record<string, unknown>) => {
+        buildReviewCommentWithReservedRecordRanges: mock.fn(async (_assignment: unknown, _result: unknown, _url: unknown, options: Record<string, unknown>) => {
             renderCalls.push(options);
-            return { reviewCommentBody: 'review body', findingCount: 0 };
+            return { reviewCommentBody: 'review body', findingCount: 0, suggestionCount: 0 };
         }),
     },
 });
@@ -81,7 +81,7 @@ function createContext(agents: Record<string, { type: string }>, prompts: Map<st
         combinedCommentBody: '/review', commentHistory: '', originalTaskSpec: 'Original objective',
         preparedDiff: preparePRDiff(largeDiffFiles(), 4000000),
         tokenStats: new ReviewTokenStatsCache(),
-        changedFilePaths: [], findingStartNumber: 1, redisClient: {},
+        changedFilePaths: [], findingStartNumber: 1, suggestionStartNumber: 1, redisClient: {},
         fileContents: '', relatedContext: '', checkSummary: '', hasCurrentCheckFailure: false,
         reviewPromptOverride: '',
         reviewBudgetSettings: { percent: 100, legacyMaxContextTokens: 0 },

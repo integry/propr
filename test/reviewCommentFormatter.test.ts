@@ -1,8 +1,10 @@
 import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
-const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
-const { getNextActionableFindingNumber, parseStructuredReview } = await import('../src/jobs/reviewOutputParser.js');
+const { buildReviewComment, getNextAuthenticatedReviewRecordNumbers } = await import('../src/jobs/reviewCommentFormatter.js');
+const {
+    getNextActionableFindingNumber, getNextReviewSuggestionNumber, parseStructuredReview,
+} = await import('../src/jobs/reviewOutputParser.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -153,6 +155,126 @@ describe('buildReviewComment', () => {
         const parsed = parseStructuredReview(formatted);
         assert.deepStrictEqual(parsed.actionableFindings.map(finding => finding.id), ['F3', 'F4']);
         assert.strictEqual(getNextActionableFindingNumber([formatted]), 5);
+    });
+
+    test('assigns consecutive PR-wide suggestion IDs on a sequence of their own', () => {
+        const response = [
+            '## Overall Evaluation',
+            'One correction and two optional follow-ups remain.',
+            '## Actionable Findings',
+            '### F1: Local finding',
+            '- **violatedRequirement:** The changed behavior must remain correct.',
+            '- **evidence:** src/first.ts:10 — the changed branch returns the wrong value.',
+            '- **introducedByPR:** true — the PR added the branch.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Return the expected value.',
+            '## Suggestions and Follow-ups',
+            '### S1: First local suggestion',
+            'Optional hardening of the new boundary.',
+            '### S2: Second local suggestion',
+            'Optional performance coverage.',
+            '## Score',
+            'Score: 5/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            {
+                firstFindingNumber: 9,
+                firstSuggestionNumber: 4,
+                changedFilePaths: ['src/first.ts'],
+            },
+        );
+
+        assert.ok(formatted.includes('### F9: 🔴 Local finding'));
+        assert.ok(formatted.includes('### S4: 🟢 First local suggestion'));
+        assert.ok(formatted.includes('### S5: 🟢 Second local suggestion'));
+        assert.ok(!formatted.includes('### S1:'));
+        const parsed = parseStructuredReview(formatted);
+        assert.strictEqual(parsed.status, 'valid_with_blockers');
+        assert.deepStrictEqual(parsed.suggestions.map(suggestion => suggestion.id), ['S4', 'S5']);
+        assert.strictEqual(parsed.suggestions[0].description, 'Optional hardening of the new boundary.');
+        // Each kind continues its own sequence: one blocker does not consume an S#.
+        assert.strictEqual(getNextActionableFindingNumber([formatted]), 10);
+        assert.strictEqual(getNextReviewSuggestionNumber([formatted]), 6);
+    });
+
+    test('continues the suggestion sequence on a review with no merge blocker', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Ready to merge, with one optional follow-up.',
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            '### S1: Cover the fallback path',
+            'Optional integration coverage.',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            { firstSuggestionNumber: 8 },
+        );
+
+        assert.ok(formatted.includes('### S8: 🟢 Cover the fallback path'));
+        const parsed = parseStructuredReview(formatted);
+        assert.strictEqual(parsed.status, 'valid_clean');
+        assert.deepStrictEqual(parsed.suggestions.map(suggestion => suggestion.id), ['S8']);
+        // A clean review leaves the F# sequence alone and advances only S#.
+        assert.strictEqual(getNextActionableFindingNumber([formatted]), 1);
+        assert.strictEqual(getNextReviewSuggestionNumber([formatted]), 9);
+    });
+
+    test('seeds the next F# and S# from published ProPR reviews only', () => {
+        const publish = (firstFindingNumber: number, firstSuggestionNumber: number): string => buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response: [
+                    '## Overall Evaluation',
+                    'One optional follow-up remains.',
+                    '## Actionable Findings',
+                    '### F1: Local finding',
+                    '- **violatedRequirement:** The changed behavior must remain correct.',
+                    '- **evidence:** src/first.ts:10 — the changed branch returns the wrong value.',
+                    '- **introducedByPR:** true — the PR added the branch.',
+                    '- **requiredForMerge:** true',
+                    '- **minimumCorrection:** Return the expected value.',
+                    '## Suggestions and Follow-ups',
+                    '### S1: Local suggestion',
+                    'Optional hardening of the new boundary.',
+                    '## Score',
+                    'Score: 5/10',
+                ].join('\n'),
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+            undefined,
+            { firstFindingNumber, firstSuggestionNumber, changedFilePaths: ['src/first.ts'] },
+        );
+
+        const comments = [
+            { body: publish(1, 1), user: { login: 'propr-dev[bot]' } },
+            { body: publish(2, 2), user: { login: 'PROPR-DEV[bot]' } },
+            // A quoted review from another author must not advance either sequence.
+            { body: publish(50, 50), user: { login: 'someone-else' } },
+            { body: 'An ordinary human comment mentioning F80 and S80.', user: { login: 'propr-dev[bot]' } },
+        ];
+
+        assert.deepStrictEqual(
+            getNextAuthenticatedReviewRecordNumbers(comments, 'ProPR-Dev[bot]'),
+            { firstFindingNumber: 3, firstSuggestionNumber: 3 },
+        );
+        // Without a verified identity no published ID may seed either sequence.
+        assert.deepStrictEqual(
+            getNextAuthenticatedReviewRecordNumbers(comments, undefined),
+            { firstFindingNumber: 1, firstSuggestionNumber: 1 },
+        );
     });
 
     test('rejects blocker output whose evidence cites only unchanged files', () => {

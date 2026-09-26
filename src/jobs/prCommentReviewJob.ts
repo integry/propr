@@ -10,7 +10,7 @@ import { ReviewTokenStatsCache } from './reviewTokenEstimator.js';
 import { resolvePullRequestGitTarget } from './prGitTarget.js';
 import { prepareRelatedReviewContext } from './reviewContextScout.js';
 import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
-import { getNextAuthenticatedActionableFindingNumber } from './reviewCommentFormatter.js';
+import { getNextAuthenticatedReviewRecordNumbers } from './reviewCommentFormatter.js';
 import { routeReviewAssignments, runReviewRoutingOutcomes, type ReviewAssignment, type ReviewResult, type RunReviewsContext } from './prReviewRunner.js';
 import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
@@ -354,6 +354,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         tokenStats: new ReviewTokenStatsCache(),
         changedFilePaths,
         findingStartNumber: 1,
+        suggestionStartNumber: 1,
         redisClient,
         fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
@@ -368,7 +369,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const reviewResults = await runReviewRoutingOutcomes(
         routingOutcomes,
         reviewCtx,
-        getNextAuthenticatedActionableFindingNumber(allComments, state.startingWorkComment.data.user?.login),
+        getNextAuthenticatedReviewRecordNumbers(allComments, state.startingWorkComment.data.user?.login),
     );
 
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });

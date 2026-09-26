@@ -78,9 +78,10 @@ function interceptRest(principal: McpPrincipal, route: string, hook: () => Promi
 
 /**
  * A published review at head `a…a` offering two merge blockers (F20, F21) and
- * five follow-ups (S1…S5), which is what a `/fix` selection is validated
- * against. Suggestion numbering always starts at S1 inside one comment, so
- * selecting S3 and S5 exercises a mid-list selection.
+ * five follow-ups (S30…S34), which is what a `/fix` selection is validated
+ * against. Both namespaces continue a PR-wide sequence rather than restarting at
+ * 1 in each comment, so selecting S32 and S34 exercises a mid-list selection of
+ * suggestions a previous review already numbered past.
  */
 function fixtureReviewBody(head: string): string {
   return [
@@ -102,15 +103,15 @@ function fixtureReviewBody(head: string): string {
     '- **Minimum fix:** Compare against the renewed token.',
     '## Suggestions',
     'These are optional follow-ups and are not sent to `/fix`.',
-    '### S1: 🟢 Add a cancellation audit log',
+    '### S30: 🟢 Add a cancellation audit log',
     'An audit trail would make operator overlap easier to diagnose.',
-    '### S2: 🟢 Document the retry budget',
+    '### S31: 🟢 Document the retry budget',
     'The budget is only described in the code.',
-    '### S3: 🟢 Extract the retry helper',
+    '### S32: 🟢 Extract the retry helper',
     'The retry block is duplicated in two callers.',
-    '### S4: 🟢 Name the lease constants',
+    '### S33: 🟢 Name the lease constants',
     'The magic numbers are hard to follow.',
-    '### S5: 🟢 Add a metrics counter',
+    '### S34: 🟢 Add a metrics counter',
     'Operators cannot see how often the path runs.',
     '## Score',
     'Score: 6/10',
@@ -331,7 +332,7 @@ export async function verifyPullRequestWrites(
     // Both namespaces are projected for selection, from the same consumed set.
     const inspected = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, commentId: reviewCommentId });
     assert.deepEqual(inspected.comments[0].review.currentFindingIds, ['F20', 'F21']);
-    assert.deepEqual(inspected.comments[0].review.currentSuggestionIds, ['S1', 'S2', 'S3', 'S4', 'S5']);
+    assert.deepEqual(inspected.comments[0].review.currentSuggestionIds, ['S30', 'S31', 'S32', 'S33', 'S34']);
 
     // Backward compatibility: a findings-only request posts what it always did.
     const findingsOnly = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F20'] });
@@ -343,20 +344,20 @@ export async function verifyPullRequestWrites(
     // Both namespaces, mixed and lower case on input, canonical on the wire,
     // with the caller's instructions carried through unchanged below the command.
     const mixed = await mutate('fix_review_findings', {
-      ...pull, reviewCommentId, findingIds: ['f20'], suggestionIds: ['s3', 's5'],
+      ...pull, reviewCommentId, findingIds: ['f20'], suggestionIds: ['s32', 's34'],
       instructions: 'Keep the public helper signature unchanged.',
     });
     assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
     const mixedBody = comments.at(-1)!.body;
-    assert.equal(mixedBody.split('\n')[0], '/fix F20 S3 S5');
+    assert.equal(mixedBody.split('\n')[0], '/fix F20 S32 S34');
     assert.ok(mixedBody.includes('\n\nKeep the public helper signature unchanged.\n\n<!-- propr-mcp:'));
     assert.deepEqual(mixed.result.findingIds, ['F20']);
-    assert.deepEqual(mixed.result.suggestionIds, ['S3', 'S5']);
+    assert.deepEqual(mixed.result.suggestionIds, ['S32', 'S34']);
 
     // Suggestions alone are a complete request.
-    const suggestionsOnly = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S1'] });
+    const suggestionsOnly = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S30'] });
     assert.equal(suggestionsOnly.state, 'posted', JSON.stringify(suggestionsOnly));
-    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix S1');
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix S30');
 
     const before = posted();
     const empty = await mutate('fix_review_findings', { ...pull, reviewCommentId });
@@ -372,16 +373,16 @@ export async function verifyPullRequestWrites(
     assert.ok(unknown.result.error.message.includes('F99'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('S9'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('F20, F21'), unknown.result.error.message);
-    assert.ok(unknown.result.error.message.includes('S1, S2, S3, S4, S5'), unknown.result.error.message);
+    assert.ok(unknown.result.error.message.includes('S30, S31, S32, S33, S34'), unknown.result.error.message);
 
     // A suggestion an earlier run already implemented is no longer selectable.
-    redis.consume(`${reviewCommentId}:S:S2`);
-    const consumed = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S2'] });
+    redis.consume(`${reviewCommentId}:S:S31`);
+    const consumed = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S31'] });
     assert.equal(consumed.result.error.code, 'STALE_FINDINGS');
-    assert.ok(consumed.result.error.message.includes('S2'), consumed.result.error.message);
+    assert.ok(consumed.result.error.message.includes('S31'), consumed.result.error.message);
 
     // A namespace mismatch is refused by the schema before anything is posted.
-    await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['S3'] }));
+    await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['S32'] }));
     await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['F20'] }));
     await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F0'] }));
 

@@ -214,14 +214,14 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
 
 function parseSuggestionRecords(
     section: string,
-    options: { requireDescription: boolean },
+    options: { requireDescription: boolean; requireFirstId?: number },
 ): ReviewSuggestion[] | null {
     if (section.trim() === 'No suggestions.') return [];
 
     const records = extractMarkdownRecords(section, 'S');
     if (
         records.length === 0
-        || !hasSequentialRecordHeadings(section, records, 'S', { requireFirstId: 1 })
+        || !hasSequentialRecordHeadings(section, records, 'S', { requireFirstId: options.requireFirstId })
         || records.some(record => options.requireDescription && record.body === '')
         || records.some(record => hasRecordFieldHeader(record.body))
         || records.some(record => /^#{1,6}[ \t]+/m.test(record.body))
@@ -236,7 +236,9 @@ function parseSuggestionRecords(
 function parsePublicSuggestionRecords(section: string): ReviewSuggestion[] | null {
     if (!section.startsWith(`${SUGGESTIONS_INTRODUCTION}\n`)) return null;
     const recordsSection = section.slice(SUGGESTIONS_INTRODUCTION.length).trim();
-    if (recordsSection !== 'No suggestions.' && !/^### S1\b/.test(recordsSection)) return null;
+    // Published S# identifiers continue the PR-wide sequence exactly as F# does,
+    // so a later review comment opens at S7 rather than S1.
+    if (recordsSection !== 'No suggestions.' && !/^### S\d+\b/.test(recordsSection)) return null;
     // Description-less S# headings were used by older public comments. Keep
     // them parseable even though new machine output requires an explanation.
     const suggestions = parseSuggestionRecords(recordsSection, { requireDescription: false });
@@ -257,7 +259,8 @@ const MACHINE_CONTRACT: ReviewContract = {
     headings: MACHINE_SECTION_HEADINGS,
     cleanSentinel: 'No actionable findings.',
     parseFindings: parseMachineActionableRecords,
-    parseSuggestions: section => parseSuggestionRecords(section, { requireDescription: true }),
+    // Reviewers number their own output from S1; publishing renumbers it PR-wide.
+    parseSuggestions: section => parseSuggestionRecords(section, { requireDescription: true, requireFirstId: 1 }),
 };
 
 const PUBLIC_CONTRACT: ReviewContract = {
@@ -345,14 +348,9 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
     ].join('\n')).join('\n\n');
 }
 
-function renumberActionableFindings(
-    findings: ActionableFinding[],
-    firstFindingNumber: number,
-): ActionableFinding[] {
-    return findings.map((finding, index) => ({
-        ...finding,
-        id: `F${firstFindingNumber + index}`,
-    }));
+/** Publish a contiguous block of PR-wide identifiers, e.g. `F9`, `F10`, ... . */
+function renumberRecords<T extends { id: string }>(records: T[], prefix: 'F' | 'S', firstNumber: number): T[] {
+    return records.map((record, index) => ({ ...record, id: `${prefix}${Math.max(1, firstNumber) + index}` }));
 }
 
 function evidenceReferencesChangedFile(evidence: string, changedFilePaths: readonly string[]): boolean {
@@ -364,22 +362,51 @@ function evidenceReferencesChangedFile(evidence: string, changedFilePaths: reado
     });
 }
 
-export function getNextActionableFindingNumber(reviewBodies: readonly (string | null | undefined)[]): number {
+/**
+ * Highest number published across `records`, e.g. `F3` and `F11` give 11. A
+ * number whose successor is not a safe integer is ignored: it cannot seed an
+ * allocator that has to hand out the next identifier.
+ */
+export function highestReviewRecordNumber(records: readonly { id: string }[]): number {
+    let highest = 0;
+    for (const record of records) {
+        const number = Number.parseInt(record.id.slice(1), 10);
+        if (!Number.isSafeInteger(number) || number < 1 || !Number.isSafeInteger(number + 1)) continue;
+        highest = Math.max(highest, number);
+    }
+    return highest;
+}
+
+function getNextRecordNumber(
+    reviewBodies: readonly (string | null | undefined)[],
+    pickRecords: (review: StructuredReviewResult) => readonly { id: string }[],
+): number {
     let highest = 0;
     for (const body of reviewBodies) {
         if (!body) continue;
-        const parsed = parseStructuredReview(body);
-        for (const finding of parsed.actionableFindings) {
-            const number = Number.parseInt(finding.id.slice(1), 10);
-            if (Number.isInteger(number)) highest = Math.max(highest, number);
-        }
+        highest = Math.max(highest, highestReviewRecordNumber(pickRecords(parseStructuredReview(body))));
     }
     return highest + 1;
+}
+
+export function getNextActionableFindingNumber(reviewBodies: readonly (string | null | undefined)[]): number {
+    return getNextRecordNumber(reviewBodies, review => review.actionableFindings);
+}
+
+/**
+ * S# counterpart of `getNextActionableFindingNumber`. Suggestions carry the same
+ * permanent-identifier guarantee as blockers, so `/fix S5` names one record for
+ * the life of the pull request instead of a different one per review comment.
+ */
+export function getNextReviewSuggestionNumber(reviewBodies: readonly (string | null | undefined)[]): number {
+    return getNextRecordNumber(reviewBodies, review => review.suggestions);
 }
 
 export interface PublicReviewRenderOptions {
     /** First PR-wide public F# identifier assigned to this review comment. */
     firstFindingNumber?: number;
+    /** First PR-wide public S# identifier assigned to this review comment. */
+    firstSuggestionNumber?: number;
     /** Base-to-head changed paths that every blocker must cite in its evidence. */
     changedFilePaths?: readonly string[];
 }
@@ -413,10 +440,8 @@ export function renderPublicReview(
         )
     ) return null;
 
-    const publicFindings = renumberActionableFindings(
-        parsed.actionableFindings,
-        Math.max(1, options.firstFindingNumber ?? 1),
-    );
+    const publicFindings = renumberRecords(parsed.actionableFindings, 'F', options.firstFindingNumber ?? 1);
+    const publicSuggestions = renumberRecords(parsed.suggestions, 'S', options.firstSuggestionNumber ?? 1);
 
     const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
     const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
@@ -444,7 +469,7 @@ export function renderPublicReview(
         mergeBlockersSection,
         '## Suggestions',
         SUGGESTIONS_INTRODUCTION,
-        formatPublicSuggestions(parsed.suggestions),
+        formatPublicSuggestions(publicSuggestions),
         '## Score',
         `${scoreSection}${scoreCapNote}`,
     ].join('\n\n');

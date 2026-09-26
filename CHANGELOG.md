@@ -18,10 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent as instructions without the token list. An identifier no current review
   offers, or a malformed one such as `S0`, is now named back on the pull request
   instead of being silently ignored, and the completion comment and task history
-  record which findings and which suggestions were addressed. Merge-blocker
-  semantics are unchanged: suggestions are acted on only when named, a pending
-  suggestion never extends an `/ultrafix` loop or moves a score gate, and
-  `/ultrafix` still selects findings only. The MCP tool `fix_review_findings`
+  record which findings and which suggestions were addressed. Published `S#`
+  identifiers now continue a per-pull-request sequence exactly as `F#` does
+  instead of restarting at `S1` in every review comment, so one `S#` names one
+  suggestion for the life of the pull request; the two sequences advance
+  independently, and each is reserved atomically so concurrent reviewers cannot
+  publish the same identifier twice. Merge-blocker semantics are unchanged:
+  suggestions are acted on only when named, a pending suggestion never extends
+  an `/ultrafix` loop or moves a score gate, and `/ultrafix` still selects
+  findings only. The MCP tool `fix_review_findings`
   gains an optional `suggestionIds` array beside `findingIds` (at least one
   identifier across the two is required, `instructions` are forwarded unchanged)
   and validates both namespaces against the referenced review, rejecting unknown,

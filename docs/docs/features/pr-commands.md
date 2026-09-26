@@ -163,6 +163,12 @@ order, mixed freely:
 Keep the public helper signature unchanged.
 ```
 
+- Both sequences continue across every review on the pull request and are never
+  reused: a second review that finds two suggestions after `S5` publishes them as
+  `S6` and `S7`, exactly as findings continue from `F5` to `F6`. An `S#` you read
+  once identifies that one suggestion for the life of the pull request, so
+  `/fix S6` cannot select a different record later. The two sequences advance
+  independently — a review with no merge blocker still continues the `S#` count.
 - Identifiers are read from the command line only, and are case-insensitive
   (`/fix f20 s3` is `/fix F20 S3`).
 - Everything after the last identifier on that line, plus every following line,
