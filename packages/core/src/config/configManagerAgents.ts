@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+    agentTankModeFromLegacyEnabled,
     getManagedAgentConfigRelativePath,
+    normalizeAgentTankMode,
+    type AgentTankMode,
     type AgentType,
     type ReasoningLevel
 } from '@propr/shared';
@@ -236,29 +239,82 @@ export async function migrateAgentConfigs(): Promise<boolean> {
  * Settings for Agent Tank integration (LLM usage monitoring).
  */
 export interface AgentTankSettings {
+    /** Authoritative integration mode. */
+    mode: AgentTankMode;
+    /**
+     * Derived convenience flag (`mode !== 'disabled'`).
+     *
+     * Kept so the existing `settings.enabled` call sites keep working without a
+     * sweeping refactor. Treat it as read-only: `mode` is the source of truth,
+     * and `saveAgentTankSettings` ignores whatever is passed here.
+     */
     enabled: boolean;
+    /** Only meaningful in `external` mode. */
     url: string;
 }
 
-const DEFAULT_AGENT_TANK_SETTINGS: AgentTankSettings = {
-    enabled: false,
-    url: 'http://0.0.0.0:3456'
-};
+export const DEFAULT_AGENT_TANK_URL = 'http://0.0.0.0:3456';
+
+/**
+ * Environment fallback for headless/automated deployments that configure the
+ * stack entirely through `.env` and never open the Settings UI. Database
+ * settings still win; this only fills in a missing record.
+ */
+function environmentModeFallback(): AgentTankMode | undefined {
+    const raw = process.env.AGENT_TANK_MODE?.trim();
+    if (!raw) return undefined;
+    const normalized = normalizeAgentTankMode(raw);
+    // normalizeAgentTankMode is total, so an unrecognized value silently becomes
+    // 'disabled'. Log it instead of pretending the operator asked for that.
+    if (normalized === 'disabled' && raw !== 'disabled') {
+        logger.warn({ AGENT_TANK_MODE: raw }, 'Unrecognized AGENT_TANK_MODE; treating Agent Tank as disabled');
+    }
+    return normalized;
+}
+
+/**
+ * Accepts both the current `{ mode, url }` shape and the legacy
+ * `{ enabled, url }` shape written before bundled mode existed.
+ */
+export function normalizeAgentTankSettings(raw: unknown): AgentTankSettings {
+    const record = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {};
+    const mode = 'mode' in record
+        ? normalizeAgentTankMode(record.mode)
+        // No `mode` key at all means this record predates the feature (or is
+        // empty). Derive from the legacy boolean, then from the environment.
+        : ('enabled' in record
+            ? agentTankModeFromLegacyEnabled(record.enabled)
+            : environmentModeFallback() ?? 'disabled');
+    const url = typeof record.url === 'string' && record.url.trim()
+        ? record.url.trim()
+        : (process.env.AGENT_TANK_URL?.trim() || DEFAULT_AGENT_TANK_URL);
+    return { mode, enabled: mode !== 'disabled', url };
+}
 
 /**
  * Loads Agent Tank settings from the database.
  */
 export async function loadAgentTankSettings(): Promise<AgentTankSettings> {
-    const settings = await getConfig<AgentTankSettings>('agent_tank', DEFAULT_AGENT_TANK_SETTINGS);
-    logger.info({ agentTank: settings }, 'Successfully loaded Agent Tank settings');
+    // Read as `unknown`: the persisted value may be the legacy shape, and the
+    // normalizer is what guarantees callers only ever see the current one.
+    const raw = await getConfig<unknown>('agent_tank', {});
+    const settings = normalizeAgentTankSettings(raw);
+    logger.info({ agentTank: { mode: settings.mode } }, 'Successfully loaded Agent Tank settings');
     return settings;
 }
 
 /**
  * Saves Agent Tank settings to the database.
  */
-export async function saveAgentTankSettings(settings: AgentTankSettings): Promise<boolean> {
-    await saveConfig('agent_tank', settings);
-    logger.info({ agentTank: settings }, 'Successfully saved Agent Tank settings');
+export async function saveAgentTankSettings(
+    settings: Pick<AgentTankSettings, 'mode'> & Partial<AgentTankSettings>
+): Promise<boolean> {
+    // Persist the canonical shape only. `enabled` is intentionally written too,
+    // so that a rollback to an older build still reads a sane boolean instead of
+    // defaulting Agent Tank on/off arbitrarily.
+    const mode = normalizeAgentTankMode(settings.mode);
+    const persisted = { mode, enabled: mode !== 'disabled', url: settings.url || DEFAULT_AGENT_TANK_URL };
+    await saveConfig('agent_tank', persisted);
+    logger.info({ agentTank: { mode } }, 'Successfully saved Agent Tank settings');
     return true;
 }

@@ -25,6 +25,7 @@ import {
   getAgentTankStatus
 } from '../../api/revertApi';
 import { Settings } from './types';
+import type { AgentTankSettings as AgentTankSettingsState } from './AgentTankSection';
 import { parseLoadedData } from './parseLoadedData';
 import { useListManagement } from './useListManagement';
 import type { TriggerReindexAllResponse } from '../../api/proprApi';
@@ -90,10 +91,7 @@ export function useSettingsState() {
     fallback_agent_alias: ''
   });
   const [isReindexing, setIsReindexing] = useState(false);
-  const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
-    enabled: false,
-    url: 'http://0.0.0.0:3456'
-  });
+  const [agentTankSettings, setAgentTankSettings] = useState<AgentTankSettingsState>({ mode: 'disabled', enabled: false, url: '' });
   const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
   const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
 
@@ -241,7 +239,7 @@ export function useSettingsState() {
     try {
       const agentTankSettingsRequest = requireCompleteConfiguration
         ? getAgentTankSettings()
-        : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
+        : getAgentTankSettings().catch(() => ({ mode: 'disabled', enabled: false, url: 'http://0.0.0.0:3456' }));
       const [results, catalog] = await Promise.all([
         Promise.all([
           getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
@@ -263,7 +261,7 @@ export function useSettingsState() {
       setCatalogAgents(catalog.agents);
       setSummarizationSettings(parsed.summarizationSettings);
       setAgentTankSettings(parsed.agentTankSettings);
-      if (parsed.agentTankSettings.enabled) {
+      if (parsed.agentTankSettings.mode !== 'disabled') {
         setAgentTankCheckingStatus(true);
         getAgentTankStatus()
           .then(status => setAgentTankAvailable(status.available))
@@ -381,13 +379,13 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
-  const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
+  const handleAgentTankChange = useCallback((newSettings: AgentTankSettingsState) => {
     setAgentTankSettings(newSettings);
     setAgentTankAvailable(null);
-    updateAgentTankSettings(newSettings).catch(err => {
+    updateAgentTankSettings({ mode: newSettings.mode, url: newSettings.url }).catch(err => {
       console.error('Failed to save Agent Tank settings:', err);
     });
-    if (newSettings.enabled) {
+    if (newSettings.mode !== 'disabled') {
       setAgentTankCheckingStatus(true);
       setTimeout(() => {
         getAgentTankStatus()

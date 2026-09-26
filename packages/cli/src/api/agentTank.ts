@@ -1,14 +1,18 @@
 /**
  * Agent Tank API
  *
- * Agent Tank tracks LLM subscription usage. It is an external service (not a
- * stack container) — toggling it is a backend setting, so these helpers go
- * through the running ProPR API (`/api/config/agent-tank`).
+ * Agent Tank tracks LLM subscription usage. It is a backend setting rather than
+ * a stack container — in `bundled` mode ProPR runs the Agent Tank CLI inside the
+ * agent image, and in `external` mode it talks to an instance the operator runs
+ * — so these helpers go through the running ProPR API
+ * (`/api/config/agent-tank`).
  */
 
 import { ApiClient, createApiClient } from "./index.js";
+import type { AgentTankMode } from "@propr/shared";
 
 export interface AgentTankSettings {
+  mode: AgentTankMode;
   enabled: boolean;
   url?: string;
 }
@@ -22,21 +26,22 @@ export async function getAgentTank(client?: ApiClient): Promise<AgentTankSetting
   return response.data;
 }
 
-/** Enable or disable Agent Tank usage tracking, optionally setting the URL. */
+/** Set the Agent Tank integration mode, optionally setting the external URL. */
 export async function setAgentTank(
-  enabled: boolean,
+  mode: AgentTankMode,
   url?: string,
   client?: ApiClient
 ): Promise<AgentTankSettings> {
   const apiClient = client ?? (await createApiClient());
 
-  // Preserve the existing URL when the caller doesn't pass one.
+  // Preserve the existing URL when the caller doesn't pass one, so switching to
+  // bundled and back to external does not lose a hand-tuned endpoint.
   let resolvedUrl = url;
   if (!resolvedUrl) {
     const current = await getAgentTank(apiClient);
     resolvedUrl = current.url || DEFAULT_AGENT_TANK_URL;
   }
 
-  await apiClient.post("/api/config/agent-tank", { body: { enabled, url: resolvedUrl } });
-  return { enabled, url: resolvedUrl };
+  await apiClient.post("/api/config/agent-tank", { body: { mode, url: resolvedUrl } });
+  return { mode, enabled: mode !== "disabled", url: resolvedUrl };
 }

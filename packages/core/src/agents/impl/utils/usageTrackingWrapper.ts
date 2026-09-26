@@ -88,14 +88,19 @@ export interface UsageTrackingMetrics {
 /**
  * Returns true when Agent Tank tracking is enabled.
  *
- * Checks the database settings for the Agent Tank configuration.
- * Tracking is disabled when enabled is false or url is empty/invalid.
+ * Checks the database settings for the Agent Tank configuration. Tracking is
+ * off in `disabled` mode, and in `external` mode when the URL is empty or
+ * invalid. `bundled` mode needs no URL — it runs the CLI in the agent image.
  */
 export async function isAgentTankEnabled(): Promise<boolean> {
     try {
         const settings = await loadAgentTankSettings();
-        const enabled = settings.enabled && !!settings.url && settings.url !== 'false' && settings.url !== '0';
-        logger.info({ enabled, settings }, 'Agent Tank enabled check');
+        // Bundled mode contacts no URL at all, so the URL sanity checks only
+        // apply to the external transport.
+        const enabled = settings.mode === 'bundled'
+            || (settings.mode === 'external'
+                && !!settings.url && settings.url !== 'false' && settings.url !== '0');
+        logger.info({ enabled, mode: settings.mode }, 'Agent Tank enabled check');
         return enabled;
     } catch (err) {
         logger.warn({ error: (err as Error).message }, 'Failed to load Agent Tank settings, assuming disabled');

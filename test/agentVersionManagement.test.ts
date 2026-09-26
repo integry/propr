@@ -1,6 +1,8 @@
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { AGENT_DEFAULTS } from '@propr/shared';
 import {
     AGENT_IMAGE_NAME,
@@ -10,7 +12,7 @@ import {
 } from '../packages/core/src/agents/constants.js';
 import { CONTAINER_CONFIG_PATHS } from '../packages/core/src/agents/types.js';
 import { AGENT_CLI_PACKAGES, AGENT_CLI_TAGS, AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
-import { findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
+import { computeContentHash, findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
 import { clearNpmCache } from '../packages/core/src/agents/version/npmClient.js';
 
 const originalFetch = globalThis.fetch;
@@ -90,6 +92,35 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, new RegExp(`^ARG VIBE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
         assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
+    });
+
+    test('pins the bundled Agent Tank version identically in the Dockerfile and the build script', () => {
+        const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        const buildScript = fs.readFileSync('scripts/build-images.sh', 'utf8');
+
+        const pinned = agentDockerfile.match(/^ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
+        assert.ok(pinned, 'Dockerfile.agent must pin ARG AGENT_TANK_CLI_VERSION');
+        assert.match(buildScript, new RegExp(`^AGENT_TANK_CLI_VERSION="\\$\\{AGENT_TANK_CLI_VERSION:-${pinned}\\}"$`, 'm'));
+    });
+
+    test('changing the pinned Agent Tank version changes the generated bundle image tag', () => {
+        // Only the Dockerfile literal feeds the content hash, which is exactly
+        // why the build script default must never drift from it.
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-bundle-tag-'));
+        const dockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        const versions = getDefaultAgentCliVersionMatrix();
+
+        fs.writeFileSync(path.join(root, 'Dockerfile.agent'), dockerfile);
+        const before = generateAgentBundleImageTag(versions, computeContentHash(root));
+
+        fs.writeFileSync(
+            path.join(root, 'Dockerfile.agent'),
+            dockerfile.replace(/ARG AGENT_TANK_CLI_VERSION=\d+\.\d+\.\d+/g, 'ARG AGENT_TANK_CLI_VERSION=9.9.9')
+        );
+        const after = generateAgentBundleImageTag(versions, computeContentHash(root));
+
+        assert.notStrictEqual(before, after);
+        fs.rmSync(root, { recursive: true, force: true });
     });
 
     test('defaults every coding agent task execution to 24 hours', () => {

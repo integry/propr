@@ -12,6 +12,11 @@ agent's credentials and task worktree. Version-specific bundle tags contain a
 complete CLI version matrix, so every agent instance can switch to the same
 image without another pull.
 
+The image also bundles the [Agent Tank](https://github.com/integry/agent-tank)
+CLI (`agent-tank`). ProPR's optional bundled usage-tracking mode runs it here
+on demand, so operators do not have to install it — or a second copy of the
+agent CLIs — on the host. It is inert unless that mode is enabled.
+
 The common Debian runtime is an internal Dockerfile stage, not a separately
 published image. Custom installation-level packages create one derivative of
 the selected bundle. The base includes `build-essential` for native extension

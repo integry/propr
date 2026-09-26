@@ -78,9 +78,14 @@ test('real MCP catalog and shared persistence reject stale repository and agent 
     for (const [key, value] of Object.entries(settings)) assert.equal(read[key], value);
     assert.equal((await call('update_indexing_configuration', { enabled: false, agent_alias: '', fallback_agent_alias: '', custom_prompt: 'Bounded summaries' })).state, 'completed');
     assert.equal((await call('get_indexing_configuration', {})).custom_prompt, 'Bounded summaries');
-    assert.equal((await call('update_provider_policy', { enabled: false, url: 'http://localhost:3456' })).state, 'completed');
+    assert.equal((await call('update_provider_policy', { mode: 'disabled', url: 'http://localhost:3456' })).state, 'completed');
+    assert.equal((await call('get_provider_policy', {})).mode, 'disabled');
     assert.equal((await call('get_provider_policy', {})).enabled, false);
-    await assert.rejects(call('update_provider_policy', { enabled: true, url: 'https://user:secret@example.com' }));
+    // Bundled mode is reachable without a url; external still requires one.
+    assert.equal((await call('update_provider_policy', { mode: 'bundled' })).state, 'completed');
+    assert.equal((await call('get_provider_policy', {})).mode, 'bundled');
+    await assert.rejects(call('update_provider_policy', { mode: 'external' }));
+    await assert.rejects(call('update_provider_policy', { mode: 'external', url: 'https://user:secret@example.com' }));
     principal.authorization.permissions = [];
     await assert.rejects(call('create_repository_configuration', { repository: 'acme/three', baseBranch: 'main' }), /instance.manage_settings/);
   } finally {

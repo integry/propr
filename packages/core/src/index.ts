@@ -364,9 +364,19 @@ export {
     toAgentTankAgent,
     toProprAgent,
     normalizeAgentTankStatus,
-    normalizeAgentTankAgents
+    normalizeAgentTankAgents,
+    getAllStatuses as getAgentTankStatuses
 } from './services/agentTankService.js';
 export type { AgentStatusResponse } from './services/agentTankService.js';
+export {
+    buildBundledAgentTankConfig,
+    canRunBundledAgentTank,
+    parseBundledAgentTankOutput,
+    refreshBundledStatuses,
+    getCachedBundledStatuses,
+    getBundledStatusesForDelta,
+    clearBundledAgentTankCache
+} from './services/agentTankBundledRunner.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {

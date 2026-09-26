@@ -405,6 +405,8 @@ export {
     saveAgents,
     migrateAgentConfigs,
     type AgentTankSettings,
+    DEFAULT_AGENT_TANK_URL,
+    normalizeAgentTankSettings,
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
