@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,9 +18,9 @@ const root = resolve(desktop, '../..');
 const fixture = join(desktop, 'scripts/fixtures/linux-window-frame');
 
 // Opt in with PROPR_DESKTOP_FRAME_TEST=1 on an isolated X11 DISPLAY with a WM
-// (e.g. Xvfb + Xfwm4/Openbox), xdotool, and a compositor (e.g. Picom) for previews.
-// PROPR_DESKTOP_FRAME_PREVIEWS=.propr/previews also captures real desktop pixels.
-// PROPR_DESKTOP_WORDMARK_PREVIEWS=.propr/previews captures the connected header.
+// (e.g. Xvfb + Xfwm4/Openbox), xdotool, and a compositor (e.g. Picom) for
+// native pixel assertions. PROPR_DESKTOP_FRAME_PREVIEWS=.propr/previews also
+// saves those captures.
 const exerciseLinuxFrame = async (context, managerOpen) => {
   if (process.env.PROPR_DESKTOP_FRAME_TEST !== '1' || process.platform !== 'linux' || !process.env.DISPLAY) {
     context.skip('Set PROPR_DESKTOP_FRAME_TEST=1 on an isolated Linux DISPLAY with a window manager and xdotool');
@@ -46,10 +46,6 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       resolveExtensions: ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
       define: { 'import.meta.env': '{}', __APP_VERSION__: '"frame-test"', __PROPR_DESKTOP__: 'true' },
     });
-    // Preserve the shipped directory structure: publicAssetUrl must resolve
-    // relative to renderer.html, just as it does in the packaged protocol.
-    await mkdir(join(directory, 'media'));
-    await copyFile(join(root, 'propr-ui/public/media/logo-and-name-transparent.png'), join(directory, 'media/logo-and-name-transparent.png'));
     const baseCss = await readFile(join(root, 'propr-ui/src/index.css'), 'utf8');
     const compiled = await postcss([tailwind({ ...tailwindConfig, content: [join(root, 'propr-ui/src/**/*.{ts,tsx}')] })])
       .process(baseCss, { from: join(root, 'propr-ui/src/index.css') });
@@ -106,10 +102,12 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       return { width: style.borderTopWidth, color: style.borderTopColor, display: style.display, pointerEvents: style.pointerEvents };
     });
     const previews = [];
-    const capture = async (name, title) => {
-      if (!process.env.PROPR_DESKTOP_FRAME_PREVIEWS || managerOpen) return;
-      const output = resolve(root, process.env.PROPR_DESKTOP_FRAME_PREVIEWS);
-      await mkdir(output, { recursive: true });
+    const capture = async (name, title, stripX = 200) => {
+      if (managerOpen) return;
+      const output = process.env.PROPR_DESKTOP_FRAME_PREVIEWS
+        ? resolve(root, process.env.PROPR_DESKTOP_FRAME_PREVIEWS)
+        : null;
+      if (output) await mkdir(output, { recursive: true });
       // Native configure/focus events precede the compositor's painted frame.
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -122,28 +120,60 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       const { bounds } = await native();
       const pixelAt = async (x, y) => [...await sharp(bytes).extract({ left: bounds.x + x, top: bounds.y + y, width: 1, height: 1 }).removeAlpha().raw().toBuffer()];
       const inactive = name.endsWith('-inactive');
-      const tint = inactive ? [240, 242, 246] : [232, 237, 245];
-      assert.deepEqual(await pixelAt(200, 12), tint, 'Capture must show the actual focused/unfocused strip, not an occluding window or an earlier frame');
-      if (name.includes('-normal-')) {
-        assert.deepEqual(await pixelAt(3, 100), inactive ? [178, 187, 199] : [146, 158, 174], 'A visible one-pixel edge must separate the app from white');
+      const tint = inactive ? [240, 245, 244] : [233, 241, 240];
+      const chromeX = stripX < 0 ? bounds.width + stripX : stripX;
+      assert.deepEqual(await pixelAt(chromeX, 12), tint, 'Capture must show the actual focused/unfocused strip, not an occluding window or an earlier frame');
+      if (!name.includes('-maximized-')) {
+        assert.deepEqual(await pixelAt(3, 100), inactive ? [180, 194, 192] : [147, 166, 164], 'A visible one-pixel edge must separate the app from white');
         assert.ok((await pixelAt(2, 100)).every(channel => channel > 220), 'The adjacent shadow must not be a solid gray rim');
       } else {
         assert.deepEqual(await pixelAt(0, 0), tint, 'Maximized chrome must reach the screen corner without a rounded gap or border');
       }
-      await writeFile(join(output, `${name}.png`), bytes);
-      previews.push({ path: `.propr/previews/${name}.png`, title, description: name.includes('-normal-')
-        ? 'Production desktop chooser on X11/Openbox over white: one-pixel boundary, subtle upper corners and short shadow blended by Picom.'
-        : 'Production desktop chooser maximized on X11/Openbox: compact tinted strip flush with the display, with no frame inset, shadow or corner gaps.' });
-      await writeFile(join(output, 'manifest.json'), JSON.stringify({ previews, toolSuggestions: [] }, null, 2));
+      if (output) {
+        await writeFile(join(output, `${name}.png`), bytes);
+        previews.push({ path: `.propr/previews/${name}.png`, title, description: name.includes('-normal-')
+          ? 'Production desktop chooser on X11/Openbox over white: one-pixel boundary, subtle upper corners and short shadow blended by Picom.'
+          : name.includes('-connected-')
+            ? 'Production connected desktop on X11/Openbox over white: compact workspace selector, neutral source-list sidebar and integrated window chrome.'
+            : 'Production desktop chooser maximized on X11/Openbox: compact tinted strip flush with the display, with no frame inset, shadow or corner gaps.' });
+        await writeFile(join(output, 'manifest.json'), JSON.stringify({ previews, toolSuggestions: [] }, null, 2));
+      }
     };
 
     await expect(html).toHaveAttribute('data-window-focused', 'true');
     await expect(html).toHaveAttribute('data-window-expanded', 'false');
-    assert.deepEqual(await frameStyle(), { width: '1px', color: 'rgb(146, 158, 174)', display: 'block', pointerEvents: 'none' });
+    assert.deepEqual(await frameStyle(), { width: '1px', color: 'rgb(147, 166, 164)', display: 'block', pointerEvents: 'none' });
     assert.equal(await page.locator('.desktop-entry-drag-region').evaluate(element => element.getBoundingClientRect().height), 44);
+    const artwork = page.locator('.desktop-brand img');
+    await expect(artwork).toHaveAttribute('src', '/logo.png');
+    assert.equal(await artwork.evaluate(img => img.currentSrc), 'frame-fixture://app/logo.png');
+    await expect.poll(() => artwork.evaluate(img => img.complete && img.naturalWidth === 30 && img.naturalHeight === 32)).toBe(true);
+    const artworkBox = await artwork.boundingBox();
+    assert.ok(artworkBox);
+    assert.equal(artworkBox.width, 32);
+    assert.equal(artworkBox.height, 32);
+    const sourceArtworkPixels = await artwork.evaluate(img => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext('2d');
+      context.drawImage(img, 0, 0);
+      return {
+        corner: [...context.getImageData(0, 0, 1, 1).data],
+        center: [...context.getImageData(15, 16, 1, 1).data],
+      };
+    });
+    assert.ok(sourceArtworkPixels.corner[3] <= 2, 'Displayed chooser artwork must retain its transparent corner');
+    assert.ok(sourceArtworkPixels.center[3] >= 190, 'Displayed chooser artwork must retain its visible center');
+    const renderedArtwork = await sharp(await artwork.screenshot()).removeAlpha().raw().toBuffer();
+    const renderedCorner = [...renderedArtwork.subarray(0, 3)];
+    const renderedCenterOffset = (16 * 32 + 16) * 3;
+    const renderedCenter = [...renderedArtwork.subarray(renderedCenterOffset, renderedCenterOffset + 3)];
+    assert.ok(renderedCorner.every(channel => channel >= 245), 'Transparent artwork corner must reveal the light production card');
+    assert.ok(Math.max(...renderedCenter) - Math.min(...renderedCenter) >= 60, 'Rendered artwork center must remain visibly colored');
     await capture('linux-normal-active', 'Linux: normal, active');
     await focusBackground();
-    assert.equal((await frameStyle()).color, 'rgb(178, 187, 199)');
+    assert.equal((await frameStyle()).color, 'rgb(180, 194, 192)');
     await capture('linux-normal-inactive', 'Linux: normal, inactive');
     await native('focus');
     await expect(html).toHaveAttribute('data-window-focused', 'true');
@@ -189,36 +219,33 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     await page.reload();
     await expect(page.getByTestId('happening-now-section')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Connected: This computer' })).toBeVisible();
-    const wordmark = page.locator('.desktop-sidebar-header img');
-    await expect(wordmark).toHaveAttribute('alt', 'ProPR');
-    await expect(wordmark).toHaveAttribute('src', 'frame-fixture://app/media/logo-and-name-transparent.png');
-    await expect.poll(() => wordmark.evaluate(img => img.complete && img.naturalWidth === 679 && img.naturalHeight === 217)).toBe(true);
-    assert.equal((await wordmark.boundingBox()).height, 32);
-    const wordmarkPreviews = [];
+    await expect(page.locator('.desktop-sidebar-header')).toHaveCount(0);
+    await expect(page.locator('.desktop-sidebar img[alt="ProPR"]')).toHaveCount(0);
+    await expect(page.locator('.desktop-sidebar')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.4)');
+    await expect(page.getByRole('link', { name: 'Dashboard' })).toHaveCSS('border-radius', '6px');
+    await expect(page.getByRole('link', { name: 'Dashboard' })).toHaveCSS('height', '32px');
+    const sidebarDrag = page.locator('.desktop-sidebar-drag-region');
+    assert.equal(await sidebarDrag.locator('*').count(), 0, 'Connected sidebar drag strip must remain non-interactive');
+    const sidebarDragBox = await sidebarDrag.boundingBox();
+    assert.ok(sidebarDragBox);
+    assert.equal(sidebarDragBox.height, 44);
+    const selectorBox = await page.locator('.desktop-instance-selector-button').boundingBox();
+    const sidebarBox = await page.locator('.desktop-sidebar').boundingBox();
+    assert.ok(selectorBox && sidebarBox);
+    assert.equal(selectorBox.x, sidebarBox.x + 8, 'Workspace selector keeps the current eight-pixel sidebar inset');
+    assert.equal(selectorBox.y, sidebarDragBox.y + 44, 'Workspace selector sits directly below the empty drag strip');
+    assert.equal(selectorBox.height, 32);
     for (const focused of [true, false]) {
       if (focused) await native('focus');
       else await focusBackground();
       await expect(html).toHaveAttribute('data-window-focused', String(focused));
-      const tint = focused ? [232, 237, 245] : [240, 242, 246];
-      // Inspect actual rendered pixels inside the image's transparent corner.
-      // An opaque white replacement fails even if its URL/dimensions are right.
-      const pixels = await wordmark.screenshot();
-      assert.deepEqual([...await sharp(pixels).extract({ left: 0, top: 0, width: 1, height: 1 }).removeAlpha().raw().toBuffer()], tint);
-      if (process.env.PROPR_DESKTOP_WORDMARK_PREVIEWS && !managerOpen) {
-        const output = resolve(root, process.env.PROPR_DESKTOP_WORDMARK_PREVIEWS);
-        await mkdir(output, { recursive: true });
-        const name = `linux-wordmark-${focused ? 'active' : 'inactive'}.png`;
-        const box = await page.locator('.desktop-sidebar-header').boundingBox();
-        await page.screenshot({ path: join(output, name), clip: { x: box.x, y: box.y, width: 600, height: 100 } });
-        wordmarkPreviews.push({ path: `.propr/previews/${name}`, title: `Linux header: ${focused ? 'active' : 'inactive'}`, description: 'Existing transparent ProPR wordmark at its unchanged 32px height on the connected Dashboard header; production components and relative packaged asset paths in Electron.' });
-        await writeFile(join(output, 'manifest.json'), JSON.stringify({ previews: wordmarkPreviews, toolSuggestions: [] }, null, 2));
-      }
+      // Sample ten pixels inside the controls: the redesigned toolbar's left
+      // side can legitimately contain amber unavailable-resource badges.
+      await capture(`linux-connected-${focused ? 'active' : 'inactive'}`, `Linux connected: ${focused ? 'active' : 'inactive'}`, -128);
     }
     await native('focus');
-    await pointerClick('0 Plans');
-    await expect(page.getByText('All caught up.', { exact: true })).toBeVisible();
-    await pointerClick('0 Plans');
-    await expect(page.getByText('All caught up.', { exact: true })).not.toBeVisible();
+    await expect(page.getByRole('status', { name: 'Plans unavailable' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '0 Plans' })).toHaveCount(0);
     await pointerClick('Maximize or restore window');
     await expect(html).toHaveAttribute('data-window-expanded', 'true');
     await expect.poll(async () => (await native()).bounds).toEqual(workArea);
