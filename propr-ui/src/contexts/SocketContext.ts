@@ -8,6 +8,8 @@ import {
   TaskLiveUpdatePayload,
   ActivityUpdatePayload,
   GoalUpdatePayload,
+  NotificationUpdatePayload,
+  UsageUpdatePayload,
 } from '@propr/shared';
 
 export interface SocketContextValue {
@@ -38,10 +40,13 @@ export interface SocketContextValue {
   onIndexingUpdate: (callback: (payload: IndexingUpdatePayload) => void) => () => void;
   onQueueStatsUpdate: (callback: (payload: QueueStatsUpdatePayload) => void) => () => void;
   onTaskLiveUpdate: (callback: (payload: TaskLiveUpdatePayload) => void) => () => void;
-  /** The general envelope: "domain X changed in way Y, in repository Z". */
+  /** The general envelope: 'domain X changed in way Y, in repository Z'. */
   onActivityUpdate: (callback: (payload: ActivityUpdatePayload) => void) => () => void;
-  /** A goal's own transition, which no task update reports. */
   onGoalUpdate: (callback: (payload: GoalUpdatePayload) => void) => () => void;
+  /** Delivered only to the authenticated recipient's own room. */
+  onNotificationUpdate: (callback: (payload: NotificationUpdatePayload) => void) => () => void;
+  /** A trigger, not a snapshot: the consumer re-reads the usage endpoint. */
+  onUsageUpdate: (callback: (payload: UsageUpdatePayload) => void) => () => void;
 }
 
 export const SocketContext = createContext<SocketContextValue | null>(null);

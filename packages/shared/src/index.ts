@@ -46,20 +46,10 @@ export {
   type DraftUpdateGenerationTrace,
 } from './events.js';
 
-// Export the general activity push surface consumed by the dashboard, the
-// goals console and the header. It lives in its own module so producers and
-// consumers share one declaration of `domain` / `change` / scope.
-export {
-  ACTIVITY_UPDATE,
-  GOAL_UPDATE,
-  ACTIVITY_DOMAINS,
-  ACTIVITY_CHANGES,
-  isActivityUpdatePayload,
-  type ActivityDomain,
-  type ActivityChange,
-  type ActivityUpdatePayload,
-  type GoalUpdatePayload,
-} from './activityEvents.js';
+// The general activity push surface. Exported from the barrel so the core
+// publishers, the API broadcaster and the UI socket provider all compile
+// against one definition of the wire format.
+export * from './activityEvents.js';
 
 // Export usage configuration and metrics types
 export {
