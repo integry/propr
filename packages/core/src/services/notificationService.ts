@@ -788,8 +788,10 @@ export class NotificationService {
         announcements?.push({
             change: 'created',
             eventId: storedEvent.id,
-            // Only the recipients that actually received a receipt: a user whose
-            // preferences filtered this kind out has nothing new to re-read.
+            // Only the recipients whose receipt this write created: a user whose
+            // preferences filtered this kind out, and a user who already held a
+            // receipt from an earlier call with the same deduplication key, have
+            // nothing new to re-read.
             recipientIds: assigned,
             repository: announcementRepository(storedEvent.target)
         });
@@ -818,6 +820,8 @@ export class NotificationService {
             announcements.push({
                 change: 'created',
                 eventId,
+                // Re-assigning a recipient that already holds a receipt inserts
+                // nothing, so it announces nothing.
                 recipientIds: assigned,
                 repository: announcementRepository(event.target)
             });
@@ -1226,7 +1230,19 @@ export class NotificationService {
             .merge(values);
     }
 
-    /** Insert the Inbox receipts, returning the recipients that received one. */
+    /**
+     * Insert the Inbox receipts, returning the recipients that gained a new one.
+     *
+     * The return value is what the caller announces as `created`, so it names
+     * the recipients whose row this call actually inserted - not everyone who
+     * was eligible. Replaying a create with the same deduplication key, or
+     * re-assigning a recipient that already holds a receipt, inserts nothing
+     * and must therefore announce nothing: an announcement is a claim that an
+     * Inbox gained something, and a dismissed receipt would otherwise be
+     * re-announced as a fresh arrival. Push delivery is deliberately left on
+     * the eligible set below, where the event/subscription unique index already
+     * makes a replay a no-op.
+     */
     private async assignRecipients(
         transaction: Knex.Transaction,
         event: NotificationEvent,
@@ -1262,7 +1278,10 @@ export class NotificationService {
         const now = normalizeISO8601Timestamp(this.now());
         const assignedAt: ISO8601Timestamp = now < event.createdAt ? event.createdAt : now;
 
-        await transaction('notification_user_states')
+        // RETURNING names the rows this statement wrote, so a receipt that
+        // already existed is excluded by the database rather than by a
+        // read-then-write check that a concurrent assignment could race.
+        const insertedRows = await transaction('notification_user_states')
             .insert(eligibleRecipients.map((recipient) => ({
                 event_id: event.id,
                 user_id: recipient.userId,
@@ -1273,9 +1292,10 @@ export class NotificationService {
                 created_at: assignedAt
             })))
             .onConflict(['event_id', 'user_id'])
-            .ignore();
+            .ignore()
+            .returning('user_id') as Array<{ user_id: string }>;
 
-        const assigned = eligibleRecipients.map(recipient => recipient.userId);
+        const assigned = insertedRows.map(row => row.user_id);
         const pushRecipientIds = eligibleRecipients
             .filter(recipient => recipient.pushEnabled)
             .map(recipient => recipient.userId);

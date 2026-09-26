@@ -132,12 +132,49 @@ describe('activity broadcast derivation', () => {
       const foreign = addressed.filter(userId => frame.room !== `user:${userId}`);
       assert.deepEqual(foreign, [], `frame to ${frame.room} leaked ${foreign.join(',')}`);
     }
-    // The instance-wide envelope is the one frame with no recipient at all.
-    assert.deepEqual(activityFrames(frames).map(payload => payload.entityId), ['event-1']);
-    assert.equal('recipientIds' in activityFrames(frames)[0], false);
+    // Each recipient gets their own envelope, and it names nobody.
+    assert.deepEqual(activityFrames(frames).map(payload => payload.entityId), [
+      'event-1',
+      'event-1',
+    ]);
+    for (const envelope of activityFrames(frames)) {
+      assert.equal('recipientIds' in envelope, false);
+    }
   });
 
-  test('a bulk clear has no single subject but is still one envelope', () => {
+  test('an activity subscriber outside the recipient rooms receives neither frame', () => {
+    const { frames, io } = recorder();
+    const broadcaster = new ActivityBroadcaster(io);
+    broadcaster.notificationUpdated(notificationPayload);
+    broadcaster.notificationUpdated({
+      ...notificationPayload,
+      change: 'read',
+      recipientIds: ['user-a'],
+    });
+    broadcaster.notificationUpdated({
+      ...notificationPayload,
+      change: 'dismissed',
+      recipientIds: ['user-a'],
+    });
+
+    // A notification's arrival, and the timing of its owner reading or
+    // dismissing it, are visible only inside that owner's room: the activity
+    // room any authenticated socket may join must carry no trace of them.
+    assert.deepEqual(
+      frames.filter(frame => frame.room === ACTIVITY_ROOM),
+      [],
+    );
+    assert.deepEqual(new Set(frames.map(frame => frame.room)), new Set([
+      'user:user-a',
+      'user:user-b',
+    ]));
+    assert.deepEqual(
+      frames.filter(frame => frame.room === 'user:user-b').map(frame => frame.event),
+      [NOTIFICATION_UPDATE, ACTIVITY_UPDATE],
+    );
+  });
+
+  test('a bulk clear has no single subject but stays with the user who cleared', () => {
     const { frames, io } = recorder();
     new ActivityBroadcaster(io).notificationUpdated({
       ...notificationPayload,
@@ -147,6 +184,10 @@ describe('activity broadcast derivation', () => {
       repository: null,
     });
 
+    assert.deepEqual(frames.map(frame => [frame.room, frame.event]), [
+      ['user:user-a', NOTIFICATION_UPDATE],
+      ['user:user-a', ACTIVITY_UPDATE],
+    ]);
     assert.deepEqual(activityFrames(frames), [{
       eventType: ACTIVITY_UPDATE,
       terminal: true,
@@ -270,8 +311,10 @@ describe('activity broadcast derivation', () => {
       timestamp: '2026-09-26T10:06:00.000Z',
     });
 
+    // One per producer event, except the notification, which is repeated once
+    // per recipient room because that is the only place it may be seen.
     const envelopes = activityFrames(frames);
-    assert.equal(envelopes.length, 3);
+    assert.equal(envelopes.length, 4);
     for (const envelope of envelopes) {
       assert.equal(isActivityUpdatePayload(envelope), true);
       assert.equal(new Date(envelope.occurredAt).toISOString(), envelope.occurredAt);
@@ -295,16 +338,23 @@ describe('socket service activity dispatch', () => {
     return { frames, internals };
   }
 
-  test('each producer event produces exactly one activity envelope', () => {
+  test('each producer event produces exactly one activity envelope per audience', () => {
     const { frames, internals } = dispatcher();
     internals.handleEvent('propr:events:goals', goalPayload);
-    internals.handleEvent('propr:events:notifications', notificationPayload);
+    internals.handleEvent('propr:events:notifications', {
+      ...notificationPayload,
+      recipientIds: ['user-a'],
+    });
     internals.handleEvent('propr:events:usage', usagePayload);
 
     assert.deepEqual(activityFrames(frames).map(payload => payload.domain), [
       'goal',
       'notification',
     ]);
+    assert.deepEqual(
+      frames.filter(frame => frame.event === ACTIVITY_UPDATE).map(frame => frame.room),
+      [ACTIVITY_ROOM, 'user:user-a'],
+    );
   });
 
   test('a task update broadcasts the task once and its activity once', async () => {

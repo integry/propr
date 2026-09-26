@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The API derives `activity:update` from the task, planner, goal and notification
   events it already subscribes to, so a producer cannot publish one without the
   other, and emits over Socket.IO with an opt-in `activity` room and the existing
-  per-user room: notification frames name only their own recipient, so one
-  operator never learns what another is being notified about. Payloads carry ids,
+  per-user room: notification frames and the activity they derive stay in their
+  recipients' rooms, so one operator never learns what another is being notified
+  about or when they read it, and an Inbox arrival is announced only to the
+  recipients whose receipt the write actually created. Payloads carry ids,
   a repository and a timestamp — no prose, tokens, diffs or agent output — and a
   failed publish is logged and swallowed, so a Redis outage degrades to the
   polling that exists today. No client change is required by this step: with

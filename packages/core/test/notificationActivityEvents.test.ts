@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { NotificationUpdatePayload } from '@propr/shared';
@@ -18,6 +19,15 @@ let service: NotificationService;
 let published: Announcement[];
 let publishError: Error | null;
 let clock = Date.parse('2026-09-26T10:00:00.000Z');
+
+/** A valid browser encryption key, so push enrollment is not rejected. */
+function pushKey(privateKeyValue: number): string {
+    const privateKey = Buffer.alloc(32);
+    privateKey[31] = privateKeyValue;
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(privateKey);
+    return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
+}
 
 function createDatabase(): Knex {
     return knex({
@@ -159,6 +169,115 @@ describe('notification activity events', { concurrency: false }, () => {
         assert.equal(published[0].eventId, 'pr-event');
         assert.deepEqual(published[0].recipientIds.sort(), ['user-a', 'user-b']);
         assert.equal(published[0].repository, 'integry/propr');
+    });
+
+    test('replaying a create announces nothing the second time', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        // Same deduplication key: the event row and the receipt are both already
+        // there, so nothing was created and nothing may claim to have been.
+        await createEvent('event-1', ['user-a']);
+
+        assert.deepEqual(published, []);
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'event-1' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            1
+        );
+    });
+
+    test('a replay announces only the recipient that gained a receipt', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        await createEvent('event-1', ['user-a', 'user-c']);
+
+        assert.deepEqual(published.map(announcement => [
+            announcement.change,
+            announcement.eventId,
+            announcement.recipientIds
+        ]), [['created', 'event-1', ['user-c']]]);
+    });
+
+    test('re-assigning an existing recipient announces nothing, a new one once', async () => {
+        await createEvent('event-1', ['user-a']);
+        published = [];
+
+        await service.assignNotificationRecipients('event-1', ['user-a']);
+        assert.deepEqual(published, []);
+
+        await service.assignNotificationRecipients('event-1', ['user-a', 'user-c']);
+        assert.deepEqual(published.map(announcement => [
+            announcement.change,
+            announcement.recipientIds
+        ]), [['created', ['user-c']]]);
+    });
+
+    test('a replay never re-announces a receipt its owner already dismissed', async () => {
+        await createEvent('event-1', ['user-a']);
+        await service.dismissNotification('user-a', 'event-1');
+        published = [];
+
+        await createEvent('event-1', ['user-a']);
+        await service.assignNotificationRecipients('event-1', ['user-a']);
+
+        assert.deepEqual(published, []);
+        const receipt = await database('notification_user_states')
+            .where({ event_id: 'event-1', user_id: 'user-a' })
+            .first() as { dismissed_at?: string | null };
+        assert.ok(receipt.dismissed_at, 'the replay must not resurrect a dismissed receipt');
+    });
+
+    test('a replay still runs push delivery for the recipients it adds', async () => {
+        for (const userId of ['user-a', 'user-c']) {
+            await service.updateNotificationPreferences(userId, {
+                preferences: { task: { pushEnabled: true } }
+            });
+            await service.upsertPushSubscription(userId, {
+                endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+                expirationTime: null,
+                keys: { p256dh: pushKey(userId === 'user-a' ? 1 : 2), auth: 'A'.repeat(22) }
+            });
+        }
+        const pushRecipient = (userId: string) => ({
+            userId,
+            inboxEnabled: true,
+            pushEnabled: true
+        });
+        await service.createNotificationEvent({
+            eventId: 'event-1',
+            deduplicationKey: 'dedupe:event-1',
+            kind: 'task',
+            severity: 'success',
+            target: { type: 'task', repository: 'integry/propr', taskId: 'task-event-1' },
+            title: 'Event event-1',
+            body: 'Body event-1',
+            recipients: [pushRecipient('user-a')]
+        });
+        published = [];
+
+        await service.createNotificationEvent({
+            eventId: 'event-1',
+            deduplicationKey: 'dedupe:event-1',
+            kind: 'task',
+            severity: 'success',
+            target: { type: 'task', repository: 'integry/propr', taskId: 'task-event-1' },
+            title: 'Event event-1',
+            body: 'Body event-1',
+            recipients: [pushRecipient('user-a'), pushRecipient('user-c')]
+        });
+
+        assert.deepEqual(published.map(announcement => announcement.recipientIds), [['user-c']]);
+        // Push delivery is keyed on the eligible set, not on the announcement:
+        // the added recipient is queued and the replayed one stays deduplicated.
+        const jobs = await database('push_delivery_jobs')
+            .where({ event_id: 'event-1' })
+            .select('user_id') as Array<{ user_id: string }>;
+        assert.deepEqual(jobs.map(job => job.user_id).sort(), ['user-a', 'user-c']);
     });
 
     test('a publish failure is swallowed and the write still stands', async () => {

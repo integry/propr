@@ -217,13 +217,18 @@ export class ActivityBroadcaster {
   }
 
   /**
-   * Fan a notification change out to its recipients, then announce it generically.
+   * Fan a notification change out to its recipients, envelope included.
    *
    * Each recipient's frame names only that recipient, so one user can neither
    * receive another user's notification events nor learn who else was notified.
-   * The generic envelope carries no recipient at all, which is what makes it
-   * safe instance-wide and lets an attention consumer react without joining
-   * every user room.
+   * The derived envelope stays inside those same rooms rather than going
+   * instance-wide: dropping `recipientIds` from it does not make it public
+   * information, because it still says that this event id, on this repository,
+   * was delivered to or acted on by someone. The instance-wide activity room is
+   * joined by any authenticated socket, so emitting there would hand every user
+   * the arrival and the read/dismiss timing of notifications addressed to
+   * someone else. A notification is the one activity domain whose audience is
+   * its recipients, so that is the only audience its activity has.
    */
   notificationUpdated(payload: NotificationUpdatePayload): void {
     if (!this.isTimestamped(payload, NOTIFICATION_UPDATE)) return;
@@ -231,13 +236,14 @@ export class ActivityBroadcaster {
     const recipients = Array.isArray(recipientIds)
       ? recipientIds.filter((userId): userId is string => typeof userId === 'string' && userId !== '')
       : [];
+    const envelope = activityFromNotification(payload);
     for (const userId of new Set(recipients)) {
       this.io.to(userRoom(userId)).emit(NOTIFICATION_UPDATE, {
         ...forClient,
         recipientIds: [userId],
       });
+      this.emitActivity(envelope, userRoom(userId));
     }
-    this.emitActivity(activityFromNotification(payload));
   }
 
   /**
