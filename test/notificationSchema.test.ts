@@ -2894,6 +2894,37 @@ describe('durable notification schema', { concurrency: false }, () => {
       );
       assert.strictEqual(pendingClaim.length, 1);
 
+      // Keep the rejection independent of disk/runner speed. Roll back this
+      // future retry so the same job can then exercise a due retry and reclaim.
+      await firstConnection.transaction(async (transaction) => {
+        await recordAttempt(transaction, {
+          attemptId: 'future-retry-attempt',
+          jobId: 'three-state-claim-job',
+          attemptNumber: 1,
+          claimToken: 'pending-worker',
+          status: 'retryable',
+          errorCode: 'temporary',
+          attemptedAt: pendingClaim[0].claimed_at as string,
+          nextRetryAt: '2099-08-02T08:05:00.000Z',
+        });
+        const scheduled = await transaction('push_delivery_jobs')
+          .where({ job_id: 'three-state-claim-job' })
+          .first();
+        await assert.rejects(
+          transaction('push_delivery_jobs')
+            .where({ job_id: 'three-state-claim-job' })
+            .update({
+              status: 'processing',
+              claim_token: 'future-time-worker',
+              claimed_at: scheduled.next_retry_at,
+              lease_expires_at: leaseExpiresAt,
+              next_retry_at: null,
+            }),
+          /invalid push delivery job transition/,
+        );
+        await transaction.rollback();
+      });
+
       await firstConnection.raw(`
         INSERT INTO push_delivery_attempts (
           attempt_id,
@@ -2915,21 +2946,6 @@ describe('durable notification schema', { concurrency: false }, () => {
           'pending-worker'
         )
       `);
-      const scheduled = await firstConnection('push_delivery_jobs')
-        .where({ job_id: 'three-state-claim-job' })
-        .first();
-      await assert.rejects(
-        firstConnection('push_delivery_jobs')
-          .where({ job_id: 'three-state-claim-job' })
-          .update({
-            status: 'processing',
-            claim_token: 'future-time-worker',
-            claimed_at: scheduled.next_retry_at,
-            lease_expires_at: leaseExpiresAt,
-            next_retry_at: null,
-          }),
-        /invalid push delivery job transition/,
-      );
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       const retryableClaim = await claimJobUsingDatabaseTime(
