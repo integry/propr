@@ -35,7 +35,7 @@ it('renders a published GitHub preview through the native session boundary and s
       electronArguments: [
         ...(process.platform === 'linux' ? linuxProbeArguments : []),
         fixture,
-        join(root, 'propr-ui/public/logo.png'),
+        `--propr-published-preview-image=${join(root, 'propr-ui/public/logo.png')}`,
       ],
       name: 'Published preview Electron fixture',
       setup,
@@ -53,6 +53,10 @@ it('renders a published GitHub preview through the native session boundary and s
         + '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260926%2Fus-east-1%2Fs3%2Faws4_request'
         + '&X-Amz-Date=20260926T160427Z&X-Amz-Expires=300'
         + `&X-Amz-Signature=${'a'.repeat(64)}&X-Amz-SignedHeaders=host&response-content-type=image%2Fpng`,
+    ]);
+    assert.deepEqual([...new Set(report.tunnels)], [
+      'github.com:443',
+      'github-production-user-asset-6210df.s3.amazonaws.com:443',
     ]);
     assert.deepEqual(report.boundary.map(request => request.url), report.handled.map(request => request.url));
     assert.ok(report.boundary.every(request => request.rendererOwned === true
