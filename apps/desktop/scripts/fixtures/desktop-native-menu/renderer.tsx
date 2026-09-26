@@ -79,6 +79,7 @@ const socket: SocketContextValue = {
   subscribeToTaskLive: noop, unsubscribeFromTaskLive: noop,
   onTaskUpdate: subscribe, onDraftUpdate: subscribe, onIndexingUpdate: subscribe,
   onQueueStatsUpdate: subscribe, onTaskLiveUpdate: subscribe,
+  onActivityUpdate: subscribe, onNotificationUpdate: subscribe, onUsageUpdate: subscribe,
 };
 
 createRoot(document.getElementById('root')!).render(

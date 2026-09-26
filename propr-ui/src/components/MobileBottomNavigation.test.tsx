@@ -10,6 +10,15 @@ vi.mock('../api/revertApi', () => ({
   getAgentTankUsage: vi.fn(),
   refreshAgentTank: vi.fn(),
 }));
+// The usage widget refreshes on `usage:update`; this suite never pushes one.
+vi.mock('../contexts/useSocket', () => ({
+  useSocket: () => ({
+    isConnected: true,
+    onActivityUpdate: () => () => undefined,
+    onNotificationUpdate: () => () => undefined,
+    onUsageUpdate: () => () => undefined,
+  }),
+}));
 
 const mockGetAgentTankUsage = vi.mocked(getAgentTankUsage);
 const mockRefreshAgentTank = vi.mocked(refreshAgentTank);

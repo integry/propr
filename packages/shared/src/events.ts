@@ -21,6 +21,21 @@ export const TASK_LIVE_UPDATE = 'task:live:update';
 /** Event fired when queue statistics change */
 export const QUEUE_STATS_UPDATE = 'queue:stats:update';
 
+/**
+ * General activity envelope derived from the lifecycle events above.
+ *
+ * Consumers declare an interest (domain, and optionally the kind of change)
+ * instead of matching worker state strings, so a new producer does not have to
+ * touch every surface that reacts to it.
+ */
+export const ACTIVITY_UPDATE = 'activity:update';
+
+/** Event fired when a notification is created, read or dismissed for a recipient */
+export const NOTIFICATION_UPDATE = 'notification:update';
+
+/** Event fired when agent capacity or quota changes */
+export const USAGE_UPDATE = 'usage:update';
+
 /** Redis channel names for pub/sub */
 export const REDIS_CHANNELS = {
   /** Channel for all task-related events */
@@ -32,7 +47,13 @@ export const REDIS_CHANNELS = {
   /** Channel for live task details (Claude log updates) */
   LIVE_DETAILS: 'propr:events:live',
   /** Channel for queue statistics updates */
-  QUEUE_STATS: 'propr:events:queue'
+  QUEUE_STATS: 'propr:events:queue',
+  /** Channel for the derived activity envelope */
+  ACTIVITY: 'propr:events:activity',
+  /** Channel for per-recipient notification changes */
+  NOTIFICATIONS: 'propr:events:notifications',
+  /** Channel for agent capacity/quota changes */
+  USAGE: 'propr:events:usage'
 } as const;
 
 /** Event payload for task updates */
@@ -175,6 +196,76 @@ export interface QueueStatsUpdatePayload {
 /** Command mode for slash-command-driven tasks */
 export type CommandMode = 'default' | 'review' | 'fix';
 
+/** Area of the product an activity event belongs to */
+export type ActivityDomain =
+  | 'task'
+  | 'plan'
+  | 'queue'
+  | 'indexing'
+  | 'goal'
+  | 'notification'
+  | 'usage';
+
+/** What happened to the subject of an activity event */
+export type ActivityChange =
+  | 'created'
+  | 'started'
+  | 'progress'
+  | 'blocked'
+  | 'failed'
+  | 'completed'
+  | 'cancelled'
+  | 'updated';
+
+/**
+ * Event payload for the derived activity envelope.
+ *
+ * It deliberately carries no projection: it says that something in `domain`
+ * changed, and the surface that cares re-reads its own endpoint. That keeps
+ * each endpoint the single owner of its permission check.
+ */
+export interface ActivityUpdatePayload {
+  eventType: typeof ACTIVITY_UPDATE;
+  domain: ActivityDomain;
+  change: ActivityChange;
+  /** Repository the change belongs to, when it has one. */
+  repository?: string;
+  /** Task, draft, goal or notification id the change belongs to, when it has one. */
+  subjectId?: string;
+  /** True when the change ends the subject's lifecycle (completed/failed/cancelled). */
+  terminal?: boolean;
+  occurredAt: string;
+}
+
+/** What happened to a notification */
+export type NotificationChange = 'created' | 'read' | 'dismissed' | 'dismissed_all';
+
+/** Event payload for notification changes, published per recipient */
+export interface NotificationUpdatePayload {
+  eventType: typeof NOTIFICATION_UPDATE;
+  change: NotificationChange;
+  /** Notification event id the change concerns; absent for `dismissed_all`. */
+  eventId?: string;
+  /** Recipient the change was published for. */
+  recipientId?: string;
+  /** Recipient's unread count after the change, when the producer knows it. */
+  unreadCount?: number;
+  occurredAt: string;
+}
+
+/**
+ * Event payload for agent capacity/quota changes.
+ *
+ * A bare trigger on purpose: the usage endpoint owns the projection and its
+ * permission check, so pushing the numbers would authorize them twice.
+ */
+export interface UsageUpdatePayload {
+  eventType: typeof USAGE_UPDATE;
+  /** Provider whose capacity moved, when the producer knows it. */
+  provider?: string;
+  occurredAt: string;
+}
+
 /** Union type for all event payloads */
 export type EventPayload =
   | TaskUpdatePayload
@@ -182,4 +273,7 @@ export type EventPayload =
   | PlanStepUpdatePayload
   | IndexingUpdatePayload
   | TaskLiveUpdatePayload
-  | QueueStatsUpdatePayload;
+  | QueueStatsUpdatePayload
+  | ActivityUpdatePayload
+  | NotificationUpdatePayload
+  | UsageUpdatePayload;

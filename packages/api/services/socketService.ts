@@ -12,13 +12,25 @@ import {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  ACTIVITY_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
+  type ActivityUpdatePayload,
   type EventPayload,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload
 } from '@propr/shared';
+import {
+  activityFromDraftUpdate,
+  activityFromIndexingUpdate,
+  activityFromQueueStatsUpdate,
+  activityFromTaskUpdate,
+} from './activityEvents.js';
 import { QueueBroadcaster } from './queueBroadcaster.js';
 import { TaskWatcherManager } from './taskWatcher.js';
 import {
@@ -187,13 +199,8 @@ export class SocketService {
     if (this.isSubscribed) return;
 
     try {
-      await this.subscriber.subscribe(
-        REDIS_CHANNELS.TASKS,
-        REDIS_CHANNELS.DRAFTS,
-        REDIS_CHANNELS.INDEXING,
-        REDIS_CHANNELS.LIVE_DETAILS,
-        REDIS_CHANNELS.QUEUE_STATS
-      );
+      // Every declared channel, so adding one to the contract is enough.
+      await this.subscriber.subscribe(...Object.values(REDIS_CHANNELS));
       this.isSubscribed = true;
       console.log('[SocketService] Subscribed to Redis channels:', Object.values(REDIS_CHANNELS));
 
@@ -229,6 +236,11 @@ export class SocketService {
         break;
       case QUEUE_STATS_UPDATE:
         this.handleQueueStatsUpdate(payload as QueueStatsUpdatePayload);
+        break;
+      case ACTIVITY_UPDATE:
+      case NOTIFICATION_UPDATE:
+      case USAGE_UPDATE:
+        this.broadcastPushEvent(payload);
         break;
       default:
         console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
@@ -313,6 +325,7 @@ export class SocketService {
       .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
+    this.broadcastPushEvent(activityFromTaskUpdate(payload));
     if (this.notificationProjection) {
       await this.notificationProjection.projectTaskUpdate(payload);
     }
@@ -340,6 +353,8 @@ export class SocketService {
       .to(userRoom(ownerId))
       .emit(DRAFT_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
+    const draftActivity = activityFromDraftUpdate(payload);
+    if (draftActivity) this.broadcastPushEvent(draftActivity);
     if (this.notificationProjection) {
       await this.notificationProjection.projectDraftUpdate(payload);
     }
@@ -349,6 +364,7 @@ export class SocketService {
     this.io.to(`indexing:${payload.repository}`).emit(INDEXING_UPDATE, payload);
     this.io.to('indexing:updates').emit(INDEXING_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${INDEXING_UPDATE} for repository ${payload.repository}, phase: ${payload.phase}`);
+    this.broadcastPushEvent(activityFromIndexingUpdate(payload));
     if (this.notificationProjection) {
       void this.notificationProjection.projectIndexingUpdate(payload).catch(error => {
         console.error(`[SocketService] Failed to project indexing update for ${payload.repository}:`, error);
@@ -364,6 +380,26 @@ export class SocketService {
   private handleQueueStatsUpdate(payload: QueueStatsUpdatePayload): void {
     this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${QUEUE_STATS_UPDATE}`);
+    this.broadcastPushEvent(activityFromQueueStatsUpdate(payload));
+  }
+
+  /**
+   * Broadcast a push event to the room allowed to see it.
+   *
+   * Activity and usage describe the instance and reach every operational
+   * client; a notification belongs to one recipient and reaches their room
+   * only. Consumers declare an interest rather than subscribing per resource,
+   * so this is the one place a new producer has to reach to become visible.
+   */
+  broadcastPushEvent(
+    payload: ActivityUpdatePayload | NotificationUpdatePayload | UsageUpdatePayload,
+  ): void {
+    if (payload.eventType === NOTIFICATION_UPDATE) {
+      if (!payload.recipientId) return;
+      this.io.to(userRoom(payload.recipientId)).emit(NOTIFICATION_UPDATE, payload);
+      return;
+    }
+    this.io.to(INSTANCE_OPERATIONAL_ROOM).emit(payload.eventType, payload);
   }
 
   /** Get the Socket.IO server instance */

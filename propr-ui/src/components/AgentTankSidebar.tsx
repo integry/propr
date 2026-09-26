@@ -1,12 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { getModelDisplayName } from '../utils/modelDisplay';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
-
-// Refresh interval in milliseconds (60 seconds)
-const REFRESH_INTERVAL = 60000;
+import { useLiveResource } from '../hooks/useLiveResource';
 
 // Which provider rows are expanded is a preference, not session state: someone
 // watching Claude's weekly quotas wants the same rows open after a reload.
@@ -362,34 +360,39 @@ interface AgentTankSidebarProps {
 }
 
 const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh = true, className = '', scrollable = false }) => {
-  const [data, setData] = useState<AgentTankUsageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(() => loadExpandedAgents());
 
-  const fetchUsage = useCallback(async (isManualRefresh = false) => {
-    if (isManualRefresh) setRefreshing(true);
-    try {
-      // Trigger Agent Tank to fetch fresh data from providers
-      if (isManualRefresh) {
-        await refreshAgentTank();
-      }
-      const result = await getAgentTankUsage();
-      setData(result);
-    } catch (err) {
-      console.error('Failed to fetch Agent Tank usage:', err);
-      setData({ enabled: false });
-    } finally {
-      setLoading(false);
-      if (isManualRefresh) setRefreshing(false);
-    }
-  }, []);
+  /*
+    Usage is re-read when the server says a quota moved.
 
-  useEffect(() => {
-    fetchUsage(false);
-    const interval = setInterval(() => fetchUsage(false), REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchUsage]);
+    `usage:update` is a bare trigger rather than a snapshot on purpose: the
+    usage endpoint owns the projection and its permission check, so pushing the
+    numbers would mean authorizing them in two places. The read is the same one
+    as before - it just no longer happens on a timer.
+  */
+  const { data: usage, error: usageError, isLoading: loading, refreshNow } = useLiveResource<AgentTankUsageResponse>({
+    read: signal => getAgentTankUsage({ signal }),
+    scopeKey: 'agent-tank-usage',
+    interest: { usage: true },
+  });
+  // A failed read keeps the last good numbers; with nothing read yet the widget
+  // stays out of the sidebar rather than showing an empty frame.
+  const data = usage ?? (usageError ? { enabled: false } : null);
+
+  const handleManualRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      // The button asks the backend to re-probe the providers; the immediate
+      // read keeps it responsive instead of waiting for the published event.
+      await refreshAgentTank();
+      await refreshNow();
+    } catch (err) {
+      console.error('Failed to refresh Agent Tank usage:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshNow]);
 
   const toggleAgent = useCallback((agentName: string) => {
     setExpandedAgents(prev => {
@@ -427,7 +430,7 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
         {allowManualRefresh && (
           <button
             type="button"
-            onClick={() => fetchUsage(true)}
+            onClick={() => { void handleManualRefresh(); }}
             disabled={refreshing}
             className="-my-1 -mr-1 rounded p-1 text-slate-400 hover:text-slate-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-400 disabled:opacity-50"
             title="Refresh usage"

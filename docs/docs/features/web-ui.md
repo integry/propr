@@ -119,7 +119,18 @@ Role assignments do not edit the GitHub trigger whitelist. Configure allowed log
 
 ## Live Updates And Shortcuts
 
-The UI subscribes to socket.io events, so the dashboard, task list, task detail, and plan generation update without a refresh. Keyboard shortcuts: `Cmd/Ctrl+K` focuses global search, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
+The UI subscribes to socket.io events, so the dashboard, task list, task detail, and plan generation update without a refresh. The websocket is the normal path for every live surface — including the parts of the app shell that are on screen no matter which page you are on:
+
+| What updates | When it updates | Event |
+| --- | --- | --- |
+| Header activity monitor, active plans, tasks awaiting review | a task, plan or queue change is published | `task:update`, `draft:update`, `queue:stats:update`, `activity:update` |
+| System health indicator and status modal | a repository index starts, finishes or fails, or agent capacity moves (per-file indexing progress is ignored) | `activity:update` (indexing, usage), `usage:update` |
+| Inbox list and its unread badge | a notification is created, read or dismissed — including in another tab, or by a server-side cleanup such as a merged pull request | `notification:update` |
+| Agent Tank usage bars | a provider quota changes | `usage:update` |
+
+Polling is the fallback for a client whose websocket is unavailable, not the normal path: while the socket is connected and nothing is happening, an open tab issues no requests of its own. A hidden or backgrounded tab does no work either, and reconciles once when you come back to it — as does a tab whose socket dropped and reconnected. The Agent Tank **Refresh usage** button still asks the backend to re-probe the providers on demand.
+
+Keyboard shortcuts: `Cmd/Ctrl+K` focuses global search, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
 
 
 ## Visual preview settings

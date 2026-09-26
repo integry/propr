@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { notificationSchema, type Notification } from '@propr/shared';
+import { notificationSchema, type Notification, type NotificationUpdatePayload } from '@propr/shared';
 import { ToastProvider } from '../components/ui/Toast';
 import InboxPage from './InboxPage';
 import {
@@ -34,6 +34,35 @@ vi.mock('../api/proprApi', () => ({
   postTaskFollowup: vi.fn(),
 }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => demoState }));
+
+const socketState = vi.hoisted(() => ({
+  isConnected: true,
+  notificationCallbacks: new Set<(payload: NotificationUpdatePayload) => void>(),
+}));
+vi.mock('../contexts/useSocket', () => ({
+  useSocket: () => ({
+    isConnected: socketState.isConnected,
+    onNotificationUpdate: (callback: (payload: NotificationUpdatePayload) => void) => {
+      socketState.notificationCallbacks.add(callback);
+      return () => socketState.notificationCallbacks.delete(callback);
+    },
+  }),
+}));
+
+/** Delivers a `notification:update` the way the server publishes it. */
+async function pushNotificationUpdate(
+  change: NotificationUpdatePayload['change'],
+  eventId?: string,
+): Promise<void> {
+  await act(async () => {
+    socketState.notificationCallbacks.forEach(callback => callback({
+      eventType: 'notification:update',
+      change,
+      eventId,
+      occurredAt: '2026-08-24T12:40:00.000Z',
+    }));
+  });
+}
 
 function item(
   id: string,
@@ -93,6 +122,8 @@ describe('Inbox page', () => {
     commitUnreadCount.mockReset();
     refreshUnreadCount.mockClear();
     demoState.isDemoMode = false;
+    socketState.isConnected = true;
+    socketState.notificationCallbacks.clear();
   });
 
   test('renders activity as one newest-first list with only System kept apart and collapsed', async () => {
@@ -242,6 +273,90 @@ describe('Inbox page', () => {
     fireEvent.click(card);
     expect(card).toHaveAttribute('aria-expanded', 'true');
     expect(markNotificationRead).toHaveBeenCalledWith('event-system');
+  });
+
+  test('prepends a pushed notification with exactly one read', async () => {
+    const existing = item('event-existing', 'Already here', null, {
+      occurredAt: '2026-08-24T12:00:00.000Z', createdAt: '2026-08-24T12:00:00.000Z',
+    });
+    const created = item('event-created', 'Just happened', null, {
+      occurredAt: '2026-08-24T12:30:00.000Z', createdAt: '2026-08-24T12:30:00.000Z',
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [existing], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [created, existing], unreadCount: 2, nextCursor: null });
+    renderInbox();
+    await screen.findByText('Already here');
+    expect(listNotifications).toHaveBeenCalledTimes(1);
+
+    await pushNotificationUpdate('created', 'event-created');
+
+    await screen.findByText('Just happened');
+    expect(screen.getAllByRole('article').map(article => article.getAttribute('aria-label'))).toEqual([
+      'Just happened',
+      'Already here',
+    ]);
+    expect(listNotifications).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not resurrect a card the user dismissed when the server echoes that dismissal', async () => {
+    const notification = item('event-1', 'Dismissed here', null, { actions: ['dismiss'] });
+    vi.mocked(listNotifications).mockResolvedValue({
+      notifications: [notification], unreadCount: 1, nextCursor: null,
+    });
+    vi.mocked(dismissNotification).mockResolvedValue({
+      notification: notificationSchema.parse({ ...notification, dismissedAt: '2026-08-24T12:05:00.000Z' }),
+      unreadCount: 0,
+    });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Dismissed here' }));
+    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-1'));
+    const readsAfterDismissal = vi.mocked(listNotifications).mock.calls.length;
+
+    // The server publishes our own dismissal back. The client already knows the
+    // outcome, so it neither re-reads nor puts the card back.
+    await pushNotificationUpdate('dismissed', 'event-1');
+
+    expect(screen.queryByText('Dismissed here')).not.toBeInTheDocument();
+    expect(listNotifications).toHaveBeenCalledTimes(readsAfterDismissal);
+  });
+
+  test('reconciles the whole list once when notifications are cleared elsewhere', async () => {
+    const notification = item('event-1', 'Cleared in another tab');
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [notification], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    renderInbox();
+    await screen.findByText('Cleared in another tab');
+
+    await pushNotificationUpdate('dismissed_all');
+
+    await waitFor(() => expect(screen.queryByText('Cleared in another tab')).not.toBeInTheDocument());
+    expect(listNotifications).toHaveBeenCalledTimes(2);
+  });
+
+  test('re-reads for a change to a notification this client did not touch', async () => {
+    const mine = item('event-mine', 'Dismissed here', null, { actions: ['dismiss'] });
+    const theirs = item('event-theirs', 'Dismissed elsewhere', null, {
+      occurredAt: '2026-08-24T11:00:00.000Z', createdAt: '2026-08-24T11:00:00.000Z',
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [mine, theirs], unreadCount: 2, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    vi.mocked(dismissNotification).mockResolvedValue({
+      notification: notificationSchema.parse({ ...mine, dismissedAt: '2026-08-24T12:05:00.000Z' }),
+      unreadCount: 1,
+    });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Dismissed here' }));
+    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-mine'));
+
+    await pushNotificationUpdate('dismissed', 'event-theirs');
+
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Dismissed elsewhere')).not.toBeInTheDocument();
   });
 
   test('optimistically dismisses and restores an item advertising dismiss when the request fails', async () => {

@@ -11,11 +11,15 @@ import React, {
 import { getNotificationPreferences, getNotificationUnreadCount } from '../api/notificationApi';
 import { useCurrentUser } from './AuthContext';
 import { useDemoMode } from './DemoModeContext';
+import { useSocket } from './useSocket';
 
 type BadgeNavigator = Navigator & {
   setAppBadge?: (count?: number) => Promise<void>;
   clearAppBadge?: () => Promise<void>;
 };
+
+/** Fallback cadence for the badge, armed only while the websocket is unavailable. */
+const DISCONNECTED_FALLBACK_INTERVAL_MS = 60_000;
 
 interface NotificationCenterValue {
   unreadCount: number | null;
@@ -41,10 +45,12 @@ async function updateInstalledBadge(count: number, enabled: boolean): Promise<vo
 export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const user = useCurrentUser();
   const { isDemoMode } = useDemoMode();
+  const { isConnected, onNotificationUpdate } = useSocket();
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
   const [badgeEnabled, setBadgeEnabled] = useState(false);
   const activeRef = useRef(true);
   const generationRef = useRef(0);
+  const previousConnectedRef = useRef<boolean | null>(null);
   const preferenceGenerationRef = useRef(0);
   const unreadCountRef = useRef(unreadCount);
   const badgeEnabledRef = useRef(badgeEnabled);
@@ -114,15 +120,44 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
         void refreshUnreadCount().catch(() => undefined);
       }
     };
-    const interval = window.setInterval(refreshWhenVisible, 60_000);
     window.addEventListener('focus', refreshWhenVisible);
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [identityKey, refreshUnreadCount]);
+
+  useEffect(() => {
+    if (identityKey === null || !isConnected) return;
+    // Every notification change moves this number, so no filtering is needed:
+    // the server scopes the event to this user's room. A hidden tab issues
+    // nothing and the visibility handler above reconciles on return.
+    return onNotificationUpdate(() => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshUnreadCount().catch(() => undefined);
+    });
+  }, [identityKey, isConnected, onNotificationUpdate, refreshUnreadCount]);
+
+  useEffect(() => {
+    // Reconnect reconciliation: a badge that is wrong after a dropped socket is
+    // worse than one request, so read once per connect transition. The identity
+    // effect above covers a session that was connected from the start.
+    const previous = previousConnectedRef.current;
+    previousConnectedRef.current = isConnected;
+    if (identityKey === null || previous !== false || !isConnected) return;
+    void refreshUnreadCount().catch(() => undefined);
+  }, [identityKey, isConnected, refreshUnreadCount]);
+
+  useEffect(() => {
+    // Fallback polling only while the websocket is unavailable.
+    if (identityKey === null || isConnected) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshUnreadCount().catch(() => undefined);
+    }, DISCONNECTED_FALLBACK_INTERVAL_MS);
+    return () => { window.clearInterval(interval); };
+  }, [identityKey, isConnected, refreshUnreadCount]);
 
   const value = useMemo(() => ({
     unreadCount,

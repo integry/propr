@@ -1,6 +1,15 @@
 import { createContext } from 'react';
 import type { Socket } from '@propr/client';
-import { TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import {
+  TaskUpdatePayload,
+  DraftUpdatePayload,
+  IndexingUpdatePayload,
+  QueueStatsUpdatePayload,
+  TaskLiveUpdatePayload,
+  ActivityUpdatePayload,
+  NotificationUpdatePayload,
+  UsageUpdatePayload,
+} from '@propr/shared';
 
 export interface SocketContextValue {
   socket: Socket | null;
@@ -22,6 +31,12 @@ export interface SocketContextValue {
   onIndexingUpdate: (callback: (payload: IndexingUpdatePayload) => void) => () => void;
   onQueueStatsUpdate: (callback: (payload: QueueStatsUpdatePayload) => void) => () => void;
   onTaskLiveUpdate: (callback: (payload: TaskLiveUpdatePayload) => void) => () => void;
+  /** Derived activity envelope; consumers filter it by domain and change. */
+  onActivityUpdate: (callback: (payload: ActivityUpdatePayload) => void) => () => void;
+  /** Notification changes for the connected user only. */
+  onNotificationUpdate: (callback: (payload: NotificationUpdatePayload) => void) => () => void;
+  /** Agent capacity/quota changes; a trigger for the usage read, not a snapshot. */
+  onUsageUpdate: (callback: (payload: UsageUpdatePayload) => void) => () => void;
 }
 
 export const SocketContext = createContext<SocketContextValue | null>(null);

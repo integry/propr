@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UsageUpdatePayload } from '@propr/shared';
 import { getAgentTankUsage, refreshAgentTank } from '../api/revertApi';
 import type { AgentTankUsageResponse } from '../api/revertApi';
 import AgentTankSidebar, { EXPANDED_AGENTS_STORAGE_KEY } from './AgentTankSidebar';
@@ -8,6 +9,33 @@ vi.mock('../api/revertApi', () => ({
   getAgentTankUsage: vi.fn(),
   refreshAgentTank: vi.fn(),
 }));
+
+const socketState = vi.hoisted(() => ({
+  isConnected: true,
+  usageCallbacks: new Set<(payload: UsageUpdatePayload) => void>(),
+}));
+vi.mock('../contexts/useSocket', () => ({
+  useSocket: () => ({
+    isConnected: socketState.isConnected,
+    onActivityUpdate: () => () => undefined,
+    onNotificationUpdate: () => () => undefined,
+    onUsageUpdate: (callback: (payload: UsageUpdatePayload) => void) => {
+      socketState.usageCallbacks.add(callback);
+      return () => socketState.usageCallbacks.delete(callback);
+    },
+  }),
+}));
+
+/** Delivers `usage:update` the way the server publishes it when a quota moves. */
+async function pushUsageUpdate(): Promise<void> {
+  await act(async () => {
+    socketState.usageCallbacks.forEach(callback => callback({
+      eventType: 'usage:update',
+      provider: 'claude',
+      occurredAt: '2026-09-26T12:00:00.000Z',
+    }));
+  });
+}
 
 const mockGetAgentTankUsage = vi.mocked(getAgentTankUsage);
 const mockRefreshAgentTank = vi.mocked(refreshAgentTank);
@@ -51,6 +79,8 @@ function storedExpansion(): unknown {
 
 beforeEach(() => {
   window.localStorage.clear();
+  socketState.isConnected = true;
+  socketState.usageCallbacks.clear();
   mockGetAgentTankUsage.mockResolvedValue(usageResponse());
   mockRefreshAgentTank.mockResolvedValue({ success: true });
 });
@@ -227,6 +257,55 @@ describe('AgentTankSidebar expansion persistence', () => {
     } finally {
       getItem.mockRestore();
       setItem.mockRestore();
+    }
+  });
+});
+
+describe('AgentTankSidebar usage refresh', () => {
+  it('re-reads once when the server says capacity changed, and never on a timer', async () => {
+    vi.useFakeTimers();
+    try {
+      render(<AgentTankSidebar />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(1);
+
+      // Five idle minutes: the widget used to poll three times over this span.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+      expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(1);
+
+      await pushUsageUpdate();
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+
+      expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(2);
+      expect(mockRefreshAgentTank).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still re-probes the providers from the manual refresh button', async () => {
+    await renderSidebar();
+    expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh usage' }));
+
+    await waitFor(() => expect(mockRefreshAgentTank).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(2));
+  });
+
+  it('polls while the socket is unavailable so a client without one still updates', async () => {
+    socketState.isConnected = false;
+    vi.useFakeTimers();
+    try {
+      render(<AgentTankSidebar />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_100); });
+
+      expect(mockGetAgentTankUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

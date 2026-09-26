@@ -193,6 +193,59 @@ describe('notification routes', () => {
         assert.deepEqual(body(), { unreadCount: 0 });
     });
 
+    test('tells the recipient\'s other tabs about a dismissal', async () => {
+        const published: unknown[] = [];
+        const routes = createNotificationRoutes({
+            publishNotificationUpdate: payload => published.push(payload),
+            service: createService({
+                dismissNotification: async () => ({ unreadCount: 1 })
+            })
+        });
+        const { response, status } = responseRecorder();
+
+        await routes.dismiss(authenticatedRequest({ params: { id: 'event-1' } }), response);
+
+        assert.equal(status(), 200);
+        assert.equal(published.length, 1);
+        const payload = published[0] as Record<string, unknown>;
+        assert.equal(payload.eventType, 'notification:update');
+        assert.equal(payload.change, 'dismissed');
+        assert.equal(payload.eventId, 'event-1');
+        assert.equal(payload.recipientId, 'authenticated-user');
+        assert.equal(payload.unreadCount, 1);
+    });
+
+    test('publishes a bulk clear without naming a notification', async () => {
+        const published: Array<Record<string, unknown>> = [];
+        const routes = createNotificationRoutes({
+            publishNotificationUpdate: payload => published.push(payload as unknown as Record<string, unknown>),
+            service: createService()
+        });
+        const { response, status } = responseRecorder();
+
+        await routes.dismissAll(authenticatedRequest(), response);
+
+        assert.equal(status(), 200);
+        assert.equal(published.length, 1);
+        assert.equal(published[0].change, 'dismissed_all');
+        assert.equal(published[0].eventId, undefined);
+        assert.equal(published[0].recipientId, 'authenticated-user');
+    });
+
+    test('publishes nothing when the notification does not exist', async () => {
+        const published: unknown[] = [];
+        const routes = createNotificationRoutes({
+            publishNotificationUpdate: payload => published.push(payload),
+            service: createService({ dismissNotification: async () => null })
+        });
+        const { response, status } = responseRecorder();
+
+        await routes.dismiss(authenticatedRequest({ params: { id: 'missing' } }), response);
+
+        assert.equal(status(), 404);
+        assert.deepEqual(published, []);
+    });
+
     test('returns 400 for malformed limits, cursors, and history flags', async () => {
         let calls = 0;
         const routes = createNotificationRoutes({

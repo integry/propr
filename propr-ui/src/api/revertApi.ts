@@ -133,8 +133,13 @@ export interface AgentTankUsageResponse {
   error?: string;
 }
 
-export const getAgentTankUsage = async (): Promise<AgentTankUsageResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/usage`, { credentials: 'include' });
+export const getAgentTankUsage = async (
+  options: { signal?: AbortSignal } = {}
+): Promise<AgentTankUsageResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/usage`, {
+    credentials: 'include',
+    signal: options.signal,
+  });
   await handleApiResponse(response);
   return response.json();
 };

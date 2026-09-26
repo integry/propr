@@ -1,6 +1,27 @@
 import { Request, Response } from 'express';
 import * as configManager from '@propr/core';
 import { normalizeAgentTankAgents, type AgentStatusResponse } from '@propr/core';
+import { USAGE_UPDATE } from '@propr/shared';
+import { getSocketService } from '../services/socketService.js';
+
+/**
+ * Tells every open tab that capacity may have moved.
+ *
+ * The event is a trigger, not a snapshot: each client re-reads
+ * `/api/config/agent-tank/usage`, which keeps owning the projection and its
+ * permission check. A failed publish only costs the other tabs freshness, so it
+ * must never fail the request that caused it.
+ */
+function publishUsageChanged(): void {
+  try {
+    getSocketService()?.broadcastPushEvent({
+      eventType: USAGE_UPDATE,
+      occurredAt: new Date().toISOString()
+    });
+  } catch {
+    // Freshness only; the re-probe itself already succeeded.
+  }
+}
 
 export function createAgentTankRoutes() {
   async function getAgentTankSettings(_req: Request, res: Response): Promise<void> {
@@ -96,6 +117,7 @@ export function createAgentTankRoutes() {
         clearTimeout(timer);
         if (response.ok) {
           res.json({ success: true });
+          publishUsageChanged();
         } else {
           res.json({ success: false, error: `HTTP ${response.status}` });
         }
