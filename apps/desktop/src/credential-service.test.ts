@@ -30,6 +30,11 @@ const encryption: EncryptionProvider = {
   encrypt: value => Buffer.from(value, 'utf8'),
   decrypt: value => value.toString('utf8'),
 };
+const PUBLIC_ATTACHMENT = 'https://github.com/user-attachments/assets/bfd3845c-0e36-42a1-a193-a58f2f368f1d';
+const PUBLIC_ATTACHMENT_REDIRECT = 'https://github-production-user-asset-6210df.s3.amazonaws.com/829273/659411478-bfd3845c-0e36-42a1-a193-a58f2f368f1d.png'
+  + '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260926%2Fus-east-1%2Fs3%2Faws4_request'
+  + '&X-Amz-Date=20260926T160427Z&X-Amz-Expires=300'
+  + `&X-Amz-Signature=${'a'.repeat(64)}&X-Amz-SignedHeaders=host&response-content-type=image%2Fpng`;
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
   status,
   headers: { 'Content-Type': 'application/json' },
@@ -964,6 +969,43 @@ describe('main-process desktop credential service', () => {
     assert.match(result.activationTicket, /^[A-Za-z0-9_-]{43}$/);
     assert.equal('transportScope' in result, false);
     const activated = await service.activate(result.activationTicket);
+    const publicImageHeaders = {
+      Accept: 'image/avif,image/webp,image/png',
+      Authorization: 'Bearer renderer-controlled',
+      Cookie: 'desktop=must-not-cross',
+      'X-ProPR-Desktop-Main-Request': 'renderer-forgery',
+    };
+    for (const url of [PUBLIC_ATTACHMENT, PUBLIC_ATTACHMENT_REDIRECT]) {
+      assert.deepEqual(service.prepareRequest(url, publicImageHeaders, {
+        rendererOwned: true,
+        resourceType: 'image',
+      }), { requestHeaders: { Accept: publicImageHeaders.Accept } }, url);
+    }
+    for (const [url, resourceType] of [
+      [PUBLIC_ATTACHMENT, 'xhr'],
+      [`${PUBLIC_ATTACHMENT}?download=1`, 'image'],
+      ['https://github.com.evil.example.test/user-attachments/assets/bfd3845c', 'image'],
+      ['https://github.com:444/user-attachments/assets/bfd3845c', 'image'],
+      ['http://github.com/user-attachments/assets/bfd3845c', 'image'],
+      ['wss://github.com/user-attachments/assets/bfd3845c', 'image'],
+      ['https://github.com/user-attachments/other/bfd3845c', 'image'],
+      ['https://private-user-images.githubusercontent.com/829273/private.png?jwt=private-attachment', 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace('.s3.amazonaws.com', '.s3.amazonaws.com.evil.example.test'), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace('https://', 'http://'), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace('https://', 'wss://'), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace('.s3.amazonaws.com/', '.s3.amazonaws.com:444/'), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace('response-content-type=image%2Fpng', 'response-content-type=text%2Fhtml'), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT.replace(/&X-Amz-Signature=[^&]+/, ''), 'image'],
+      [PUBLIC_ATTACHMENT_REDIRECT, 'media'],
+    ] as const) {
+      assert.deepEqual(service.prepareRequest(url, publicImageHeaders, {
+        rendererOwned: true,
+        resourceType,
+      }), { cancel: true }, `${resourceType} ${url}`);
+    }
+    assert.deepEqual(service.prepareRequest(PUBLIC_ATTACHMENT, transportHeaders(activated.transportScope, {
+      ...publicImageHeaders,
+    }), { rendererOwned: true, resourceType: 'image' }), { cancel: true });
     assert.deepEqual((await service.prepareRequestAsync('https://a.example.test/api/tasks', transportHeaders(activated.transportScope, {
       Cookie: 'legacy=session', Authorization: 'Bearer renderer-controlled', Accept: 'application/json',
     }))).requestHeaders, {
@@ -1015,6 +1057,16 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(service.prepareRequest(
       profile.apiBaseUrl + '/api/tasks', transportHeaders(activated.transportScope),
     ), { cancel: true });
+    for (const url of [PUBLIC_ATTACHMENT, PUBLIC_ATTACHMENT_REDIRECT]) {
+      assert.deepEqual(service.prepareRequest(url, publicImageHeaders, {
+        rendererOwned: true,
+        resourceType: 'image',
+      }), { requestHeaders: { Accept: publicImageHeaders.Accept } });
+    }
+    assert.deepEqual(service.prepareRequest(PUBLIC_ATTACHMENT, transportHeaders(activated.transportScope), {
+      rendererOwned: true,
+      resourceType: 'image',
+    }), { cancel: true });
   });
 
   it('uses only the active bearer when profiles share an origin and never a cookie identity', async () => {
