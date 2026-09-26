@@ -77,6 +77,8 @@ export interface CommentJobData {
     reasoningLevel?: ReasoningLevel;
     /** Internal lease token persisted across BullMQ redelivery of this same job. */
     prProcessingLockToken?: string;
+    /** Times this job has waited in place for another job's PR processing lock; drives the backoff. */
+    prLockWaitAttempts?: number;
     /** Legacy original task whose live container a recovery job must wait for. */
     containerCollisionTaskId?: string;
     /** Every preceding task whose live container a recovery job must wait for. */

@@ -47,6 +47,7 @@ export async function schedulePRCommentUsageLimitRetry(
 ): Promise<string> {
     const retryJobData = { ...job.data };
     delete retryJobData.prProcessingLockToken;
+    delete retryJobData.prLockWaitAttempts;
     const retryData: CommentJobData = { ...retryJobData, comments };
     const initialRetry = await issueQueue.add(job.name, retryData, {
         jobId: baseJobId,
