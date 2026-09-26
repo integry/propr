@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Film, ImageOff } from 'lucide-react';
 import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
 import { downsampleToCanvas } from './previewDownsampling';
+import { usePreviewMediaSource } from './usePreviewMediaSource';
 
 /**
  * `className` replaces the default sizing classes; compact thumbnails keep their canvas downsampling either way.
@@ -15,6 +16,7 @@ export function PreviewImage({ preview, compact = false, className: sizing, onUn
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const className = sizing ?? (compact ? 'h-12 w-full object-contain bg-slate-900/5 sm:h-14' : 'aspect-video w-full object-contain');
+  const source = usePreviewMediaSource(preview.url);
 
   const draw = useCallback(() => {
     const image = imageRef.current;
@@ -30,7 +32,14 @@ export function PreviewImage({ preview, compact = false, className: sizing, onUn
   useEffect(() => {
     setFailed(false);
     setDownsampled(false);
-  }, [preview.url]);
+  }, [preview.url, source.src]);
+
+  useEffect(() => {
+    if (source.status === 'failed') {
+      setFailed(true);
+      onUnavailable?.();
+    }
+  }, [onUnavailable, source.status]);
 
   useEffect(() => {
     const image = imageRef.current;
@@ -41,11 +50,12 @@ export function PreviewImage({ preview, compact = false, className: sizing, onUn
     const observer = new ResizeObserver(() => draw());
     observer.observe(image);
     return () => observer.disconnect();
-  }, [compact, draw, failed, preview.url]);
+  }, [compact, draw, failed, preview.url, source.src]);
 
-  if (failed && onUnavailable) return null;
-  if (failed) return <span role="img" aria-label={`${preview.title} — image unavailable`} className={`${className} flex items-center justify-center bg-slate-100 text-slate-500`}><ImageOff className="h-5 w-5" /></span>;
-  const image = <img ref={imageRef} src={preview.url} alt={preview.title} loading="lazy" onLoad={draw} onError={() => { setFailed(true); onUnavailable?.(); }}
+  if ((failed || source.status === 'failed') && onUnavailable) return null;
+  if (failed || source.status === 'failed') return <span role="img" aria-label={`${preview.title} — image unavailable`} className={`${className} flex items-center justify-center bg-slate-100 text-slate-500`}><ImageOff className="h-5 w-5" /></span>;
+  if (source.status === 'loading') return <span role="status" aria-label={`${preview.title} — image loading`} className={`${className} block animate-pulse bg-slate-100`} />;
+  const image = <img ref={imageRef} src={source.src} alt={preview.title} loading="lazy" onLoad={draw} onError={() => { setFailed(true); onUnavailable?.(); }}
     className={`${className}${compact && downsampled ? ' opacity-0' : ''}`} />;
   if (!compact) return image;
   // The image stays in the DOM for lazy loading, accessibility and fallback; the canvas is presentation only.
@@ -54,6 +64,20 @@ export function PreviewImage({ preview, compact = false, className: sizing, onUn
     <canvas ref={canvasRef} aria-hidden="true" data-testid="preview-thumbnail-canvas"
       className={`pointer-events-none absolute inset-0 m-auto ${downsampled ? '' : 'hidden'}`} />
   </span>;
+}
+
+/** Authenticated video equivalent used by full galleries in web and Desktop. */
+export function PreviewVideo({ preview, className }: { preview: PublishedVisualPreview; className: string }) {
+  const source = usePreviewMediaSource(preview.url);
+  if (source.status === 'loading') {
+    return <span role="status" aria-label={`${preview.title} — video loading`} className={`${className} block animate-pulse bg-slate-900`} />;
+  }
+  if (source.status === 'failed') {
+    return <span role="img" aria-label={`${preview.title} — video unavailable`} className={`${className} flex items-center justify-center bg-slate-900 text-sm text-white/70`}>
+      <Film className="mr-2 h-5 w-5" />Video unavailable
+    </span>;
+  }
+  return <video src={source.src} aria-label={preview.title} controls preload="metadata" playsInline className={className} />;
 }
 
 /** A 48×32 thumbnail for action rails; it removes itself when the image can't load rather than show a broken placeholder. */

@@ -1,14 +1,17 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
 import { downsampleToCanvas } from './previewDownsampling';
 import { ParentTaskRow, ChildTaskRow } from './TaskList/TaskRows';
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 import { InboxCard } from '../pages/InboxPageComponents';
+import { AuthProvider } from '../contexts/AuthContext';
+import type { CurrentUser } from '../api/proprTypes';
 
 vi.mock('./Inbox/NotificationActions', () => ({ default: () => null }));
+afterEach(() => vi.restoreAllMocks());
 const media = Array.from({ length: 5 }, (_, i) => ({ title: `Published screen ${i}`, type: 'image' as const, url: `https://github.com/user-attachments/assets/screen-${i}` }));
 const task = { id: 'task-1', status: 'completed', title: 'Ship media', createdAt: '2026-09-13', previewMedia: media };
 const group = { key: 'one', repoOwner: 'acme', repoName: 'web', tasks: [task] };
@@ -36,6 +39,30 @@ describe('preview thumbnails', () => {
     const { container } = render(<PreviewThumbnails media={[{ ...media[0], type: 'video' }]} />);
     expect(screen.getByRole('img', { name: /Video preview: Published screen 0/ })).toBeInTheDocument();
     expect(container.querySelector('video')).toBeNull();
+  });
+  it('loads application media with authenticated fetch and drops the old blob on account switch', async () => {
+    const protectedMedia = [{ ...media[0], url: '/api/preview-media/pulls/acme/web/49/private-asset' }];
+    const user = (id: string) => ({ id, username: id, permissions: [] }) as unknown as CurrentUser;
+    const responses: Array<(response: Response) => void> = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(resolve => responses.push(resolve)));
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValueOnce('blob:account-a').mockReturnValueOnce('blob:account-b');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const { rerender } = render(<AuthProvider user={user('account-a')}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => { responses[0]?.(new Response('image-a', { status: 200, headers: { 'Content-Type': 'image/png' } })); });
+    expect(await screen.findByAltText('Published screen 0')).toHaveAttribute('src', 'blob:account-a');
+
+    rerender(<AuthProvider user={user('account-b')}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByAltText('Published screen 0')).not.toBeInTheDocument();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:account-a');
+    await act(async () => { responses[1]?.(new Response('image-b', { status: 200, headers: { 'Content-Type': 'image/png' } })); });
+    expect(await screen.findByAltText('Published screen 0')).toHaveAttribute('src', 'blob:account-b');
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+    rerender(<AuthProvider user={null}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(screen.queryByAltText('Published screen 0')).not.toBeInTheDocument();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:account-b');
   });
   it.each([false, true])('renders 3 previews in parent and child rows (desktop=%s)', desktopLayout => {
     render(<table><tbody><ParentTaskRow group={group} task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /><ChildTaskRow task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /></tbody></table>);

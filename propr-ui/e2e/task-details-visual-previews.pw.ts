@@ -4,10 +4,11 @@ import { mkdir } from 'node:fs/promises';
 const taskId = 'task-visual-previews-2460';
 const timestamp = '2026-09-22T09:00:00.000Z';
 const asset = (id: string) => `https://github.com/user-attachments/assets/${id}`;
+const privateAsset = (id: string) => `/api/preview-media/pulls/acme/web/42/${id}`;
 const previewMedia = [
-  { type: 'image', title: 'Task queue at desktop width', description: 'The updated task queue after the change.', url: asset('queue') },
+  { type: 'image', title: 'Task queue at desktop width', description: 'Private PR evidence served through the authenticated application media path.', url: privateAsset('queue') },
   { type: 'video', title: 'Checkout walkthrough', url: asset('walkthrough') },
-  { type: 'image', title: 'Goal workspace', description: 'The goal workspace with published evidence.', url: asset('goals') },
+  { type: 'image', title: 'Goal workspace', description: 'The goal workspace with published evidence.', url: privateAsset('goals') },
 ];
 
 async function fixture(page: Page) {
@@ -18,6 +19,9 @@ async function fixture(page: Page) {
     ? route.fulfill({ contentType: 'image/png', body: image }) : route.abort());
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/preview-media/pulls/acme/web/42/')) {
+      return image ? route.fulfill({ contentType: 'image/png', body: image }) : route.abort();
+    }
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: true },
       [`/api/task/${taskId}/history`]: {

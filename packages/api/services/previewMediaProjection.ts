@@ -6,8 +6,9 @@ import { isNotificationPreviewEligible, trustedPreviewMedia, type Notification, 
  * `commentBody` scopes a follow-up run to the completion comment it published;
  * such sources never inherit the PR description shared by earlier runs.
  */
-export interface PreviewSource { repository: string; prNumbers: number[]; commentBody?: string; isFollowUp?: boolean }
+export interface PreviewSource { repository: string; prNumbers: number[]; commentBody?: string; commentId?: number; isFollowUp?: boolean }
 export interface PreviewProjection { previews: PublishedVisualPreview[]; unavailable?: boolean }
+type PreviewAssociation = { kind: 'pull' | 'comment'; repository: string; number: number };
 interface Dependencies {
   loadRepos?: typeof loadMonitoredReposRaw;
   getOctokit?: typeof getAuthenticatedOctokit;
@@ -60,6 +61,7 @@ export function createPreviewMediaReader(deps: Dependencies = {}) {
     sources: readonly PreviewSource[], limit = 3, mode: 'list' | 'gallery' = 'list',
   ): Promise<PreviewProjection[]> {
     const results = new Map<string, PreviewProjection>();
+    const associations = new Map<string, PreviewAssociation>();
     let keys: string[][] | undefined;
     let expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,12 +84,14 @@ export function createPreviewMediaReader(deps: Dependencies = {}) {
           // Run-scoped media is already stored with the task; no GitHub read is needed.
           const key = `comment:${index}`;
           results.set(key, { previews: parseComment?.(source.commentBody) ?? [] });
+          if (source.commentId) associations.set(key, { kind: 'comment', repository, number: source.commentId });
           return [key];
         }
         if (source.isFollowUp) return [];
         return [...new Set(source.prNumbers)].filter(number => Number.isSafeInteger(number) && number > 0).map(number => {
           const key = `${repository}#${number}`;
           reads.set(key, { repository, number });
+          associations.set(key, { kind: 'pull', repository, number });
           return key;
         });
       });
@@ -120,7 +124,9 @@ export function createPreviewMediaReader(deps: Dependencies = {}) {
       previews: [], ...(source.prNumbers.length || source.commentBody ? { unavailable: true } : {}),
     }));
     return keys.map(sourceKeys => ({
-      previews: trustedPreviewMedia(sourceKeys.flatMap(key => results.get(key)?.previews ?? []), limit),
+      previews: trustedPreviewMedia(sourceKeys.flatMap(key => projectApplicationMedia(
+        results.get(key)?.previews ?? [], associations.get(key),
+      )), limit),
       ...(sourceKeys.some(key => !results.has(key) || results.get(key)?.unavailable) ? { unavailable: true } : {}),
     }));
   }
@@ -181,13 +187,43 @@ function isFollowUpTask(row: Record<string, unknown>, initial: Record<string, un
     || !!initial.pullRequestNumber || !!record(initial.issueRef).pullRequestNumber;
 }
 
+function commentIdFromUrl(value: unknown, repository: string): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    const match = /^#issuecomment-([1-9][0-9]*)$/.exec(url.hash);
+    const number = match ? Number(match[1]) : NaN;
+    const path = /^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/[1-9][0-9]*$/.exec(url.pathname);
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.port || url.username || url.password
+      || path?.[1].toLowerCase() !== repository.toLowerCase()
+      || !Number.isSafeInteger(number)) return undefined;
+    return number;
+  } catch { return undefined; }
+}
+
+function projectApplicationMedia(
+  previews: readonly PublishedVisualPreview[], association: PreviewAssociation | undefined,
+): PublishedVisualPreview[] {
+  if (!association) return [...previews];
+  const [owner, repo] = association.repository.split('/');
+  return previews.flatMap(preview => {
+    const attachment = /^https:\/\/github\.com\/user-attachments\/assets\/([A-Za-z0-9_-]+)$/.exec(preview.url);
+    return attachment ? [{ ...preview,
+      url: `/api/preview-media/${association.kind === 'pull' ? 'pulls' : 'comments'}/${owner}/${repo}/${association.number}/${attachment[1]}`,
+    }] : [];
+  });
+}
+
 export function taskPreviewSource(row: Record<string, unknown>): PreviewSource {
   const initial = record(row.initial_job_data);
   const result = record(row.final_result);
   if (isFollowUpTask(row, initial)) {
     const comment = record(record(row.latest_metadata).githubComment);
     const commentBody = typeof comment.body === 'string' && comment.body.includes(VISUAL_PREVIEW_MARKER) ? comment.body : undefined;
-    return { repository: String(row.repository ?? ''), prNumbers: [], isFollowUp: true, ...(commentBody ? { commentBody } : {}) };
+    const repository = String(row.repository ?? '');
+    const commentId = commentIdFromUrl(comment.url, repository);
+    return { repository, prNumbers: [], isFollowUp: true, ...(commentBody ? { commentBody } : {}),
+      ...(commentBody && commentId ? { commentId } : {}) };
   }
   return { repository: String(row.repository ?? ''), prNumbers: [
     row.pr_number || record(record(result.postProcessing).pr).number,
