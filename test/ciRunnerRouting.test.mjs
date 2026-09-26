@@ -530,10 +530,16 @@ describe('PR check routing', () => {
             cwd: REPOSITORY,
             encoding: 'utf8',
         }).stdout.trim().split('\n');
-        assert.deepEqual(units, [
-            'apps/desktop/scripts/electron-frame-semantics.test.mjs',
-            'apps/desktop/scripts/electron-pairing-zstd.test.mjs',
-        ]);
+        // The units the repository actually has, found without the workflow's
+        // shell, so the job is held to running every one of them while a new
+        // unit joins it without this assertion going stale.
+        const scripts = join(REPOSITORY, 'apps', 'desktop', 'scripts');
+        const native = readdirSync(scripts)
+            .filter(entry => entry.endsWith('.test.mjs') && entry !== 'electron-native-test-setup.test.mjs')
+            .filter(entry => readFileSync(join(scripts, entry), 'utf8').includes('prepareNativeElectronTest('))
+            .map(entry => `apps/desktop/scripts/${entry}`);
+        assert.ok(native.length >= 2, 'the repository has native Electron units to run');
+        assert.deepEqual([...units].sort(), native.sort());
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
         assert.match(electron, /PROPR_TEST_SHARD_COUNT: ''\n/);
