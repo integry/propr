@@ -5,10 +5,21 @@
  * updates. Nothing here invents progress, percentages or estimates.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 // The task list owns the relative-time vocabulary; the dashboard reuses it
 // rather than growing a second set of duration strings.
 import { formatDuration, formatRelativeTime } from '../TaskList/utils.tsx';
+import { SocketContext } from '../../contexts/SocketContext';
+import { useLiveRefreshScheduler } from '../../hooks/useLiveRefreshScheduler';
+
+/**
+ * How often a section re-reads while the websocket is unavailable.
+ *
+ * Push is the normal path; this exists so a client with no websocket degrades to
+ * the previous behaviour rather than silently going stale. It is only ever armed
+ * while the connection is down.
+ */
+const FALLBACK_POLL_MS = 30_000;
 
 /** Query-string key holding the dashboard-wide repository filter. */
 export const REPOSITORY_PARAM = 'repository';
@@ -17,7 +28,7 @@ export const ALL_REPOSITORIES = 'all';
 export interface DashboardSectionProps {
   /** `all`, or an `owner/repo` string. */
   repository: string;
-  /** Bumped by the composition root once per coalesced burst of live events. */
+  /** Bumped by the composition root when activity this section reflects arrives. */
   refreshToken: number;
 }
 
@@ -43,6 +54,16 @@ export interface DashboardSection<T> {
  * only records the error. Nothing announces the dropped connection — the rows
  * that stay on screen are the behaviour, and the next successful read replaces
  * them.
+ *
+ * Every read goes through the shared live-refresh scheduler, so all four
+ * sections inherit the same rules rather than each re-implementing them: a burst
+ * of pushed events costs one read, a hidden tab issues none and reconciles once
+ * when it becomes visible, a reconnect reconciles once, and while the socket is
+ * down a bounded fallback interval keeps the rows fresh.
+ *
+ * The connection is read from the context directly rather than through
+ * `useSocket`, because a section rendered outside a socket provider should
+ * degrade to that fallback interval instead of throwing.
  */
 export function useDashboardSection<T>(
   load: () => Promise<T>,
@@ -54,17 +75,20 @@ export function useDashboardSection<T>(
   const requestRef = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
+  const isConnected = useContext(SocketContext)?.isConnected ?? false;
 
-  useEffect(() => {
+  const read = useCallback(async () => {
     const requestId = ++requestRef.current;
-    setState(previous => (previous.scope === scope ? previous : { scope, data: null, error: null }));
-    void loadRef.current().then(
+    await loadRef.current().then(
       data => {
         if (requestId !== requestRef.current) return;
         setState({ scope, data, error: null });
       },
       error => {
         if (requestId !== requestRef.current) return;
+        // A failed refresh keeps the last known rows: it is not evidence that
+        // the work disappeared, so blanking the section would be a lie. The
+        // fallback interval keeps trying.
         setState(previous => ({
           scope,
           data: previous.scope === scope ? previous.data : null,
@@ -72,7 +96,30 @@ export function useDashboardSection<T>(
         }));
       },
     );
-  }, [scope, refreshToken, retryToken]);
+  }, [scope]);
+
+  const scheduler = useLiveRefreshScheduler({
+    isConnected,
+    refresh: read,
+    scopeKey: scope,
+    fallbackPollMs: FALLBACK_POLL_MS,
+  });
+  const { refreshNow } = scheduler;
+
+  useEffect(() => {
+    // A changed scope is different data, so the previous rows are cleared before
+    // the new read lands, and that read is immediate rather than coalesced. The
+    // same path serves the retry control.
+    setState(previous => (previous.scope === scope ? previous : { scope, data: null, error: null }));
+    void refreshNow();
+  }, [scope, retryToken, refreshNow]);
+
+  useEffect(() => {
+    // Pushed activity is coalesced: a burst of relevant events costs one read.
+    // Skipped on mount, where the effect above already read immediately.
+    if (refreshToken === 0) return;
+    scheduler();
+  }, [refreshToken, scheduler]);
 
   const reload = useCallback(() => setRetryToken(token => token + 1), []);
 

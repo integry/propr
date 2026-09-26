@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 import type { Socket } from '@propr/client';
-import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, ACTIVITY_UPDATE, GOAL_UPDATE, isActivityUpdatePayload, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload, ActivityUpdatePayload, GoalUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 import {
   getDesktopConnectionScope,
@@ -53,12 +53,30 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const activityUpdateCallbacksRef = useRef<Set<(payload: ActivityUpdatePayload) => void>>(new Set());
+  const goalUpdateCallbacksRef = useRef<Set<(payload: GoalUpdatePayload) => void>>(new Set());
+  /**
+   * How many components currently want instance-wide activity. Socket.IO rooms
+   * are not reference-counted, so without this the first consumer to unmount
+   * would silently unsubscribe the others.
+   */
+  const activitySubscribersRef = useRef(0);
+  /*
+    The activity room's subscribe/unsubscribe pair must keep a stable identity:
+    consumers call it from an effect, and a callback that changed whenever the
+    socket state changed would make every consumer leave and rejoin the room on
+    each connection flap. The current socket is therefore read through refs.
+  */
+  const socketRef = useRef<Socket | null>(null);
+  const connectedRef = useRef(false);
   const socketConfigurationKey = useSyncExternalStore(
     subscribeDesktopConnectionScope,
     getDesktopSocketConfigurationKey,
     getDesktopSocketConfigurationKey,
   );
   const { demoModeLoading, demoMode, currentUserLoading, currentUserAbsent } = disableReasons;
+  socketRef.current = socket;
+  connectedRef.current = isConnected;
 
   useEffect(() => {
     reportPackagedAcceptanceRendererLifecycle('socket-provider-mounted', {
@@ -203,11 +221,30 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     };
 
+    const activityUpdated = (payload: ActivityUpdatePayload) => {
+      // A frame that does not carry the envelope cannot be filtered by domain or
+      // change, so it is dropped rather than woken every consumer on the page.
+      if (!isCurrentScope() || !isActivityUpdatePayload(payload)) return;
+      // Activity frames are frequent, so only the envelope's shape is logged:
+      // the identifiers are enough to explain a refresh in a console trace.
+      console.log(`[SocketContext] Received activity update: ${payload.domain}/${payload.change}`);
+      activityUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    };
+
+    const goalUpdated = (payload: GoalUpdatePayload) => {
+      if (!isCurrentScope()) return;
+      console.log(`[SocketContext] Received goal update: ${payload.goalId}`);
+      goalUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+      refreshDesktopActiveWork();
+    };
+
     newSocket.on(TASK_UPDATE, taskUpdated);
     newSocket.on(DRAFT_UPDATE, draftUpdated);
     newSocket.on(INDEXING_UPDATE, indexingUpdated);
     newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
+    newSocket.on(ACTIVITY_UPDATE, activityUpdated);
+    newSocket.on(GOAL_UPDATE, goalUpdated);
 
     setSocket(newSocket);
     reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
@@ -233,6 +270,8 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       newSocket.off(INDEXING_UPDATE, indexingUpdated);
       newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
+      newSocket.off(ACTIVITY_UPDATE, activityUpdated);
+      newSocket.off(GOAL_UPDATE, goalUpdated);
       newSocket.disconnect();
     };
   }, [
@@ -328,6 +367,26 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     }
   }, [socket, isConnected]);
 
+  const subscribeToActivity = useCallback(() => {
+    // Emit only on the 0 -> 1 transition: a second subscriber must not send a
+    // duplicate join, and the count is what lets the last leave be correct.
+    activitySubscribersRef.current += 1;
+    if (activitySubscribersRef.current === 1 && connectedRef.current) socketRef.current?.emit('subscribe:activity');
+  }, []);
+
+  const unsubscribeFromActivity = useCallback(() => {
+    activitySubscribersRef.current = Math.max(0, activitySubscribersRef.current - 1);
+    if (activitySubscribersRef.current === 0 && connectedRef.current) socketRef.current?.emit('unsubscribe:activity');
+  }, []);
+
+  useEffect(() => {
+    // Room membership does not survive a reconnect, and a component can
+    // subscribe before the socket is up. Either way the join is (re-)sent once
+    // the connection exists, or the page would go permanently quiet and fall
+    // back to polling forever.
+    if (socket && isConnected && activitySubscribersRef.current > 0) socket.emit('subscribe:activity');
+  }, [socket, isConnected]);
+
   const onTaskUpdate = useCallback((callback: (payload: TaskUpdatePayload) => void) => {
     taskUpdateCallbacksRef.current.add(callback);
     return () => {
@@ -363,6 +422,20 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     };
   }, []);
 
+  const onActivityUpdate = useCallback((callback: (payload: ActivityUpdatePayload) => void) => {
+    activityUpdateCallbacksRef.current.add(callback);
+    return () => {
+      activityUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
+  const onGoalUpdate = useCallback((callback: (payload: GoalUpdatePayload) => void) => {
+    goalUpdateCallbacksRef.current.add(callback);
+    return () => {
+      goalUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -378,11 +451,15 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     unsubscribeFromQueueStats,
     subscribeToTaskLive,
     unsubscribeFromTaskLive,
+    subscribeToActivity,
+    unsubscribeFromActivity,
     onTaskUpdate,
     onDraftUpdate,
     onIndexingUpdate,
     onQueueStatsUpdate,
     onTaskLiveUpdate,
+    onActivityUpdate,
+    onGoalUpdate,
   };
 
   return (
