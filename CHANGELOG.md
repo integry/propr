@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summarized per connected app on `/mcp/apps`; the log stores names, identities,
   outcomes, sizes and durations, never tool arguments or payload content. See
   [docs/mcp.md](docs/mcp.md) and [docs/mcp-coverage.md](docs/mcp-coverage.md).
+- **Ultrafix and auto-merge for one-off MCP tasks**: `create_task` now takes the
+  same automation options `implement_plan` already had — `runUltrafix` with its
+  bounded `ultrafixGoal` (1-10, default 9) and `ultrafixMaxCycles` (1-10, default
+  3), plus `autoMerge`. Both opt-ins are applied as the shared `ultrafix` and
+  `auto-merge` issue labels, so the review-fix loop starts on the resulting pull
+  request as soon as it opens without a separate manual step, and removing a label
+  stops it exactly as it does for planned work. `runUltrafix` requires review
+  scope and `autoMerge` requires merge scope; the ultrafix bounds apply only when
+  `runUltrafix` is true. Existing callers are unaffected: both default to off.
 - **Cancel CI while follow-up implementation is in progress**: a new per-repository
   option (Repositories → Automation, off by default, also available through
   `POST /api/config/repos`) cancels the queued and running GitHub Actions

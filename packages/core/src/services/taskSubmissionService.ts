@@ -39,6 +39,13 @@ export interface SubmissionPayload {
   trigger: string;
   username: string;
   todoIds?: string[];
+  /** Applies the shared `auto-merge` label so the resulting pull request merges itself. */
+  autoMerge?: boolean;
+  /** Applies the shared `ultrafix` label so the resulting pull request runs the review/fix loop. */
+  runUltrafix?: boolean;
+  /** Bounds only travel with an ultrafix opt-in; null keeps the loop's own defaults. */
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
 }
 export const submissionMarker = (id: string): string => `<!-- propr-task-submission:${id} -->`;
 export const submissionAssetPath = (file: SubmissionAttachment, issue: string | number): string =>

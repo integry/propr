@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import {
+    findIssueSubmission,
     findPlanIssueByRepoAndNumber,
     generateCompletionComment,
     getAuthenticatedOctokit,
@@ -14,6 +15,7 @@ import {
     type CommentEventConfig,
     type ClaudeCodeResponse,
     type IssueJobData,
+    type SubmissionPayload,
 } from '@propr/core';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -92,11 +94,40 @@ async function resolveEffectiveUltrafixSettings(planIssue: {
     };
 }
 
+const NO_ULTRAFIX = { runUltrafix: false, goal: null, maxCycles: null } as const;
+
+/**
+ * A directly submitted task carries its own Ultrafix choice, so its bounds come
+ * from the submission the way a planned issue's come from Planner settings.
+ */
+async function resolveSubmissionUltrafixSettings(
+    issueRef: IssueJobData,
+    correlatedLogger: Logger,
+): Promise<{ runUltrafix: boolean; goal: number | null; maxCycles: number | null }> {
+    try {
+        const submission = await findIssueSubmission(issueRef);
+        if (!submission) return NO_ULTRAFIX;
+        const payload = JSON.parse(submission.payload) as SubmissionPayload;
+        if (payload.runUltrafix !== true) return NO_ULTRAFIX;
+        return {
+            runUltrafix: true,
+            goal: sanitizeUltrafixGoal(payload.ultrafixGoal),
+            maxCycles: sanitizeUltrafixMaxCycles(payload.ultrafixMaxCycles),
+        };
+    } catch (error) {
+        correlatedLogger.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message,
+        }, 'Could not read submitted task ultrafix settings');
+        return NO_ULTRAFIX;
+    }
+}
+
 function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
     const parts = ['/ultrafix'];
     if (goal != null) parts.push(`goal=${goal}`);
     if (maxCycles != null) parts.push(`max=${maxCycles}`);
-    return `${parts.join(' ')}\nTriggered automatically by Planner execution settings.`;
+    return `${parts.join(' ')}\nTriggered automatically by the requested execution settings.`;
 }
 
 function createCommentConfig(): CommentEventConfig {
@@ -284,7 +315,7 @@ export async function handleCreatedPlanIssuePR(options: {
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
     const effectiveUltrafix = planIssue
         ? await resolveEffectiveUltrafixSettings(planIssue)
-        : { runUltrafix: false, goal: null, maxCycles: null };
+        : await resolveSubmissionUltrafixSettings(issueRef, correlatedLogger);
 
     const ultrafixTrigger = resolveImplementationPrUltrafixTrigger(
         currentIssueData.data.labels,

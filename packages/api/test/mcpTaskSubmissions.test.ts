@@ -196,3 +196,54 @@ test('an unpolled launch receipt stays with its original execution after an issu
     assert.equal((await f.db('task_submissions').first()).latest_task_id, 'later-task');
   } finally { await f.db.destroy(); }
 });
+
+const automationKeys = ['autoMerge', 'runUltrafix', 'ultrafixGoal', 'ultrafixMaxCycles'] as const;
+const storedAutomation = (payload: Record<string, unknown>) => Object.fromEntries(
+  automationKeys.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
+
+test('create_task requests ultrafix and auto-merge through the shared issue labels used by planned work', async () => {
+  const routing = [['llm-agent-model'], ['base-release']];
+  const scenarios = [
+    { key: 'plain-task', args: {}, labels: [...routing, ['AI']], automation: {} },
+    { key: 'ultrafix-defaults', args: { runUltrafix: true }, labels: [...routing, ['ultrafix'], ['AI']],
+      automation: { runUltrafix: true, ultrafixGoal: 9, ultrafixMaxCycles: 3 } },
+    { key: 'ultrafix-explicit', args: { runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2, autoMerge: true },
+      labels: [...routing, ['auto-merge'], ['ultrafix'], ['AI']],
+      automation: { autoMerge: true, runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2 } },
+    // Bounds are meaningful only for an ultrafix run and are otherwise dropped.
+    { key: 'bounds-without-opt-in', args: { ultrafixGoal: 6, ultrafixMaxCycles: 2 }, labels: [...routing, ['AI']], automation: {} },
+  ];
+  for (const scenario of scenarios) {
+    const f = await fixture();
+    const principal = { ...f.principal, scopes: ['read', 'execute', 'review', 'merge'] } as unknown as McpPrincipal;
+    try {
+      const receipt = (await f.call('create_task', { repository: 'owner/repo', instruction: 'Fix invoice dates',
+        idempotencyKey: scenario.key, ...scenario.args }, principal)).data as Receipt;
+      assert.equal(receipt.state, 'queued');
+      assert.deepEqual(f.calls.filter(call => call.route.endsWith('/labels')).map(call => call.body.labels), scenario.labels);
+      assert.deepEqual(storedAutomation(JSON.parse((await f.db('task_submissions').first()).payload)), scenario.automation);
+    } finally { await f.db.destroy(); }
+  }
+});
+
+test('create_task rejects out-of-range ultrafix bounds and requires review and merge scope for automation', async () => {
+  const f = await fixture();
+  const principal = { ...f.principal, scopes: ['read', 'execute', 'review', 'merge'] } as unknown as McpPrincipal;
+  const args = { repository: 'owner/repo', instruction: 'Fix it', runUltrafix: true, idempotencyKey: 'automation-bounds' };
+  try {
+    for (const invalid of [{ ultrafixGoal: 0 }, { ultrafixGoal: 11 }, { ultrafixGoal: 2.5 }, { ultrafixMaxCycles: 0 },
+      { ultrafixMaxCycles: 11 }, { runUltrafix: 'yes' }, { autoMerge: 1 }, { ultrafixCycles: 3 }]) {
+      await assert.rejects(f.call('create_task', { ...args, ...invalid }, principal));
+    }
+    // A scope denial becomes a durable failed receipt, exactly as implement_plan reports it.
+    for (const [key, request, expected] of [['denied-review', args, /requires review/],
+      ['denied-merge', { ...args, runUltrafix: false, autoMerge: true }, /requires merge/]] as const) {
+      const denied = (await f.call('create_task', { ...request, idempotencyKey: key })).data as Receipt;
+      assert.equal(denied.state, 'failed');
+      assert.match(JSON.stringify(denied.result), expected);
+    }
+    assert.equal(f.calls.length, 0);
+    assert.equal((await f.db('task_submissions')).length, 0);
+    assert.equal(f.enqueues(), 0);
+  } finally { await f.db.destroy(); }
+});
