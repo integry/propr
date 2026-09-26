@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { NotificationUpdatePayload } from '@propr/shared';
@@ -29,10 +32,10 @@ function pushKey(privateKeyValue: number): string {
     return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
 }
 
-function createDatabase(): Knex {
+function createDatabase(filename = ':memory:'): Knex {
     return knex({
         client: 'better-sqlite3',
-        connection: { filename: ':memory:' },
+        connection: { filename },
         useNullAsDefault: true,
         pool: {
             afterCreate(
@@ -46,6 +49,15 @@ function createDatabase(): Knex {
             }
         }
     });
+}
+
+async function migrate(target: Knex): Promise<void> {
+    await up(target);
+    await addPreferenceApis(target);
+    await addBadgePreference(target);
+    await addAdvertisedActions(target);
+    await addSystemFailureState(target);
+    await addPullRequestState(target);
 }
 
 async function createEvent(eventId: string, recipients: string[]) {
@@ -66,12 +78,7 @@ beforeEach(async () => {
     published = [];
     publishError = null;
     database = createDatabase();
-    await up(database);
-    await addPreferenceApis(database);
-    await addBadgePreference(database);
-    await addAdvertisedActions(database);
-    await addSystemFailureState(database);
-    await addPullRequestState(database);
+    await migrate(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -169,6 +176,91 @@ describe('notification activity events', { concurrency: false }, () => {
         assert.equal(published[0].eventId, 'pr-event');
         assert.deepEqual(published[0].recipientIds.sort(), ['user-a', 'user-b']);
         assert.equal(published[0].repository, 'integry/propr');
+    });
+
+    test('a cleanup announces a recipient it dismissed mid-flight', async () => {
+        // Two connections to one database, so a second process can really
+        // commit between the statements of the cleanup below.
+        const directory = await mkdtemp(join(tmpdir(), 'propr-notification-race-'));
+        const filename = join(directory, 'notifications.sqlite');
+        const cleanupDatabase = createDatabase(filename);
+        const assignmentDatabase = createDatabase(filename);
+        const announcements: Announcement[] = [];
+        const publishUpdate = async (payload: Announcement) => {
+            announcements.push(payload);
+        };
+
+        try {
+            await migrate(cleanupDatabase);
+            const cleanup = new NotificationService({
+                database: cleanupDatabase,
+                now: () => new Date(clock += 1000),
+                allowInsecureLocalhost: false,
+                publishUpdate
+            });
+            const assignment = new NotificationService({
+                database: assignmentDatabase,
+                now: () => new Date(clock += 1000),
+                allowInsecureLocalhost: false,
+                publishUpdate
+            });
+            await cleanup.createNotificationEvent({
+                eventId: 'pr-event',
+                deduplicationKey: 'dedupe:pr-event',
+                kind: 'pull_request',
+                severity: 'info',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'PR needs attention',
+                body: 'Review requested',
+                recipients: ['user-a']
+            });
+            announcements.length = 0;
+
+            // user-b is assigned once the cleanup is under way: its receipt is
+            // still active when the dismissal runs, so the dismissal closes it.
+            const client = cleanupDatabase.client as unknown as {
+                query: (connection: unknown, request: { sql?: string }) => Promise<unknown>;
+            };
+            const runQuery = client.query.bind(client);
+            let interleaved = false;
+            client.query = async (connection, request) => {
+                const sql = String(request.sql ?? '');
+                if (
+                    !interleaved
+                    && /^update\s+[`"[]?notification_user_states/i.test(sql)
+                    && sql.includes('dismissed_at')
+                ) {
+                    interleaved = true;
+                    await assignment.assignNotificationRecipients('pr-event', ['user-b']);
+                }
+                return runQuery(connection, request);
+            };
+
+            let dismissed: number;
+            try {
+                dismissed = await cleanup.dismissNotificationsForPullRequest('integry/propr', 42);
+            } finally {
+                client.query = runQuery;
+            }
+
+            assert.ok(interleaved, 'the assignment must commit inside the cleanup');
+            assert.equal(dismissed, 2, 'the cleanup closes the receipt it never read');
+            const closed = await cleanupDatabase('notification_user_states')
+                .whereNotNull('dismissed_at')
+                .pluck('user_id') as string[];
+            assert.deepEqual(closed.sort(), ['user-a', 'user-b']);
+            // Every recipient the update changed hears about it. Announcing the
+            // audience read before the update would leave user-b with a card
+            // that arrived and never went away.
+            const told = announcements
+                .filter(announcement => announcement.change === 'dismissed')
+                .flatMap(announcement => [...announcement.recipientIds]);
+            assert.deepEqual(told.sort(), ['user-a', 'user-b']);
+        } finally {
+            await cleanupDatabase.destroy();
+            await assignmentDatabase.destroy();
+            await rm(directory, { recursive: true, force: true });
+        }
     });
 
     test('replaying a create announces nothing the second time', async () => {

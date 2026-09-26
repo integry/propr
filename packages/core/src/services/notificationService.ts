@@ -1412,21 +1412,15 @@ export class NotificationService {
         announce?: { into: NotificationAnnouncement[]; repository: string | null }
     ): Promise<number> {
         const timestamp = normalizeISO8601Timestamp(this.now());
-        // Read the receipts this update is about to close before closing them:
-        // afterwards they are indistinguishable from receipts an earlier
-        // dismissal already closed, and announcing those would tell a user their
-        // Inbox changed when it did not.
-        const affected = announce
-            ? await database('notification_user_states')
-                .select('event_id', 'user_id')
-                .where({ inbox_enabled: true })
-                .whereNull('dismissed_at')
-                .whereIn('event_id', eventIds.clone()) as Array<{
-                    event_id: string;
-                    user_id: string;
-                }>
-            : [];
-        const changed = await database('notification_user_states')
+        // RETURNING names the receipts this statement closed, so the audience of
+        // the announcement is the set of rows the database actually changed.
+        // Reading the receipts first instead would miss a recipient assigned
+        // between the two statements: the UPDATE dismisses that receipt - its
+        // `dismissed_at` is still null when the UPDATE runs - and its owner
+        // would be told the card arrived and never that it went away. Rows an
+        // earlier dismissal already closed stay excluded by `dismissed_at`, so
+        // nobody is told about a change that did not happen either.
+        const dismissed = await database('notification_user_states')
             .where({ inbox_enabled: true })
             .whereNull('dismissed_at')
             .whereIn('event_id', eventIds)
@@ -1435,12 +1429,16 @@ export class NotificationService {
                     'CASE WHEN created_at > ? THEN created_at ELSE ? END',
                     [timestamp, timestamp]
                 )
-            });
+            })
+            .returning(['event_id', 'user_id']) as Array<{
+                event_id: string;
+                user_id: string;
+            }>;
         if (announce) {
             // One frame per closed event rather than per receipt, so a card with
             // many recipients costs one publish and the API fans it out.
             const recipientsByEvent = new Map<string, string[]>();
-            for (const row of affected) {
+            for (const row of dismissed) {
                 const recipients = recipientsByEvent.get(row.event_id) ?? [];
                 recipients.push(row.user_id);
                 recipientsByEvent.set(row.event_id, recipients);
@@ -1454,7 +1452,7 @@ export class NotificationService {
                 });
             }
         }
-        return Number(changed);
+        return dismissed.length;
     }
 
     private async updateInboxTimestamp(

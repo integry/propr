@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recipients whose receipt the write actually created. Payloads carry ids,
   a repository and a timestamp — no prose, tokens, diffs or agent output — and a
   failed publish is logged and swallowed, so a Redis outage degrades to the
-  polling that exists today. No client change is required by this step: with
+  polling that exists today. Publishing is also bounded: a disconnected
+  publisher drops the event and a Redis that stops answering costs one second,
+  so a notification request or a goal worker never waits out an outage after its
+  database write has committed. No client change is required by this step: with
   nothing subscribed, behaviour is unchanged.
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
