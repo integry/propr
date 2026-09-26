@@ -1,42 +1,7 @@
 import assert from 'node:assert/strict';
-import { createServer, type Server, type Socket } from 'node:net';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { closeEventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
-
-/**
- * A Redis that accepts connections and then says nothing.
- *
- * This is the outage the publisher has to survive: not a refused connection,
- * which fails fast on its own, but a server that takes the command and never
- * answers. Its callers have already committed their database write by the time
- * they publish, so the wait has to end whether Redis comes back or not.
- */
-class SilentRedis {
-    private readonly sockets = new Set<Socket>();
-    private constructor(private readonly server: Server, readonly port: number) {}
-
-    static async listen(): Promise<SilentRedis> {
-        const server = createServer();
-        server.unref();
-        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-        const address = server.address();
-        assert.ok(address && typeof address === 'object', 'the stub must report a port');
-        const stub = new SilentRedis(server, address.port);
-        server.on('connection', socket => {
-            socket.unref();
-            stub.sockets.add(socket);
-            socket.on('close', () => stub.sockets.delete(socket));
-        });
-        return stub;
-    }
-
-    /** Take the server away, the way a Redis restart or a network cut does. */
-    async goAway(): Promise<void> {
-        for (const socket of this.sockets) socket.destroy();
-        this.sockets.clear();
-        await new Promise<void>(resolve => this.server.close(() => resolve()));
-    }
-}
+import { SilentRedis } from './silentRedisStub.js';
 
 let redisHost: string | undefined;
 let redisPort: string | undefined;
@@ -93,6 +58,18 @@ describe('event publisher outage bounds', { concurrency: false }, () => {
         const duration = await elapsedMs(publishNotification);
 
         assert.ok(duration < 500, `the publish waited ${duration}ms on a disconnected client`);
+    });
+
+    test('a batch of publishes costs one timeout, not one per event', async () => {
+        // A cleanup that closes many notifications announces each of them. The
+        // first publish to a connected-but-silent Redis is enough evidence that
+        // the connection is not answering; the rest of the batch must be dropped
+        // instead of each waiting out its own deadline.
+        const duration = await elapsedMs(async () => {
+            for (let published = 0; published < 5; published += 1) await publishNotification();
+        });
+
+        assert.ok(duration < 2_500, `five publishes took ${duration}ms`);
     });
 
     test('shutdown does not wait on an unreachable Redis either', async () => {

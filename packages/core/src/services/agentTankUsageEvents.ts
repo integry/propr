@@ -52,6 +52,21 @@ const defaultUsagePublisher: UsageUpdatePublisher = () =>
     });
 
 /**
+ * Record what one agent's snapshot looks like now.
+ *
+ * Returns true only when it moved away from a baseline this process had already
+ * seen: an agent read for the first time is seeded silently, and a re-read of
+ * the same values is not a change. Every read path shares this map, so a change
+ * one path has already announced is not announced again by the next one.
+ */
+function recordUsageFingerprint(status: AgentStatusResponse): boolean {
+    const fingerprint = agentTankUsageFingerprint(status);
+    const previous = publishedUsageFingerprints.get(status.name);
+    publishedUsageFingerprints.set(status.name, fingerprint);
+    return previous !== undefined && previous !== fingerprint;
+}
+
+/**
  * Announce a usage snapshot only when it differs from the last one observed.
  *
  * The first snapshot a process sees only seeds the fingerprint: it is the
@@ -69,16 +84,53 @@ export async function observeAgentTankUsage(
     publish: UsageUpdatePublisher = defaultUsagePublisher
 ): Promise<void> {
     try {
-        const fingerprint = agentTankUsageFingerprint(status);
-        const previous = publishedUsageFingerprints.get(status.name);
-        publishedUsageFingerprints.set(status.name, fingerprint);
-        if (previous === undefined || previous === fingerprint) return;
+        if (!recordUsageFingerprint(status)) return;
         await publish();
     } catch (error) {
         // Usage tracking is best-effort around real work; a failed publish must
         // never fail the status read that observed the change.
         logger.warn(
             { agent: status.name, error: (error as Error).message },
+            'Could not publish Agent Tank usage change'
+        );
+    }
+}
+
+/**
+ * Announce a change observed in an aggregate `GET /status` snapshot.
+ *
+ * The aggregate read is the one that supplies the client's usage panel, so it
+ * has to be a detection point in its own right: without it a changed percentage
+ * is only announced when something else happens to read the same agent
+ * one-by-one, and the other connected clients are told nothing.
+ *
+ * At most one trigger is published per snapshot however many agents moved. The
+ * event carries no usage values, so a client re-reads this same endpoint once
+ * either way, and the per-agent baselines are still seeded individually: a
+ * newly appearing agent is not a change.
+ *
+ * Expects the ProPR-facing snapshot (`normalizeAgentTankAgents`), so its
+ * fingerprints match the ones the single-agent path records.
+ */
+export async function observeAgentTankUsageSnapshot(
+    agents: Record<string, AgentStatusResponse>,
+    publish: UsageUpdatePublisher = defaultUsagePublisher
+): Promise<void> {
+    try {
+        let changed = false;
+        for (const [agent, status] of Object.entries(agents)) {
+            // A status object that omits its own name is still about the agent
+            // it is keyed by; without the fallback every such agent would share
+            // one baseline.
+            if (recordUsageFingerprint({ ...status, name: status.name || agent })) changed = true;
+        }
+        if (!changed) return;
+        await publish();
+    } catch (error) {
+        // Best-effort, exactly as in the single-agent path: a failed publish
+        // must not fail the usage read that observed the change.
+        logger.warn(
+            { agents: Object.keys(agents).length, error: (error as Error).message },
             'Could not publish Agent Tank usage change'
         );
     }

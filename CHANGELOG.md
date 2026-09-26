@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resume, cancel, claim, completion, failure and leased recovery), Inbox changes
   from the only writer of notification receipts, and an Agent Tank usage trigger
   only when an observed snapshot actually differs — never on an unchanged poll.
-  The API derives `activity:update` from the task, planner, goal and notification
+  Both reads that see provider usage feed that one detector: the per-agent status
+  read and the aggregate endpoint the usage panel itself calls, so a percentage
+  that moves is announced whichever read observes it. The API derives `activity:update` from the task, planner, goal and notification
   events it already subscribes to, so a producer cannot publish one without the
   other, and emits over Socket.IO with an opt-in `activity` room and the existing
   per-user room: notification frames and the activity they derive stay in their
@@ -30,8 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polling that exists today. Publishing is also bounded: a disconnected
   publisher drops the event and a Redis that stops answering costs one second,
   so a notification request or a goal worker never waits out an outage after its
-  database write has committed. No client change is required by this step: with
-  nothing subscribed, behaviour is unchanged.
+  database write has committed. An operation that announces many changes is
+  bounded too — one timeout pauses publishing briefly instead of being charged
+  again per event, and a notification cleanup stops announcing once its flush
+  budget is spent — so closing a hundred notifications cannot cost a hundred
+  timeouts. No client change is required by this step: with nothing subscribed,
+  behaviour is unchanged.
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,

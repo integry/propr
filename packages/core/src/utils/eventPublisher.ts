@@ -54,11 +54,28 @@ const CONNECT_RETRY_COOLDOWN_MS = 5_000;
  */
 const PUBLISH_TIMEOUT_MS = 1_000;
 
+/**
+ * How long to stop publishing after a publish that a live connection failed.
+ *
+ * A per-publish deadline bounds one event; it does not bound an operation that
+ * publishes several. A cleanup that closes a hundred notifications produces a
+ * hundred announcements, and a Redis that has connected and then stopped
+ * answering commands would charge each of them its own timeout - a hundred
+ * seconds of waiting after the database write already committed. One timeout is
+ * enough evidence that the connection is not answering: the rest of the batch
+ * is dropped immediately, and publishing resumes on its own once the cooldown
+ * expires. This is the command-level twin of `CONNECT_RETRY_COOLDOWN_MS`, which
+ * only covers a connection that never came up.
+ */
+const PUBLISH_FAILURE_COOLDOWN_MS = 5_000;
+
 class EventPublisher {
   private redis: InstanceType<typeof Redis> | null = null;
   private isInitialized = false;
   private connectRetryAfter = 0;
   private connecting: Promise<void> | null = null;
+  /** Skip publishing until this time: a live connection just failed a publish. */
+  private publishRetryAfter = 0;
   /** Bumped by `close()`, so a connection still in flight is not adopted after it. */
   private generation = 0;
 
@@ -130,6 +147,12 @@ class EventPublisher {
    * unreachable Redis costs the event, not the operation that produced it.
    */
   private async publish(channel: string, payload: EventPayload): Promise<boolean> {
+    // A publish that already timed out speaks for the ones behind it: the rest
+    // of a batch is dropped for free instead of waiting out its own deadline.
+    if (Date.now() < this.publishRetryAfter) {
+      logger.debug({ channel }, 'Dropped event: EventPublisher is waiting out a failed publish');
+      return false;
+    }
     // `attempt` never rejects, so abandoning it at the deadline cannot leave an
     // unhandled rejection behind.
     const attempt = this.attemptPublish(channel, payload);
@@ -137,6 +160,7 @@ class EventPublisher {
     const deadline = new Promise<boolean>(resolve => {
       expire = setTimeout(() => {
         logger.warn({ channel, timeoutMs: PUBLISH_TIMEOUT_MS }, 'Dropped slow event publish');
+        this.suspendPublishing(`no answer within ${PUBLISH_TIMEOUT_MS}ms`);
         resolve(false);
       }, PUBLISH_TIMEOUT_MS);
       expire.unref?.();
@@ -167,13 +191,38 @@ class EventPublisher {
       }
 
       const message = JSON.stringify(payload);
-      await client.publish(channel, message);
+      try {
+        await client.publish(channel, message);
+      } catch (error) {
+        // The connection was ready and the command still failed: a command
+        // timeout, or a socket that died under it. Either way the next event in
+        // the batch would pay the same cost, so stop publishing for a while.
+        this.suspendPublishing((error as Error).message);
+        throw error;
+      }
       logger.debug({ channel, eventType: payload.eventType }, 'Published event');
       return true;
     } catch (error) {
       logger.warn({ error: (error as Error).message, channel }, 'Failed to publish event');
       return false;
     }
+  }
+
+  /**
+   * Stop publishing for a cooldown after a live connection failed a publish.
+   *
+   * Keeps the client: the connection itself may well be fine again by the time
+   * the cooldown expires, and one successful publish afterwards costs a single
+   * command. An already running cooldown is left as it is, so a burst of
+   * failures cannot extend the silence indefinitely.
+   */
+  private suspendPublishing(reason: string): void {
+    if (Date.now() < this.publishRetryAfter) return;
+    this.publishRetryAfter = Date.now() + PUBLISH_FAILURE_COOLDOWN_MS;
+    logger.warn(
+      { reason, cooldownMs: PUBLISH_FAILURE_COOLDOWN_MS },
+      'Pausing event publishing after a failed publish'
+    );
   }
 
   /**
@@ -339,6 +388,7 @@ class EventPublisher {
    */
   async close(): Promise<void> {
     this.connectRetryAfter = 0;
+    this.publishRetryAfter = 0;
     this.generation += 1;
     const client = this.redis;
     if (client) {

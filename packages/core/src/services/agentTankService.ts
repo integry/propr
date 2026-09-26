@@ -47,6 +47,7 @@ export type { AgentStatusResponse } from './agentTankTypes.js';
 export {
     agentTankUsageFingerprint,
     observeAgentTankUsage,
+    observeAgentTankUsageSnapshot,
     resetAgentTankUsageTracking,
     type UsageUpdatePublisher
 } from './agentTankUsageEvents.js';

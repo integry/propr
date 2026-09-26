@@ -63,6 +63,16 @@ type Database = Knex | Knex.Transaction;
 const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
 
 /**
+ * How long one operation may spend announcing all of its Inbox changes.
+ *
+ * The publisher bounds a single publish, which is not the same as bounding an
+ * operation that publishes one event per notification it closed. This is the
+ * longest a committed mutation is willing to wait for its announcements in
+ * total; a healthy Redis answers all of them in a few milliseconds.
+ */
+const ANNOUNCEMENT_FLUSH_BUDGET_MS = 2_000;
+
+/**
  * One Inbox change to announce after its transaction has committed.
  *
  * Collected during the write instead of published from it: a client that reacts
@@ -703,13 +713,28 @@ export class NotificationService {
      * Failures are logged and swallowed: an unreachable Redis degrades the
      * Inbox to the polling it already falls back on, and must never fail the
      * insert or the dismissal that produced the change.
+     *
+     * The whole flush is bounded, not each announcement: a cleanup that closes
+     * a hundred events produces a hundred of them, and each one costing its own
+     * timeout would keep the caller waiting minutes after its transaction had
+     * already committed. Once the budget is spent the remaining announcements
+     * are dropped - the clients that lose them fall back to the same polling an
+     * unreachable Redis already leaves them with.
      */
     private async flushAnnouncements(
         announcements: readonly NotificationAnnouncement[]
     ): Promise<void> {
-        for (const announcement of announcements) {
+        const deadline = Date.now() + ANNOUNCEMENT_FLUSH_BUDGET_MS;
+        for (const [index, announcement] of announcements.entries()) {
             const recipientIds = [...new Set(announcement.recipientIds)];
             if (recipientIds.length === 0) continue;
+            if (Date.now() >= deadline) {
+                logger.warn(
+                    { dropped: announcements.length - index, budgetMs: ANNOUNCEMENT_FLUSH_BUDGET_MS },
+                    'Stopped announcing notification changes: the flush budget is spent'
+                );
+                return;
+            }
             try {
                 await this.publishUpdate({
                     change: announcement.change,

@@ -367,6 +367,7 @@ export {
     normalizeAgentTankAgents,
     agentTankUsageFingerprint,
     observeAgentTankUsage,
+    observeAgentTankUsageSnapshot,
     resetAgentTankUsageTracking
 } from './services/agentTankService.js';
 export type { AgentStatusResponse } from './services/agentTankService.js';
