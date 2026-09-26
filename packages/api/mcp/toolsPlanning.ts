@@ -4,7 +4,7 @@ import { loadAgents, loadSyntheticAgents } from '@propr/core';
 import type { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { McpError } from './config.js';
 import { callWorkflow } from './adapter.js';
-import { type McpTool, type ToolDeps, planShape, mutationShape, pageShape, repositorySchema, textSchema, idSchema, ok, workflow, markMergedPullRequests } from './tools.js';
+import { type McpTool, type ToolDeps, TERMINAL_PLAN_STATUSES, planScopeShape, planShape, mutationShape, pageShape, repositorySchema, textSchema, idSchema, ok, workflow, markMergedPullRequests } from './tools.js';
 import { planRelationLimit, summarizePlan } from './listSummaries.js';
 
 const target = { table: 'task_drafts', column: 'draft_id', arg: 'planId', owner: 'user_id' };
@@ -15,9 +15,13 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
   const plan = z.array(planTask).min(1).max(20);
   
   const { db, policy } = deps;
-  tools.push({ name: 'list_plans', description: 'List compact plan summaries with issue progress, agent assignments and pull requests.', scope: 'read', readOnly: true,
-    schema: z.object({ repository: repositorySchema, ...pageShape }).strict(), run: async ({ principal, args }) => {
-      const rows = await db('task_drafts').where({ repository: args.repository, user_id: principal.user.id })
+  tools.push({ name: 'list_plans', description: 'List compact plan summaries with issue progress, agent assignments and pull requests. Filter with status to see only one lifecycle state, such as review or executing; active covers every plan that has not merged or failed.', scope: 'read', readOnly: true,
+    schema: z.object({ repository: repositorySchema, ...planScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
+      const query = db('task_drafts').where({ repository: args.repository, user_id: principal.user.id });
+      // The lifecycle filter runs in the query, before paging, so offset and limit page the filtered set.
+      if (args.status === 'active') query.whereRaw(`coalesce(status, 'draft') not in (${TERMINAL_PLAN_STATUSES.map(() => '?').join(', ')})`, [...TERMINAL_PLAN_STATUSES]);
+      else if (args.status && args.status !== 'all') query.where('status', args.status);
+      const rows = await query
         .select('draft_id', 'repository', 'name', 'initial_prompt', 'context_config', 'generation_trace',
           'refinement_result', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at')
         .orderBy('created_at', 'desc').orderBy('draft_id', 'desc').offset(args.offset).limit(args.limit);
