@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PublishedVisualPreview } from '@propr/shared';
 import VisualPreviewGallery from './VisualPreviewGallery';
 
@@ -8,8 +8,17 @@ const preview = (title: string): PublishedVisualPreview =>
 
 const both = [preview('Desktop'), preview('Mobile')];
 const open = (title: string) => fireEvent.click(screen.getByRole('button', { name: `Open full-size preview: ${title}` }));
+afterEach(() => vi.restoreAllMocks());
 
 describe('VisualPreviewGallery', () => {
+  it('keeps authenticated application media inside the gallery instead of exposing a broken renderer link', () => {
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+    const secured = { ...preview('Private'), url: '/api/preview-media/pulls/acme/web/42/private' };
+    render(<VisualPreviewGallery previews={[secured]} />);
+    expect(screen.getByRole('button', { name: 'Open full-size preview: Private' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open original: Private' })).toBeNull();
+  });
+
   it('keeps the open preview when a refresh reorders the list', () => {
     const { rerender } = render(<VisualPreviewGallery previews={both} />);
     open('Mobile');

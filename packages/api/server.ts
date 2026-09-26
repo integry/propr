@@ -1,5 +1,6 @@
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
+import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 /* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
@@ -331,6 +332,7 @@ function setupRoutes(): void {
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
   app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const repositoryMediaRoutes = createRepositoryMediaRoutes({ db });
+  const previewMediaRoutes = createPreviewMediaRoutes();
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -400,6 +402,8 @@ function setupRoutes(): void {
     ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
     ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities], ['get', '/api/voice/briefing', voiceRoutes.getBriefing],
     ['get', '/api/repos/media', repositoryMediaRoutes.getMedia],
+    ['get', '/api/preview-media/pulls/:owner/:repo/:number/:assetId', previewMediaRoutes.getPullMedia],
+    ['get', '/api/preview-media/comments/:owner/:repo/:number/:assetId', previewMediaRoutes.getCommentMedia],
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],

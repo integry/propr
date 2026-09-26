@@ -39,6 +39,7 @@ test('default task-list and identity-only preview consumers exit without opening
 });
 
 const url = (id: string) => `https://github.com/user-attachments/assets/${id}`;
+const servedPull = (number: number, id: string) => `/api/preview-media/pulls/acme/web/${number}/${id}`;
 const body = (prefix: string) => `![unmarked](${url('ignored')})\n<!-- propr-visual-preview -->\n${Array.from({ length: 5 }, (_, i) => `### ${prefix} ${i}\n\n![Preview](${url(`${prefix}-${i}`)})\n`).join('\n')}`;
 function fixture() {
   let repos = [
@@ -182,7 +183,7 @@ test('strict published parser rejects unmarked, local, and untrusted Markdown; e
   assert.equal((await reader.project([{ repository: 'acme/web', prNumbers: [99] }]))[0].unavailable, true);
   const unsafe = createPreviewMediaReader({ loadRepos: async () => [{ name: 'acme/web', enabled: true, visualPreview: { enabled: true, types: ['image'] } }],
     getOctokit: async () => ({ request: async () => ({ data: { body: `![outside](${url('outside')})\n<!-- propr-visual-preview -->\n### Local\n\n![Local](.propr/previews/desktop.png)\n### Evil\n\n![Evil](https://evil.test/preview.png)\n### Query\n\n![Query](${url('query')}?secret=yes)\n### Valid\n\n![Image](${url('valid')})` } }) }) as never });
-  assert.deepEqual((await unsafe.project([{ repository: 'acme/web', prNumbers: [1] }]))[0].previews.map(item => item.url), [url('valid')]);
+  assert.deepEqual((await unsafe.project([{ repository: 'acme/web', prNumbers: [1] }]))[0].previews.map(item => item.url), [servedPull(1, 'valid')]);
   assert.deepEqual(trustedPreviewMedia([{ title: 'Evil', type: 'image', url: 'https://github.com.evil.test/user-attachments/assets/x' }]), []);
 });
 
@@ -227,7 +228,7 @@ test('real implementation completion persists one PR event and projects one trus
     // The immutable event retains its original PR even if the task subsequently changes.
     await database('tasks').where({ task_id: 'implementation-1' }).update({ pr_number: 88 });
     const [projected] = await projectNotificationPreviews(notifications, reader, database);
-    assert.deepEqual(projected.previewMedia?.map(item => item.url), [url('1-0')]);
+    assert.deepEqual(projected.previewMedia?.map(item => item.url), [servedPull(1, '1-0')]);
     assert.deepEqual(parseNotification(projected), projected);
     const unchanged = { ...projected };
     delete unchanged.previewMedia;
@@ -364,11 +365,18 @@ test('follow-up runs never inherit PR description previews and only project thei
   [review, batch, direct, nested].forEach(source => assert.deepEqual(source, { repository: 'acme/web', prNumbers: [], isFollowUp: true }));
   assert.deepEqual(fix.prNumbers, []);
   const media = await reader.project([initial, review, fix, batch, direct, nested]);
-  assert.deepEqual(media[0].previews.map(item => item.url), [url('1-0'), url('1-1'), url('1-2')]);
+  assert.deepEqual(media[0].previews.map(item => item.url), [servedPull(1, '1-0'), servedPull(1, '1-1'), servedPull(1, '1-2')]);
   assert.deepEqual(media[1], { previews: [] });
   assert.deepEqual(media[2].previews.map(item => item.url), [url('fix-0'), url('fix-1'), url('fix-2')]);
   assert.deepEqual(media.slice(3), [{ previews: [] }, { previews: [] }, { previews: [] }]);
   assert.deepEqual(calls, [1]);
+  const associatedComment = taskPreviewSource({ task_id: 'fix', repository: 'acme/web', task_type: 'pr-comment',
+    latest_metadata: JSON.stringify({ githubComment: { url: 'https://github.com/acme/web/pull/1#issuecomment-77', body: body('comment') } }) });
+  assert.deepEqual((await reader.project([associatedComment]))[0].previews.map(item => item.url), [
+    '/api/preview-media/comments/acme/web/77/comment-0',
+    '/api/preview-media/comments/acme/web/77/comment-1',
+    '/api/preview-media/comments/acme/web/77/comment-2',
+  ]);
   disable();
   assert.deepEqual((await reader.project([fix]))[0], { previews: [] });
 });
@@ -390,7 +398,7 @@ test('task list isolates previews for follow-up runs sharing a PR', async () => 
     ]);
     const result = await getTasksFromDb({ db, previewReader: reader, status: 'all', repository: 'all', offset: 0, limit: 10 });
     const byId = new Map((result.tasks as Array<{ id: string; previewMedia?: PublishedVisualPreview[] }>).map(task => [task.id, task.previewMedia]));
-    assert.deepEqual(byId.get('initial')?.map(item => item.url), [url('1-0'), url('1-1'), url('1-2')]);
+    assert.deepEqual(byId.get('initial')?.map(item => item.url), [servedPull(1, '1-0'), servedPull(1, '1-1'), servedPull(1, '1-2')]);
     assert.equal(byId.get('review'), undefined);
     assert.deepEqual(byId.get('fix')?.map(item => item.url), [url('fix-0'), url('fix-1'), url('fix-2')]);
     assert.deepEqual(calls, [1]);

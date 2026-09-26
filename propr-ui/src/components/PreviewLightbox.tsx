@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, ImageOff, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { PublishedVisualPreview } from '@propr/shared';
 import { MAX_ZOOM, MIN_ZOOM, useLightboxZoom } from './useLightboxZoom';
+import { usePreviewMediaSource } from './usePreviewMediaSource';
 
 const FOCUSABLE = 'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
 const control = 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white/90 hover:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 disabled:opacity-40 disabled:hover:bg-transparent';
@@ -28,6 +29,7 @@ export default function PreviewLightbox({ previews, index, onIndexChange, onClos
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const source = usePreviewMediaSource(preview?.url ?? '');
   const zoom = useLightboxZoom({ stageRef, contentRef: imageRef, resetKey: preview?.url });
   const { onWheel } = zoom;
 
@@ -111,7 +113,7 @@ export default function PreviewLightbox({ previews, index, onIndexChange, onClos
   if (!preview) return null;
   const { scale } = zoom.view;
   const percent = Math.round(scale * 100);
-  const failed = failedUrl === preview.url;
+  const failed = failedUrl === preview.url || source.status === 'failed';
 
   return createPortal(
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={handleKeyDown}
@@ -139,7 +141,9 @@ export default function PreviewLightbox({ previews, index, onIndexChange, onClos
           ? <span role="img" aria-label={`${preview.title} — image unavailable`} className="flex flex-col items-center gap-2 text-sm text-white/70">
             <ImageOff className="h-8 w-8" aria-hidden="true" />Image unavailable
           </span>
-          : <img ref={imageRef} key={preview.url} src={preview.url} alt={preview.title} draggable={false} onError={() => setFailedUrl(preview.url)}
+          : source.status === 'loading'
+            ? <span role="status" className="text-sm text-white/70">Loading preview…</span>
+          : <img ref={imageRef} key={source.src} src={source.src} alt={preview.title} draggable={false} onError={() => setFailedUrl(preview.url)}
             style={{ transform: zoom.transform }}
             className={`max-h-full max-w-full origin-center object-contain will-change-transform ${scale > MIN_ZOOM ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`} />}
         {total > 1 && <>
