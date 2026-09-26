@@ -11,6 +11,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { retryConfigs, withRetry } from '../utils/retryHandler.js';
 import { clearUltrafixStateForLabelRemoval } from '../utils/ultrafixLabelTransition.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
+import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
     IssuesEvent,
@@ -443,6 +444,8 @@ export async function processWebhookEvent(
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
         await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
+        // A closed pull request's validation is as obsolete as one a follow-up replaces.
+        if (payload.action === 'closed') await recordClosedPullRequestForCiCancellation(payload, getClosedPullRequestCiRedis());
     }
 
     // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work

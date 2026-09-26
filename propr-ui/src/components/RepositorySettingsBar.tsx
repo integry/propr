@@ -71,7 +71,7 @@ const CancelCiDuringFollowupControl: React.FC<{
       >
         <span className="min-w-0">
           <span className="block">Cancel CI while follow-up implementation is in progress</span>
-          <span className="mt-1 block text-slate-500">Only the validation workflows you select below are cancelled on the commit ProPR is about to replace. Every other workflow, deployments and previews included, keeps running. If you select nothing here, the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback applies instead, and only what it lists is cancelled. Checks start again on the new commit, or resume on the current one if no commit is produced.</span>
+          <span className="mt-1 block text-slate-500">Only the validation workflows you select below are cancelled on the commit ProPR is about to replace. Every other workflow, deployments and previews included, keeps running. If you select nothing here, the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback applies instead, and only what it lists is cancelled. Checks start again on the new commit, or resume on the current one if no commit is produced. The same workflows are also cancelled when a pull request is merged or closed while they are still queued or running.</span>
         </span>
         <input
           type="checkbox"
