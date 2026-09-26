@@ -149,21 +149,31 @@ describe('Dashboard push-driven refreshes', () => {
   });
 
   it('does not re-read aggregate stats for progress-only activity', async () => {
-    renderDashboard();
-    await waitForSections();
-    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(1));
+    // The clock is held still for the burst, then stepped past one coalescing
+    // window: on real timers a loaded machine can take longer than that window
+    // to deliver five frames, which splits the burst across two windows and
+    // makes the count of reads a race rather than a fact.
+    vi.useFakeTimers();
+    try {
+      renderDashboard();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(mockStats).toHaveBeenCalledTimes(1);
 
-    // A tool-call heartbeat is the noisiest event on a busy instance. Re-running
-    // the completion-count aggregate for it was the single most wasteful refresh
-    // on the page; the stats panel only reacts to finished work.
-    for (let index = 0; index < 5; index += 1) {
-      await push(activity('task', 'progressed', { entityId: `task-${index}` }));
+      // A tool-call heartbeat is the noisiest event on a busy instance. Re-running
+      // the completion-count aggregate for it was the single most wasteful refresh
+      // on the page; the stats panel only reacts to finished work.
+      for (let index = 0; index < 5; index += 1) {
+        await push(activity('task', 'progressed', { entityId: `task-${index}` }));
+      }
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(mockActive).toHaveBeenCalledTimes(2);
+      expect(mockStats).toHaveBeenCalledTimes(1);
+      // Progress is not a completion either, so the outcomes feed stays put.
+      expect(mockOutcomes).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
     }
-
-    await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(2));
-    expect(mockStats).toHaveBeenCalledTimes(1);
-    // Progress is not a completion either, so the outcomes feed stays put.
-    expect(mockOutcomes).toHaveBeenCalledTimes(1);
   });
 
   it('re-reads outcomes and stats exactly once for a completion', async () => {

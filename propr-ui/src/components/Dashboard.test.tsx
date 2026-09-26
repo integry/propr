@@ -275,28 +275,39 @@ describe('Dashboard', () => {
   });
 
   it('coalesces a burst of activity into a single refresh per interested section', async () => {
-    renderDashboard();
-    await waitForSections();
+    // The clock is held still for the burst. Each frame is still delivered in
+    // its own flush, so only the scheduler's coalescing can collapse them —
+    // but on real timers a loaded machine can spend longer than the coalescing
+    // window delivering ten frames, which splits one burst into two windows and
+    // costs a second read. That is correct behaviour and a broken assertion, so
+    // the window is stepped explicitly instead of raced against.
+    vi.useFakeTimers();
+    try {
+      renderDashboard();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(screen.getByTestId('historical-stats-section')).toBeInTheDocument();
+      expect(mockActive).toHaveBeenCalledTimes(1);
+      expect(activityHandler).not.toBeNull();
 
-    await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(1));
-    expect(activityHandler).not.toBeNull();
+      for (let index = 0; index < 10; index += 1) {
+        await push(activity('task', 'completed', { entityId: `task-${index}` }));
+      }
+      // Still inside the window: the burst has cost nothing yet.
+      expect(mockActive).toHaveBeenCalledTimes(1);
 
-    // Each event is delivered in its own flush, so only the scheduler's
-    // coalescing can collapse them into one read per section.
-    for (let index = 0; index < 10; index += 1) {
-      await push(activity('task', 'completed', { entityId: `task-${index}` }));
-    }
-
-    await waitFor(() => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
       expect(mockActive).toHaveBeenCalledTimes(2);
       expect(mockStats).toHaveBeenCalledTimes(2);
       expect(mockAttention).toHaveBeenCalledTimes(2);
       expect(mockOutcomes).toHaveBeenCalledTimes(2);
-    });
-    // And nothing trails in behind the coalesced read.
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); });
-    expect(mockActive).toHaveBeenCalledTimes(2);
-    expect(mockStats).toHaveBeenCalledTimes(2);
+
+      // And nothing trails in behind the coalesced read.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(mockActive).toHaveBeenCalledTimes(2);
+      expect(mockStats).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not reorder running work under a pointer when live updates arrive', async () => {
