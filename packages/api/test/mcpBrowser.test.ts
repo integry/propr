@@ -17,7 +17,7 @@ import { closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider, type McpGrant } from '../mcp/oauth.js';
-import { mountMcpBrowser } from '../mcp/browser.js';
+import { GitHubReauthRequired, mountMcpBrowser } from '../mcp/browser.js';
 import { configureDemoMode } from '../demoMode.js';
 import { mountMcp } from '../mcp/server.js';
 import { configureApiProxyTrust } from '../requestRateLimits.js';
@@ -302,4 +302,30 @@ test('real consent and connected-app routes work at desktop/mobile widths and en
       { path: '.propr/previews/mcp-consent-mobile.png', title: 'Mobile MCP consent bulk controls', description: 'The same selected consent state at a 390-pixel mobile viewport.' },
     ], toolSuggestions: [] }, null, 2));
   } finally { await browser?.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await db.destroy(); }
+});
+
+test('a rejected GitHub session token sends consent back through sign-in instead of failing', async () => {
+  configureDemoMode(false);
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  await db.schema.createTable('task_drafts', table => table.string('draft_id').primary()); await up(db);
+  const app = express();
+  app.use(session({ secret: randomBytes(32).toString('hex'), resave: false, saveUninitialized: true }));
+  app.use((req, _res, next) => { req.user = { id: '123', username: 'demo-developer', login: 'demo-developer', displayName: 'Demo developer', email: null, avatarUrl: null, accessToken: 'revoked-fixture' }; req.isAuthenticated = (() => true) as never; next(); });
+  const server = createHttpServer(app);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const oauth = new McpOAuthProvider(new McpStore(db, randomBytes(32)), { origin, resource: `${origin}/api/mcp`, instanceId: 'development-instance', encryptionKey: randomBytes(32) });
+  mountMcpBrowser(app, oauth, { accessibleRepositories: async () => { throw new GitHubReauthRequired('Bad credentials'); } });
+  try {
+    const client = await oauth.clientsStore.registerClient!({ client_name: 'Chat client', token_endpoint_auth_method: 'none', redirect_uris: ['https://client.example/callback'], grant_types: ['authorization_code'], response_types: ['code'] });
+    let consent = '';
+    await oauth.authorize(client, { redirectUri: client.redirect_uris[0], resource: new URL(`${origin}/api/mcp`), codeChallenge: randomBytes(32).toString('base64url'), scopes: ['read'] }, { redirect: (url: string) => { consent = url; } } as never);
+    const consentPath = new URL(consent).pathname + new URL(consent).search;
+    const response = await fetch(`${origin}${consentPath}`, { redirect: 'manual' });
+    assert.equal(response.status, 302);
+    const login = new URL(response.headers.get('location')!, origin);
+    assert.equal(login.pathname, '/api/auth/github');
+    assert.equal(login.searchParams.get('redirect_to'), `${origin}${consentPath}`, 'sign-in must resume the same consent request');
+    assert.equal(response.headers.get('set-cookie'), null, 'the session holding the dead token is dropped, not reissued');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await db.destroy(); }
 });
