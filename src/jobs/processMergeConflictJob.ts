@@ -300,17 +300,19 @@ async function releaseMergeJobResources(options: {
     correlatedLogger: Logger;
 }): Promise<void> {
     const { lockKey, correlationId, localRepoPath, worktreeInfo, jobSucceeded, correlatedLogger } = options;
-    const lockOwner = await redisClient.get(lockKey);
-    if (lockOwner === correlationId) {
-        await redisClient.del(lockKey);
-    }
-
+    // Remove the worktree first: it holds the PR branch until then, and the next
+    // job for this PR would fail to check it out.
     if (localRepoPath && worktreeInfo) {
         try {
             await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: jobSucceeded });
         } catch (cleanupError) {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
+    }
+
+    const lockOwner = await redisClient.get(lockKey);
+    if (lockOwner === correlationId) {
+        await redisClient.del(lockKey);
     }
 }
 
