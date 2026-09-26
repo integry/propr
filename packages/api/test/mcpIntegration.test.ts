@@ -276,3 +276,66 @@ test('MCP task, goal and plan lists paginate in deterministic newest-first order
   });
 
 });
+
+test('list_plans filters plan status inside the query and paginates the filtered set', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+
+  const repository = 'acme/repo';
+  // Distinct creation timestamps keep newest-first page boundaries deterministic.
+  const fixtures = [
+    { draft_id: 'plan-review-newest', status: 'review', created_at: '2026-09-01 12:00:05' },
+    { draft_id: 'plan-merged', status: 'merged', created_at: '2026-09-01 12:00:04' },
+    { draft_id: 'plan-review-middle', status: 'review', created_at: '2026-09-01 12:00:03' },
+    { draft_id: 'plan-executing', status: 'executing', created_at: '2026-09-01 12:00:02' },
+    { draft_id: 'plan-review-oldest', status: 'review', created_at: '2026-09-01 12:00:01' },
+    { draft_id: 'plan-failed', status: 'failed', created_at: '2026-09-01 12:00:00' },
+  ];
+  await db('task_drafts').insert(fixtures.map(fixture => ({ user_id: '123', repository, mcp_revision: 0, updated_at: fixture.created_at, ...fixture })));
+  // Another owner's matching plan must never appear in a filtered page.
+  await db('task_drafts').insert({ draft_id: 'plan-other-owner', user_id: '999', repository, status: 'review',
+    mcp_revision: 0, created_at: '2026-09-01 12:00:06', updated_at: '2026-09-01 12:00:06' });
+
+  const deps: ToolDeps = { db, policy: {} as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
+  const tool = createToolCatalog(deps).find(candidate => candidate.name === 'list_plans')!;
+  const principal = { user: { id: '123' } } as McpPrincipal;
+  const list = async (args: Record<string, unknown>) => {
+    const result = await tool.run({ principal, args: tool.schema.parse({ repository, ...args }) });
+    assert.equal(result.status, 200);
+    const data = result.data as { plans: Array<{ draft_id: string; status: string }>; nextOffset: number | null };
+    return { ids: data.plans.map(plan => plan.draft_id), statuses: data.plans.map(plan => plan.status), nextOffset: data.nextOffset };
+  };
+
+  // The default stays every plan, so existing callers see the pre-filter page.
+  const unfiltered = await list({ limit: 100 });
+  assert.deepEqual(unfiltered.ids, fixtures.map(fixture => fixture.draft_id));
+  assert.equal(unfiltered.nextOffset, null);
+  assert.deepEqual((await list({ limit: 100, status: 'all' })).ids, unfiltered.ids);
+
+  const review = await list({ status: 'review', limit: 100 });
+  assert.deepEqual(review.ids, ['plan-review-newest', 'plan-review-middle', 'plan-review-oldest']);
+  assert.deepEqual(review.statuses, ['review', 'review', 'review']);
+  assert.equal(review.nextOffset, null);
+
+  // Paging walks the filtered rows: page one must not spend its limit on merged
+  // or executing plans that the filter already excluded.
+  const firstPage = await list({ status: 'review', limit: 2 });
+  assert.deepEqual(firstPage.ids, ['plan-review-newest', 'plan-review-middle']);
+  assert.equal(firstPage.nextOffset, 2);
+  const secondPage = await list({ status: 'review', offset: firstPage.nextOffset!, limit: 2 });
+  assert.deepEqual(secondPage.ids, ['plan-review-oldest']);
+  assert.equal(secondPage.nextOffset, null);
+
+  // active is everything that has not merged or failed, including a plan whose
+  // status column was never written.
+  await db('task_drafts').insert({ draft_id: 'plan-null-status', user_id: '123', repository, status: null,
+    mcp_revision: 0, created_at: '2026-08-01 12:00:00', updated_at: '2026-08-01 12:00:00' });
+  assert.deepEqual((await list({ status: 'active', limit: 100 })).ids,
+    ['plan-review-newest', 'plan-review-middle', 'plan-executing', 'plan-review-oldest', 'plan-null-status']);
+  assert.deepEqual((await list({ status: 'merged', limit: 100 })).ids, ['plan-merged']);
+  assert.deepEqual((await list({ status: 'failed', limit: 100 })).ids, ['plan-failed']);
+  assert.deepEqual((await list({ status: 'pr_created', limit: 100 })).ids, []);
+  assert.equal(tool.schema.safeParse({ repository, status: 'in_review' }).success, false);
+  assert.equal(tool.schema.parse({ repository }).status, 'all');
+});

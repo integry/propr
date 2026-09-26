@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan status filter over MCP**: the `list_plans` tool now takes an optional
+  `status` next to `repository`, `offset` and `limit` — `active` for every plan
+  that has not merged or failed, one exact persisted status (`draft`,
+  `generating`, `refining`, `review`, `approved`, `executed`, `executing`,
+  `pr_created`, `merged`, `failed`) or `all`, which stays the default so existing
+  callers see the same page. The filter is applied in the query, so `offset` and
+  `limit` paginate the filtered set instead of the whole repository, and the
+  response shape is unchanged. Mirrors the `state` filter `list_tasks` and
+  `list_goals` already expose. See [docs/mcp.md](docs/mcp.md).
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,

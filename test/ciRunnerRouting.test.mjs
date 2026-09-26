@@ -539,8 +539,13 @@ describe('PR check routing', () => {
             .filter(entry => readFileSync(join(scripts, entry), 'utf8').includes('prepareNativeElectronTest('))
             .map(entry => `apps/desktop/scripts/${entry}`);
         assert.ok(native.length >= 2, 'the repository has native Electron units to run');
-        // Both long-lived probes must remain included, even as new units join.
-        for (const probe of ['electron-frame-semantics.test.mjs', 'electron-pairing-zstd.test.mjs']) {
+        // The long-lived probes and published-preview coverage must remain included,
+        // even as new units join.
+        for (const probe of [
+            'electron-frame-semantics.test.mjs',
+            'electron-pairing-zstd.test.mjs',
+            'published-preview-electron.test.mjs',
+        ]) {
             assert.ok(native.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
         }
         assert.deepEqual([...units].sort(), native.sort());
