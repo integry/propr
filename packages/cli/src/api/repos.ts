@@ -1,3 +1,4 @@
+import type { GitHubAttachmentCapacity, GitHubAttachmentPlanOverride } from '@propr/shared';
 /**
  * Repository Configuration API
  *
@@ -167,6 +168,22 @@ export interface MonitoredRepo {
   enabled: boolean;
 
   /**
+   * Whether failed CI should trigger automatic follow-up work for this repository.
+   */
+  autoFollowupOnFailedCi: boolean;
+
+  /**
+   * Whether Inbox and push notifications are generated for this repository.
+   * Omitted by older servers; treat omission as enabled.
+   */
+  notificationsEnabled?: boolean;
+
+  /**
+   * Visual evidence generated for changes with a user-visible result.
+   */
+  visualPreview?: VisualPreviewSettings;
+
+  /**
    * Optional display alias for the repository.
    */
   alias?: string;
@@ -175,6 +192,14 @@ export interface MonitoredRepo {
    * Optional base branch name (defaults to main/master if not specified).
    */
   baseBranch?: string;
+}
+
+export interface VisualPreviewSettings {
+  githubAttachmentPlan?: GitHubAttachmentPlanOverride;
+  githubAttachmentCapacity?: GitHubAttachmentCapacity;
+  enabled: boolean;
+  types: Array<'image' | 'video'>;
+  instructions?: string;
 }
 
 /**
@@ -205,6 +230,20 @@ export interface AddRepoOptions {
    * Whether monitoring is enabled. Defaults to true.
    */
   enabled?: boolean;
+
+  /**
+   * Whether failed CI should trigger automatic follow-up work. Defaults to false.
+   */
+  autoFollowupOnFailedCi?: boolean;
+
+  /**
+   * Whether Inbox and push notifications are generated. When omitted, the
+   * server inherits the repository-wide value, defaulting to true.
+   */
+  notificationsEnabled?: boolean;
+
+  /** Visual preview policy. Defaults to disabled with image capture selected. */
+  visualPreview?: VisualPreviewSettings;
 }
 
 /**
@@ -225,6 +264,17 @@ export interface UpdateRepoOptions {
    * Optional new enabled state.
    */
   enabled?: boolean;
+
+  /**
+   * Optional new automatic failed-CI follow-up state.
+   */
+  autoFollowupOnFailedCi?: boolean;
+
+  /** Optional repository-wide notification state. */
+  notificationsEnabled?: boolean;
+
+  /** Optional visual preview policy update. */
+  visualPreview?: Omit<Partial<VisualPreviewSettings>, 'instructions'> & { instructions?: string | null };
 }
 
 /**
@@ -308,6 +358,10 @@ export async function addRepo(
     id: crypto.randomUUID(),
     name: fullName,
     enabled: options.enabled ?? true,
+    autoFollowupOnFailedCi: options.autoFollowupOnFailedCi ?? false,
+    // Omitted so the server inherits the repository-wide value (enabled for new repositories).
+    ...(options.notificationsEnabled !== undefined && { notificationsEnabled: options.notificationsEnabled }),
+    visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
   };
@@ -363,9 +417,23 @@ export async function updateRepo(
 
   // Apply updates
   const existingRepo = currentRepos.repos_to_monitor[repoIndex];
+  const updatedInstructions = updates.visualPreview?.instructions === undefined
+    ? existingRepo.visualPreview?.instructions
+    : updates.visualPreview.instructions?.trim() || undefined;
   const updatedRepo: MonitoredRepo = {
     ...existingRepo,
     ...(updates.enabled !== undefined && { enabled: updates.enabled }),
+    ...(updates.autoFollowupOnFailedCi !== undefined && { autoFollowupOnFailedCi: updates.autoFollowupOnFailedCi }),
+    ...(updates.notificationsEnabled !== undefined && { notificationsEnabled: updates.notificationsEnabled }),
+    ...(updates.visualPreview !== undefined && {
+      visualPreview: {
+        ...((updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan) !== undefined
+          ? { githubAttachmentPlan: updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan } : {}),
+        enabled: updates.visualPreview.enabled ?? existingRepo.visualPreview?.enabled ?? false,
+        types: updates.visualPreview.types ?? existingRepo.visualPreview?.types ?? ['image'],
+        ...(updatedInstructions ? { instructions: updatedInstructions } : {})
+      }
+    }),
     ...(updates.alias !== undefined && { alias: updates.alias?.trim() || undefined }),
     ...(updates.baseBranch !== undefined && { baseBranch: updates.baseBranch?.trim() || undefined }),
   };

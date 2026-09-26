@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
+import { createContainerExecutionId } from './containerExecutionId.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 const MAX_LLM_LOG_METADATA_TEXT_CHARS = 20000;
 const MISTRAL_API_KEY_SETTING_KEYS = ['mistral_api_key', 'MISTRAL_API_KEY', 'mistralApiKey', 'vibe_mistral_api_key'];
 
@@ -108,11 +110,20 @@ export function isSuccessfulVibeResult(exitCode: number | null, parsedOutput: Re
 }
 
 export function sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
-    const sanitized = value?.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
+    const replaced = value?.replace(/[^a-zA-Z0-9_.-]/g, '-') ?? '';
+    let start = 0;
+    let end = replaced.length;
+    const isAlphaNumeric = (char: string): boolean => {
+        const code = char.charCodeAt(0);
+        return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    };
+    while (start < end && !isAlphaNumeric(replaced[start])) start++;
+    while (end > start && !isAlphaNumeric(replaced[end - 1])) end--;
+    const sanitized = replaced.slice(start, end);
     return sanitized || fallback;
 }
 
-export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefined): {
+export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefined, omitGitHubCredentials = false): {
     dockerArgs: string[];
     skipped: string[];
 } {
@@ -120,6 +131,10 @@ export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefi
     const skipped: string[] = [];
     for (const [key, value] of Object.entries(envVars || {})) {
         if (key === 'MISTRAL_API_KEY' || key === 'VIBE_CLI_ARGS') {
+            continue;
+        }
+        if (omitGitHubCredentials && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) {
+            skipped.push(key);
             continue;
         }
         if (!VALID_ENV_VAR_NAME.test(key) || /[\0\r\n]/.test(value)) {
@@ -320,8 +335,7 @@ export function cleanupTempFile(filePath: string | undefined): void {
 }
 
 export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined, modelName?: string): string {
-    const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
+    const shortTaskId = sanitizeDockerNamePart(createContainerExecutionId(taskId), 'execution');
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
     const sanitizedModel = modelName ? `${sanitizeDockerNamePart(modelName, 'model')}-` : '';

@@ -12,7 +12,7 @@ import {
   TaskState,
   TaskStatus,
 } from "../api/index.js";
-import { normalizeProjectSlug } from "../utils/index.js";
+import { resolveOptionalProject } from "../utils/index.js";
 
 /**
  * Terminal states that indicate a task has finished processing.
@@ -55,14 +55,7 @@ function parseIssueId(issueId: string): { draftId: string; issueNumber: number }
 export function resolveOptionalImplementationRepository(
   options: { project?: string }
 ): string | undefined {
-  if (options.project === undefined) {
-    return undefined;
-  }
-  const normalized = normalizeProjectSlug(options.project);
-  if (normalized === null) {
-    throw new Error("Invalid project format. Expected 'owner/repo'.");
-  }
-  return normalized;
+  return resolveOptionalProject(options);
 }
 
 /**

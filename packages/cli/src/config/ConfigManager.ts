@@ -15,6 +15,15 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
+import {
+  ensurePrivateDirectory,
+  secureExistingPrivateDirectory,
+  secureExistingPrivateFile,
+  validateExistingPrivateDirectory,
+  validateExistingPrivateFile,
+  writePrivateFileAtomic,
+} from "../utils/privateFilesystem.js";
+import { canonicalRootKey } from "./rootKey.js";
 
 /**
  * Default configuration directory name.
@@ -56,6 +65,8 @@ export class ConfigManager {
   private configFilePath: string;
   private config: CLIConfig;
   private initialized: boolean = false;
+  private readonly warn: (message: string) => void;
+  private readonly readOnly: boolean;
 
   /**
    * Creates a new ConfigManager instance.
@@ -63,10 +74,15 @@ export class ConfigManager {
    * @param customConfigDir - Optional custom configuration directory path.
    *                          Defaults to ~/.propr
    */
-  constructor(customConfigDir?: string) {
+  constructor(
+    customConfigDir?: string,
+    options: { warn?: (message: string) => void; readOnly?: boolean } = {},
+  ) {
     this.configDir = customConfigDir ?? path.join(os.homedir(), CONFIG_DIR_NAME);
     this.configFilePath = path.join(this.configDir, CONFIG_FILE_NAME);
     this.config = { ...DEFAULT_CONFIG };
+    this.warn = options.warn ?? ((message) => console.warn(message));
+    this.readOnly = options.readOnly ?? false;
   }
 
   /**
@@ -85,22 +101,6 @@ export class ConfigManager {
   }
 
   /**
-   * Ensures the configuration directory exists.
-   *
-   * @returns A promise that resolves when the directory exists.
-   */
-  private async ensureConfigDir(): Promise<void> {
-    try {
-      await fs.promises.mkdir(this.configDir, { recursive: true });
-    } catch (error) {
-      // Directory already exists or other error
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-    }
-  }
-
-  /**
    * Loads the configuration from the file.
    * If the file doesn't exist, uses default values.
    * If the file is corrupted, resets to defaults and warns the user.
@@ -109,12 +109,19 @@ export class ConfigManager {
    */
   async load(): Promise<CLIConfig> {
     try {
+      const directoryExists = this.readOnly
+        ? validateExistingPrivateDirectory(this.configDir)
+        : await secureExistingPrivateDirectory(this.configDir);
+      if (directoryExists) {
+        if (this.readOnly) validateExistingPrivateFile(this.configFilePath);
+        else await secureExistingPrivateFile(this.configFilePath);
+      }
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
 
       // Validate that parsed data is an object
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} contains invalid data. Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -139,7 +146,7 @@ export class ConfigManager {
 
       if (err instanceof SyntaxError) {
         // JSON parsing error - corrupted file
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -147,7 +154,7 @@ export class ConfigManager {
       }
 
       // Other errors (permission issues, etc.)
-      console.warn(
+      this.warn(
         `Warning: Could not read configuration file at ${this.configFilePath}: ${err.message}. Using defaults.`
       );
       this.config = { ...DEFAULT_CONFIG };
@@ -206,8 +213,33 @@ export class ConfigManager {
       sanitized.docsEnabled = data.docsEnabled;
     }
 
-    if (typeof data.tunnelEnabled === "boolean") {
-      sanitized.tunnelEnabled = data.tunnelEnabled;
+    const tunnelEnabledByRoot: Record<string, boolean> = {};
+    if (
+      data.tunnelEnabledByRoot &&
+      typeof data.tunnelEnabledByRoot === "object" &&
+      !Array.isArray(data.tunnelEnabledByRoot)
+    ) {
+      for (const [root, enabled] of Object.entries(data.tunnelEnabledByRoot as Record<string, unknown>)) {
+        if (path.isAbsolute(root) && typeof enabled === "boolean") {
+          tunnelEnabledByRoot[canonicalRootKey(root)] = enabled;
+        }
+      }
+    }
+
+    // Migrate the 0.8.15 global flag to the stack root that was stored beside
+    // it. The legacy value is deliberately not retained globally: doing so
+    // would let a later explicit --root inherit another stack's tunnel intent.
+    // If no stackRoot was recorded, there is no safe root to associate with the
+    // flag, so leave it unset and fall back to that stack's own .env default.
+    if (typeof data.tunnelEnabled === "boolean" && typeof data.stackRoot === "string") {
+      const legacyRoot = canonicalRootKey(path.resolve(data.stackRoot));
+      if (!(legacyRoot in tunnelEnabledByRoot)) {
+        tunnelEnabledByRoot[legacyRoot] = data.tunnelEnabled;
+      }
+    }
+
+    if (Object.keys(tunnelEnabledByRoot).length > 0) {
+      sanitized.tunnelEnabledByRoot = tunnelEnabledByRoot;
     }
 
     return sanitized;
@@ -256,7 +288,8 @@ export class ConfigManager {
    * @returns A promise that resolves when the configuration is saved.
    */
   async save(): Promise<void> {
-    await this.ensureConfigDir();
+    if (this.readOnly) throw new Error("Configuration manager is read-only");
+    await ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
     const dataToWrite: Record<string, unknown> = {};
@@ -267,7 +300,7 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    await fs.promises.writeFile(this.configFilePath, content, "utf-8");
+    await writePrivateFileAtomic(this.configFilePath, content);
   }
 
   /**
@@ -496,15 +529,25 @@ export class ConfigManager {
    * it, so it must preserve the unset (undefined) state rather than collapsing
    * it to false.
    */
-  getTunnelEnabled(): boolean | undefined {
-    return this.get("tunnelEnabled");
+  getTunnelEnabled(root: string): boolean | undefined {
+    return this.config.tunnelEnabledByRoot?.[canonicalRootKey(path.resolve(root))];
   }
 
   /**
-   * Sets the desired Cloudflare Tunnel service state.
+   * Sets the desired Cloudflare Tunnel service state for one stack root. An
+   * undefined value clears the override so the launcher's env-derived default
+   * applies again (used to roll back a failed toggle).
    */
-  async setTunnelEnabled(enabled: boolean): Promise<void> {
-    await this.set("tunnelEnabled", enabled);
+  async setTunnelEnabled(root: string, enabled: boolean | undefined): Promise<void> {
+    const normalizedRoot = canonicalRootKey(path.resolve(root));
+    const states = { ...(this.config.tunnelEnabledByRoot ?? {}) };
+    if (enabled === undefined) {
+      delete states[normalizedRoot];
+    } else {
+      states[normalizedRoot] = enabled;
+    }
+    this.config.tunnelEnabledByRoot = Object.keys(states).length > 0 ? states : undefined;
+    await this.save();
   }
 
   /**
@@ -588,9 +631,10 @@ export class ConfigManager {
  * @returns A promise that resolves to an initialized ConfigManager.
  */
 export async function createConfigManager(
-  customConfigDir?: string
+  customConfigDir?: string,
+  options: { warn?: (message: string) => void; readOnly?: boolean } = {},
 ): Promise<ConfigManager> {
-  const manager = new ConfigManager(customConfigDir);
+  const manager = new ConfigManager(customConfigDir, options);
   await manager.init();
   return manager;
 }

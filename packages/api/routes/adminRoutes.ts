@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
 import type { InstanceRole } from '@propr/shared';
@@ -142,7 +143,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         }
     }
 
-    async function updateMemberRole(req: Request, res: Response): Promise<void> {
+    async function updateMemberRole(req: FlatRequest, res: Response): Promise<void> {
         const context = requestContext(req, res);
         if (!context) return;
         const role = parseRole(req.body?.role);
@@ -162,7 +163,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         }
     }
 
-    async function removeMember(req: Request, res: Response): Promise<void> {
+    async function removeMember(req: FlatRequest, res: Response): Promise<void> {
         const context = requestContext(req, res);
         if (!context) return;
         try {

@@ -3,7 +3,9 @@ import { Knex } from 'knex';
 import { Queue } from 'bullmq';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId, logger } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import { ACTIVE_TASK_LIFECYCLE_STATES } from '@propr/shared';
 import { getTasksFromDb } from './taskHelpers.js';
+import { isPullRequestTask } from './pullRequestTaskIdentity.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
 
@@ -16,7 +18,20 @@ interface TaskRecord {
   task_id: string;
   repository: string;
   issue_number: number;
+  pr_number?: number | null;
   task_type: string;
+}
+
+/**
+ * Resolves the GitHub thread a follow-up comment is posted to. PR commands go
+ * to the task's pull request; implementation tasks keep their source issue in
+ * issue_number and the created PR in pr_number.
+ */
+export function resolveFollowupThread(task: TaskRecord, targetsPullRequest: boolean): { number?: number; error: string } {
+  return targetsPullRequest
+    // PR comment tasks record their pull request as the issue number; other tasks must have a PR of their own.
+    ? { number: task.pr_number ?? (isPullRequestTask(task) ? task.issue_number : undefined), error: 'Task does not have a valid GitHub pull request' }
+    : { number: task.issue_number, error: 'Task does not have valid GitHub issue information' };
 }
 
 export function createTaskRoutes(deps: TaskRoutesDeps) {
@@ -97,6 +112,11 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
       const { requestingUser, systemTaskSecret } = authResult;
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'Unable to determine requesting user ID' });
+        return;
+      }
 
       // --- GitHub lookups (only after basic authorization passes) ---
 
@@ -106,6 +126,11 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
       const { prData, octokit } = prLookup;
+
+      if (req.body.expectedHead !== undefined && req.body.expectedHead !== prData.head.sha) {
+        res.status(409).json({ error: 'Pull request head changed before revert could be queued' });
+        return;
+      }
 
       // Scope validation: verify the commit actually belongs to this PR and resolve to full SHA
       const commitCheck = await verifyCommitBelongsToPr({ octokit, owner, repo, prNumber, commit });
@@ -127,7 +152,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const jobData = buildRevertJobData({
         owner, repo, prNumber, commit: resolvedCommit, targetCommentId: targetCommentIdNum,
-        requestingUser, systemTaskSecret, branch, prHeadSha,
+        userId, requestingUser, systemTaskSecret, branch, prHeadSha,
         isFork: repoAccess.isFork, headRepoOwner: repoAccess.headRepoOwner, headRepoName: repoAccess.headRepoName
       });
 
@@ -242,10 +267,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const activeStates = ['pending', 'queued', 'processing', 'claude_execution', 'post_processing'];
       const forceDelete = force === 'true';
 
-      if (activeStates.includes(latestState.state?.toLowerCase()) && !forceDelete) {
+      if ((ACTIVE_TASK_LIFECYCLE_STATES as readonly string[]).includes(latestState.state?.toLowerCase()) && !forceDelete) {
         res.status(400).json({
           error: 'Cannot delete task in active state',
           message: `Task is currently in "${latestState.state}" state. Please stop the task before deleting.`,
@@ -275,7 +299,12 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
   async function postFollowup(req: Request, res: Response): Promise<void> {
     try {
       const { taskId } = req.params;
-      const { body } = req.body;
+      const { body, target } = req.body;
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'Unable to determine requesting user ID' });
+        return;
+      }
 
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(taskId);
@@ -296,6 +325,12 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      if (target !== undefined && target !== 'pull_request') {
+        res.status(400).json({ error: 'Follow-up target must be "pull_request" when provided' });
+        return;
+      }
+      const targetsPullRequest = target === 'pull_request';
+
       // Get task info from database
       const task = await db('tasks').where({ task_id: taskId }).first() as TaskRecord | undefined;
       if (!task) {
@@ -304,10 +339,11 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       }
 
       const [repoOwner, repoName] = (task.repository as string).split('/');
-      const issueNumber = task.issue_number;
+      const thread = resolveFollowupThread(task, targetsPullRequest);
+      const issueNumber = thread.number;
 
       if (!repoOwner || !repoName || !issueNumber) {
-        res.status(400).json({ error: 'Task does not have valid GitHub issue information' });
+        res.status(400).json({ error: thread.error });
         return;
       }
 
@@ -327,7 +363,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       // Get branch name for PR-based tasks
       let branchName: string | undefined;
-      if (task.task_type === 'pr-comment') {
+      if (targetsPullRequest || isPullRequestTask(task)) {
         try {
           const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner: repoOwner,
@@ -351,6 +387,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       };
 
       const jobData: CommentJobData = {
+        userId,
         pullRequestNumber: issueNumber,
         comments: [unprocessedComment],
         repoOwner,
@@ -360,26 +397,19 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       };
 
       const timestamp = Date.now();
-      const jobId = `pr-comments-batch-${repoOwner}-${repoName}-${issueNumber}-${timestamp}`;
+      const jobId = `pr-comments-batch-${repoOwner}-${repoName}-${issueNumber}-${timestamp}-${commentId}`;
 
       try {
         await issueQueue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
-        console.log(`[followup] Queued follow-up comment for processing (jobId: ${jobId}, delay: ${COMMENT_BATCH_DELAY_MS}ms)`);
       } catch (queueErr) {
-        const err = queueErr as Error;
-        if (err.message?.includes('Job already exists')) {
-          console.log(`[followup] Comment job already in queue, skipping`);
-        } else {
-          console.warn(`[followup] Failed to queue comment for processing: ${err.message}`);
-        }
+        // Redis may have accepted the job before the connection failed. A posted
+        // comment is not evidence of a successful submission; retain both handles.
+        console.warn(`[followup] Queue submission uncertain: ${(queueErr as Error).message}`);
+        res.status(202).json({ success: false, state: 'unknown', posted: true, commentId, jobId,
+          sourceTaskId: taskId, message: 'Comment posted, but queue submission could not be confirmed. Inspect this job before retrying.' });
+        return;
       }
-
-      res.json({
-        success: true,
-        message: `Comment posted to ${repoOwner}/${repoName}#${issueNumber}`,
-        commentId,
-        jobId
-      });
+      res.status(202).json({ success: true, state: 'queued', posted: true, commentId, jobId, sourceTaskId: taskId });
     } catch (error) {
       console.error('Error posting follow-up comment:', error);
       res.status(500).json({ error: 'Failed to post follow-up comment' });

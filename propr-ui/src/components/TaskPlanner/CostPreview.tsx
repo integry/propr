@@ -100,7 +100,6 @@ interface EmptyStateProps {
   isPaused?: boolean;
   onTogglePause?: () => void;
   onManualRefresh?: () => void;
-  isNewMode?: boolean;
 }
 
 const EmptyState: React.FC<EmptyStateProps> = ({
@@ -108,21 +107,21 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   timeUntilRefresh,
   isPaused,
   onTogglePause,
-  onManualRefresh,
-  isNewMode
+  onManualRefresh
 }) => {
-  const showRefreshIndicator = !!onManualRefresh && !isNewMode;
+  // Refresh handler is only provided when a prompt is present, so analysis can be triggered on demand
+  const showRefreshIndicator = !!onManualRefresh;
 
   return (
     <div className="pt-3 sm:pt-4 border-t border-gray-200">
       <div className="flex items-center justify-between">
         <span className="hidden sm:inline text-gray-500">
-          {isNewMode
-            ? 'Cost estimate will be available after entering a prompt'
+          {showRefreshIndicator
+            ? 'Cost estimate will be available after context analysis'
             : 'Enter a prompt to see cost estimate'}
         </span>
         <span className="sm:hidden text-gray-500 text-xs">
-          {isNewMode ? 'Cost after entering prompt' : 'Enter prompt for cost'}
+          {showRefreshIndicator ? 'Cost after context analysis' : 'Enter prompt for cost'}
         </span>
         {showRefreshIndicator && (
           <RefreshIndicator
@@ -163,7 +162,10 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
     if (timeUntilRefresh !== null) {
       return 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.';
     }
-    return 'Context is outdated. Click to regenerate based on your current prompt and settings.';
+    if (isContextStale) {
+      return 'Context has not been analyzed for your current prompt and settings. Click to analyze now, or it will run automatically when you generate the plan.';
+    }
+    return 'Context is up to date. Click to re-analyze based on your current prompt and settings.';
   };
 
   return (
@@ -340,7 +342,6 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onManualRefresh,
   isPaused,
   onTogglePause,
-  isNewMode,
   previewTrace,
   showPreviewProgress = true,
   hideCostsAndTokens,
@@ -358,7 +359,6 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
         isPaused={isPaused}
         onTogglePause={hideRefreshControls ? undefined : onTogglePause}
         onManualRefresh={refreshHandler}
-        isNewMode={isNewMode}
       />
     )
   );

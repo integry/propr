@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { DraftListItem } from '../api/proprApi';
+import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
 import {
   getEffectiveStatus,
   renderStatusStrip,
@@ -116,7 +117,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
           {/* Plan Title */}
           <div className="mb-1">
             <span className="text-sm font-medium text-gray-900 break-words">
-              {draft.name || draft.initial_prompt}
+              {getDraftDisplayName(draft, draft.initial_prompt)}
             </span>
           </div>
           {/* Bottom line: Unified Status Strip */}

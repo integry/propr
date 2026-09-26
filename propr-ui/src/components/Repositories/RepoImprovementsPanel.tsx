@@ -78,10 +78,11 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   disabled = false,
   suggestions = [],
   onToggleSuggestion,
-  defaultModel = 'claude:claude-haiku-4-5-20251001',
+  defaultModel = '',
   defaultContextLevel = 50,
   lastGenerationTiming,
   onTodosSaved,
+  agents,
 }) => {
   const navigate = useNavigate();
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
@@ -207,6 +208,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         contextLevel={contextLevel}
         onContextLevelChange={setContextLevel}
         disabled={isLoading || disabled}
+        agents={agents}
       />
 
       <div

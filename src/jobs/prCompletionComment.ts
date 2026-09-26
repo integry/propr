@@ -3,6 +3,7 @@ import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -25,6 +26,7 @@ export interface CommentContext {
     undoContext?: UndoLinkContext;
     taskUrl?: string;
     consumedReviewCommentIds?: number[];
+    visualPreviewSection?: string;
 }
 
 export interface UndoLinkContext {
@@ -141,17 +143,24 @@ export async function buildCompletionComment(
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, visualPreviewSection } = commentContext;
+    const terminationReason = resolveAgentTerminationReason(claudeResult);
+    const partial = !claudeResult.success && terminationReason !== undefined;
 
     const cleanBody = (text: string) => {
-        return text
+        return sanitizeAgentReport(redactVisualPreviewPaths(text)
             .replace(/^(PR|Comment by|Model):.*/gm, '')
+            .split('\n')
+            .filter(line => !line.replaceAll('\\', '/').includes(`${VISUAL_PREVIEW_DIRECTORY}/`))
+            .join('\n')
             .replace(/\n{3,}/g, '\n\n')
-            .trim();
+            .trim());
     };
 
     if (commitResult) {
-        let prCommentBody = `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;
+        let prCommentBody = partial
+            ? `⚠️ **Applied partial follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n> [!WARNING]\n> **This work may be incomplete.** ${describeAgentTermination(terminationReason!)} The available changes were committed instead of discarded.\n\n`
+            : `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;
 
         if (unprocessedComments.length > 1) {
             prCommentBody += `Processed ${unprocessedComments.length} comments:\n`;
@@ -167,7 +176,17 @@ export async function buildCompletionComment(
 
         const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
         if (contentToShow) {
-            prCommentBody += `## Summary of Changes\n\n${cleanBody(contentToShow)}\n\n`;
+            prCommentBody += `${partial ? '## Last Agent Update' : '## Summary of Changes'}\n\n${cleanBody(contentToShow)}\n\n`;
+        } else if (partial && claudeResult.modifiedFiles.length > 0) {
+            prCommentBody += `## Work Completed Before Interruption\n\n${claudeResult.modifiedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n')}\n\n`;
+        }
+
+        if (partial) {
+            prCommentBody += '## Remaining Work\n\nThe agent stopped before validating every request. Review this partial commit against the follow-up instructions and complete any unaddressed implementation, tests, or documentation.\n\n';
+        }
+
+        if (visualPreviewSection) {
+            prCommentBody += `${visualPreviewSection}\n\n`;
         }
 
         prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);
@@ -195,7 +214,9 @@ export async function buildCompletionComment(
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
 
-        noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += visualPreviewSection
+            ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
+            : `No code changes were necessary based on the current state of the branch.\n\n`;
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         if (taskUrl) {

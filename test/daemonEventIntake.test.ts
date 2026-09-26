@@ -23,6 +23,7 @@ function makeDeps(overrides: Partial<EventIntakeStartupDeps> = {}): EventIntakeS
     const statusPublisher = { stop: mock.fn(async () => {}) };
 
     return {
+        prepareConfiguration: mock.fn(async () => {}),
         safePoll: mock.fn(() => {}),
         pollingIntervalMs: 60000,
         scheduleInterval: mock.fn(() => FAKE_INTERVAL),
@@ -73,7 +74,16 @@ test('direct_webhook mode initializes the webhook handler and does not poll', as
 });
 
 test('routing_websocket mode initializes the handler and starts the routing service', async () => {
-    const deps = makeDeps();
+    const order: string[] = [];
+    const deps = makeDeps({
+        prepareConfiguration: mock.fn(async () => { order.push('configuration'); }),
+        initWebhookHandler: mock.fn(async () => { order.push('handler'); }),
+        createRoutingService: mock.fn(() => ({
+            start: mock.fn(async () => { order.push('routing'); }),
+            stop: mock.fn(async () => {}),
+            getStatus: mock.fn(() => ({})),
+        }) as never),
+    });
 
     const result = await startEventIntake('routing_websocket', deps);
 
@@ -92,6 +102,7 @@ test('routing_websocket mode initializes the handler and starts the routing serv
 
     assert.ok(result.routingService);
     assert.ok(result.routingStatusPublisher);
+    assert.deepEqual(order, ['configuration', 'handler', 'routing']);
 
     // Routing mode never polls.
     assert.equal((deps.safePoll as ReturnType<typeof mock.fn>).mock.calls.length, 0);

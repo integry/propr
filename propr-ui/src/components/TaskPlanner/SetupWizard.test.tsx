@@ -1,9 +1,8 @@
-import React from 'react';
 import { render, act, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import SetupWizard from './SetupWizard';
-import { getDraft, createDraft, updateDraft, getRepoBranches } from '../../api/proprApi';
+import { getDraft, createDraft, updateDraft, getRepoBranches, type PlannerDraft } from '../../api/proprApi';
 const mockGetDraft = vi.mocked(getDraft);
 const mockCreateDraft = vi.mocked(createDraft);
 const mockUpdateDraft = vi.mocked(updateDraft);
@@ -35,10 +34,11 @@ let mockPreviewState: {
   lastSynced: Date | null;
 };
 const mockNavigate = vi.fn();
+let mockLocationSearch = '';
 let mockLocationState: Record<string, unknown> | undefined;
-const baseDraft = { draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
-const createdDraft = { draft_id: 'draft-2', repository: 'integry/other', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
-const fullContextConfig = { baseBranch: 'main', granularity: 'large', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
+const baseDraft: PlannerDraft = { draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
+const createdDraft: PlannerDraft = { draft_id: 'draft-2', repository: 'integry/other', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
+const fullContextConfig = { baseBranch: 'main', granularity: 'granular', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
 const renderSetupWizard = (draftOverrides: Record<string, unknown> = {}) => render(<MemoryRouter><SetupWizard draft={{ ...baseDraft, ...draftOverrides }} onGenerateComplete={vi.fn()} /></MemoryRouter>);
 const triggerRepoChange = (repo: string, selection?: Record<string, unknown> & { baseBranch?: string }) => (lastLeftPaneProps?.onRepoChange as ((nextRepo: string, nextSelection?: Record<string, unknown> & { baseBranch?: string }) => Promise<void>))(repo, selection);
 const setGeneratingState = (trace = generationTrace) => {
@@ -57,7 +57,7 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useLocation: () => ({ state: mockLocationState }),
+    useLocation: () => ({ state: mockLocationState, search: mockLocationSearch }),
   };
 });
 vi.mock('../../api/proprApi', () => ({
@@ -98,7 +98,7 @@ vi.mock('../ui/useToast', () => ({
   }),
 }));
 vi.mock('./ComposerControls', () => ({
-  GranularityPills: () => <div>granularity</div>,
+  GranularityPills: ({ value }: { value: string }) => <div aria-label="Task granularity">{value}</div>,
 }));
 vi.mock('./ContextLevelSlider', () => ({
   ContextLevelSlider: () => <div>context level slider</div>,
@@ -171,7 +171,7 @@ vi.mock('./setupWizardHooks', () => ({
   useAutoDraftCreation: () => ({
     isAutoCreating: false,
     autoCreateError: null,
-    autoCreateWarning: null,
+    autoCreateWarning: null, ensureDraftCreated: vi.fn(),
   }),
   useDraftContextConfigSync: vi.fn(),
   useDraftSettingsPersistence: vi.fn(),
@@ -188,7 +188,7 @@ vi.mock('./setupWizardHooks', () => ({
   persistDraftSetupSnapshot: (draftId: string, setupSnapshot?: Record<string, unknown>) => updateDraft(draftId, {
     context_config: setupSnapshot
   }),
-  usePromptPersistence: vi.fn(),
+  usePromptPersistence: () => ({ flushPrompt: vi.fn() }),
   computeIsGenerateDisabled: () => false,
   computeCanExport: () => false,
   useAutoResize: () => vi.fn(),
@@ -204,6 +204,15 @@ vi.mock('../../hooks/useGenerationPolling', () => ({
   }),
 }));
 describe('SetupWizard', () => {
+  it.each([
+    ['?mode=task', 'single'],
+    ['', 'medium'],
+  ])('uses %s to select %s granularity without changing saved settings', (search, granularity) => {
+    mockLocationSearch = search;
+    render(<MemoryRouter><SetupWizard onGenerateComplete={vi.fn()} /></MemoryRouter>);
+    expect(screen.getByLabelText('Task granularity')).toHaveTextContent(granularity);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -222,6 +231,7 @@ describe('SetupWizard', () => {
       lastSynced: null,
     };
     mockLocationState = undefined;
+    mockLocationSearch = '';
   });
 
   afterEach(() => {
@@ -385,11 +395,19 @@ describe('SetupWizard', () => {
   });
 
   it('preserves right-pane preview progress on desktop while generating', () => {
-    setViewportWidth(1024);
+    setViewportWidth(768);
     setGeneratingState(previewTrace);
     mockPreviewTrace = previewTrace;
     renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
     expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
+  });
+
+  it.each([320, 390])('keeps setup actions, including context export, reachable at %ipx', width => {
+    setViewportWidth(width);
+    renderSetupWizard({ context_config: {} });
+
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export Context' })).toBeInTheDocument();
   });
 });

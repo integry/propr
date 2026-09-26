@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { Layers, Zap, Clock, Turtle, DollarSign, BarChart2, Target } from 'lucide-react';
+import { Layers, Zap, Clock, Turtle, BarChart2, Target } from 'lucide-react';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -33,7 +33,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   focused: {
     label: 'Focused',
     subtitle: 'Analyzes only directly referenced files. Best for isolated bug fixes and simple tweaks.',
-    indicatorLine: 'Fast • $ • Standard',
+    indicatorLine: 'Fast · $ · Standard',
     speedIcon: Zap,
     costText: '$',
     precisionIcon: BarChart2,
@@ -41,7 +41,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   expanded: {
     label: 'Expanded',
     subtitle: 'Analyzes imports, dependencies, and related modules. Best for adding new features or updating logic.',
-    indicatorLine: 'Moderate • $$ • High Precision',
+    indicatorLine: 'Moderate · $$ · High Precision',
     speedIcon: Clock,
     costText: '$$',
     precisionIcon: BarChart2,
@@ -49,7 +49,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   fullscan: {
     label: 'Full Scan',
     subtitle: 'Scans the entire repository structure to catch edge cases. Essential for refactoring and architectural changes.',
-    indicatorLine: 'Slower • $$$ • Max Precision',
+    indicatorLine: 'Slower · $$$ · Max Precision',
     speedIcon: Turtle,
     costText: '$$$',
     precisionIcon: Target,
@@ -61,7 +61,6 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
   const SpeedIcon = config.speedIcon;
-  const PrecisionIcon = config.precisionIcon;
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -93,11 +92,11 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <span className="hidden sm:inline">{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
           {!hideCostLabels && (
             <>
-              <span className="text-gray-400">•</span>
+              <span className="text-gray-400">·</span>
               <span>{config.costText}</span>
             </>
           )}
-          <span className="text-gray-400 hidden sm:inline">•</span>
+          <span className="text-gray-400 hidden sm:inline">·</span>
           <span className="hidden sm:inline">{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High' : 'Max'}</span>
         </div>
       </div>

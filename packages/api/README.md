@@ -2,6 +2,12 @@
 
 The ProPR API provides the backend server for the web-based management interface for monitoring and controlling your ProPR instance.
 
+Optional authenticated MCP is documented in [the MCP operator and user guide](../../docs/mcp.md).
+It uses separate ProPR OAuth credentials at `/api/mcp`; GitHub bearer tokens
+for the existing REST API are not MCP access tokens. See the
+[Connect wire contract](../../docs/mcp-connect-contract.md) and
+[capability/acceptance checklist](../../docs/mcp-coverage.md).
+
 ## Components
 
 - **api**: Express.js backend API with GitHub OAuth authentication
@@ -59,12 +65,19 @@ To run the API in development mode:
 
 ## API Endpoints
 
-All API endpoints are protected by authentication:
+All operational API endpoints are protected by authentication. Compatibility,
+desktop discovery, and the bounded pairing bootstrap/poll routes are the
+documented pre-authentication exceptions:
 
 - `GET /api/auth/github` - Initiate GitHub OAuth flow
 - `GET /api/auth/github/callback` - OAuth callback
 - `GET /api/auth/logout` - Logout user
 - `GET /api/auth/user` - Get sanitized current user info, instance role, and permissions
+- `GET /api/desktop/discovery` - Public product/API compatibility and desktop-auth capabilities only
+- `POST /api/desktop/pairings` - Start a short-lived browser pairing request
+- `POST /api/desktop/pairings/:pairingId/poll` - Poll with the device secret in the JSON body
+- `GET /api/desktop/tokens` - List the current user's safe instance-token metadata
+- `DELETE /api/desktop/tokens/:tokenId` - Revoke one of the current user's instance tokens
 - `GET /api/catalog` - Get the sanitized enabled repository/agent catalog needed by member workflows
 - `GET /api/repositories/indexing-status` - Get indexing status projected to enabled catalog repository/branch entries
 - `GET /api/admin/members` - List explicit role assignments (administrator)
@@ -78,6 +91,133 @@ All API endpoints are protected by authentication:
 - `GET /api/activity` - Activity log
 - `GET /api/metrics` - Performance metrics
 - `GET /api/task/:taskId/history` - Task history
+
+### Notification preferences and Web Push
+
+Notification routes always derive the user from the authenticated session. A
+new user receives all six categories (`plan`, `task`, `review`,
+`pull_request`, `indexing`, and `system_failure`) with Inbox enabled and Push
+disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
+"UTC" }`. Push is not enabled by registering a browser; the user must also set
+`pushEnabled` for each desired category. A synthesized category default has
+`updatedAt: null`; persisted choices carry their actual update timestamp.
+When a trusted producer assigns recipients, its channel eligibility is
+intersected with the stored category preference. In particular, an explicit
+producer `pushEnabled: true` cannot bypass a user opt-out, while an opt-in only
+enables Push for events whose producer also selected that channel. Object-form
+recipient assignments must always provide `pushEnabled`; the string shorthand
+is explicitly Inbox-only. Production lifecycle projections select Push as an
+eligible channel, but the user opt-in remains authoritative.
+
+Repository-scoped lifecycle notifications (`plan`, `task`, `review`,
+`pull_request`, and `indexing`, including stalled-activity cards) are also gated
+by the monitored repository's `notificationsEnabled` setting. It defaults to
+`true`; a repository is silenced only when every configured branch entry sets it
+to `false`, and no event (and therefore no Push delivery) is created for it.
+The lookup fails open if the configuration cannot be read. `system_failure`
+notifications are not repository-scoped and are never filtered.
+
+The API owns a Web Push dispatcher that fans eligible events out to every
+subscription active at assignment time. It applies both quiet-hour boundaries
+in the stored IANA timezone at claim time (including retries and DST
+transitions), treats either null boundary as disabled, treats equal non-null
+boundaries as a zero-length window, and retains jobs until the quiet window
+ends. Preference
+opt-outs atomically cancel pending, retryable, and expired-lease jobs; current
+preferences are also checked when jobs are created or claimed. Revocation erases
+stored keys and cancels the same queued work, but both opt-out and subscription
+refresh/revocation remain best-effort for a live lease that may already hold old
+state. The dispatcher re-reads the current category preference,
+subscription, and job immediately before network I/O, use the latest refreshed
+keys, and skip an opted-out user, revoked subscription, expired subscription, or
+cancelled job. It must also reject loopback destinations independently unless it
+is intentionally running in the same isolated local-development mode.
+
+- `GET /api/notifications/config` - Canonical capability route; return Web Push availability and the VAPID public key. The private key is never serialized. `/api/notifications/capabilities` is a compatibility alias.
+- `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
+- `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged.
+- `POST /api/notifications/dismiss-all` - Dismiss every active Inbox notification for the authenticated user without deleting audit events.
+- `GET /api/notifications/push-subscriptions` - List the authenticated user's active browser subscriptions without encryption keys.
+- `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
+- `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` only in the JSON body; capability URLs are never accepted in query strings.
+- `DELETE /api/notifications/push-subscriptions/:subscriptionId` - Revoke an owned subscription by the opaque ID returned from the list route.
+
+Enrollment is limited to 10 active and 50 retained subscription rows per user,
+with at most 20 new enrollments/reactivations per hour. Refreshing an already
+active endpoint does not consume the enrollment rate limit, and an unchanged
+refresh takes a read-only path. Expired rows are atomically revoked before
+enrollment, which releases active quota and endpoint ownership, erases keys, and
+cancels queued jobs. The API runs bounded expiration and garbage-collection
+batches at startup and hourly. Revoked rows older than 30 days are deleted only
+when no delivery job references them; quota pressure may safely collect newer
+unreferenced revocations. Referenced delivery history remains immutable and
+counts toward the retained quota. Rate-limit responses use HTTP 429 with
+`Retry-After`; quota responses use HTTP 409 so clients can prompt the user to
+revoke another browser.
+
+Subscription endpoints are intentionally limited to FCM, Mozilla Autopush, and
+Apple Web Push vendor hosts. Adding another browser provider requires updating
+the shared allowlist and shipping a schema migration that updates the persisted
+SQLite `CHECK`; delivery clients must revalidate stored endpoints and disable
+redirects. Insecure `localhost`/`127.0.0.1` enrollment is off by default and is
+available only for isolated local development through
+`PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH=true`. The API additionally requires a
+non-production `NODE_ENV` and a loopback `API_PUBLIC_URL` (or its unset localhost
+default), so the flag is ineffective on remote preview/staging URLs. The SQLite
+constraint is deliberately stable across restarts and permits loopback rows;
+the authenticated service deployment checks are the enrollment policy boundary.
+At startup, Web Push automatically generates and atomically persists a P-256 pair
+in `web-push/vapid.json` beside the SQLite database (`DB_FILENAME`, otherwise
+`DATA_DIR` or `./data`). The startup result is shared by enrollment/capability
+routes and dispatcher signing; capability requests never generate keys. Back up
+and restore this directory with the instance data, preserving directory mode 700
+and file mode 600. The private key is never serialized in API responses or logs.
+
+A valid explicit `WEB_PUSH_VAPID_PUBLIC_KEY` / `WEB_PUSH_VAPID_PRIVATE_KEY` pair
+wins without overwriting the stored pair. `WEB_PUSH_VAPID_SUBJECT` is independently
+optional: by default use the configured HTTPS `API_PUBLIC_URL` or `FRONTEND_URL`
+origin, falling back to the project contact URL `https://propr.dev`.
+`WEB_PUSH_ENABLED=false` skips setup and disables enrollment/delivery without
+changing subscriptions or preferences. Browser permission and category opt-in
+remain explicit. Partial, malformed or mismatched keys, corrupt storage and
+persistence failures disable Push with a sanitized startup diagnostic while the
+rest of the API remains available. Repair/restore and restart to retry; no
+transient key is advertised and no corrupt identity is silently replaced.
+See [operations](../../docs/docs/operations/pwa-web-push.md#configure-vapid) for
+manual overrides, backup/restore and deliberate rotation (browsers must subscribe
+again when the key changes).
+
+Provider throttling, server
+errors, and network failures use capped exponential retry scheduling; HTTP 404
+and 410 responses revoke and erase the subscription.
+
+Quiet-hour timezone aliases are canonicalized using the server's ICU database
+before storage. Shared response parsing validates the returned identifier's
+shape without consulting the browser's potentially older timezone database.
+
+The preference API migration remains startup-blocking and transactional because
+it rebuilds the subscription table while preserving delivery foreign keys. Its
+work is linear in historical subscription count: runtime URL/key validation is
+performed in batches of 500 and collision reconciliation uses set-based SQLite
+updates. Operators with unusually large subscription history should run the
+migration during a maintenance window and budget time for one P-256 validation
+per active legacy row.
+
+For example, this enables Push for task notifications and configures local
+quiet hours without changing any other category:
+
+```json
+{
+  "preferences": {
+    "task": { "pushEnabled": true }
+  },
+  "quietHours": {
+    "start": "22:00",
+    "end": "07:30",
+    "timezone": "America/New_York"
+  }
+}
+```
 
 ## Security
 

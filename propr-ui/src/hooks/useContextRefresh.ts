@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
-import { simulateContextLevel, isSignificantPromptChange, DEFAULT_MODEL_MAX_TOKENS } from './contextRefreshUtils';
+import { simulateContextLevel, compareSourceConfig, DEFAULT_MODEL_MAX_TOKENS, type SourceConfig } from './contextRefreshUtils';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
@@ -44,14 +44,6 @@ export interface PreviewState {
   lastSynced: Date | null;
 }
 
-interface SourceConfig {
-  prompt: string;
-  baseBranch: string;
-  filesLength: number;
-  compress: boolean;
-  manualFilesLength: number;
-}
-
 interface FetchConfig {
   prompt: string;
   baseBranch: string;
@@ -73,9 +65,14 @@ interface UseContextRefreshOptions {
   draftId: string;
   config: FetchConfig;
   onBranchError: (error: string | null) => void;
+  /**
+   * When true, source changes start a countdown that automatically fetches the context preview.
+   * When false (default), context is only marked stale and must be refreshed manually or on generation.
+   */
+  autoRefresh?: boolean;
 }
 
-export function useContextRefresh({ draftId, config, onBranchError }: UseContextRefreshOptions) {
+export function useContextRefresh({ draftId, config, onBranchError, autoRefresh = false }: UseContextRefreshOptions) {
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
@@ -112,6 +109,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   // Track whether we've auto-paused after the first successful context fetch
   const hasAutoPausedRef = useRef<boolean>(false);
   const pendingPreviewRequestIdRef = useRef<string | null>(null);
+  // Draft ID used by the most recent preview request (may be an override passed before draftId propagates)
+  const activeDraftIdRef = useRef<string>(draftId);
   const previewCompletionRef = useRef<{
     promise: Promise<boolean>;
     resolve: (success: boolean) => void;
@@ -161,15 +160,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     justFetchedRef.current = true;
     fullPreviewDataRef.current = result;
     setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
-    if (!hasAutoPausedRef.current) {
+    if (autoRefresh && !hasAutoPausedRef.current) {
       hasAutoPausedRef.current = true;
       setIsPaused(true);
     }
     settlePreview(true);
-  }, [settlePreview]);
+  }, [autoRefresh, settlePreview]);
 
   const loadCompletedPreview = useCallback(async (previewRequestId: string): Promise<boolean> => {
-    const draft = await getDraft(draftId);
+    const draft = await getDraft(activeDraftIdRef.current || draftId);
     const previewError = getPreviewErrorFromDraft(draft.context_config, previewRequestId);
     if (previewError) {
       pendingPreviewRequestIdRef.current = null;
@@ -198,12 +197,14 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     setCountdownStarted(false);
   }, []);
 
-  const fetchPreview = useCallback(async () => {
+  const fetchPreview = useCallback(async (overrideDraftId?: string) => {
     if (previewCompletionRef.current) return previewCompletionRef.current.promise;
 
     const currentConfig = configRef.current;
+    // Ignore non-string arguments (e.g. click events when used directly as a handler)
+    const effectiveDraftId = (typeof overrideDraftId === 'string' && overrideDraftId) || draftId;
     // Skip preview if no draftId (new mode - draft not created yet)
-    if (!draftId) return false;
+    if (!effectiveDraftId) return false;
     if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) return false;
 
     if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
@@ -212,6 +213,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     }
     onBranchError(null);
 
+    activeDraftIdRef.current = effectiveDraftId;
     clearCountdown();
     setIsContextStale(false);
 
@@ -235,7 +237,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         ...currentConfig.manualFiles
       ];
       const result = await previewContext({
-        draftId,
+        draftId: effectiveDraftId,
         prompt: currentConfig.prompt,
         baseBranch: currentConfig.baseBranch,
         granularity: currentConfig.granularity,
@@ -335,20 +337,21 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   useEffect(() => {
     if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
       setInitialSyncDone(true);
-      // Mark context as stale and start the countdown instead of fetching immediately
+      // Mark context as stale; start the countdown only when auto-refresh is enabled
       setIsContextStale(true);
-      startCountdown();
+      if (autoRefresh) startCountdown();
     }
-  }, [config.baseBranch, config.prompt, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, startCountdown]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, autoRefresh, startCountdown]);
 
   // Source changes - start countdown (unless paused)
   useEffect(() => {
     if (!initialSyncDone) return;
 
-    // Skip if we just completed a fetch - prevents immediate re-trigger loop
+    // Skip if we just completed a fetch - prevents immediate re-trigger loop.
+    // Without auto-refresh there is no loop to prevent, so staleness is always evaluated.
     if (justFetchedRef.current) {
       justFetchedRef.current = false;
-      return;
+      if (autoRefresh) return;
     }
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -362,20 +365,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       manualFilesLength: config.manualFiles.length
     };
 
-    const isStrictlyStale = !lastFetched || (
-      lastFetched.prompt !== currentSource.prompt ||
-      lastFetched.baseBranch !== currentSource.baseBranch ||
-      lastFetched.filesLength !== currentSource.filesLength ||
-      lastFetched.compress !== currentSource.compress ||
-      lastFetched.manualFilesLength !== currentSource.manualFilesLength
-    );
-
-    const isSignificant = !lastFetched ||
-      lastFetched.baseBranch !== currentSource.baseBranch ||
-      lastFetched.filesLength !== currentSource.filesLength ||
-      lastFetched.compress !== currentSource.compress ||
-      lastFetched.manualFilesLength !== currentSource.manualFilesLength ||
-      isSignificantPromptChange(lastFetched.prompt, currentSource.prompt);
+    const { isStrictlyStale, isSignificant } = compareSourceConfig(lastFetched, currentSource);
 
     if (!isStrictlyStale) {
       clearCountdown();
@@ -388,7 +378,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
-    if (!isSignificant || isPaused) {
+    if (!autoRefresh || !isSignificant || isPaused) {
       clearCountdown();
       return;
     }
@@ -396,7 +386,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   // Note: isContextStale intentionally not in deps - we use isContextStaleRef to check without re-triggering
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, isPaused, clearCountdown, startCountdown]);
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, config.manualFiles.length, initialSyncDone, autoRefresh, isPaused, clearCountdown, startCountdown]);
 
   // View changes - handle context level locally, fetch for granularity/model changes
   useEffect(() => {
@@ -432,25 +422,30 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     // Granularity changes don't affect context - only plan generation
     // Only model changes need server refresh (different context window)
     if (modelChanged) {
-      fetchPreview();
+      if (autoRefresh) {
+        fetchPreview();
+      } else {
+        // Without auto-refresh, mark context stale so it is refreshed manually or before generation
+        setIsContextStale(true);
+      }
     }
-  }, [config.contextLevel, config.granularity, config.generationModel, initialSyncDone, fetchPreview]);
+  }, [config.contextLevel, config.granularity, config.generationModel, initialSyncDone, autoRefresh, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
   // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
   useEffect(() => {
-    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused && countdownStarted) {
+    if (autoRefresh && timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused && countdownStarted) {
       setIsContextStale(false);
       setCountdownStarted(false);
       fetchPreview();
     }
-  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, countdownStarted, fetchPreview]);
+  }, [autoRefresh, timeUntilRefresh, isContextStale, initialSyncDone, isPaused, countdownStarted, fetchPreview]);
 
-  const handleManualRefresh = useCallback(() => {
+  const handleManualRefresh = useCallback((overrideDraftId?: string) => {
     clearCountdown();
     setIsContextStale(false);
     pausedTimeRemainingRef.current = null;
-    fetchPreview();
+    return fetchPreview(overrideDraftId);
   }, [clearCountdown, fetchPreview]);
 
   const togglePause = useCallback(() => {

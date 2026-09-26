@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
 process.env.GH_APP_ID ||= '1';
@@ -6,6 +6,11 @@ process.env.GH_INSTALLATION_ID ||= '1';
 process.env.GH_PRIVATE_KEY ||= '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n';
 
 const { formatPRDiff, formatPRDiffWithMetadata } = await import('../src/jobs/prFileUtils.js');
+const { closeConnection } = await import('@propr/core');
+
+after(async () => {
+    await closeConnection();
+});
 
 function prFile(overrides: Partial<{
     filename: string;
@@ -89,10 +94,59 @@ describe('formatPRDiff', () => {
         assert.ok(diff.includes('## src/a.ts'), 'should include first small source file');
         assert.ok(diff.includes('## src/b.ts'), 'should include second small source file');
         assert.ok(!diff.includes('## package-lock.json'), 'should omit oversized lockfile');
-        assert.ok(diff.includes('1 files omitted'), 'should report omitted files');
+        assert.ok(diff.includes('1 file was omitted'), 'should report omitted files');
         assert.ok(diff.includes('**Files omitted from review diff:**'), 'should include omitted file list for the prompt');
         assert.ok(diff.includes('- package-lock.json'), 'should identify omitted lockfile');
+        assert.ok(diff.includes('Did not fit the review context budget (1):'));
         assert.ok(diff.includes('Large, binary, generated, and lockfile changes are deprioritized'));
+    });
+
+    test('treats a missing non-binary patch as omitted review coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'src/large-change.ts',
+                additions: 2000,
+                deletions: 1500,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, ['src/large-change.ts']);
+        assert.ok(!result.diff.includes('## src/large-change.ts'));
+        assert.ok(result.diff.includes('Review diff is partial'));
+        assert.ok(result.diff.includes('- src/large-change.ts'));
+        assert.ok(result.diff.includes('GitHub supplied no patch content; a larger review budget cannot recover these (1):'));
+        assert.ok(!result.diff.includes('Did not fit the review context budget'));
+    });
+
+    test('does not treat a recognized binary file as missing text coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'assets/logo.png',
+                additions: 0,
+                deletions: 0,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, []);
+        assert.ok(result.diff.includes('## assets/logo.png'));
+        assert.ok(result.diff.includes('(binary or too large to display)'));
+    });
+
+    test('does not mark a metadata-only text-file change as missing coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'src/renamed.ts',
+                status: 'renamed',
+                additions: 0,
+                deletions: 0,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, []);
+        assert.ok(result.diff.includes('## src/renamed.ts'));
     });
 
     test('returns omitted file metadata for the review result comment', () => {

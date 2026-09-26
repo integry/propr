@@ -1,0 +1,2 @@
+# The packaged Darwin ACL helper is hash-pinned; keep its source canonical.
+packages/cli/native/darwin-authority-broker.c text eol=lf

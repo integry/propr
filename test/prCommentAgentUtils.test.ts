@@ -38,7 +38,7 @@ function baseOptions(overrides = {}) {
         correlationId: 'corr-1',
         taskId: 'task-1',
         correlatedLogger: logger,
-        summarizationSettingsLoader: async () => ({ agent_alias: '' }),
+        summarizationSettingsLoader: async () => ({ agent_alias: 'test-agent:test-summary-model' }),
         ...overrides,
     };
 }
@@ -74,6 +74,21 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Fix: Handle null refresh tokens in src/auth.ts before calling persistSession().');
     });
 
+    test('does not silently select a model when summarization is not configured', async () => {
+        let analysisCalls = 0;
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nHandle null refresh tokens.',
+            summarizationSettingsLoader: async () => ({ agent_alias: '' }),
+            analysisRunner: async () => {
+                analysisCalls += 1;
+                return 'unused';
+            },
+        }));
+
+        assert.strictEqual(title, 'Fix: Handle null refresh tokens.');
+        assert.strictEqual(analysisCalls, 0);
+    });
+
     test('records workflow-specific title generation metadata without a reasoning level', async () => {
         let taskKind: unknown;
         let timeoutMs: unknown;
@@ -97,6 +112,20 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(timeoutMs, 1234);
         assert.strictEqual(reasoningLevel, undefined);
         assert.strictEqual(useConfiguredReasoningLevel, undefined);
+    });
+
+    test('allows enough time for a cold agent launch by default', async () => {
+        let timeoutMs: unknown;
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
+            analysisRunner: async options => {
+                timeoutMs = options.timeoutMs;
+                return 'Resolve lint failures';
+            },
+        }));
+
+        assert.strictEqual(title, 'Resolve lint failures');
+        assert.strictEqual(timeoutMs, 30_000);
     });
 
     test('removes surrounding quotes from generated subtitles', async () => {

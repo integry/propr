@@ -1,0 +1,125 @@
+import { randomUUID } from 'node:crypto';
+import type { Redis } from 'ioredis';
+
+export const PR_PROCESSING_LOCK_TTL_SECONDS = 60 * 60;
+export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
+
+export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
+
+export class PRProcessingLeaseLostError extends Error {
+    constructor(message = 'PR processing attempt lost its lock') {
+        super(message);
+        this.name = 'PRProcessingLeaseLostError';
+    }
+}
+
+interface LockHeartbeatOptions {
+    redisClient: PRProcessingLockRedisClient;
+    lockKey: string;
+    lockToken: string;
+    ttlSeconds?: number;
+    intervalMs?: number;
+    onLockLost?: () => void;
+    onError?: (error: unknown) => void;
+}
+
+const RENEW_LOCK_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
+const RELEASE_LOCK_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+`;
+
+export function createPRProcessingLockToken(correlationId: string): string {
+    return `${correlationId}:${randomUUID()}`;
+}
+
+export async function ensurePRProcessingLockToken(
+    data: { prProcessingLockToken?: string },
+    correlationId: string,
+    persist: () => Promise<void>,
+): Promise<string> {
+    if (data.prProcessingLockToken) return data.prProcessingLockToken;
+    data.prProcessingLockToken = createPRProcessingLockToken(correlationId);
+    await persist();
+    return data.prProcessingLockToken;
+}
+
+export async function acquirePRProcessingLock(
+    redisClient: PRProcessingLockRedisClient,
+    lockKey: string,
+    lockToken: string,
+    ttlSeconds = PR_PROCESSING_LOCK_TTL_SECONDS,
+): Promise<boolean> {
+    const result = await redisClient.set(lockKey, lockToken, 'EX', ttlSeconds, 'NX');
+    if (result === 'OK') return true;
+
+    // A worker can exit after acquiring the lease but before releasing it.
+    // BullMQ redelivery of that same logical execution must be able to resume
+    // immediately with its persisted token, while a different token remains
+    // excluded even when it shares the same correlation ID.
+    return renewPRProcessingLock(redisClient, lockKey, lockToken, ttlSeconds);
+}
+
+export async function renewPRProcessingLock(
+    redisClient: PRProcessingLockRedisClient,
+    lockKey: string,
+    lockToken: string,
+    ttlSeconds = PR_PROCESSING_LOCK_TTL_SECONDS,
+): Promise<boolean> {
+    const result = await redisClient.eval(RENEW_LOCK_SCRIPT, 1, lockKey, lockToken, ttlSeconds);
+    return Number(result) === 1;
+}
+
+export async function releasePRProcessingLock(
+    redisClient: PRProcessingLockRedisClient,
+    lockKey: string,
+    lockToken: string,
+): Promise<boolean> {
+    const result = await redisClient.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, lockToken);
+    return Number(result) === 1;
+}
+
+export function startPRProcessingLockHeartbeat(options: LockHeartbeatOptions): () => Promise<void> {
+    const {
+        redisClient,
+        lockKey,
+        lockToken,
+        ttlSeconds = PR_PROCESSING_LOCK_TTL_SECONDS,
+        intervalMs = PR_PROCESSING_LOCK_RENEW_INTERVAL_MS,
+        onLockLost,
+        onError,
+    } = options;
+    let stopped = false;
+    let renewalPromise: Promise<void> | null = null;
+
+    const renew = (): void => {
+        if (stopped || renewalPromise) return;
+        renewalPromise = renewPRProcessingLock(redisClient, lockKey, lockToken, ttlSeconds)
+            .then(renewed => {
+                if (!renewed && !stopped) onLockLost?.();
+            })
+            .catch(error => {
+                if (!stopped) onError?.(error);
+            })
+            .finally(() => {
+                renewalPromise = null;
+            });
+    };
+
+    const timer = setInterval(renew, intervalMs);
+    timer.unref();
+
+    return async () => {
+        stopped = true;
+        clearInterval(timer);
+        await renewalPromise;
+    };
+}

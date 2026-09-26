@@ -1,8 +1,10 @@
 // Agent Chat Types and API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface ChatQuery {
   agentId: string;
+  /** Stable synthetic configuration identity, present only for pool choices. */
+  syntheticConfigId?: string;
   model?: string;
 }
 
@@ -13,6 +15,12 @@ export interface ChatResult {
   response?: string;
   error?: string;
   durationMs: number;
+  syntheticConfigId?: string;
+  virtualAgentAlias?: string;
+  virtualModel?: string;
+  physicalAgentAlias?: string;
+  physicalModel?: string;
+  attemptNumber?: number;
 }
 
 export const chatWithAgents = async (

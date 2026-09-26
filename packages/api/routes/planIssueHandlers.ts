@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import {
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
@@ -195,10 +196,11 @@ async function runIssueImplementation(params: ImplementIssueContext & {
 
 async function loadImplementationTarget(params: {
   deps: PlanIssueDeps;
-  req: Request;
+  req: FlatRequest;
   draftId: string;
   issueNumber: number;
 }): Promise<{
+  userId: string;
   owner: string;
   repo: string;
   draft: Record<string, unknown>;
@@ -228,6 +230,7 @@ async function loadImplementationTarget(params: {
   const planIssue = await getPlanIssue(draftId, issueNumber);
   if (!planIssue) throw new ImplementationRequestError(404, 'Issue not found in this plan');
   return {
+    userId: req.user!.id,
     owner: repositoryParts.owner,
     repo: repositoryParts.repo,
     draft: draft as Record<string, unknown>,
@@ -242,6 +245,7 @@ async function loadImplementationTarget(params: {
 async function implementLoadedIssue(params: {
   draftId: string;
   issueNumber: number;
+  userId: string;
   owner: string;
   repo: string;
   draft: Record<string, unknown>;
@@ -251,7 +255,7 @@ async function implementLoadedIssue(params: {
   models?: ImplementationModel[];
   planIssue: PlanIssue;
 }): Promise<unknown> {
-  const { draftId, issueNumber, owner, repo, draft, contextConfig, implementationSettings, body, models, planIssue } = params;
+  const { draftId, issueNumber, userId, owner, repo, draft, contextConfig, implementationSettings, body, models, planIssue } = params;
   const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
   const processingLabels = await loadPrimaryProcessingLabels();
   const implementLabel = processingLabels[0] || 'AI';
@@ -263,12 +267,12 @@ async function implementLoadedIssue(params: {
   const firstIssueNumber = firstPendingIssue.issues[0]?.issue_number ?? issueNumber;
   const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft, firstIssueNumber, contextConfig, correlationId, labelLogger });
   const context: ImplementIssueContext = {
-    octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
+    octokit, owner, repo, issueNumber, userId, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
   };
   const effectivePlanIssue = buildEffectivePlanIssue(issueForImplementation, body);
   return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models });
 }
-function parseIssueNumberParam(req: Request, res: Response): number | null {
+function parseIssueNumberParam(req: FlatRequest, res: Response): number | null {
   const issueNumber = parseInt(req.params.issueNumber, 10);
   if (isNaN(issueNumber)) {
     res.status(400).json({ error: 'Invalid issue number' });
@@ -290,7 +294,7 @@ function sendImplementIssueError(res: Response, error: unknown): void {
 }
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
-  return async function getIssues(req: Request, res: Response): Promise<void> {
+  return async function getIssues(req: FlatRequest, res: Response): Promise<void> {
     try {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
@@ -317,7 +321,7 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
   };
 }
 export function createImplementIssueHandler(deps: PlanIssueDeps) {
-  return async function implementIssue(req: Request, res: Response): Promise<void> {
+  return async function implementIssue(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseIssueNumberParam(req, res);
     if (issueNumber === null) return;
@@ -331,7 +335,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
   };
 }
 export function createUpdateIssueHandler(deps: PlanIssueDeps) {
-  return async function updateIssueHandler(req: Request, res: Response): Promise<void> {
+  return async function updateIssueHandler(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseInt(req.params.issueNumber, 10);
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
@@ -343,7 +347,9 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueUpdates = buildIssueUpdate(body);
+      const issueUpdates = buildIssueUpdate(body, {
+        existingRunUltrafix: currentIssue.run_ultrafix,
+      });
       const repository = ownership.draft!.repository as string;
       const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);

@@ -21,6 +21,7 @@ test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
 
     assert.deepStrictEqual(parsed.events, [
         { type: 'thought', content: 'I will inspect the repo.', timestamp: '2026-06-05T13:00:01.000Z' },
+        { type: 'tool_use', toolName: 'read_file', input: { path: 'package.json' }, id: 'tool-1', timestamp: '2026-06-05T13:00:03.000Z' },
         { type: 'thought', content: 'Done.', timestamp: '2026-06-05T13:00:05.000Z' }
     ]);
     assert.deepStrictEqual(parsed.tokenUsage, {
@@ -29,6 +30,25 @@ test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0
     });
+});
+
+test('parseRedisOutput emits later Antigravity tool calls once per stable ID', () => {
+    const firstCall = { type: 'tool_use', tool_name: 'read_file', tool_id: 'tool-1', parameters: { path: 'one.ts' }, timestamp: '2026-06-05T13:00:02.000Z' };
+    const parsed = parseRedisOutput([
+        JSON.stringify({ type: 'init', model: 'antigravity-gemini-3-pro-preview' }),
+        JSON.stringify({ type: 'message', role: 'assistant', delta: true, content: 'Checking files. ', timestamp: '2026-06-05T13:00:01.000Z' }),
+        JSON.stringify(firstCall),
+        JSON.stringify(firstCall),
+        JSON.stringify({ type: 'message', role: 'assistant', delta: true, content: 'Next file.', timestamp: '2026-06-05T13:00:03.000Z' }),
+        JSON.stringify({ type: 'tool_use', tool_name: 'read_file', tool_id: 'tool-2', parameters: { path: 'two.ts' }, timestamp: '2026-06-05T13:00:04.000Z' }),
+    ]);
+
+    assert.deepStrictEqual(parsed.events.map(event => event.type), [
+        'thought', 'tool_use', 'thought', 'tool_use',
+    ]);
+    assert.deepStrictEqual(parsed.events.filter(event => event.type === 'tool_use').map(event => event.id), [
+        'tool-1', 'tool-2',
+    ]);
 });
 
 test('parseRedisOutput suppresses Antigravity tool_result output', () => {
@@ -65,6 +85,55 @@ test('parseRedisOutput keeps generic Codex JSONL events out of Antigravity routi
         { type: 'tool_result', result: 'tests passed', isError: false, timestamp: '2026-06-05T13:00:03.000Z' }
     ]);
     assert.strictEqual(parsed.tokenUsage, null);
+});
+
+test('parseRedisOutput counts Codex usage once when turn and result records coexist', () => {
+    const usage = { input_tokens: 120, output_tokens: 30, cached_input_tokens: 40 };
+    const parsed = parseRedisOutput([
+        JSON.stringify({ type: 'turn.completed', usage }),
+        JSON.stringify({ type: 'result', status: 'success', usage }),
+    ]);
+
+    assert.deepStrictEqual(parsed.tokenUsage, {
+        input_tokens: 120,
+        output_tokens: 30,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 40,
+    });
+});
+
+test('parseRedisOutput projects native Codex App Server plan, activity and token usage', () => {
+    const parsed = parseRedisOutput([
+        JSON.stringify({ method: 'turn/plan/updated', params: { plan: [
+            { step: 'Inspect transport', status: 'completed' },
+            { step: 'Run tests', status: 'inProgress' },
+        ] } }),
+        JSON.stringify({ method: 'item/completed', params: { item: {
+            id: 'cmd-1', type: 'commandExecution', command: 'npm test', aggregatedOutput: 'passed', status: 'completed',
+        } } }),
+        JSON.stringify({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: {
+            inputTokens: 200, outputTokens: 50, cachedInputTokens: 80,
+        } } } }),
+        JSON.stringify({ method: 'thread/goal/updated', params: { goal: {
+            objective: 'Ship native goals', status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42,
+        } } }),
+    ]);
+
+    assert.deepStrictEqual(parsed.todos, [
+        { id: 'plan-0', content: 'Inspect transport', status: 'completed' },
+        { id: 'plan-1', content: 'Run tests', status: 'in_progress' },
+    ]);
+    assert.equal(parsed.currentTask, 'Run tests');
+    assert.equal(parsed.events.some(event => event.type === 'tool_use'), true);
+    assert.deepStrictEqual(parsed.tokenUsage, {
+        input_tokens: 200,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 80,
+    });
+    assert.deepStrictEqual(parsed.nativeGoal, {
+        objective: 'Ship native goals', status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42,
+    });
 });
 
 test('parseRedisOutput emits Vibe live events from a partial JSON transcript array', () => {
@@ -104,6 +173,7 @@ test('parseRedisOutput emits Vibe live events from a partial JSON transcript arr
 
     assert.deepStrictEqual(parsed.events.map(event => event.type), ['thought', 'tool_use', 'tool_result', 'thought']);
     assert.strictEqual(parsed.events[0].content, 'I will inspect the file.');
+    assert.equal(parsed.events[0].internalReasoning, true);
     assert.strictEqual(parsed.events[1].toolName, 'read_file');
     assert.deepStrictEqual(parsed.events[1].input, { path: 'vibe_test.py' });
     assert.strictEqual(parsed.events[2].toolUseId, 'tool-1');

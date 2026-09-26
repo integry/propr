@@ -56,17 +56,21 @@ export async function logFileBatchCall(options: {
   durationMs: number;
   success: boolean;
   errorMessage?: string;
+  routingMetadata?: Record<string, unknown>;
 }): Promise<void> {
   const {
     log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
-    estimatedOutputTokens, durationMs, success, errorMessage
+    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata
   } = options;
+  const physicalAgentAlias = typeof routingMetadata?.physicalAgentAlias === 'string'
+    ? routingMetadata.physicalAgentAlias
+    : agentUsed.config.alias;
 
   await logSummarizationCall({
     timestamp: new Date().toISOString(),
     callType: 'batch_summarization',
     model: modelLogged,
-    agentAlias: agentUsed.config.alias,
+    agentAlias: physicalAgentAlias,
     repository: fullName,
     estimatedInputTokens,
     estimatedOutputTokens,
@@ -85,7 +89,11 @@ export async function logFileBatchCall(options: {
     tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
     error: errorMessage,
     repository: fullName,
-    agentAlias: agentUsed.config.alias,
+    agentAlias: physicalAgentAlias,
+    metadata: {
+      phase: 'batch_summarization',
+      ...(routingMetadata && { syntheticRouting: routingMetadata }),
+    },
     workRef: { workType: 'repository', workRepository: fullName },
   }));
 }

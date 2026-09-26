@@ -3,12 +3,16 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+import { applyDatabaseMigrations } from './migrationGate.js';
+import { installSqliteRetry } from './sqliteRetry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 type KnexEnvironment = 'development' | 'production' | 'test';
-type BetterSqliteConnection = { pragma: (arg: string) => unknown };
+export type BetterSqliteConnection = {
+    pragma: (arg: string, options?: { simple?: boolean }) => unknown;
+};
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000;
 
@@ -17,11 +21,31 @@ function getSqliteBusyTimeoutMs(): number {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
 }
 
-function configureSqliteConnection(conn: BetterSqliteConnection): void {
+export function configureSqliteConnection(conn: BetterSqliteConnection): void {
     conn.pragma(`busy_timeout = ${getSqliteBusyTimeoutMs()}`);
     conn.pragma('journal_mode = WAL');
     conn.pragma('synchronous = NORMAL');
     conn.pragma('foreign_keys = ON');
+    conn.pragma('recursive_triggers = ON');
+
+    if (conn.pragma('foreign_keys', { simple: true }) !== 1) {
+        throw new Error('SQLite foreign_keys pragma must be enabled');
+    }
+    if (conn.pragma('recursive_triggers', { simple: true }) !== 1) {
+        throw new Error('SQLite recursive_triggers pragma must be enabled');
+    }
+}
+
+export function configurePooledSqliteConnection(
+    conn: BetterSqliteConnection,
+    done: (err: Error | null, connection?: BetterSqliteConnection) => void
+): void {
+    try {
+        configureSqliteConnection(conn);
+        done(null, conn);
+    } catch (error) {
+        done(error as Error);
+    }
 }
 
 // Get database filename from env or use default
@@ -59,10 +83,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         },
         production: {
@@ -76,10 +97,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         },
         test: {
@@ -93,10 +111,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         }
     };
@@ -119,6 +134,10 @@ try {
     ensureDataDirectory(dbFilename);
 
     db = knex(config);
+
+    // A locked database is contention, not a failure: retry every query rather
+    // than surfacing SQLITE_BUSY to callers.
+    installSqliteRetry(db);
 
     // Test connection
     db.raw('SELECT 1')
@@ -151,22 +170,16 @@ export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Co
 }
 
 export async function runMigrations(): Promise<void> {
+    if (process.env.PROPR_MIGRATIONS_PREAPPLIED === '1') {
+        logger.info('Database migrations were completed by the launcher migration phase');
+        return;
+    }
+
     try {
         logger.info('Running database migrations...');
 
-        // Disable foreign keys during migrations to prevent cascade deletes
-        // when tables are recreated (common in SQLite ALTER TABLE operations)
-        await db.raw('PRAGMA foreign_keys = OFF');
-        logger.info('Disabled foreign keys for migration safety');
-
-        try {
-            await db.migrate.latest();
-            logger.info('Database migrations completed successfully');
-        } finally {
-            // Re-enable foreign keys after migrations
-            await db.raw('PRAGMA foreign_keys = ON');
-            logger.info('Re-enabled foreign keys after migrations');
-        }
+        await applyDatabaseMigrations(db);
+        logger.info('Database migrations completed successfully');
     } catch (error) {
         const err = error as Error;
         logger.error({

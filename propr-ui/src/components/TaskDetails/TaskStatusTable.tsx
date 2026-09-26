@@ -6,7 +6,7 @@ import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest
 interface TaskStatusTableProps {
   history: HistoryItem[];
   compact?: boolean;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
 }
 
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
@@ -29,6 +29,13 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
 };
 
 const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
+  const routing = item.metadata?.syntheticRouting;
+  if (routing) {
+    const attempt = routing.attemptNumber ?? history.slice(0, index + 1)
+      .filter(entry => entry.metadata?.syntheticRouting).length;
+    const physical = [routing.physicalAgentAlias, routing.physicalModel].filter(Boolean).join(' · ');
+    return `Pool attempt ${attempt}${physical ? ` — ${physical}` : ''}`;
+  }
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
@@ -121,12 +128,13 @@ const TimelineContent: React.FC<{
   const displayLabel = getDisplayLabel(item, index, history, commandMode);
   const prInfo = item.metadata?.pr || item.metadata?.pullRequest;
   const isCompleted = item.state?.toUpperCase() === 'COMPLETED';
+  const routing = item.metadata?.syntheticRouting;
 
   return (
-    <div className={`flex-grow ${isCompleted ? 'mt-1' : ''} ${compact ? 'pb-3' : 'pb-6'}`}>
-      <div className="flex justify-between items-center">
-        <div>
-          <div className={`${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
+    <div className={`min-w-0 flex-grow ${isCompleted ? 'mt-1' : ''} ${compact ? 'pb-3' : 'pb-6'}`}>
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className={`break-words ${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
             {displayLabel}
             {prInfo?.url && (
               <a
@@ -142,10 +150,16 @@ const TimelineContent: React.FC<{
               </a>
             )}
           </div>
+          {routing && (
+            <div className="mt-0.5 break-words text-[10px] text-slate-500">
+              Virtual {routing.virtualAgentAlias} · {routing.virtualModel}
+              {routing.selectionReason ? ` · ${routing.selectionReason}` : ''}
+            </div>
+          )}
         </div>
 
         {/* Duration */}
-        <div className="text-right pl-4">
+        <div className="flex-shrink-0 text-right">
           {item.duration !== null && (
             <span className={`${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-800' : 'text-gray-500'}`}>
               {formatRelativeTime(item.duration)}

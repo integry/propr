@@ -17,6 +17,8 @@ export const EFFECTIVE_MAX_RATIO = 0.98;
 export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
 // Codex/OpenAI reasoning models reserve ~128K tokens for output/tooling, so the
 // usable input cap is materially lower than the advertised 400K context window.
+// PR reviews resolve per-model runtime windows through
+// resolveReviewInputCapacity in @propr/shared instead of this blanket cap.
 export const CODEX_CLI_CONTEXT_LIMIT = 272000;
 
 export const MODEL_LIMITS: Record<string, number> = {

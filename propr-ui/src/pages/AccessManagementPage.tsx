@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { History, ShieldCheck, Trash2, UserPlus } from 'lucide-react';
 import {
   addInstanceMember,
@@ -31,6 +31,14 @@ function auditDescription(entry: InstanceRoleAuditEntry): string {
   return `${entry.action.replace(/_/g, ' ')} for`;
 }
 
+type CollectionState = 'refreshing' | 'loading' | 'error' | 'empty' | 'ready';
+
+function getCollectionState(loading: boolean, itemCount: number, error: string): CollectionState {
+  if (loading) return itemCount > 0 ? 'refreshing' : 'loading';
+  if (error && itemCount === 0) return 'error';
+  return itemCount === 0 ? 'empty' : 'ready';
+}
+
 const AccessManagementPage: React.FC = () => {
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
@@ -39,32 +47,52 @@ const AccessManagementPage: React.FC = () => {
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<InstanceRole>('member');
   const [loading, setLoading] = useState(true);
+  const [auditLoading, setAuditLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [auditError, setAuditError] = useState('');
+  const membersRequestIdRef = useRef(0);
+  const auditRequestIdRef = useRef(0);
 
   const loadMembers = useCallback(async () => {
+    const requestId = ++membersRequestIdRef.current;
     setLoading(true);
     setError('');
     try {
-      setData(await getInstanceMembers());
+      const response = await getInstanceMembers();
+      if (requestId === membersRequestIdRef.current) setData(response);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load instance roles');
+      if (requestId === membersRequestIdRef.current) {
+        setError(loadError instanceof Error ? loadError.message : 'Failed to load instance roles');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === membersRequestIdRef.current) setLoading(false);
     }
   }, []);
 
   const loadAudit = useCallback(async () => {
+    const requestId = ++auditRequestIdRef.current;
+    setAuditLoading(true);
+    setAuditError('');
     try {
-      setAuditEntries(await getInstanceRoleAudit());
+      const response = await getInstanceRoleAudit();
+      if (requestId === auditRequestIdRef.current) setAuditEntries(response);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load role audit');
+      if (requestId === auditRequestIdRef.current) {
+        setAuditError(loadError instanceof Error ? loadError.message : 'Failed to load role audit');
+      }
+    } finally {
+      if (requestId === auditRequestIdRef.current) setAuditLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadMembers();
     void loadAudit();
+    return () => {
+      membersRequestIdRef.current += 1;
+      auditRequestIdRef.current += 1;
+    };
   }, [loadAudit, loadMembers]);
 
   const runMutation = async (mutation: () => Promise<unknown>) => {
@@ -103,6 +131,8 @@ const AccessManagementPage: React.FC = () => {
 
   const canStoreBootstrapRole = currentUser?.authorizationSource === 'bootstrap'
     && !data.members.some(member => member.githubUserId === currentUser.id && member.role === 'admin');
+  const memberState = getCollectionState(loading, data.members.length, error);
+  const auditState = getCollectionState(auditLoading, auditEntries.length, auditError);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
@@ -191,9 +221,11 @@ const AccessManagementPage: React.FC = () => {
         <div className="border-b border-gray-200 px-5 py-4">
           <h2 className="font-medium text-gray-900">Explicit assignments</h2>
         </div>
-        {loading ? (
+        {memberState === 'refreshing' && <div role="status" className="border-b border-gray-100 px-5 py-2 text-xs text-gray-500">Refreshing assignments…</div>}
+        {memberState === 'loading' ? (
           <div className="p-8 text-center text-sm text-gray-500">Loading access assignments…</div>
-        ) : data.members.length === 0 ? (
+        ) : memberState === 'error' ? null
+        : memberState === 'empty' ? (
           <div className="p-8 text-center text-sm text-gray-500">No durable assignments yet.</div>
         ) : (
           <ul className="divide-y divide-gray-200">
@@ -245,7 +277,12 @@ const AccessManagementPage: React.FC = () => {
           <History className="h-4 w-4 text-gray-500" />
           <h2 className="font-medium text-gray-900">Recent role changes</h2>
         </div>
-        {auditEntries.length === 0 ? (
+        {auditError && <div role="alert" className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">{auditError}</div>}
+        {auditState === 'refreshing' && <div role="status" className="border-b border-gray-100 px-5 py-2 text-xs text-gray-500">Refreshing role changes…</div>}
+        {auditState === 'loading' ? (
+          <div className="p-6 text-sm text-gray-500">Loading role changes…</div>
+        ) : auditState === 'error' ? null
+        : auditState === 'empty' ? (
           <div className="p-6 text-sm text-gray-500">No role changes recorded yet.</div>
         ) : (
           <ul className="divide-y divide-gray-100">

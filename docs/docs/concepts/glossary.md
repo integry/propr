@@ -31,6 +31,18 @@ title: Glossary
 
 **Task** — one unit of agent work with its own record: prompt, isolated run, logs, usage, commits, and resulting PR or follow-up.
 
+**Synthetic agent** — a provider-neutral virtual agent whose models route to configured direct agent/model members. See [Synthetic Pools](../features/synthetic-pools.md).
+
+**Synthetic model** — a virtual model ID exposed by a synthetic agent in normal model selectors.
+
+**Pool member** — one direct-agent alias and supported physical model participating in a synthetic model.
+
+**Priority tier** — all eligible pool members at one priority; only the highest currently eligible tier participates in selection.
+
+**Usage cap** — an optional session or weekly usage percentage above which a capped pool member becomes ineligible.
+
+**Failover** — retrying the same call and workspace on another eligible pool member after a retryable physical failure.
+
 **Ultrafix** — the automated review-fix loop: `/review` scores the PR, fixes are applied, and cycles repeat until the target score, cycle limit, or a human stop. See [PR Comment Commands](../features/pr-commands.md#ultrafix).
 
 **Worktree** — the dedicated Git working directory each task gets, paired with its own branch and container, so parallel tasks never collide and the main checkout stays untouched.

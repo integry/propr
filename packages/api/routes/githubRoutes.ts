@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
@@ -8,11 +9,22 @@ import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
+import {
+  GitHubMetadataAuthorizationError,
+  refreshRejectedGitHubMetadataToken,
+  resolveGitHubMetadataToken,
+  sendGitHubMetadataAuthorizationError,
+} from '../githubMetadataAuth.js';
+
+const PaginatedOctokit = Octokit.plugin(paginateRest);
+type MetadataOctokit = InstanceType<typeof PaginatedOctokit>;
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
+  resolveMetadataToken?: typeof resolveGitHubMetadataToken;
+  createMetadataOctokit?: (accessToken: string) => MetadataOctokit;
 }
 
 /**
@@ -80,6 +92,30 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue } = deps;
+  const resolveMetadataToken = deps.resolveMetadataToken ?? resolveGitHubMetadataToken;
+  const createMetadataOctokit = deps.createMetadataOctokit
+    ?? ((accessToken: string) => new PaginatedOctokit({ auth: accessToken }));
+
+  async function handleMetadataError(req: Request, res: Response, error: unknown): Promise<void> {
+    if (error instanceof GitHubMetadataAuthorizationError) {
+      sendGitHubMetadataAuthorizationError(error, res);
+      return;
+    }
+    if (isAuthError(error)) {
+      if (req.authenticationMethod === 'instance_token') await refreshRejectedGitHubMetadataToken(req, res);
+      else await handleAuthError(req, res);
+      return;
+    }
+    const status = (error as { status?: number })?.status;
+    if (status === 403 || status === 404) {
+      res.status(404).json({
+        error: 'Repository not found or not accessible with your GitHub authorization',
+        code: 'REPOSITORY_NOT_ACCESSIBLE',
+      });
+      return;
+    }
+    throw error;
+  }
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -92,9 +128,14 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         res.status(400).json({ error: 'Invalid repository format. Expected: owner/name' });
         return;
       }
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'Unable to determine requesting user ID' });
+        return;
+      }
       const jobId = `import-tasks-${repository.replace('/', '-')}-${Date.now()}`;
       const correlationId = `${jobId}-${Math.random().toString(36).substring(2, 9)}`;
-      const newJob = await taskQueue.add('processTaskImport', { taskDescription, repository, correlationId, user: req.user?.username }, { jobId, removeOnComplete: { age: 24 * 3600, count: 100 }, removeOnFail: { age: 7 * 24 * 3600 } });
+      const newJob = await taskQueue.add('processTaskImport', { taskDescription, repository, correlationId, userId, user: req.user?.username }, { jobId, removeOnComplete: { age: 24 * 3600, count: 100 }, removeOnFail: { age: 7 * 24 * 3600 } });
       await redisClient.lPush('system:activity:log', JSON.stringify({ id: `activity-${Date.now()}-${jobId}`, type: 'task_import', timestamp: new Date().toISOString(), user: req.user?.username, repository, description: `Task import job created for ${repository}`, status: 'pending' }));
       await redisClient.lTrim('system:activity:log', 0, 999);
       console.log(`Created task import job ${jobId} for repository ${repository}`);
@@ -112,16 +153,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
 
-      // Get user's access token from session
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) {
-        res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
-        return;
-      }
-
-      // Create Octokit instance with user's token and pagination support
-      const PaginatedOctokit = Octokit.plugin(paginateRest);
-      const octokit = new PaginatedOctokit({ auth: accessToken });
+      const accessToken = await resolveMetadataToken(req);
+      const octokit = createMetadataOctokit(accessToken);
 
       // Fetch all repositories the user has access to with pagination
       const repos: string[] = [];
@@ -146,8 +179,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       res.json({ repos });
     } catch (error) {
       // Check if this is a token expiration/revocation error
-      if (isAuthError(error)) {
-        await handleAuthError(req, res);
+      if (error instanceof GitHubMetadataAuthorizationError || isAuthError(error)) {
+        await handleMetadataError(req, res, error);
         return;
       }
       console.error('Error in /api/github/repos:', error);
@@ -155,7 +188,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  async function getBranches(req: Request, res: Response): Promise<void> {
+  async function getBranches(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { owner, repo } = req.params;
 
@@ -174,16 +207,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
 
-      // Get user's access token from session
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) {
-        res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
-        return;
-      }
-
-      // Create Octokit instance with user's token and pagination support
-      const PaginatedOctokit = Octokit.plugin(paginateRest);
-      const octokit = new PaginatedOctokit({ auth: accessToken });
+      const accessToken = await resolveMetadataToken(req);
+      const octokit = createMetadataOctokit(accessToken);
 
       // Fetch branches with pagination
       const branches: string[] = [];
@@ -197,11 +222,10 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         });
         defaultBranch = repoInfo.data.default_branch;
       } catch (error) {
-        // Check for auth error on repo info request
-        if (isAuthError(error)) {
-          await handleAuthError(req, res);
-          return;
-        }
+        // Authentication failures need request-auth-specific handling in the
+        // outer boundary (desktop grants must never clear a browser session).
+        const status = (error as { status?: number })?.status;
+        if (isAuthError(error) || status === 403 || status === 404) throw error;
         console.error('Error fetching repo info for default branch:', error);
         // Continue without default branch info
       }
@@ -229,8 +253,9 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       res.json({ branches, defaultBranch });
     } catch (error) {
       // Check if this is a token expiration/revocation error
-      if (isAuthError(error)) {
-        await handleAuthError(req, res);
+      if (error instanceof GitHubMetadataAuthorizationError || isAuthError(error)
+        || (error as { status?: number })?.status === 403 || (error as { status?: number })?.status === 404) {
+        await handleMetadataError(req, res, error);
         return;
       }
       console.error('Error in /api/github/repos/:owner/:repo/branches:', error);

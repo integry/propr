@@ -1,28 +1,36 @@
 import type { Express, RequestHandler } from 'express';
 import type {
   createAdminRoutes,
+  createAdminMcpRoutes,
   createAgentLoginRoutes,
   createAgentRuntimeRoutes,
   createAgentVersionRoutes,
   createConfigRoutes,
   createInstanceCatalogRoutes,
+  createVisualPreviewAuthRoutes,
 } from './routes/index.js';
 import {
+  requireAgentTankUsageAccess,
   requireManageAgents,
   requireManageMembers,
   requireManageRuntime,
   requireManageSettings,
 } from './permissionGuards.js';
+import { timeApiRouteHandler } from './apiPerformanceTiming.js';
 
 export type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
-export type RouteEntry = [RouteMethod, string, ...RequestHandler[]];
+// A route matrix contains handlers with different inferred parameter shapes.
+// `never` erases those shapes while retaining their request/response contract.
+export type RouteEntry = [RouteMethod, string, ...RequestHandler<never>[]];
 
 interface ManagementRouteDeps {
   adminRoutes: ReturnType<typeof createAdminRoutes>;
+  adminMcpRoutes: ReturnType<typeof createAdminMcpRoutes>;
   agentLoginRoutes: ReturnType<typeof createAgentLoginRoutes>;
   agentRuntimeRoutes: ReturnType<typeof createAgentRuntimeRoutes>;
   agentVersionRoutes: ReturnType<typeof createAgentVersionRoutes>;
   configRoutes: ReturnType<typeof createConfigRoutes>;
+  visualPreviewAuthRoutes: ReturnType<typeof createVisualPreviewAuthRoutes>;
 }
 
 interface MemberCatalogRouteDeps {
@@ -31,10 +39,12 @@ interface MemberCatalogRouteDeps {
 
 export function createManagementRouteEntries({
   adminRoutes,
+  adminMcpRoutes,
   agentLoginRoutes,
   agentRuntimeRoutes,
   agentVersionRoutes,
   configRoutes,
+  visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
   return [
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
@@ -53,6 +63,8 @@ export function createManagementRouteEntries({
     ['post', '/api/config/primary-processing-labels', requireManageSettings, configRoutes.postPrimaryProcessingLabels],
     ['get', '/api/config/agents', requireManageAgents, configRoutes.getAgents],
     ['post', '/api/config/agents', requireManageAgents, configRoutes.postAgents],
+    ['get', '/api/config/synthetic-agents', requireManageAgents, configRoutes.getSyntheticAgents],
+    ['post', '/api/config/synthetic-agents', requireManageAgents, configRoutes.postSyntheticAgents],
     ['get', '/api/config/summarization', requireManageSettings, configRoutes.getSummarizationSettings],
     ['post', '/api/config/summarization', requireManageSettings, configRoutes.postSummarizationSettings],
     ['get', '/api/config/repos/indexing-status', requireManageSettings, configRoutes.getRepositoriesIndexingStatus],
@@ -62,9 +74,14 @@ export function createManagementRouteEntries({
     ['get', '/api/config/agent-tank', requireManageAgents, configRoutes.getAgentTankSettings],
     ['post', '/api/config/agent-tank', requireManageAgents, configRoutes.postAgentTankSettings],
     ['get', '/api/config/agent-tank/status', requireManageAgents, configRoutes.getAgentTankStatus],
-    ['get', '/api/config/agent-tank/usage', requireManageAgents, configRoutes.getAgentTankUsage],
+    ['get', '/api/config/agent-tank/usage', requireAgentTankUsageAccess, configRoutes.getAgentTankUsage],
     ['post', '/api/config/agent-tank/refresh', requireManageAgents, configRoutes.postAgentTankRefresh],
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
+    ['get', '/api/config/preview-storage', requireManageSettings, visualPreviewAuthRoutes.getManagedStorageStatus],
+    ['get', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.getStatus],
+    ['post', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.useCurrentLogin],
+    ['put', '/api/config/visual-preview-auth/token', requireManageSettings, visualPreviewAuthRoutes.usePersonalAccessToken],
+    ['delete', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.disconnect],
 
     ['get', '/api/admin/members', requireManageMembers, adminRoutes.listMembers],
     ['get', '/api/admin/role-audit', requireManageMembers, adminRoutes.listRoleAudit],
@@ -73,11 +90,18 @@ export function createManagementRouteEntries({
     ['patch', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.updateMemberRole],
     ['delete', '/api/admin/members/:githubUserId', requireManageMembers, adminRoutes.removeMember],
 
+    ['get', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.getSettings],
+    ['put', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.putSettings],
+    ['post', '/api/admin/mcp/revoke-all', requireManageSettings, adminMcpRoutes.revokeAll],
+    ['get', '/api/admin/mcp/logs', requireManageSettings, adminMcpRoutes.getLogs],
+    ['get', '/api/admin/mcp/logs/stats', requireManageSettings, adminMcpRoutes.getLogStats],
+
     ['get', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.getRuntimePackages],
     ['get', '/api/agent-runtime/packages/search', requireManageRuntime, agentRuntimeRoutes.searchRuntimePackages],
     ['post', '/api/agent-runtime/packages/validate', requireManageRuntime, agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', requireManageRuntime, agentRuntimeRoutes.applyRuntimePackages],
+    ['post', '/api/agent-runtime/packages/verify', requireManageRuntime, agentRuntimeRoutes.verifyRuntimePackages],
 
     ['post', '/api/agents/:agentId/login-sessions', requireManageAgents, agentLoginRoutes.startLogin],
     ['get', '/api/agents/:agentId/login-sessions/:sessionId', requireManageAgents, agentLoginRoutes.getLogin],
@@ -97,7 +121,8 @@ export function createMemberCatalogRouteEntries({
   instanceCatalogRoutes,
 }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
-    ['get', '/api/catalog', instanceCatalogRoutes.getCatalog],
+    ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
+    ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],
     ['get', '/api/repositories/indexing-status', instanceCatalogRoutes.getRepositoryIndexingStatus],
   ];
 }
@@ -113,6 +138,12 @@ export function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
 
 export function registerRouteEntries(app: Express, routes: RouteEntry[]): void {
   routes.forEach(([method, path, ...handlers]) => {
-    app[method](path, ...handlers);
+    const finalHandler = handlers.at(-1);
+    if (!finalHandler) return;
+    app[method](
+      path,
+      ...handlers.slice(0, -1),
+      timeApiRouteHandler(method, path, finalHandler as RequestHandler) as RequestHandler<never>,
+    );
   });
 }

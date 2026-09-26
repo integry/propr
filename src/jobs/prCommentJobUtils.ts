@@ -1,3 +1,5 @@
+import type { PullRequestReference } from './prContinuation.js';
+import { loadOriginalContributionDiscussion } from './prContributionDiscussion.js';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -5,14 +7,28 @@ import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
+    buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
+    sanitizeAgentReport,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
-    type CommentJobData, type UnprocessedComment, type WorkerStateManager,
+    type CommentJobData, type UnprocessedComment, type WorkerStateManager, type VisualPreviewSettings,
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
+import { releasePRProcessingLock } from './prProcessingLock.js';
+import { releaseFollowupCiSuspensionsForTask } from './followupCiSuspension.js';
+import type { CiSuspensionOctokit } from './followupCiSuspensionRuns.js';
+import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.js';
+
+export async function fetchOriginalContributionDiscussion(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    ref: PullRequestReference,
+    correlationId: string,
+): Promise<string> {
+    return loadOriginalContributionDiscussion(octokit, { ...ref, correlationId });
+}
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -24,6 +40,7 @@ export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
         error: response.error,
+        terminationReason: response.terminationReason,
         tokenUsage: response.tokenUsage,
         usageMetrics: response.usageMetrics ?? undefined
     };
@@ -106,15 +123,20 @@ export interface CommitMessageOptions {
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
+    const publishableSummary = sanitizeAgentReport(changesSummary);
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
-    return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
+    const terminationReason = resolveAgentTerminationReason(claudeResult);
+    const partialExecutionNote = terminationReason
+        ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}`
+        : '';
+    return `feat(ai): ${publishableSummary ? publishableSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
-${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
+${publishableSummary || `Implemented changes requested by ${authorsText}`}
 
 PR: #${pullRequestNumber}
 ${commentReferences}
-Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}`;
+Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}${partialExecutionNote}`;
 }
 
 export interface PromptOptions {
@@ -124,39 +146,59 @@ export interface PromptOptions {
     commandMode?: string;
     /** Formatted section of AI review comments gathered for /fix */
     reviewCommentsSection?: string;
+    visualPreviewSettings?: VisualPreviewSettings;
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
     const environmentRepairInstructions = getFixEnvironmentRepairInstructions(commandMode);
+    const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${commentCount > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
 ${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
-${commentHistory}${originalTaskSpec}
+${commentHistory}${originalTaskSpec ? `**Immutable Original PR Objective:**\n${originalTaskSpec}\n` : ''}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - Analyze the existing code on this branch and the comment history provided above.
-- Implement ONLY the changes requested in the **New Request(s)** section${reviewCommentsSection ? ' and the **AI Review Comments** section' : ''}.
+${reviewCommentsSection
+        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, actionable F# records are the complete implementation scope. Suggestions cannot be selected by /fix and require a separate ordinary follow-up request.\n- If no actionable finding is selected, do not modify files.\n- Do not infer work from prior review prose, scores, or suggestion IDs.'
+        : '- Implement ONLY the changes requested in the **New Request(s)** section.'}
+- Treat the original PR objective as immutable context, not as permission to expand the requested work.
 - DO NOT commit your changes - the system will handle the commit for you
+- Do not inspect or repair .git permissions. In your final response, do not mention that changes are uncommitted or that you did not create a commit; ProPR creates and reports the commit after you finish.
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
 ${environmentRepairInstructions}
+${visualPreviewInstructions}
 
 **Context:**
 - This is a follow-up to an existing pull request #${pullRequestNumber}.
 - Make sure your changes are compatible with the existing modifications on this branch.`;
 }
 
+export function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
+    const realComments = filterRealComments(unprocessedComments);
+    const plural = unprocessedComments.length > 1 ? 's' : '';
+    const commentIdsSuffix = realComments.length > 0
+        ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id) + '✓').join(', ')}_`
+        : '';
+    const evidenceMarker = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
+    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${evidenceMarker ? `\n${evidenceMarker}` : ''}`;
+}
+
 export interface JobErrorOptions {
+    publicationStatus?: string;
     pullRequestNumber: number; repoOwner: string; repoName: string; authorsText: string;
     unprocessedComments: UnprocessedComment[];
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    /** Complete in-memory claim to persist in a delayed retry payload. */
+    retryComments?: UnprocessedComment[];
 }
 
 export class UsageLimitError extends Error {
@@ -169,6 +211,7 @@ export class UsageLimitError extends Error {
 }
 
 interface CancellationCommentParams {
+    publicationStatus?: string;
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
     repoOwner: string;
     repoName: string;
@@ -181,7 +224,7 @@ async function postCancellationComment(params: CancellationCommentParams): Promi
     try {
         await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: commentId,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
+            body: `${params.publicationStatus ? params.publicationStatus + '\n\n' : ''}🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
         });
     } catch (commentError) {
         correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post cancellation comment');
@@ -201,18 +244,25 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
     const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
 
+    const retryComments = options.retryComments ?? job.data.comments ?? [];
+    const durableRetryJobId = await schedulePRCommentUsageLimitRetry(
+        job,
+        retryComments,
+        requeueJobId,
+        Math.max(0, delay),
+    );
+
     if (octokit) {
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
+                body: `${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${durableRetryJobId} will run again after delay.*`
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
         }
     }
 
-    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
@@ -220,7 +270,7 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
     await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
-        await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+        await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger, publicationStatus: options.publicationStatus });
     }
 }
 
@@ -242,7 +292,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
             const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+                body: `${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
@@ -262,7 +312,7 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
         if (currentState.state === TaskStates.CANCELLED && octokit && startingWorkComment) {
-            await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+            await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger, publicationStatus: options.publicationStatus });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
         return;
@@ -278,19 +328,27 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 }
 
 export interface CleanupOptions {
-    stateManager: WorkerStateManager; lockKey: string; correlationId: string;
+    stateManager: WorkerStateManager; lockKey: string; lockToken: string;
+    /** Owner of any follow-up CI suspension released together with the lock. */
+    taskId: string; octokit?: CiSuspensionOctokit;
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
+    jobUserId?: string;
     jobReasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
-    const { lockKey, correlationId, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
-    const lockOwner = await redisClient.get(lockKey);
-    if (lockOwner === correlationId) {
-        await redisClient.del(lockKey);
+    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    // Implementation is over: a published replacement keeps its own CI, anything
+    // else gets the validation of the still-current head back. This runs before the
+    // lease is released so the next request for the same PR cannot cancel the runs
+    // being restored right now.
+    await releaseFollowupCiSuspensionsForTask({ taskId: options.taskId }, { octokit: options.octokit, log: correlatedLogger })
+        .catch(error => correlatedLogger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Failed to release follow-up CI suspension; reconciliation will retry it'));
+
+    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }
 

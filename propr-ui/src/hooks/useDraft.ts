@@ -12,6 +12,7 @@ interface UseDraftResult {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  activateGenerationRun: (runId: string) => void;
 }
 
 function ensureArray(value: unknown): unknown[] {
@@ -19,7 +20,7 @@ function ensureArray(value: unknown): unknown[] {
 }
 
 // Helper to safely parse JSON string fields that should be arrays/objects
-function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
+function parseJsonFields(data: Record<string, unknown>): Record<string, unknown> {
   const result = { ...data };
   const jsonFields = ['plan_json', 'chat_history', 'attachments'] as const;
   for (const field of jsonFields) {
@@ -85,12 +86,14 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   const [draft, setDraft] = useState<PlannerDraft | null>(() => {
     if (useInitialData) {
       consumedInitialDataRef.current = draftId;
-      return initialData;
+      return initialData ?? null;
     }
     return null;
   });
   const [loading, setLoading] = useState<boolean>(() => !useInitialData);
   const [error, setError] = useState<string | null>(null);
+  const activeRunIdRef = useRef(draft?.generation_trace?.runId);
+  activeRunIdRef.current = draft?.generation_trace?.runId;
 
   // Fetch function - only sets loading for explicit refetch, not background refresh
   const fetchDraft = useCallback(async (showLoading = true) => {
@@ -102,7 +105,9 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       }
       setError(null);
       const data = await getDraft(draftId);
-      setDraft(parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft);
+      const parsedDraft = parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft;
+      activeRunIdRef.current = parsedDraft.generation_trace?.runId;
+      setDraft(parsedDraft);
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
@@ -137,6 +142,10 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       if (!currentDraft || currentDraft.draft_id !== payload.draftId) {
         return currentDraft;
       }
+      const activeRunId = currentDraft.generation_trace?.runId;
+      if (activeRunId && payload.runId !== activeRunId) {
+        return currentDraft;
+      }
 
       return parseJsonFields({
         ...currentDraft,
@@ -146,9 +155,23 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     });
   }, []);
 
+  const activateGenerationRun = useCallback((runId: string) => {
+    activeRunIdRef.current = runId;
+    setDraft(currentDraft => {
+      if (!currentDraft || currentDraft.draft_id !== draftId) return currentDraft;
+      return {
+        ...currentDraft,
+        status: 'generating',
+        generation_trace: { steps: [], runId },
+      };
+    });
+  }, [draftId]);
+
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId) return;
+    const activeRunId = activeRunIdRef.current;
+    if (activeRunId && payload.runId !== activeRunId) return;
 
     console.log('[useDraft] Received draft update via WebSocket:', payload);
     applySocketSnapshot(payload);
@@ -178,5 +201,5 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     };
   }, [draftId, draft?.status, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
-  return { draft, loading, error, refetch: () => fetchDraft(true) };
+  return { draft, loading, error, refetch: () => fetchDraft(true), activateGenerationRun };
 };

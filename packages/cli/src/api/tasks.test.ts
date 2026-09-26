@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { followupTask, getRevertPreview, importTasks } from "./tasks.js";
+import { deleteTask, followupTask, getRevertPreview, importTasks, listTasks, stopTask } from "./tasks.js";
+import { getTaskStatus } from "./implement.js";
 import type { ApiClient } from "./client.js";
 
 function clientWithCalls(responseData: unknown) {
@@ -13,6 +14,10 @@ function clientWithCalls(responseData: unknown) {
     async post(endpoint: string, options?: unknown) {
       calls.push({ method: "POST", endpoint, options });
       return { data: responseData, status: 200, headers: new Headers() };
+    },
+    async delete(endpoint: string, options?: unknown) {
+      calls.push({ method: "DELETE", endpoint, options });
+      return { data: responseData, status: 204, headers: new Headers() };
     },
   } as unknown as ApiClient;
   return { client, calls };
@@ -27,6 +32,18 @@ test("followupTask posts the task follow-up body", async () => {
     method: "POST",
     endpoint: "/api/tasks/task-123/followup",
     options: { body: { body: "Please add tests" } },
+  }]);
+});
+
+test("stopTask posts to the canonical stop endpoint with encoded task IDs", async () => {
+  const { client, calls } = clientWithCalls({ success: true, message: "stopped" });
+
+  await stopTask("task/id?attempt=2", client);
+
+  assert.deepEqual(calls, [{
+    method: "POST",
+    endpoint: "/api/task/task%2Fid%3Fattempt%3D2/stop",
+    options: undefined,
   }]);
 });
 
@@ -51,5 +68,48 @@ test("getRevertPreview sends expected query parameters", async () => {
     method: "GET",
     endpoint: "/api/tasks/revert-preview",
     options: { params: { owner: "owner", repo: "repo", pr: "42", commit: "abc123" } },
+  }]);
+});
+
+test("deleteTask safely encodes the task ID path segment with force query", async () => {
+  const { client, calls } = clientWithCalls(undefined);
+  const taskId = "task/id?x=1";
+
+  await deleteTask(taskId, true, client);
+
+  assert.deepEqual(calls, [{
+    method: "DELETE",
+    endpoint: "/api/tasks/task%2Fid%3Fx%3D1",
+    options: { params: { force: "true" } },
+  }]);
+});
+
+test("listTasks sends lifecycle-state filters to the server", async () => {
+  const response = { tasks: [], total: 0, offset: 0, limit: 25 };
+  const { client, calls } = clientWithCalls(response);
+
+  await listTasks({ status: "claude_execution", limit: 25 }, client);
+
+  assert.deepEqual(calls, [{
+    method: "GET",
+    endpoint: "/api/tasks",
+    options: { params: { status: "claude_execution", limit: "25" } },
+  }]);
+});
+
+test("getTaskStatus uses the task detail/history path for a supplied ID", async () => {
+  const { client, calls } = clientWithCalls({
+    taskId: "task/id?attempt=2",
+    history: [{ state: "processing", timestamp: "2026-08-25T20:00:00.000Z" }],
+    taskInfo: null,
+  });
+
+  const result = await getTaskStatus("task/id?attempt=2", client);
+
+  assert.equal(result.currentState, "processing");
+  assert.deepEqual(calls, [{
+    method: "GET",
+    endpoint: "/api/task/task%2Fid%3Fattempt%3D2/history",
+    options: undefined,
   }]);
 });

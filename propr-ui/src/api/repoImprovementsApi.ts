@@ -1,5 +1,5 @@
 // Repository Improvements API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import { ImprovementCategory } from '../components/Repositories/RepoImprovementsPanel.types';
 
 /**

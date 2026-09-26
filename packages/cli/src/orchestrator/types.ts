@@ -16,6 +16,8 @@ export interface OrchestratorConfig {
   readonly network: string;
   readonly envFileLocal: string;
   readonly envFileHost?: string;
+  /** Explicit NODE_ENV read from the stack env file, if present. */
+  readonly nodeEnv?: string;
   readonly validateHostPaths: boolean;
   readonly hostData?: string;
   readonly hostLogs?: string;
@@ -26,6 +28,16 @@ export interface OrchestratorConfig {
   readonly docsPort: string;
   readonly redisExternalPort: string;
   readonly docsEnabled: boolean;
+  readonly apiRateLimitMax: string;
+  readonly apiRateLimitWindowMs: string;
+  readonly authRateLimitMax: string;
+  readonly authRateLimitWindowMs: string;
+  readonly webhookRateLimitMax: string;
+  readonly webhookRateLimitWindowMs: string;
+  readonly webPushVapidSubject?: string;
+  readonly webPushVapidPublicKey?: string;
+  /** Secret server-side half of the VAPID pair; never render this value. */
+  readonly webPushVapidPrivateKey?: string;
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
@@ -40,12 +52,17 @@ export interface OrchestratorConfig {
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
+  readonly trustedProxyPeers?: string;
+  /** Public origin injected into the running API container. */
+  readonly apiPublicUrl: string;
   /**
    * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
    * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
    * localhost UI default for local development.
    */
   readonly frontendUrl: string;
+  readonly ghOauthCallbackUrl: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
@@ -102,6 +119,8 @@ export type ImageFreshnessResult =
 export interface DockerCommandOptions {
   capture?: boolean;
   timeout?: number;
+  env?: NodeJS.ProcessEnv;
+  maxBuffer?: number;
 }
 
 export interface DockerCommandResult {
@@ -112,6 +131,11 @@ export interface DockerCommandResult {
   signal?: NodeJS.Signals | null;
 }
 
+export interface StackStatusInspection {
+  result: DockerCommandResult;
+  status?: StackStatus;
+}
+
 export interface ResolveHostConfigOptions {
   rootDir?: string;
   env?: NodeJS.ProcessEnv;
@@ -119,26 +143,32 @@ export interface ResolveHostConfigOptions {
   cliOverrides?: Record<string, unknown>;
 }
 
+export interface ResolveConfigOverrides extends Partial<OrchestratorConfig> {
+  envFileValues?: Readonly<Record<string, string>>;
+}
+
 export interface OnLogOption {
   onLog?: (line: string) => void;
   pull?: boolean;
   freshnessCache?: Map<string, ImageFreshnessResult>;
+  signal?: AbortSignal;
 }
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */
 export interface OrchestratorModule {
-  resolveConfig(env?: NodeJS.ProcessEnv, overrides?: Partial<OrchestratorConfig>): OrchestratorConfig;
+  resolveConfig(env?: NodeJS.ProcessEnv, overrides?: ResolveConfigOverrides): OrchestratorConfig;
   resolveHostConfig(opts?: ResolveHostConfigOptions): OrchestratorConfig;
   readEnvFile(envFilePath: string): Record<string, string>;
+  parseEnvFileContents(contents: string): Record<string, string>;
   validateEnv(cfg: OrchestratorConfig): ValidationResult;
   validateDockerBindPath(name: string, value?: string, opts?: { containerPath?: boolean }): string | null;
 
   dockerAvailable(): boolean;
   inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
-  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
+  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean; signal?: AbortSignal }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void): Promise<void>;
+  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void, signal?: AbortSignal): Promise<void>;
   ensureServiceImage(
     cfg: OrchestratorConfig,
     service: string,
@@ -155,10 +185,23 @@ export interface OrchestratorModule {
   readonly TOGGLE_SERVICES: readonly string[];
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
-  isStackRunningAsync(cfg: OrchestratorConfig): Promise<boolean>;
+  isStackRunningAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<boolean>;
+  isStackReplacementPending(cfg: OrchestratorConfig): boolean;
+  replaceStackContainersAsync(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; signal?: AbortSignal }
+  ): Promise<void>;
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
+  runMigrationPhase(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): void;
+  runMigrationPhaseAsync(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult>; signal?: AbortSignal }
+  ): Promise<void>;
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,
@@ -166,19 +209,23 @@ export interface OrchestratorModule {
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void; signal?: AbortSignal }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
     opts?: { remove?: boolean; removeNetwork?: boolean; onLog?: (line: string) => void }
   ): { failed: string[] };
 
-  getStackStatus(cfg: OrchestratorConfig): StackStatus;
-  getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
+  getStackStatus(cfg: OrchestratorConfig, opts?: { timeout?: number }): StackStatus;
+  inspectStackStatus(
+    cfg: OrchestratorConfig,
+    opts?: { timeout?: number; env?: NodeJS.ProcessEnv }
+  ): StackStatusInspection;
+  getStackStatusAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<StackStatus>;
   /** Pure parse of `docker ps` tab-separated output into per-service state. */
   parseStackStatus(cfg: OrchestratorConfig, stdout: string): StackStatus;
   getTunnelStatus(cfg: OrchestratorConfig, stackStatus?: StackStatus): Promise<TunnelStatus>;
-  getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
+  getServiceState(cfg: OrchestratorConfig, service: string, opts?: { timeout?: number }): ServiceState | undefined;
   getServiceLogs(
     cfg: OrchestratorConfig,
     service: string,
@@ -187,5 +234,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
-  dockerAsync(args: string[], opts?: { timeout?: number }): Promise<DockerCommandResult>;
+  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal }): Promise<DockerCommandResult>;
 }

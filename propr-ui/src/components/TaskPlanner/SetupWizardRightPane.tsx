@@ -44,8 +44,7 @@ interface SetupWizardRightPaneProps {
 }
 
 function getEmptyStateMessage(isNewMode?: boolean, hasData?: boolean): string {
-  if (isNewMode) return 'Context preview will be available after entering a prompt';
-  if (hasData) return 'No files found in repository';
+  if (hasData && !isNewMode) return 'No files found in repository';
   return 'Files will be selected after context analysis';
 }
 

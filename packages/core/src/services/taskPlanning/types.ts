@@ -7,6 +7,7 @@ import type { Attachment } from '../attachmentService.js';
 import type {
   GenerationTrace, Granularity, TaskDraftConfig, MinimalLogger, Base64Image, ContextRepository
 } from '../planning/index.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 export { Plan, PlanItem };
 
@@ -53,6 +54,8 @@ export interface GeneratePlanOptions {
   worktreePath: string;
   githubToken: string;
   correlationId?: string;
+  /** Active planner run used to guard completion against abort/restart races. */
+  runId: string;
 }
 
 export interface TokenBudgetResult {
@@ -83,6 +86,8 @@ export interface AdditionalContextOptions {
   useFullBudget?: boolean;
   githubToken: string;
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   correlationId: string | undefined;
   correlatedLogger: MinimalLogger;
 }
@@ -138,6 +143,8 @@ export interface TaskDraft {
 
 export interface CallLLMOptions {
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   /** Full context XML including all enrichments (repomix, summaries, images, etc.) */
   fullContext: string;
   worktreePath: string;
@@ -147,11 +154,17 @@ export interface CallLLMOptions {
   /** Token limit based on user's context level setting */
   tokenLimit: number;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
-  model?: string;
+  model: string;
+  /** Configured default coding model used to repair malformed planner JSON. */
+  repairModel: string;
   /** Optional context from additional repositories (marked as example/reference only) */
   additionalContext?: string;
   /** Granularity setting for task enforcement */
   granularity: Granularity;
+  /** Route selected before planner context/token budgets were calculated. */
+  routingSession?: SyntheticRoutingSession;
+  /** Independent route for JSON repair so a malformed planner is not asked to repair itself. */
+  repairRoutingSession?: SyntheticRoutingSession;
 }
 
 export interface CallLLMForPlanResult {
@@ -183,6 +196,8 @@ export interface ContextGenerationParams {
   base64Images: Base64Image[];
   draft: TaskDraft;
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   githubToken: string;
   correlationId?: string;
   generationModel: string;

@@ -54,6 +54,38 @@ const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> 
   </div>
 );
 
+// Operator steering message - rendered verbatim with an amber accent so it never
+// reads as provider output. Only the goal timeline produces these events.
+const UserInputContent: React.FC<{ event: LiveEvent }> = ({ event }) => (
+  <div className="border-l-2 border-amber-400/70 bg-amber-400/5 pl-2 py-1 text-xs text-amber-50/90 overflow-hidden font-mono whitespace-pre-wrap break-words">
+    {event.content}
+  </div>
+);
+
+// Queued / attachment metadata for an operator message
+const UserInputBadges: React.FC<{ event: LiveEvent }> = ({ event }) => {
+  if (event.type !== 'user_input') return null;
+  return (
+    <>
+      {event.inputState === 'pending' && (
+        <span className="rounded border border-amber-400/50 px-1 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+          Queued
+        </span>
+      )}
+      {event.inputState === 'undeliverable' && (
+        <span className="rounded border border-red-400/50 px-1 text-[10px] font-bold uppercase tracking-wider text-red-300">
+          Not delivered
+        </span>
+      )}
+      {!!event.attachmentCount && (
+        <span className="text-[10px] text-amber-200/80">
+          {event.attachmentCount} attachment{event.attachmentCount === 1 ? '' : 's'}
+        </span>
+      )}
+    </>
+  );
+};
+
 // Separate component for tool result rendering
 const ToolResultContent: React.FC<{ resultText: string; language: string }> = ({ resultText, language }) => (
   <div className="mt-1">
@@ -68,6 +100,10 @@ const ExpandedContent: React.FC<{
   resultText: string;
   language: string;
 }> = ({ event, taskInfo, resultText, language }) => {
+  if (event.type === 'user_input') {
+    return <UserInputContent event={event} />;
+  }
+
   if (event.type === 'thought' && event.content) {
     return <ThoughtContent content={event.content} />;
   }
@@ -86,6 +122,7 @@ const ExpandedContent: React.FC<{
 // Check if event has expandable content
 const hasExpandableContent = (event: LiveEvent, resultText: string): boolean => {
   return (
+    (event.type === 'user_input' && !!event.content) ||
     (event.type === 'thought' && !!event.content && event.content.length > 60) ||
     (event.type === 'tool_result' && resultText.length > 0) ||
     (event.type === 'tool_use' && !!(event.input?.command || event.input?.file_path))
@@ -100,7 +137,8 @@ const EventHeader: React.FC<{
   expandable: boolean;
   isCollapsed: boolean;
   onToggle?: () => void;
-}> = ({ categoryDisplay, eventIndex, summary, expandable, isCollapsed, onToggle }) => (
+  badges?: React.ReactNode;
+}> = ({ categoryDisplay, eventIndex, summary, expandable, isCollapsed, onToggle, badges }) => (
   <div
     className={`flex items-center gap-2 flex-wrap font-mono ${expandable ? 'cursor-pointer' : ''}`}
     onClick={onToggle}
@@ -114,6 +152,7 @@ const EventHeader: React.FC<{
     <span className="text-[12px] text-zinc-200 truncate flex-1">
       {summary}
     </span>
+    {badges}
     {expandable && (
       <span className="text-zinc-600">
         {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
@@ -168,6 +207,7 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
             expandable={expandable}
             isCollapsed={isCollapsed}
             onToggle={handleToggle}
+            badges={<UserInputBadges event={event} />}
           />
 
           {!isCollapsed && expandable && (
@@ -222,23 +262,13 @@ const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string 
 
 // Compute events with their previous tool_use reference for context
 const computeEventsWithContext = (
-  filteredEvents: LiveEvent[],
-  allEvents: LiveEvent[]
+  events: LiveEvent[],
 ): Array<{ event: LiveEvent; prevToolUse?: LiveEvent; originalIndex: number }> => {
-  return filteredEvents.map((event, index) => {
-    let prevToolUse: LiveEvent | undefined;
-    for (let i = index - 1; i >= 0; i--) {
-      if (filteredEvents[i].type === 'tool_use') {
-        prevToolUse = filteredEvents[i];
-        break;
-      }
-    }
-
-    return {
-      event,
-      prevToolUse,
-      originalIndex: allEvents.indexOf(event)
-    };
+  let previousToolUse: LiveEvent | undefined;
+  return events.map((event, originalIndex) => {
+    const eventWithContext = { event, prevToolUse: previousToolUse, originalIndex };
+    if (event.type === 'tool_use') previousToolUse = event;
+    return eventWithContext;
   });
 };
 
@@ -253,17 +283,18 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   // Note: isTaskActive is still passed for potential future use
   void _isTaskActive;
 
-  // No filtering - show all events
-  const filteredEvents = events;
-
   const summaryMessage = useMemo(
-    () => computeSummaryMessage(filteredEvents, lastThought),
-    [filteredEvents, lastThought]
+    () => computeSummaryMessage(events, lastThought),
+    [events, lastThought]
   );
 
+  // The log starts collapsed, so do not materialize its potentially large
+  // Markdown and syntax-highlighted history until the user opens it. Live
+  // socket updates otherwise rebuild the entire hidden tree on every event and
+  // can block unrelated response handling on the browser main thread.
   const eventsWithContext = useMemo(
-    () => computeEventsWithContext(filteredEvents, events),
-    [filteredEvents, events]
+    () => collapsed ? [] : computeEventsWithContext(events),
+    [collapsed, events]
   );
 
   if (events.length === 0) {
@@ -273,8 +304,11 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   return (
     <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-900'}`}>
       {/* VS Code Terminal Footer Bar - Solid full-width bar with zinc palette */}
-      <div
-        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 ${
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-controls="execution-event-log-content"
+        className={`flex w-full items-center justify-between px-3 sm:px-6 h-9 text-left transition-all duration-300 cursor-pointer flex-shrink-0 ${
           collapsed
             ? 'bg-slate-100 hover:bg-slate-200 border-t border-slate-200 text-slate-500'
             : 'bg-zinc-900 text-white'
@@ -297,17 +331,21 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
-      </div>
+      </button>
 
       {/* Expandable Content - VS Code Integrated Terminal Style with zinc-950 background */}
       <div
+        id="execution-event-log-content"
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
             ? 'max-h-0 opacity-0'
             : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-900 text-zinc-300'
         }`}
       >
-        <div className={`overflow-y-auto scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}>
+        <div
+          data-testid="execution-log-scroll"
+          className={`overflow-y-auto overscroll-contain scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}
+        >
           {/* Continuous stream layout - no dividers between items */}
           <div className="p-3 space-y-0">
             {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (

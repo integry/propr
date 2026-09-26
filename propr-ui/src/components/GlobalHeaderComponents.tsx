@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink, Layers3 } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
+import type { HeaderStatsResourceStatus } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { ProviderLogo } from './ui/ProviderLogo';
+import HeaderResourceStatus from './HeaderResourceStatus';
 
 interface TaskGroup { key: string; repoOwner: string; repoName: string; prNumber?: number; issueNumber?: number; latestTask: { id: string; status: string; createdAt: string; title?: string; }; allTasks: unknown[]; }
 
@@ -40,13 +42,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   const getRepoName = (repository: string): string => { const parts = repository.split('/'); return parts.length > 1 ? parts[1] : repository; };
 
   return (
-    <div
-      className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
-      style={{
-        top: '64px',
-        left: '240px',
-      }}
-    >
+    <div className="desktop-toolbar-popover absolute left-0 top-full z-50 w-[600px] overflow-hidden border border-t-0 border-slate-200 bg-white shadow-xl ring-1 ring-black/5">
       {/* Header with View All link moved to top-right */}
       <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
         <div className="flex items-baseline justify-between">
@@ -101,12 +97,12 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
-              {/* Line 1 (Meta): Repo • Status Badge ... Time Ago (right-aligned) */}
+              {/* Line 1 (Meta): Repo · Status Badge ... Time Ago (right-aligned) */}
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-xs font-normal text-slate-500">
                   {getRepoName(plan.repository)}
                 </span>
-                <span className="text-slate-300">•</span>
+                <span className="text-slate-300">·</span>
                 <span className={`px-1.5 py-0.5 text-xs font-mono font-normal ${getStatusBadgeStyle(plan.status)}`}>
                   {plan.status}
                 </span>
@@ -161,13 +157,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   const cleanTaskTitle = (title?: string): string => { if (!title) return ''; return title.replace(/^Followup:\s*/i, '').replace(/^\[.*?\]\s*/g, '').trim(); };
 
   return (
-    <div
-      className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
-      style={{
-        top: '64px',
-        left: '240px',
-      }}
-    >
+    <div className="desktop-toolbar-popover absolute left-0 top-full z-50 w-[600px] overflow-hidden border border-t-0 border-slate-200 bg-white shadow-xl ring-1 ring-black/5">
       {/* Header with View All link moved to top-right */}
       <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
         <div className="flex items-baseline justify-between">
@@ -222,14 +212,14 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
               }`}
               onClick={() => handleTaskClick(group)}
             >
-              {/* Line 1 (Meta): Repo • ID (Chip) ... Time Ago (right-aligned) */}
+              {/* Line 1 (Meta): Repo · ID (Chip) ... Time Ago (right-aligned) */}
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-xs font-normal text-slate-500">
                   {group.repoName}
                 </span>
                 {getIssueId(group) && (
                   <>
-                    <span className="text-slate-300">•</span>
+                    <span className="text-slate-300">·</span>
                     <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-xs font-mono font-normal text-slate-500">
                       {getIssueId(group)}
                     </span>
@@ -264,12 +254,17 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   );
 };
 
-export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (taskGroupKey: string, latestTaskCreatedAt: string) => void }> = ({ taskGroups, onDismissTask }) => {
+export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (taskGroupKey: string, latestTaskCreatedAt: string) => void; status?: HeaderStatsResourceStatus }> = ({ taskGroups, onDismissTask, status = 'available' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
+  if (status !== 'available') return <HeaderResourceStatus label="Tasks" status={status} />;
   return (
     <div className="relative h-full" ref={containerRef}>
-      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}
+        aria-label={`${taskGroups.length} ${taskGroups.length === 1 ? 'Task' : 'Tasks'}`}
+      >
         <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 text-sm">{taskGroups.length === 1 ? 'Task' : 'Tasks'}</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-blue-600" />}
       </button>
@@ -285,7 +280,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     if (!status) return 'bg-gray-400';
     const lower = status.toLowerCase();
     if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
-    if (lower === 'queued') return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
+    if (lower === 'queued' || lower === 'degraded') return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
     return 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]';
   };
   const getOverallHealthColor = (): string => {
@@ -299,7 +294,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     if (!status) return 'text-gray-400';
     const lower = status.toLowerCase();
     if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'text-green-500';
-    if (lower === 'queued') return 'text-amber-500';
+    if (lower === 'queued' || lower === 'degraded') return 'text-amber-500';
     return 'text-red-500';
   };
   const renderStatusRow = (label: string, status?: string) => (
@@ -338,7 +333,9 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (
     <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm">
       <span className="flex items-center gap-2 text-slate-700">
-        <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+        {agent.type === 'synthetic'
+          ? <Layers3 className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+          : <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />}
         <span>{formatAgentLabel(agent, systemHealth.agents)}</span>
       </span>
       <span className="flex-shrink-0 font-medium text-slate-500">{agent.status || 'Unknown'}</span>
@@ -364,7 +361,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full w-[288px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-[100]">
+        <div className="desktop-toolbar-popover absolute right-0 top-full z-[100] w-[288px] border border-t-0 border-slate-200 bg-white shadow-xl ring-1 ring-black/5">
           <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
               Services
@@ -397,12 +394,17 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   );
 };
 
-export const ActivePlansButton: React.FC<{ activePlans: DraftListItem[]; onDismissPlan: (planId: string) => void }> = ({ activePlans, onDismissPlan }) => {
+export const ActivePlansButton: React.FC<{ activePlans: DraftListItem[]; onDismissPlan: (planId: string) => void; status?: HeaderStatsResourceStatus }> = ({ activePlans, onDismissPlan, status = 'available' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
+  if (status !== 'available') return <HeaderResourceStatus label="Plans" status={status} />;
   return (
     <div className="relative h-full" ref={containerRef}>
-      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}
+        aria-label={`${activePlans.length} ${activePlans.length === 1 ? 'Plan' : 'Plans'}`}
+      >
         <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 text-sm">{activePlans.length === 1 ? 'Plan' : 'Plans'}</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-teal-600" />}
       </button>

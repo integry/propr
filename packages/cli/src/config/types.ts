@@ -46,12 +46,11 @@ export interface CLIConfig {
   docsEnabled?: boolean;
 
   /**
-   * Desired state of the Cloudflare Tunnel service. Persisted so `propr start`
-   * honors a previous `propr tunnel on|off` toggle. When unset, the launcher
-   * falls back to its env-derived default (a configured PROPR_UI_TUNNEL_TOKEN
-   * or PROPR_UI_TUNNEL_ENABLED=true).
+   * Desired state of the Cloudflare Tunnel service, keyed by absolute stack
+   * root. Keeping this state per root prevents an explicit stack from inheriting
+   * another stack's `propr tunnel on|off` choice.
    */
-  tunnelEnabled?: boolean;
+  tunnelEnabledByRoot?: Record<string, boolean>;
 }
 
 /**
@@ -74,5 +73,5 @@ export const DEFAULT_CONFIG: CLIConfig = {
   stackRoot: undefined,
   uiEnabled: undefined,
   docsEnabled: undefined,
-  tunnelEnabled: undefined,
+  tunnelEnabledByRoot: undefined,
 };

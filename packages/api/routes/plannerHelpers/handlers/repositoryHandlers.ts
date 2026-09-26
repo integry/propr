@@ -2,18 +2,50 @@
  * Repository-related HTTP handlers.
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../../../requestTypes.js';
+import { Octokit } from '@octokit/core';
 import { isDemoMode } from '../../../demoMode.js';
 import type { OwnershipResult, ValidateContextRepositoryResponse } from '../types.js';
-import { getRepoAuthToken } from '../auth.js';
 import { loadDemoRepositoryMetadata } from '../../demoRepositoryMetadata.js';
+import {
+  GitHubMetadataAuthorizationError,
+  refreshRejectedGitHubMetadataToken,
+  resolveGitHubMetadataToken,
+  sendGitHubMetadataAuthorizationError,
+} from '../../../githubMetadataAuth.js';
 
-interface RepositoryInfoDeps {
+type MetadataOctokit = Octokit;
+
+interface MetadataDeps {
+  resolveMetadataToken?: typeof resolveGitHubMetadataToken;
+  createMetadataOctokit?: (accessToken: string) => MetadataOctokit;
+}
+
+interface RepositoryInfoDeps extends MetadataDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
 }
 
+function isGitHubAuthError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'status' in error && error.status === 401);
+}
+
+async function handleRepositoryMetadataError(req: Request, res: Response, error: unknown): Promise<boolean> {
+  if (error instanceof GitHubMetadataAuthorizationError) {
+    sendGitHubMetadataAuthorizationError(error, res);
+    return true;
+  }
+  if (isGitHubAuthError(error)) {
+    await refreshRejectedGitHubMetadataToken(req, res);
+    return true;
+  }
+  return false;
+}
+
 export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
-  return async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
+  const resolveMetadataToken = deps.resolveMetadataToken ?? resolveGitHubMetadataToken;
+  const createMetadataOctokit = deps.createMetadataOctokit ?? ((accessToken: string) => new Octokit({ auth: accessToken }));
+  return async function getRepositoryInfo(req: FlatRequest, res: Response): Promise<void> {
     // draftId comes from URL path parameter for GET requests
     const draftId = req.params.id;
     const repository = req.query.repository as string | undefined;
@@ -56,15 +88,8 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
         return;
       }
 
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) {
-        res.status(401).json({ error: 'GitHub access token not available' });
-        return;
-      }
-
-      const authToken = await getRepoAuthToken(accessToken);
-      const { Octokit } = await import('@octokit/core');
-      const octokit = new Octokit({ auth: authToken });
+      const accessToken = await resolveMetadataToken(req);
+      const octokit = createMetadataOctokit(accessToken);
 
       // Fetch repo info first
       const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName });
@@ -92,6 +117,12 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
         description: repoInfo.data.description
       });
     } catch (error) {
+      if (await handleRepositoryMetadataError(req, res, error)) return;
+      const status = (error as { status?: number })?.status;
+      if (status === 403 || status === 404) {
+        res.status(404).json({ error: 'Repository not found or not accessible', code: 'REPOSITORY_NOT_ACCESSIBLE' });
+        return;
+      }
       console.error('Get repository info error:', error);
       res.status(500).json({ error: 'Failed to get repository info' });
     }
@@ -101,7 +132,9 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
 /**
  * Create handler for validating context repositories
  */
-export function createValidateContextRepositoryHandler() {
+export function createValidateContextRepositoryHandler(deps: MetadataDeps = {}) {
+  const resolveMetadataToken = deps.resolveMetadataToken ?? resolveGitHubMetadataToken;
+  const createMetadataOctokit = deps.createMetadataOctokit ?? ((accessToken: string) => new Octokit({ auth: accessToken }));
   return async function validateContextRepository(req: Request, res: Response): Promise<void> {
     const { repository, branch } = req.body;
 
@@ -116,16 +149,9 @@ export function createValidateContextRepositoryHandler() {
       return;
     }
 
-    const accessToken = req.user?.accessToken;
-    if (!accessToken) {
-      res.status(401).json({ valid: false, error: 'GitHub access token not available' });
-      return;
-    }
-
     try {
-      const authToken = await getRepoAuthToken(accessToken);
-      const { Octokit } = await import('@octokit/core');
-      const octokit = new Octokit({ auth: authToken });
+      const accessToken = await resolveMetadataToken(req);
+      const octokit = createMetadataOctokit(accessToken);
 
       // Check if the repository exists and is accessible
       const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', {
@@ -141,7 +167,8 @@ export function createValidateContextRepositoryHandler() {
             repo: repoName,
             branch
           });
-        } catch {
+        } catch (error) {
+          if (isGitHubAuthError(error)) throw error;
           res.status(400).json({
             valid: false,
             repository,
@@ -160,6 +187,7 @@ export function createValidateContextRepositoryHandler() {
 
       res.json(response);
     } catch (error) {
+      if (await handleRepositoryMetadataError(req, res, error)) return;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
       // Check for specific GitHub API errors

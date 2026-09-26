@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, TokenUsage, UsageMetricRecord } from './types';
-import { ExternalLink, GitPullRequest, GitCommit, Zap } from 'lucide-react';
+import { ExternalLink, GitPullRequest, GitCommit, Layers3, Zap } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -44,7 +44,7 @@ const formatTokenCount = (count: number | null | undefined): string => {
 
 // Separator dot between items
 const Dot: React.FC = () => (
-  <span className="text-gray-300 mx-1.5">•</span>
+  <span className="text-gray-300 mx-1.5">·</span>
 );
 
 // Repository link component
@@ -101,13 +101,15 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
 };
 
 // Model chip component
-const ModelChip: React.FC<{ modelName: string; duration?: number | null }> = ({ modelName, duration }) => (
+const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean }> = ({ modelName, duration, synthetic }) => (
   <>
     <span
       className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-xs"
       title={modelName}
     >
-      <ProviderLogo provider={modelName} className="w-3 h-3" />
+      {synthetic
+        ? <Layers3 className="h-3 w-3" aria-label="Synthetic pool" />
+        : <ProviderLogo provider={modelName} className="w-3 h-3" />}
       {getDisplayModelName(modelName)}
     </span>
     {duration !== null && duration !== undefined && (
@@ -181,6 +183,7 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
 // Map of raw Agent Tank metric keys to human-readable labels
 const METRIC_KEY_LABELS: Record<string, string> = {
   session: 'Session', weeklyAll: 'Weekly', weeklySonnet: 'Sonnet',
+  weeklyFable: 'Fable',
   weeklyOpus: 'Opus', weeklyHaiku: 'Haiku', fiveHour: 'Five Hour',
   weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly',
 };
@@ -241,6 +244,7 @@ interface ContextStripProps {
   duration?: number | null;
   tokenUsage?: TokenUsage;
   usageMetricRecords?: UsageMetricRecord[];
+  synthetic?: boolean;
   /** Mobile only: Show only the repository name link */
   mobileRepoOnly?: boolean;
   /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
@@ -255,6 +259,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   duration,
   tokenUsage,
   usageMetricRecords,
+  synthetic,
   mobileRepoOnly,
   mobileMetadataOnly,
 }) => {
@@ -280,11 +285,11 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   // Mobile: Show only metadata without repo name
   if (mobileMetadataOnly) {
     return (
-      <div className="flex items-center flex-wrap gap-1 text-sm text-gray-600">
+      <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm text-gray-600">
         {prInfo && <PRInfoChip prInfo={prInfo} />}
         {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
         {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
-        <ModelChip modelName={modelName} duration={duration} />
+        <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
         {commitInfo && (
           <>
             <Dot />
@@ -315,12 +320,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
         {taskInfo && <RepoLink taskInfo={taskInfo} />}
       </div>
 
-      {/* Middle: PR • Issue • Model • Duration - Separated by dots */}
+      {/* Middle: PR · Issue · Model · Duration - Separated by dots */}
       <div className="flex items-center flex-wrap">
         {prInfo && <PRInfoChip prInfo={prInfo} />}
         {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
         {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
-        <ModelChip modelName={modelName} duration={duration} />
+      <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
         {commitInfo && (
           <>
             <Dot />

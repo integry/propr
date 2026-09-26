@@ -1,12 +1,16 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
-import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
 import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
+import { getDockerContainerLogs, getDockerContainerStatus } from './dockerCommandSafety.js';
+
+type StopTaskExecutor = typeof stopTaskExecution;
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
+  stopTaskExecution?: StopTaskExecutor;
 }
 
 interface TaskStateHistory {
@@ -47,6 +51,8 @@ export interface StopTaskQueue {
 
 export interface StopTaskExecutionOptions {
   redisClient: StopTaskRedisClient;
+  /** Authenticated adapters resolve exact task IDs before calling this helper. */
+  exactTaskId?: boolean;
   /** Who requested the stop (username or e.g. 'system'). Defaults to 'user'. */
   requestedBy?: string;
   /** Human-readable cancellation reason, surfaced in the conversation log and task history. */
@@ -266,7 +272,7 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
 export async function stopTaskExecution(taskIdOrJobId: string, options: StopTaskExecutionOptions): Promise<StopTaskExecutionResult> {
   const { redisClient } = options;
   const stopMessage = options.reason ?? 'Stop requested by user. Terminating execution...';
-  const taskId = normalizeTaskId(taskIdOrJobId);
+  const taskId = options.exactTaskId ? taskIdOrJobId : normalizeTaskId(taskIdOrJobId);
 
   const markCancelled = (historyMetadata: Record<string, unknown>): Promise<boolean> => markTaskCancelledSafely(taskId, historyMetadata, options);
 
@@ -381,7 +387,7 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
  * Returns the container ID when the container was stopped, null otherwise.
  */
 async function stopRunningTaskContainer(taskId: string, state: TaskState, options: StopTaskExecutionOptions): Promise<string | null> {
-  const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+  const entry = state.history.findLast(h => h.state === 'claude_execution' && h.metadata?.containerId);
   const containerId = entry?.metadata?.containerId;
   if (!containerId) {
     console.log(`[stop-execution] No container ID found for task ${taskId}, relying on abort signal`);
@@ -403,8 +409,9 @@ async function stopRunningTaskContainer(taskId: string, state: TaskState, option
 
 export function createDockerRoutes(deps: DockerRoutesDeps) {
   const { redisClient } = deps;
+  const executeStopTask = deps.stopTaskExecution ?? stopTaskExecution;
 
-  async function getDockerInfo(req: Request, res: Response): Promise<void> {
+  async function getDockerInfo(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);
@@ -420,7 +427,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { containerId?: string; containerName?: string } }> };
-      const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+      const entry = state.history.findLast(h => h.state === 'claude_execution' && h.metadata?.containerId);
       if (!entry?.metadata?.containerId) {
         res.status(404).json({ error: 'No Docker container info available for this task' });
         return;
@@ -432,7 +439,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
     }
   }
 
-  async function getDockerLogs(req: Request, res: Response): Promise<void> {
+  async function getDockerLogs(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);
@@ -462,7 +469,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       try {
-        const logsOutput = execSync(`docker logs --tail ${tail} ${entry.metadata.containerId}`, { encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
+        const logsOutput = getDockerContainerLogs(entry.metadata.containerId, tail);
         res.setHeader('Content-Type', 'text/plain');
         res.send(logsOutput);
       } catch (err) {
@@ -478,7 +485,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
     }
   }
 
-  async function stopTask(req: Request, res: Response): Promise<void> {
+  async function stopTask(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);
@@ -488,10 +495,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       console.log(`[stop-execution] Attempting to stop task: ${req.params.taskId}`);
-      const result = await stopTaskExecution(req.params.taskId, {
-        redisClient,
-        requestedBy: req.user?.username || 'user'
-      });
+      const result = await executeStopTask(req.params.taskId, { redisClient, requestedBy: req.user?.username || 'user' });
 
       if (result.notFound) {
         res.status(404).json({ error: 'Task not found', message: result.message });
@@ -502,15 +506,10 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
 
-      res.json({
-        success: true,
-        message: result.message,
-        taskId: result.taskId,
-        containerStopped: result.containerStopped
-      });
-    } catch (error) {
-      console.error('Error in /api/task/:taskId/stop:', error);
-      res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
+      res.json({ success: true, message: result.message, taskId: result.taskId, containerStopped: result.containerStopped });
+    } catch {
+      console.error('Error in /api/task/:taskId/stop');
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 
@@ -528,7 +527,7 @@ export function normalizeTaskId(jobId: string): string {
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const statusOutput = execSync(`docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+    const statusOutput = getDockerContainerStatus(containerId);
     if (statusOutput) {
       return { id: containerId, name: containerName, status: statusOutput.includes('Up') ? 'running' : 'stopped', logsAvailable: true };
     }

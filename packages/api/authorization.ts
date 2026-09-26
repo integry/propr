@@ -11,6 +11,7 @@ import {
 } from '@propr/shared';
 import { isDemoMode } from './demoMode.js';
 import type { GitHubUser } from './authTypes.js';
+import { timeApiStage } from './apiPerformanceTiming.js';
 
 export { INSTANCE_PERMISSIONS };
 export type { InstancePermission, InstanceRole };
@@ -75,10 +76,12 @@ export async function resolveInstanceAuthorization(
 
     // Keep this single primary-key lookup uncached so demotions and removals
     // take effect on the next request.
-    const member = await database<InstanceMemberRow>('instance_members')
-        .select('github_user_id', 'role', 'source')
-        .where({ github_user_id: user.id })
-        .first();
+    const member = await timeApiStage('authorization.role-query', () =>
+        database<InstanceMemberRow>('instance_members')
+            .select('github_user_id', 'role', 'source')
+            .where({ github_user_id: user.id })
+            .first()
+    );
     if (member) {
         const permissions = member.role === 'admin' ? [...ADMIN_PERMISSIONS] : [];
         return { role: member.role, permissions, source: member.source };

@@ -9,12 +9,19 @@ import { getAgentRegistry } from '../../agents/AgentRegistry.js';
 import { generateContext } from '../context/index.js';
 import { parseFileReferences, getResolvedPaths } from '../relevance/fileReferenceParser.js';
 import { buildSummaryContext } from '../relevance/contextBuilder.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 
 import { BranchNotFoundError, PlanningFailedError } from './planningErrors.js';
 import { checkoutBranch } from './branchOperations.js';
 import { updateTrace } from './traceService.js';
 import { estimateContextGatheringDuration } from './previewUtils.js';
 import type { RegenerateContextParams, RegenerateContextResult } from './planningTypes.js';
+
+function requireRelevanceModel(contextModel?: string, defaultModel?: string): string {
+  const model = contextModel?.trim() || defaultModel?.trim();
+  if (!model) throw new NoDefaultModelConfiguredError();
+  return model;
+}
 
 /**
  * Regenerate context when content has changed.
@@ -52,12 +59,13 @@ export async function regenerateContext(params: RegenerateContextParams): Promis
     const selectedAgent = registry.getAgentByAlias(agentAlias);
     if (selectedAgent) agent = selectedAgent;
   }
+  const relevanceModel = requireRelevanceModel(contextModel, agent?.config.defaultModel);
 
   // Estimate duration for relevance analysis
   const estimatedInputTokens = estimateTokens(prompt);
   const relevanceEstimation = await estimateLlmDuration({
     executionType: 'context-analysis',
-    modelName: contextModel || 'haiku',
+    modelName: relevanceModel,
     inputTokenCount: estimatedInputTokens,
     correlationId
   });
@@ -79,7 +87,7 @@ export async function regenerateContext(params: RegenerateContextParams): Promis
   // Find relevant files
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId, useSummaryScoring: !!agent, useLLMKeywords: true, agent,
-    repoName: draft.repository, branch: baseBranch, modelId: contextModel
+    repoName: draft.repository, branch: baseBranch, modelId: relevanceModel
   });
 
   await updateTrace(draftId, 'relevance', 'completed', {

@@ -1,0 +1,148 @@
+name: CLI Node Compatibility
+
+# Selection lives in the shared classifier rather than in a filename-only path
+# list here, so one policy decides what a path means for every workflow.
+on:
+  pull_request:
+
+concurrency:
+  group: cli-node-compatibility-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      cli: ${{ steps.classify.outputs.cli }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
+  project-options:
+    name: Project options (Node ${{ matrix.node-version }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the matrix.
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
+    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Isolate job state from the shared host
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          ./scripts/ci-rootless-preflight.sh
+          job_root="$RUNNER_TEMP/ci"
+          rm -rf -- "$job_root"
+          mkdir -p "$job_root/home" "$job_root/pw"
+          # TMPDIR is a private 0700 directory directly under the sticky /tmp,
+          # the same ancestry tests get on hosted runners. The runner's own
+          # tree can have a group-writable ancestor, which the CLI's private
+          # directory checks rightly reject, and its long path overflows
+          # Chromium's singleton socket path.
+          tmp_dir="$(mktemp -d /tmp/propr-ci.XXXXXX)"
+          {
+            echo "HOME=$job_root/home"
+            echo "DOCKER_CONFIG=$job_root/home/.docker"
+            echo "TMPDIR=$tmp_dir"
+            echo "PROPR_CI_TMPDIR=$tmp_dir"
+            echo "XDG_CONFIG_HOME=$job_root/home/.config"
+            echo "XDG_CACHE_HOME=$job_root/home/.cache"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$job_root/pw"
+          } >> "$GITHUB_ENV"
+
+      - name: Record runner placement
+        run: ./scripts/ci-runner-evidence.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspace dependencies
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
+
+      - name: Run project option regressions
+        run: >-
+          npx tsx --test
+          packages/cli/src/projectOptions.cli.test.ts
+          packages/cli/src/utils/resolveProject.test.ts
+          packages/cli/src/commands/configCommands.test.ts
+          packages/cli/src/commands/implementCommands.test.ts
+
+      - name: Remove job files from the persistent workspace
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          git -C "$GITHUB_WORKSPACE" clean -ffdxq
+          case "${PROPR_CI_TMPDIR:-}" in /tmp/propr-ci.*) rm -rf -- "$PROPR_CI_TMPDIR" ;; esac
+
+  cli-node-compatibility-guard:
+    # Stable aggregate over the matrix above. It passes only when every leg
+    # succeeded, or when the shared classifier proved the CLI surface
+    # inapplicable and the matrix was skipped for exactly that reason.
+    name: CLI Node Compatibility Guard
+    needs: [classify, project-options]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce CLI Node compatibility results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          CLI_DECISION: ${{ needs.classify.outputs.cli }}
+          MATRIX_RESULT: ${{ needs.project-options.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "CLI decision: ${CLI_DECISION:-none}"
+          echo "Project options matrix: ${MATRIX_RESULT:-did not run}"
+          if [ "${CLASSIFY_RESULT:-}" = success ] \
+            && [ "${CLASSIFY_STATUS:-}" = ok ] \
+            && [ "${CLI_DECISION:-}" = false ] \
+            && [ "${MATRIX_RESULT:-}" = skipped ]; then
+            echo "CLI Node compatibility is not applicable to this change set." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::CLI Node compatibility proved inapplicable; see the classifier job summary for the reasons."
+            exit 0
+          fi
+          if [ "${MATRIX_RESULT:-}" != success ]; then
+            echo "::error::CLI Node compatibility finished with result '${MATRIX_RESULT:-did not run}'."
+            exit 1
+          fi

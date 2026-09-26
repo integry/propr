@@ -84,16 +84,16 @@ export const OnboardingStep: React.FC<OnboardingStepProps> = ({
           </span>
         </div>
 
-        {/* Action Button - Hidden when completed, inline link style for pending */}
+        {/* Action Button - Hidden when completed, outlined control for pending */}
         {!isCompleted && onAction && (
           <button
             onClick={onAction}
             className={`
-              mt-2 inline-flex items-center text-sm font-medium
+              mt-2 inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium
               transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2
               ${isActive
-                ? 'px-3 py-1.5 bg-teal-600 text-white rounded-md hover:bg-teal-700 focus:ring-teal-500'
-                : 'text-slate-500 hover:text-slate-700 underline-offset-2 hover:underline focus:ring-slate-400'
+                ? 'bg-teal-600 text-white hover:bg-teal-700 focus:ring-teal-500'
+                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 focus:ring-slate-400'
               }
             `}
           >

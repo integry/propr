@@ -18,6 +18,8 @@ ProPR is self-hosted: the delivery layer, task history, credentials, and reposit
 
 Model calls go directly from your stack to the provider you configured. ProPR is not a proxy for LLM traffic and never sees or marks up your tokens.
 
+[Voice Briefings](../features/voice-briefings.md) have a separate browser-vendor boundary. The ProPR server returns text JSON and does not accept raw microphone audio, provide server-side TTS, or keep a call or WebRTC session open. Speech recognition belongs to the browser or operating system and may send audio to its vendor, so it must not be assumed to run locally. Only a confirmed follow-up instruction is sent to ProPR as text through the normal authenticated task or plan API, as applicable.
+
 ## Isolation Model
 
 Every implementation task runs in its own Docker container and its own Git worktree on a dedicated branch. The agent edits files; it does not commit, push, or open PRs — ProPR performs those Git and GitHub operations deterministically after the agent finishes. The main checkout is never touched, and a wrong result is contained to a branch you can review, retry, or discard. Details: [Execution Safety](../features/execution-safety.md).
@@ -30,7 +32,7 @@ The API and worker use the host Docker socket to launch task containers; the API
 
 - **Inbound: none required.** The default event intake is an outbound WebSocket to the routing service, so a stack behind NAT or a firewall works without exposing any port. The API (4000) and Web UI (5173) bind locally; expose them deliberately (reverse proxy, VPN, or the managed [hosted UI tunnel](../operations/deployment.md#hosted-ui-tunnel)).
 - **`direct_webhook` mode** (advanced) is the exception: it requires a public `POST /webhook` endpoint and a webhook secret.
-- **Unauthenticated endpoints:** `GET /api/compatibility` is intentionally unauthenticated so the hosted UI can check version compatibility before login — the release version of your stack is readable pre-auth. Treat that as public information or keep the API off the public internet.
+- **Unauthenticated endpoints:** `GET /api/compatibility` and `GET /api/desktop/discovery` intentionally expose only product/version compatibility and desktop-auth capabilities. The rate-limited desktop pairing start/poll endpoints use a high-entropy, body-only device secret and disclose an instance token only after browser-session approval. Treat version metadata as public information or keep the API off the public internet.
 - API access is protected by session auth (GitHub OAuth) and optional bearer-token auth for automation.
 - **Organizations with GitHub IP allow lists**: add your ProPR server's egress IP to the org allow list. The GitHub App deliberately declares no IP allow list of its own: every API call comes from your self-hosted stack at your own address, so inheriting an App-level list would block your own stack.
 

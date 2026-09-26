@@ -18,7 +18,7 @@ export function checkDbAndAuth(
   return { valid: true };
 }
 
-export function withAuthCheck(db: Knex, handler: HandlerFunction): HandlerFunction {
+export function withAuthCheck<P>(db: Knex, handler: HandlerFunction<P>): HandlerFunction<P> {
   return async (req, res): Promise<void> => {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }

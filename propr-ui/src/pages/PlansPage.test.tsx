@@ -41,6 +41,16 @@ vi.mock('./PlansPageComponents', () => ({
 const mockGetDrafts = vi.mocked(getDrafts);
 const mockGetDraftRepositories = vi.mocked(getDraftRepositories);
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('PlansPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -85,7 +95,7 @@ describe('PlansPage', () => {
       repository: 'integry/propr',
     })));
 
-    const trigger = screen.getByRole('button', { name: /propr/i });
+    const trigger = await screen.findByRole('button', { name: /propr/i });
     expect(trigger.textContent).toContain('integry');
     expect(trigger.textContent).toContain('propr');
     expect(trigger.textContent).toContain('3');
@@ -270,5 +280,68 @@ describe('PlansPage', () => {
 
     await waitFor(() => expect(mockGetDrafts).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockGetDraftRepositories).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not show an empty plan state before a successful read or after a failed read', async () => {
+    const initialRequest = deferred<PaginatedDraftsResponse>();
+    mockGetDraftRepositories.mockResolvedValue({ repositories: [], total: 0 });
+    mockGetDrafts.mockReturnValue(initialRequest.promise);
+
+    const view = render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes><Route path="/plans" element={<PlansPage />} /></Routes>
+      </MemoryRouter>
+    );
+    expect(screen.getByText('Loading plans...')).toBeInTheDocument();
+    expect(screen.queryByText('empty state')).not.toBeInTheDocument();
+
+    await act(async () => {
+      initialRequest.resolve({ drafts: [], total: 0, page: 1, limit: 50, hasMore: false });
+    });
+    expect(await screen.findByText('empty state')).toBeInTheDocument();
+
+    view.unmount();
+    const failedRequest = deferred<PaginatedDraftsResponse>();
+    mockGetDrafts.mockReturnValue(failedRequest.promise);
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes><Route path="/plans" element={<PlansPage />} /></Routes>
+      </MemoryRouter>
+    );
+    await act(async () => { failedRequest.reject(new Error('Plans unavailable')); });
+
+    expect(await screen.findByText('Plans unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('empty state')).not.toBeInTheDocument();
+  });
+
+  it('hides plans from the previous filter until the next scoped read resolves', async () => {
+    const filteredRequest = deferred<PaginatedDraftsResponse>();
+    mockGetDraftRepositories.mockResolvedValue({ repositories: [], total: 0 });
+    mockGetDrafts
+      .mockResolvedValueOnce({
+        drafts: [{
+          draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Current plan', status: 'draft',
+          updated_at: '2026-09-14T00:00:00Z', created_at: '2026-09-14T00:00:00Z',
+        }],
+        total: 1, page: 1, limit: 50, hasMore: false,
+      })
+      .mockReturnValueOnce(filteredRequest.promise);
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes><Route path="/plans" element={<PlansPage />} /></Routes>
+      </MemoryRouter>
+    );
+    expect(await screen.findByText('plans table')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('All Statuses'), { target: { value: 'review' } });
+    expect(await screen.findByText('Loading plans...')).toBeInTheDocument();
+    expect(screen.queryByText('plans table')).not.toBeInTheDocument();
+    expect(screen.queryByText('empty state')).not.toBeInTheDocument();
+
+    await act(async () => {
+      filteredRequest.resolve({ drafts: [], total: 0, page: 1, limit: 50, hasMore: false });
+    });
+    expect(await screen.findByText('empty state')).toBeInTheDocument();
   });
 });

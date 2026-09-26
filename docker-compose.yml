@@ -28,8 +28,11 @@ services:
     image: redis:alpine
     ports:
       # Expose Redis for PR preview environments to share sessions
-      # REDIS_EXTERNAL_PORT allows different ports for different stacks
-      - '${REDIS_EXTERNAL_PORT:-6380}:6379'
+      # Bind to loopback by default so running this development compose file on
+      # a public host does not expose unauthenticated Redis to the internet.
+      # REDIS_EXTERNAL_PORT allows different ports for different stacks;
+      # REDIS_EXTERNAL_BIND_HOST must be set explicitly for trusted bridge access.
+      - '${REDIS_EXTERNAL_BIND_HOST:-127.0.0.1}:${REDIS_EXTERNAL_PORT:-6380}:6379'
     volumes:
       - redis_data:/data
     networks:
@@ -106,6 +109,9 @@ services:
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
+      # Optional override for the encrypted OAuth credential collected through
+      # the Web UI. App installation tokens cannot upload GitHub attachments.
+      - GITHUB_VISUAL_PREVIEW_TOKEN=${GITHUB_VISUAL_PREVIEW_TOKEN:-}
       - PROPR_CONTAINERIZED=1
     depends_on:
       redis:
@@ -216,7 +222,16 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    command: sh -c "cd /usr/src/app/packages/api && npx tsx server.ts"
+    command:
+      - sh
+      - -c
+      - |
+        case "$${DB_FILENAME}" in
+          "") export DB_FILENAME=/usr/src/app/data/propr.sqlite ;;
+          /*|:memory:|file:*) ;;
+          *) export DB_FILENAME="/usr/src/app/$${DB_FILENAME}" ;;
+        esac
+        cd /usr/src/app/packages/api && exec npx tsx server.ts
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -252,6 +267,10 @@ services:
       - PROPR_CONTAINERIZED=1
       - PROPR_STACK=${PROPR_STACK:-propr}
       - CONFIG_REPO_PATH=/tmp/config_repo
+      # Keep API-owned durable state on the mounted data directory. The startup
+      # command preserves env_file database paths and resolves relative filenames
+      # from /usr/src/app, matching the daemon and workers before changing cwd.
+      - DATA_DIR=/usr/src/app/data
       # Allow injection of API_PUBLIC_URL for PR preview environments
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
       # Allow injection of FRONTEND_URL for CORS in PR preview environments

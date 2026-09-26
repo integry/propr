@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
 import { getModelDisplayName } from '../utils/modelDisplay';
 import { ProviderLogo } from './ui/ProviderLogo';
+import { SystemAlert } from './ui/SystemAlert';
 
 // Model icon component using ProviderLogo for visual grouping
 const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
@@ -109,7 +110,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-        <div className="text-red-500 text-center py-4">{error}</div>
+        <SystemAlert>{error}</SystemAlert>
       </div>
     );
   }

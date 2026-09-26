@@ -75,7 +75,11 @@ export function isProcessableFile(repoPath: string, filePath: string): boolean {
   }
 }
 
-export async function scanGitFiles(repoPath: string, log: Logger): Promise<GitFileInfo[]> {
+export async function scanGitFiles(
+  repoPath: string,
+  log: Logger,
+  options: { throwOnError?: boolean } = {},
+): Promise<GitFileInfo[]> {
   const git = simpleGit(repoPath);
 
   try {
@@ -104,11 +108,16 @@ export async function scanGitFiles(repoPath: string, log: Logger): Promise<GitFi
     return files;
   } catch (error) {
     log.error({ error: (error as Error).message }, 'Failed to scan git files');
+    if (options.throwOnError) throw error;
     return [];
   }
 }
 
 export async function scanProcessableGitFiles(repoPath: string, log: Logger): Promise<GitFileInfo[]> {
   const gitFiles = await scanGitFiles(repoPath, log);
+  return filterProcessableGitFiles(repoPath, gitFiles);
+}
+
+export function filterProcessableGitFiles(repoPath: string, gitFiles: GitFileInfo[]): GitFileInfo[] {
   return gitFiles.filter(file => isProcessableFile(repoPath, file.path));
 }

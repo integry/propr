@@ -6,7 +6,6 @@ const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/models';
 const PRICING_CACHE_KEY = 'pricing:openrouter:v2:data';
 const CACHE_TTL_SECONDS = 86400;
-const SONNET_5_PROMOTIONAL_PRICING_END = Date.UTC(2026, 8, 1);
 
 interface RedisConnectionOptions {
     host: string;
@@ -56,9 +55,17 @@ const perMillion = (price: number): number => price / 1_000_000;
  * OpenAI: https://developers.openai.com/api/docs/models/compare
  */
 const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
+    'anthropic/claude-fable-5.1': {
+        prompt: perMillion(10), completion: perMillion(50),
+        cacheCreation: perMillion(12.5), cacheRead: perMillion(0.25)
+    },
     'anthropic/claude-fable-5': {
         prompt: perMillion(10), completion: perMillion(50),
         cacheCreation: perMillion(12.5), cacheRead: perMillion(1)
+    },
+    'anthropic/claude-opus-5.5': {
+        prompt: perMillion(4), completion: perMillion(20),
+        cacheCreation: perMillion(5), cacheRead: perMillion(0.2)
     },
     'anthropic/claude-opus-5': {
         prompt: perMillion(5), completion: perMillion(25),
@@ -81,8 +88,8 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         cacheCreation: perMillion(6.25), cacheRead: perMillion(0.5)
     },
     'anthropic/claude-sonnet-5': {
-        prompt: perMillion(3), completion: perMillion(15),
-        cacheCreation: perMillion(3.75), cacheRead: perMillion(0.3)
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
     },
     'anthropic/claude-sonnet-4.6': {
         prompt: perMillion(3), completion: perMillion(15),
@@ -96,17 +103,21 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         prompt: perMillion(1), completion: perMillion(5),
         cacheCreation: perMillion(1.25), cacheRead: perMillion(0.1)
     },
+    'openai/gpt-6-astra': {
+        prompt: perMillion(10), completion: perMillion(50),
+        cacheCreation: perMillion(12.5), cacheRead: perMillion(1)
+    },
     'openai/gpt-5.6-sol': {
-        prompt: perMillion(5), completion: perMillion(30),
-        cacheCreation: perMillion(5), cacheRead: perMillion(0.5)
+        prompt: perMillion(4), completion: perMillion(20),
+        cacheCreation: perMillion(5), cacheRead: perMillion(0.4)
     },
     'openai/gpt-5.6-terra': {
-        prompt: perMillion(2.5), completion: perMillion(15),
-        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.25)
+        prompt: perMillion(2), completion: perMillion(12),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
     },
     'openai/gpt-5.6-luna': {
-        prompt: perMillion(1), completion: perMillion(6),
-        cacheCreation: perMillion(1), cacheRead: perMillion(0.1)
+        prompt: perMillion(0.2), completion: perMillion(1.2),
+        cacheCreation: perMillion(0.25), cacheRead: perMillion(0.02)
     },
     'openai/gpt-5.5': {
         prompt: perMillion(5), completion: perMillion(30),
@@ -148,15 +159,8 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     }
 };
 
-const SONNET_5_PROMOTIONAL_PRICING: ModelPricing = {
-    prompt: perMillion(2), completion: perMillion(10),
-    cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
-};
-
-export function getOfficialModelPricing(modelId: string, at: Date = new Date()): ModelPricing | null {
-    if (modelId === 'anthropic/claude-sonnet-5' && at.getTime() < SONNET_5_PROMOTIONAL_PRICING_END) {
-        return SONNET_5_PROMOTIONAL_PRICING;
-    }
+export function getOfficialModelPricing(modelId: string, _at: Date = new Date()): ModelPricing | null {
+    void _at;
     return OFFICIAL_MODEL_PRICING[modelId] ?? null;
 }
 

@@ -4,6 +4,7 @@ import type { SystemAgentStatus } from '../api/proprTypes';
 import { useSocket } from '../contexts/useSocket';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { ProviderLogo } from './ui/ProviderLogo';
+import { Layers3 } from 'lucide-react';
 
 interface Worker {
   id: number;
@@ -65,6 +66,7 @@ const SystemStatus: React.FC = () => {
       case 'idle':
         return '#10B981'; // emerald-500 for success states
       case 'queued':
+      case 'degraded':
         return '#F59E0B'; // amber-500 for pending work
       case 'stopped':
       case 'disconnected':
@@ -87,6 +89,7 @@ const SystemStatus: React.FC = () => {
       case 'idle':
         return 'text-emerald-500';
       case 'queued':
+      case 'degraded':
         return 'text-amber-500';
       case 'stopped':
       case 'disconnected':
@@ -118,7 +121,9 @@ const SystemStatus: React.FC = () => {
   const renderAgentStatusRow = (agent: SystemAgentStatus, isLast = false) => (
     <div className={`flex justify-between items-center py-2 ${isLast ? '' : 'border-b border-slate-200'}`}>
       <span className="font-medium text-slate-600 flex items-center gap-2">
-        <ProviderLogo provider={agent.type || agent.alias} className={`w-4 h-4 flex-shrink-0 ${getStatusTextColorClass(agent.status)}`} />
+        {agent.type === 'synthetic'
+          ? <Layers3 className={`w-4 h-4 flex-shrink-0 ${getStatusTextColorClass(agent.status)}`} />
+          : <ProviderLogo provider={agent.type || agent.alias} className={`w-4 h-4 flex-shrink-0 ${getStatusTextColorClass(agent.status)}`} />}
         {formatAgentLabel(agent, status?.agents || [])}:
       </span>
       <span className="font-semibold" style={{ color: getStatusColor(agent.status) }}>

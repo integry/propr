@@ -1,10 +1,11 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // Re-export all types from plannerTypes for backwards compatibility
 export type {
   GenerationStepData,
   GenerationStep,
   GenerationTrace,
+  GenerationStartResponse,
   PlannerAttachment,
   PlannerDraft,
   ContextStats,
@@ -40,10 +41,12 @@ import type {
   PreviewResult,
   PendingPreviewResult,
   PlanGenerationOptions,
+  GenerationStartResponse,
   CreateDraftOptions,
   DraftWithPlan,
   PlanTask,
   ChatMessage,
+  DraftContextConfig,
   RefineResponse,
   FinalizeResponse,
   GetDraftsOptions,
@@ -115,7 +118,7 @@ export const removeAttachment = async (draftId: string, attachmentId: string): P
   await handleApiResponse(response);
 };
 
-export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
+export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<GenerationStartResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -123,6 +126,7 @@ export const generatePlan = async (draftId: string, options?: PlanGenerationOpti
     credentials: 'include'
   });
   await handleApiResponse(response);
+  return response.json();
 };
 
 export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult | PendingPreviewResult> => {
@@ -143,7 +147,7 @@ export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
   return response.json();
 };
 
-export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string }): Promise<void> => {
+export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string; context_config?: DraftContextConfig }): Promise<void> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

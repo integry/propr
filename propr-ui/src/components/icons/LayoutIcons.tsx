@@ -1,4 +1,5 @@
 import React from 'react';
+import { SIDEBAR_ICON_STROKE_WIDTH } from './sidebarIconStroke';
 
 interface IconProps {
   className?: string;
@@ -23,8 +24,10 @@ export const MenuIcon: React.FC<IconProps> = ({ className }) => (
   </svg>
 );
 
+// CloseIcon renders inside the sidebar (mobile close button), so it shares
+// the sidebar's uniform stroke spec.
 export const CloseIcon: React.FC<IconProps> = ({ className }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} d="M6 18L18 6M6 6l12 12" />
   </svg>
 );

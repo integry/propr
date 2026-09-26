@@ -1,7 +1,12 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import { redactSecrets, redactSerializableValue, createLogFiles, generateCompletionComment } from '../packages/core/src/utils/github/logFiles.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 test('redactSecrets replaces GitHub personal access tokens', () => {
     const input = 'token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
@@ -22,6 +27,13 @@ test('redactSecrets replaces GitHub App installation tokens (ghs_)', () => {
     const result = redactSecrets(input);
     assert.ok(!result.includes('ghs_ABCDEF'));
     assert.ok(result.includes('[REDACTED_GITHUB_TOKEN]'));
+});
+
+test('redactSecrets replaces modern JWT-shaped GitHub App installation tokens', () => {
+    const token = 'ghs_1234567_eyJhbGciOiJFUzI1NiJ9.abc-DEF_123.xyz';
+    const result = redactSecrets(`relay returned ${token}`);
+    assert.ok(!result.includes(token));
+    assert.strictEqual(result, 'relay returned [REDACTED_GITHUB_TOKEN]');
 });
 
 test('redactSecrets scrubs the relay credential (PROPR_GH_RELAY_TOKEN)', () => {
@@ -460,6 +472,17 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
 });
 
+test('generateCompletionComment does not claim a PR exists when posted to an issue', async () => {
+    const comment = await generateCompletionComment({ success: false, error: 'Agent failed' }, {
+        number: 7788,
+        repoOwner: 'test-owner',
+        repoName: 'test-repo',
+    }, { publishedAs: 'issue_comment' });
+
+    assert.match(comment, /processing report was generated automatically/i);
+    assert.doesNotMatch(comment, /This PR was created automatically/);
+});
+
 // --- Vendor-specific false-positive boundary tests ---
 
 test('redactSecrets should not redact Stripe publishable key prefix in prose', () => {
@@ -596,4 +619,67 @@ test('redactSecrets redacts secrets regardless of surrounding text with no known
     const result = redactSecrets(input);
     assert.ok(!result.includes('VeryLongSecretPassword12345678'), 'Generic PASSWORD assignment must be redacted even without fast-path prefix');
     assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
+test('preview path redaction covers native and encoded worktree and staging references', () => {
+    for (const local of [
+        '/tmp/private/.propr/previews/screen.png', '/home/worker/.propr/preview-src/capture.ts',
+        '/tmp/propr-previews/task-123/screen.png', 'C:\\work\\.propr\\previews\\screen.png',
+        '.propr/previews/screen.png', '%2Ftmp%2Fwork%2F.propr%2Fpreviews%2Fscreen.png',
+    ]) {
+        const output = redactSecrets(`Captured [preview](<${local}>) successfully.`);
+        assert.ok(!output.includes(local));
+        assert.ok(output.includes('Captured'));
+        assert.ok(output.includes('successfully'));
+    }
+    const safe = 'https://github.com/user-attachments/assets/123 https://connect.propr.dev/previews/123';
+    assert.equal(redactSecrets(safe), safe);
+});
+
+test('preview path redaction covers native, Windows, and encoded runtime directory roots', () => {
+    for (const local of [
+        '/srv/task/.propr/previews', '/srv/task/.propr/preview-src', '/tmp/propr-previews',
+        'C:\\work\\.propr\\previews', 'C:\\work\\.propr\\preview-src', 'C:\\temp\\propr-previews',
+        '%2Fsrv%2Ftask%2F.propr%2Fpreviews', '%2Fsrv%2Ftask%2F.propr%2Fpreview-src',
+        '%2Ftmp%2Fpropr-previews',
+    ]) {
+        const atEnd = redactSecrets(local);
+        assert.ok(!atEnd.includes(local));
+        assert.ok(atEnd.includes('[local preview omitted]'));
+
+        const beforePunctuation = redactSecrets(`Runtime directory: ${local}. Capture complete.`);
+        assert.ok(!beforePunctuation.includes(local));
+        assert.ok(beforePunctuation.includes('Capture complete'));
+    }
+});
+
+test('preview path redaction preserves serialized JSON containing escaped quotes', () => {
+    const local = '/tmp/private/.propr/previews/screen.png';
+    const serialized = JSON.stringify({ message: `Captured ${local} before "the dialog" opened.` });
+    const redacted = redactSecrets(serialized);
+
+    assert.doesNotThrow(() => JSON.parse(redacted));
+    assert.equal(redacted.includes(local), false);
+    assert.match((JSON.parse(redacted) as { message: string }).message, /local preview omitted/);
+});
+
+test('preview path redaction handles long runs of escaped quote delimiters', () => {
+    const local = '/tmp/private/.propr/previews/screen.png';
+    for (const delimiter of ['"', "'", '`']) {
+        const escapedDelimiters = `\\${delimiter}`.repeat(50_000);
+        const redacted = redactSecrets(`${delimiter}${escapedDelimiters} ${local}${delimiter}`);
+
+        assert.equal(redacted.includes(local), false);
+        assert.strictEqual(redacted, `${delimiter}[local preview omitted]${delimiter}`);
+    }
+});
+
+test('redactSerializableValue redacts preview paths used as nested metadata keys', () => {
+    const local = '/tmp/private/.propr/previews/screen.png';
+    const redacted = redactSerializableValue({ metadata: { [local]: { status: 'captured' } } }) as {
+        metadata: Record<string, { status: string }>;
+    };
+
+    assert.deepEqual(Object.keys(redacted.metadata), ['[local preview omitted]']);
+    assert.equal(JSON.stringify(redacted).includes(local), false);
 });

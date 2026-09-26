@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
@@ -17,12 +17,35 @@ import {
   ExpandButton,
   ExpandedRowDetails,
   PaginationFooter,
+  SyntheticRoutingModelSummary,
+  LlmLogsBlockingState,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { useAgentTankSuggestion } from '../hooks/useAgentTankSuggestion';
 
 const DEFAULT_PAGE_SIZE = 20;
+
+type LlmLogsScopeState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; logs: LlmLogEntry[]; refreshError: string | null };
+
+function resolveLlmLogsScopeState(
+  loadedScope: string | null,
+  queryScope: string,
+  logs: LlmLogEntry[],
+  error: { scope: string; message: string } | null,
+): LlmLogsScopeState {
+  const currentError = error?.scope === queryScope ? error.message : null;
+  if (loadedScope !== queryScope) return currentError ? { kind: 'error', message: currentError } : { kind: 'loading' };
+  if (currentError && logs.length === 0) return { kind: 'error', message: currentError };
+  return { kind: 'ready', logs, refreshError: currentError };
+}
+
+function isRefreshPending(loading: boolean, refreshing: boolean): boolean {
+  return loading || refreshing;
+}
 
 const LlmLogsPage: React.FC = () => {
   useDocumentTitle('LLM Log');
@@ -40,8 +63,15 @@ const LlmLogsPage: React.FC = () => {
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
   const [pagination, setPagination] = useState<LlmLogsPagination | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  const [error, setError] = useState<{ scope: string; message: string } | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const requestIdRef = useRef(0);
+  const queryScope = useMemo(
+    () => JSON.stringify([currentPage, typeFilter, modelFilter, statusFilter, workTypeFilter]),
+    [currentPage, modelFilter, statusFilter, typeFilter, workTypeFilter]
+  );
 
   const {
     dismissSuggestion: dismissAgentTankSuggestion,
@@ -68,9 +98,13 @@ const LlmLogsPage: React.FC = () => {
   }, [setSearchParams]);
 
   const loadLogs = useCallback(async (page: number, showLoading = true) => {
+    const requestId = ++requestIdRef.current;
     if (showLoading) {
       setLoading(true);
+    } else {
+      setRefreshing(true);
     }
+    setError(current => current?.scope === queryScope ? null : current);
     try {
       const params: Record<string, unknown> = {
         page,
@@ -90,8 +124,10 @@ const LlmLogsPage: React.FC = () => {
       }
 
       const data = await getLlmLogs(params as Parameters<typeof getLlmLogs>[0]);
+      if (requestId !== requestIdRef.current) return;
       setLogs(data.logs);
       setPagination(data.pagination);
+      setLoadedScope(queryScope);
 
       // Extract unique types and models from current page for filter options
       // For a more complete solution, you'd fetch all unique values from a dedicated endpoint
@@ -103,17 +139,15 @@ const LlmLogsPage: React.FC = () => {
 
       setError(null);
     } catch (err) {
-      if (showLoading) {
-        setError((err as Error).message || 'Failed to load LLM logs');
-      } else {
-        console.error('Silent refresh failed:', err);
-      }
+      if (requestId !== requestIdRef.current) return;
+      setError({ scope: queryScope, message: (err as Error).message || 'Failed to load LLM logs' });
     } finally {
-      if (showLoading) {
+      if (requestId === requestIdRef.current) {
         setLoading(false);
+        setRefreshing(false);
       }
     }
-  }, [typeFilter, modelFilter, statusFilter, workTypeFilter]);
+  }, [modelFilter, queryScope, statusFilter, typeFilter, workTypeFilter]);
 
   // Initial load and when filters/page change
   useEffect(() => {
@@ -154,32 +188,12 @@ const LlmLogsPage: React.FC = () => {
     });
   };
 
-  if (loading && logs.length === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
-          <div className="text-gray-500">Loading logs...</div>
-        </div>
-      </div>
-    );
+  const scopeState = resolveLlmLogsScopeState(loadedScope, queryScope, logs, error);
+  if (scopeState.kind !== 'ready') {
+    return <LlmLogsBlockingState error={scopeState.kind === 'error' ? scopeState.message : undefined} />;
   }
 
-  if (error) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
-        </div>
-      </div>
-    );
-  }
-
+  const { logs: visibleLogs, refreshError: currentError } = scopeState;
   const totalPages = pagination?.totalPages || 1;
 
   return (
@@ -247,6 +261,8 @@ const LlmLogsPage: React.FC = () => {
 
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-auto">
+        {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh logs: {currentError}</div>}
+        {isRefreshPending(loading, refreshing) && <div role="status" className="px-4 pt-3 text-xs text-slate-500 sm:px-6">Refreshing logs…</div>}
         {/* Agent Tank Suggestion Banner */}
         {canManageAgents && showAgentTankSuggestion && (
           <div className="mx-4 sm:mx-6 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
@@ -277,7 +293,7 @@ const LlmLogsPage: React.FC = () => {
           </div>
         )}
 
-        {logs.length === 0 ? (
+        {visibleLogs.length === 0 ? (
           <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
             <div className="mb-4">
               <Cpu className="w-16 h-16 mx-auto text-gray-400" />
@@ -326,7 +342,7 @@ const LlmLogsPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {logs.map((log) => (
+                  {visibleLogs.map((log) => (
                     <React.Fragment key={log.logId}>
                       <tr
                         className={`hover:bg-gray-50 ${hasDetailedInfo(log) ? 'cursor-pointer' : ''}`}
@@ -374,7 +390,8 @@ const LlmLogsPage: React.FC = () => {
                           )}
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          {log.modelName || '-'}
+                          <div>{log.modelName || '-'}</div>
+                          <SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} />
                         </td>
                         <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
                           <UsageBadge
@@ -406,7 +423,7 @@ const LlmLogsPage: React.FC = () => {
       </div>
 
       {/* Anchored Footer - compact on mobile */}
-      {logs.length > 0 && totalPages > 1 && pagination && (
+      {visibleLogs.length > 0 && totalPages > 1 && pagination && (
         <PaginationFooter
           currentPage={currentPage}
           totalPages={totalPages}

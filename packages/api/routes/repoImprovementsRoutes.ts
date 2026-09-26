@@ -9,7 +9,8 @@ import {
   parseLlmJson,
   getEffectiveTokenLimit,
   estimateLlmDuration,
-  estimateTokens
+  estimateTokens,
+  resolveConfiguredModel
 } from '@propr/core';
 
 /**
@@ -325,7 +326,7 @@ export function createRepoImprovementsRoutes() {
 
       // Get model settings and call the LLM - use requested model or fall back to settings
       const settings = await loadSettings();
-      const model = requestedModel || settings.planner_context_model || 'haiku';
+      const model = await resolveConfiguredModel(requestedModel || settings.planner_context_model);
       const issueRef = { number: 0, repoOwner: owner, repoName };
 
       // Estimate input tokens and duration for the request

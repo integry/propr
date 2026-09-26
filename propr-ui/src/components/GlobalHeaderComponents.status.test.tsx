@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { SystemHealth } from './GlobalHeaderComponents';
+import { ActivePlansButton, SystemHealth } from './GlobalHeaderComponents';
 import type { HeaderStats } from '../hooks/useHeaderStats';
 
 function makeSystemHealth(overrides: Partial<HeaderStats['systemHealth']> = {}): HeaderStats['systemHealth'] {
@@ -103,5 +104,30 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('Disconnected')).toBeInTheDocument();
     const indicator = container.querySelector('button[aria-label="System Status"] span.bg-red-500');
     expect(indicator).toBeInTheDocument();
+  });
+});
+
+describe('ActivePlansButton resource status', () => {
+  it('does not present an authoritative zero while plans have not loaded', () => {
+    render(
+      <MemoryRouter>
+        <ActivePlansButton activePlans={[]} onDismissPlan={() => undefined} status="checking" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('status', { name: 'Checking plans' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '0 Plans' })).not.toBeInTheDocument();
+    expect(screen.queryByText('All caught up.')).not.toBeInTheDocument();
+  });
+
+  it('shows the existing empty treatment after a genuinely empty response', () => {
+    render(
+      <MemoryRouter>
+        <ActivePlansButton activePlans={[]} onDismissPlan={() => undefined} status="available" />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '0 Plans' }));
+    expect(screen.getByText('All caught up.')).toBeInTheDocument();
   });
 });

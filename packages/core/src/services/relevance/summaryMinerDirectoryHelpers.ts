@@ -1,5 +1,6 @@
 import path from 'path';
 import logger from '../../utils/logger.js';
+import { extractJsonCandidates } from '../../utils/jsonUtils.js';
 
 export interface DirectoryInfo {
   dirPath: string;
@@ -192,7 +193,15 @@ export function parseBatchDirectoryResponse(response: string, expectedPaths: str
 
 function extractDirectorySummaryJson(response: string): string | null {
   const cleaned = cleanSummaryText(response);
-  if (/^\s*[[{]/.test(cleaned)) return cleaned;
+  // Take the first parseable balanced JSON value so duplicated documents or
+  // trailing prose after the JSON don't break parsing.
+  for (const candidate of extractJsonCandidates(cleaned)) {
+    try {
+      if (normalizeDirectorySummaryEntries(JSON.parse(candidate)).length > 0) return candidate;
+    } catch {
+      // Try the next candidate
+    }
+  }
 
   const objectMatch = cleaned.match(/\{[\s\S]*(?:"summaries"|"directory_summaries"|"directories"|"results"|"summary")[\s\S]*\}/);
   if (objectMatch) return objectMatch[0];

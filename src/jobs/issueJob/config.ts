@@ -3,7 +3,8 @@
  */
 
 import { Redis } from 'ioredis';
-import { logger, loadPrLabel, loadPrimaryProcessingLabels, getDefaultModel } from '@propr/core';
+import { logger, loadPrimaryProcessingLabels, getDefaultModel } from '@propr/core';
+export { getPrLabel } from '../prLabel.js';
 
 export const redisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -24,13 +25,4 @@ export async function getPrimaryProcessingLabels(): Promise<string[]> {
     return process.env.PRIMARY_PROCESSING_LABELS.split(',').map(l => l.trim()).filter(l => l);
   }
   return [process.env.AI_PRIMARY_TAG || 'AI'];
-}
-
-export async function getPrLabel(): Promise<string> {
-  try {
-    if (process.env.CONFIG_REPO) return await loadPrLabel();
-  } catch (error) {
-    logger.warn({ error: (error as Error).message }, 'Failed to load PR label from config, using fallback');
-  }
-  return process.env.PR_LABEL || 'propr';
 }

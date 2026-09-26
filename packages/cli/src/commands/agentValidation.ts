@@ -56,34 +56,50 @@ interface ExecResult {
   error?: NodeJS.ErrnoException;
 }
 
-/** Async exec with timeout + optional stdin; never rejects. */
+/** Async exec with timeout + optional stdin; abort rejects after the child is reaped. */
 function execAsync(
   cmd: string,
   args: string[],
-  opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
+  opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }
 ): Promise<ExecResult> {
-  return new Promise((resolve) => {
+  opts.signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let aborted = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    let timeoutError: NodeJS.ErrnoException | undefined;
     const finish = (res: ExecResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(res);
+      if (killTimer) clearTimeout(killTimer);
+      opts.signal?.removeEventListener("abort", abort);
+      if (aborted) reject(opts.signal?.reason ?? Object.assign(new Error("aborted"), { name: "AbortError" }));
+      else resolve(res);
+    };
+    const abort = (): void => {
+      if (settled || aborted) return;
+      aborted = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 100);
+      killTimer.unref();
     };
     const timer = setTimeout(() => {
+      timeoutError = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
       child.kill("SIGKILL");
-      finish({ status: null, stdout, stderr, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) });
     }, opts.timeoutMs);
     child.stdout.on("data", (d) => { stdout += d.toString(); });
     child.stderr.on("data", (d) => { stderr += d.toString(); });
     child.on("error", (error) => finish({ status: null, stdout, stderr, error }));
-    child.on("close", (code) => finish({ status: code, stdout, stderr }));
+    child.on("close", (code) => finish({ status: code, stdout, stderr, error: timeoutError }));
     child.stdin.on("error", () => { /* ignore EPIPE if the child never reads stdin */ });
     if (opts.input != null) child.stdin.write(opts.input);
     child.stdin.end();
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    if (opts.signal?.aborted) abort();
   });
 }
 
@@ -277,7 +293,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
           agentType: "antigravity",
           env: ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
         }),
-        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions --print - "$@"', "propr-antigravity",
+        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions "$@"', "propr-antigravity",
       ],
       stdin: VALIDATION_PROMPT,
     }),
@@ -353,8 +369,9 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
 ];
 
-function imagePresent(orch: OrchestratorModule, tag: string): boolean {
-  return orch.docker(["images", "-q", tag], { capture: true }).stdout.trim().length > 0;
+async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
+  const result = await orch.dockerAsync(["images", "-q", tag], { timeout: VERSION_TIMEOUT_MS, signal });
+  return result.status === 0 && result.stdout.trim().length > 0;
 }
 
 function commandExists(bin: string): boolean {
@@ -402,6 +419,10 @@ export interface ValidateAgentsOptions {
   onProgress?: (message: string) => void;
   /** Fired as each agent cell (version/host/image) resolves, for live rendering. */
   onUpdate?: (agent: string, update: AgentCellUpdate) => void;
+  /** Skip the billable host invocation; setup uses the worker image as truth. */
+  skipHost?: boolean;
+  /** Cancel and reap live host and image checks. */
+  signal?: AbortSignal;
 }
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
@@ -449,6 +470,18 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item
   return results;
 }
 
+/** Preserve Promise.all's first rejection, but do not return until every started operation settles. */
+async function settleAllPreservingFailure<T extends readonly unknown[] | []>(
+  values: T
+): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }> {
+  try {
+    return await Promise.all(values);
+  } catch (error) {
+    await Promise.allSettled(values);
+    throw error;
+  }
+}
+
 export interface AgentValidationRow {
   type: string;
   hostVersion?: string;
@@ -461,15 +494,19 @@ export interface AgentValidationRow {
 async function versionInfo(
   d: AgentValidationDescriptor,
   image: string | undefined,
-  orch: OrchestratorModule
+  orch: OrchestratorModule,
+  signal?: AbortSignal
 ): Promise<{ host?: string; image?: string; drift?: "older" | "newer" }> {
   const hostPromise = d.hostBin && commandExists(d.hostBin)
-    ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+    ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS, signal }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
-  const imagePromise = image && imagePresent(orch, image)
-    ? execAsync("docker", ["run", "--rm", "--network=none", "-e", `PROPR_AGENT_TYPE=${d.type}`, image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+  const imagePromise = image
+    ? imagePresent(orch, image, signal).then(present => present
+      ? execAsync("docker", ["run", "--rm", "--network=none", "-e", `PROPR_AGENT_TYPE=${d.type}`, image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS, signal })
+        .then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+      : undefined)
     : Promise.resolve(undefined);
-  const [host, img] = await Promise.all([hostPromise, imagePromise]);
+  const [host, img] = await settleAllPreservingFailure([hostPromise, imagePromise]);
   const drift = host && img && host !== img ? (compareVersions(img, host) < 0 ? "older" : "newer") : undefined;
   return { host, image: img, drift };
 }
@@ -503,6 +540,7 @@ export async function validateAgents(
   cfg: OrchestratorConfig,
   options: ValidateAgentsOptions = {}
 ): Promise<AgentValidationRow[]> {
+  options.signal?.throwIfAborted();
   const { agents, unknown } = validateAgentFilter(options.agents);
   if (unknown.length > 0) {
     throw new Error(`unknown agent type${unknown.length === 1 ? "" : "s"} '${unknown.join(", ")}'. Valid agents: ${validAgentTypes().join(", ")}`);
@@ -518,18 +556,24 @@ export async function validateAgents(
   writeFileSync(promptFileHost, `${VALIDATION_PROMPT}\n`);
 
   const runHost = async (d: AgentValidationDescriptor): Promise<AgentCell | undefined> => {
+    if (options.skipHost) return undefined;
     if (!d.hostInvocation || !d.hostBin) return undefined;
     if (!commandExists(d.hostBin)) {
       return { status: "warn", detail: `${d.hostBin} not installed on host — skipped` };
     }
     const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
-    const run = await execAsync(d.hostBin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS });
+    const run = await execAsync(d.hostBin, args, {
+      input: stdin,
+      cwd: workspaceDir,
+      timeoutMs: VALIDATION_TIMEOUT_MS,
+      signal: options.signal,
+    });
     const ev = evaluateRun(run);
     return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${hostDebugCommand(d)}\` on the host to debug ${d.type} auth.` }) };
   };
 
   const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string | undefined): Promise<AgentCell> => {
-    if (!image || !imagePresent(orch, image)) {
+    if (!image || !await imagePresent(orch, image, options.signal)) {
       return { status: "warn", detail: `image ${image ?? d.imageKey} not present — skipped` };
     }
     if (!hostDir) {
@@ -558,6 +602,7 @@ export async function validateAgents(
       input: stdin,
       env: d.type === "vibe" && cfg.mistralApiKey ? { ...process.env, MISTRAL_API_KEY: cfg.mistralApiKey } : undefined,
       timeoutMs: VALIDATION_TIMEOUT_MS,
+      signal: options.signal,
     });
     const ev = evaluateRun(run);
     const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
@@ -582,7 +627,8 @@ export async function validateAgents(
           mkdirSync(hostDir, { recursive: true, mode: 0o700 });
         }
         // Emit each cell as it resolves so a live view can fill the table in.
-        const versionP = versionInfo(d, image, orch).then((v) => {
+        options.signal?.throwIfAborted();
+        const versionP = versionInfo(d, image, orch, options.signal).then((v) => {
           options.onUpdate?.(d.type, { field: "version", hostVersion: v.host, imageVersion: v.image, drift: v.drift });
           return v;
         });
@@ -594,7 +640,7 @@ export async function validateAgents(
           options.onUpdate?.(d.type, { field: "image", cell: i });
           return i;
         });
-        const [version, host, imageResult] = await Promise.all([versionP, hostP, imageP]);
+        const [version, host, imageResult] = await settleAllPreservingFailure([versionP, hostP, imageP]);
         return { type: d.type, hostVersion: version.host, imageVersion: version.image, drift: version.drift, host, image: imageResult };
       });
   } finally {
@@ -659,23 +705,11 @@ export function planAgentLogin(
 // Agent Tank — subscription usage (optional, external `agent-tank` CLI)
 // ---------------------------------------------------------------------------
 
-interface AgentTankMetric {
-  label?: string;
-  percent?: number;
-  percentUsed?: number;
-  resetsIn?: string;
-}
-
-interface AgentTankAgent {
-  usage?: Record<string, AgentTankMetric>;
-  metadata?: { email?: string; model?: string };
-  error?: string | null;
-}
-
 export interface AgentTankUsage {
   installed: boolean;
   version?: string;
-  usage?: Record<string, AgentTankAgent>;
+  /** Unvalidated JSON emitted by the external Agent Tank process. */
+  usage?: unknown;
   error?: string;
 }
 
@@ -693,7 +727,7 @@ export async function getAgentTankUsage(): Promise<AgentTankUsage> {
   const res = await execAsync("agent-tank", ["--once", "--json"], { timeoutMs: 90_000 });
   if (res.error?.code === "ETIMEDOUT") return { installed: true, version, error: "timed out reading usage" };
   try {
-    const data = JSON.parse(res.stdout.trim()) as Record<string, AgentTankAgent>;
+    const data: unknown = JSON.parse(res.stdout.trim());
     return { installed: true, version, usage: data };
   } catch {
     const reason = (res.stderr || res.stdout || "could not parse agent-tank output").trim().split("\n").pop();

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ProPR Operator"
+  short_description: "Delegate GitHub issue-to-PR work through ProPR"
+  default_prompt: "Use $propr to delegate this change through GitHub and independently verify the resulting pull request."

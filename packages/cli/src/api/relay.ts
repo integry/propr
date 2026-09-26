@@ -53,6 +53,19 @@ function baseUrl(options: RelayClientOptions): string {
 
 interface RelayRequestInit {
   notFoundMessage?: string;
+  operation?: "discovery" | "enrollment" | "token-management";
+}
+
+export class RelayApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string,
+    readonly operation: NonNullable<RelayRequestInit["operation"]>,
+  ) {
+    super(message);
+    this.name = "RelayApiError";
+  }
 }
 
 async function relayRequest<T>(
@@ -90,12 +103,15 @@ async function relayRequest<T>(
       /* non-JSON error body */
     }
     if (response.status === 401) {
-      throw new Error("The relay rejected your GitHub token. Run `propr login` to refresh it.");
+      throw new RelayApiError("The relay rejected your GitHub token. Run `propr login` to refresh it.", 401, code, init?.operation ?? "token-management");
     }
     if (response.status === 403) {
-      throw new Error(
-        "You are not authorized for this installation. Confirm the shared GitHub App is installed and you have access to it."
-      );
+      const operation = init?.operation ?? "token-management";
+      throw new RelayApiError(operation === "enrollment"
+        ? "This GitHub identity can access the installation, but relay enrollment requires authorization from the installation owner."
+        : operation === "discovery"
+          ? "The relay did not authorize installation discovery for this GitHub identity."
+          : "The relay did not authorize this token operation.", response.status, code, operation);
     }
     if (response.status === 404 && init?.notFoundMessage) {
       throw new Error(init.notFoundMessage);
@@ -120,7 +136,7 @@ async function relayRequest<T>(
 export function fetchAuthenticatedUser(
   options: RelayClientOptions
 ): Promise<AuthenticatedUser> {
-  return relayRequest<AuthenticatedUser>(options, "/auth/me", "GET");
+  return relayRequest<AuthenticatedUser>(options, "/auth/me", "GET", undefined, { operation: "discovery" });
 }
 
 export function enrollRelayToken(
@@ -130,7 +146,7 @@ export function enrollRelayToken(
   return relayRequest<EnrollRelayTokenResult>(options, "/relay-tokens", "POST", {
     installation_id: params.installationId,
     label: params.label ?? null,
-  });
+  }, { operation: "enrollment" });
 }
 
 export function listRelayTokens(

@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import type { SummarizationSettings } from './proprTypes';
 
 export type { SummarizationSettings };
@@ -107,6 +107,9 @@ export interface AgentUsageMetric {
   percent: number;
   resetsIn?: string;
   resetsAt?: string;
+  resetsInSeconds?: number;
+  pace?: number;
+  paceEval?: string;
 }
 
 export interface AgentUsageData {
@@ -115,6 +118,7 @@ export interface AgentUsageData {
     session?: AgentUsageMetric;
     weeklyAll?: AgentUsageMetric;
     weeklySonnet?: AgentUsageMetric;
+    weeklyFable?: AgentUsageMetric;
     weekly?: AgentUsageMetric;
     models?: Array<{ model: string; percentUsed: number; resetsIn?: string }>;
     fiveHour?: { percentUsed: number; resetsIn?: string };
@@ -168,8 +172,8 @@ export const enableAgentTank = async (url: string): Promise<{ success: boolean }
 };
 
 export interface PostFollowupResponse { success: boolean; message: string; }
-export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }), credentials: 'include' });
+export const postTaskFollowup = async (taskId: string, body: string, target?: 'pull_request'): Promise<PostFollowupResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks/${encodeURIComponent(taskId)}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target ? { body, target } : { body }), credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };

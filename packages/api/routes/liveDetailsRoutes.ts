@@ -1,4 +1,6 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import { redactVisualPreviewValue } from '@propr/core';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
@@ -7,7 +9,6 @@ import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
 import {
   isConversationResultEmpty,
-  parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
   type ConversationResult
@@ -15,8 +16,11 @@ import {
 import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
-import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
+import { detectStoredOutputFormat, hasCodexAppServerNotification, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
+import { parseAgentStreamOutput, type AgentStreamParseOptions } from '../services/agentStreamProjection.js';
+import { parseConversationFile } from '../services/conversationParser.js';
+import { withStableLiveEventIds, type LiveEventSource } from '../services/liveEventIds.js';
 
 export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
@@ -26,7 +30,8 @@ const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'a
 const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
-  async function getLiveDetails(req: Request, res: Response): Promise<void> {
+  const send = (res: Response, value: unknown) => res.json(redactVisualPreviewValue(value));
+  async function getLiveDetails(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
       const taskIdValidation = validateTaskId(jobId);
@@ -40,11 +45,13 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       if (!sessionId) {
         const activeRedisResult = await parseActiveExecutionOutput(redisClient, db, taskId);
         if (activeRedisResult) {
-          res.json(activeRedisResult);
+          send(res, activeRedisResult);
           return;
         }
+        const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+        if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', taskId, persistedGoalResult)); return; }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
-        res.json({ events: [], todos: [], currentTask: null });
+        send(res, { events: [], todos: [], currentTask: null });
         return;
       }
       console.log(`[live-details] Using sessionId: ${sessionId}`);
@@ -54,13 +61,13 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         console.log('[live-details] Claude conversation file not found, trying active Redis output');
         const activeRedisResult = await parseActiveExecutionOutput(redisClient, db, taskId);
         if (activeRedisResult) {
-          res.json(activeRedisResult);
+          send(res, activeRedisResult);
           return;
         }
         console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
         const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
         if (fallbackResult) {
-          res.json(fallbackResult);
+          send(res, withStableResultEventIds(taskId, 'stored', sessionId, fallbackResult));
           return;
         }
         console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
@@ -68,18 +75,29 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         if (!dbFallbackResult) {
           const rawStoredOutput = await loadStoredExecutionOutput(redisClient, sessionId);
           if (rawStoredOutput?.rawFallback) {
-            res.json(rawStoredOutput.rawFallback);
+            send(res, withStableResultEventIds(taskId, 'stored', sessionId, rawStoredOutput.rawFallback));
             return;
           }
-          res.json({ events: [], todos: [], currentTask: null });
+          const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+          if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', sessionId, persistedGoalResult)); return; }
+          send(res, { events: [], todos: [], currentTask: null });
           return;
         }
-        res.json(dbFallbackResult);
+        send(res, withStableResultEventIds(taskId, 'database', sessionId, dbFallbackResult));
         return;
       }
-      const result = await parseClaudeConversationFile(conversationPath);
+      const result = await parseConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
-      res.json(result);
+      send(res, {
+        ...result,
+        events: withStableLiveEventIds({
+          taskId,
+          source: 'conversation',
+          events: result.events,
+          totalEventCount: result.totalEventCount,
+          executionNamespace: sessionId,
+        }),
+      });
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
       res.status(500).json({ error: 'Internal server error' });
@@ -92,6 +110,24 @@ function normalizeTaskId(jobId: string): string {
   const parts = jobId.replace(/^issue-/, '').split('-');
   parts.pop();
   return parts.join('-');
+}
+
+function withStableResultEventIds(
+  taskId: string,
+  source: LiveEventSource,
+  executionNamespace: string,
+  result: ConversationResult,
+): ConversationResult {
+  return {
+    ...result,
+    events: withStableLiveEventIds({
+      taskId,
+      source,
+      events: result.events,
+      totalEventCount: result.events.length,
+      executionNamespace,
+    }),
+  };
 }
 async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
@@ -234,21 +270,76 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string): Promise<ConversationResult | null> {
+async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string, options: AgentStreamParseOptions = {}): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
   const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
-  const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()), { executionStartTimestamp });
+  const redisParsed = parseAgentStreamOutput(output, { ...options, executionStartTimestamp });
   if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
     return {
-      events: redisParsed.events as unknown as Array<Record<string, unknown>>,
+      events: withStableLiveEventIds({
+        taskId,
+        source: 'redis',
+        events: redisParsed.events,
+        totalEventCount: redisParsed.totalEventCount,
+        executionNamespace: executionStartTimestamp ?? taskId,
+      }) as unknown as Array<Record<string, unknown>>,
       todos: redisParsed.todos,
       currentTask: redisParsed.currentTask,
-      tokenUsage: redisParsed.tokenUsage
+      tokenUsage: redisParsed.tokenUsage,
+      nativeGoal: redisParsed.nativeGoal,
     };
   }
   const parsedOutput = parseStoredOutputContent(output);
-  return parsedOutput.parsed ?? parsedOutput.rawFallback;
+  const result = projectStoredOutputResult(parsedOutput);
+  return result
+    ? withStableResultEventIds(taskId, 'redis', executionStartTimestamp ?? taskId, result)
+    : null;
+}
+
+/**
+ * Provider-aware local projection shared by task details and goal summaries.
+ *
+ * Null means no output was found, or, unless `rethrowReadErrors` is set, that
+ * the persisted fallback could not be read. A caller that must tell an empty
+ * stream from an unreadable one sets it and treats a rejection as unknown.
+ */
+export async function projectTaskLiveDetails(
+  redisClient: RedisClientType,
+  db: Knex,
+  taskId: string,
+  { sessionId, rethrowReadErrors = false, ...options }: AgentStreamParseOptions & { sessionId?: string | null; rethrowReadErrors?: boolean } = {},
+): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
+  const active = await parseActiveExecutionOutput(redisClient, db, taskId, options);
+  if (active) return active;
+  try {
+    const details = sessionId ? await parseExecutionDetailsFromDb(db, taskId, sessionId) : null;
+    if (details) return details;
+    return await parsePersistedGoalOutput(db, taskId);
+  } catch (error) {
+    if (rethrowReadErrors) throw error;
+    return null;
+  }
+}
+async function parsePersistedGoalOutput(db: Knex, taskId: string): Promise<ConversationResult | null> {
+  const history = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'desc').limit(20).select('metadata');
+  const records = history.reverse().flatMap(entry => {
+    try {
+      const metadata = typeof entry.metadata === 'string' ? JSON.parse(entry.metadata) : entry.metadata;
+      return Array.isArray(metadata?.goalOutputRecords)
+        ? metadata.goalOutputRecords.filter((value: unknown): value is string => typeof value === 'string') : [];
+    } catch { return []; }
+  });
+  if (records.length === 0) return null;
+  const stored = parseStoredOutputContent(records.join('\n'));
+  return projectStoredOutputResult(stored);
+}
+function projectStoredOutputResult(stored: ParsedStoredOutput): ConversationResult | null {
+  if (stored.parsed) return stored.parsed;
+  return stored.rawFallback ? {
+    ...stored.rawFallback,
+    events: stored.rawFallback.events.map(event => ({ ...event, rawFallback: true })),
+  } : null;
 }
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
@@ -262,6 +353,19 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   return { parsed: null, rawFallback, format };
 }
 function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat, rawFallback: ConversationResult | null): ParsedStoredOutput {
+  if (format === 'codex' && hasCodexAppServerNotification(output)) {
+    const appServerOutput = parseRedisOutput(output.split('\n').filter(line => line.trim()));
+    return {
+      parsed: {
+        events: appServerOutput.events as unknown as Array<Record<string, unknown>>,
+        todos: appServerOutput.todos,
+        currentTask: appServerOutput.currentTask,
+        tokenUsage: appServerOutput.tokenUsage,
+      },
+      rawFallback,
+      format,
+    };
+  }
   const parsed = parseStoredOutputForFormat(output, format);
   return { parsed: isConversationResultEmpty(parsed) ? null : parsed, rawFallback, format };
 }

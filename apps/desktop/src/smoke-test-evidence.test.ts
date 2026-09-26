@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
+import {
+  createPackagedSmokeEvidenceSink,
+  NATIVE_SMOKE_EVIDENCE_FILES,
+  PACKAGED_SMOKE_EVIDENCE_EVENTS,
+  PACKAGED_SMOKE_EVIDENCE_FILE,
+} from './smoke-test-evidence';
+
+const withSmokeDirectory = (run: (directory: string) => void): void => {
+  const directory = mkdtempSync(join(tmpdir(), 'propr-desktop-smoke-evidence-'));
+  try {
+    run(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+describe('packaged smoke evidence', () => {
+  it('does not create evidence for a non-smoke run', () => {
+    withSmokeDirectory(directory => {
+      assert.equal(createPackagedSmokeEvidenceSink(null), null);
+      assert.deepEqual(readdirSync(directory), []);
+    });
+  });
+
+  it('writes only fixed allowlisted event-only records and suppresses duplicates', () => {
+    withSmokeDirectory(directory => {
+      const sink = createPackagedSmokeEvidenceSink(directory);
+      assert.ok(sink);
+      sink.write('desktop.smoke.authorized');
+      sink.write('desktop.smoke.authorized');
+      sink.write('https://credentials.example/token?secret=raw');
+      sink.write('desktop.renderer.ready');
+      sink.close();
+
+      const evidencePath = join(directory, PACKAGED_SMOKE_EVIDENCE_FILE);
+      const stats = lstatSync(evidencePath);
+      assert.ok(stats.isFile());
+      assert.equal(stats.isSymbolicLink(), false);
+      const contents = readFileSync(evidencePath, 'utf8');
+      assert.deepEqual(contents.trimEnd().split('\n').map(line => JSON.parse(line)), [
+        { event: 'desktop.smoke.authorized' },
+        { event: 'desktop.renderer.ready' },
+      ]);
+      assert.doesNotMatch(contents, /timestamp|path|url|error|exception|credential|secret|raw/i);
+    });
+  });
+
+  it('flushes the bounded lifecycle in emission order', () => {
+    withSmokeDirectory(directory => {
+      const lifecycle = [
+        'desktop.smoke.authorized',
+        'desktop.app.ready',
+        'desktop.renderer.mvp_flows.ready',
+        'desktop.renderer.layout.ready',
+        'desktop.native.reduced_window.ready',
+        'desktop.renderer.ready',
+        'desktop.app.shutdown',
+      ];
+      const sink = createPackagedSmokeEvidenceSink(directory);
+      assert.ok(sink);
+      for (const event of lifecycle) sink.write(event);
+      for (const event of PACKAGED_SMOKE_EVIDENCE_EVENTS) sink.write(event);
+      sink.close();
+
+      const contents = readFileSync(join(directory, PACKAGED_SMOKE_EVIDENCE_FILE), 'utf8');
+      const records = contents.trimEnd().split('\n').map(line => JSON.parse(line));
+      assert.deepEqual(records.slice(0, lifecycle.length).map(record => record.event), lifecycle);
+      assert.equal(records.length, PACKAGED_SMOKE_EVIDENCE_EVENTS.length);
+      assert.ok(Buffer.byteLength(contents, 'utf8') < 1024);
+    });
+  });
+
+  it('uses separate fixed event-only files for native first launch and relaunch', () => {
+    withSmokeDirectory(directory => {
+      const first = createPackagedSmokeEvidenceSink(directory, 'first');
+      const relaunch = createPackagedSmokeEvidenceSink(directory, 'relaunch');
+      assert.ok(first && relaunch);
+      first.write('desktop.deeplink.consumer_ready');
+      first.write('desktop.native.profile_fresh');
+      first.write('desktop.native.cold_confirmation_not_visible');
+      first.write('desktop.renderer.gone');
+      first.write('desktop.native.failure:/private/profile?credential=raw');
+      relaunch.write('desktop.native.profile_preserved');
+      first.close();
+      relaunch.close();
+      assert.deepEqual(readdirSync(directory).sort(), Object.values(NATIVE_SMOKE_EVIDENCE_FILES).sort());
+      const firstRecords = readFileSync(
+        join(directory, NATIVE_SMOKE_EVIDENCE_FILES.first),
+        'utf8',
+      ).trimEnd().split('\n').map(line => JSON.parse(line));
+      assert.deepEqual(firstRecords, [
+        { event: 'desktop.deeplink.consumer_ready' },
+        { event: 'desktop.native.profile_fresh' },
+        { event: 'desktop.native.cold_confirmation_not_visible' },
+        { event: 'desktop.renderer.gone' },
+      ]);
+    });
+  });
+});

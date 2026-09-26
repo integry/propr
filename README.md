@@ -21,7 +21,7 @@
 
 ---
 
-ProPR is a **self-hosted platform** that runs AI coding agents through the GitHub pull-request workflow. It monitors issues and PRs, runs your choice of agents in isolated containers on your own server, and drives the complete path from a labeled issue to a reviewed pull request — with a Web UI for configuration and monitoring and a CLI that doubles as the local control plane. You bring your existing AI subscriptions or API keys; ProPR never marks up tokens.
+ProPR is a **self-hosted platform** that runs AI coding agents like Claude Code and Codex through the GitHub pull-request workflow. It monitors issues and PRs, runs your choice of agents in isolated Docker containers and Git worktrees on your own server, and drives the complete path from an issue to a reviewed pull request — with a Web UI available for configuration and monitoring and a CLI that doubles as the local control plane. You bring your existing AI subscriptions or API keys; ProPR never marks up tokens.
 
 <p align="center">
   <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
@@ -44,7 +44,7 @@ ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr
 ProPR is a set of stages you can adopt independently — use one or all:
 
 - **Plan** — turn an issue or idea into a reviewable implementation plan (Planner Studio)
-- **Implement** — label an issue and let an agent open a PR for it
+- **Implement** — add label to an issue and let an agent open a PR for it
 - **Review & fix** — drive existing PRs with slash commands (`/review`, `/fix`, `/ultrafix`, model routing)
 - **Operate** — monitor tasks, costs, logs, and agent capacity from the Web UI
 
@@ -56,11 +56,14 @@ ProPR is a set of stages you can adopt independently — use one or all:
 - **CLI control plane**: scaffold, verify, start, and stop the local Docker stack — and drive plans, issues, tasks, and repos against the backend
 - **GitHub PR automation**: slash commands, automatic state labels, and PR follow-ups
 - **Deterministic git workflow**: isolated worktrees, model-specific branches, and a strict setup → implement → finalize pipeline
-- **Production-ready**: Docker-isolated agent execution, Redis-backed job state with correlation IDs, retries with backoff, and Agent Tank capacity/rate-limit tracking
+- **MCP operator surface**: connect a chat client over authenticated MCP and ask what is running right now, drill into a goal, task or PR, send a correction, reroute a model, or stop an ultrafix loop — with every call recorded in an admin-readable access log ([docs/mcp.md](docs/mcp.md))
+- **Production-ready**: Docker-isolated agent execution, Redis-backed job state, retries with backoff, and Agent Tank subscription capacity/rate-limit tracking
 
 ## Quick start (recommended: CLI)
 
-You need a Docker-capable Linux host, **Node.js 22+**, and a provider account for at least one coding agent. Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
+You need a Linux `amd64` host with a maintained Docker Engine release, direct access to its Docker socket, **Node.js 22 or 24**, GitHub access, and a provider account for at least one coding agent. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation; 8 GB RAM or more is recommended for normal or concurrent use. The full Docker, platform, capacity, and network contract is in [System Requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
+
+Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
 
 ```bash
 npm install -g propr-cli
@@ -69,12 +72,27 @@ propr setup   # guided one-pass: verify host, authorize agents, connect GitHub, 
 ```
 
 `propr setup` is re-runnable and wraps the individual steps (`propr init stack`, `propr check`, `propr start`), which remain available for scripting.
+During interactive setup, ProPR can also install its bundled operator Agent Skill into detected tools after showing the exact destinations. Manage it separately with `propr skill install|status|remove`; non-interactive setup does not write agent homes unless `--install-skill <targets>` is explicit.
+
+### Desktop release candidate
+
+ProPR Desktop packages the same Web UI for `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`. On Linux,
+first launch can guide a new, isolated local stack through Docker checks, installation, authentication, startup, and a
+normal saved-profile connection. On macOS the app makes no local-stack changes; connect it to an existing HTTPS ProPR
+instance or a loopback instance instead. Windows packaging is deferred and is not part of the first public release.
+
+Desktop credentials are held by the operating-system credential facility, never by renderer storage. Manual endpoints,
+ProPR Connect discovery candidates, and `propr://connect` links require confirmation; a changed tunnel identity requires
+a fresh browser pairing. See the [desktop install, connection, security, and troubleshooting guide](apps/desktop/README.md)
+for unsigned internal-RC installation and the protected macOS release requirements.
+
+Delegating setup to an AI coding agent? Use the copyable [safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) so GitHub authorization, App scope, Connect/tunnel choices, provider logins, and existing stack data stay under human control.
 
 Then open the Web UI at **http://localhost:5173** and add a repository and an agent (`propr repo add`, `propr agent add`, or via the UI).
 
 See the [Local Setup tutorial](https://docs.propr.dev/docs/tutorials/setup-local) for the full walkthrough, [Server Setup](https://docs.propr.dev/docs/tutorials/setup-server) for shared/production hosts, and [Secure VPS Deployment](https://docs.propr.dev/docs/tutorials/setup-vps) for a hardened install.
 
-> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
+> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. Docker Compose is only required for source development. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
 
 ## Supported agents
 
@@ -92,10 +110,11 @@ You supply your own provider credentials. The full model catalog, per-agent cred
 
 Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
 
-- `llm-claude-opus5` — Claude Opus 5
-- `llm-codex-gpt54` — Codex GPT-5.4
-- `llm-opencode-deepseek-v4-flash-free` — OpenCode DeepSeek V4 Flash Free
-- `llm-antigravity-pro-high` — Antigravity Gemini 3.1 Pro High
+- `llm-claude-opus55` — Claude Opus 5.5 (the default Claude model)
+- `llm-claude-fable51` — Claude Fable 5.1
+- `llm-codex-astra` — Codex GPT-6 Astra
+- `llm-opencode-big-pickle` — OpenCode Big Pickle
+- `llm-antigravity-flash38-high` — Antigravity Gemini 3.8 Flash High
 - `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
 
 Multiple model labels on one issue create one independent job (and branch) per model. Add a `base-<branch>` label to target a non-default branch.
@@ -123,6 +142,7 @@ State labels are derived from the trigger label, so an issue labeled `AI` moves 
 | Secure VPS deployment | https://docs.propr.dev/docs/tutorials/setup-vps |
 | Daily usage | https://docs.propr.dev/docs/tutorials/usage |
 | Planner Studio | https://docs.propr.dev/docs/tutorials/planner-studio |
+| Desktop application | [apps/desktop/README.md](apps/desktop/README.md) |
 | CLI reference | https://docs.propr.dev/docs/features/propr-cli |
 | Agents & models | https://docs.propr.dev/docs/features/agents-and-models |
 | Web UI guide | https://docs.propr.dev/docs/features/web-ui |
@@ -133,6 +153,7 @@ State labels are derived from the trigger label, so an issue labeled `AI` moves 
 | GitHub authentication | https://docs.propr.dev/docs/operations/github-auth |
 | Deployment | https://docs.propr.dev/docs/operations/deployment |
 | Architecture | https://docs.propr.dev/docs/architecture/overview |
+| Authenticated MCP | [docs/mcp.md](docs/mcp.md) |
 
 The docs site also ships inside the stack — run `propr docs` to open the bundled copy.
 
@@ -144,7 +165,7 @@ Start from [`.env.example`](.env.example) and see [GitHub authentication](https:
 
 ## Prebuilt images
 
-ProPR ships as a set of prebuilt images orchestrated by the `propr/launcher` umbrella image (mirrored to `ghcr.io/proprdev/*`):
+ProPR ships its prebuilt images on Docker Hub, orchestrated by the `propr/launcher` umbrella image:
 
 | Image | Contents |
 |---|---|
@@ -194,43 +215,6 @@ propr/
 ├── scripts/        # Agent entrypoints, build/compose/release helpers
 └── docker-compose*.yml
 ```
-
-### Releasing
-
-Docker image releases run via the **Docker Images** GitHub Actions workflow.
-Bump the version, merge the release commit, then tag that merged commit (the
-workflow verifies the tag matches `package.json`):
-
-```bash
-git tag vX.Y.Z   # must match the version in package.json
-git push origin vX.Y.Z
-```
-
-The `propr-cli` npm package is published separately from the same merged commit:
-
-```bash
-npm run cli:pack                         # build and npm-pack dry-run
-npm view propr-cli@X.Y.Z version         # should 404 before publishing
-PROPR_NPM_OTP=123456 npm run cli:publish # omit PROPR_NPM_OTP if npm does not ask
-npm view propr-cli@X.Y.Z version         # should print X.Y.Z after publishing
-```
-
-`npm run cli:publish` builds and publishes the standalone, unscoped
-`propr-cli` package. It also regenerates the staged launcher manifest from the
-current commit, so the CLI release is not dependent on a dirty local manifest
-from an image build.
-
-Hosted UI tunnel releases must ship both artifacts from the same merged commit:
-
-1. Publish the Docker images so the launcher manifest includes the `cloudflared`
-   sidecar and tunnel-aware API/UI environment handling. The Docker image
-   license label is derived from `package.json`.
-2. Publish `propr-cli` so Connect's generated
-   `propr tunnel setup --token ... --url ... --start` command is available to
-   users.
-3. Smoke-test with a fresh stack: install `propr-cli@X.Y.Z`, run the Connect
-   setup command, verify the stack recreates with `API_PUBLIC_URL` /
-   `FRONTEND_URL` applied, then run `propr tunnel verify`.
 
 ## License
 

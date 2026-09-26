@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 
 import { planAgentLogin, validateAgentFilter, validateAgents } from "../packages/cli/src/commands/agentValidation.js";
@@ -62,8 +62,19 @@ function fakeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
 function fakeOrchestrator(): OrchestratorModule {
   return {
     docker: () => ({ status: 0, stdout: "image-id\n", stderr: "" }),
+    dockerAsync: async () => ({ status: 0, stdout: "image-id\n", stderr: "" }),
     validateDockerBindPath: (name, value) => (!value || value.startsWith("/") ? null : `${name} must be absolute`),
   } as unknown as OrchestratorModule;
+}
+
+async function waitForLog(logFile: string, predicate: (contents: string) => boolean): Promise<string> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const contents = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+    if (predicate(contents)) return contents;
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  throw new Error(`timed out waiting for validation log:\n${existsSync(logFile) ? readFileSync(logFile, "utf8") : "(empty)"}`);
 }
 
 test("validateAgents skips image validation when the stack credential mount is not configured", async () => {
@@ -128,6 +139,124 @@ test("validateAgents starts validation containers as root so entrypoints can dro
     assert.match(logged, /run .*--user 0:0/);
   } finally {
     restore();
+  }
+});
+
+test("Antigravity image validation leaves the prompt on stdin", async () => {
+  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "antigravity");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker(logFile);
+  try {
+    await validateAgents(fakeOrchestrator(), fakeConfig({ hostAntigravityDir: hostDir }), { agents: ["antigravity"] });
+    const logged = readFileSync(logFile, "utf8");
+    assert.match(logged, /exec agy --dangerously-skip-permissions/);
+    assert.doesNotMatch(logged, /--print -/);
+  } finally {
+    restore();
+  }
+});
+
+test("validateAgents drains staggered version, host, and image children before cleanup and cancellation", async () => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "propr-cli-agent-drain-"));
+  const eventLog = join(fixtureDir, "events.log");
+  const executable = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const isDocker = path.basename(process.argv[1]) === "docker";
+const kind = isDocker
+  ? (args.includes("--network=none") ? "image-version" : "image-check")
+  : (args[0] === "--version" ? "host-version" : "host-check");
+const delay = { "host-version": 5, "host-check": 20, "image-check": 40, "image-version": 90 }[kind];
+const log = process.env.PROPR_VALIDATION_EVENT_LOG;
+const record = (event, ...extra) => fs.appendFileSync(log,
+  [event, kind, process.pid, process.cwd(), ...extra].join("|") + "\\n");
+// Each child reports whether the validation temporary root (the host check's
+// parent directory) still exists at the moment it closes.
+const temporaryRootPresent = () => {
+  const hostCheck = fs.readFileSync(log, "utf8").split("\\n").find(line => line.startsWith("start|host-check|"));
+  return hostCheck ? fs.existsSync(path.dirname(hostCheck.split("|")[3])) : "unknown";
+};
+process.on("SIGTERM", () => setTimeout(() => { record("exit", "root=" + temporaryRootPresent()); process.exit(0); }, delay));
+record("start");
+setInterval(() => undefined, 1000);
+`;
+  const dockerPath = join(fixtureDir, "docker");
+  const claudePath = join(fixtureDir, "claude");
+  writeFileSync(dockerPath, executable, { mode: 0o700 });
+  writeFileSync(claudePath, executable, { mode: 0o700 });
+  chmodSync(dockerPath, 0o700);
+  chmodSync(claudePath, 0o700);
+  const hostDir = join(fixtureDir, "claude-creds");
+  mkdirSync(hostDir);
+  const previousPath = process.env.PATH;
+  const previousEventLog = process.env.PROPR_VALIDATION_EVENT_LOG;
+  process.env.PATH = `${fixtureDir}${delimiter}${previousPath ?? ""}`;
+  process.env.PROPR_VALIDATION_EVENT_LOG = eventLog;
+  const controller = new AbortController();
+  const cancellation = Object.assign(new Error("staggered cancellation"), { name: "AbortError" });
+  let validation: Promise<unknown> | undefined;
+  let logAtSettlement: string | undefined;
+  let runningAtSettlement: string[] | undefined;
+  try {
+    validation = validateAgents(fakeOrchestrator(), fakeConfig({ hostClaudeDir: hostDir }), {
+      agents: ["claude"],
+      signal: controller.signal,
+    });
+    // Snapshot the children at settlement instead of polling for an
+    // intermediate state, so a stalled event loop on a loaded runner cannot
+    // make the ordering checks below miss or misread it. A child counts as
+    // closed once it is gone, whether it exited on SIGTERM or was escalated
+    // to SIGKILL after the grace period.
+    const snapshot = () => {
+      logAtSettlement = existsSync(eventLog) ? readFileSync(eventLog, "utf8") : "";
+      runningAtSettlement = logAtSettlement.split("\n").filter(line => line.startsWith("start|")).filter(line => {
+        try {
+          process.kill(Number(line.split("|")[2]), 0);
+          return true;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code !== "ESRCH";
+        }
+      });
+    };
+    void validation.then(snapshot, snapshot);
+    const started = await waitForLog(eventLog, contents =>
+      ["host-version", "host-check", "image-version", "image-check"]
+        .every(kind => contents.includes(`start|${kind}|`))
+    );
+    const hostCheck = started.split("\n").find(line => line.startsWith("start|host-check|"));
+    assert.ok(hostCheck);
+    const temporaryRoot = dirname(hostCheck.split("|")[3]);
+
+    controller.abort(cancellation);
+    await assert.rejects(validation, error => error === cancellation);
+    assert.ok(logAtSettlement !== undefined && runningAtSettlement !== undefined);
+    assert.equal(logAtSettlement.split("\n").filter(line => line.startsWith("start|")).length, 4);
+    assert.deepEqual(runningAtSettlement, [], `cancellation settled before every child closed:\n${logAtSettlement}`);
+    const exits = logAtSettlement.split("\n").filter(line => line.startsWith("exit|"));
+    assert.ok(exits.length > 0, `no child drained on SIGTERM:\n${logAtSettlement}`);
+    for (const exit of exits) {
+      assert.ok(exit.endsWith("|root=true"), `temporary validation resources were removed while a child was still running:\n${logAtSettlement}`);
+    }
+    const completed = readFileSync(eventLog, "utf8");
+    assert.equal(existsSync(temporaryRoot), false);
+    for (const line of completed.split("\n").filter(line => line.startsWith("start|"))) {
+      const pid = Number(line.split("|")[2]);
+      assert.throws(() => process.kill(pid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");
+    }
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousEventLog === undefined) delete process.env.PROPR_VALIDATION_EVENT_LOG;
+    else process.env.PROPR_VALIDATION_EVENT_LOG = previousEventLog;
+    controller.abort(cancellation);
+    await validation?.catch(() => undefined);
+    if (existsSync(eventLog)) {
+      for (const line of readFileSync(eventLog, "utf8").split("\n").filter(line => line.startsWith("start|"))) {
+        try { process.kill(Number(line.split("|")[2]), "SIGKILL"); } catch { /* already reaped */ }
+      }
+    }
+    rmSync(fixtureDir, { recursive: true, force: true });
   }
 });
 

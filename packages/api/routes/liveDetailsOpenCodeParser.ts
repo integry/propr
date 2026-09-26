@@ -1,4 +1,5 @@
 import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
+import { isDeepStrictEqual } from 'node:util';
 import type { ConversationResult, TokenUsage } from './liveDetailsTypes.js';
 
 function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
@@ -18,26 +19,34 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
   let hasAssistantMessageEvents = false;
   let pendingAssistantMessage = '';
   let pendingAssistantTimestamp: string | null = null;
+  let pendingAssistantInternalReasoning = false;
   const emittedToolUseIds = new Set<string>();
   const emittedToolResultIds = new Set<string>();
   const flushPendingAssistantMessage = (fallbackTimestamp: string): void => {
     if (!pendingAssistantMessage) return;
     hasAssistantMessageEvents = true;
-    events.push({ type: 'thought', content: pendingAssistantMessage, timestamp: pendingAssistantTimestamp ?? fallbackTimestamp });
+    events.push({
+      type: 'thought',
+      content: pendingAssistantMessage,
+      ...(pendingAssistantInternalReasoning ? { internalReasoning: true } : {}),
+      timestamp: pendingAssistantTimestamp ?? fallbackTimestamp,
+    });
     pendingAssistantMessage = '';
     pendingAssistantTimestamp = null;
+    pendingAssistantInternalReasoning = false;
   };
   for (const event of parsed.conversationLog) {
     const eventTimestamp = getOpenCodeEventTimestamp(event, timestamp);
-    const assistantMessage = extractOpenCodeAssistantMessage(event);
-    if (assistantMessage) {
+    for (const { content: assistantMessage, internalReasoning } of extractOpenCodeAssistantSegments(event)) {
       if (isOpenCodeStreamingTextEvent(event)) {
+        if (pendingAssistantInternalReasoning !== internalReasoning) flushPendingAssistantMessage(eventTimestamp);
         pendingAssistantMessage += assistantMessage;
         pendingAssistantTimestamp ??= eventTimestamp;
+        pendingAssistantInternalReasoning = internalReasoning;
       } else {
         flushPendingAssistantMessage(eventTimestamp);
         hasAssistantMessageEvents = true;
-        events.push(buildOpenCodeAssistantTextEvent(event, assistantMessage, eventTimestamp));
+        events.push(buildOpenCodeAssistantTextEvent(event, assistantMessage, eventTimestamp, internalReasoning));
       }
     }
     if (event.type?.toLowerCase() === 'error' || event.error) {
@@ -51,7 +60,8 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
     }
   }
   flushPendingAssistantMessage(timestamp);
-  if (!hasAssistantMessageEvents && parsed.summary) events.push({ type: 'thought', content: parsed.summary, timestamp });
+  // Without recognized assistant events, the summary can contain unparsed stdout.
+  if (!hasAssistantMessageEvents && parsed.summary) events.push({ type: 'thought', content: parsed.summary, rawFallback: true, timestamp });
   if (parsed.error && !events.some(event => event.type === 'tool_result' && event.result === parsed.error)) {
     events.push({ type: 'tool_result', result: parsed.error, isError: true, timestamp });
   }
@@ -59,11 +69,68 @@ export function parseOpenCodeOutputToConversationResult(output: string): Convers
   return events.length || tokenUsage ? { events, todos: [], currentTask: null, tokenUsage } : null;
 }
 
-function buildOpenCodeAssistantTextEvent(event: OpenCodeEvent, content: string, timestamp: string): Record<string, unknown> {
+function buildOpenCodeAssistantTextEvent(event: OpenCodeEvent, content: string, timestamp: string, internalReasoning: boolean): Record<string, unknown> {
   const type = event.message?.role === 'assistant' && event.type?.toLowerCase() === 'message'
     ? 'message'
     : 'thought';
-  return { type, content, timestamp };
+  return { type, content, ...(internalReasoning ? { internalReasoning: true } : {}), timestamp };
+}
+
+interface OpenCodeAssistantSegment {
+  content: string;
+  internalReasoning: boolean;
+}
+
+// Classify the text actually selected by the parser, rather than marking an
+// entire envelope as private when just one of its parts contains reasoning.
+export function extractOpenCodeAssistantSegments(
+  event: OpenCodeEvent,
+  extractText: (event: OpenCodeEvent) => string | null = extractOpenCodeAssistantMessage,
+): OpenCodeAssistantSegment[] {
+  const messageParts = event.message?.role === 'assistant' && event.message.parts?.length
+    ? event.message.parts : null;
+  const parts = messageParts ?? getOpenCodeEnvelopeTextParts(event);
+  const textParts = parts.filter(part => buildOpenCodeTextCandidate(part))
+    .map(part => !part.type && event.type?.toLowerCase() === 'reasoning' ? { ...part, type: 'reasoning' } : part);
+  if (!textParts.some(part => part.type?.toLowerCase() === 'reasoning')) {
+    const content = extractText(messageParts ? { ...event, part: undefined, parts: undefined } : event);
+    return content ? [{ content, internalReasoning: !textParts.length && event.type?.toLowerCase() === 'reasoning' }] : [];
+  }
+
+  const segments = groupOpenCodeTextParts(textParts).flatMap(group => {
+    const content = extractText({
+      ...event,
+      part: undefined,
+      parts: messageParts ? undefined : group.parts,
+      message: messageParts ? { ...event.message, parts: group.parts } : event.message && { role: event.message.role },
+      response: undefined,
+      text: undefined,
+      delta: isOpenCodeStreamingTextEvent(event) ? '' : undefined,
+      content: undefined,
+    });
+    return content ? [{ content, internalReasoning: group.internalReasoning }] : [];
+  });
+  // Message/response text is public even beside reasoning parts.
+  if (event.response || (!messageParts && event.message?.role === 'assistant')) {
+    const content = extractText({
+      ...event, part: undefined, parts: undefined,
+      message: messageParts ? { role: event.message?.role } : event.message,
+      text: undefined, delta: undefined, content: undefined,
+    });
+    if (content) segments.push({ content, internalReasoning: false });
+  }
+  return segments;
+}
+
+function groupOpenCodeTextParts(textParts: OpenCodeTextPart[]) {
+  const groups: Array<{ parts: OpenCodeTextPart[]; internalReasoning: boolean }> = [];
+  for (const part of textParts) {
+    const internalReasoning = part.type?.toLowerCase() === 'reasoning';
+    const previous = groups.at(-1);
+    if (previous?.internalReasoning === internalReasoning) previous.parts.push(part);
+    else groups.push({ parts: [part], internalReasoning });
+  }
+  return groups;
 }
 
 function getOpenCodeEventTimestamp(event: OpenCodeEvent, fallback: string): string {
@@ -96,7 +163,10 @@ function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string |
   }
 
   const topLevelPartsText = includeTopLevel
-    ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
+    ? joinOpenCodePartsText(
+        getOpenCodeEnvelopeTextParts(event),
+        !isOpenCodeStreamingTextEvent(event)
+      )
     : '';
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
   const messageText = isConfirmedAssistant
@@ -137,13 +207,76 @@ function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
   });
 }
 
-function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
-  const values = parts.flatMap(part => {
-    const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
-    return [part.text, part.delta, part.content];
-  });
-  return joinOpenCodeTextValues(values, trim);
+interface OpenCodeTextPart {
+  id?: string;
+  type?: string;
+  text?: string;
+  delta?: string;
+  content?: unknown;
+}
+
+interface OpenCodeTextCandidate {
+  text: string;
+  finalized: boolean;
+}
+
+function getOpenCodeEnvelopeTextParts(event: OpenCodeEvent): OpenCodeTextPart[] {
+  const parts = event.parts ?? [];
+  if (!event.part) return parts;
+
+  // JSON parsing breaks object identity when an envelope exposes the same
+  // no-ID payload through both `part` and `parts`. Treat only that cross-field
+  // structural overlap as a duplicate; equal entries within `parts` remain.
+  const noIdEnvelopeOverlap = !event.part.id
+    && parts.some(part => !part.id && isDeepStrictEqual(part, event.part));
+  return noIdEnvelopeOverlap ? parts : [event.part, ...parts];
+}
+
+function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandidate | null {
+  const partType = part.type?.toLowerCase();
+  if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return null;
+  const text = joinOpenCodeTextValues([part.text, part.delta, part.content], false);
+  if (!text) return null;
+  const hasFinalText = typeof part.text === 'string' || typeof part.content === 'string';
+  const isDelta = partType === 'delta' || partType === 'text_delta';
+  return {
+    text,
+    finalized: hasFinalText && !isDelta,
+  };
+}
+
+function joinOpenCodePartsText(parts: OpenCodeTextPart[], trim = true): string {
+  const seenReferences = new Set<object>();
+  const candidateIndexById = new Map<string, number>();
+  const candidates: OpenCodeTextCandidate[] = [];
+  for (const part of parts) {
+    if (seenReferences.has(part)) continue;
+    seenReferences.add(part);
+    // A single part can expose the same payload through text/content/delta.
+    // Same-ID envelope representations select finalized payloads first and
+    // otherwise use the latest envelope order, while
+    // identical text from distinct part IDs remains meaningful and is kept.
+    const candidate = buildOpenCodeTextCandidate(part);
+    if (!candidate) continue;
+    const existingIndex = part.id ? candidateIndexById.get(part.id) : undefined;
+    if (existingIndex !== undefined) {
+      const existing = candidates[existingIndex];
+      if (candidate.finalized || !existing.finalized) {
+        candidates[existingIndex] = candidate;
+      }
+      continue;
+    }
+    if (part.id) candidateIndexById.set(part.id, candidates.length);
+    candidates.push(candidate);
+  }
+  const textParts = candidates.map(candidate => candidate.text);
+  if (!trim) return textParts.join('');
+
+  return textParts.reduce((combined, value) => {
+    if (!combined) return value;
+    const separator = /\s$/.test(combined) || /^\s/.test(value) ? '' : '\n';
+    return `${combined}${separator}${value}`;
+  }, '').trim();
 }
 
 function joinOpenCodeTextValues(values: unknown[], trim = true): string {

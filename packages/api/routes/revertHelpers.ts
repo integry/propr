@@ -352,6 +352,7 @@ export function buildRevertJobData(params: {
   prNumber: number;
   commit: string;
   targetCommentId: number;
+  userId: string;
   requestingUser: string;
   systemTaskSecret: string;
   branch: string;
@@ -360,7 +361,7 @@ export function buildRevertJobData(params: {
   headRepoOwner: string;
   headRepoName: string;
 }): SystemTaskJobData {
-  const { owner, repo, prNumber, commit, targetCommentId, requestingUser, systemTaskSecret, branch, prHeadSha, isFork, headRepoOwner, headRepoName } = params;
+  const { owner, repo, prNumber, commit, targetCommentId, userId, requestingUser, systemTaskSecret, branch, prHeadSha, isFork, headRepoOwner, headRepoName } = params;
   const correlationId = generateCorrelationId();
   const authTimestamp = Date.now();
 
@@ -369,6 +370,7 @@ export function buildRevertJobData(params: {
     owner,
     repoName: repo,
     prNumber,
+    userId,
     requestingUser,
     commitHash: commit,
     targetCommentId,
@@ -388,6 +390,7 @@ export function buildRevertJobData(params: {
     prBranch: branch,
     owner,
     correlationId,
+    userId,
     requestingUser,
     authToken,
     authTimestamp,

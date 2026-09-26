@@ -13,7 +13,7 @@ import {
     getDefaultAgentCliVersionMatrix,
     AGENT_IMAGE_NAME,
     validateAgentType,
-    ensureAgentBundleImage,
+    enqueueAgentImagePreparation,
     cleanupUnusedAgentImages,
     listAgentImages,
     loadAgents,
@@ -29,7 +29,7 @@ function isValidCliVersionType(versionType: unknown): versionType is CliVersionT
 interface AgentVersionRouteDeps {
     getAvailableVersions: typeof getAvailableVersions;
     resolveVersion: typeof resolveVersion;
-    ensureAgentBundleImage: typeof ensureAgentBundleImage;
+    enqueueAgentImagePreparation: typeof enqueueAgentImagePreparation;
     cleanupUnusedAgentImages: typeof cleanupUnusedAgentImages;
     listAgentImages: typeof listAgentImages;
     loadAgents: typeof loadAgents;
@@ -45,7 +45,7 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
     const versionService = {
         getAvailableVersions,
         resolveVersion,
-        ensureAgentBundleImage,
+        enqueueAgentImagePreparation,
         cleanupUnusedAgentImages,
         listAgentImages,
         loadAgents,
@@ -117,23 +117,11 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
             versions[agentType] = resolvedVersion;
             const contentHash = computeContentHash();
 
-            // Build the image
-            const result = await versionService.ensureAgentBundleImage(versions, contentHash);
-
-            if (result.success) {
-                res.json({
-                    success: true,
-                    imageTag: result.imageTag,
-                    cliVersion: resolvedVersion,
-                    contentHash
-                });
-            } else {
-                res.status(500).json({
-                    success: false,
-                    error: result.error || 'Build failed',
-                    imageTag: result.imageTag
-                });
-            }
+            // The API requests preparation from the worker; it never launches
+            // Docker image builds in the API process.
+            const imageTag = generateAgentBundleImageTag(versions, contentHash);
+            await versionService.enqueueAgentImagePreparation(imageTag, { versions, contentHash });
+            res.json({ success: true, imageTag, cliVersion: resolvedVersion, contentHash });
         } catch (error) {
             const err = error as Error;
             console.error('Error in /api/agents/:agentId/build-image POST:', err);

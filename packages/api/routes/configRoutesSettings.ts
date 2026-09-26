@@ -2,6 +2,30 @@ import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
 import type { Knex } from 'knex';
+import {
+  REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
+  isValidLegacyReviewMaxContextTokens,
+  isValidReviewContextBudgetPercent,
+  normalizeLegacyReviewMaxContextTokens,
+  normalizeReviewContextBudgetPercent,
+} from '@propr/shared';
+
+/**
+ * Review context budget fields for the settings response. A missing or legacy
+ * `0` percentage reads as automatic (100%); a retained legacy absolute cap is
+ * returned unchanged so clients can explain it (the lower of the two applies).
+ */
+export function reviewContextBudgetSettingsResponse(settings: Record<string, unknown>): {
+  pr_review_max_context_tokens: number;
+  pr_review_context_budget_percent: number;
+} {
+  return {
+    pr_review_max_context_tokens: normalizeLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens),
+    pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settings.pr_review_context_budget_percent),
+  };
+}
 
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
@@ -14,6 +38,7 @@ interface SaveSettingsRequest {
   settings: Record<string, unknown>;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   configStore?: SettingsStore;
+  database?: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }
 
@@ -24,6 +49,7 @@ interface PersistSettingsRequest {
   otherSettings: Record<string, unknown>;
   normalizedSpecializedSettings: Partial<Record<SpecializedSettingName, unknown>>;
   specializedNames: SpecializedSettingName[];
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }
 
@@ -32,6 +58,7 @@ async function persistSettingsAtomically({
   otherSettings,
   normalizedSpecializedSettings,
   specializedNames,
+  database,
   lock
 }: PersistSettingsRequest): Promise<void> {
   let trx: Knex.Transaction | null = null;
@@ -46,7 +73,7 @@ async function persistSettingsAtomically({
         generalSettingsPatch
       )
       : null;
-    trx = await db.transaction();
+    trx = await database.transaction();
     const transaction = trx;
 
     if (mergedSettings !== null) {
@@ -131,19 +158,49 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
   return prototype === Object.prototype || prototype === null;
 }
 
-export async function saveSettingsWithRollback({
+async function normalizePrReviewContextSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if ('pr_review_context_enabled' in settings && typeof settings.pr_review_context_enabled !== 'boolean') {
+    throw new ConfigRouteError(400, { error: 'pr_review_context_enabled must be a boolean' });
+  }
+
+  let normalized = settings;
+  if ('pr_review_context_model' in settings) {
+    if (typeof settings.pr_review_context_model !== 'string') {
+      throw new ConfigRouteError(400, { error: 'pr_review_context_model must be a string' });
+    }
+    const model = settings.pr_review_context_model.trim();
+    if (model === '' && settings.pr_review_context_model.length > 0) {
+      throw new ConfigRouteError(400, { error: 'pr_review_context_model must not be whitespace-only; use an empty string to clear' });
+    }
+    const validation = await configManager.validatePrReviewModelValue(model);
+    if (!validation.valid) {
+      throw new ConfigRouteError(400, {
+        error: validation.error?.replaceAll('pr_review_model', 'pr_review_context_model'),
+      });
+    }
+    normalized = { ...settings, pr_review_context_model: model };
+  }
+
+  if ('pr_review_max_context_tokens' in settings && !isValidLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens)) {
+    throw new ConfigRouteError(400, {
+      error: `pr_review_max_context_tokens must be 0 (no legacy cap) or an integer between ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN} and ${REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX}`,
+    });
+  }
+  if ('pr_review_context_budget_percent' in settings && !isValidReviewContextBudgetPercent(settings.pr_review_context_budget_percent)) {
+    throw new ConfigRouteError(400, {
+      error: `pr_review_context_budget_percent must be one of ${REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS.join(', ')}`,
+    });
+  }
+  return normalized;
+}
+
+async function saveNormalizedSettingsWithRollback({
   settings,
   publishConfigUpdate,
   configStore = configManager,
+  database = db,
   lock
 }: SaveSettingsRequest): Promise<SaveResponse> {
-  if (!isPlainSettingsObject(settings)) {
-    return { status: 400, body: { error: 'settings object is required' } };
-  }
-  if (Object.keys(settings).length === 0) {
-    return { status: 200, body: { success: true, settings: {}, noop: true } };
-  }
-
   const {
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
@@ -175,6 +232,7 @@ export async function saveSettingsWithRollback({
       otherSettings,
       normalizedSpecializedSettings: extracted.normalized,
       specializedNames: extracted.saves.map(({ name }) => name),
+      database,
       lock
     });
   } catch (error) {
@@ -231,4 +289,21 @@ export async function saveSettingsWithRollback({
       ...(warnings.length > 0 ? { warnings } : {})
     }
   };
+}
+
+export async function saveSettingsWithRollback(request: SaveSettingsRequest): Promise<SaveResponse> {
+  if (!isPlainSettingsObject(request.settings)) {
+    return { status: 400, body: { error: 'settings object is required' } };
+  }
+  if (Object.keys(request.settings).length === 0) {
+    return { status: 200, body: { success: true, settings: {}, noop: true } };
+  }
+
+  try {
+    const settings = await normalizePrReviewContextSettings(request.settings);
+    return await saveNormalizedSettingsWithRollback({ ...request, settings });
+  } catch (error) {
+    if (error instanceof ConfigRouteError) return { status: error.status, body: error.body };
+    throw error;
+  }
 }

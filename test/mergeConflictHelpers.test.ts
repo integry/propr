@@ -1,13 +1,36 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
 
 // Import the helpers directly (no external dependencies needed)
 import {
     buildConflictResolutionPrompt,
     buildMergeConflictCommitMessage,
     buildMergeConflictComment,
+    getAgentFailureDetail,
     mergeConflictJobToCommentJob,
 } from '../src/jobs/mergeConflictHelpers.js';
+
+after(async () => {
+    await closeConnection();
+});
+
+describe('getAgentFailureDetail', () => {
+    test('classifies known failures without returning raw error text', () => {
+        const detail = getAgentFailureDetail({ error: 'request timed out while reading /repo/private.ts' });
+
+        assert.strictEqual(detail, 'Agent execution timed out.');
+        assert.ok(!detail.includes('/repo/private.ts'));
+    });
+
+    test('does not expose explicit errors, raw agent logs, or output', () => {
+        const secret = 'repository source and secret token ghp_not-a-real-token';
+        const detail = getAgentFailureDetail({ error: secret, logs: secret, rawOutput: secret });
+
+        assert.strictEqual(detail, 'Agent execution failed; detailed output is available in restricted logs.');
+        assert.ok(!detail.includes(secret));
+    });
+});
 
 describe('buildConflictResolutionPrompt', () => {
     test('includes all conflicted files in the prompt', () => {
@@ -29,6 +52,8 @@ describe('buildConflictResolutionPrompt', () => {
         assert.ok(prompt.includes('/tmp/worktree/test'));
         assert.ok(prompt.includes('test-owner/test-repo'));
         assert.ok(prompt.includes('DO NOT commit'));
+        assert.ok(prompt.includes('Do not inspect or repair .git permissions'));
+        assert.ok(prompt.includes('do not mention that changes are uncommitted'));
         assert.ok(prompt.includes('conflict markers'));
     });
 
@@ -111,6 +136,7 @@ describe('buildMergeConflictComment', () => {
             model: 'claude-sonnet-4-20250514',
             executionTimeMs: 125000,
             taskUrl: 'https://gitfix.dev/tasks/test-123',
+            resolutionSummary: 'Kept both compatible changes.\nNo commits created.',
         });
 
         assert.ok(comment.includes('Resolved merge conflicts'));
@@ -120,6 +146,8 @@ describe('buildMergeConflictComment', () => {
         assert.ok(comment.includes('claude-sonnet-4-20250514'));
         assert.ok(comment.includes('2m 5s'));
         assert.ok(comment.includes('https://gitfix.dev/tasks/test-123'));
+        assert.ok(comment.includes('Kept both compatible changes.'));
+        assert.doesNotMatch(comment, /No commits created/i);
         assert.ok(comment.includes('System-triggered'));
     });
 
@@ -140,6 +168,7 @@ describe('buildMergeConflictComment', () => {
 describe('mergeConflictJobToCommentJob', () => {
     test('converts merge conflict job data to comment job data', () => {
         const result = mergeConflictJobToCommentJob({
+            userId: '123456',
             pullRequestNumber: 42,
             repoOwner: 'test-owner',
             repoName: 'test-repo',
@@ -151,6 +180,7 @@ describe('mergeConflictJobToCommentJob', () => {
             correlationId: 'corr-1',
         });
 
+        assert.strictEqual(result.userId, '123456');
         assert.strictEqual(result.pullRequestNumber, 42);
         assert.strictEqual(result.repoOwner, 'test-owner');
         assert.strictEqual(result.repoName, 'test-repo');

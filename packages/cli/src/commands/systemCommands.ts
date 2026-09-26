@@ -13,12 +13,17 @@ import {
   QueueStats,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a status value with color-like indicators for terminal display.
  */
 function formatStatusIndicator(status: string): string {
   const normalizedStatus = status.toLowerCase();
+
+  if (normalizedStatus === "not_applicable") {
+    return "[--] not applicable";
+  }
 
   if (
     normalizedStatus === "healthy" ||
@@ -145,6 +150,8 @@ function displaySystemStatus(status: SystemStatus): void {
   const routingHealthy = status.routing
     ? status.routing.connected === true
     : !routingIntakeActive;
+  const claudeHealthy = status.claudeAuth === "connected" ||
+    status.claudeAuth === "not_applicable";
 
   const allHealthy =
     status.api === "healthy" &&
@@ -152,6 +159,7 @@ function displaySystemStatus(status: SystemStatus): void {
     status.daemon === "running" &&
     status.worker === "running" &&
     status.githubAuth === "connected" &&
+    claudeHealthy &&
     routingHealthy;
 
   console.log("");
@@ -176,7 +184,7 @@ function displaySystemStatus(status: SystemStatus): void {
         `  - GitHub auth not configured (mode: ${status.githubAuthMode ?? "unknown"}). Set GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID for app auth, or PROPR_GH_RELAY_URL and PROPR_GH_RELAY_TOKEN for relay auth.`
       );
     }
-    if (status.claudeAuth !== "connected") {
+    if (!claudeHealthy) {
       console.log("  - Claude auth status unknown or no recent activity.");
     }
     if (routingStateMissing) {
@@ -281,21 +289,29 @@ Examples:
 
         displaySystemStatus(status);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
         if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
         ) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view system status.",
+            fallbackMessage: `Error checking system status: ${errorMessage}`,
+          });
         } else if (
-          errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.includes("network")
+          (classification.status === undefined || classification.status === 0) &&
+          (errorMessage.includes("ECONNREFUSED") ||
+            errorMessage.toLowerCase().includes("network"))
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"
           );
         } else {
-          console.error(`Error checking system status: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view system status.",
+            fallbackMessage: `Error checking system status: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -335,21 +351,29 @@ Examples:
 
         displayQueueStats(stats);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
         if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
         ) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view queue statistics.",
+            fallbackMessage: `Error fetching queue statistics: ${errorMessage}`,
+          });
         } else if (
-          errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.includes("network")
+          (classification.status === undefined || classification.status === 0) &&
+          (errorMessage.includes("ECONNREFUSED") ||
+            errorMessage.toLowerCase().includes("network"))
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"
           );
         } else {
-          console.error(`Error fetching queue statistics: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view queue statistics.",
+            fallbackMessage: `Error fetching queue statistics: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }

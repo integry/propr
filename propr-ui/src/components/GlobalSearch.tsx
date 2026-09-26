@@ -56,6 +56,20 @@ interface GlobalSearchProps {
   inputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
+type SearchResultState = 'loading' | 'error' | 'empty' | 'results' | 'idle';
+
+function getSearchResultState(
+  isLoading: boolean,
+  error: string | null,
+  query: string,
+  hasResults: boolean,
+): SearchResultState {
+  if (isLoading && !hasResults) return 'loading';
+  if (!isLoading && error) return 'error';
+  if (!isLoading && query.trim() && !hasResults) return 'empty';
+  return hasResults ? 'results' : 'idle';
+}
+
 const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef }) => {
   const navigate = useNavigate();
   const internalInputRef = useRef<HTMLInputElement>(null);
@@ -68,6 +82,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
     results,
     isLoading,
     isOpen,
+    error,
     hasResults,
     setQuery,
     clearSearch,
@@ -144,6 +159,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
 
   // Should show dropdown
   const showDropdown = isOpen && (hasResults || isLoading || query.trim());
+  const resultState = getSearchResultState(isLoading, error, query, hasResults);
 
   return (
     <div ref={containerRef} className="relative w-full max-w-md">
@@ -157,8 +173,9 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
           onFocus={handleFocus}
+          aria-label="Search"
           placeholder="Search..."
-          className="w-full pl-9 sm:pl-12 pr-8 sm:pr-10 py-1.5 sm:py-2 bg-gray-50 border border-slate-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
+          className="w-full rounded-lg border-0 bg-slate-100 py-1.5 pl-9 pr-14 text-sm text-gray-900 shadow-inner placeholder-gray-400 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 sm:py-2 sm:pl-12 sm:pr-16"
         />
         {/* Clear button or loading indicator */}
         {query && (
@@ -173,24 +190,36 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
             )}
           </button>
         )}
+        {!query && (
+          <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 sm:right-3">
+            ⌘K
+          </kbd>
+        )}
       </div>
 
       {/* Results Dropdown */}
       {showDropdown && (
         <div
           ref={dropdownRef}
-          className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 shadow-xl ring-1 ring-black/5 z-50 max-h-[480px] overflow-y-auto"
+          className="desktop-toolbar-popover absolute left-0 right-0 top-full z-50 mt-1 max-h-[480px] overflow-y-auto border border-slate-200 bg-white shadow-xl ring-1 ring-black/5"
         >
           {/* Loading state */}
-          {isLoading && !hasResults && (
+          {resultState === 'loading' && (
             <div className="px-4 py-8 text-center">
               <Loader2 className="w-6 h-6 text-slate-400 animate-spin mx-auto mb-2" />
               <p className="text-sm text-slate-500">Searching...</p>
             </div>
           )}
 
+          {resultState === 'error' && (
+            <div role="alert" className="px-4 py-8 text-center">
+              <p className="text-sm font-medium text-red-700">Couldn’t search</p>
+              <p className="mt-1 text-xs text-red-600">{error}</p>
+            </div>
+          )}
+
           {/* No results state */}
-          {!isLoading && query.trim() && !hasResults && (
+          {resultState === 'empty' && (
             <div className="px-4 py-8 text-center">
               <Search className="w-6 h-6 text-slate-300 mx-auto mb-2" />
               <p className="text-sm text-slate-500">No results found for "{query}"</p>
@@ -275,7 +304,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                         <span className="text-xs text-slate-500">
                           {getRepoName(plan.repository)}
                         </span>
-                        <span className="text-slate-300">•</span>
+                        <span className="text-slate-300">·</span>
                         <span
                           className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(
                             plan.status
@@ -325,7 +354,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                         <span className="text-xs text-slate-500">
                           {task.repository ? getRepoName(task.repository) : 'Unknown'}
                         </span>
-                        <span className="text-slate-300">•</span>
+                        <span className="text-slate-300">·</span>
                         <span
                           className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(
                             task.status
@@ -352,7 +381,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
             <div className="px-4 py-2 bg-slate-50 border-t border-slate-100">
               <p className="text-[10px] text-slate-400">
                 Press <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Enter</kbd> to search all tasks
-                {' '}• <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Esc</kbd> to close
+                {' '}· <kbd className="px-1 py-0.5 bg-slate-200 rounded text-slate-600">Esc</kbd> to close
               </p>
             </div>
           )}

@@ -33,7 +33,7 @@ export interface RepoTodosPanelProps {
   disabled?: boolean;
 }
 
-const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled = false }) => {
+const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositoryName, disabled = false }) => {
   const navigate = useNavigate();
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(['uncategorized']));
   const [addingToCategory, setAddingToCategory] = useState<string | null | false>(false);
@@ -235,7 +235,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
             <h3 className="text-sm font-semibold text-slate-800">To-Dos</h3>
             <p className="text-xs text-slate-500">
               {activeTodos.length} item{activeTodos.length !== 1 ? 's' : ''}
-              {completedTodos.length > 0 && ` • ${completedTodos.length} completed`}
+              {completedTodos.length > 0 && ` · ${completedTodos.length} completed`}
             </p>
           </div>
           <button
@@ -363,6 +363,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
 
       {selectedTodos.length > 0 && (
         <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white">
+          <button disabled={disabled} onClick={() => navigate('/tasks/new', { state: { initialRepository: repositoryName, initialPrompt: selectedTodos.map(todo => todo.content).join('\n\n'), todoIds: selectedTodos.map(todo => todo.todoId) } })} className="mb-2 w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50">Run task</button>
           <button onClick={handleCreatePlan} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
             <Sparkles size={16} />
             <span className="font-medium">Create Plan from {selectedTodos.length} Item{selectedTodos.length !== 1 ? 's' : ''}</span>

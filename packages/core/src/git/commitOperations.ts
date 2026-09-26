@@ -1,8 +1,10 @@
-import { simpleGit, SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
+import { SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
+import { createHooklessGit } from './hooklessGit.js';
+import { VISUAL_PREVIEW_RUNTIME_DIRECTORIES } from '../services/visualPreviewPaths.js';
 
 interface Author {
     name: string;
@@ -21,11 +23,67 @@ interface CommitMessageObject {
 interface CommitOptions {
     issueNumber?: number;
     issueTitle?: string;
+    /** Create an empty commit when a remote branch must exist before agent edits begin. */
+    allowEmpty?: boolean;
+    /** Exact repository-relative changed files to stage. Omitted means all changed files. */
+    include?: string[];
+    /** Exact repository-relative changed files to leave unstaged. */
+    exclude?: string[];
+}
+
+const GENERATED_PROPR_RUNTIME_PATHS = [
+    '.propr/assets',
+    '.propr/cache',
+    '.propr/.cache',
+    '.propr/node_modules',
+    ...VISUAL_PREVIEW_RUNTIME_DIRECTORIES,
+];
+
+export class InvalidCheckpointScopeError extends Error {}
+
+function validateScopedPath(file: string): string {
+    if (!file || file.trim() !== file || file.includes('\\') || file.includes('\0') || file.includes('\n') || file.includes('\r')
+        || path.posix.isAbsolute(file) || path.posix.normalize(file) !== file
+        || file.split('/').some(part => part === '..' || part === '.git')) {
+        throw new InvalidCheckpointScopeError(`Checkpoint path must be a normalized repository-relative file: ${JSON.stringify(file)}`);
+    }
+    return file;
+}
+
+function isGeneratedRuntimePath(file: string): boolean {
+    return GENERATED_PROPR_RUNTIME_PATHS.some(generated => file === generated || file.startsWith(`${generated}/`));
+}
+
+async function stageCommitFiles(git: SimpleGit, options: CommitOptions): Promise<void> {
+    const scoped = options.include !== undefined || options.exclude !== undefined;
+    if (!scoped) {
+        await git.add('.');
+        for (const generatedPath of GENERATED_PROPR_RUNTIME_PATHS) {
+            try { await git.raw(['reset', 'HEAD', '--', generatedPath]); } catch { /* path was not staged */ }
+        }
+        return;
+    }
+    const include = options.include?.map(validateScopedPath);
+    const exclude = new Set((options.exclude ?? []).map(validateScopedPath));
+    if (include?.some(file => exclude.has(file))) {
+        throw new InvalidCheckpointScopeError('Checkpoint include and exclude paths must not overlap');
+    }
+    const before = await git.status();
+    const changed = new Set(before.files.map(file => file.path));
+    const missing = include?.filter(file => !changed.has(file)) ?? [];
+    if (missing.length > 0) throw new InvalidCheckpointScopeError(`Checkpoint include path is not a changed file: ${missing.join(', ')}`);
+    const selected = (include ?? [...changed])
+        .filter(file => !exclude.has(file) && !isGeneratedRuntimePath(file));
+    // The worker owns the index. Clear it before staging the declared scope so
+    // unrelated parallel work cannot leak into this commit.
+    await git.raw(['reset', 'HEAD', '--', '.']);
+    if (selected.length > 0) await git.raw(['add', '--', ...selected.map(file => `:(literal)${file}`)]);
 }
 
 export interface CommitResult {
     commitHash: string;
     commitMessage: string;
+    filesChanged?: string[];
 }
 
 async function validateWorktree(worktreePath: string, issueNumber?: number): Promise<void> {
@@ -99,8 +157,22 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
     return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`;
 }
 
+function assertNoUnmergedEntries(status: StatusResult): void {
+    if (status.conflicted.length > 0) {
+        throw new Error(`Cannot commit with unresolved index entries: ${status.conflicted.join(', ')}`);
+    }
+}
+
+async function getPendingMergeHead(git: SimpleGit): Promise<string | null> {
+    try {
+        return (await git.raw(['rev-parse', '--verify', 'MERGE_HEAD'])).trim() || null;
+    } catch {
+        return null;
+    }
+}
+
 export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
-    const { issueNumber, issueTitle } = options;
+    const { issueNumber, issueTitle, allowEmpty = false } = options;
     try {
         await validateWorktree(worktreePath, issueNumber);
     } catch (validationError) {
@@ -108,27 +180,30 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         throw validationError;
     }
 
-    const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+    const git: SimpleGit = createHooklessGit(worktreePath);
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {
         await configureGitAuthor(git, author, worktreePath, issueNumber);
 
-        await git.add('.');
-        // Unstage generated ProPR runtime directories. Repo-authored files such
-        // as .propr/setup.sh and .propr/package.json should remain committable.
-        for (const generatedPath of ['.propr/assets', '.propr/cache', '.propr/.cache', '.propr/node_modules']) {
-            try {
-                await git.raw(['reset', 'HEAD', '--', generatedPath]);
-            } catch {
-                // Ignore error if the path doesn't exist or wasn't staged.
-            }
-        }
+        // A merge conflict is only resolved once its index entries have been
+        // explicitly staged. Do not let staging below silently turn an
+        // unresolved index into a commit candidate.
+        assertNoUnmergedEntries(await git.status());
+
+        await stageCommitFiles(git, options);
         const status = await git.status();
+        const stagedFiles = status.files.filter((file: FileStatusResult) => file.index !== ' ' && file.index !== '?');
 
         logGitStatus(status, worktreePath, issueNumber);
+        assertNoUnmergedEntries(status);
 
-        if (status.files.length === 0) {
+        // A resolved merge can legitimately have the same tree as HEAD. Git
+        // still needs a commit in that case to record MERGE_HEAD as the second
+        // parent and preserve the requested base in branch ancestry.
+        const pendingMergeHead = await getPendingMergeHead(git);
+
+        if (stagedFiles.length === 0 && !allowEmpty && !pendingMergeHead) {
             logger.info({ worktreePath }, 'No changes to commit');
             return null;
         }
@@ -136,18 +211,27 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         logger.info({
             worktreePath,
             issueNumber,
-            totalFiles: status.files.length,
-            files: status.files.map((f: FileStatusResult) => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
-        }, 'Files to be committed');
+            totalFiles: stagedFiles.length,
+            files: stagedFiles.map((f: FileStatusResult) => ({ path: f.path, index: f.index, working_dir: f.working_dir })),
+            pendingMergeHead,
+        }, pendingMergeHead && stagedFiles.length === 0 ? 'Finalizing pending merge with no tree changes' : 'Files to be committed');
 
         const finalCommitMessage = resolveCommitMessage(commitMessage, issueNumber, issueTitle);
 
-        const result = await git.commit(finalCommitMessage);
-        const commitHash = result.commit.replace(/^HEAD\s+/, '');
+        const result = allowEmpty && stagedFiles.length === 0
+            ? await git.raw(['commit', '--allow-empty', '-m', finalCommitMessage])
+            : await git.commit(finalCommitMessage);
+        const commitHash = typeof result === 'string'
+            ? (await git.revparse(['HEAD'])).trim()
+            : result.commit.replace(/^HEAD\s+/, '');
 
-        logger.info({ worktreePath, commitHash, filesChanged: status.files.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
+        logger.info({ worktreePath, commitHash, filesChanged: stagedFiles.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
 
-        return { commitHash, commitMessage: finalCommitMessage };
+        return {
+            commitHash,
+            commitMessage: finalCommitMessage,
+            filesChanged: stagedFiles.map((file: FileStatusResult) => file.path)
+        };
 
     } catch (error) {
         handleError(error, `Failed to commit changes in worktree ${worktreePath}`);

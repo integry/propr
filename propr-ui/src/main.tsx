@@ -1,7 +1,8 @@
-import React, { StrictMode } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { registerServiceWorker } from './serviceWorkerRegistration.ts'
 
 const container = document.getElementById('root')
 if (container) {
@@ -15,3 +16,8 @@ if (container) {
   console.error("Root container missing in index.html")
 }
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('load', () => {
+    void registerServiceWorker()
+  }, { once: true })
+}

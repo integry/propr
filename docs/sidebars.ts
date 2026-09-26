@@ -52,6 +52,11 @@ const sidebars: SidebarsConfig = {
       label: 'Web UI Guide',
     },
     {
+      type: 'doc',
+      id: 'features/voice-briefings',
+      label: 'Voice Briefings',
+    },
+    {
       type: 'category',
       label: 'Core Workflow',
       items: [
@@ -67,6 +72,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/pr-followup',
         'features/pr-commands',
+        'features/visual-previews',
       ],
     },
     {
@@ -82,6 +88,7 @@ const sidebars: SidebarsConfig = {
       label: 'Reference',
       items: [
         'features/agents-and-models',
+        'features/synthetic-pools',
         'features/propr-cli',
       ],
     },
@@ -127,6 +134,9 @@ const sidebars: SidebarsConfig = {
         'operations/propr-connect',
         'operations/connect-dashboard',
         'operations/hosted-ui-tunnel',
+        'operations/desktop-application',
+        'operations/desktop-pairing',
+        'operations/pwa-web-push',
         'operations/configuration-reference',
         'operations/metrics',
         'operations/agent-tank',

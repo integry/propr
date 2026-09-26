@@ -1,3 +1,4 @@
+import type { GitHubAttachmentCapacity, GitHubAttachmentPlanOverride } from '@propr/shared';
 import type { AuthenticatedInstanceUser, ReasoningLevel } from '@propr/shared';
 
 export type CurrentUser = AuthenticatedInstanceUser;
@@ -34,6 +35,20 @@ export interface SystemStatus {
   githubEventIntakeStatus: string;
   agents: SystemAgentStatus[];
   warnings?: SystemWarning[];
+  connectAccount?: ConnectAccountStatus;
+}
+
+export interface ConnectAccountStatus {
+  installationId: number;
+  accountLogin: string | null;
+  plan: 'community' | 'plus';
+  hasPlusAccess: boolean;
+  activeSeats: number;
+  allowedSeats: number;
+  seatsRemaining: number;
+  billingCycleResetAt: string;
+  seatLimitBlockedAt?: string | null;
+  sentAt: string;
 }
 
 export interface SystemWarning {
@@ -57,6 +72,9 @@ export interface StatusResponse {
   githubEventIntakeStatus?: string;
   agents?: SystemAgentStatus[];
   warnings?: SystemWarning[];
+  // Optional additive field from ProPR v0.8.15+. Keep unknown at the HTTP
+  // boundary so malformed responses cannot be trusted through a type assertion.
+  connectAccount?: unknown;
 }
 
 export interface TaskAnalysisResponse {
@@ -66,11 +84,22 @@ export interface TaskAnalysisResponse {
 
 export interface QueueStats {
   active: number;
+  activeGoals?: number;
+  activeJobs?: LiveQueueJob[];
   waiting: number;
   completed: number;
   failed: number;
   delayed: number;
   paused: number;
+}
+
+export interface LiveQueueJob {
+  id: string;
+  taskId?: string;
+  name: string;
+  title: string;
+  repository: string;
+  createdAt: string;
 }
 
 export interface GeneratingPlansResponse {
@@ -91,6 +120,22 @@ export interface MonitoredRepo {
   id: string;
   name: string;
   enabled: boolean;
+  /** Whether failed CI triggers an automatic follow-up. Missing legacy values are off. */
+  autoFollowupOnFailedCi?: boolean;
+  /** Whether obsolete PR checks are cancelled while a follow-up implements. Missing legacy values are off. */
+  cancelCiDuringFollowup?: boolean;
+  /** Exactly which validation workflows that option may cancel: file names, paths, display names or IDs. Empty cancels nothing. */
+  cancelCiDuringFollowupWorkflows?: string[];
+  /** Whether Inbox and push notifications are generated for this repository. Missing values are on. */
+  notificationsEnabled?: boolean;
+  /** Generated media to embed in PRs when a change has a visible result. */
+  visualPreview?: {
+    githubAttachmentPlan?: GitHubAttachmentPlanOverride;
+    githubAttachmentCapacity?: GitHubAttachmentCapacity;
+    enabled: boolean;
+    types: Array<'image' | 'video'>;
+    instructions?: string;
+  };
   alias?: string;
   baseBranch?: string;
   starred?: boolean;
@@ -131,7 +176,12 @@ export interface AgentConfig {
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
   modelReasoningLevels?: Record<string, ReasoningLevel>;
+  cliVersionType?: CliVersionType;
+  cliVersion?: string;
+  cliVersionResolved?: string;
 }
+
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface SystemSettings {
   default_agent_alias?: string;
@@ -145,6 +195,12 @@ export interface SystemSettings {
   model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
+  pr_review_context_enabled?: boolean;
+  pr_review_context_model?: string;
+  /** Legacy absolute review input token cap; 0 = none. */
+  pr_review_max_context_tokens?: number;
+  /** Review context budget: 10-100% of each reviewer's safe input capacity. */
+  pr_review_context_budget_percent?: number;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;

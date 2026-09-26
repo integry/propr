@@ -1,15 +1,51 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
+import type { Socket } from '@propr/client';
+import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import {
+  getDesktopConnectionScope,
+  getDesktopSocketConfigurationKey,
+  getProprClient,
+  handleDesktopAccessCode,
+  subscribeDesktopConnectionScope,
+} from '../api/apiClient';
+import { isDesktopRuntime } from '../config/runtimeMode';
+import {
+  reportPackagedAcceptanceRendererLifecycle,
+  reportPackagedAcceptanceSocketConnectInvocation,
+  reportPackagedAcceptanceSocketConstructed,
+  reportPackagedAcceptanceSocketConstructionInvocation,
+} from '../desktop/packagedAcceptanceRendererLifecycle';
 
 interface SocketProviderProps {
   children: React.ReactNode;
   disabled?: boolean;
+  disableReasons?: SocketProviderDisableReasons;
 }
 
-export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false }) => {
+export interface SocketProviderDisableReasons {
+  demoModeLoading: boolean;
+  demoMode: boolean;
+  currentUserLoading: boolean;
+  currentUserAbsent: boolean;
+}
+
+const noDisableReasons: SocketProviderDisableReasons = {
+  demoModeLoading: false,
+  demoMode: false,
+  currentUserLoading: false,
+  currentUserAbsent: false,
+};
+
+const refreshDesktopActiveWork = (): void => {
+  void window.proprDesktop?.app.refreshActiveWork().catch(() => undefined);
+};
+
+export const SocketProvider: React.FC<SocketProviderProps> = ({
+  children,
+  disabled = false,
+  disableReasons = noDisableReasons,
+}) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
@@ -17,74 +53,196 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const socketConfigurationKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope,
+    getDesktopSocketConfigurationKey,
+    getDesktopSocketConfigurationKey,
+  );
+  const { demoModeLoading, demoMode, currentUserLoading, currentUserAbsent } = disableReasons;
 
   useEffect(() => {
+    reportPackagedAcceptanceRendererLifecycle('socket-provider-mounted', {
+      socketProviderMounted: true,
+    });
+  }, []);
+
+  useEffect(() => {
+    const disableReasonEvidence = {
+      disabledByDemoModeLoading: demoModeLoading,
+      disabledByDemoMode: demoMode,
+      disabledByCurrentUserLoading: currentUserLoading,
+      disabledByCurrentUserAbsent: currentUserAbsent,
+    };
     if (disabled) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-disabled', {
+        providerDisabled: true,
+        desktopRuntime: Boolean(isDesktopRuntime()),
+        ...disableReasonEvidence,
+      });
       setSocket(null);
       setIsConnected(false);
       return;
     }
 
-    // Connect to the backend WebSocket server using the same runtime-configured
-    // API base URL as REST calls, so REST and Socket.IO always share an origin.
-    // When empty, socket.io-client connects to the same origin.
-    const socketUrl = getApiBaseUrl() || undefined;
-
-    const newSocket = io(socketUrl, {
-      transports: ['websocket'],
-      withCredentials: true,
-      autoConnect: true,
-      // Use path for socket.io which is the standard /socket.io/
-      path: '/socket.io/',
+    const desktopScope = getDesktopConnectionScope();
+    if (isDesktopRuntime() && !desktopScope) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-scope-unavailable', {
+        providerDisabled: false,
+        desktopRuntime: true,
+        connectionScope: 'unavailable',
+        ...disableReasonEvidence,
+      });
+      setSocket(null);
+      setIsConnected(false);
+      return;
+    }
+    setIsConnected(false);
+    reportPackagedAcceptanceRendererLifecycle('socket-effect-ready', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
     });
+    reportPackagedAcceptanceSocketConstructionInvocation();
+    const newSocket = getProprClient().connectSocket({
+      transports: ['websocket'],
+      autoConnect: true,
+      path: '/socket.io/',
+      forceNew: true,
+      ...(desktopScope ? {
+        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+      } : {}),
+    });
+    reportPackagedAcceptanceSocketConstructed();
+    let disposed = false;
+    const isCurrentScope = (): boolean => {
+      if (disposed) return false;
+      const current = getDesktopConnectionScope();
+      return current?.profileId === desktopScope?.profileId
+        && current?.transportScope === desktopScope?.transportScope;
+    };
+    const handleAuthenticationCode = (code: string | undefined, reconnect = false): void => {
+      if (!isCurrentScope()) return;
+      void handleDesktopAccessCode(code, desktopScope).then(classification => {
+        if (!isCurrentScope()) return;
+        if (classification === 'authorization-changed' && reconnect) {
+          newSocket.disconnect();
+          if (!isCurrentScope()) return;
+          newSocket.connect();
+        }
+      });
+    };
 
-    newSocket.on('connect', () => {
+    const connected = () => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Connected to WebSocket server');
       setIsConnected(true);
-    });
+      refreshDesktopActiveWork();
+    };
 
-    newSocket.on('disconnect', (reason) => {
+    const disconnected = (reason: string) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Disconnected from WebSocket server:', reason);
       setIsConnected(false);
-    });
+      refreshDesktopActiveWork();
+    };
 
-    newSocket.on('connect_error', (error) => {
+    const connectionError = (error: Error) => {
+      if (!isCurrentScope()) return;
+      setIsConnected(false);
+      refreshDesktopActiveWork();
       console.error('[SocketContext] Connection error:', error.message);
-    });
+      const code = (error as Error & { data?: { code?: string } }).data?.code;
+      handleAuthenticationCode(code);
+    };
+
+    const authenticationError = (value: { code?: string } | undefined) => {
+      handleAuthenticationCode(value?.code, true);
+    };
+
+    newSocket.on('connect', connected);
+    newSocket.on('disconnect', disconnected);
+    newSocket.on('connect_error', connectionError);
+    newSocket.on('authentication:error', authenticationError);
 
     // Set up global event listeners
-    newSocket.on(TASK_UPDATE, (payload: TaskUpdatePayload) => {
+    const taskUpdated = (payload: TaskUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received task update:', payload);
       taskUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+      refreshDesktopActiveWork();
+    };
 
-    newSocket.on(DRAFT_UPDATE, (payload: DraftUpdatePayload) => {
+    const draftUpdated = (payload: DraftUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received draft update:', payload);
       draftUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+      refreshDesktopActiveWork();
+    };
 
-    newSocket.on(INDEXING_UPDATE, (payload: IndexingUpdatePayload) => {
+    const indexingUpdated = (payload: IndexingUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received indexing update:', payload);
       indexingUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
 
-    newSocket.on(QUEUE_STATS_UPDATE, (payload: QueueStatsUpdatePayload) => {
+    const queueStatsUpdated = (payload: QueueStatsUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received queue stats update:', payload);
       queueStatsUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+      refreshDesktopActiveWork();
+    };
 
-    newSocket.on(TASK_LIVE_UPDATE, (payload: TaskLiveUpdatePayload) => {
-      console.log('[SocketContext] Received task live update:', payload);
+    const taskLiveUpdated = (payload: TaskLiveUpdatePayload) => {
+      if (!isCurrentScope()) return;
+      // Live payloads can contain large command outputs. Logging the object
+      // makes Chromium retain and inspect that data on its main thread for
+      // every incremental event, competing with rendering and HTTP callbacks.
+      console.log(`[SocketContext] Received task live update: ${payload.events.length} event(s)`);
       taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
+
+    newSocket.on(TASK_UPDATE, taskUpdated);
+    newSocket.on(DRAFT_UPDATE, draftUpdated);
+    newSocket.on(INDEXING_UPDATE, indexingUpdated);
+    newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
+    newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
 
     setSocket(newSocket);
+    reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
+    });
+    // connectSocket's current transport contract uses autoConnect. Record that
+    // one invocation without changing its authentication/query semantics.
+    reportPackagedAcceptanceSocketConnectInvocation();
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
+      setIsConnected(false);
+      disposed = true;
+      newSocket.off('connect', connected);
+      newSocket.off('disconnect', disconnected);
+      newSocket.off('connect_error', connectionError);
+      newSocket.off('authentication:error', authenticationError);
+      newSocket.off(TASK_UPDATE, taskUpdated);
+      newSocket.off(DRAFT_UPDATE, draftUpdated);
+      newSocket.off(INDEXING_UPDATE, indexingUpdated);
+      newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
+      newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
       newSocket.disconnect();
     };
-  }, [disabled]);
+  }, [
+    currentUserAbsent,
+    currentUserLoading,
+    demoMode,
+    demoModeLoading,
+    disabled,
+    socketConfigurationKey,
+  ]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

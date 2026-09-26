@@ -212,7 +212,7 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(conversationLog.length, 4);
         assert.strictEqual(conversationLog[0].type, 'user');
         assert.deepStrictEqual(conversationLog[1].message.content, [
-            { type: 'text', text: 'I need to inspect the file.' },
+            { type: 'text', text: 'I need to inspect the file.', internalReasoning: true },
             { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'vibe_test.py' } }
         ]);
         assert.deepStrictEqual(conversationLog[2].message.content, [{
@@ -221,7 +221,7 @@ describe('parseVibeOutput', () => {
             content: 'path: /home/node/workspace/vibe_test.py\ncontent: print("Hello from Vibe")',
             is_error: false
         }]);
-        assert.deepStrictEqual(conversationLog[3].message.content, [{ type: 'text', text: 'Updated vibe_test.py.' }]);
+        assert.deepStrictEqual(conversationLog[3].message.content, [{ type: 'text', text: 'Updated vibe_test.py.', internalReasoning: false }]);
         assert.ok(!JSON.stringify(conversationLog).includes('System prompt should not be logged'));
     });
 
@@ -475,6 +475,10 @@ describe('VibeAgent Docker args', () => {
         assert.match(script, /ensure_runtime_dirs/);
         assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /bypass_tool_permissions = true/);
+        assert.match(
+            script,
+            /if \[ -n "\$VIBE_PROMPT_FILE_TO_INJECT" \]; then\s+exec env PROPR_VIBE_PROMPT_FILE="\$VIBE_PROMPT_FILE_TO_INJECT" "\$@"\s+fi\s+exec "\$@"/
+        );
         assert.doesNotMatch(script, /sudo -E -u node -H/);
     });
 

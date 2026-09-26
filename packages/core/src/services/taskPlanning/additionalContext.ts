@@ -3,14 +3,14 @@
  */
 
 import { generateAdditionalContext } from '../context/index.js';
-import { updateTrace } from '../planning/index.js';
+import { updateTraceForRun } from '../planning/index.js';
 import type { AdditionalContextOptions, AdditionalContextResult } from './types.js';
 
 /**
  * Generate additional context from context repositories if configured
  */
 export async function generateAdditionalContextIfNeeded(options: AdditionalContextOptions): Promise<AdditionalContextResult> {
-  const { contextRepositories, prompt, contextModel, additionalContextBudget, useFullBudget = false, githubToken, draftId, correlationId, correlatedLogger } = options;
+  const { contextRepositories, prompt, contextModel, additionalContextBudget, useFullBudget = false, githubToken, draftId, runId, correlationId, correlatedLogger } = options;
   if (!contextRepositories || contextRepositories.length === 0) {
     return {};
   }
@@ -39,11 +39,12 @@ export async function generateAdditionalContextIfNeeded(options: AdditionalConte
         errorCount: additionalContextResult.errors.length
       }, 'Additional context generated successfully');
 
-      await updateTrace(draftId, 'additional_context', 'completed', {
+      const traceData = {
         repositoriesIncluded: additionalContextResult.repositoriesIncluded,
         totalTokens: additionalContextResult.totalTokens,
         errors: additionalContextResult.errors
-      });
+      };
+      await updateTraceForRun(draftId, 'additional_context', 'completed', { expectedRunId: runId, data: traceData });
     }
 
     if (additionalContextResult.errors.length > 0) {

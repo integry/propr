@@ -8,9 +8,11 @@ import {
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
     validateAgentRuntimePackages,
+    verifyAgentRuntimePackageProfile,
     warmAgentRuntimePackageCatalog,
     type AgentRuntimeBuildJobData,
-    type AgentRuntimePackageState
+    type AgentRuntimePackageState,
+    type AgentRuntimePackageVerificationResult
 } from '@propr/core';
 
 interface AgentRuntimeRoutesDeps {
@@ -37,6 +39,7 @@ interface AgentRuntimeRouteServices {
     search: typeof searchAgentRuntimePackages;
     validate: typeof validateAgentRuntimePackages;
     validateAvailability: typeof validateAgentRuntimePackageAvailability;
+    verify: typeof verifyAgentRuntimePackageProfile;
     warmCatalog: typeof warmAgentRuntimePackageCatalog;
 }
 
@@ -99,6 +102,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         search: searchAgentRuntimePackages,
         validate: validateAgentRuntimePackages,
         validateAvailability: validateAgentRuntimePackageAvailability,
+        verify: verifyAgentRuntimePackageProfile,
         warmCatalog: warmAgentRuntimePackageCatalog,
         ...overrides
     };
@@ -213,11 +217,27 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         }
     }
 
+    async function verifyRuntimePackages(req: Request, res: Response): Promise<void> {
+        if (!requireRuntimeAdmin(req, res)) return;
+        try {
+            const state = await services.loadState();
+            const images = await configuredBaseImages(services.loadBaseImages);
+            const result: AgentRuntimePackageVerificationResult = await withRuntimePackageRequestTimeout(
+                'Agent runtime package verification',
+                services.verify(state, images, { validateAvailability: services.validateAvailability })
+            );
+            res.json(result);
+        } catch (error) {
+            sendRuntimePackageError(error, res);
+        }
+    }
+
     return {
         getRuntimePackages,
         searchRuntimePackages,
         validateRuntimePackages,
         putRuntimePackages,
-        applyRuntimePackages
+        applyRuntimePackages,
+        verifyRuntimePackages
     };
 }

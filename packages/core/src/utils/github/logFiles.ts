@@ -9,11 +9,18 @@ import { getDetailedUsageStats, calculateCostWithCachePricing } from '../tokenCa
 import type { DetailedUsageStats, ClaudeResult as TokenCalcClaudeResult } from '../tokenCalculation.js';
 import { formatSubscriptionUsage } from './formatSubscriptionUsage.js';
 import type { SubscriptionUsageMetrics } from './formatSubscriptionUsage.js';
+import { describeAgentTermination, resolveAgentTerminationReason } from '../../agents/termination.js';
+import { sanitizeAgentReport } from '../../agents/agentReportSanitizer.js';
+import { redactVisualPreviewPaths } from '../../services/visualPreviewPaths.js';
 
 interface IssueRef {
     number: number;
     repoOwner: string;
     repoName: string;
+}
+
+interface CompletionCommentOptions {
+    publishedAs?: 'pull_request' | 'issue_comment';
 }
 
 interface ConversationMessage {
@@ -39,6 +46,9 @@ interface ClaudeResult {
     rawOutput?: string;
     finalResult?: FinalResult;
     summary?: string;
+    error?: string;
+    terminationReason?: 'timeout' | 'max_turns';
+    modifiedFiles?: string[];
     tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
     usageMetrics?: SubscriptionUsageMetrics | null;
 }
@@ -65,7 +75,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
     { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghu_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
-    { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /ghs_[A-Za-z0-9_.-]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
 
     // --- AWS ---
@@ -122,7 +132,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
 ];
 
 export function redactSecrets(input: string): string {
-    let result = input;
+    let result = redactVisualPreviewPaths(input);
     for (const { pattern, replacement, dynamicReplacement } of SECRET_PATTERNS) {
         if (dynamicReplacement === 'bearer') {
             // Preserve the original casing of "Bearer" / "bearer" / "BEARER"
@@ -171,11 +181,10 @@ export function redactSerializableValue(obj: unknown, key: string = '', seen?: W
                 guard
             );
         }
-        const redacted: Record<string, unknown> = {};
-        for (const [k, value] of Object.entries(obj)) {
-            redacted[k] = redactSerializableValue(value, k, guard);
-        }
-        return redacted;
+        return Object.fromEntries(Object.entries(obj).map(([k, value]) => [
+            redactVisualPreviewPaths(k),
+            redactSerializableValue(value, k, guard)
+        ]));
     }
     return obj;
 }
@@ -283,7 +292,17 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
     return files;
 }
 
-function buildStatusText(isSuccess: boolean): { header: string; status: string } {
+function buildStatusText(claudeResult: ClaudeResult): { header: string; status: string } {
+    const terminationReason = resolveAgentTerminationReason({
+        success: claudeResult.success,
+        terminationReason: claudeResult.terminationReason,
+        subtype: claudeResult.finalResult?.subtype,
+        error: claudeResult.error
+    });
+    if (!claudeResult.success && terminationReason) {
+        return { header: 'Incomplete', status: 'Partial work published for review' };
+    }
+    const isSuccess = claudeResult?.success || false;
     return {
         header: isSuccess ? 'Completed' : 'Failed',
         status: isSuccess ? 'Success' : 'Failed'
@@ -321,12 +340,11 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
 }
 
 async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
-    const isSuccess = claudeResult?.success || false;
     const executionTimeStr = formatDuration(claudeResult?.executionTime || 0);
     const detailedStats = getDetailedUsageStats(claudeResult as unknown as TokenCalcClaudeResult);
     const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
     const cost = await calculateExecutionCost(claudeResult, detailedStats);
-    const { header, status } = buildStatusText(isSuccess);
+    const { header, status } = buildStatusText(claudeResult);
 
     const date = new Date(timestamp);
     const formattedTimestamp = date.toLocaleString('en-US', {
@@ -359,8 +377,35 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
 }
 
 function buildSummarySection(claudeResult: ClaudeResult): string {
+    const terminationReason = resolveAgentTerminationReason({
+        success: claudeResult.success,
+        terminationReason: claudeResult.terminationReason,
+        subtype: claudeResult.finalResult?.subtype,
+        error: claudeResult.error
+    });
+    if (terminationReason) {
+        const changedFiles = claudeResult.modifiedFiles || [];
+        let section = `> [!WARNING]\n> **This implementation may be incomplete.** ${describeAgentTermination(terminationReason)} Partial changes were preserved instead of discarded.\n\n`;
+        section += '**Work completed before interruption:**\n';
+        const publishableSummary = sanitizeAgentReport(claudeResult.summary);
+        if (publishableSummary) {
+            section += `${redactSecrets(publishableSummary).slice(0, 6000)}\n\n`;
+        } else if (changedFiles.length > 0) {
+            section += `Changes were committed in ${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}:\n`;
+            section += changedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n');
+            if (changedFiles.length > 20) section += `\n- …and ${changedFiles.length - 20} more`;
+            section += '\n\n';
+        } else {
+            section += 'See the committed diff for the changes completed before execution stopped.\n\n';
+        }
+        section += '**Remaining work:**\n';
+        section += 'The agent stopped before validating every requirement. Review the partial diff against the original request and complete any unaddressed implementation, tests, or documentation before merging.\n\n';
+        return section;
+    }
+
     let section = '';
-    if (claudeResult?.summary) section += `**Summary:**\n${redactSecrets(claudeResult.summary)}\n\n`;
+    const publishableSummary = sanitizeAgentReport(claudeResult.summary);
+    if (publishableSummary) section += `**Summary:**\n${redactSecrets(publishableSummary)}\n\n`;
     if (claudeResult?.finalResult?.subtype === 'error_max_turns') {
         section += `**Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
     }
@@ -396,7 +441,11 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
     return lines.join('\n') + '\n';
 }
 
-export async function generateCompletionComment(claudeResultInput: unknown, issueRef: IssueRef): Promise<string> {
+export async function generateCompletionComment(
+    claudeResultInput: unknown,
+    issueRef: IssueRef,
+    options: CompletionCommentOptions = {},
+): Promise<string> {
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
     let comment = await buildExecutionDetails(result, issueRef, timestamp);
@@ -408,6 +457,8 @@ export async function generateCompletionComment(claudeResultInput: unknown, issu
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
-    comment += `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
+    comment += options.publishedAs === 'issue_comment'
+        ? `---\n*This processing report was generated automatically by [ProPR](https://propr.dev) for issue #${issueRef.number}.*`
+        : `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
     return comment;
 }

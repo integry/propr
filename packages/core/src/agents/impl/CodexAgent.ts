@@ -3,19 +3,22 @@ import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from '../../codex/codexHelpers.js';
 import {
     assertReasoningLevelCliVersionSupported,
-    loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolveCodexReasoningLevel, resolveConfigPath, type CodexRuntimeReasoningLevel,
+    assertCodexConfigPathAvailable, loadModelReasoningLevel, resolveAgentModelReasoningLevel,
+    resolveCodexConfigPath, resolveCodexReasoningLevel, type CodexRuntimeReasoningLevel,
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
-import { executeWithUsageTracking } from './utils/index.js';
+import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { resolveAgentTerminationReason } from '../termination.js';
+import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -23,15 +26,13 @@ export { UsageLimitError };
 const DEFAULT_CODEX_MAX_TURNS = 1000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-// Container path for Codex config
-const CONTAINER_CONFIG_PATH = '/home/node/.codex';
-
 type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
 type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
 type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
 
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -42,9 +43,11 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
+            executionMode = 'task', resumeSessionId, metadata } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -65,7 +68,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -78,7 +81,8 @@ export class CodexAgent implements Agent {
                     worktreePath,
                     stdinData: prompt,
                     taskId,
-                    streamToRedis: true
+                    streamToRedis: true,
+                    preserveOutputOnTimeout: true
                 })
             );
 
@@ -89,7 +93,7 @@ export class CodexAgent implements Agent {
 
             await this.persistTaskLog({
                 response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
-                issueRef, repo, taskId, prNumber, isRetry, retryReason
+                issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata
             });
 
             this.handleTaskCompletion({ response, issueNumber: issueRef.number, result, parsedOutput, worktreePath, worktreeGitContent });
@@ -103,6 +107,18 @@ export class CodexAgent implements Agent {
         }
     }
 
+    private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        await setWorktreeOwnership(options.worktreePath, options.issueRef.number, {
+            protectGitMetadata: options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+        });
+        const worktreeGitContent = verifyWorktreeStructure(options.worktreePath, options.issueRef.number);
+        const result = await executeCodexAppServerGoal(this.config, options, this.timeoutMs);
+        if (result.success) {
+            verifyWorktreePostExecution(options.worktreePath, options.issueRef.number, worktreeGitContent);
+        }
+        return result;
+    }
+
     private buildTaskExecutionResult(params: {
         parsedOutput: CodexParsedOutput;
         result: CodexExecutionOutput;
@@ -112,8 +128,12 @@ export class CodexAgent implements Agent {
         usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
         const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
+        const terminationReason = resolveAgentTerminationReason({
+            timedOut: result.timedOut,
+            error: parsedOutput.error || result.stderr
+        });
         return {
-            success: parsedOutput.success && result.exitCode === 0,
+            success: parsedOutput.success && result.exitCode === 0 && !terminationReason,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode,
@@ -128,6 +148,7 @@ export class CodexAgent implements Agent {
             summary: parsedOutput.result ?? undefined,
             prompt,
             error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
+            terminationReason,
             tokenUsage: parsedOutput.tokenUsage,
             usageMetrics: usageMetrics ?? undefined
         };
@@ -138,9 +159,9 @@ export class CodexAgent implements Agent {
         executionTime: number; modelUsed: string; prompt: string;
         usageMetrics: CodexUsageMetrics;
         issueRef: AgentTaskOptions['issueRef']; repo: string;
-        taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string;
+        taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string; metadata?: Record<string, unknown>;
     }): Promise<void> {
-        const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason } = params;
+        const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata } = params;
         await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt: params.prompt, issueRef, model: modelUsed, isRetry, retryReason });
         const logEntry = createLlmLogFromAnalysis({
             executionType: 'implementation', modelUsed,
@@ -150,7 +171,7 @@ export class CodexAgent implements Agent {
             sessionId: parsedOutput.sessionId, draftId: taskId,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             agentAlias: this.config.alias, reasoningLevel: response.reasoningLevel,
-            metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
+            metadata: { ...metadata, isRetry, retryReason, conversationId: parsedOutput.conversationId },
             ...this.formatUsageMetrics(usageMetrics),
             workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
         });
@@ -198,7 +219,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -207,11 +228,9 @@ export class CodexAgent implements Agent {
             hasContext: !!context, requestedModel: model, taskId, executionType
         }, 'Running lightweight analysis via Codex agent...');
 
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
-        const analysisWorkspace = this.ensureAnalysisWorkspace();
+        const analysisWorkspace = readOnlyWorkspacePath || this.ensureAnalysisWorkspace();
 
         try {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
@@ -219,7 +238,9 @@ export class CodexAgent implements Agent {
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
-                issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel
+                issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel,
+                readOnlyWorkspace: !!readOnlyWorkspacePath,
+                repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands,
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -233,10 +254,21 @@ export class CodexAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
-            if (result.exitCode === 0 || parsedOutput.result) {
+            if (!result.timedOut && (result.exitCode === 0 || parsedOutput.result)) {
                 return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, effectiveReasoningLevel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog });
             }
 
+            logger.warn({
+                agentAlias: this.config.alias,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut ?? false,
+                stdoutLength: result.stdout.length,
+                stderrLength: result.stderr.length,
+                parsedResultPresent: Boolean(parsedOutput.result),
+                parsedErrorPresent: Boolean(parsedOutput.error),
+                executionType,
+                taskId,
+            }, 'Codex analysis process exited without a usable result');
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
         } catch (error) {
@@ -345,6 +377,8 @@ export class CodexAgent implements Agent {
         const dockerImage = this.config.dockerImage;
         logger.debug({ agentAlias, dockerImage }, 'Running health check for Codex agent...');
         try {
+            const configPath = resolveCodexConfigPath(this.config.configPath);
+            assertCodexConfigPathAvailable(configPath);
             const result = await executeDockerCommand('docker', ['images', '-q', dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
             logger.info({ agentAlias, dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
@@ -358,95 +392,7 @@ export class CodexAgent implements Agent {
     /**
      * Builds Docker arguments for running Codex in a container.
      */
-    private buildDockerArgs(params: {
-        worktreePath: string; githubToken: string; modelName?: string;
-        issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;
-        taskId?: string; executionType?: string;
-        reasoningLevel?: CodexRuntimeReasoningLevel | '';
-    }): string[] {
-        const {
-            worktreePath,
-            githubToken,
-            modelName,
-            issueNumber,
-            jsonOutput = true,
-            environment,
-            taskId,
-            executionType,
-            reasoningLevel
-        } = params;
-
-        const dockerImage = this.config.dockerImage;
-        const configPath = resolveConfigPath(this.config.configPath);
-
-        // Inject any custom environment variables from config
-        const envVars: string[] = [];
-        if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
-        if (environment) {
-            for (const [key, value] of Object.entries(environment)) {
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
-
-        // Generate human-readable container name
-        const timestamp = Date.now().toString(36);
-        const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'codex'}-${taskType}-${shortTaskId}`;
-
-        // Build Docker run arguments
-        // Note: Start as root so entrypoint can fix volume permissions, then drops to node user
-        // This matches the Claude agent pattern for consistent security handling
-        const dockerArgs: string[] = [
-            'run', '--rm',
-            '-i', // Allow stdin for piping prompt
-            '--name', containerName,
-            '--security-opt', 'no-new-privileges',
-            // Docker's default seccomp profile often blocks the namespace syscalls
-            // bubblewrap needs inside the container.
-            '--security-opt', 'seccomp=unconfined',
-            // Ubuntu/Debian hosts often apply an AppArmor profile that blocks
-            // the user namespace and mount operations bubblewrap needs.
-            '--security-opt', 'apparmor=unconfined',
-            '--cap-add', 'CHOWN',
-            '--network', 'bridge',
-            '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
-            '-v', `${worktreePath}:/home/node/workspace:rw`,
-            '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`,
-            '-e', `GITHUB_TOKEN=${githubToken}`,
-            ...envVars,
-            '-w', '/home/node/workspace',
-            dockerImage,
-            // Codex CLI arguments
-            'codex', 'exec',
-            '--ephemeral', // ProPR persists run output itself; do not pollute the user's resumable Codex sessions
-            ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
-            '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
-            '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
-            ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
-            '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
-            '--cd', '/home/node/workspace', // Set working directory
-            '-'                          // Read prompt from stdin
-        ];
-
-        // Add model if specified
-        if (modelName) {
-            // Strip agent prefix if present (e.g., "codex:gpt-5.4" -> "gpt-5.4")
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
-            const codexIndex = dockerArgs.indexOf('codex');
-            dockerArgs.splice(codexIndex + 2, 0, '--model', cleanModelName);
-            logger.info({ issueNumber, requestedModel: cleanModelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
-        } else {
-            logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Codex agent will use default');
-        }
-        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Codex agent');
-
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, dockerImage, 'codex');
+    private buildDockerArgs(params: CodexDockerArgsParams): string[] {
+        return buildCodexDockerArgs(this.config, params);
     }
 }

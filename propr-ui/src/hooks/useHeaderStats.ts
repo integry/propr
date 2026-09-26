@@ -1,71 +1,79 @@
+/* eslint-disable max-lines -- stateful header projections stay together so partial refreshes commit atomically */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getQueueStats, getTasks, getSystemStatus } from '../api/proprApi';
-import type { SystemAgentStatus } from '../api/proprTypes';
+import { getQueueStats, getTasks } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 import { useSocket } from '../contexts/useSocket';
+import { isDesktopRuntime } from '../config/runtimeMode';
+import type { DraftUpdatePayload, QueueStatsUpdatePayload, TaskUpdatePayload } from '@propr/shared';
+import { useCurrentUser } from '../contexts/AuthContext';
+import { getDesktopSocketConfigurationKey } from '../api/apiClient';
+import { useSharedSystemStatus } from '../contexts/SystemStatusContext';
+import type { SystemStatus } from '../api/proprTypes';
+import {
+  coalesceHeaderStatsRead,
+  type HeaderStatsResource,
+} from './headerStatsRequestCoordinator';
+import {
+  buildReviewGroups,
+  buildRunningItems,
+  buildSystemHealth,
+  DISMISSED_PLAN_IDS_KEY,
+  DISMISSED_TASK_IDS_KEY,
+  filterActivePlans,
+  getDismissedIds,
+  getDismissedTaskTimestamps,
+  saveDismissedIds,
+  saveDismissedTaskTimestamps,
+} from './useHeaderStatsHelpers';
+import type {
+  DismissedTaskTimestamps,
+  RunningItem,
+  SystemHealth,
+  TaskGroup,
+} from './useHeaderStatsHelpers';
 
-// LocalStorage keys for dismissal tracking
-const DISMISSED_PLAN_IDS_KEY = 'dismissed_plan_ids';
-const DISMISSED_TASK_IDS_KEY = 'dismissed_task_ids';
-// New key for tracking PR-based dismissal timestamps
-// When a task is dismissed, we store the timestamp for that PR/issue key
-// All tasks created before that timestamp for that PR/issue are auto-dismissed
-const DISMISSED_TASK_TIMESTAMPS_KEY = 'dismissed_task_timestamps';
+export type { RunningItem } from './useHeaderStatsHelpers';
 
-interface Task {
-  id: string;
-  repository?: string;
-  repositoryOwner?: string;
-  repositoryName?: string;
-  issueNumber?: number;
-  prNumber?: number;
-  linkedIssueNumber?: number | null;
-  title?: string;
-  status: string;
-  createdAt: string;
-  completedAt?: string;
-  planIssueStatus?: string | null;
+const LIVE_INVALIDATION_COALESCE_MS = 100;
+const LIVE_REVALIDATION_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const FALLBACK_POLL_INTERVAL_MS = 30_000;
+const ALL_STATS_RESOURCES: readonly HeaderStatsResource[] = ['queue', 'drafts', 'tasks', 'status'];
+
+export type HeaderStatsResourceStatus = 'checking' | 'available' | 'unavailable';
+
+type ResourceRecord<T> = Record<HeaderStatsResource, T>;
+
+interface FetchStatsResult {
+  succeededResources: HeaderStatsResource[];
+  failedResources: HeaderStatsResource[];
+  supersededResources: HeaderStatsResource[];
 }
 
-// Running item interface for AI Activity Monitor
-export interface RunningItem {
-  id: string;
-  type: 'plan' | 'task';
-  label: string;
-  repository: string;
-  status: string;
-  createdAt: string;
-}
+const createResourceRecord = <T,>(value: T): ResourceRecord<T> => ({
+  queue: value,
+  drafts: value,
+  tasks: value,
+  status: value,
+});
 
-// Map of PR/issue keys to dismissal timestamps
-// When a task group is dismissed, all tasks created before that timestamp are hidden
-interface DismissedTaskTimestamps {
-  [key: string]: number; // key format: "owner/repo-pr-123" or "owner/repo-issue-456", value: timestamp in ms
-}
+const getActivityStatus = (
+  statuses: ResourceRecord<HeaderStatsResourceStatus>,
+): HeaderStats['activityStatus'] => {
+  const activityStatuses = [statuses.queue, statuses.drafts];
+  if (activityStatuses.includes('unavailable')) return 'unavailable';
+  if (activityStatuses.every(status => status === 'available')) return 'available';
+  return 'checking';
+};
 
-interface TaskGroup {
-  key: string;
-  repoOwner: string;
-  repoName: string;
-  prNumber?: number;
-  issueNumber?: number;
-  latestTask: Task;
-  allTasks: Task[];
-}
-
-interface SystemHealth {
-  daemon: string;
-  workers: string;
-  redis: string;
-  githubAuth: string;
-  claudeAuth: string;
-  indexing: string;
-  // Human-readable name and UI status of the active GitHub event intake path.
-  githubEventIntake: string;
-  githubEventIntakeStatus: string;
-  agents: SystemAgentStatus[];
-  isHealthy: boolean;
-}
+const queueStatsFingerprint = (payload: QueueStatsUpdatePayload): string => JSON.stringify([
+  payload.stats.waiting,
+  payload.stats.active,
+  payload.stats.activeGoals ?? 0,
+  payload.stats.completed,
+  payload.stats.failed,
+  payload.stats.delayed,
+  payload.stats.total,
+]);
 
 export interface HeaderStats {
   // Running tasks count from queue
@@ -73,6 +81,12 @@ export interface HeaderStats {
 
   // Running items for AI Activity Monitor dropdown
   runningItems: RunningItem[];
+
+  // Whether the active-work snapshot is current and complete.
+  activityStatus: 'checking' | 'available' | 'unavailable';
+
+  // Whether each independently reconciled header resource has loaded.
+  resourceStatuses: ResourceRecord<HeaderStatsResourceStatus>;
 
   // Active plans (not merged, not closed), sorted by updated_at descending
   activePlans: DraftListItem[];
@@ -109,58 +123,15 @@ export interface HeaderStats {
   refresh: () => Promise<void>;
 }
 
-// Helper to get dismissed IDs from localStorage
-const getDismissedIds = (key: string): string[] => {
-  try {
-    const stored = localStorage.getItem(key);
-    return stored ? JSON.parse(stored) : [];
-  } catch {
-    return [];
-  }
-};
-
-// Helper to save dismissed IDs to localStorage
-const saveDismissedIds = (key: string, ids: string[]): void => {
-  try {
-    localStorage.setItem(key, JSON.stringify(ids));
-  } catch {
-    console.error(`Failed to save dismissed IDs to ${key}`);
-  }
-};
-
-// Helper to get dismissed task timestamps from localStorage
-const getDismissedTaskTimestamps = (): DismissedTaskTimestamps => {
-  try {
-    const stored = localStorage.getItem(DISMISSED_TASK_TIMESTAMPS_KEY);
-    return stored ? JSON.parse(stored) : {};
-  } catch {
-    return {};
-  }
-};
-
-// Helper to save dismissed task timestamps to localStorage
-const saveDismissedTaskTimestamps = (timestamps: DismissedTaskTimestamps): void => {
-  try {
-    localStorage.setItem(DISMISSED_TASK_TIMESTAMPS_KEY, JSON.stringify(timestamps));
-  } catch {
-    console.error('Failed to save dismissed task timestamps');
-  }
-};
-
-// Helper to create a task group key for dismissal tracking
-const getTaskGroupKey = (repoOwner: string, repoName: string, prNumber?: number, issueNumber?: number): string => {
-  const repoPrefix = `${repoOwner}/${repoName}`;
-  if (prNumber) {
-    return `${repoPrefix}-pr-${prNumber}`;
-  } else if (issueNumber) {
-    return `${repoPrefix}-issue-${issueNumber}`;
-  }
-  return '';
-};
-
 export function useHeaderStats(): HeaderStats {
+  const currentUser = useCurrentUser();
+  const { getStatus, refreshStatus } = useSharedSystemStatus();
+  const requestIdentityKey = `${getDesktopSocketConfigurationKey()}\0${currentUser?.id ?? 'anonymous'}`;
   const [runningCount, setRunningCount] = useState<number>(0);
   const [runningItems, setRunningItems] = useState<RunningItem[]>([]);
+  const [resourceStatuses, setResourceStatuses] = useState<ResourceRecord<HeaderStatsResourceStatus>>(
+    () => createResourceRecord('checking'),
+  );
   const [activePlans, setActivePlans] = useState<DraftListItem[]>([]);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [reviewGroups, setReviewGroups] = useState<TaskGroup[]>([]);
@@ -187,9 +158,52 @@ export function useHeaderStats(): HeaderStats {
 
   // Track if component is mounted
   const isMountedRef = useRef(true);
+  const statsRequestRef = useRef<ResourceRecord<number>>(createResourceRecord(0));
+  const resourceErrorsRef = useRef<ResourceRecord<string | null>>(createResourceRecord(null));
+  const liveRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveRefreshInFlightRef = useRef(false);
+  const liveRefreshPendingRef = useRef<Set<HeaderStatsResource>>(new Set());
+  const liveRefreshRetryAttemptRef = useRef(0);
+  const lastQueueStatsFingerprintRef = useRef<string | null>(null);
+  const pendingQueueStatsFingerprintRef = useRef<string | null>(null);
+  const draftsSnapshotRef = useRef<DraftListItem[]>([]);
+  const activeJobsSnapshotRef = useRef<Awaited<ReturnType<typeof getQueueStats>>['activeJobs']>([]);
+  const tasksSnapshotRef = useRef<Awaited<ReturnType<typeof getTasks>>>({ tasks: [] });
+  const draftStatusesRef = useRef<Map<string, string>>(new Map());
+  const taskFingerprintsRef = useRef<Map<string, string>>(new Map());
+  const previousRequestIdentityRef = useRef(requestIdentityKey);
+  const requestIdentityRef = useRef(requestIdentityKey);
 
   // WebSocket connection for real-time updates
-  const { onTaskUpdate, onDraftUpdate, isConnected } = useSocket();
+  const { onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, isConnected } = useSocket();
+  const socketConnectedRef = useRef(isConnected);
+  socketConnectedRef.current = isConnected;
+
+  // A mounted desktop renderer can switch instances/accounts without a page
+  // reload. Drop every account-derived snapshot before starting reads under
+  // the new coalescing key.
+  useEffect(() => {
+    if (previousRequestIdentityRef.current === requestIdentityKey) return;
+    previousRequestIdentityRef.current = requestIdentityKey;
+    requestIdentityRef.current = requestIdentityKey;
+    ALL_STATS_RESOURCES.forEach(resource => { statsRequestRef.current[resource] += 1; });
+    resourceErrorsRef.current = createResourceRecord(null);
+    draftsSnapshotRef.current = [];
+    activeJobsSnapshotRef.current = [];
+    tasksSnapshotRef.current = { tasks: [] };
+    draftStatusesRef.current.clear();
+    taskFingerprintsRef.current.clear();
+    lastQueueStatsFingerprintRef.current = null;
+    pendingQueueStatsFingerprintRef.current = null;
+    setRunningItems([]);
+    setRunningCount(0);
+    setActivePlans([]);
+    setReviewGroups([]);
+    setReviewCount(0);
+    setResourceStatuses(createResourceRecord('checking'));
+    setIsLoading(true);
+    setError(null);
+  }, [requestIdentityKey]);
 
   // Dismiss a plan
   const dismissPlan = useCallback((planId: string) => {
@@ -236,311 +250,351 @@ export function useHeaderStats(): HeaderStats {
   }, []);
 
   // Main fetch function
-  const fetchStats = useCallback(async (isInitialLoad = false) => {
+  // Partial reconciliation has several deliberately independent failure paths.
+  /* eslint-disable complexity */
+  const fetchStats = useCallback(
+  async (
+    resources: readonly HeaderStatsResource[] = ALL_STATS_RESOURCES,
+    isInitialLoad = false,
+  ): Promise<FetchStatsResult> => {
+    const requestIdentity = requestIdentityKey;
+    const requestVersions = new Map(resources.map(resource => {
+      const version = statsRequestRef.current[resource] + 1;
+      statsRequestRef.current[resource] = version;
+      return [resource, version] as const;
+    }));
     try {
       if (isInitialLoad) {
         setIsLoading(true);
       }
 
-      // Fetch all data in parallel with smart DB-level pre-filtering
-      const [_queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
-        getQueueStats(),
-        // Fetch active plans only (exclude merged at DB level - include executed and pr_created for Plans in Focus)
-        getDrafts({ limit: 20, excludeStatuses: 'merged' }),
-        // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
-        getTasks({ limit: 30, forReview: true, excludeMerged: true }),
-        // Fetch processing tasks for the AI Activity Monitor
-        getTasks({ status: 'processing', limit: 20 }),
-        getSystemStatus(),
-      ]);
-
-      if (!isMountedRef.current) return;
-
-      // 1. Build running items list for AI Activity Monitor
-      const runningItemsList: RunningItem[] = [];
-
-      // Add generating/refining plans
-      const generatingPlans = draftsResponse.drafts.filter(
-        (draft) => draft.status === 'generating' || draft.status === 'refining'
-      );
-      generatingPlans.forEach((plan) => {
-        runningItemsList.push({
-          id: plan.draft_id,
-          type: 'plan',
-          label: plan.name || plan.initial_prompt || 'Generating Plan',
-          repository: plan.repository,
-          status: plan.status === 'generating' ? 'Generating Spec' : 'Refining',
-          createdAt: plan.created_at,
-        });
-      });
-
-      // Add processing tasks
-      const processingTasks = (processingTasksResponse as { tasks: Task[] }).tasks || [];
-      processingTasks.forEach((task) => {
-        runningItemsList.push({
-          id: task.id,
-          type: 'task',
-          label: task.title || `Task ${task.id.slice(0, 8)}`,
-          repository: task.repository || `${task.repositoryOwner || 'unknown'}/${task.repositoryName || 'unknown'}`,
-          status: 'Implementing',
-          createdAt: task.createdAt,
-        });
-      });
-
-      // Sort by createdAt descending (newest first)
-      runningItemsList.sort((a, b) => {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
-
-      setRunningItems(runningItemsList);
-      // Running count should match the actual running items to ensure consistency
-      setRunningCount(runningItemsList.length);
-
-      // 2. Process active plans
-      // Plans are already pre-filtered at DB level (excludes merged, executed)
-      // Only need to filter out manually dismissed plans
-      const currentDismissedPlanIds = getDismissedIds(DISMISSED_PLAN_IDS_KEY);
-      const filteredPlans = draftsResponse.drafts.filter(draft => {
-        return !currentDismissedPlanIds.includes(draft.draft_id);
-      });
-
-      // Already sorted by updated_at desc from API, but ensure order
-      filteredPlans.sort((a, b) => {
-        const dateA = new Date(a.updated_at).getTime();
-        const dateB = new Date(b.updated_at).getTime();
-        return dateB - dateA;
-      });
-
-      setActivePlans(filteredPlans);
-
-      // 3. Process review items
-      // Tasks are pre-filtered at DB level (completed/failed only, merged excluded)
-      // Group tasks by PR (or issue if no PR)
-      const tasks = (tasksResponse as { tasks: Task[] }).tasks || [];
-      const currentDismissedTaskIds = getDismissedIds(DISMISSED_TASK_IDS_KEY);
-      const currentDismissedTimestamps = getDismissedTaskTimestamps();
-
-      const groups: Record<string, TaskGroup> = {};
-      // Track issue-to-PR mapping: when a PR task has linkedIssueNumber,
-      // map that issue to the PR for merging groups
-      const issueToPrMap: Record<string, string> = {};
-
-      // Track which issues have PR followup tasks
-      // If a PR task exists for an issue, we should filter out the initial issue task
-      const prTasksByIssue: Record<string, boolean> = {};
-
-      // First pass: identify issues that have PR followup tasks
-      tasks.forEach(task => {
-        if (task.prNumber && task.issueNumber) {
-          let owner = task.repositoryOwner;
-          let name = task.repositoryName;
-          if (!owner || !name) {
-            const parts = (task.repository || 'unknown/unknown').split('/');
-            owner = parts[0] || 'unknown';
-            name = parts[1] || 'unknown';
-          }
-          const issueKey = `${owner}/${name}-issue-${task.issueNumber}`;
-          prTasksByIssue[issueKey] = true;
-        }
-      });
-
-      tasks.forEach(task => {
-        let owner = task.repositoryOwner;
-        let name = task.repositoryName;
-
-        if (!owner || !name) {
-          const parts = (task.repository || 'unknown/unknown').split('/');
-          owner = parts[0] || 'unknown';
-          name = parts[1] || 'unknown';
-        }
-
-        const repoPrefix = `${owner}/${name}`;
-
-        // Create group key: prefer PR number, fallback to issue number
-        const taskGroupKey = getTaskGroupKey(owner, name, task.prNumber, task.issueNumber) || task.id;
-
-        // Skip dismissed tasks using timestamp-based filtering
-        // If this PR/issue key has a dismissal timestamp, only show tasks created AFTER that timestamp
-        const dismissedTimestamp = currentDismissedTimestamps[taskGroupKey];
-        if (dismissedTimestamp) {
-          const taskCreatedAt = new Date(task.createdAt).getTime();
-          // Skip tasks created at or before the dismissal timestamp
-          if (taskCreatedAt <= dismissedTimestamp) {
-            return;
-          }
-        }
-
-        // Also check legacy dismissal by task ID for backwards compatibility
-        if (currentDismissedTaskIds.includes(task.id)) {
-          return;
-        }
-
-        // If this task has a PR and a linkedIssueNumber, record the mapping
-        // This allows us to merge issue-based groups into PR-based groups
-        if (task.prNumber && task.linkedIssueNumber) {
-          const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
-          const prKey = `${repoPrefix}-pr-${task.prNumber}`;
-          issueToPrMap[issueKey] = prKey;
-        }
-
-        // Use the already-computed group key (taskGroupKey is already computed above)
-        const key = taskGroupKey;
-
-        // Skip initial issue tasks if a PR followup exists for this issue
-        if (!task.prNumber && task.issueNumber && prTasksByIssue[key]) {
-          return;
-        }
-
-        if (!groups[key]) {
-          groups[key] = {
-            key,
-            repoOwner: owner,
-            repoName: name,
-            prNumber: task.prNumber,
-            issueNumber: task.issueNumber,
-            latestTask: task,
-            allTasks: [],
-          };
-        }
-
-        groups[key].allTasks.push(task);
-      });
-
-      // Merge issue-based groups into their corresponding PR groups
-      Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
-        if (groups[issueKey] && groups[prKey]) {
-          // Merge issue group tasks into PR group
-          groups[prKey].allTasks.push(...groups[issueKey].allTasks);
-          // Remove the issue group
-          delete groups[issueKey];
-        }
-      });
-
-      // For each group, determine the latest task
-      // Tasks are pre-filtered at DB level, we just need to organize by group
-      const reviewableGroups: TaskGroup[] = [];
-
-      Object.values(groups).forEach(group => {
-        // Sort tasks by createdAt descending to find the latest
-        group.allTasks.sort((a, b) => {
-          const dateA = new Date(a.createdAt).getTime();
-          const dateB = new Date(b.createdAt).getTime();
-          return dateB - dateA;
-        });
-
-        const latestTask = group.allTasks[0];
-        group.latestTask = latestTask;
-
-        // Tasks are already pre-filtered at DB level to be completed/failed and not merged
-        // Just add to reviewable groups
-        reviewableGroups.push(group);
-      });
-
-      // Sort review groups by latest task's createdAt (newest first)
-      reviewableGroups.sort((a, b) => {
-        const dateA = new Date(a.latestTask.createdAt).getTime();
-        const dateB = new Date(b.latestTask.createdAt).getTime();
-        return dateB - dateA;
-      });
-
-      setReviewGroups(reviewableGroups);
-      setReviewCount(reviewableGroups.length);
-
-      // 4. Process system health
-      const workersStatus = statusResponse.workers.length > 0 ? 'Running' : 'Stopped';
-      const agentsHealthy = statusResponse.agents.every(agent => agent.status === 'Ready');
-      // 'Unknown' is treated as neutral so older backends that don't report intake
-      // status (and resolver-error/unknown modes) don't flip the header unhealthy,
-      // while an explicit 'Disconnected' from a stalled intake path does.
-      const intakeStatus = statusResponse.githubEventIntakeStatus || 'Unknown';
-      const health: SystemHealth = {
-        daemon: statusResponse.daemon,
-        workers: workersStatus,
-        redis: statusResponse.redis,
-        githubAuth: statusResponse.githubAuth,
-        claudeAuth: statusResponse.claudeAuth,
-        indexing: statusResponse.indexing,
-        githubEventIntake: statusResponse.githubEventIntake || 'Unknown',
-        githubEventIntakeStatus: intakeStatus,
-        agents: statusResponse.agents,
-        isHealthy:
-          statusResponse.daemon === 'Running' &&
-          workersStatus === 'Running' &&
-          statusResponse.redis === 'Connected' &&
-          statusResponse.githubAuth === 'Authenticated' &&
-          ['Idle', 'Active', 'Queued', 'Connected'].includes(statusResponse.indexing) &&
-          ['Connected', 'Active', 'Unknown'].includes(intakeStatus) &&
-          agentsHealthy,
+      const requested = new Set(resources);
+      const reads = {
+        queue: requested.has('queue')
+          ? coalesceHeaderStatsRead(requestIdentityKey, 'queue', getQueueStats) : null,
+        drafts: requested.has('drafts')
+          ? coalesceHeaderStatsRead(requestIdentityKey, 'drafts', () =>
+            getDrafts({ limit: 20, excludeStatuses: 'merged' })) : null,
+        tasks: requested.has('tasks')
+          ? coalesceHeaderStatsRead(requestIdentityKey, 'tasks', () =>
+            getTasks({ limit: 30, forReview: true, excludeMerged: true })) : null,
+        status: requested.has('status')
+          ? coalesceHeaderStatsRead(requestIdentityKey, 'status', isInitialLoad ? getStatus : refreshStatus) : null,
       };
-      setSystemHealth(health);
+      const entries = await Promise.all((Object.entries(reads) as Array<[
+        HeaderStatsResource, Promise<unknown> | null
+      ]>).filter((entry): entry is [HeaderStatsResource, Promise<unknown>] => entry[1] !== null)
+        .map(async ([resource, promise]) => {
+          try {
+            return [resource, await promise, null] as const;
+          } catch (error) {
+            return [resource, null, error as Error] as const;
+          }
+        }));
 
-      setError(null);
+      if (!isMountedRef.current || requestIdentityRef.current !== requestIdentity) {
+        return {
+          succeededResources: [],
+          failedResources: [],
+          supersededResources: [...resources],
+        };
+      }
+
+      const result: FetchStatsResult = {
+        succeededResources: [],
+        failedResources: [],
+        supersededResources: [],
+      };
+      for (const [resource, value, resourceError] of entries) {
+        if (requestVersions.get(resource) !== statsRequestRef.current[resource]) {
+          result.supersededResources.push(resource);
+          continue;
+        }
+        if (resourceError) {
+          resourceErrorsRef.current[resource] = resourceError.message;
+          result.failedResources.push(resource);
+          setResourceStatuses(previous => ({ ...previous, [resource]: 'unavailable' }));
+          continue;
+        }
+        resourceErrorsRef.current[resource] = null;
+        result.succeededResources.push(resource);
+        setResourceStatuses(previous => ({
+          ...previous,
+          [resource]: resource === 'queue' && isDesktopRuntime() && !socketConnectedRef.current
+            ? 'unavailable'
+            : 'available',
+        }));
+        if (resource === 'queue') {
+          const queue = value as Awaited<ReturnType<typeof getQueueStats>>;
+          activeJobsSnapshotRef.current = queue.activeJobs || [];
+          if (pendingQueueStatsFingerprintRef.current !== null) {
+            lastQueueStatsFingerprintRef.current = pendingQueueStatsFingerprintRef.current;
+            pendingQueueStatsFingerprintRef.current = null;
+          }
+        } else if (resource === 'drafts') {
+          const response = value as Awaited<ReturnType<typeof getDrafts>>;
+          draftsSnapshotRef.current = response.drafts;
+          draftStatusesRef.current = new Map(response.drafts.map(draft => [draft.draft_id, draft.status]));
+          setActivePlans(filterActivePlans(response.drafts));
+        } else if (resource === 'tasks') {
+          const response = value as Awaited<ReturnType<typeof getTasks>>;
+          tasksSnapshotRef.current = response;
+          for (const task of response.tasks) {
+            taskFingerprintsRef.current.set(task.id, `${task.status}\0${task.repository ?? ''}\0${task.issueNumber ?? ''}`);
+          }
+          const reviewableGroups = buildReviewGroups(response);
+          setReviewGroups(reviewableGroups);
+          setReviewCount(reviewableGroups.length);
+        } else {
+          setSystemHealth(buildSystemHealth(value as SystemStatus));
+        }
+      }
+
+      if (result.succeededResources.some(resource => resource === 'queue' || resource === 'drafts')) {
+        const runningItemsList = buildRunningItems(
+          draftsSnapshotRef.current,
+          activeJobsSnapshotRef.current || [],
+        );
+        setRunningItems(runningItemsList);
+        setRunningCount(runningItemsList.length);
+      }
+      setError(ALL_STATS_RESOURCES
+        .map(resource => resourceErrorsRef.current[resource])
+        .find((message): message is string => message !== null) ?? null);
+      return result;
     } catch (err) {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || requestIdentityRef.current !== requestIdentity) {
+        return {
+          succeededResources: [],
+          failedResources: [],
+          supersededResources: [...resources],
+        };
+      }
       console.error('Failed to fetch header stats:', err);
+      const failedResources = resources.filter(resource =>
+        requestVersions.get(resource) === statsRequestRef.current[resource]);
+      failedResources.forEach(resource => {
+        resourceErrorsRef.current[resource] = (err as Error).message;
+      });
+      setResourceStatuses(previous => failedResources.reduce((next, resource) => ({
+        ...next,
+        [resource]: 'unavailable',
+      }), previous));
       setError((err as Error).message);
+      return {
+        succeededResources: [],
+        failedResources,
+        supersededResources: resources.filter(resource => !failedResources.includes(resource)),
+      };
     } finally {
-      if (isMountedRef.current) {
+      if (isInitialLoad
+        && isMountedRef.current
+        && requestIdentityRef.current === requestIdentity) {
         setIsLoading(false);
       }
     }
-  }, []);
+  }, [getStatus, refreshStatus, requestIdentityKey]);
+  /* eslint-enable complexity */
 
   // Refresh function for manual refresh
   const refresh = useCallback(async () => {
-    await fetchStats(false);
+    await fetchStats(ALL_STATS_RESOURCES, false);
   }, [fetchStats]);
+
+  // Queue, task, and draft transitions are often emitted together. Collect the
+  // affected resources and reconcile each at most once after the burst.
+  const scheduleLiveRefresh = useCallback((resources: readonly HeaderStatsResource[] = ALL_STATS_RESOURCES) => {
+    resources.forEach(resource => liveRefreshPendingRef.current.add(resource));
+    if (document.visibilityState === 'hidden') return;
+    if (liveRefreshTimerRef.current !== null || liveRefreshInFlightRef.current) return;
+
+    const armRefresh = (delayMs: number) => {
+      liveRefreshTimerRef.current = setTimeout(async () => {
+        liveRefreshTimerRef.current = null;
+        if (!isMountedRef.current || liveRefreshPendingRef.current.size === 0) return;
+
+        const pendingResources = [...liveRefreshPendingRef.current];
+        liveRefreshPendingRef.current.clear();
+        liveRefreshInFlightRef.current = true;
+        const outcome = await fetchStats(pendingResources, false);
+        liveRefreshInFlightRef.current = false;
+
+        if (!isMountedRef.current) return;
+        if (outcome.failedResources.length === 0) {
+          liveRefreshRetryAttemptRef.current = 0;
+        } else if (socketConnectedRef.current
+          && liveRefreshRetryAttemptRef.current < LIVE_REVALIDATION_RETRY_DELAYS_MS.length) {
+          const retryDelay = LIVE_REVALIDATION_RETRY_DELAYS_MS[liveRefreshRetryAttemptRef.current];
+          liveRefreshRetryAttemptRef.current += 1;
+          outcome.failedResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
+          if (document.visibilityState !== 'hidden') armRefresh(retryDelay);
+        } else {
+          liveRefreshRetryAttemptRef.current = 0;
+          if (outcome.failedResources.includes('queue')) {
+            pendingQueueStatsFingerprintRef.current = null;
+          }
+        }
+
+        if (liveRefreshPendingRef.current.size > 0
+          && liveRefreshTimerRef.current === null
+          && document.visibilityState !== 'hidden') {
+          armRefresh(LIVE_INVALIDATION_COALESCE_MS);
+        }
+      }, delayMs);
+    };
+
+    armRefresh(LIVE_INVALIDATION_COALESCE_MS);
+  }, [fetchStats]);
+
+  // A reconnect can carry a forced queue snapshot whose counts match the last
+  // payload even though drafts, tasks, or health changed while offline. Reset
+  // queue dedup for every runtime and reconcile one authoritative snapshot.
+  // Desktop additionally invalidates cached activity while its scoped socket is
+  // disconnected.
+  const previousSocketConnectionRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const previous = previousSocketConnectionRef.current;
+    previousSocketConnectionRef.current = isConnected;
+    if (!isConnected) {
+      if (liveRefreshTimerRef.current !== null) {
+        clearTimeout(liveRefreshTimerRef.current);
+        liveRefreshTimerRef.current = null;
+      }
+      liveRefreshPendingRef.current.clear();
+      liveRefreshRetryAttemptRef.current = 0;
+      pendingQueueStatsFingerprintRef.current = null;
+      lastQueueStatsFingerprintRef.current = null;
+      ALL_STATS_RESOURCES.forEach(resource => { statsRequestRef.current[resource] += 1; });
+      if (isDesktopRuntime()) {
+        setRunningItems([]);
+        setRunningCount(0);
+        setResourceStatuses(previous => ({ ...previous, queue: 'unavailable' }));
+        setIsLoading(false);
+      }
+      return;
+    }
+    if (previous === false) {
+      lastQueueStatsFingerprintRef.current = null;
+      pendingQueueStatsFingerprintRef.current = null;
+      liveRefreshRetryAttemptRef.current = 0;
+      if (isDesktopRuntime()) {
+        setResourceStatuses(previous => ({ ...previous, queue: 'checking' }));
+      }
+      scheduleLiveRefresh(ALL_STATS_RESOURCES);
+    }
+  }, [isConnected, scheduleLiveRefresh]);
 
   // Initial load
   useEffect(() => {
     isMountedRef.current = true;
+    const pendingResources = liveRefreshPendingRef.current;
 
     // Initial fetch
-    fetchStats(true);
+    const initialResources = ALL_STATS_RESOURCES;
+    if (document.visibilityState === 'hidden') {
+      initialResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
+    } else {
+      void fetchStats(initialResources, true).then(outcome => {
+        if (outcome.failedResources.length > 0 && socketConnectedRef.current) {
+          scheduleLiveRefresh(outcome.failedResources);
+        }
+      });
+    }
 
     return () => {
       isMountedRef.current = false;
+      if (liveRefreshTimerRef.current !== null) {
+        clearTimeout(liveRefreshTimerRef.current);
+        liveRefreshTimerRef.current = null;
+      }
+      pendingResources.clear();
     };
-  }, [fetchStats]);
+  }, [fetchStats, scheduleLiveRefresh]);
 
   // Subscribe to WebSocket events for real-time updates
   useEffect(() => {
     if (!isConnected) return;
 
     // Handle task updates - refresh stats when any task changes state
-    const handleTaskUpdate = () => {
-      console.log('[useHeaderStats] Received task update, refreshing stats');
-      fetchStats(false);
+    const handleTaskUpdate = (payload: TaskUpdatePayload) => {
+      const state = payload.state.toLowerCase();
+      const previousState = payload.previousState?.toLowerCase();
+      const fingerprint = `${state}\0${payload.repository ?? ''}\0${payload.issueNumber ?? ''}`;
+      if (taskFingerprintsRef.current.get(payload.taskId) === fingerprint) return;
+      taskFingerprintsRef.current.set(payload.taskId, fingerprint);
+      const reviewStates = new Set(['completed', 'failed']);
+      const identityChanged = payload.metadata?.issueRefUpdated === true;
+      if (!identityChanged && !reviewStates.has(state) && !reviewStates.has(previousState ?? '')) return;
+      scheduleLiveRefresh(['tasks']);
     };
 
     // Handle draft updates - refresh stats when drafts change (affects active plans)
-    const handleDraftUpdate = () => {
-      console.log('[useHeaderStats] Received draft update, refreshing stats');
-      fetchStats(false);
+    const handleDraftUpdate = (payload: DraftUpdatePayload) => {
+      if (!payload.draftStatus) return;
+      const previousStatus = draftStatusesRef.current.get(payload.draftId);
+      if (previousStatus === payload.draftStatus) return;
+      draftStatusesRef.current.set(payload.draftId, payload.draftStatus);
+      scheduleLiveRefresh(['drafts']);
     };
 
-    // Subscribe to task and draft updates
+    const handleQueueStatsUpdate = (payload: QueueStatsUpdatePayload) => {
+      const fingerprint = queueStatsFingerprint(payload);
+      if (fingerprint === lastQueueStatsFingerprintRef.current
+        || fingerprint === pendingQueueStatsFingerprintRef.current) return;
+      pendingQueueStatsFingerprintRef.current = fingerprint;
+      console.log('[useHeaderStats] Received changed queue stats, scheduling stats refresh');
+      scheduleLiveRefresh(['queue']);
+    };
+
+    // Subscribe to every event that can change active work.
     const unsubscribeTask = onTaskUpdate(handleTaskUpdate);
     const unsubscribeDraft = onDraftUpdate(handleDraftUpdate);
+    const unsubscribeQueueStats = onQueueStatsUpdate(handleQueueStatsUpdate);
 
     return () => {
       unsubscribeTask();
       unsubscribeDraft();
+      unsubscribeQueueStats();
     };
-  }, [isConnected, onTaskUpdate, onDraftUpdate, fetchStats]);
+  }, [isConnected, onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, scheduleLiveRefresh]);
+
+  // Hidden tabs accumulate invalidations without issuing requests. Becoming
+  // visible (or receiving focus after a suspended socket) performs one full
+  // recovery snapshot. A disconnected visible tab keeps a bounded HTTP
+  // fallback so the UI cannot remain stale forever.
+  useEffect(() => {
+    const recoverVisible = () => {
+      if (document.visibilityState !== 'hidden') scheduleLiveRefresh(ALL_STATS_RESOURCES);
+    };
+    const fallbackPoll = window.setInterval(() => {
+      if (!socketConnectedRef.current && document.visibilityState !== 'hidden') {
+        scheduleLiveRefresh(ALL_STATS_RESOURCES);
+      }
+    }, FALLBACK_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', recoverVisible);
+    window.addEventListener('focus', recoverVisible);
+    return () => {
+      window.clearInterval(fallbackPoll);
+      document.removeEventListener('visibilitychange', recoverVisible);
+      window.removeEventListener('focus', recoverVisible);
+    };
+  }, [scheduleLiveRefresh]);
 
   // Re-filter when dismissed IDs or timestamps change
   useEffect(() => {
-    // Trigger a refresh when dismissal state changes
-    // This ensures the lists are updated when items are dismissed
     if (!isLoading) {
-      fetchStats(false);
+      setActivePlans(filterActivePlans(draftsSnapshotRef.current));
+      const reviewableGroups = buildReviewGroups(tasksSnapshotRef.current);
+      setReviewGroups(reviewableGroups);
+      setReviewCount(reviewableGroups.length);
     }
   }, [dismissedPlanIds.length, dismissedTaskIds.length, Object.keys(dismissedTaskTimestamps).length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     runningCount,
     runningItems,
+    activityStatus: getActivityStatus(resourceStatuses),
+    resourceStatuses,
     activePlans,
     reviewCount,
     reviewGroups,

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
-import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
+import { createWorker, INDEXING_QUEUE_NAME, indexingQueue, runMigrations } from '@propr/core';
 import type { IndexingJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
@@ -327,6 +327,9 @@ async function scanAndQueueRepositories(): Promise<void> {
 
 async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingResult>> {
     const workerId = `indexing-worker:${generateCorrelationId()}`;
+
+    // Do not scan or claim indexing work until the shared schema is current.
+    await runMigrations();
 
     logger.info({
         queue: INDEXING_QUEUE_NAME,

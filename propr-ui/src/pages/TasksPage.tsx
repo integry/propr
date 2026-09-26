@@ -17,7 +17,7 @@ const TasksPage: React.FC = () => {
 
   // Full-height flex column layout for TaskList with anchored header/footer
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full w-full min-w-0 flex-col bg-white">
       <TaskList limit={50} />
     </div>
   );

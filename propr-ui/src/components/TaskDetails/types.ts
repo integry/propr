@@ -1,3 +1,5 @@
+import type { PublishedVisualPreview } from '@propr/shared';
+
 export interface TokenUsage {
   input_tokens?: number | null;
   output_tokens?: number | null;
@@ -35,6 +37,17 @@ export interface HistoryItemMetadata {
   ultrafixScore?: number;
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
+  syntheticRouting?: {
+    virtualAgentAlias?: string;
+    virtualModel?: string;
+    physicalAgentAlias?: string;
+    physicalModel?: string;
+    memberId?: string;
+    callId?: string;
+    attemptNumber?: number;
+    selectionReason?: string;
+    requiredTokens?: number;
+  };
 }
 
 export interface HistoryItem {
@@ -59,6 +72,7 @@ export interface TaskInfo {
   llmProvider?: string;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   ultrafixCycle?: boolean;
+  previewMedia?: PublishedVisualPreview[];
 }
 
 export interface PromptData {
@@ -83,10 +97,10 @@ export interface LogFileInfo {
 }
 
 export interface LogFilesData {
-  sessionId?: string;
-  logFiles?: LogFileInfo[];
-  error?: string;
-  files?: Record<string, string>;
+  sessionId?: string | null;
+  logFiles?: LogFileInfo[] | null;
+  error?: string | null;
+  files?: Record<string, string> | null;
 }
 
 export interface SelectedLogFileData {
@@ -102,13 +116,21 @@ export interface TodoItem {
 }
 
 export interface LiveEvent {
-  type: 'thought' | 'tool_use' | 'tool_result';
+  // `user_input` is produced only by the goal timeline merge; provider streams never emit it.
+  type: 'thought' | 'tool_use' | 'tool_result' | 'user_input';
   content?: string;
   timestamp?: string;
   toolName?: string;
-  input?: { file_path?: string; command?: string };
-  result?: string | object;
+  input?: Record<string, unknown> & { file_path?: string; command?: string };
+  id?: string;
+  toolUseId?: string;
+  result?: unknown;
   isError?: boolean;
+  isSubagentSummary?: boolean;
+  /** Delivery state of a `user_input` event. */
+  inputState?: 'pending' | 'delivered' | 'undeliverable';
+  /** Number of files sent alongside a `user_input` message. */
+  attachmentCount?: number;
 }
 
 export interface LiveDetails {
@@ -124,6 +146,10 @@ export interface AnalysisData {
   content?: string;
   error?: string;
 }
+
+export type AnalysisApiData = {
+  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
+};
 
 export interface ParsedAnalysis {
   recommendations?: string[];

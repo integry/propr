@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- repository configuration state and auto-save stay together */
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   getRepoConfig,
@@ -7,7 +8,6 @@ import {
   getRepositoriesIndexingStatus,
   stopRepositoryIndexing,
   RepositoryIndexingStatus,
-  MonitoredRepo,
   getUserRepoPreferences,
   updateUserRepoPreferences,
   UserRepoPreferences
@@ -17,6 +17,21 @@ import { useSocket } from '../contexts/useSocket';
 import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { isCommittedConfigWriteError } from '../api/apiClient';
+import {
+  buildRepositoriesForDisplay,
+  defaultVisualPreview,
+  getRepositoryConfigKey,
+  parseVisualPreview,
+  parseWorkflowSelection,
+  updateRepositoryCancelCiWorkflows,
+  resolveRepositoryNotificationsEnabled,
+  toggleRepositoryCancelCiDuringFollowup,
+  toggleRepositoryNotifications,
+  updateRepositoryVisualPreview,
+  type ManagedRepo,
+  type VisualPreviewSettings
+} from './repositoryVisualPreview';
 
 const generateId = (): string => crypto.randomUUID();
 const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
@@ -37,7 +52,7 @@ function shouldIgnoreStaleProgressUpdate(
   return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
 }
 
-export type Repo = MonitoredRepo;
+export type Repo = ManagedRepo;
 
 export interface UseRepositoryManagementResult {
   repos: Repo[];
@@ -52,9 +67,14 @@ export interface UseRepositoryManagementResult {
   loadRepos: () => Promise<void>;
   handleStopIndexing: (repoName: string, baseBranch?: string) => Promise<void>;
   handleReindexRepo: (repoName: string, baseBranch?: string) => Promise<void>;
-  handleAddRepo: (newRepo: string, newAlias: string, newBaseBranch: string) => boolean;
+  handleAddRepo: (newRepo: string, newAlias: string, newBaseBranch: string, autoFollowupOnFailedCi: boolean, newVisualPreview?: VisualPreviewSettings) => boolean;
   handleRemoveRepo: (repoId: string) => void;
   handleToggleRepo: (repoId: string) => void;
+  handleToggleAutoCiFollowup: (repoId: string) => void;
+  handleToggleCancelCiDuringFollowup: (repoId: string) => void;
+  handleUpdateCancelCiWorkflows: (repoId: string, workflows: string[]) => void;
+  handleToggleNotifications: (repoId: string) => void;
+  handleUpdateVisualPreview: (repoId: string, settings: VisualPreviewSettings) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
   handleToggleShowHidden: () => void;
@@ -78,10 +98,13 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const configurationReloadRequiredRef = useRef(false);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
   const terminalSocketUpdatesRef = useRef<Set<string>>(new Set());
+  const reposRequestIdRef = useRef(0);
 
   const loadRepos = useCallback(async () => {
+    const requestId = ++reposRequestIdRef.current;
     try {
       setLoading(true);
       setError(null);
@@ -91,24 +114,31 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           : getInstanceCatalog().then(catalog => ({ repos_to_monitor: catalog.repositories })),
         getUserRepoPreferences().catch(() => ({} as UserRepoPreferences))
       ]);
+      if (requestId !== reposRequestIdRef.current) return;
       const rawRepos = repoData.repos_to_monitor || [];
       setUserRepoPrefs(prefs);
       const seenKeys = new Set<string>();
-      const validRepos: Repo[] = rawRepos
+      const parsedRepos: Repo[] = rawRepos
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             const userPref = prefs[repo] || {};
-            return { id: generateId(), name: repo, enabled: true, starred: userPref.starred, hidden: userPref.hidden };
+            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], notificationsEnabled: true, visualPreview: defaultVisualPreview(), starred: userPref.starred, hidden: userPref.hidden };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+            const autoFollowupOnFailedCi = repoObj.autoFollowupOnFailedCi === true;
+            const cancelCiDuringFollowup = repoObj.cancelCiDuringFollowup === true;
+            const cancelCiDuringFollowupWorkflows = parseWorkflowSelection(repoObj.cancelCiDuringFollowupWorkflows);
+            // An absent field means enabled: the product default and legacy behaviour.
+            const notificationsEnabled = repoObj.notificationsEnabled !== false;
+            const visualPreview = parseVisualPreview(repoObj.visualPreview);
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, notificationsEnabled, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -122,11 +152,14 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           seenKeys.add(key);
           return true;
         });
-      setRepos(validRepos);
+      setRepos(parsedRepos);
+      configurationReloadRequiredRef.current = false;
     } catch (err) {
+      if (requestId !== reposRequestIdRef.current) return;
       setError((err as Error).message || 'Failed to load repositories');
+      throw err;
     } finally {
-      setLoading(false);
+      if (requestId === reposRequestIdRef.current) setLoading(false);
     }
   }, [canManageRepositories]);
 
@@ -193,7 +226,13 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   }, []);
 
-  useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
+  useEffect(() => {
+    void loadRepos().catch(() => undefined);
+    void loadAvailableRepos();
+    void loadIndexingStatuses();
+  }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
+
+  useEffect(() => () => { reposRequestIdRef.current += 1; }, []);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -209,6 +248,11 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const performAutoSave = useCallback(async (reposToSave: Repo[]) => {
     if (!canManageRepositories) {
       setError('Administrator access is required to change repository configuration');
+      return false;
+    }
+    if (configurationReloadRequiredRef.current) {
+      setSaveStatus('error');
+      setError('Reload the current repository configuration before saving again.');
       return false;
     }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -227,11 +271,23 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
       return true;
     } catch (err) {
+      let reportedError = err instanceof Error ? err : new Error(String(err));
+      if (isCommittedConfigWriteError(err)) {
+        // The write is durable even though publication/lock finalization failed.
+        // Keep the save pending while replacing optimistic state from the server.
+        try {
+          await loadRepos();
+        } catch (refreshError) {
+          configurationReloadRequiredRef.current = true;
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          reportedError = new Error(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing repositories again.`);
+        }
+      }
       setSaveStatus('error');
-      setError((err as Error).message || 'Failed to save repository configuration');
+      setError(reportedError.message || 'Failed to save repository configuration');
       return false;
     }
-  }, [canManageRepositories]);
+  }, [canManageRepositories, loadRepos]);
 
   const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
     if (!canManageRepositories) return;
@@ -267,7 +323,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   };
 
-  const handleAddRepo = (newRepo: string, newAlias: string, newBaseBranch: string): boolean => {
+  const handleAddRepo = (newRepo: string, newAlias: string, newBaseBranch: string, autoFollowupOnFailedCi: boolean, newVisualPreview = defaultVisualPreview()): boolean => {
     if (!canManageRepositories || !newRepo) return false;
     const isDuplicate = repos.some(r => r.name === newRepo && (r.baseBranch || '') === (newBaseBranch || ''));
     if (isDuplicate) {
@@ -275,8 +331,46 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       alert(`Repository "${newRepo}"${branchInfo} has already been added to the list.`);
       return false;
     }
-    const newEntry: Repo = { id: generateId(), name: newRepo, enabled: true, alias: newAlias.trim() || undefined, baseBranch: newBaseBranch.trim() || undefined };
-    const newRepos = [...repos, newEntry];
+    const repositoryKey = getRepositoryConfigKey(newRepo);
+    const existingVisualPreview = buildRepositoriesForDisplay(repos)
+      .find(repo => getRepositoryConfigKey(repo.name) === repositoryKey)?.visualPreview || defaultVisualPreview();
+    // Visual preview settings are shared by every branch of a repository, so blank instructions keep the existing ones.
+    const visualPreview = newVisualPreview.enabled
+      ? parseVisualPreview({
+        ...existingVisualPreview,
+        enabled: true,
+        types: newVisualPreview.types,
+        instructions: newVisualPreview.instructions?.trim() || existingVisualPreview.instructions
+      })
+      : existingVisualPreview;
+    const newEntry: Repo = {
+      id: generateId(),
+      name: newRepo,
+      enabled: true,
+      autoFollowupOnFailedCi,
+      // Not in the Add Repository modal: new branches inherit the repository value.
+      cancelCiDuringFollowup: repos.some(repo =>
+        getRepositoryConfigKey(repo.name) === repositoryKey && repo.cancelCiDuringFollowup
+      ),
+      cancelCiDuringFollowupWorkflows: repos.find(repo =>
+        getRepositoryConfigKey(repo.name) === repositoryKey && repo.cancelCiDuringFollowupWorkflows.length > 0
+      )?.cancelCiDuringFollowupWorkflows ?? [],
+      // Not in the Add Repository modal: new repositories default on; new branches inherit.
+      notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, repositoryKey),
+      visualPreview,
+      alias: newAlias.trim() || undefined,
+      baseBranch: newBaseBranch.trim() || undefined
+    };
+    const newRepos = [
+      ...repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+        ? {
+          ...repo,
+          autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi || autoFollowupOnFailedCi,
+          ...(newVisualPreview.enabled ? { visualPreview } : {})
+        }
+        : repo),
+      newEntry
+    ];
     setRepos(newRepos);
     performAutoSave(newRepos);
     return true;
@@ -292,6 +386,53 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const handleToggleRepo = (repoId: string) => {
     if (!canManageRepositories) return;
     const newRepos = repos.map(repo => repo.id === repoId ? { ...repo, enabled: !repo.enabled } : repo);
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleAutoCiFollowup = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const targetRepo = repos.find(repo => repo.id === repoId);
+    if (!targetRepo) return;
+    const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+    const autoFollowupOnFailedCi = !repos.some(repo =>
+      getRepositoryConfigKey(repo.name) === repositoryKey && repo.autoFollowupOnFailedCi
+    );
+    const newRepos = repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+      ? { ...repo, autoFollowupOnFailedCi }
+      : repo);
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleCancelCiDuringFollowup = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const newRepos = toggleRepositoryCancelCiDuringFollowup(repos, repoId);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleUpdateCancelCiWorkflows = (repoId: string, workflows: string[]) => {
+    if (!canManageRepositories) return;
+    const newRepos = updateRepositoryCancelCiWorkflows(repos, repoId, workflows);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleNotifications = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const newRepos = toggleRepositoryNotifications(repos, repoId);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleUpdateVisualPreview = (repoId: string, settings: VisualPreviewSettings) => {
+    if (!canManageRepositories) return;
+    const newRepos = updateRepositoryVisualPreview(repos, repoId, settings);
+    if (newRepos === repos) return;
     setRepos(newRepos);
     performAutoSave(newRepos);
   };
@@ -327,15 +468,16 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleToggleShowHidden = () => setShowHiddenRepos(prev => !prev);
-  const handleRetry = () => { setError(null); loadRepos(); };
+  const handleRetry = () => { setError(null); void loadRepos().catch(() => undefined); };
 
   const hiddenCount = repos.filter(r => r.hidden).length;
-  const filteredRepos = showHiddenRepos ? repos : repos.filter(r => !r.hidden);
+  const reposForDisplay = buildRepositoriesForDisplay(repos);
+  const filteredRepos = showHiddenRepos ? reposForDisplay : reposForDisplay.filter(r => !r.hidden);
 
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleToggleNotifications, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }

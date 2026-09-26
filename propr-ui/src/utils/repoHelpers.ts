@@ -1,6 +1,6 @@
 import { RepoOption } from '../components/RepositorySelector';
 import { getInstanceCatalog } from '../api/proprApi';
-import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
+import { getRepositoriesIndexingStatus, getRepoStatusKey, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPreferencesApi';
 
 /**
@@ -16,20 +16,21 @@ export async function fetchEnabledRepos(): Promise<RepoOption[]> {
 
   const indexingMap = new Map<string, RepositoryIndexingStatus>();
   for (const status of indexingData.repositories || []) {
-    indexingMap.set(status.full_name, status);
+    indexingMap.set(getRepoStatusKey(status.full_name, status.branch), status);
   }
 
   return repoData.repositories
     .filter(r => r.enabled)
     .map(r => {
       const prefs = userPrefs[r.name];
-      const indexingStatus = indexingMap.get(r.name);
+      const indexingStatus = indexingMap.get(getRepoStatusKey(r.name, r.baseBranch));
       return {
         name: r.name,
         enabled: true,
         baseBranch: r.baseBranch,
         starred: prefs?.starred || false,
-        iconPath: indexingStatus?.icon_path || null
+        iconPath: indexingStatus?.icon_path || null,
+        iconRevision: indexingStatus?.last_indexed_hash || r.baseBranch || 'HEAD'
       };
     });
 }

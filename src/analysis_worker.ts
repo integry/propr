@@ -1,13 +1,13 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
-import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@propr/core';
+import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue, runMigrations } from '@propr/core';
 import type { AnalysisJobData, JobResult, CommentJobData, UnprocessedComment } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import { getExecutionAnalysis } from '@propr/core';
 import { loadSettings, loadAutoFollowupScoreThreshold } from '@propr/core';
-import { resolveModelAlias } from '@propr/core';
+import { resolveConfiguredModel } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 
 process.on('uncaughtException', (error: Error) => {
@@ -45,6 +45,18 @@ interface TaskRecord {
     repository: string;
     issue_number: number;
     pr_number?: number;
+    initial_job_data?: unknown;
+}
+
+function userIdFromInitialJobData(value: unknown): string | undefined {
+    try {
+        const data = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+        const userId = (data as Record<string, unknown>).userId;
+        return typeof userId === 'string' && userId.trim() ? userId.trim() : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /**
@@ -207,6 +219,7 @@ async function checkAndTriggerAutoFollowup(
         // Queue as PR comment job - same as user follow-up comments
         // The webhook filters bot comments, so we queue directly
         const followupCorrelationId = generateCorrelationId();
+        const userId = userIdFromInitialJobData(task.initial_job_data);
         const unprocessedComment: UnprocessedComment = {
             id: commentId,
             body: commentBody,
@@ -214,6 +227,7 @@ async function checkAndTriggerAutoFollowup(
             type: 'issue'
         };
         const jobData: CommentJobData = {
+            ...(userId ? { userId } : {}),
             pullRequestNumber: targetNumber,
             comments: [unprocessedComment],
             repoOwner,
@@ -255,8 +269,7 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
 
     try {
         const settings = await loadSettings();
-        const configuredModel = (settings.analysis_model_fast as string) || 'haiku';
-        const fastModel = resolveModelAlias(configuredModel);
+        const fastModel = await resolveConfiguredModel(settings.analysis_model_fast);
 
         const analysisReport = await getExecutionAnalysis({
             executionId,
@@ -286,6 +299,9 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
 
 async function startAnalysisWorker(): Promise<Worker<AnalysisJobData, AnalysisResult>> {
     const workerId = `analysis-worker:${generateCorrelationId()}`;
+
+    // Do not claim analysis work until the shared schema is current.
+    await runMigrations();
 
     logger.info({
         queue: ANALYSIS_QUEUE_NAME,

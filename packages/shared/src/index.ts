@@ -56,6 +56,26 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
+export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
+
+export {
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+  PROPR_API_ORIGIN_PARITY_CASES,
+  type NormalizeProprApiOriginOptions,
+} from './apiOrigin.js';
+
+export {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  DESKTOP_TOKEN_TERMINAL_CODES,
+  type DesktopTokenTerminalCode,
+  type DesktopTokenTerminalRevocation,
+} from './desktopTokenRevocation.js';
+
 export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,
@@ -74,6 +94,26 @@ export {
   type InstanceCatalogResponse,
 } from './instanceCatalog.js';
 
+export {
+  SYNTHETIC_SELECTION_STRATEGIES,
+  syntheticUsageLimitsSchema,
+  syntheticModelMemberSchema,
+  syntheticModelConfigSchema,
+  syntheticAgentConfigSchema,
+  syntheticAgentConfigsSchema,
+  parseSyntheticAgentConfigs,
+  validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
+  findSyntheticReferencesToDirectAgent,
+  type SyntheticSelectionStrategy,
+  type SyntheticUsageLimits,
+  type SyntheticModelMember,
+  type SyntheticModelConfig,
+  type SyntheticAgentConfig,
+  type SyntheticDirectAgentReference,
+  type SyntheticReferenceValidationResult,
+} from './syntheticAgents.js';
+
 // Export user whitelist helpers
 export {
   getGithubUserWhitelist,
@@ -89,15 +129,47 @@ export { validateRelayUrl } from './validateRelayUrl.js';
 export {
   DEFAULT_PROPR_ROUTING_URL,
   DEFAULT_PROPR_GH_RELAY_URL,
+  DEFAULT_LOCAL_API_PORT,
+  DEFAULT_LOCAL_API_BINDING,
+  DEFAULT_LOCAL_API_BASE_URL,
+  DEFAULT_LOCAL_API_OAUTH_CALLBACK_URL,
   DEFAULT_PROPR_UI_ORIGIN,
+  DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
+  MAX_PROPR_API_BASE_URL_LENGTH,
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
+  canonicalProprProxySelector,
+  canonicalProprProxyUrl,
   isValidProprInstanceId,
+  parseProprConnectEndpoint,
+  isCanonicalProprConnectHostname,
+  isProprConnectReservedHostAttempt,
+  type ProprConnectEndpoint,
   isProprProxyUrl,
   proprTunnelEndpoints,
 } from './proprServiceUrls.js';
+
+export {
+  normalizeDesktopPairingApprovalUrl,
+  type DesktopPairingApprovalUrlInput,
+} from './desktopPairing.js';
+
+export {
+  PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+  PROPR_CONNECT_DISCOVERY_MAX_BYTES,
+  PUBLIC_INSTANCE_IDENTITY_SCHEMA_VERSION,
+  PUBLIC_INSTANCE_IDENTITY_FILENAME,
+  isPublicInstanceIdentity,
+  parseProprDesktopDiscovery,
+  parseProprDesktopDiscoveryJson,
+  parsePublicInstanceIdentityDocument,
+  type PublicInstanceIdentityDocument,
+  type ProprDesktopDiscovery,
+} from './connectDiscovery.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
 // routing service so the boot/CLI checks and the dialer agree on one policy)
@@ -134,6 +206,9 @@ export {
 // keys so the daemon publisher, API status route, and CLI cannot drift)
 export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
 
+// Export the timestamp contract used at every account-status trust boundary.
+export { isAccountStatusTimestamp } from './accountStatusTimestamp.js';
+
 export {
   PROPR_VERSION,
   PROPR_API_COMPATIBILITY,
@@ -142,6 +217,7 @@ export {
   getProprCompatibilityMetadata,
   evaluateProprApiCompatibility,
   type ProprCompatibilityMetadata,
+  type ProprDesktopAuthenticationCapabilities,
   type ProprApiCompatibilityInput,
   type ProprApiCompatibilityResult,
 } from './proprCompatibility.js';
@@ -156,10 +232,51 @@ export {
 // Export the default review guidance (the overridable part of the /review prompt)
 export { DEFAULT_REVIEW_GUIDANCE } from './reviewPrompt.js';
 
+export {
+  REVIEW_CONTEXT_BUDGET_PERCENT_MIN,
+  REVIEW_CONTEXT_BUDGET_PERCENT_MAX,
+  REVIEW_CONTEXT_BUDGET_PERCENT_STEP,
+  DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
+  REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
+  REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MAX,
+  REVIEW_OUTPUT_TOKEN_RESERVE,
+  REVIEW_FALLBACK_CONTEXT_WINDOW,
+  isValidReviewContextBudgetPercent,
+  normalizeReviewContextBudgetPercent,
+  isValidLegacyReviewMaxContextTokens,
+  normalizeLegacyReviewMaxContextTokens,
+  resolveReviewInputCapacity,
+  resolveReviewInputCeiling,
+  type ReviewCapacitySource,
+  type ReviewTokenizerProfile,
+  type ReviewRouteDescriptor,
+  type ReviewInputCapacity,
+  type ReviewInputCeiling,
+  type ReviewInputCeilingLimit,
+} from './reviewContextBudget.js';
+
 // Export the owner/repo slug parser shared by the CLI and API
 export { parseProjectSlug } from './projectSlug.js';
 
 export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
+
+// Export the task lifecycle vocabulary shared by the API and CLI. This keeps
+// active-task workflows aligned with the states returned by the server.
+export {
+  TASK_LIFECYCLE_STATES,
+  ACTIVE_TASK_LIFECYCLE_STATES,
+  type TaskLifecycleState,
+} from './taskLifecycle.js';
+
+export {
+  buildIssueTaskId,
+  isLegacyProviderTaskId,
+  sanitizeTaskIdComponent,
+  MAX_TASK_ID_LENGTH,
+  TASK_ID_PATTERN,
+  type IssueTaskIdParts,
+} from './taskIdentifiers.js';
 
 export {
   AGENT_LOGIN_DESCRIPTORS,
@@ -188,3 +305,162 @@ export {
   type ModelReasoningLevel,
   type ReasoningLevelLabel,
 } from './reasoningLevels.js';
+
+// Export the durable notification contract shared by backend and UI clients.
+export {
+  NOTIFICATION_KINDS,
+  NOTIFICATION_SEVERITIES,
+  NOTIFICATION_EVENT_ACTIONS,
+  NOTIFICATION_ACTION_TYPES,
+  MAX_CANONICAL_TIMESTAMP_EPOCH_MS,
+  WEB_PUSH_ENDPOINT_HOSTS,
+  WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+  NOTIFICATION_PAYLOAD_LIMITS,
+  DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS,
+  DEFAULT_NOTIFICATION_QUIET_HOURS,
+  PUSH_DELIVERY_STATUSES,
+  PUSH_DELIVERY_ATTEMPT_STATUSES,
+  NOTIFICATION_SOURCE_ACTIVITY_TYPES,
+  NOTIFICATION_SOURCE_ACTIVITY_STATUSES,
+  normalizeISO8601Timestamp,
+  parseISO8601Timestamp,
+  parseNotificationTarget,
+  parseNotificationAction,
+  parseNotificationEventActions,
+  parseNotificationEvent,
+  parseNotification,
+  isNotificationPreviewEligible,
+  parseNotificationUserState,
+  parseNotificationPreferenceChannels,
+  parseNotificationPreference,
+  parseNotificationPreferences,
+  parseIanaTimezone,
+  parseQuietHour,
+  parseNotificationQuietHours,
+  parseNotificationPreferencesUpdate,
+  parsePushSubscriptionEndpoint,
+  parsePushSubscriptionInput,
+  parsePushSubscription,
+  parsePushDeliveryJob,
+  parsePushDeliveryAttempt,
+  parseNotificationSourceActivity,
+  parseNotificationListResponse,
+  parseNotificationUnreadCountResponse,
+  parseNotificationStateResponse,
+  parseNotificationPreferencesResponse,
+  parseNotificationCapabilitiesResponse,
+  parsePushSubscriptionEnrollmentResponse,
+  parsePushSubscriptionsResponse,
+  iso8601TimestampSchema,
+  notificationTargetSchema,
+  notificationActionSchema,
+  notificationEventActionsSchema,
+  notificationEventSchema,
+  notificationSchema,
+  notificationUserStateSchema,
+  notificationPreferenceChannelsSchema,
+  notificationPreferenceSchema,
+  notificationPreferencesSchema,
+  notificationQuietHoursSchema,
+  notificationPreferencesUpdateSchema,
+  pushSubscriptionInputSchema,
+  pushSubscriptionSchema,
+  pushDeliveryJobSchema,
+  pushDeliveryAttemptSchema,
+  notificationSourceActivitySchema,
+  notificationListResponseSchema,
+  notificationUnreadCountResponseSchema,
+  notificationStateResponseSchema,
+  notificationPreferencesResponseSchema,
+  notificationCapabilitiesResponseSchema,
+  pushSubscriptionEnrollmentResponseSchema,
+  pushSubscriptionsResponseSchema,
+  type ISO8601Timestamp,
+  type Iso8601Timestamp,
+  type JsonPrimitive,
+  type JsonValue,
+  type JsonObject,
+  type NotificationKind,
+  type NotificationSeverity,
+  type NotificationEventAction,
+  type PlanNotificationTarget,
+  type TaskNotificationTarget,
+  type ReviewNotificationTarget,
+  type PullRequestNotificationTarget,
+  type IndexingNotificationTarget,
+  type SystemFailureNotificationTarget,
+  type NotificationTarget,
+  type NotificationTargetFor,
+  type NotificationActionType,
+  type NavigateNotificationAction,
+  type ExternalLinkNotificationAction,
+  type NotificationAction,
+  type NotificationEvent,
+  type NotificationUserState,
+  type Notification,
+  type NotificationPreferenceChannels,
+  type NotificationPreference,
+  type NotificationPreferences,
+  type NotificationQuietHours,
+  type NotificationPreferencePatch,
+  type NotificationPreferencesPatch,
+  type NotificationPreferencesUpdate,
+  type PushSubscriptionKeys,
+  type PushSubscriptionInput,
+  type PushSubscriptionValidationOptions,
+  type WebPushSubscription,
+  type PushSubscription,
+  type PushDeliveryJobStatus,
+  type PushDeliveryStatus,
+  type PendingPushDeliveryJob,
+  type ProcessingPushDeliveryJob,
+  type RetryablePushDeliveryJob,
+  type TerminalPushDeliveryJob,
+  type PushDeliveryJob,
+  type PushDeliveryAttemptStatus,
+  type DeliveredPushDeliveryAttempt,
+  type RetryablePushDeliveryAttempt,
+  type FailedPushDeliveryAttempt,
+  type PushDeliveryAttempt,
+  type NotificationSourceActivityType,
+  type NotificationSourceActivityStatus,
+  type TaskNotificationSourceActivity,
+  type IndexingNotificationSourceActivity,
+  type NotificationSourceActivity,
+  type NotificationListResponse,
+  type NotificationUnreadCountResponse,
+  type NotificationStateResponse,
+  type NotificationPreferencesResponse,
+  type NotificationPushCapability,
+  type NotificationCapabilitiesResponse,
+  type PushSubscriptionEnrollmentResponse,
+  type PushSubscriptionsResponse,
+  type RuntimeSchema,
+} from './notifications.js';
+
+// Keep voice briefing contracts shared so API and browser validation cannot drift.
+export {
+  VOICE_BRIEFING_SCOPES,
+  VOICE_BRIEFING_ITEM_KINDS,
+  VOICE_BRIEFING_ACTIONS,
+  VOICE_BRIEFING_MAX_ITEMS,
+  parseVoiceBriefingScope,
+  parseVoiceBriefingItem,
+  parseVoiceBriefingResponse,
+  parseVoiceCapabilitiesResponse,
+  voiceBriefingResponseSchema,
+  voiceCapabilitiesResponseSchema,
+  type VoiceBriefingScope,
+  type VoiceBriefingItemKind,
+  type VoiceBriefingAction,
+  type VoiceBriefingItem,
+  type VoiceBriefingCounts,
+  type VoiceBriefingResponse,
+  type VoiceCapabilitiesResponse,
+  type RuntimeVoiceSchema,
+} from './voice.js';
+
+export * from './visualPreviewCapacity.js';
+export * from './previewStorage/v1.js';
+
+export * from './publishedVisualPreviews.js';

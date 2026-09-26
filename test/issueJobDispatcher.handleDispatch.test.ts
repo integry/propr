@@ -33,6 +33,10 @@ describe('issueJobDispatcher handleDispatch', () => {
       })),
     };
     const deps = {
+        resolveSubmissionRetry: async () => null,
+      findSubmission: async () => undefined,
+        recordDispatch: async () => undefined,
+        recordDispatchFailure: async () => undefined,
       getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
       withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
       retryConfigs: {

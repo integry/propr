@@ -1,4 +1,8 @@
 export interface InstanceCatalogAgent {
+  /** Stable configuration identity. Omitted by older servers. */
+  id?: string;
+  /** Omitted by older servers; consumers should treat omission as direct. */
+  kind?: 'direct' | 'synthetic';
   alias: string;
   /** Always true: the operational catalog omits disabled entries. */
   enabled: boolean;
@@ -12,6 +16,8 @@ export interface InstanceCatalogRepository {
   enabled: boolean;
   alias?: string;
   baseBranch?: string;
+  /** Repository-wide notification filter. Omitted by older servers; treat omission as enabled. */
+  notificationsEnabled?: boolean;
 }
 
 export interface InstanceCatalogResponse {

@@ -5,7 +5,7 @@ title: Configuration Reference
 
 ProPR reads its configuration from the `.env` file in the stack root — the directory you run `propr` from. `propr setup`, `propr relay enroll`, and `propr tunnel setup` write most of these values for you; this page is the reference for reading or hand-editing the file. Where the value shipped in `.env.example` differs from the fallback the code uses when a variable is unset, both are shown.
 
-Deep dives live elsewhere: [Production Deployment](./deployment.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
+Deep dives live elsewhere: [Production Deployment](./deployment.md), [PWA, Web Push, and Badges](./pwa-web-push.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
 
 ## Core & GitHub Auth
 
@@ -22,16 +22,35 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `HOST_GH_PRIVATE_KEY` | Unset | Absolute host path to the `.pem`. The CLI/launcher bind-mounts it read-only into the app containers and overrides `GH_PRIVATE_KEY_PATH`, so the key can live anywhere on the host. No `~`. | App mode via the `propr` CLI or launcher. |
 | `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` | Placeholders | GitHub OAuth App credentials for Web UI login. | Always, for UI login. |
 | `GH_OAUTH_CALLBACK_URL` | Derived: `<API host>/api/auth/github/callback` | OAuth callback served by the API. Leave commented so tunnel-mode derivation wins; an active localhost value is used as-is even in tunnel mode. Register the URL — derived or explicit — in your GitHub OAuth App. | Override only. |
+| `GITHUB_VISUAL_PREVIEW_TOKEN` | Unset | Advanced override for the OAuth App token (`gho_`), classic PAT, or fine-grained PAT used only to upload visual-preview attachments. Administrators can normally paste a PAT in Settings instead, and `propr setup` imports a compatible `gh` CLI token when available. GitHub's uploader rejects GitHub App user (`ghu_`) and installation (`ghs_`) tokens. | Optional override. |
+| `PROPR_CREDENTIAL_ENCRYPTION_KEY` | `SYSTEM_TASK_SECRET`, then `SESSION_SECRET` | Optional dedicated secret used to encrypt the persisted visual-preview OAuth grant. It must be identical in the API and worker containers and remain stable across restarts; changing it requires reconnecting the GitHub login. | Optional security isolation. |
 | `SESSION_SECRET` | Placeholder | Signs browser session cookies. | Always. |
 | `ENABLE_BEARER_AUTH` | `true` (any value except `false` enables it) | Bearer token auth for the CLI. Set `false` to allow session login only. | Optional. |
 | `PROPR_DEMO_MODE` | `false` | `true`/`1` allows read-only access without GitHub OAuth and blocks all mutating API requests. Use a curated config/database for public demos. | Demo deployments. |
+| `API_PORT` | `127.0.0.1:4000` | Docker host publish binding for the packaged API. A bare `4000` explicitly publishes on all host interfaces; protect any non-loopback bind with a firewall and TLS reverse proxy. Existing `.env` values are preserved. | Optional advanced override. |
+| `UI_PORT` | `127.0.0.1:5173` | Docker host publish binding for the packaged UI. A bare `5173` explicitly publishes on all host interfaces; protect any non-loopback bind with a firewall and TLS reverse proxy. Existing `.env` values are preserved. | Optional advanced override. |
 | `DASHBOARD_API_PORT` | `4000` | Host port the dashboard API is published on. | Optional. |
+| `DASHBOARD_API_HOST` | Direct host: `127.0.0.1`; container: `0.0.0.0` | Interface the API listens on. Keep the loopback default for direct runs; set explicitly only when a trusted reverse proxy or network must reach a non-container process. | Optional advanced override. |
 | `FRONTEND_URL` | `http://localhost:5173` when unset | Browser origin for CORS and auth redirects. In hosted UI tunnel mode it is derived as `https://app.propr.dev` — leave it commented so derivation wins. | Custom origin only. |
 | `API_PUBLIC_URL` | `http://localhost:4000` when unset | Public URL the API is reached at (auth redirects, attachment links, cookie security). Derived to the `t-<id>.propr.dev` host in tunnel mode. | Custom deployments; derived in tunnel mode. |
 | `COOKIE_DOMAIN` | Unset | Session cookie domain. Leave unset — including for tunnel proxy sessions, which run host-only on a single `t-<id>.propr.dev` host. | Custom multi-subdomain deployments only. |
 | `AUTH_REDIRECT_ALLOWED_HOSTS` | Unset | Comma-separated extra redirect hosts for auth preview flows. Entries are exact-match unless prefixed with `.` or `*.` for trusted parent domains. | Preview auth flows. |
+| `WEB_PUSH_VAPID_SUBJECT` | Configured public HTTPS origin, else `https://propr.dev` | Optional HTTPS contact URL or `mailto:` override, also supported without manual keys. Malformed explicit subjects disable Push. | Web Push. |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | Automatically persisted | Optional manual P-256 public key; supply with the matching private key. Overrides automatic storage without replacing it. The API advertises only a successfully resolved identity. | Web Push. |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Automatically persisted | Optional manual signing key; must match the explicit public key. Automatic keys live in private `web-push/vapid.json` beside the database; include it in protected data backups. Never returned by the API; never commit or log it. | Web Push; keep server-side only. |
+| `WEB_PUSH_ENABLED` | `true` | Set to `false` to skip automatic setup and disable enrollment/delivery without changing user preferences, subscriptions or stored keys. | Optional Web Push control. |
+| `WEB_PUSH_DISPATCH_INTERVAL_MS` / `WEB_PUSH_DISPATCH_BATCH_SIZE` | `5000` / `20` | How often the API scans for due Push jobs and the maximum jobs claimed per pass. | Optional Web Push tuning. |
+| `WEB_PUSH_DELIVERY_LEASE_MS` / `WEB_PUSH_REQUEST_TIMEOUT_MS` | `60000` / `15000` | Claim lifetime and provider-request timeout in milliseconds. The lease must exceed the request timeout. | Optional Web Push tuning. |
+| `WEB_PUSH_TTL_SECONDS` | `300` | Provider message lifetime in seconds. | Optional Web Push tuning. |
+| `WEB_PUSH_MAX_ATTEMPTS` | `5` | Maximum provider requests per delivery job before a transient failure becomes terminal. | Optional Web Push tuning. |
+| `WEB_PUSH_RETRY_BASE_MS` / `WEB_PUSH_RETRY_CAP_MS` | `30000` / `900000` | Base and cap for exponential retry scheduling after throttling, provider errors, or network failures. | Optional Web Push tuning. |
+| `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Requests loopback HTTP Push enrollment for isolated local development. It is honored only outside production when `API_PUBLIC_URL` is unset/local or has a loopback host, and can be changed without migrating the stable schema. | Local browser development only. |
+| `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
+| `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth initiation and callback endpoints. | Optional tuning. |
+| `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
+| `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. Its broad `uniquelocal` name is accepted only when `API_PORT` is explicitly loopback-bound. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
-| `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
+| `NODE_ENV` | `development` in the source template; `production` in stacks scaffolded by the packaged CLI | Packaged API, daemon, and worker containers require `production`. Source-development commands may use `development`. Existing files are preserved during upgrades; if an older generated stack still says `development`, review it and change it to `production` before running `propr start`. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
 
 ## Event Intake
@@ -46,14 +65,15 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PROPR_ROUTING_WS_PONG_TIMEOUT_MS` | `30000` (30 seconds) | Maximum wait for a transport pong before the stale socket is terminated and reconnected. | Optional. |
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
-| `GITHUB_REPOS_TO_MONITOR` | Placeholder (`owner/repo1,owner/repo2`) | Comma-separated repositories the daemon watches. | Always. |
-| `CONFIG_REPO` | Example config repo URL | Git repository for dynamic repository management; when set, processing labels and repo config load from it. | Optional. |
+| `GITHUB_REPOS_TO_MONITOR` | Unset | Optional authoritative, comma-separated repository list when `CONFIG_REPO` is unset. When neither variable is set, the daemon uses repositories selected through setup or Settings and reloads that persisted list live. | Static environment-managed deployments only. |
+| `CONFIG_REPO` | Example config repo URL | Legacy external config-repository switch; when set, processing labels and persisted repo config load dynamically. | Optional. |
 | `PRIMARY_PROCESSING_LABELS` | Shipped `AI,propr` / code falls back to `AI` | Issue labels that trigger processing. | Optional. |
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
 | `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
 | `GITHUB_USER_WHITELIST` / `GITHUB_USER_BLACKLIST` | Empty | Comma-separated allow/deny lists for who can trigger processing. | Optional. |
 | `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames that bootstrap instance administrators. Non-demo startup fails when neither this list nor a durable administrator exists. The list remains an independent, authoritative override while configured. **Username risk:** GitHub usernames can be renamed or recycled; store the bootstrap role from **Web UI → Access** to bind it to the numeric GitHub ID, then remove or carefully maintain the environment entry. | Initial setup, or optional break-glass access. |
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
+| `CANCEL_CI_FOLLOWUP_WORKFLOWS` | Unset (nothing selected) | Fallback selection of the workflows the per-repository option *Cancel CI while follow-up implementation is in progress* may cancel, for instances configured outside the Web UI. Comma-separated, matched case-insensitively and exactly by workflow display name, file path, file name or numeric ID — never as a substring. Applies only to repositories whose own selection is empty; a repository selection always wins. With neither, nothing is cancelled. See [PR Follow-up](../features/pr-followup.md#cancelling-obsolete-checks-during-follow-up). | Optional; only with that option enabled. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
 ## Agents & Timeouts
@@ -63,11 +83,18 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
+| `AGENT_CONTAINER_MEMORY_LIMIT` | `6g` | Hard memory and memory-plus-swap ceiling applied to every coding-agent container. Use a positive Docker memory value such as `8g`. | Optional tuning. |
+| `AGENT_CONTAINER_CPU_LIMIT` | Adaptive: `min(4, detected CPUs)` | Maximum CPUs available to each coding-agent container; fractional overrides such as `1.5` are accepted. Leave unset to stay within the worker host's detected capacity. | Optional tuning. |
+| `AGENT_CONTAINER_PIDS_LIMIT` | `512` | Maximum processes/threads available to each coding-agent container. | Optional tuning. |
 | `PROPR_MANAGED_CREDENTIALS_DIR` | Native/Compose: `~/.propr/agent-credentials`; launcher: `PROPR_DATA_DIR/agent-credentials` | Host-visible root for isolated accounts created through direct Web login. The default is derived automatically; a launcher/CLI override must be an absolute Docker-host path. | Optional advanced override. |
 | `CLAUDE_CONFIG_PATH` | Empty | Absolute path to an existing `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. Direct-login agents do not need this setting. | Reusing an existing Claude account. |
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
 | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
+| `CODEX_STREAM_TRANSPORT` | `websocket` | Codex response transport. `websocket` avoids long-lived HTTP response deadlines, `sse` supports environments that cannot carry WebSockets, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
+| `CODEX_STREAM_IDLE_TIMEOUT_MS` | `1800000` (30 minutes) | Maximum quiet period on a Codex response stream before reconnecting. This is separate from the whole-task `CODEX_TIMEOUT_MS`. | Optional tuning. |
+| `CODEX_STREAM_MAX_RETRIES` | `5` | Number of Codex response-stream reconnect attempts. Zero disables retries. | Optional tuning. |
+| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `3600000` (60 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
@@ -86,6 +113,7 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | Redis connection for the job queue. | Optional. |
+| `REDIS_EXTERNAL_BIND_HOST` / `REDIS_EXTERNAL_PORT` | `127.0.0.1` / `6380` | Host bind used only by the development `docker-compose.yml` when publishing Redis. Keep the bind on loopback or a private Docker bridge; never expose unauthenticated Redis on a public interface. | Optional; contributor preview deployment derives a private Docker gateway automatically. |
 | `GITHUB_ISSUE_QUEUE_NAME` | `github-issue-processor` | Name of the issue-processing queue. | Optional. |
 | `WORKER_CONCURRENCY` | Shipped `2` / code falls back to `5` if unset | Jobs a worker processes in parallel. | Optional. |
 | `COMMENT_BATCH_DELAY_MS` | `3000` | Delay for batching GitHub comment updates. | Optional. |
@@ -106,7 +134,7 @@ Optional: expose a local stack's API to the hosted control plane at `https://app
 |---|---|---|---|
 | `PROPR_UI_TUNNEL_TOKEN` | Unset | Cloudflare Tunnel token; setting it enables the tunnel on the next `propr start` (unless you ran `propr tunnel off`). This is a **live credential** — anyone with it can route traffic through your tunnel. Keep it in `.env` only; never commit, log, or share it. | Tunnel mode. |
 | `PROPR_UI_TUNNEL_ENABLED` | Unset | `true`/`1` explicitly enables the tunnel. A token is still required — `propr check` fails without one. Redundant when a token is set. | Optional. |
-| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
+| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — letters, digits, and hyphens; 1–61 characters so the full `t-<id>` DNS label remains valid. Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
 | `PROPR_UI_PUBLIC_API_URL` | Derived from `PROPR_INSTANCE_ID` | Explicit public API URL the hosted UI talks to; overrides the derived one. | Override only. |
 | `PROPR_CLOUDFLARED_IMAGE` | `cloudflare/cloudflared:2024.12.2` (pinned) | The cloudflared sidecar image. | Override only. |
 

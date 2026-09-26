@@ -16,6 +16,17 @@ interface FiltersProps {
   setSearchQuery: (query: string) => void;
 }
 
+const normalizeFilterValue = (filter: string): string => {
+  switch (filter) {
+    case 'implementing':
+      return 'active';
+    case 'pending':
+      return 'waiting';
+    default:
+      return filter;
+  }
+};
+
 export const Filters: React.FC<FiltersProps> = ({
   hideFilters,
   showViewAll,
@@ -32,6 +43,11 @@ export const Filters: React.FC<FiltersProps> = ({
   if (hideFilters && !showViewAll) {
     return null;
   }
+
+  // The dropdown exposes lifecycle labels ("Active", "Waiting") while URLs and
+  // callers may carry the worker-facing aliases, so collapse them onto the
+  // option values to keep the select bound instead of falling back to "all".
+  const selectedFilter = normalizeFilterValue(filter);
 
   return (
     <div className="flex items-center justify-between gap-2 sm:gap-4">
@@ -63,11 +79,12 @@ export const Filters: React.FC<FiltersProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
-                value={filter}
+                value={selectedFilter}
                 onChange={(e) => setFilter(e.target.value)}
                 className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Tasks</option>
+                <option value="attention">Needs attention</option>
                 <option value="active">Active</option>
                 <option value="completed">Completed</option>
                 <option value="failed">Failed</option>

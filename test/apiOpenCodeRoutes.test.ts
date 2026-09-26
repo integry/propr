@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.18.9');
+            assert.equal(agent?.cliVersionResolved, '1.18.31');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -65,7 +65,7 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-deepseek-v4-flash-free', 'openai/gpt-5.5'],
+                    supportedModels: ['opencode-big-pickle', 'openai/gpt-5.5'],
                     defaultModel: 'openai/gpt-5.5'
                 }]
             }
@@ -76,13 +76,14 @@ describe('OpenCode API routes', () => {
         assert.equal(redisClient.set.mock.calls.length, 1);
         const appliedAgent = (res.body?.agents as Array<Record<string, unknown>>)[0];
         assert.equal(appliedAgent?.type, 'opencode');
-        assert.deepEqual(appliedAgent?.supportedModels, ['opencode-deepseek-v4-flash-free', 'opencode-openai/gpt-5.5']);
+        assert.deepEqual(appliedAgent?.supportedModels, ['opencode-big-pickle', 'opencode-openai/gpt-5.5']);
         assert.equal(appliedAgent?.defaultModel, 'opencode-openai/gpt-5.5');
     });
 
     test('POST /api/config/agents normalizes stale default OpenCode CLI version payloads before applying config', async () => {
         const redisClient = {
-            set: mock.fn(async () => 'OK')
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1)
         };
         const applyAgentsUpdateFn = mock.fn(async () => ({ status: 200, body: { success: true } }));
         const routes = createAgentsRoutes({
@@ -102,8 +103,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-deepseek-v4-flash-free'],
-                    defaultModel: 'opencode-deepseek-v4-flash-free',
+                    supportedModels: ['opencode-big-pickle'],
+                    defaultModel: 'opencode-big-pickle',
                     cliVersionType: 'default',
                     cliVersion: 'latest'
                 }]
@@ -160,6 +161,35 @@ describe('OpenCode API routes', () => {
                 fullName: 'propr/agent:1.17.10-abc123'
             }]
         });
+    });
+
+    test('POST agent image build delegates preparation to the worker queue', async () => {
+        const enqueueAgentImagePreparation = mock.fn(async () => {});
+        const routes = createAgentVersionRoutes({
+            resolveVersion: async () => '9.8.7',
+            loadAgents: async () => [{
+                id: 'opencode-1',
+                type: 'opencode',
+                alias: 'opencode',
+                enabled: true,
+                cliVersionResolved: '1.18.29',
+                dockerImage: 'propr/agent:latest',
+            }],
+            enqueueAgentImagePreparation,
+        });
+        const res = createMockResponse();
+
+        await routes.buildImage({
+            params: { agentId: 'opencode-1' },
+            body: { cliVersionType: 'specific', cliVersion: '9.8.7' },
+        } as never, res as never);
+
+        assert.equal(res.statusCode, 200);
+        assert.equal(enqueueAgentImagePreparation.mock.calls.length, 1);
+        const [imageTag, options] = enqueueAgentImagePreparation.mock.calls[0].arguments;
+        assert.match(imageTag, /^propr\/agent:bundle-/);
+        assert.equal(options?.contentHash !== undefined, true);
+        assert.equal(options?.versions.opencode, '9.8.7');
     });
 
     test('agent version routes reject invalid agent types with a deterministic 400', async () => {

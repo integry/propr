@@ -4,6 +4,7 @@ import {
   fetchLogFile as apiFetchLogFile 
 } from '../../api/proprApi';
 import { LogFilesData, SelectedLogFileData } from './types';
+import { isLogFilesData } from './apiDataGuards';
 
 export const useLogFilesData = () => {
   const [logFiles, setLogFiles] = useState<LogFilesData | null>(null);
@@ -43,12 +44,13 @@ export const useLogFilesData = () => {
       setLoadingLogFile(true);
       setSelectedLogFile(null);
       const logsData = await apiFetchLogFiles(logsPath);
+      if (!isLogFilesData(logsData)) throw new Error('Invalid log files response');
       
       if (logsData.files) {
         const transformedData = {
           sessionId: logsData.sessionId,
           logFiles: Object.entries(logsData.files).map(([type, path]) => ({
-            name: (path as string).split('/').pop() || '',
+            name: path.split('/').pop() || '',
             path: `/api/execution/${logsData.sessionId}/logs/${type}`,
             size: 0,
             type: type

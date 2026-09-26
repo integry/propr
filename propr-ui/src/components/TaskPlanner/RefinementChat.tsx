@@ -32,6 +32,8 @@ interface RefinementChatProps {
   disableSmoothAutoScroll?: boolean;
   disableAutoScroll?: boolean;
   stableComposerHeight?: number;
+  /** Incremented when an external navigation asks to focus the composer. */
+  focusComposerRequest?: number;
 }
 
 /** Human label for the plan's default model, shown as the switcher's default option. */
@@ -68,6 +70,7 @@ const ChatInputForm: React.FC<ChatInputFormProps> = ({
       <div className={`flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 ${isMobile ? 'p-3' : 'p-4'}`}>
         <textarea
           ref={textareaRef}
+          aria-label="Refinement instructions"
           value={effectiveInput}
           onChange={e => onInputChange(e.target.value)}
           onKeyDown={onKeyDown}
@@ -190,8 +193,8 @@ const getVisibleMessages = (syncInitialMessages: boolean, syncedMessages: Messag
   syncInitialMessages ? syncedMessages : messages
 );
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, defaultModel, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
-  const isMobile = useIsMobile();
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, defaultModel, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight, focusComposerRequest = 0 }) => {
+  const isMobile = useIsMobile(768);
   const agents = useAgentsLoader();
   const syncedMessages = useMemo<Message[]>(() => toMessages(initialMessages), [initialMessages]);
   const [messages, setMessages] = useState<Message[]>(() => initMessages(initialMessages));
@@ -238,6 +241,10 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   useEffect(() => {
     adjustTextareaHeight();
   }, [effectiveInput, adjustTextareaHeight]);
+
+  useEffect(() => {
+    if (focusComposerRequest > 0) textareaRef.current?.focus();
+  }, [focusComposerRequest]);
 
   const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
     return msgs

@@ -1,0 +1,307 @@
+import assert from 'node:assert/strict';
+import { after, before, beforeEach, describe, test } from 'node:test';
+import knex from 'knex';
+
+process.env.NODE_ENV = 'test';
+process.env.PROPR_DEMO_MODE = 'true';
+
+const {
+  clearAbortSignal,
+  createAbortGenerationHandler,
+  createAbortRefinementHandler,
+  setAbortSignal,
+} = await import('../routes/plannerAbortHandlers.js');
+const { closeConnection } = await import('@propr/core');
+type AbortRedisFactory = import('../routes/plannerAbortHandlers.js').AbortRedisFactory;
+
+const database = knex({
+  client: 'better-sqlite3',
+  connection: { filename: ':memory:' },
+  useNullAsDefault: true,
+});
+
+function createResponse() {
+  return {
+    statusCode: 200,
+    body: undefined as Record<string, unknown> | undefined,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: Record<string, unknown>) {
+      this.body = payload;
+      return this;
+    },
+  };
+}
+
+before(async () => {
+  await database.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary();
+    table.string('user_id').notNullable();
+    table.string('status').notNullable();
+    table.text('generation_trace');
+    table.text('refinement_result');
+    table.timestamp('updated_at');
+  });
+});
+
+beforeEach(async () => {
+  await database('task_drafts').delete();
+});
+
+after(async () => {
+  await database.destroy();
+  await closeConnection();
+});
+
+describe('planner abort handlers', () => {
+  test('preserves a generation that completes before the conditional abort transition', async () => {
+    await database('task_drafts').insert({
+      draft_id: 'generation-race',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    let signalledRunId: string | undefined;
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async (_draftId, runId) => {
+        signalledRunId = runId;
+        await database('task_drafts').where({ draft_id: 'generation-race' }).update({
+          status: 'review',
+          generation_trace: 'completed-run',
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'generation-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'generation-race' }).first();
+    assert.equal(response.statusCode, 409);
+    assert.equal(signalledRunId, 'generation-run-1');
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'review');
+    assert.equal(current.generation_trace, 'completed-run');
+  });
+
+  test('retries the abort transition when the same generation run advances its trace', async () => {
+    const advancedTrace = JSON.stringify({
+      steps: [{ name: 'context', status: 'in_progress' }],
+      runId: 'generation-run-1',
+    });
+    await database('task_drafts').insert({
+      draft_id: 'generation-progress-race',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'generation-progress-race' }).update({
+          generation_trace: advancedTrace,
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'generation-progress-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'generation-progress-race' }).first();
+    assert.equal(response.statusCode, 200);
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'draft');
+    assert.equal(JSON.parse(current.generation_trace).error, 'Generation aborted by user');
+  });
+
+  test('does not cancel a same-timestamp refinement restart after reading the old run snapshot', async () => {
+    const restartedMetadata = JSON.stringify({ status: 'in_progress', runId: 'refinement-run-2' });
+    await database('task_drafts').insert({
+      draft_id: 'refinement-restart-race',
+      user_id: 'user-1',
+      status: 'refining',
+      refinement_result: JSON.stringify({ status: 'in_progress', runId: 'refinement-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    let signalledRunId: string | undefined;
+    const handler = createAbortRefinementHandler(database, {
+      setAbortSignal: async (_draftId, runId) => {
+        signalledRunId = runId;
+        await database('task_drafts').where({ draft_id: 'refinement-restart-race' }).update({
+          status: 'refining',
+          refinement_result: restartedMetadata,
+          updated_at: '2026-08-03 20:00:00.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'refinement-restart-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'refinement-restart-race' }).first();
+    assert.equal(response.statusCode, 409);
+    assert.equal(signalledRunId, 'refinement-run-1');
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'refining');
+    assert.equal(current.refinement_result, restartedMetadata);
+  });
+
+  test('retries the abort transition when the same refinement run metadata advances', async () => {
+    const advancedMetadata = JSON.stringify({
+      status: 'in_progress',
+      runId: 'refinement-run-1',
+      phase: 'executing',
+    });
+    await database('task_drafts').insert({
+      draft_id: 'refinement-progress-race',
+      user_id: 'user-1',
+      status: 'refining',
+      refinement_result: JSON.stringify({ status: 'in_progress', runId: 'refinement-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    const handler = createAbortRefinementHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'refinement-progress-race' }).update({
+          refinement_result: advancedMetadata,
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'refinement-progress-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'refinement-progress-race' }).first();
+    assert.equal(response.statusCode, 200);
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'review');
+    assert.equal(JSON.parse(current.refinement_result).action, 'cancelled');
+  });
+
+  test('surfaces failed reconciliation for a legacy draft-wide abort signal', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    await database('task_drafts').insert({
+      draft_id: 'legacy-generation-race',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: 'legacy-active-run',
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'legacy-generation-race' }).update({
+          status: 'review',
+          generation_trace: 'completed-run',
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { throw new Error('Redis reconciliation failed'); },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'legacy-generation-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'legacy-generation-race' }).first();
+    assert.equal(response.statusCode, 500);
+    assert.equal(current.status, 'review');
+    assert.equal(current.generation_trace, 'completed-run');
+  });
+
+  test('reconciles the abort signal when the conditional database transition fails', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    await database('task_drafts').insert({
+      draft_id: 'generation-update-error',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-error' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    await database.raw(`
+      CREATE TRIGGER fail_planner_abort
+      BEFORE UPDATE ON task_drafts
+      WHEN OLD.draft_id = 'generation-update-error'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced update failure');
+      END
+    `);
+    t.after(async () => {
+      await database.raw('DROP TRIGGER IF EXISTS fail_planner_abort');
+    });
+
+    let clearedRunId: string | undefined;
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async () => undefined,
+      clearAbortSignal: async (_draftId, runId) => { clearedRunId = runId; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'generation-update-error' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'generation-update-error' }).first();
+    assert.equal(response.statusCode, 500);
+    assert.equal(clearedRunId, 'generation-run-error');
+    assert.equal(current.status, 'generating');
+    assert.equal(current.generation_trace, JSON.stringify({ steps: [], runId: 'generation-run-error' }));
+  });
+
+  test('closes Redis connections when setting or clearing an abort signal fails', async () => {
+    for (const operation of [
+      (factory: AbortRedisFactory) => setAbortSignal('draft-1', factory),
+      (factory: AbortRedisFactory) => clearAbortSignal('draft-1', factory),
+    ]) {
+      let quitCalls = 0;
+      const factory = () => ({
+        del: async () => { throw new Error('del failed'); },
+        setex: async () => { throw new Error('setex failed'); },
+        quit: async () => { quitCalls += 1; },
+        disconnect: () => undefined,
+      });
+
+      await assert.rejects(operation(factory));
+      assert.equal(quitCalls, 1);
+    }
+  });
+
+  test('uses a run-specific Redis key when a planner run ID is available', async () => {
+    const keys: string[] = [];
+    const factory = () => ({
+      del: async (key: string) => { keys.push(key); return 1; },
+      setex: async (key: string) => { keys.push(key); return 'OK'; },
+      quit: async () => undefined,
+      disconnect: () => undefined,
+    });
+
+    await setAbortSignal('draft-1', 'run-1', factory);
+    await clearAbortSignal('draft-1', 'run-1', factory);
+
+    assert.deepEqual(keys, [
+      'planner:abort:draft-1:run:run-1',
+      'planner:abort:draft-1:run:run-1',
+    ]);
+  });
+
+  test('disconnects Redis when graceful shutdown fails', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    let disconnectCalls = 0;
+    await clearAbortSignal('draft-1', () => ({
+      del: async () => 1,
+      setex: async () => 'OK',
+      quit: async () => { throw new Error('quit failed'); },
+      disconnect: () => { disconnectCalls += 1; },
+    }));
+
+    assert.equal(disconnectCalls, 1);
+  });
+});

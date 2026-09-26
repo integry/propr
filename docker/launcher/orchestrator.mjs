@@ -18,7 +18,11 @@
 // The CLI imports this .mjs dynamically and types it via src/orchestrator/types.ts.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, statSync, accessSync, constants as fsConstants } from 'node:fs';
+import { createECDH, timingSafeEqual } from 'node:crypto';
+import {
+    readFileSync, writeFileSync, renameSync, unlinkSync, lstatSync, chmodSync,
+    existsSync, statSync, accessSync, constants as fsConstants,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,10 +30,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Hosted UI tunnel naming. These mirror the shared TypeScript constants in
-// packages/shared/src/proprServiceUrls.ts (PROPR_UI_PROXY_SUFFIX,
-// PROPR_UI_PROXY_LABEL_PREFIX, DEFAULT_CLOUDFLARED_IMAGE,
-// DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals here because this module is
-// dependency-free .mjs (Node stdlib only) and cannot import the TS package.
+// packages/shared/src/proprServiceUrls.ts (DEFAULT_LOCAL_API_PORT,
+// DEFAULT_LOCAL_API_BINDING, PROPR_UI_PROXY_SUFFIX, PROPR_UI_PROXY_LABEL_PREFIX,
+// DEFAULT_CLOUDFLARED_IMAGE, DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals
+// here because this module is dependency-free .mjs (Node stdlib only) and cannot
+// import the TS package.
 // Change one, change the other;
 // test/orchestratorProprUrlsDrift.test.ts guards against the copies diverging.
 export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
@@ -40,13 +45,15 @@ export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 // operator docs can then describe a single, pinned default.
 export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
+export const DEFAULT_LOCAL_API_PORT = '4000';
+export const DEFAULT_LOCAL_API_BINDING = `127.0.0.1:${DEFAULT_LOCAL_API_PORT}`;
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
-// (t-<id>.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
-// leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
+// (t-<id>.propr.dev): 1–61 chars (leaving room for `t-`), ASCII
+// letters/digits/hyphens only, no leading/trailing hyphen.
 export function isValidProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+    return /^[a-z0-9]([a-z0-9-]{0,59}[a-z0-9])?$/i.test(id);
 }
 
 // Derive the per-instance public API/UI URL (https://t-<instanceId>.propr.dev)
@@ -60,36 +67,40 @@ export function proprInstanceProxyUrl(instanceId) {
     return isValidProprInstanceId(id) ? `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
+export function canonicalProprProxyUrl(url) {
+    if (!url || url !== url.trim() || /[^\x20-\x7e]/.test(url)) return undefined;
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== ''
+            || parsed.port !== '' || parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') return undefined;
+        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+        if (!parsed.hostname.endsWith(suffix)) return undefined;
+        const label = parsed.hostname.slice(0, -suffix.length);
+        if (label.length > 63 || label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) return undefined;
+        const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+        if (!isValidProprInstanceId(id)) return undefined;
+        const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
+        return url === canonical ? canonical : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 // Whether a URL is a hosted per-instance proxy URL (https://t-<id>.propr.dev).
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one t-<instance-id>
 // label before the suffix (other propr.dev hosts and nested hosts are rejected)
-// and a bare origin (a non-root path/query/fragment is rejected so
+// and the exact lowercase ASCII bare origin (a slash/path/query/fragment is rejected so
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    if (!url) return false;
-    try {
-        const { protocol, hostname, pathname, search, hash } = new URL(url);
-        if (protocol !== 'https:') return false;
-        // Trailing slashes are tolerated; any real path segment/query/fragment
-        // is rejected so a base path can't double up the appended /api prefix.
-        if (/[^/]/.test(pathname) || search || hash) return false;
-        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-        if (!hostname.endsWith(suffix)) return false;
-        const label = hostname.slice(0, -suffix.length);
-        if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-            return false;
-        }
-        return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
-    } catch {
-        return false;
-    }
+    return typeof url === 'string'
+        && /^https:\/\/t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev$/.test(url);
 }
 
 function normalizeProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    return id.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
         ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
         : id;
 }
@@ -215,9 +226,14 @@ function envFileValueFrom(envFileLocal, name) {
  * `check`/`init` commands to inspect HOST_*_DIR settings without re-reading.
  */
 export function readEnvFile(envFilePath) {
+    if (!envFilePath || !isReadableFile(envFilePath)) return {};
+    return parseEnvFileContents(readFileSync(envFilePath, 'utf8'));
+}
+
+/** Parse already-authorized env bytes without reopening their pathname. */
+export function parseEnvFileContents(contents) {
     const out = {};
-    if (!envFilePath || !isReadableFile(envFilePath)) return out;
-    for (const rawLine of readFileSync(envFilePath, 'utf8').split(/\r?\n/)) {
+    for (const rawLine of contents.split(/\r?\n/)) {
         const parsed = parseEnvAssignment(rawLine);
         if (parsed) out[parsed.name] = parsed.value;
     }
@@ -227,6 +243,13 @@ export function readEnvFile(envFilePath) {
 // ---------------------------------------------------------------------------
 // Config resolution
 // ---------------------------------------------------------------------------
+
+/** Host-facing port number from a Docker publish value (bare or IP-bound). */
+export function publishedHostPort(binding) {
+    const raw = String(binding ?? '').trim();
+    const match = raw.match(/(?:^|:)(\d{1,5})$/);
+    return match?.[1] ?? raw;
+}
 
 /**
  * Resolve a stack config from an environment + overrides. Works for both the
@@ -239,9 +262,19 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const network = overrides.network ?? env.PROPR_NETWORK ?? `${stack}-net`;
     const envFileLocal = overrides.envFileLocal ?? env.PROPR_LAUNCHER_ENV_FILE ?? '/app/.env';
     const envFileHost = overrides.envFileHost ?? env.PROPR_ENV_FILE;
+    // NODE_ENV is special: Docker receives it from the stack's --env-file, not
+    // from the CLI/launcher process environment. Inspect that exact source so a
+    // developer's shell NODE_ENV cannot accidentally describe (or alter) the
+    // packaged container runtime.
+    const authorizedEnvFileValues = overrides.envFileValues;
+    const nodeEnv = (authorizedEnvFileValues ?? readEnvFile(envFileLocal)).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
-    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
+    const get = (name) => env[name] !== undefined
+        ? env[name]
+        : authorizedEnvFileValues
+            ? authorizedEnvFileValues[name] || undefined
+            : envFileValueFrom(envFileLocal, name) || undefined;
 
     const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;
@@ -255,11 +288,29 @@ export function resolveConfig(env = process.env, overrides = {}) {
             ? join(homedir(), '.propr', 'agent-credentials')
             : (hostData ? join(hostData, 'agent-credentials') : undefined));
 
-    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '4000';
-    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
+    // Published service ports are host-loopback-only unless an operator chooses
+    // an explicit binding. Preserve every explicit form verbatim: a bare port is
+    // an intentional all-interface opt-in, while host:port supports custom binds.
+    const apiPort = overrides.apiPort ?? get('API_PORT') ?? DEFAULT_LOCAL_API_BINDING;
+    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '127.0.0.1:5173';
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
+    const apiHostPort = publishedHostPort(apiPort);
+    const uiHostPort = publishedHostPort(uiPort);
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
+    const apiRateLimitMax = overrides.apiRateLimitMax ?? get('PROPR_API_RATE_LIMIT_MAX') ?? '600';
+    const apiRateLimitWindowMs = overrides.apiRateLimitWindowMs ?? get('PROPR_API_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    const authRateLimitMax = overrides.authRateLimitMax ?? get('PROPR_AUTH_RATE_LIMIT_MAX') ?? '30';
+    const authRateLimitWindowMs = overrides.authRateLimitWindowMs ?? get('PROPR_AUTH_RATE_LIMIT_WINDOW_MS') ?? '900000';
+    const webhookRateLimitMax = overrides.webhookRateLimitMax ?? get('PROPR_WEBHOOK_RATE_LIMIT_MAX') ?? '300';
+    const webhookRateLimitWindowMs = overrides.webhookRateLimitWindowMs ?? get('PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    // Web Push is automatic by default, but a partially configured VAPID pair is never
+    // useful. Resolve the three values here so both the host CLI and the
+    // containerized launcher validate the exact stack environment before any
+    // service starts. Key material is deliberately never included in errors.
+    const webPushVapidSubject = get('WEB_PUSH_VAPID_SUBJECT');
+    const webPushVapidPublicKey = get('WEB_PUSH_VAPID_PUBLIC_KEY');
+    const webPushVapidPrivateKey = get('WEB_PUSH_VAPID_PRIVATE_KEY');
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end).
@@ -294,6 +345,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
     // default so `propr start` honors the user's last explicit choice.
     const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
+    // The managed cloudflared sidecar shares the API container's network
+    // namespace. Trust only that namespace's own non-loopback addresses while
+    // tunnel mode is on; other private-network peers remain untrusted.
+    const trustedProxyPeers = overrides.trustedProxyPeers
+        ?? get('PROPR_TRUSTED_PROXY_PEERS')
+        ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
@@ -301,18 +358,20 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
-    // slashes are stripped once here so every consumer (API/worker/UI env, status
-    // output, endpoint rendering) sees one canonical form — the derived URL never
-    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
-    const uiPublicApiUrl =
-        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Preserve
+    // explicit raw spelling so validation cannot turn an alternate reserved
+    // Connect spelling into a trusted canonical endpoint.
+    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId) || undefined;
 
     return Object.freeze({
-        stack, network, envFileLocal, envFileHost,
+        stack, network, envFileLocal, envFileHost, nodeEnv,
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
+        apiRateLimitMax, apiRateLimitWindowMs,
+        authRateLimitMax, authRateLimitWindowMs,
+        webhookRateLimitMax, webhookRateLimitWindowMs,
+        webPushVapidSubject, webPushVapidPublicKey, webPushVapidPrivateKey,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
@@ -320,15 +379,16 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
         uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
         // (OAuth/session redirects, attachment links, browser-visible API refs)
         // and the frontend must point at the hosted UI origin. An explicit
         // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
         // them, falling back to the localhost defaults for local development.
-        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
-        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
-        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiPort}/api/auth/github/callback`),
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiHostPort}`),
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiHostPort}`,
+        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiHostPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
@@ -441,6 +501,12 @@ function tunnelApiEnvArgs(cfg) {
     return args;
 }
 
+function proxyTrustApiEnvArgs(cfg) {
+    return cfg.trustedProxyPeers
+        ? ['-e', `PROPR_TRUSTED_PROXY_PEERS=${cfg.trustedProxyPeers}`]
+        : [];
+}
+
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
 // malformed -v HOST:CONTAINER args; Windows drive paths (C:\...) are unsupported.
 export function validateDockerBindPath(name, value, { containerPath = false } = {}) {
@@ -459,11 +525,13 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 
 const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
 
-export function docker(args, { capture = false, timeout } = {}) {
+export function docker(args, { capture = false, timeout, env, maxBuffer } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
         timeout,
+        env,
+        maxBuffer,
     });
     if (res.status !== 0 && !capture) {
         const detail = res.error?.message || (res.signal ? `signal ${res.signal}` : `code ${res.status}`);
@@ -479,18 +547,37 @@ export function docker(args, { capture = false, timeout } = {}) {
  * On timeout it kills the child and reports an ETIMEDOUT error, matching the
  * spawnSync timeout contract that `dockerError` inspects.
  */
-export function dockerAsync(args, { timeout } = {}) {
-    return new Promise((resolveResult) => {
+export function dockerAsync(args, { timeout, signal } = {}) {
+    signal?.throwIfAborted();
+    return new Promise((resolveResult, reject) => {
         const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         let settled = false;
         let timeoutError = null;
+        let aborted = false;
+        let killTimer = null;
         const finish = (res) => {
             if (settled) return;
             settled = true;
             if (timer) clearTimeout(timer);
-            resolveResult(res);
+            if (killTimer) clearTimeout(killTimer);
+            signal?.removeEventListener('abort', abort);
+            if (aborted) {
+                const error = signal?.reason instanceof Error
+                    ? signal.reason
+                    : Object.assign(new Error('docker command aborted'), { name: 'AbortError' });
+                reject(error);
+            } else {
+                resolveResult(res);
+            }
+        };
+        const abort = () => {
+            if (settled || aborted) return;
+            aborted = true;
+            child.kill('SIGTERM');
+            killTimer = setTimeout(() => child.kill('SIGKILL'), 100);
+            killTimer.unref?.();
         };
         const timer = timeout
             ? setTimeout(() => {
@@ -501,7 +588,9 @@ export function dockerAsync(args, { timeout } = {}) {
         child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
         child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
         child.on('error', (error) => finish({ status: null, stdout, stderr, error }));
-        child.on('close', (code, signal) => finish({ status: code, stdout, stderr, signal, error: timeoutError || undefined }));
+        child.on('close', (code, closeSignal) => finish({ status: code, stdout, stderr, signal: closeSignal, error: timeoutError || undefined }));
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
     });
 }
 
@@ -511,10 +600,10 @@ export function dockerAvailable() {
     return res.status === 0;
 }
 
-function dockerRunDetached(cfg, name, service, args) {
+function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -566,6 +655,11 @@ function imagePresentLocally(tag) {
     return res.stdout.trim().length > 0;
 }
 
+async function imagePresentLocallyAsync(tag, signal) {
+    const res = await dockerAsync(['images', '-q', tag], { signal });
+    return res.stdout.trim().length > 0;
+}
+
 function firstLine(value) {
     return (value || '').trim().split('\n')[0] || '';
 }
@@ -579,6 +673,17 @@ export function normalizeDigest(value) {
 
 function localRepoDigests(tag) {
     const res = docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { capture: true });
+    if (res.status !== 0) return null;
+    try {
+        const parsed = JSON.parse(res.stdout.trim() || '[]');
+        return Array.isArray(parsed) ? parsed.map(normalizeDigest).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
+async function localRepoDigestsAsync(tag, signal) {
+    const res = await dockerAsync(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { signal });
     if (res.status !== 0) return null;
     try {
         const parsed = JSON.parse(res.stdout.trim() || '[]');
@@ -716,8 +821,8 @@ export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
 }
 
 /** Async mirror of remoteManifestDigest using non-blocking docker exec. */
-async function remoteManifestDigestAsync(tag) {
-    const res = await dockerAsync(['manifest', 'inspect', '--verbose', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+async function remoteManifestDigestAsync(tag, signal) {
+    const res = await dockerAsync(['manifest', 'inspect', '--verbose', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
     if (res.status !== 0) {
         return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
     }
@@ -726,13 +831,13 @@ async function remoteManifestDigestAsync(tag) {
         if (digests.length > 0) {
             let allDigests = digests;
             if (res.stdout.trim().startsWith('[')) {
-                const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+                const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
                 if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
             }
             return { ok: true, digests: allDigests, digest: allDigests[0] };
         }
 
-        const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+        const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
         if (buildx.status !== 0) {
             return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
         }
@@ -746,16 +851,16 @@ async function remoteManifestDigestAsync(tag) {
 }
 
 /**
- * Async mirror of inspectImageFreshness. The local (fast) docker calls stay
- * synchronous; only the remote registry probe is awaited, so many tags can be
- * checked concurrently without blocking the event loop.
+ * Async mirror of inspectImageFreshness. Every Docker call accepts the same
+ * abort signal so setup can cancel local metadata and remote registry probes.
  */
-export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false } = {}) {
-    if (!imagePresentLocally(tag)) {
+export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false, signal } = {}) {
+    signal?.throwIfAborted();
+    if (!await imagePresentLocallyAsync(tag, signal)) {
         return { status: 'missing', tag };
     }
 
-    const localDigests = localRepoDigests(tag);
+    const localDigests = await localRepoDigestsAsync(tag, signal);
     if (!localDigests) {
         return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
     }
@@ -768,7 +873,7 @@ export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false 
         return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
     }
 
-    return classifyImageFreshness(tag, localDigests, await remoteManifestDigestAsync(tag));
+    return classifyImageFreshness(tag, localDigests, await remoteManifestDigestAsync(tag, signal));
 }
 
 function cachedImageFreshness(cache, tag, opts) {
@@ -809,6 +914,12 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
+// This value is intentionally module-private. A caller cannot opt a database
+// service out of its migration gate by passing an option to startService();
+// only startStack(), after its owner process exits successfully, can provide
+// the handoff capability.
+const MIGRATIONS_PREAPPLIED_HANDOFF = Symbol('migrations-preapplied-handoff');
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
@@ -819,10 +930,24 @@ function imageTagForService(cfg, service) {
     return cfg.images.app;
 }
 
+function packagedRuntimeModeError(cfg) {
+    if (!cfg.nodeEnv || cfg.nodeEnv.trim().toLowerCase() === 'production') return null;
+    return `The existing stack .env sets NODE_ENV=${cfg.nodeEnv}, but packaged ProPR services must run with NODE_ENV=production. `
+        + 'This file may contain the old generated development default or an intentional user setting, so ProPR will not overwrite it silently. '
+        + 'Review the setting, change NODE_ENV to production in the stack .env, then run `propr check` and start again. '
+        + 'Source-development commands continue to support NODE_ENV=development outside the packaged launcher.';
+}
+
 function appBaseArgs(cfg) {
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
     return [
         // --env-file is resolved by the docker CLI (inside the launcher / on host).
         '--env-file', cfg.envFileLocal,
+        // Published images default to production, but make the launcher contract
+        // explicit after --env-file so a missing value cannot regress it. A
+        // conflicting existing value is rejected above rather than overwritten.
+        '-e', 'NODE_ENV=production',
         '-v', `${cfg.hostLogs}:/usr/src/app/logs`,
         '-v', `${cfg.hostData}:/usr/src/app/data`,
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
@@ -839,6 +964,42 @@ function appBaseArgs(cfg) {
 
 function appSpec(cfg, command, extraArgs = []) {
     return { image: cfg.images.app, args: [...appBaseArgs(cfg), ...extraArgs], command: ['node', ...command] };
+}
+
+function migrationSpec(cfg) {
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
+    return {
+        image: cfg.images.app,
+        // The migration command imports only the database connection module.
+        // Keep its container equally narrow: the user-managed env file is
+        // unavoidable because it supplies DB_FILENAME, but the owner needs no
+        // app credentials, Docker access, repositories, Redis, tunnel state,
+        // worktrees, or persistent log directory. These forced values follow
+        // --env-file so stale user settings cannot change the packaged runtime
+        // or opt this sole owner out of applying migrations.
+        args: [
+            '--env-file', cfg.envFileLocal,
+            '-e', 'NODE_ENV=production',
+            '-e', 'PROPR_CONTAINERIZED=1',
+            '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
+            '-v', `${cfg.hostData}:/usr/src/app/data`,
+        ],
+        command: ['node', 'dist/src/migrate.js'],
+    };
+}
+
+function withMigrationPolicy(spec, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return spec;
+    return {
+        ...spec,
+        // This override is deliberately after --env-file. The marker is a
+        // launcher-internal handoff, never a trusted user configuration value.
+        args: [
+            ...spec.args,
+            '-e', `PROPR_MIGRATIONS_PREAPPLIED=${migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF ? '1' : '0'}`,
+        ],
+    };
 }
 
 // Returns { image, args, command? } for a canonical service name.
@@ -910,17 +1071,28 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
+                '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
                 ...tunnelApiEnvArgs(cfg),
+                ...proxyTrustApiEnvArgs(cfg),
             ]);
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
             // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
-            // per-instance proxy. Pass the tunnel base URL through unchanged — the
-            // UI appends /api/... to it for REST and uses /socket.io/ for Socket.IO,
-            // so the value must be the bare proxy origin (no /api suffix). Only set
-            // it when known; an unset value keeps the same-origin local default.
-            const uiArgs = ['-p', `${cfg.uiPort}:5173`];
-            if (cfg.uiPublicApiUrl) uiArgs.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+            // browser-visible API origin. A production UI container has no Vite
+            // development proxy: leaving this unset makes /api requests hit the UI
+            // server and its SPA fallback returns index.html. Prefer the managed
+            // tunnel URL when present; otherwise inject API_PUBLIC_URL (localhost
+            // by default, or the operator's explicit public API URL).
+            const uiApiBaseUrl = cfg.uiPublicApiUrl || cfg.apiPublicUrl;
+            const uiArgs = [
+                '-p', `${cfg.uiPort}:5173`,
+                '-e', `PROPR_UI_PUBLIC_API_URL=${uiApiBaseUrl}`,
+            ];
             return { image: cfg.images.ui, args: uiArgs };
         }
         case 'docs':
@@ -956,6 +1128,11 @@ export function buildServiceSpec(cfg, service) {
                 image: cfg.cloudflaredImage,
                 args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
                 command: ['tunnel', '--no-autoupdate', 'run'],
+                // Sharing the API network namespace makes cloudflared's socket
+                // peer one of the API container's own addresses. The API can
+                // therefore trust this exact path without trusting unrelated
+                // containers or direct private-network clients.
+                networkMode: `container:${cfg.stack}-api`,
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -967,13 +1144,14 @@ export function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
+    assertDatabaseServiceCanStart(cfg, service, migrationHandoff);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs);
+    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1001,6 +1179,7 @@ export function stopService(cfg, service, { remove = true, onLog } = {}) {
  * prompt before restarting (e.g. `propr start`).
  */
 export function isStackRunning(cfg) {
+    if (isStackReplacementPending(cfg)) return false;
     const status = getStackStatus(cfg);
     return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
 }
@@ -1011,12 +1190,27 @@ export function isStackRunning(cfg) {
  * rethrown, so a failed startup doesn't leave a half-running stack behind.
  */
 export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+    if (isStackReplacementPending(cfg)) {
+        throw new Error('Desktop-managed stack replacement was interrupted; re-run `propr setup` to resume it before starting the stack');
+    }
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
+        runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
-            startService(cfg, service, { onLog, freshnessCache });
+            startService(cfg, service, {
+                onLog,
+                freshnessCache,
+                // The one-shot phase above is the sole migration owner for a
+                // full stack launch. Direct startService callers retain the
+                // service's normal fail-closed migration gate.
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
+                // The migration phase already verified/pulled this exact app
+                // image tag. Avoid repeating the freshness check for all five
+                // app containers.
+                pull: !DATABASE_SERVICES.has(service),
+            });
             started.push(service);
         }
     } catch (err) {
@@ -1033,6 +1227,98 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     return getStackStatus(cfg);
 }
 
+function migrationDockerArgs(cfg) {
+    const spec = migrationSpec(cfg);
+    return [
+        'run', '--rm', '--init', '--name', `${cfg.stack}-migrate`,
+        '--network', cfg.network,
+        '--label', `propr.stack=${cfg.stack}`,
+        '--label', 'propr.service=migrate',
+        ...spec.args,
+        spec.image,
+        ...spec.command,
+    ];
+}
+
+function migrationFailure(res) {
+    const detail = firstLine(res.stderr || res.stdout || res.error?.message || 'migration container exited unsuccessfully');
+    return new Error(`Database migration phase failed: ${detail}`);
+}
+
+function containerRunning(cfg, name) {
+    const res = docker(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+function runningDatabaseServiceNames(cfg) {
+    return [...DATABASE_SERVICES]
+        .map((service) => `${cfg.stack}-${service}`)
+        .filter((name) => containerRunning(cfg, name));
+}
+
+function assertNoLiveMigrationOwner(cfg, service) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+function directDatabaseStartError(cfg, service, running) {
+    return new Error(`Refusing to start ${cfg.stack}-${service} directly while database services are running (${running.join(', ')}). Restart the full stack instead (for the CLI, run \`propr start --restart\`); existing containers were left untouched.`);
+}
+
+function assertDatabaseServiceCanStart(cfg, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    assertNoLiveMigrationOwner(cfg, service);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
+function assertMigrationCanStart(cfg) {
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+function prepareMigrationOwner(cfg, onLog) {
+    assertMigrationCanStart(cfg);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!containerExists(cfg, migrationName)) return;
+
+    // Never use -f here. If the container became live after the check, Docker
+    // must reject this removal rather than killing a real migration owner.
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = docker(['rm', migrationName], { capture: true });
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
+    }
+}
+
+/** Run the sole schema-migration owner to completion before app services start. */
+export function runMigrationPhase(cfg, { onLog, freshnessCache } = {}) {
+    // Check before a potentially slow pull so an existing stack is rejected
+    // without side effects, then check again immediately before ownership.
+    assertMigrationCanStart(cfg);
+    ensureServiceImage(cfg, 'daemon', onLog, { freshnessCache });
+    prepareMigrationOwner(cfg, onLog);
+    onLog?.('  · running database migrations');
+    const res = docker(migrationDockerArgs(cfg), { capture: true });
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
+}
+
 // ---------------------------------------------------------------------------
 // async start path
 //
@@ -1047,38 +1333,96 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
 // one, change the other.
 // ---------------------------------------------------------------------------
 
-async function containerExistsAsync(cfg, name) {
-    const res = await dockerAsync(['ps', '-a', '--filter', `name=^${name}$`, '--format', '{{.Names}}']);
+async function containerExistsAsync(cfg, name, signal) {
+    const res = await dockerAsync(['ps', '-a', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { signal });
     return res.stdout.trim() === name;
 }
 
-async function removeIfExistsAsync(cfg, name, onLog) {
-    if (await containerExistsAsync(cfg, name)) {
+async function removeIfExistsAsync(cfg, name, onLog, signal) {
+    if (await containerExistsAsync(cfg, name, signal)) {
         onLog?.(`  · removing stale ${name}`);
-        await dockerAsync(['rm', '-f', name]);
+        await dockerAsync(['rm', '-f', name], { signal });
     }
 }
 
-async function dockerRunDetachedAsync(cfg, name, service, args) {
+async function containerRunningAsync(cfg, name, signal) {
+    const res = await dockerAsync(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { signal });
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+async function assertNoLiveMigrationOwnerAsync(cfg, service, signal) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName, signal)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+async function runningDatabaseServiceNamesAsync(cfg, signal) {
+    const running = [];
+    for (const service of DATABASE_SERVICES) {
+        const name = `${cfg.stack}-${service}`;
+        if (await containerRunningAsync(cfg, name, signal)) running.push(name);
+    }
+    return running;
+}
+
+async function assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    await assertNoLiveMigrationOwnerAsync(cfg, service, signal);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = await runningDatabaseServiceNamesAsync(cfg, signal);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
+async function assertMigrationCanStartAsync(cfg, signal) {
+    const running = await runningDatabaseServiceNamesAsync(cfg, signal);
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName, signal)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+async function prepareMigrationOwnerAsync(cfg, onLog, signal) {
+    await assertMigrationCanStartAsync(cfg, signal);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!(await containerExistsAsync(cfg, migrationName, signal))) return;
+
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = await dockerAsync(['rm', migrationName], { signal });
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
+    }
+}
+
+async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network, signal) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
     ];
-    const res = await dockerAsync(full);
+    const res = await dockerAsync(full, { signal });
     if (res.status !== 0) {
         throw new Error(`Failed to start ${name}: ${res.stderr}`);
     }
 }
 
 /** Async mirror of ensureNetwork. */
-export async function ensureNetworkAsync(cfg, onLog) {
-    const res = await dockerAsync(['network', 'inspect', cfg.network]);
+export async function ensureNetworkAsync(cfg, onLog, signal) {
+    const res = await dockerAsync(['network', 'inspect', cfg.network], { signal });
     if (res.status !== 0) {
         onLog?.(`creating network ${cfg.network}`);
-        await dockerAsync(['network', 'create', cfg.network]);
+        await dockerAsync(['network', 'create', cfg.network], { signal });
     }
 }
 
@@ -1091,11 +1435,11 @@ async function cachedImageFreshnessAsync(cache, tag, opts) {
 }
 
 /** Async mirror of ensureServiceImage — pulls a missing/stale image, awaited. */
-async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } = {}) {
+async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal } = {}) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
     const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
-    const freshness = await cachedImageFreshnessAsync(freshnessCache, tag, { skipRemoteCheck: skipFreshness });
+    const freshness = await cachedImageFreshnessAsync(freshnessCache, tag, { skipRemoteCheck: skipFreshness, signal });
     if (freshness.status === 'current') return;
     if (freshness.status === 'unknown') {
         if (freshness.skipped) return;
@@ -1108,34 +1452,35 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } =
     } else {
         onLog?.(`  · pulling ${tag}`);
     }
-    const res = await dockerAsync(['pull', tag]);
+    const res = await dockerAsync(['pull', tag], { signal });
     if (res.status !== 0) {
         throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
     }
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal } = {}) {
     const name = `${cfg.stack}-${service}`;
-    if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
-    await removeIfExistsAsync(cfg, name, onLog);
+    await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
+    if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
+    await removeIfExistsAsync(cfg, name, onLog, signal);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs);
+    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
     onLog?.(`  [ok] started ${name}`);
-    return getServiceStateAsync(cfg, service);
+    return getServiceStateAsync(cfg, service, signal);
 }
 
 /** Async mirror of stopService (used by startStackAsync's rollback). */
-async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
+async function stopServiceAsync(cfg, service, { remove = true, onLog, signal } = {}) {
     const name = `${cfg.stack}-${service}`;
-    if (!(await containerExistsAsync(cfg, name))) return;
-    const stopped = await dockerAsync(['stop', '-t', '10', name]);
+    if (!(await containerExistsAsync(cfg, name, signal))) return;
+    const stopped = await dockerAsync(['stop', '-t', '10', name], { signal });
     if (stopped.status !== 0) {
         throw new Error(`Failed to stop ${name}: ${(stopped.stderr || '').trim()}`);
     }
     if (remove) {
-        const removed = await dockerAsync(['rm', name]);
+        const removed = await dockerAsync(['rm', name], { signal });
         if (removed.status !== 0) {
             throw new Error(`Stopped ${name} but failed to remove it: ${(removed.stderr || '').trim()}`);
         }
@@ -1148,44 +1493,294 @@ async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
  * without blocking the event loop, rolling back already-started services on a
  * mid-startup failure (best effort) before rethrowing.
  */
-export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog, signal } = {}) {
+    if (isStackReplacementPending(cfg)) {
+        onLog?.('  · resuming interrupted desktop-managed stack replacement');
+        await replaceStackContainersAsync(cfg, { onLog, signal });
+    }
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
+        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal });
         for (const service of toStart) {
-            await startServiceAsync(cfg, service, { onLog, freshnessCache });
+            await startServiceAsync(cfg, service, {
+                onLog,
+                freshnessCache,
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
+                pull: !DATABASE_SERVICES.has(service),
+                signal,
+            });
             started.push(service);
         }
     } catch (err) {
+        if (signal?.aborted) throw err;
         onLog?.(`  ! startup failed (${err.message}) — rolling back already-started services`);
         for (const service of started.reverse()) {
             try {
-                await stopServiceAsync(cfg, service, { onLog });
+                await stopServiceAsync(cfg, service, { onLog, signal });
             } catch (stopErr) {
                 onLog?.(`  ! rollback: ${stopErr.message}`);
             }
         }
         throw err;
     }
-    return getStackStatusAsync(cfg);
+    return getStackStatusAsync(cfg, signal);
+}
+
+/** Async mirror of runMigrationPhase for the interactive setup UI. */
+export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal } = {}) {
+    await assertMigrationCanStartAsync(cfg, signal);
+    await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache, signal });
+    await prepareMigrationOwnerAsync(cfg, onLog, signal);
+    onLog?.('  · running database migrations');
+    const res = await dockerAsync(migrationDockerArgs(cfg), { signal });
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
 }
 
 /** Async mirror of getStackStatus. */
-export async function getStackStatusAsync(cfg) {
-    const res = await dockerAsync(STACK_STATUS_PS_ARGS);
+export async function getStackStatusAsync(cfg, signal) {
+    const res = await dockerAsync(stackStatusPsArgs(cfg), { signal });
     return parseStackStatus(cfg, res.stdout);
 }
 
 /** Async mirror of getServiceState. */
-async function getServiceStateAsync(cfg, service) {
-    return (await getStackStatusAsync(cfg)).services.find((s) => s.service === service);
+async function getServiceStateAsync(cfg, service, signal) {
+    return (await getStackStatusAsync(cfg, signal)).services.find((s) => s.service === service);
 }
 
 /** Async mirror of isStackRunning. */
-export async function isStackRunningAsync(cfg) {
-    const status = await getStackStatusAsync(cfg);
+export async function isStackRunningAsync(cfg, signal) {
+    if (isStackReplacementPending(cfg)) return false;
+    const status = await getStackStatusAsync(cfg, signal);
     return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+}
+
+/**
+ * Resolve the root paths that prove a host-managed container belongs to this
+ * exact stack root. A stack label is not sufficient: different roots can use
+ * the same configured stack name.
+ */
+function replacementRootPaths(cfg) {
+    if (!cfg?.validateHostPaths || !cfg.hostData || !cfg.hostLogs || !cfg.hostRepos || !cfg.envFileHost) {
+        throw new Error('Refusing container replacement because the managed stack root is not fully resolved');
+    }
+    const data = resolve(cfg.hostData);
+    const logs = resolve(cfg.hostLogs);
+    const repos = resolve(cfg.hostRepos);
+    const envFile = resolve(cfg.envFileHost);
+    const roots = [dirname(data), dirname(logs), dirname(repos), dirname(envFile)];
+    if (new Set(roots).size !== 1
+        || data !== join(roots[0], 'data')
+        || logs !== join(roots[0], 'logs')
+        || repos !== join(roots[0], 'repos')
+        || envFile !== join(roots[0], '.env')) {
+        throw new Error('Refusing container replacement because the managed stack root paths do not agree');
+    }
+    return { root: roots[0], data, logs, repos, envFile };
+}
+
+const REPLACEMENT_MARKER_FILENAME = '.propr-stack-replacement.json';
+const REPLACEMENT_MARKER_MODE = 0o600;
+
+function replacementMarkerPath(cfg) {
+    if (!cfg?.validateHostPaths) return undefined;
+    return join(replacementRootPaths(cfg).root, REPLACEMENT_MARKER_FILENAME);
+}
+
+function validateReplacementMarker(cfg, marker) {
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)
+        || marker.schemaVersion !== 1 || marker.stack !== cfg.stack
+        || !Array.isArray(marker.containers) || marker.containers.length === 0
+        || marker.containers.length > SERVICES.length) {
+        throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
+    }
+    const ids = new Set();
+    const services = new Set();
+    for (const container of marker.containers) {
+        if (!container || typeof container !== 'object' || Array.isArray(container)
+            || typeof container.id !== 'string' || !/^[a-f0-9]{64}$/.test(container.id)
+            || typeof container.service !== 'string' || !SERVICES.includes(container.service)
+            || container.name !== `${cfg.stack}-${container.service}`
+            || ids.has(container.id) || services.has(container.service)) {
+            throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
+        }
+        ids.add(container.id);
+        services.add(container.service);
+    }
+    if (!marker.containers.some((container) => DATABASE_SERVICES.has(container.service))) {
+        throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is not root-bound`);
+    }
+    return marker;
+}
+
+function readReplacementMarker(cfg) {
+    const path = replacementMarkerPath(cfg);
+    if (!path || !existsSync(path)) return undefined;
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()
+        || (metadata.mode & 0o777) !== REPLACEMENT_MARKER_MODE
+        || metadata.size > 64 * 1024) {
+        throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is unsafe`);
+    }
+    try {
+        return validateReplacementMarker(cfg, JSON.parse(readFileSync(path, 'utf8')));
+    } catch (error) {
+        if (error instanceof SyntaxError) {
+            throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
+        }
+        throw error;
+    }
+}
+
+function persistReplacementMarker(cfg, rootPaths, containers) {
+    const path = join(rootPaths.root, REPLACEMENT_MARKER_FILENAME);
+    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+    try {
+        writeFileSync(temporary, `${JSON.stringify({
+            schemaVersion: 1,
+            stack: cfg.stack,
+            containers: containers.map(({ id, name, service }) => ({ id, name, service })),
+        })}\n`, { encoding: 'utf8', mode: REPLACEMENT_MARKER_MODE, flag: 'wx' });
+        chmodSync(temporary, REPLACEMENT_MARKER_MODE);
+        renameSync(temporary, path);
+    } finally {
+        try { unlinkSync(temporary); } catch { /* rename or cleanup already removed it */ }
+    }
+}
+
+function clearReplacementMarker(cfg) {
+    const path = replacementMarkerPath(cfg);
+    if (!path) return;
+    try { unlinkSync(path); }
+    catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+    }
+}
+
+/** Whether an earlier validated replacement must finish before startup. */
+export function isStackReplacementPending(cfg) {
+    return Boolean(readReplacementMarker(cfg));
+}
+
+const REPLACEMENT_INSPECT_FORMAT = '{{json .Id}}\t{{json .Name}}\t{{json .Config.Labels}}\t{{json .Mounts}}';
+
+function parseReplacementInspection(stdout) {
+    const fields = stdout.trim().split('\t');
+    if (fields.length !== 4) return null;
+    try {
+        const [id, name, labels, mounts] = fields.map((field) => JSON.parse(field));
+        if (typeof id !== 'string' || typeof name !== 'string'
+            || !labels || typeof labels !== 'object' || Array.isArray(labels)
+            || !Array.isArray(mounts)) return null;
+        return { id, name, labels, mounts };
+    } catch {
+        return null;
+    }
+}
+
+function hasReplacementMount(mounts, expected) {
+    return mounts.some((mount) => mount && typeof mount === 'object'
+        && mount.Type === expected.type
+        && mount.Destination === expected.destination
+        && (expected.source === undefined || resolve(String(mount.Source || '')) === expected.source)
+        && (expected.name === undefined || mount.Name === expected.name));
+}
+
+function replacementMountsMatch(cfg, service, mounts, rootPaths) {
+    if (service === 'redis') {
+        return hasReplacementMount(mounts, {
+            type: 'volume', destination: '/data', name: `${cfg.stack}-redis-data`,
+        });
+    }
+    if (DATABASE_SERVICES.has(service)) {
+        if (!hasReplacementMount(mounts, {
+            type: 'bind', source: rootPaths.data, destination: '/usr/src/app/data',
+        }) || !hasReplacementMount(mounts, {
+            type: 'bind', source: rootPaths.logs, destination: '/usr/src/app/logs',
+        })) return false;
+        if (service === 'worker' && !hasReplacementMount(mounts, {
+            type: 'bind', source: rootPaths.repos, destination: '/usr/src/app/repos',
+        })) return false;
+        if ((service === 'daemon' || service === 'api') && !hasReplacementMount(mounts, {
+            type: 'bind', source: rootPaths.envFile, destination: '/usr/src/app/.env',
+        })) return false;
+        return true;
+    }
+    // The UI, docs, and tunnel service specifications own no mounts. Refuse a
+    // same-labelled substitute that adds one instead of inferring ownership.
+    return mounts.length === 0;
+}
+
+/**
+ * Stop and remove only containers whose immutable IDs, canonical service
+ * identity, and root mounts were all validated before the first mutation.
+ * Bind-mounted data, credentials, logs, repositories, and the network are
+ * deliberately retained so an aligned runtime can be started in place.
+ */
+export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
+    signal?.throwIfAborted();
+    const rootPaths = replacementRootPaths(cfg);
+    const recovery = readReplacementMarker(cfg);
+    const listed = await dockerAsync([
+        'ps', '-a', '--no-trunc', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.ID}}',
+    ], { signal });
+    if (listed.status !== 0) {
+        throw new Error(`Failed to list ${cfg.stack} containers: ${(listed.stderr || '').trim()}`);
+    }
+    const ids = listed.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
+    if (ids.length > SERVICES.length || new Set(ids).size !== ids.length
+        || ids.some((id) => !/^[a-f0-9]{64}$/.test(id))) {
+        throw new Error(`Refusing to replace ${cfg.stack} containers because the ownership target set is invalid`);
+    }
+    const validated = [];
+    const services = new Set();
+    let rootBoundServices = 0;
+    const recoveryById = new Map((recovery?.containers ?? []).map((container) => [container.id, container]));
+    for (const listedId of ids) {
+        signal?.throwIfAborted();
+        const inspected = await dockerAsync(['inspect', '--format', REPLACEMENT_INSPECT_FORMAT, listedId], { signal });
+        const container = inspected.status === 0 ? parseReplacementInspection(inspected.stdout) : null;
+        const service = container?.labels?.['propr.service'];
+        if (!container
+            || container.id !== listedId
+            || container.name !== `/${cfg.stack}-${service}`
+            || container.labels['propr.stack'] !== cfg.stack
+            || typeof service !== 'string'
+            || !SERVICES.includes(service)
+            || services.has(service)
+            || (recovery && (recoveryById.get(container.id)?.name !== container.name.slice(1)
+                || recoveryById.get(container.id)?.service !== service))
+            || !replacementMountsMatch(cfg, service, container.mounts, rootPaths)) {
+            throw new Error(`Refusing to replace ${cfg.stack} containers because ownership metadata does not match the managed root and service set`);
+        }
+        services.add(service);
+        if (DATABASE_SERVICES.has(service)) rootBoundServices += 1;
+        validated.push({ id: container.id, name: container.name.slice(1), service });
+    }
+    if (validated.length > 0 && rootBoundServices === 0) {
+        throw new Error(`Refusing to replace ${cfg.stack} containers because no container proves ownership of the managed root`);
+    }
+    signal?.throwIfAborted();
+    if (!recovery && validated.length > 0) persistReplacementMarker(cfg, rootPaths, validated);
+    // Keep at least one root-bound service until optional containers are gone.
+    // A retry can therefore re-prove this exact root even if interruption lands
+    // between any two removals; the final root-bound removal leaves no target.
+    const replacementOrder = validated.toSorted((left, right) =>
+        Number(DATABASE_SERVICES.has(left.service)) - Number(DATABASE_SERVICES.has(right.service)));
+    for (const container of replacementOrder) {
+        const stopped = await dockerAsync(['stop', '-t', '10', container.id], { signal });
+        if (stopped.status !== 0) {
+            throw new Error(`Failed to stop ${container.name}: ${(stopped.stderr || '').trim()}`);
+        }
+        const removed = await dockerAsync(['rm', container.id], { signal });
+        if (removed.status !== 0) {
+            throw new Error(`Stopped ${container.name} but failed to remove it: ${(removed.stderr || '').trim()}`);
+        }
+        onLog?.(`  [ok] replaced ${container.name}`);
+    }
+    clearReplacementMarker(cfg);
 }
 
 /**
@@ -1264,16 +1859,76 @@ export function parseStackStatus(cfg, stdout) {
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
-const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
+const STACK_STATUS_MAX_BYTES = 64 * 1024;
+
+function stackStatusPsArgs(cfg) {
+    // `cfg.stack` has already passed the Docker-name validation before Connect
+    // reaches this boundary. Keep the label expression in one argv element so
+    // neither a shell nor Docker's fuzzy name matching can broaden discovery.
+    if (typeof cfg?.stack !== 'string' || cfg.stack.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(cfg.stack)) {
+        throw new Error('Docker stack status scope is invalid');
+    }
+    return [
+        'ps',
+        '-a',
+        '--filter',
+        `label=propr.stack=${cfg.stack}`,
+        '--format',
+        '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}',
+    ];
+}
+
+/**
+ * Run and strictly validate one bounded Docker status inspection. The command
+ * result is retained so callers can distinguish an absent service (a successful
+ * empty inspection) from a missing binary, daemon error, timeout, signal, or
+ * truncated/malformed output.
+ */
+export function inspectStackStatus(cfg, { timeout, env } = {}) {
+    let args;
+    try {
+        args = stackStatusPsArgs(cfg);
+    } catch (error) {
+        return { result: { status: null, stdout: '', stderr: '', error } };
+    }
+    const result = docker(args, {
+        capture: true,
+        timeout,
+        env,
+        maxBuffer: STACK_STATUS_MAX_BYTES,
+    });
+    if (result.status !== 0 || result.error || result.signal || typeof result.stdout !== 'string') {
+        return { result };
+    }
+
+    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const seenExpectedNames = new Set();
+    const validStates = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
+    for (const line of result.stdout.split('\n')) {
+        if (line === '') continue;
+        const fields = line.endsWith('\r') ? line.slice(0, -1).split('\t') : line.split('\t');
+        if (fields.length !== 4) return { result };
+        const [name, state, status] = fields;
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !validStates.has(state) || status.length === 0) {
+            return { result };
+        }
+        // The daemon-side label filter is a scope reduction, not an authority
+        // assertion. Every row returned for the target label must still be one
+        // of this stack's canonical service containers, exactly once.
+        if (!expectedNames.has(name) || seenExpectedNames.has(name)) return { result };
+        seenExpectedNames.add(name);
+    }
+    return { result, status: parseStackStatus(cfg, result.stdout) };
+}
 
 /** Per-service state for the whole stack, discovered by canonical container name. */
-export function getStackStatus(cfg) {
-    const res = docker(STACK_STATUS_PS_ARGS, { capture: true });
+export function getStackStatus(cfg, { timeout } = {}) {
+    const res = docker(stackStatusPsArgs(cfg), { capture: true, timeout });
     return parseStackStatus(cfg, res.stdout);
 }
 
-export function getServiceState(cfg, service) {
-    return getStackStatus(cfg).services.find((s) => s.service === service);
+export function getServiceState(cfg, service, opts) {
+    return getStackStatus(cfg, opts).services.find((s) => s.service === service);
 }
 
 // Best-effort GET <publicApiUrl>/api/status behind a hard timeout. propr-routing
@@ -1382,6 +2037,12 @@ export function validateEnv(cfg) {
     const errors = [];
     const warnings = [];
 
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) errors.push(runtimeModeError);
+
+    const vapidError = validateVapidConfiguration(cfg);
+    if (vapidError) errors.push(vapidError);
+
     // Docker name constraint — the stack name is embedded in container, volume
     // and network names, so reject it early instead of failing mid-startup.
     const dockerNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
@@ -1390,6 +2051,23 @@ export function validateEnv(cfg) {
     }
     if (!dockerNamePattern.test(cfg.network)) {
         errors.push(`PROPR_NETWORK ("${cfg.network}") is not a valid Docker network name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
+    }
+
+    // `uniquelocal` is intentionally broad: proxy-addr expands it to every
+    // private/link-local range. It is safe for the documented host-nginx path
+    // only because Docker publishes the API on host loopback, leaving the host
+    // bridge gateway as the sole reachable private peer. Refuse combinations
+    // that would expose this trust boundary to LAN or unrelated Docker peers.
+    const trustedProxyPeers = String(cfg.trustedProxyPeers ?? '')
+        .split(',')
+        .map((peer) => peer.trim().toLowerCase())
+        .filter(Boolean);
+    const apiIsLoopbackBound = /^(?:127\.0\.0\.1|\[::1\]):\d+$/.test(String(cfg.apiPort ?? '').trim());
+    if (trustedProxyPeers.includes('uniquelocal') && !apiIsLoopbackBound) {
+        errors.push(
+            'PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback '
+            + '(for example, API_PORT=127.0.0.1:4000); otherwise private peers can spoof forwarded client addresses.'
+        );
     }
 
     if (!cfg.envFileHost) errors.push('env file path is not set (PROPR_ENV_FILE / <root>/.env)');
@@ -1556,7 +2234,7 @@ export function validateEnv(cfg) {
     // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
     // config) to the public proxy callback.
     if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
-        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. Hosted login will redirect the browser to a localhost URL the hosted UI cannot reach. Run \`propr tunnel setup\` or set GH_OAUTH_CALLBACK_URL to the active proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback).`);
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
@@ -1568,6 +2246,74 @@ export function validateEnv(cfg) {
     }
 
     return { ok: errors.length === 0, errors, warnings };
+}
+
+function decodeCanonicalBase64Url(value, expectedBytes) {
+    const expectedLength = Math.ceil(expectedBytes * 8 / 6);
+    if (
+        typeof value !== 'string'
+        || value.length !== expectedLength
+        || value !== value.trim()
+        || !/^[A-Za-z0-9_-]+$/.test(value)
+    ) return null;
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.length === expectedBytes && decoded.toString('base64url') === value
+        ? decoded
+        : null;
+}
+
+function validVapidSubject(value) {
+    if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) return false;
+    try {
+        const url = new URL(value);
+        if (url.protocol === 'https:') {
+            return url.hostname.length > 0 && url.username === '' && url.password === '';
+        }
+        return url.protocol === 'mailto:'
+            && url.pathname.length > 0
+            && url.pathname.includes('@')
+            && url.search === ''
+            && url.hash === '';
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Validate an optional VAPID identity without ever returning key material.
+ * This mirrors packages/api/services/webPushConfiguration.ts, but remains local
+ * because the launcher is a dependency-free Node module shipped on its own.
+ */
+export function validateVapidConfiguration(cfg) {
+    const subject = cfg.webPushVapidSubject;
+    const publicKeyValue = cfg.webPushVapidPublicKey;
+    const privateKeyValue = cfg.webPushVapidPrivateKey;
+    if (subject && !validVapidSubject(subject)) {
+        return 'Web Push VAPID configuration is malformed: WEB_PUSH_VAPID_SUBJECT must be an HTTPS URL or mailto address.';
+    }
+    const configuredKeys = [publicKeyValue, privateKeyValue]
+        .filter(value => typeof value === 'string' && value.length > 0).length;
+    if (configuredKeys === 0) return null; // API startup resolves the durable automatic identity.
+    if (configuredKeys !== 2) {
+        return 'Web Push VAPID configuration is incomplete: set WEB_PUSH_VAPID_PUBLIC_KEY '
+            + 'and WEB_PUSH_VAPID_PRIVATE_KEY together, or remove both for automatic setup. Key values are not shown.';
+    }
+
+    const publicKey = decodeCanonicalBase64Url(publicKeyValue, 65);
+    const privateKey = decodeCanonicalBase64Url(privateKeyValue, 32);
+    if (!publicKey || publicKey[0] !== 0x04 || !privateKey) {
+        return 'Web Push VAPID configuration is malformed: the public and private keys must be canonical URL-safe base64 P-256 keys generated as one VAPID pair. Key values are not shown.';
+    }
+    try {
+        const ecdh = createECDH('prime256v1');
+        ecdh.setPrivateKey(privateKey);
+        if (!timingSafeEqual(publicKey, ecdh.getPublicKey(undefined, 'uncompressed'))) {
+            return 'Web Push VAPID configuration is invalid: the public and private keys do not belong to the same VAPID pair. Key values are not shown.';
+        }
+    } catch {
+        return 'Web Push VAPID configuration is malformed: the private key is not a valid P-256 VAPID key. Key values are not shown.';
+    }
+    return null;
 }
 
 /**

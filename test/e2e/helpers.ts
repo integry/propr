@@ -20,6 +20,9 @@ import {
   implementIssue,
   type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
+import { findUnclaimedModelTask } from "./taskMatching.js";
+import { parseModelTaskTimeoutMs } from "./modelTaskTimeout.js";
+import { isProviderUsageLimitFailure } from "./providerUsageLimit.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -29,6 +32,9 @@ export const API_URL = process.env.PROPR_E2E_API_URL;
 export const REPO = process.env.PROPR_E2E_REPO;
 export const SKIP_SLOW = process.env.PROPR_E2E_SKIP_SLOW === "1";
 export const NO_CLEANUP = process.env.PROPR_E2E_NO_CLEANUP === "1";
+export const MODEL_TASK_TIMEOUT_MS = parseModelTaskTimeoutMs(
+  process.env.PROPR_E2E_MODEL_TASK_TIMEOUT_MS,
+);
 
 export function resolveToken(): string | undefined {
   if (process.env.PROPR_E2E_TOKEN) return process.env.PROPR_E2E_TOKEN;
@@ -177,52 +183,59 @@ export async function waitForTasks(
   client: ApiClient,
   timeoutPolls = 60,
 ): Promise<void> {
+  if (results.length === 0) return;
+
+  const claimedTaskIds = new Set(results.map((result) => result.taskId).filter(Boolean) as string[]);
   for (let poll = 0; poll < timeoutPolls; poll++) {
     await sleep(10_000);
-    const taskList = await listTasks({ repository: repo }, client);
+    const taskList = await listTasks({ repository: repo, limit: 1000 }, client);
 
     let allFound = true;
     for (const r of results) {
       if (r.taskId) continue;
-      const task = taskList.tasks.find(
-        (t) =>
-          t.issueNumber === r.issueNumber &&
-          (t.modelName === r.model_name || t.id.includes(r.model_name)),
-      );
-      if (task && !results.some((o) => o !== r && o.taskId === task.id)) {
+      const task = findUnclaimedModelTask(taskList.tasks, r, claimedTaskIds);
+      if (task) {
         r.taskId = task.id;
-        console.log(`    Task for #${r.issueNumber} (${r.model_name}): ${task.id.substring(0, 50)}...`);
+        claimedTaskIds.add(task.id);
+        console.log(`    Task for #${r.issueNumber} (${r.agent_alias}/${r.model_name}): ${task.id.substring(0, 50)}...`);
       } else {
         allFound = false;
       }
     }
-    if (allFound) break;
+    if (allFound) return;
 
     if (poll % 6 === 0) {
       const found = results.filter((r) => r.taskId).length;
       console.log(`    Tasks: ${found}/${results.length}`);
     }
   }
+
+  const missing = results.filter((result) => !result.taskId);
+  throw new Error(
+    `Timed out waiting for ${missing.length}/${results.length} model task(s): ${missing
+      .map((result) => `${result.agent_alias}/${result.model_name}`)
+      .join(", ")}`,
+  );
 }
 
 export async function pollTasksToCompletion(
   results: ModelTestResult[],
   client: ApiClient,
+  timeoutMs = MODEL_TASK_TIMEOUT_MS,
 ): Promise<void> {
   const withTasks = results.filter((r) => r.taskId);
   if (withTasks.length === 0) return;
 
   const terminalStates = new Set(["completed", "failed", "cancelled"]);
   let pollCount = 0;
+  const deadline = Date.now() + timeoutMs;
 
-  while (true) {
+  while (Date.now() < deadline) {
     await sleep(10_000);
     pollCount++;
 
-    let allDone = true;
     for (const r of withTasks) {
       if (r.finalState && terminalStates.has(r.finalState)) continue;
-      allDone = false;
 
       const status = await getTaskStatus(r.taskId!, client);
       const prevSize = r.observedStates.size;
@@ -258,8 +271,47 @@ export async function pollTasksToCompletion(
       console.log(`    Progress: ${done}/${withTasks.length} done`);
     }
 
-    if (allDone) break;
+    if (withTasks.every((r) => r.finalState && terminalStates.has(r.finalState))) return;
   }
+
+  const unfinished = withTasks.filter((result) =>
+    !result.finalState || !terminalStates.has(result.finalState));
+  throw new Error(
+    `Timed out waiting for ${unfinished.length}/${withTasks.length} model task(s): ${unfinished
+      .map((result) => `${result.agent_alias}/${result.model_name}`)
+      .join(", ")}`,
+  );
+}
+
+function describeModelTask(result: ModelTestResult): string {
+  const state = result.finalState ?? "unknown";
+  const reason = result.failureReason?.replace(/\s+/g, " ").trim();
+  return `${result.agent_alias}/${result.model_name}: ${state}${reason ? ` — ${reason.slice(0, 300)}` : ""}`;
+}
+
+/**
+ * Requires every model task to complete. Tasks that failed only because the
+ * provider account ran out of credits are reported but tolerated, as long as
+ * at least one model completed so the run still validated a live model.
+ */
+export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
+  const unsuccessful = results.filter((result) => result.finalState !== "completed");
+  if (unsuccessful.length === 0) return;
+
+  const usageLimited = unsuccessful.filter((result) =>
+    isProviderUsageLimitFailure(result.finalState, result.failureReason));
+  const unexpected = unsuccessful.filter((result) => !usageLimited.includes(result));
+
+  if (unexpected.length === 0 && usageLimited.length < results.length) {
+    console.log(
+      `    WARNING: ${usageLimited.length}/${results.length} model task(s) hit provider usage limits: ${usageLimited.map(describeModelTask).join("; ")}`,
+    );
+    return;
+  }
+
+  throw new Error(
+    `${unsuccessful.length}/${results.length} model task(s) did not complete successfully: ${unsuccessful.map(describeModelTask).join("; ")}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

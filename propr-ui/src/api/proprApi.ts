@@ -1,161 +1,44 @@
-// API for fetching system data from backend
-import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import type { AgentType, ReasoningLevel } from '@propr/shared';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import { DESKTOP_LOGGED_OUT_EVENT } from '../desktop/types';
+import type { Task as ApiTask } from './tasks';
+import {
+  API_BASE_URL,
+  apiFetch,
+  getAuthenticatedApiReadScopeGeneration,
+  handleApiResponse,
+  getDesktopConnectionScope,
+  setAuthenticatedApiReadIdentity,
+  setDesktopConnectionScope,
+  shareInFlightApiRead,
+} from './apiClient';
+import { isHostedUiOrigin, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { isProprProxyUrl } from '@propr/shared';
+import {
+  reportPackagedAcceptanceCurrentUser,
+  type PackagedAcceptanceCurrentUserClassification,
+} from '../desktop/packagedAcceptanceCurrentUserValidation';
 
-export const API_BASE_URL = getApiBaseUrl();
-export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
+export * from './apiClient';
+export { getSystemStatus } from './systemStatusApi';
 
 export interface DemoModeStatus {
   demoMode: boolean;
 }
 
-export class DemoModeReadOnlyError extends Error {
-  readonly code = DEMO_MODE_READ_ONLY_CODE;
-
-  constructor(message = 'Demo mode is read-only. Write and AI execution actions are disabled.') {
-    super(message);
-    this.name = 'DemoModeReadOnlyError';
-  }
-}
-
-export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
-  error instanceof DemoModeReadOnlyError || (
-    error instanceof Error &&
-    'code' in error &&
-    (error as { code?: unknown }).code === DEMO_MODE_READ_ONLY_CODE
-  );
-
-const shouldRetryAfterTokenRefresh = async (response: Response): Promise<boolean> => {
-  if (response.status !== 401) return false;
-  try {
-    const data = await response.clone().json() as { code?: string };
-    return data.code === 'TOKEN_REFRESHED';
-  } catch {
-    return false;
-  }
-};
-
-const isReplayableApiRequest = (input: RequestInfo | URL, init?: RequestInit): boolean => {
-  const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
-  if (typeof Request !== 'undefined' && input instanceof Request && (input.body || input.bodyUsed)) return false;
-  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
-};
-
-export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
-  return response;
-};
-
 // Re-export all types for backward compatibility
 export * from './proprTypes';
 
 import type {
-  SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
-  GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser,
+  TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
+  GetTasksOptions, StopExecutionResponse, DeleteTaskResponse, CurrentUser,
   InstanceCatalogResponse
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
 
-export const handleApiResponse = async (response: Response): Promise<Response> => {
-  if (response.ok) return response;
-  if (response.status === 401) {
-    if (window.location.pathname === '/login') throw new Error('Authentication required');
-    window.location.href = '/login';
-    throw new Error('Authentication required');
-  }
-
-  let data: { code?: string; error?: string; message?: string } | null = null;
-  try {
-    data = await response.clone().json() as { code?: string; error?: string; message?: string };
-  } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
-  if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
-    throw new DemoModeReadOnlyError(data.message || data.error);
-  }
-  if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
-    window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
-  }
-  if (response.status < 500 && (data?.message || data?.error)) {
-    throw new Error(data.message || data.error);
-  }
-  throw new Error(
-    response.status >= 500
-      ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
-      : `The request could not be completed (HTTP ${response.status}).`
-  );
-};
-
 export const getDemoModeStatus = async (): Promise<DemoModeStatus> => {
   const response = await apiFetch(`${API_BASE_URL}/api/auth/demo-mode`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
-};
-
-export const getSystemStatus = async (): Promise<SystemStatus> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/status`, { credentials: 'include' });
-  await handleApiResponse(response);
-  const data: StatusResponse = await response.json();
-  const workers: { id: number; status: string }[] = [];
-  for (let i = 0; i < (data.workerCount || 0); i++) workers.push({ id: i + 1, status: 'active' });
-  const mapAuthStatus = (status?: string) => status === 'connected' ? 'Authenticated' : 'Failed';
-  const mapAgentStatus = (status?: string) => status === 'connected' ? 'Ready' : 'Failed';
-  const mapIndexingStatus = (status?: string) => {
-    switch (status) {
-      case 'active':
-        return 'Active';
-      case 'queued':
-        return 'Queued';
-      case 'idle':
-        return 'Idle';
-      case 'failed':
-        return 'Failed';
-      case 'connected':
-        return 'Connected';
-      case 'disconnected':
-        return 'Unavailable';
-      default:
-        return 'Unavailable';
-    }
-  };
-  // Human-readable label for the configured intake path. An unknown or absent
-  // mode (older backends) falls back to 'Unknown' so the UI never shows a raw key.
-  const intakeLabels: Record<string, string> = {
-    routing_websocket: 'ProPR Connect',
-    polling: 'Polling',
-    direct_webhook: 'Direct Webhook',
-  };
-  const mapIntakeLabel = (mode?: string) => (mode && intakeLabels[mode]) || 'Unknown';
-  const mapIntakeStatus = (status?: string) => {
-    switch (status) {
-      case 'connected':
-        return 'Connected';
-      case 'active':
-        return 'Active';
-      case 'disconnected':
-        return 'Disconnected';
-      default:
-        return 'Unknown';
-    }
-  };
-  const agents = (data.agents || []).map(agent => ({
-    ...agent,
-    status: mapAgentStatus(agent.status),
-  }));
-  return {
-    daemon: data.daemon === 'running' ? 'Running' : 'Stopped',
-    workers,
-    redis: data.redis === 'connected' ? 'Connected' : 'Disconnected',
-    githubAuth: mapAuthStatus(data.githubAuth),
-    claudeAuth: mapAuthStatus(data.claudeAuth),
-    indexing: mapIndexingStatus(data.indexing),
-    githubEventIntake: mapIntakeLabel(data.githubEventIntake),
-    githubEventIntakeStatus: mapIntakeStatus(data.githubEventIntakeStatus),
-    agents,
-    warnings: data.warnings || [],
-  };
 };
 
 export const getQueueStats = async (): Promise<QueueStats> => {
@@ -175,12 +58,22 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
-export const getTasks = async (
-  statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
-): Promise<unknown> => {
-  let options: GetTasksOptions;
-  if (typeof statusOrOptions === 'object') options = statusOrOptions;
-  else options = { status: statusOrOptions, limit, offset, repository, search };
+export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
+
+const normalizeGetTasksOptions = (
+  statusOrOptions: string | GetTasksOptions = 'all',
+  limit = 50,
+  offset = 0,
+  repository = 'all',
+  search = '',
+): GetTasksOptions => typeof statusOrOptions === 'object'
+  ? statusOrOptions
+  : { status: statusOrOptions, limit, offset, repository, search };
+
+const getTasksRequest = async (
+  options: GetTasksOptions,
+  signal?: AbortSignal,
+): Promise<GetTasksResponse> => {
   const params = new URLSearchParams({
     status: options.status || 'all', limit: (options.limit ?? 50).toString(),
     offset: (options.offset ?? 0).toString(), repository: options.repository || 'all'
@@ -188,113 +81,49 @@ export const getTasks = async (
   if (options.search) params.append('search', options.search);
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
-  const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
+    credentials: 'include',
+    ...(signal ? { signal } : {}),
+  });
   await handleApiResponse(response);
   return response.json();
 };
 
+export const getTasks = (
+  statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
+): Promise<GetTasksResponse> => getTasksRequest(
+  normalizeGetTasksOptions(statusOrOptions, limit, offset, repository, search),
+);
+
+/** The onboarding existence query is distinct from list and review task reads. */
+export const getReadinessTaskExistence = (): Promise<GetTasksResponse> =>
+  shareInFlightApiRead('readiness-task-existence', signal =>
+    getTasksRequest({ status: 'all', limit: 1, offset: 0, repository: 'all' }, signal));
+
 export const getTaskHistory = async (taskId: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/history`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/history`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getTaskAnalysis = async (taskId: string): Promise<TaskAnalysisResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/analysis`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, { credentials: 'include' });
   if (response.status === 202) return { analysis: null, message: 'Analysis pending...' };
   await handleApiResponse(response);
   return response.json();
 };
 
 export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/live-details`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/live-details`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
-export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
+export const getInstanceCatalog = (): Promise<InstanceCatalogResponse> => shareInFlightApiRead('instance-catalog', async signal => {
+  const response = await apiFetch(`${API_BASE_URL}/api/instance/catalog`, { credentials: 'include', signal });
   await handleApiResponse(response);
   return response.json();
-};
-
-export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repos_to_monitor: repos }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAvailableGithubRepos = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getSettings = async (): Promise<SystemSettings> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface ConfigUpdateResponse {
-  success: boolean;
-  settings?: Record<string, unknown>;
-  warnings?: string[];
-}
-
-export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_keywords: keywords }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupIgnoreKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_ignore_keywords: keywords }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
+});
 
 export const fetchPrompt = async (promptPath: string): Promise<string> => {
   const response = await apiFetch(`${API_BASE_URL}${promptPath}`, { credentials: 'include' });
@@ -314,59 +143,15 @@ export const fetchLogFile = async (logFilePath: string): Promise<string> => {
   return response.text();
 };
 
-export const getPrLabel = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pr_label: prLabel }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAiPrimaryTag = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ai_primary_tag: aiPrimaryTag }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getPrimaryProcessingLabels = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ primary_processing_labels: primaryLabels }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${taskId}/stop`, { method: 'POST', credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/stop`, { method: 'POST', credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
 
 export const deleteTask = async (taskId: string, force?: boolean): Promise<void> => {
-  const url = force ? `${API_BASE_URL}/api/tasks/${taskId}?force=true` : `${API_BASE_URL}/api/tasks/${taskId}`;
+  const encodedTaskId = encodeURIComponent(taskId);
+  const url = force ? `${API_BASE_URL}/api/tasks/${encodedTaskId}?force=true` : `${API_BASE_URL}/api/tasks/${encodedTaskId}`;
   const response = await apiFetch(url, { method: 'DELETE', credentials: 'include' });
   if (response.status === 204) return;
   if (response.status === 400) {
@@ -376,65 +161,184 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
   await handleApiResponse(response);
 };
 
-export const getCurrentUser = async (): Promise<CurrentUser> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
+export interface CurrentUserValidationOptions {
+  scopeGeneration?: number;
+  activeScopePresent?: boolean;
+}
+
+const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
+
+const isNullableString = (value: unknown): value is string | null => value === null || typeof value === 'string';
+
+export const isCurrentUserResponse = (value: unknown): value is CurrentUser => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const user = value as Partial<CurrentUser>;
+  const permissions = new Set(['instance.manage_agents', 'instance.manage_members', 'instance.manage_runtime', 'instance.manage_settings']);
+  return typeof user.id === 'string'
+    && typeof user.login === 'string'
+    && typeof user.username === 'string'
+    && typeof user.displayName === 'string'
+    && isNullableString(user.email)
+    && isNullableString(user.avatarUrl)
+    && (user.role === 'admin' || user.role === 'member')
+    && Array.isArray(user.permissions)
+    && user.permissions.every(permission => permissions.has(permission))
+    && ['bootstrap', 'local', 'managed', 'implicit', 'demo'].includes(user.authorizationSource ?? '');
 };
 
-export const logout = (): void => {
+const currentUserResponseClassification = async (
+  response: Response,
+): Promise<PackagedAcceptanceCurrentUserClassification> => {
+  if (response.ok) return 'success';
+  if (response.status === 403) return 'forbidden';
+  if (response.status >= 500) return 'server-error';
+  if (response.status !== 401) return 'unauthenticated';
+  try {
+    const body = await response.clone().json() as { code?: unknown };
+    return ['INVALID_INSTANCE_TOKEN', 'INSTANCE_TOKEN_EXPIRED', 'INSTANCE_TOKEN_REVOKED'].includes(String(body.code))
+      ? 'revoked'
+      : 'unauthenticated';
+  } catch {
+    return 'unauthenticated';
+  }
+};
+
+export const getCurrentUser = async (options: CurrentUserValidationOptions = {}): Promise<CurrentUser> => {
+  const authenticatedReadScopeGeneration = getAuthenticatedApiReadScopeGeneration();
+  const requestedScopeGeneration = options.scopeGeneration;
+  const scopeGeneration = typeof requestedScopeGeneration === 'number'
+    && Number.isSafeInteger(requestedScopeGeneration) && requestedScopeGeneration >= 0
+    ? requestedScopeGeneration
+    : 0;
+  const activeScopePresent = options.activeScopePresent === true;
+  const currentUserUrl = activeScopePresent
+    ? `${API_BASE_URL}/api/auth/user?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${scopeGeneration}`
+    : `${API_BASE_URL}/api/auth/user`;
+  if (activeScopePresent) {
+    reportPackagedAcceptanceCurrentUser({
+      phase: 'request-issued', scopeGeneration, activeScopePresent,
+      responseStatus: 0, classification: 'pending', schemaAccepted: false,
+    });
+  }
+  const response = await apiFetch(currentUserUrl, activeScopePresent
+    ? { credentials: 'include' }
+    : { credentials: 'include', cache: 'no-store' });
+  const classification = await currentUserResponseClassification(response);
+  if (activeScopePresent) {
+    reportPackagedAcceptanceCurrentUser({
+      phase: 'response-completed', scopeGeneration, activeScopePresent,
+      responseStatus: response.status, classification, schemaAccepted: false,
+    });
+  }
+  await handleApiResponse(response);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    if (activeScopePresent) {
+      reportPackagedAcceptanceCurrentUser({
+        phase: 'parsed-user-rejected', scopeGeneration, activeScopePresent,
+        responseStatus: response.status, classification: 'invalid-schema', schemaAccepted: false,
+      });
+    }
+    throw new Error('Current-user response schema was invalid.');
+  }
+  if (!isCurrentUserResponse(body)) {
+    if (activeScopePresent) {
+      reportPackagedAcceptanceCurrentUser({
+        phase: 'parsed-user-rejected', scopeGeneration, activeScopePresent,
+        responseStatus: response.status, classification: 'invalid-schema', schemaAccepted: false,
+      });
+    }
+    throw new Error('Current-user response schema was invalid.');
+  }
+  if (activeScopePresent) {
+    reportPackagedAcceptanceCurrentUser({
+      phase: 'parsed-user-accepted', scopeGeneration, activeScopePresent,
+      responseStatus: response.status, classification, schemaAccepted: true,
+    });
+  }
+  setAuthenticatedApiReadIdentity(body.id, authenticatedReadScopeGeneration);
+  return body;
+};
+
+export const HOSTED_LOGOUT_FAILED_MESSAGE =
+  'Unable to log out from the active hosted ProPR tunnel. Check the connection and try again.';
+
+let hostedLogoutInFlight: Promise<void> | null = null;
+
+const isHostedLogoutResponseComplete = (response: Response): boolean =>
+  response.ok || response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400);
+
+const hostedLogout = async (): Promise<void> => {
+  try {
+    const response = await fetch(new URL('/api/auth/logout', API_BASE_URL), {
+      credentials: 'include',
+      redirect: 'manual',
+    });
+    if (!isHostedLogoutResponseComplete(response)) {
+      throw new Error(`Hosted logout failed with HTTP ${response.status}`);
+    }
+    window.location.href = pathWithActiveHostedTunnelFlow('/login?logged_out=true');
+  } catch (error) {
+    console.error('[propr] Hosted logout failed; keeping the active hosted tunnel in this tab.', error);
+    window.alert(HOSTED_LOGOUT_FAILED_MESSAGE);
+  } finally {
+    hostedLogoutInFlight = null;
+  }
+};
+
+let desktopLogoutInFlight: Promise<void> | null = null;
+
+const desktopLogout = async (): Promise<void> => {
+  const scope = getDesktopConnectionScope();
+  if (!scope) {
+    window.alert('Unable to log out: the active desktop connection changed. Reconnect and try again.');
+    return;
+  }
+  // Cancels REST and disconnects the scoped socket before invoking main.
+  setDesktopConnectionScope(null);
+  try {
+    await scope.bridge.auth.logout({ profileId: scope.profileId, transportScope: scope.transportScope });
+  } catch {
+    if (!getDesktopConnectionScope()) setDesktopConnectionScope(scope);
+    window.alert('Unable to log out from ProPR Desktop. The local credential could not be removed. Try again.');
+    return;
+  }
+  // A late logout must never clear a newer profile's renderer state.
+  if (getDesktopConnectionScope()) return;
+  window.dispatchEvent(new CustomEvent(DESKTOP_LOGGED_OUT_EVENT, { detail: scope }));
+  // The desktop shell now owns sign-in. Reset account-specific routes so a
+  // later successful pairing boots the dashboard and validates its new user.
+  window.location.hash = '/';
+  try {
+    // These legacy keys belong to the mounted account UI. Keep instance
+    // configuration, device preferences and any other profile namespaces.
+    for (const key of [
+      'dismissed_plan_ids', 'dismissed_task_ids', 'dismissed_task_timestamps',
+      'plannerSettings', 'propr.goalFormSettings', 'propr:push-subscription-owner',
+    ]) window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem('agent-tank-banner-dismissed');
+  } catch {
+    window.alert('You are signed out, but ProPR could not clear the account display cache. Restart ProPR Desktop before signing in again.');
+  }
+};
+
+export const logout = (): void | Promise<void> => {
+  setAuthenticatedApiReadIdentity(null);
+  if (typeof window !== 'undefined' && window.proprDesktop) {
+    desktopLogoutInFlight ??= desktopLogout().finally(() => { desktopLogoutInFlight = null; });
+    return desktopLogoutInFlight;
+  }
+  if (typeof window !== 'undefined' && isHostedUiOrigin(window.location.hostname) && isProprProxyUrl(API_BASE_URL)) {
+    hostedLogoutInFlight ??= hostedLogout();
+    return hostedLogoutInFlight;
+  }
+
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
-export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
-
-export interface AgentConfig {
-  id: string;
-  type: AgentType;
-  alias: string;
-  enabled: boolean;
-  dockerImage: string;
-  configPath: string;
-  supportedModels: string[];
-  defaultModel?: string;
-  envVars?: Record<string, string>;
-  modelCustomLabels?: Record<string, string>;
-  modelReasoningLevels?: Record<string, ReasoningLevel>;
-  // CLI Version Configuration
-  cliVersionType?: CliVersionType;
-  cliVersion?: string;
-  cliVersionResolved?: string;
-}
-
-export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface SaveAgentsResponse {
-  success: boolean;
-  agents: AgentConfig[];
-  warnings?: string[];
-}
-
-export const saveAgents = async (agents: AgentConfig[]): Promise<SaveAgentsResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agents }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {
-  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
-  const response = await apiFetch(`${API_BASE_URL}/api/agents/opencode/models${params}`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-
+export * from './configApi';
 export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';
@@ -448,3 +352,10 @@ export * from './repoTodosApi';
 export * from './userRepoPreferencesApi';
 export * from './revertApi';
 export * from './agentLoginApi';
+
+export type { ChatMessage } from './plannerApi';
+export type { PlanIssueStatus } from './planIssuesApi';
+export type {
+  CommitInfo, DeleteTaskResponse, PostFollowupResponse,
+  RevertParams, RevertPreviewResponse, TriggerReindexAllResponse
+} from './proprTypes';

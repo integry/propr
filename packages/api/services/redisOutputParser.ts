@@ -1,11 +1,25 @@
 /* eslint-disable max-lines */
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
-import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
+import {
+  isOpenCodeJsonlEvent,
+  normalizeOpenCodeTimestamp,
+  normalizeOpenCodeUsage,
+} from '@propr/core';
+import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
 import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
   events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number;
+  nativeGoal: NativeGoalProjection | null;
+}
+
+export interface NativeGoalProjection {
+  objective: string;
+  status: string;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
 }
 
 export interface RedisOutputParseOptions {
@@ -17,14 +31,18 @@ interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
+  codexTurnCompletedUsage: ParseState['tokenUsage'] | null;
+  codexResultUsage: ParseState['tokenUsage'] | null;
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
-  pendingAssistantMessage: string; pendingAssistantTimestamp: string | null;
+  pendingAssistantMessage: string; pendingAssistantTimestamp: string | null; pendingAssistantInternalReasoning: boolean;
   antigravityStreamActive: boolean;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
+  emittedAntigravityToolUseIds: Set<string>;
   emittedOpenCodeToolUseIds: Set<string>;
   emittedOpenCodeToolResultIds: Set<string>;
+  nativeGoal: NativeGoalProjection | null;
 }
 
 interface OpenCodeRedisEventUsage {
@@ -65,6 +83,21 @@ interface CodexItem {
   items?: Array<{ text: string; completed: boolean }>;
 }
 
+interface CodexAppServerEvent {
+  id?: number;
+  method?: string;
+  emittedAtMs?: number;
+  error?: { message?: string };
+  params?: {
+    item?: Record<string, unknown>;
+    plan?: Array<{ step?: string; status?: string }>;
+    tokenUsage?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
+    message?: string;
+    goal?: Record<string, unknown>;
+  };
+}
+
 /** Max content length for truncation */
 const MAX_CONTENT_LENGTH = 2000;
 const OPEN_CODE_TOOL_USE_TYPES = ['tool_use', 'tool', 'tool_call'];
@@ -98,7 +131,7 @@ function processCodexItem(
   switch (item.type) {
     case 'reasoning':
       if (item.text) {
-        events.push({ type: 'thought' as const, content: item.text, timestamp });
+        events.push({ type: 'thought' as const, content: item.text, internalReasoning: true, timestamp });
       }
       break;
     case 'command_execution':
@@ -174,9 +207,26 @@ function processCodexItemUpdated(event: CodexEvent, _timestamp: string, state: P
 
 function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
   if (!event.usage) return false;
-  state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-  state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+  const usage = {
+    input_tokens: event.usage.input_tokens ?? 0,
+    output_tokens: event.usage.output_tokens ?? 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: event.usage.cached_input_tokens ?? 0,
+  };
+  if (event.type === 'result') {
+    // Legacy result usage is a cumulative fallback. A transcript containing
+    // turn.completed events uses those per-turn records as the authority.
+    state.codexResultUsage = usage;
+    return true;
+  }
+  state.codexTurnCompletedUsage ??= emptyRedisTokenUsage();
+  addRedisTokenUsage(state.codexTurnCompletedUsage, usage);
   return true;
+}
+
+function applyAuthoritativeCodexUsage(state: ParseState): void {
+  const usage = state.codexTurnCompletedUsage ?? state.codexResultUsage;
+  if (usage) addRedisTokenUsage(state.tokenUsage, usage);
 }
 
 function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseState): boolean {
@@ -189,7 +239,7 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
     case 'tool_result':
       return processCodexToolResult(event, timestamp, state);
     case 'result':
-      return true;
+      return event.usage ? processCodexTurnCompleted(event, timestamp, state) : true;
     case 'item.completed':
       return processCodexItemCompleted(event, timestamp, state);
     case 'item.updated':
@@ -201,9 +251,110 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
   }
 }
 
+function appServerUsage(event: CodexAppServerEvent): ParseState['tokenUsage'] | null {
+  const params = event.params ?? {};
+  const outer = (params.tokenUsage ?? params.usage ?? {}) as Record<string, unknown>;
+  const usage = (outer.total ?? outer) as Record<string, unknown>;
+  const normalized = {
+    input_tokens: Number(usage.inputTokens ?? usage.input_tokens ?? 0),
+    output_tokens: Number(usage.outputTokens ?? usage.output_tokens ?? 0),
+    cache_creation_input_tokens: Number(usage.cacheCreationInputTokens ?? usage.cache_creation_input_tokens ?? 0),
+    cache_read_input_tokens: Number(usage.cachedInputTokens ?? usage.cache_read_input_tokens ?? 0),
+  };
+  return hasRedisTokenUsage(normalized) ? normalized : null;
+}
+
+function processAppServerItem(item: Record<string, unknown>, timestamp: string, state: ParseState): void {
+  const type = item.type;
+  if (type === 'agentMessage' && typeof item.text === 'string') {
+    state.events.push({ type: 'thought', content: truncateContent(item.text), timestamp });
+    return;
+  }
+  if (type === 'reasoning') {
+    const summary = Array.isArray(item.summary) ? item.summary.join('\n') : textFromValue(item.summary);
+    if (summary) state.events.push({ type: 'thought', content: truncateContent(summary), internalReasoning: true, reasoningSummary: true, timestamp });
+    return;
+  }
+  if (type === 'commandExecution') {
+    state.events.push({ type: 'tool_use', toolName: 'Bash', input: { command: item.command }, timestamp });
+    if (typeof item.aggregatedOutput === 'string') {
+      state.events.push({ type: 'tool_result', result: truncateContent(item.aggregatedOutput), isError: Number(item.exitCode ?? 0) !== 0, timestamp });
+    }
+    return;
+  }
+  if (type === 'fileChange' && Array.isArray(item.changes)) {
+    state.events.push({ type: 'tool_use', toolName: 'FileChange', input: { changes: item.changes }, timestamp });
+    return;
+  }
+  if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'collabToolCall') {
+    const toolName = String(item.tool ?? item.server ?? type);
+    state.events.push({ type: 'tool_use', toolName, input: (item.arguments ?? {}) as Record<string, unknown>, timestamp });
+    if (item.result || item.error) state.events.push({ type: 'tool_result', result: item.result ?? item.error, isError: Boolean(item.error), timestamp });
+  }
+}
+
+function processAppServerPlan(event: CodexAppServerEvent, state: ParseState): void {
+  state.todos = (event.params?.plan ?? []).map((entry, index) => ({
+      id: `plan-${index}`,
+      content: entry.step || `Step ${index + 1}`,
+      status: entry.status === 'completed' ? 'completed' : entry.status === 'inProgress' ? 'in_progress' : 'pending',
+  }));
+}
+
+function processAppServerGoal(event: CodexAppServerEvent, state: ParseState): void {
+  const goal = event.params?.goal;
+  if (typeof goal?.objective !== 'string' || typeof goal.status !== 'string') return;
+  state.nativeGoal = {
+    objective: goal.objective,
+    status: goal.status,
+    tokenBudget: typeof goal.tokenBudget === 'number' ? goal.tokenBudget : null,
+    tokensUsed: Number(goal.tokensUsed ?? 0),
+    timeUsedSeconds: Number(goal.timeUsedSeconds ?? 0),
+  };
+}
+
+function processAppServerDiagnostic(event: CodexAppServerEvent, timestamp: string, state: ParseState): void {
+  const content = event.error?.message || event.params?.message;
+  if (content) {
+    state.events.push({ type: 'tool_result', result: content, isError: event.method === 'error', timestamp });
+  }
+}
+
+function processCodexAppServerEvent(event: CodexAppServerEvent, timestamp: string, state: ParseState): boolean {
+  if (!event.method) return typeof event.id === 'number';
+  if (event.method === 'turn/plan/updated') processAppServerPlan(event, state);
+  else if (event.method === 'item/completed' && event.params?.item) processAppServerItem(event.params.item, timestamp, state);
+  else if (event.method === 'thread/tokenUsage/updated') {
+    const usage = appServerUsage(event);
+    if (usage) mergeRedisTokenUsageByMax(state.tokenUsage, usage);
+  } else if (event.method === 'thread/goal/updated') processAppServerGoal(event, state);
+  else if (event.method === 'error' || event.method === 'warning') processAppServerDiagnostic(event, timestamp, state);
+  return event.method === 'error' || event.method === 'warning'
+    || event.method.startsWith('thread/') || event.method.startsWith('turn/')
+    || event.method.startsWith('item/') || event.method.startsWith('model/');
+}
+
 /**
  * Process Antigravity events (message, tool_use, tool_result, result)
  */
+function processAntigravityToolUse(
+  event: { tool_name?: string; parameters?: unknown; tool_id?: string },
+  timestamp: string,
+  state: ParseState
+): void {
+  flushPendingMessage(state, timestamp);
+  const id = event.tool_id;
+  if (id && state.emittedAntigravityToolUseIds.has(id)) return;
+  if (id) state.emittedAntigravityToolUseIds.add(id);
+  state.events.push({
+    type: 'tool_use' as const,
+    toolName: event.tool_name,
+    input: event.parameters as Record<string, unknown> | undefined,
+    id,
+    timestamp
+  });
+}
+
 function processAntigravityEvent(
   event: { type?: string; source?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number } },
   timestamp: string,
@@ -229,7 +380,7 @@ function processAntigravityEvent(
     return;
   }
   if (event.type === 'tool_use') {
-    flushPendingMessage(state, timestamp);
+    processAntigravityToolUse(event, timestamp, state);
     return;
   }
   if (event.type === 'tool_result') {
@@ -252,14 +403,20 @@ function processOpenCodeEvent(
 ): boolean {
   if (!isOpenCodeEvent(event)) return false;
   const type = event.type?.toLowerCase();
-  const assistantText = extractOpenCodeAssistantText(event);
-  if (assistantText) {
+  for (const { content: assistantText, internalReasoning } of extractOpenCodeAssistantSegments(event, extractOpenCodeAssistantText)) {
     if (type === 'delta' || event.part || event.parts?.length) {
+      if (state.pendingAssistantInternalReasoning !== internalReasoning) flushPendingMessage(state, timestamp);
       state.pendingAssistantMessage += assistantText;
       state.pendingAssistantTimestamp ??= timestamp;
+      state.pendingAssistantInternalReasoning = internalReasoning;
     } else {
       flushPendingMessage(state, timestamp);
-      state.events.push({ type: 'thought' as const, content: assistantText, timestamp });
+      state.events.push({
+        type: 'thought' as const,
+        content: assistantText,
+        ...(internalReasoning ? { internalReasoning: true } : {}),
+        timestamp,
+      });
     }
   }
 
@@ -525,9 +682,15 @@ function hasRedisTokenUsage(usage: ParseState['tokenUsage']): boolean {
  */
 function flushPendingMessage(state: ParseState, timestamp: string): void {
   if (state.pendingAssistantMessage) {
-    state.events.push({ type: 'thought' as const, content: state.pendingAssistantMessage, timestamp: state.pendingAssistantTimestamp ?? timestamp });
+    state.events.push({
+      type: 'thought' as const,
+      content: state.pendingAssistantMessage,
+      ...(state.pendingAssistantInternalReasoning ? { internalReasoning: true } : {}),
+      timestamp: state.pendingAssistantTimestamp ?? timestamp,
+    });
     state.pendingAssistantMessage = '';
     state.pendingAssistantTimestamp = null;
+    state.pendingAssistantInternalReasoning = false;
   }
 }
 
@@ -604,16 +767,30 @@ function isAntigravityStreamEvent(
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.created_at || event.timestamp || getNextSyntheticTimestamp(state);
+    const rawTimestamp = event.created_at || event.timestamp || event.emittedAtMs;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? normalizeOpenCodeTimestamp(rawTimestamp)
+      : rawTimestamp || getNextSyntheticTimestamp(state);
 
-    if (isAntigravityStreamEvent(event, state)) {
+    if (processCodexAppServerEvent(event, timestamp, state)) return;
+
+    // Session-qualified OpenCode events overlap with Antigravity's tool
+    // envelopes, so preserve their stronger identity before generic routing.
+    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
+
+    if (event.type === 'message' && event.role === 'assistant' && event.delta === true && !hasOpenCodeSessionId(event)) {
       state.antigravityStreamActive = true;
       processAntigravityEvent(event, timestamp, state);
       return;
     }
 
+    if (isAntigravityStreamEvent(event, state)) {
+      processAntigravityEvent(event, timestamp, state);
+      state.antigravityStreamActive = true;
+      return;
+    }
+
     // Try OpenCode before Codex when session ID is present (their envelopes overlap)
-    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
     // Try Codex event processing
     if (!processCodexEvent(event, timestamp, state)) {
       // Try OpenCode
@@ -643,15 +820,20 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     events: [],
     todos: [],
     tokenUsage: emptyRedisTokenUsage(),
+    codexTurnCompletedUsage: null,
+    codexResultUsage: null,
     lastOpenCodeCumulativeTopLevelUsage: null,
     pendingAssistantMessage: '',
     pendingAssistantTimestamp: null,
+    pendingAssistantInternalReasoning: false,
     antigravityStreamActive: false,
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set(),
+    emittedAntigravityToolUseIds: new Set(),
     emittedOpenCodeToolUseIds: new Set(),
-    emittedOpenCodeToolResultIds: new Set()
+    emittedOpenCodeToolResultIds: new Set(),
+    nativeGoal: null,
   };
 
   if (parseVibeTranscriptOutput(lines.join('\n'), state)) {
@@ -661,13 +843,15 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
       todos: state.todos,
       currentTask: null,
       tokenUsage: hasTokens ? state.tokenUsage : null,
-      totalEventCount: state.events.length
+      totalEventCount: state.events.length,
+      nativeGoal: state.nativeGoal,
     };
   }
 
   for (const line of lines) {
     parseLine(line, state);
   }
+  applyAuthoritativeCodexUsage(state);
 
   // Flush any remaining pending message
   flushPendingMessage(state, new Date().toISOString());
@@ -675,5 +859,12 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
   const inProgressTask = state.todos.find(t => t.status === 'in_progress');
   const hasTokens = hasRedisTokenUsage(state.tokenUsage);
 
-  return { events: state.events, todos: state.todos, currentTask: inProgressTask ? inProgressTask.content : null, tokenUsage: hasTokens ? state.tokenUsage : null, totalEventCount: state.events.length };
+  return {
+    events: state.events,
+    todos: state.todos,
+    currentTask: inProgressTask ? inProgressTask.content : null,
+    tokenUsage: hasTokens ? state.tokenUsage : null,
+    totalEventCount: state.events.length,
+    nativeGoal: state.nativeGoal,
+  };
 }

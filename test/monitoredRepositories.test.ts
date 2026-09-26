@@ -1,0 +1,113 @@
+import assert from 'node:assert/strict';
+import { after, test } from 'node:test';
+
+process.env.PROPR_DEMO_MODE = 'true';
+
+const {
+    getCancelCiDuringFollowupWorkflowsForRepository,
+    getReposFromEnv,
+    isAutoCiFollowupEnabledForRepository,
+    isMonitoredRepository,
+    resolveMonitoredRepositories,
+} = await import('../packages/core/src/daemon/configLoader.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+
+after(async () => {
+    await closeConnection();
+});
+
+test('persisted setup repositories are used when no environment list is configured', async () => {
+    let persistedLoads = 0;
+    const repos = await resolveMonitoredRepositories({}, async () => {
+        persistedLoads += 1;
+        return ['owner/from-setup'];
+    });
+
+    assert.deepEqual(repos, ['owner/from-setup']);
+    assert.equal(persistedLoads, 1);
+});
+
+test('an explicit environment list remains authoritative', async () => {
+    let persistedLoads = 0;
+    const environment = { GITHUB_REPOS_TO_MONITOR: 'owner/one, owner/two' };
+    const repos = await resolveMonitoredRepositories(environment, async () => {
+        persistedLoads += 1;
+        return ['owner/from-setup'];
+    });
+
+    assert.deepEqual(getReposFromEnv(environment), ['owner/one', 'owner/two']);
+    assert.deepEqual(repos, ['owner/one', 'owner/two']);
+    assert.equal(persistedLoads, 0);
+});
+
+test('legacy CONFIG_REPO keeps persisted configuration authoritative', async () => {
+    const repos = await resolveMonitoredRepositories({
+        CONFIG_REPO: 'https://example.invalid/config.git',
+        GITHUB_REPOS_TO_MONITOR: 'owner/environment',
+    }, async () => ['owner/persisted']);
+
+    assert.deepEqual(repos, ['owner/persisted']);
+});
+
+test('repository matching is case-insensitive and empty configuration fails closed', () => {
+    assert.equal(isMonitoredRepository('Owner/Repo', ['owner/repo']), true);
+    assert.equal(isMonitoredRepository('owner/other', ['owner/repo']), false);
+    assert.equal(isMonitoredRepository('owner/repo', []), false);
+});
+
+test('automatic CI follow-up aggregates duplicate branch configurations independent of order', async () => {
+    const disabledBranch = {
+        id: 'repo-main',
+        name: 'owner/repo',
+        enabled: true,
+        baseBranch: 'main',
+        autoFollowupOnFailedCi: false,
+    };
+    const enabledBranch = {
+        id: 'repo-release',
+        name: 'OWNER/REPO',
+        enabled: true,
+        baseBranch: 'release',
+        autoFollowupOnFailedCi: true,
+    };
+
+    assert.equal(await isAutoCiFollowupEnabledForRepository(
+        'owner',
+        'repo',
+        async () => [disabledBranch, enabledBranch],
+    ), true);
+    assert.equal(await isAutoCiFollowupEnabledForRepository(
+        'owner',
+        'repo',
+        async () => [enabledBranch, disabledBranch],
+    ), true);
+});
+
+test('the selected follow-up CI cancellation workflows are read across the branch entries of a repository', async () => {
+    const withoutSelection = { id: 'repo-main', name: 'owner/repo', enabled: true, baseBranch: 'main' };
+    const withSelection = {
+        id: 'repo-release',
+        name: 'OWNER/REPO',
+        enabled: true,
+        baseBranch: 'release',
+        cancelCiDuringFollowup: true,
+        cancelCiDuringFollowupWorkflows: [' pr-build-check.yml ', 'PR-BUILD-CHECK.YML', 'Full Test Suite', ''],
+    };
+    const otherRepository = { id: 'other', name: 'owner/other', enabled: true, cancelCiDuringFollowupWorkflows: ['deploy.yml'] };
+
+    assert.deepEqual(
+        await getCancelCiDuringFollowupWorkflowsForRepository('owner', 'repo', async () => [withoutSelection, withSelection, otherRepository] as never),
+        ['pr-build-check.yml', 'Full Test Suite'],
+    );
+    // A repository that selected nothing selects nothing, which cancels nothing.
+    assert.deepEqual(
+        await getCancelCiDuringFollowupWorkflowsForRepository('owner', 'repo', async () => [withoutSelection] as never),
+        [],
+    );
+    // An unreadable configuration is not an empty selection: it must be reported
+    // as unreadable so the caller skips cancellation instead of falling back.
+    assert.equal(
+        await getCancelCiDuringFollowupWorkflowsForRepository('owner', 'repo', async () => { throw new Error('database is down'); }),
+        null,
+    );
+});

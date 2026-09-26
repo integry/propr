@@ -96,6 +96,21 @@ test('stopTaskExecution stops the container and marks the task cancelled with th
   assert.ok(redis.calls.some(c => c.method === 'del' && c.key === 'worker:abort:task-a'), 'abort signal cleared after container stop');
 });
 
+test('authenticated exact task handles are never normalized into a different task', async () => {
+  const taskId = 'issue-acme-widgets-42-99';
+  const redis = makeFakeRedis({ [`worker:state:${taskId}`]: runningTaskState('exact-container') });
+  const stopped: string[] = [], cancelled: string[] = [];
+  const result = await stopTaskExecution(taskId, {
+    exactTaskId: true, redisClient: redis, getQueue: async () => makeFakeQueue([]),
+    stopContainer: async id => { stopped.push(id); return { success: true }; },
+    markCancelled: async id => { cancelled.push(id); },
+  });
+  assert.equal(result.taskId, taskId);
+  assert.deepEqual(stopped, ['exact-container']);
+  assert.deepEqual(cancelled, [taskId]);
+  assert.ok(!redis.calls.some(call => call.key === 'worker:state:acme-widgets-42'));
+});
+
 test('stopTaskExecution removes queued jobs that never started and records the cancellation', async () => {
   const redis = makeFakeRedis(); // no worker state — job never started
   const queue = makeFakeQueue([

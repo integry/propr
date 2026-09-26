@@ -1,6 +1,6 @@
 {
   "name": "@propr/shared",
-  "version": "0.8.6",
+  "version": "0.8.15",
   "description": "Shared constants and type definitions for ProPR",
   "type": "module",
   "main": "dist/index.js",
@@ -8,6 +8,9 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

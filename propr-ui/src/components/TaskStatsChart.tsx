@@ -1,43 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getTaskStats, TaskStatsResponse } from '../api/proprApi';
-import { VolumeChart, ProcessingTimeChart, StatusPieChart } from './TaskStatsChartParts';
+import { VolumeChart, ProcessingTimeChart, StatusSegmentedBar } from './TaskStatsChartParts';
+import { buildStatusBreakdown } from './taskStatusBreakdown';
 import { useSocket } from '../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
-
-// Color palette matching the dashboard's indigo/purple theme
-const STATUS_COLORS: Record<string, string> = {
-  completed: '#10B981', // green
-  failed: '#EF4444', // red
-  processing: '#F59E0B', // amber
-  pending: '#6366F1', // indigo
-  claude_execution: '#8B5CF6', // purple
-  post_processing: '#EC4899', // pink
-  queued: '#6366f1', // indigo
-  planning: '#ec4899', // pink
-  default: '#94A3B8', // slate
-};
-
-const getStatusColor = (status: string): string => {
-  return STATUS_COLORS[status] || STATUS_COLORS.default;
-};
+import { SystemAlert } from './ui/SystemAlert';
 
 const formatDate = (dateStr: string): string => {
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
-const formatStatus = (status: string): string => {
-  const statusMap: Record<string, string> = {
-    completed: 'Completed',
-    failed: 'Failed',
-    processing: 'Processing',
-    pending: 'Pending',
-    claude_execution: 'AI Execution',
-    post_processing: 'Post Processing',
-    queued: 'Queued',
-    planning: 'Planning',
-  };
-  return statusMap[status] || status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ');
 };
 
 interface TaskStatsChartProps {
@@ -107,22 +78,20 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     };
   }, [externalData, isConnected, onTaskUpdate, handleTaskUpdate]);
 
-  // Loading skeleton for distribution mode (donut chart)
+  // Loading skeleton for distribution mode (segmented bar + tabular legend)
   const renderDistributionSkeleton = () => (
     <div>
       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
-      <div className="h-64 flex flex-col items-center justify-center animate-pulse">
-        {/* Donut chart skeleton */}
-        <div className="relative w-44 h-44">
-          <div className="absolute inset-0 rounded-full border-[20px] border-gray-200" />
-          <div className="absolute inset-[30px] rounded-full bg-white" />
-        </div>
-        {/* Legend skeleton */}
-        <div className="flex flex-wrap justify-center gap-3 mt-4">
+      <div className="animate-pulse">
+        <div className="h-2 w-full rounded-sm bg-gray-200" />
+        <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-gray-200" />
-              <div className="h-3 w-14 bg-gray-200 rounded" />
+            <div key={i} className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <div className="h-2 w-2 rounded-sm bg-gray-200" />
+                <div className="h-3 w-16 rounded bg-gray-200" />
+              </div>
+              <div className="h-3 w-8 rounded bg-gray-200" />
             </div>
           ))}
         </div>
@@ -148,10 +117,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
 
   if (error) {
     return (
-      <div>
-        <div className="flex items-center justify-center h-64 text-red-500">
-          <span>Failed to load statistics: {error}</span>
-        </div>
+      <div className="flex h-64 items-center justify-center">
+        <SystemAlert>Failed to load statistics: {error}</SystemAlert>
       </div>
     );
   }
@@ -165,11 +132,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     count: item.count,
   }));
 
-  const pieData = stats.statusDistribution.map(item => ({
-    name: formatStatus(item.status),
-    value: item.count,
-    color: getStatusColor(item.status),
-  }));
+  // Only states that actually exist are shown; empty states are dropped.
+  const statusBreakdown = buildStatusBreakdown(stats.statusDistribution);
 
   const processingTimeData = stats.avgProcessingTime.map(item => ({
     date: item.date,
@@ -177,7 +141,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     avgMinutes: item.avgMinutes,
   }));
 
-  const hasData = dailyData.length > 0 || pieData.length > 0;
+  const hasData = dailyData.length > 0 || statusBreakdown.length > 0;
   const hasProcessingTimeData = processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0);
 
   // Render trends section - simplified to show only tasks processed
@@ -216,13 +180,13 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     );
   };
 
-  // Render distribution section (donut chart)
+  // Render distribution section (compact segmented bar)
   const renderDistribution = () => (
     <>
-      {pieData.length > 0 && (
+      {statusBreakdown.length > 0 && (
         <div>
           <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
-          <div className="h-64"><StatusPieChart data={pieData} /></div>
+          <StatusSegmentedBar data={statusBreakdown} />
         </div>
       )}
     </>

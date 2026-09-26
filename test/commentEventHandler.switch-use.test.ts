@@ -1,7 +1,17 @@
-import { test, mock, describe, beforeEach } from 'node:test';
+import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
+
+function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    const digest = createHash('sha256').update(`${eventType}\0${body}`).digest('hex').slice(0, 12);
+    return `${updatedAt}:${digest}`;
+}
+
+function manualRevisionSlug(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    return manualRevisionIdentity(updatedAt, body, eventType).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 
 // ========== Mocks ==========
 
@@ -19,8 +29,14 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+    namedExports: {
+        Redis: function Redis() {
+            return {
+                on: mock.fn(),
+                connect: mock.fn(async () => {}),
+                quit: mock.fn(async () => {}),
+            };
+        },
     },
 });
 
@@ -31,6 +47,7 @@ let mockWaitingJobs: unknown[] = [];
 let mockDelayedJobs: unknown[] = [];
 await mock.module('bullmq', {
     namedExports: {
+        ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
         Queue: function Queue() {
             return {
                 add: mockQueueAdd,
@@ -40,6 +57,9 @@ await mock.module('bullmq', {
                 getWaiting: mock.fn(async () => mockWaitingJobs),
                 getDelayed: mock.fn(async () => mockDelayedJobs),
             };
+        },
+        QueueEvents: function QueueEvents() {
+            return { waitUntilReady: mock.fn(async () => {}), close: mock.fn(async () => {}) };
         },
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };
@@ -64,6 +84,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', {
     namedExports: {
         getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
         getGitHubInstallationToken: mock.fn(async () => 'mock-token'),
+        validateGithubIntakePrerequisites: mock.fn(() => {}),
     },
 });
 
@@ -85,31 +106,50 @@ await mock.module('../packages/core/src/utils/logger.js', {
     },
     namedExports: {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
-        default: {
-            info: mock.fn(),
-            warn: mock.fn(),
-            error: mock.fn(),
-            debug: mock.fn(),
-            withCorrelation: mock.fn(() => mockLoggerInstance),
-        },
+        createCorrelatedLogger: mock.fn(() => mockLoggerInstance),
     },
 });
 
 // Mock configManager
+const actualConfigManager = await import('../packages/core/src/config/configManager.js');
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: {
+        ...actualConfigManager,
         loadFollowupIgnoreKeywords: mock.fn(async () => []),
+        loadMonitoredRepos: mock.fn(async () => []),
+        loadAiPrimaryTag: mock.fn(async () => 'AI'),
         loadPrimaryProcessingLabels: mock.fn(async () => ['AI']),
+        hasValidTriggerLabel: mock.fn(async (labels: Array<{ name: string } | string>) => (labels ?? []).some(l => (typeof l === 'string' ? l : l.name) === 'AI')),
+        loadSettings: mock.fn(async () => ({})),
+        loadAgentTankSettings: mock.fn(async () => ({})),
         getConfig: mock.fn(async () => null),
         saveConfig: mock.fn(async () => true),
     },
 });
 
+// Keep the model-validation fallback isolated from the full agent runtime.
+const mockAgentRegistry = {
+    ensureInitialized: mock.fn(async () => {}),
+    getAllAgents: mock.fn(() => []),
+};
+await mock.module('../packages/core/src/agents/AgentRegistry.js', {
+    namedExports: {
+        AgentRegistry: class AgentRegistry {
+            static getInstance() {
+                return mockAgentRegistry;
+            }
+        },
+        getAgentRegistry: mock.fn(() => mockAgentRegistry),
+    },
+});
+
 // Mock commentFilters
+const mockFilterCommentByAuthor = mock.fn(() => ({ shouldFilter: false }));
+const mockCheckCommentTrigger = mock.fn(() => ({ isTriggered: true }));
 await mock.module('../packages/core/src/utils/commentFilters.js', {
     namedExports: {
-        filterCommentByAuthor: mock.fn(() => ({ shouldFilter: false })),
-        checkCommentTrigger: mock.fn(() => ({ isTriggered: true })),
+        filterCommentByAuthor: mockFilterCommentByAuthor,
+        checkCommentTrigger: mockCheckCommentTrigger,
         checkCommentIgnore: mock.fn(() => ({ shouldIgnore: false })),
     },
 });
@@ -118,35 +158,81 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 const mockSafeUpdateLabels = mock.fn(async () => {});
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
+        safeRemoveLabel: mock.fn(async () => true),
+        safeAddLabel: mock.fn(async () => true),
         safeUpdateLabels: mockSafeUpdateLabels,
     },
 });
 
 // Mock mergeConflictDetector
+const mockHandleMergeCommand = mock.fn(async () => ({ outcome: 'queued', prNumber: 42, repository: 'test/repo' }));
 await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', {
     namedExports: {
-        handleMergeCommand: mock.fn(async () => {}),
+        handleMergeCommand: mockHandleMergeCommand,
         handlePullRequestConflictDetection: mock.fn(async () => {}),
         handlePushConflictDetection: mock.fn(async () => {}),
     },
 });
 
 // Mock retryHandler
+const actualRetryHandler = await import('../packages/core/src/utils/retryHandler.js');
+const { default: retryHandlerDefault, ...retryHandlerNamedExports } = actualRetryHandler;
 await mock.module('../packages/core/src/utils/retryHandler.js', {
+    defaultExport: retryHandlerDefault,
     namedExports: {
+        ...retryHandlerNamedExports,
         withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
+        retryConfigs: { githubApi: {} },
     },
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent, handleCommentDeleted } = await import(
+const { processCommentEvent, handleCommentDeleted, handleCommentEdited, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
 
+const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
+const mockHasAutomaticWork = mock.fn(async () => false);
+setUltrafixDeps({
+    loadUltrafixRatingGoal: mock.fn(async () => 7),
+    loadUltrafixMaxCycles: mock.fn(async () => 5),
+    loadUltrafixPauseSeconds: mock.fn(async () => 60),
+    loadPrReviewModel: mock.fn(async () => ''),
+    startLoop: mock.fn(async () => ({ state: {}, initialAction: 'review' as const })),
+    clearStateIfCurrent: mock.fn(async () => true),
+    hasAutomaticWork: mockHasAutomaticWork,
+    reserveAutomaticWork: mock.fn(async () => 1),
+    invalidateAutomaticWork: mockInvalidateAutomaticWork,
+    getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
+});
+
+beforeEach(() => {
+    mockFilterCommentByAuthor.mock.resetCalls();
+    mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: false }));
+    mockCheckCommentTrigger.mock.resetCalls();
+    mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: true }));
+    mockInvalidateAutomaticWork.mock.resetCalls();
+    mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
+    mockHasAutomaticWork.mock.resetCalls();
+    mockHasAutomaticWork.mock.mockImplementation(async () => false);
+});
+
+after(async () => {
+    await shutdownQueue();
+    await closeConnection();
+});
+
 // ========== Helpers ==========
+
+// Canonical model behind the bare "opus" alias. Promoting a new default Claude
+// model retargets the alias, so the /switch and /use expectations read it from
+// here rather than repeating the id.
+const CANONICAL_OPUS_MODEL = 'claude-opus-5-5';
 
 function createMockRedis() {
     const store = new Map<string, string>();
@@ -162,6 +248,11 @@ function createMockRedis() {
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
+        }),
+        eval: mock.fn(async (_script: string, _keyCount: number, key: string, token: string) => {
+            if (store.get(key) !== token) return 0;
+            store.delete(key);
+            return 1;
         }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
@@ -203,6 +294,57 @@ function createPRReviewCommentEvent(body: string, overrides: Record<string, unkn
 
 // ========== Tests ==========
 
+describe('commentEventHandler — automatic CI follow-up marker', () => {
+    test('accepts the ProPR bot marker as a trigger and strips it from agent instructions', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { head: { ref: 'feature-branch' }, labels: [] },
+        }));
+
+        const marker = `<!-- propr:ci-failure-followup key="${'a'.repeat(64)}" -->`;
+        const event = createPRCommentEvent(`Please investigate unit-tests.\n\n${marker}`);
+        event.comment.user.login = 'propr-dev[bot]';
+        event.comment.user.type = 'Bot';
+
+        const disposition = await processCommentEvent(
+            event,
+            'issue_comment',
+            'corr-ci-followup',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as { comments: Array<{ body: string }> };
+        assert.strictEqual(jobData.comments[0].body, 'Please investigate unit-tests.');
+        assert.doesNotMatch(jobData.comments[0].body, /propr:ci-failure-followup/);
+        assert.deepStrictEqual(disposition.billing, { seatConsumed: false });
+    });
+
+    test('does not let an unrelated bot use the CI marker to bypass author filtering', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        const marker = `<!-- propr:ci-failure-followup key="${'b'.repeat(64)}" -->`;
+        const event = createPRCommentEvent(`Untrusted instructions\n\n${marker}`);
+        event.comment.user.login = 'unrelated-app[bot]';
+        event.comment.user.type = 'Bot';
+
+        const disposition = await processCommentEvent(
+            event,
+            'issue_comment',
+            'corr-untrusted-ci-marker',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.deepStrictEqual(disposition, { status: 'ignored', reason: 'filtered_author' });
+    });
+});
+
 describe('commentEventHandler — /switch command', () => {
     beforeEach(() => {
         mockSafeUpdateLabels.mock.resetCalls();
@@ -232,8 +374,8 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const call = mockSafeUpdateLabels.mock.calls[0];
         const newLabels = call.arguments[2] as string[];
-        // "opus" should be resolved to "claude-opus-4-6" via resolveModelAlias
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-4-6']);
+        // "opus" should be resolved via the current configured alias.
+        assert.deepStrictEqual(newLabels, [`llm-${CANONICAL_OPUS_MODEL}`]);
     });
 
     test('/switch with full model ID preserves it in label', async () => {
@@ -267,7 +409,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-5']);
     });
 
     test('/switch without model argument warns and returns early', async () => {
@@ -350,7 +492,7 @@ describe('commentEventHandler — /switch command', () => {
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['ai-model-claude-opus-4-6']);
         // New label should use the custom prefix, not hardcoded 'llm-'
-        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-5']);
     });
 
     test('/switch with llm- prefixed argument strips prefix before resolving', async () => {
@@ -399,7 +541,7 @@ describe('commentEventHandler — /switch command', () => {
         // Should call safeUpdateLabels with the derived prefix 'model-'
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['model-claude-opus-4-6']);
+        assert.deepStrictEqual(newLabels, [`model-${CANONICAL_OPUS_MODEL}`]);
     });
 
     test('/switch aborts when derived label prefix would not match MODEL_LABEL_PATTERN', async () => {
@@ -425,7 +567,7 @@ describe('commentEventHandler — /switch command', () => {
         // Should still update labels using the first model
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-4-6']);
+        assert.deepStrictEqual(newLabels, [`llm-${CANONICAL_OPUS_MODEL}`]);
         // Should have logged a warning about extra arguments
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const extraWarn = warnCalls.find(
@@ -446,6 +588,62 @@ describe('commentEventHandler — /switch command', () => {
         assert.ok(comments[0].body.includes('First line'));
         assert.ok(comments[0].body.includes('Second line'));
         assert.ok(comments[0].body.includes('Third line'));
+    });
+});
+
+describe('commentEventHandler — /merge command trigger label gate', () => {
+    beforeEach(() => {
+        mockHandleMergeCommand.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockQueueAdd.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+    });
+
+    test('ignores /merge on a PR without a trigger label and does not claim the comment or a seat', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { head: { ref: 'feature-branch' }, labels: [{ name: 'bug' }] },
+        }));
+        const config = createTestConfig();
+        const event = createPRCommentEvent('/merge');
+
+        const disposition = await processCommentEvent(event, 'issue_comment', 'corr-merge-unlabelled', config);
+
+        assert.deepStrictEqual(disposition, { status: 'ignored', reason: 'no_trigger_label' });
+        assert.strictEqual(mockHandleMergeCommand.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        const claimedKeys = [...config.redisClient._store.keys()].filter(k => k.startsWith('pr-comment-processed:'));
+        assert.deepStrictEqual(claimedKeys, [], 'unlabelled /merge must not claim the comment tracking key');
+    });
+
+    test('ignores /merge on a PR with no labels at all', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { head: { ref: 'feature-branch' }, labels: [] },
+        }));
+        const event = createPRCommentEvent('/merge');
+
+        const disposition = await processCommentEvent(event, 'issue_comment', 'corr-merge-nolabels', createTestConfig());
+
+        assert.deepStrictEqual(disposition, { status: 'ignored', reason: 'no_trigger_label' });
+        assert.strictEqual(mockHandleMergeCommand.mock.callCount(), 0);
+    });
+
+    test('dispatches /merge on a PR carrying a valid trigger label', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { head: { ref: 'feature-branch' }, labels: [{ name: 'AI' }] },
+        }));
+        const event = createPRCommentEvent('/merge');
+
+        const disposition = await processCommentEvent(event, 'issue_comment', 'corr-merge-labelled', createTestConfig());
+
+        assert.strictEqual(disposition.status, 'accepted');
+        assert.deepStrictEqual(disposition.billing, { seatConsumed: true });
+        assert.strictEqual(mockHandleMergeCommand.mock.callCount(), 1);
+        const mergeArgs = mockHandleMergeCommand.mock.calls[0].arguments[0] as { prNumber: number; owner: string; repoName: string };
+        assert.strictEqual(mergeArgs.prNumber, 42);
+        // The PR was fetched once for the gate and reused by the handler
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 1);
     });
 });
 
@@ -499,8 +697,7 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        // resolveLlm should have resolved "opus" → "claude-opus-4-6"
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.strictEqual(jobData.llm, CANONICAL_OPUS_MODEL);
     });
 
     test('/use without model argument warns and returns early', async () => {
@@ -552,8 +749,8 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        // "llm-opus" → normalizeModelLabel strips "llm-" → "opus" → resolveModelAlias → "claude-opus-4-6"
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        // "llm-opus" is normalized before resolving the current alias.
+        assert.strictEqual(jobData.llm, CANONICAL_OPUS_MODEL);
     });
 
     test('/use without instructions still enqueues a job with empty body', async () => {
@@ -596,7 +793,7 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.strictEqual(jobData.llm, CANONICAL_OPUS_MODEL);
         // Warning should be logged
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const extraWarn = warnCalls.find(
@@ -638,7 +835,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.commandMode, 'switch');
         const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
         assert.strictEqual(meta.mode, 'switch');
-        assert.deepStrictEqual(meta.models, ['claude-sonnet-4-6']);
+        assert.deepStrictEqual(meta.models, ['sonnet']);
         assert.strictEqual(meta.instructions, 'Do a review');
         assert.strictEqual(jobData.commandInstructions, 'Do a review');
     });
@@ -671,7 +868,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.requestedModels, undefined);
     });
 
-    test('/use job does not include requestedModels', async () => {
+    test('/use job preserves its explicit model as requestedModels', async () => {
         const event = createPRCommentEvent('/use sonnet\nDo something');
         const config = createTestConfig();
 
@@ -679,7 +876,9 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.requestedModels, undefined);
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
+        assert.strictEqual(jobData.commandCommentCreatedAt, event.comment.created_at);
+        assert.strictEqual(jobData.commandCommentType, 'issue');
     });
 
     test('/review job includes requestedModels from command args', async () => {
@@ -833,7 +1032,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, 'Fix the bug');
         assert.strictEqual(pendingComment.commandMode, 'use');
         assert.strictEqual(pendingComment.commandInstructions, 'Fix the bug');
-        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
+        assert.strictEqual(pendingComment.llmOverride, CANONICAL_OPUS_MODEL);
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -856,7 +1055,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.commandMode, 'switch');
         assert.strictEqual(pendingComment.commandInstructions, 'Review the code');
-        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
+        assert.strictEqual(pendingComment.llmOverride, CANONICAL_OPUS_MODEL);
     });
 
     test('/use enqueues normally when no existing job is active', async () => {
@@ -887,6 +1086,198 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, '');
         assert.strictEqual(pendingComment.commandMode, 'review');
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: manualRevisionIdentity(event.comment.updated_at, event.comment.body) }],
+        );
+    });
+
+    test('tail-active automatic work gets a durable manual takeover after loop state becomes inactive', async () => {
+        const takeoverSteps: string[] = [];
+        mockQueueAdd.mock.mockImplementationOnce(async () => { takeoverSteps.push('enqueue'); });
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
+            takeoverSteps.push('invalidate');
+            return { workEpoch: 1, hadAutomaticWork: false };
+        });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/review codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.deepStrictEqual(jobData.requestedModels, ['codex']);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
+        assert.deepStrictEqual(takeoverSteps, ['invalidate', 'enqueue']);
+    });
+
+    test('failed manual takeover enqueue remains observable after automatic work is fenced', async () => {
+        const enqueueError = new Error('queue unavailable');
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw enqueueError; });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover-failure', config),
+            enqueueError,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+    });
+
+    test('tracking refresh failure preserves the fenced job and suppresses redelivery', async () => {
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+        config.redisClient.setex.mock.mockImplementationOnce(async () => {
+            throw new Error('tracking write response lost');
+        });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-takeover-lost-response', config);
+        const redelivery = await processCommentEvent(event, 'issue_comment', 'corr-takeover-redelivery', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        assert.deepStrictEqual(redelivery, { status: 'ignored', reason: 'duplicate_delivery' });
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
+    });
+
+    test('an edited manual command fences and enqueues once under its new revision after the original job is terminal', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-original-revision', config);
+
+        // No active/waiting/delayed job represents the original BullMQ job having
+        // reached a retained completed or failed state.
+        event.comment.body = '/fix edited instructions';
+        event.comment.updated_at = '2026-08-09T10:05:00Z';
+        await handleCommentEdited(event, 'issue_comment', 'corr-edited-revision', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const originalRevision = manualRevisionIdentity('2026-08-09T10:00:00Z', '/fix original instructions');
+        const editedRevision = manualRevisionIdentity('2026-08-09T10:05:00Z', '/fix edited instructions');
+        assert.deepStrictEqual(
+            mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId),
+            [
+                `pr-comments-batch-testowner-testrepo-42-12345-${originalRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+                `pr-comments-batch-testowner-testrepo-42-12345-${editedRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+            ],
+        );
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1]),
+            [
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: originalRevision },
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: editedRevision },
+            ],
+        );
+    });
+
+    test('same-timestamp edits use distinct deterministic takeover and job identities', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-same-second-original', config);
+        event.comment.body = '/fix edited within the same second';
+        await handleCommentEdited(event, 'issue_comment', 'corr-same-second-edit', config);
+
+        const jobIds = mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId);
+        const takeoverIdentities = mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1].sourceCommentRevision);
+        assert.strictEqual(jobIds.length, 2);
+        assert.notStrictEqual(jobIds[0], jobIds[1]);
+        assert.notStrictEqual(takeoverIdentities[0], takeoverIdentities[1]);
+        assert.match(jobIds[0] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
+        assert.match(jobIds[1] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
+    });
+
+    test('later manual commands resume normal batching after an Ultrafix takeover', async () => {
+        let workEpoch = 0;
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => {
+            workEpoch += 1;
+            return { workEpoch, hadAutomaticWork: workEpoch === 1 };
+        });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+        const takeover = createPRCommentEvent('/review codex');
+        const laterCommand = createPRCommentEvent('/review codex');
+        laterCommand.comment.id = takeover.comment.id + 1;
+        const config = createTestConfig();
+
+        await processCommentEvent(takeover, 'issue_comment', 'corr-first-takeover', config);
+        mockActiveJobs = [
+            ...mockActiveJobs,
+            {
+                name: 'processPullRequestComment',
+                data: {
+                    pullRequestNumber: 42,
+                    repoOwner: 'testowner',
+                    repoName: 'testrepo',
+                    commandMode: 'review',
+                },
+            },
+        ];
+        await processCommentEvent(laterCommand, 'issue_comment', 'corr-later-batch', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(
+            config.redisClient.rpush.mock.calls[0].arguments[1] as string,
+        ) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.commandMode, 'review');
     });
 
     test('batched slash commands on review comments preserve code-review context', async () => {
@@ -904,6 +1295,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.type, 'review');
+        assert.strictEqual(pendingComment.createdAt, event.comment.created_at);
         assert.strictEqual(pendingComment.hasCodeContext, true);
         assert.match(pendingComment.body as string, /Please fix this line/);
         assert.match(pendingComment.body as string, /--- Review Comment Context ---/);
@@ -913,7 +1305,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
     });
 });
 
-describe('commentEventHandler — comment deletion queue cleanup', () => {
+describe('commentEventHandler — comment revision cancellation', () => {
     beforeEach(() => {
         mockLoggerInstance.info.mock.resetCalls();
         mockActiveJobs = [];
@@ -921,15 +1313,16 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         mockDelayedJobs = [];
     });
 
-    test('removes delayed PR comment job when the source comment is deleted', async () => {
+    test('deleting an active revision-based manual job uses its exact worker abort key', async () => {
         const remove = mock.fn(async () => {});
-        mockDelayedJobs = [{
-            id: 'pr-comments-batch-testowner-testrepo-42-123',
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
             name: 'processPullRequestComment',
             data: {
                 pullRequestNumber: 42,
                 repoOwner: 'testowner',
                 repoName: 'testrepo',
+                commandMode: 'fix',
                 comments: [{ id: 123, body: 'please fix this', author: 'integry', type: 'issue' }],
             },
             remove,
@@ -941,15 +1334,319 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         await handleCommentDeleted(event, 'issue_comment', 'corr-delete-delayed', config);
 
         assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
         assert.strictEqual(
             config.redisClient.del.mock.calls[0].arguments[0],
             'pr-comment-processed:testowner:testrepo:42:123'
         );
     });
+
+    test('editing an active revision-based manual job uses its exact worker abort key', async () => {
+        const remove = mock.fn(async () => {});
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                commandMode: 'review',
+                comments: [{ id: 123, body: 'please review this', author: 'integry', type: 'issue' }],
+            },
+            remove,
+        }];
+        const event = createPRCommentEvent('/review codex');
+        event.comment.id = 123;
+        const config = createTestConfig();
+
+        await handleCommentEdited(event, 'issue_comment', 'corr-edit-active-manual', config);
+
+        assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
+        assert.strictEqual(config.redisClient.del.mock.calls[0].arguments[0], 'pr-comment-processed:testowner:testrepo:42:123');
+    });
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('selects the same pending command for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'selected by legacy ID ordering',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                commandInstructions: '',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'switch' as const,
+                commandInstructions: '',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-command-chronology',
+                commandMode: 'default' as const,
+                commandCommentId: undefined as number | undefined,
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.commandCommentId, 300, `permutation ${permutation.join(',')}`);
+        }
+    });
+
+    test('selects the same model override for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-sonnet-4-6',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'codex:gpt-5.6-sol',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-override-chronology',
+                commandMode: 'default' as const,
+                llm: 'initial-model',
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.llm, 'claude-opus-4-6', `permutation ${permutation.join(',')}`);
+        }
+    });
+
+    test('orders issue and review commands by creation time instead of cross-resource IDs', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-cross-type-order',
+            comments: [{
+                id: 900,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 900,
+            commandCommentCreatedAt: '2026-08-09T09:00:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'fix' as const,
+            commandInstructions: 'queued fix',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 10,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.commandCommentId, 10);
+        assert.strictEqual(jobData.commandCommentCreatedAt, '2026-08-09T09:01:00Z');
+        assert.strictEqual(jobData.commandCommentType, 'review');
+    });
+
+    test('ignores an older cross-type override even when its resource ID is larger', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-cross-type-cutoff',
+            comments: [{
+                id: 10,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 10,
+            commandCommentCreatedAt: '2026-08-09T09:01:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'review' as const,
+            llm: 'codex:gpt-5.6-sol',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 900,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
+                commandMode: 'use' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.llm, 'codex:gpt-5.6-sol');
+    });
+
+    test('does not let an older pending command override a newer queued command', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: 'Fix F7',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F7',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.ok(jobData.ultrafixMeta);
+    });
+
+    test('does not let an older model override replace a newer queued command model', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-model-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            llm: 'codex:gpt-5.6-sol',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.llm, 'codex:gpt-5.6-sol');
+    });
+
+    test('latest manual command clears inherited Ultrafix metadata', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-manual',
+            comments: [{ id: 98, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 98,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 99,
+                body: 'Fix F3',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F3',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, undefined);
+        assert.strictEqual(jobData.commandCommentId, 99);
+    });
+
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {
             pullRequestNumber: 42,
@@ -984,5 +1681,85 @@ describe('applyPendingCommentCommandContext', () => {
         assert.strictEqual(jobData.commandMode, 'fix');
         assert.strictEqual(jobData.commandInstructions, 'Fix the auth bug');
         assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+    });
+
+    test('promotes a /use override when a later model-less /review becomes active', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-review',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+            requestedModels: undefined as string[] | undefined,
+        };
+        const commentsToProcess = [
+            {
+                id: 102,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                requestedModels: ['claude-opus-4-6'],
+                commandInstructions: '',
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 103,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
+    });
+
+    test('promotes a queued /use override when a newer model-less /review becomes active', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-queued-use-review',
+            comments: [{
+                id: 800,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 800,
+            commandCommentCreatedAt: '2026-08-09T09:00:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'use' as const,
+            llm: 'claude-opus-4-6',
+            requestedModels: ['claude-opus-4-6'],
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 20,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
     });
 });

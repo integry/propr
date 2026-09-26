@@ -3,8 +3,8 @@ import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
-
-const CONTEXT_ANALYSIS_TIMEOUT_MS = 5 * 60 * 1000;
+import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -40,40 +40,141 @@ const STOP_WORDS = new Set([
   // Common action words that don't help file matching
   'add', 'remove', 'change', 'update', 'fix', 'modify', 'edit', 'create',
   'delete', 'replace', 'make', 'set', 'get', 'put', 'use', 'find', 'show',
+  'refactor', 'implement', 'bug', 'code', 'file', 'component', 'page',
   'hide', 'move', 'copy', 'paste', 'cut', 'save', 'load', 'open', 'close',
   'please', 'want', 'need', 'like', 'help', 'try', 'let', 'see', 'look'
 ]);
 
 /** Minimum length for a keyword */
 const MIN_KEYWORD_LENGTH = 2;
+const LEADING_KEYWORD_DELIMITERS = new Set(['`', "'", '"', '(', '[', '{']);
+const TRAILING_KEYWORD_DELIMITERS = new Set(['.', '`', "'", '"', ']', ')', '}', ',', ';', ':', '!', '?']);
+
+function trimKeywordDelimiters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && LEADING_KEYWORD_DELIMITERS.has(value[start])) start++;
+  while (end > start && TRAILING_KEYWORD_DELIMITERS.has(value[end - 1])) end--;
+  return value.slice(start, end);
+}
+
+function trimPathBoundarySlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start++;
+  while (end > start && value[end - 1] === '/') end--;
+  return value.slice(start, end);
+}
+
+function isWordTokenCharacter(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || char === '_';
+}
+
+function trimFilenameWordBoundaries(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && !isWordTokenCharacter(value[start])) start++;
+  while (end > start && !isWordTokenCharacter(value[end - 1])) end--;
+  return value.slice(start, end);
+}
+
+function filenameCandidates(rawToken: string): string[] {
+  const candidates: string[] = [];
+  let segments: string[] = [];
+  const flush = (): void => {
+    if (segments.length < 2) {
+      segments = [];
+      return;
+    }
+    const candidate = trimFilenameWordBoundaries(segments.join('.'));
+    if (isFileLikeToken(candidate)) candidates.push(candidate);
+    segments = [];
+  };
+
+  for (const segment of rawToken.split('.')) {
+    if (segment) segments.push(segment);
+    else flush();
+  }
+  flush();
+  return candidates;
+}
+
+function isFileLikeToken(token: string): boolean {
+  if (!token) return false;
+  if (token.includes('/')) {
+    const segments = token.split('/');
+    return segments.every(Boolean) && /[A-Za-z0-9_-]/.test(token[token.length - 1]);
+  }
+  if (!token.includes('.') || !/[A-Za-z0-9_]/.test(token[0])) return false;
+  return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
+}
+
+function fileLikeTokens(prompt: string): string[] {
+  const tokens: string[] = [];
+  for (const match of prompt.matchAll(/[A-Za-z0-9_./-]+/g)) {
+    for (const part of match[0].split(/\/{2,}/)) {
+      const token = trimKeywordDelimiters(
+        trimPathBoundarySlashes(trimKeywordDelimiters(part)),
+      );
+      if (!token) continue;
+      if (token.includes('/')) {
+        if (isFileLikeToken(token)) tokens.push(token);
+      } else {
+        tokens.push(...filenameCandidates(token));
+      }
+    }
+  }
+  return tokens;
+}
 
 /**
  * Basic regex-based keyword extraction from a prompt.
  * Extracts meaningful words that might appear in file paths or names.
  */
 export function extractKeywords(prompt: string): string[] {
-  // Extract words, including hyphenated and underscored terms
-  const words = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9\s_-]/g, ' ')
-    .split(/\s+/)
-    .filter(word =>
-      word.length >= MIN_KEYWORD_LENGTH &&
-      !STOP_WORDS.has(word) &&
-      !/^\d+$/.test(word) // Exclude pure numbers
-    );
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+  const addKeyword = (value: string, preserveCase = false): void => {
+    const normalized = trimKeywordDelimiters(value);
+    const comparison = normalized.toLowerCase();
+    if (comparison.length < MIN_KEYWORD_LENGTH
+        || STOP_WORDS.has(comparison)
+        || /^\d+$/.test(comparison)
+        || seen.has(comparison)) {
+      return;
+    }
+    seen.add(comparison);
+    keywords.push(preserveCase ? normalized : comparison);
+  };
 
-  // Also extract camelCase and PascalCase parts
-  const camelCaseWords: string[] = [];
-  for (const word of prompt.match(/[a-zA-Z][a-z]+/g) || []) {
-    const lower = word.toLowerCase();
-    if (lower.length >= MIN_KEYWORD_LENGTH && !STOP_WORDS.has(lower)) {
-      camelCaseWords.push(lower);
+  // Paths and filenames carry the strongest signal. Preserve separators and
+  // extensions so path scoring can perform exact and directory matches.
+  for (const token of fileLikeTokens(prompt)) {
+    addKeyword(token, true);
+  }
+
+  // Preserve source identifiers exactly for diagnostics and git searches,
+  // while also adding their constituent words for broader path matching.
+  for (const match of prompt.matchAll(/\b[A-Za-z][A-Za-z0-9_]*\b/g)) {
+    const token = match[0];
+    const isStructuredIdentifier = token.includes('_') || /[a-z0-9][A-Z]/.test(token);
+    if (!isStructuredIdentifier) continue;
+    addKeyword(token, true);
+    for (const part of token.replace(/_/g, ' ').split(/\s+|(?=[A-Z])/)) {
+      addKeyword(part);
     }
   }
 
-  // Deduplicate and return
-  return [...new Set([...words, ...camelCaseWords])];
+  // Finally retain ordinary technical terms and hyphenated identifiers.
+  for (const match of prompt.matchAll(/\b[A-Za-z0-9][A-Za-z0-9_-]*\b/g)) {
+    addKeyword(match[0]);
+  }
+
+  return keywords;
 }
 
 // --- LLM-based Keyword Extraction ---
@@ -91,6 +192,7 @@ export interface KeywordExtractionOptions {
   /** Agent to use for LLM calls */
   agent: Agent;
   correlationId?: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 const KEYWORD_EXTRACTION_PROMPT = `Extract the most relevant keywords from the user's request for finding files in a codebase.
@@ -111,6 +213,25 @@ Return ONLY a JSON object in this exact format:
   "alternatives": ["alt1", "alt2", "related1"]
 }`;
 
+function resolveKeywordLogTarget(options: {
+  actualModelUsed?: string;
+  routedMetadata?: Record<string, unknown>;
+  configuredModel?: string;
+  agent: Agent;
+}): { modelUsed: string; agentAlias: string } {
+  const { actualModelUsed, routedMetadata, configuredModel, agent } = options;
+  const routedModel = routedMetadata?.physicalModel;
+  const routedAgentAlias = routedMetadata?.physicalAgentAlias;
+  return {
+    modelUsed: actualModelUsed
+      || (typeof routedModel === 'string' ? routedModel : undefined)
+      || configuredModel
+      || agent.config.defaultModel
+      || 'unknown',
+    agentAlias: typeof routedAgentAlias === 'string' ? routedAgentAlias : agent.config.alias,
+  };
+}
+
 /**
  * Extracts relevant keywords and alternatives from a user prompt using an LLM.
  * This helps improve file matching by understanding the user's intent.
@@ -119,12 +240,14 @@ export async function extractKeywordsWithLLM(
   prompt: string,
   options: KeywordExtractionOptions
 ): Promise<ExtractedKeywords> {
-  const { agent, correlationId } = options;
+  const { agent, correlationId, routingSession } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
+  let routedMetadata: Record<string, unknown> | undefined;
+  let actualModelUsed: string | undefined;
   const cachedSettings = await getCachedSettings();
 
   try {
@@ -134,14 +257,19 @@ export async function extractKeywordsWithLLM(
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
-    const analysisResult = await agent.analyze(llmPrompt, {
+    const analyzeOptions = {
       ...(contextModel ? { model: contextModel } : {}),
-      timeoutMs: CONTEXT_ANALYSIS_TIMEOUT_MS,
+      timeoutMs: resolveContextAnalysisTimeoutMs(),
       executionType: 'context-analysis',
       correlationId,
       metadata: { callType: 'keyword_extraction' },
       suppressLlmLog: true
-    });
+    };
+    const analysisResult = routingSession
+      ? await routingSession.analyze(llmPrompt, analyzeOptions)
+      : await agent.analyze(llmPrompt, analyzeOptions);
+    routedMetadata = routingSession?.routingMetadata;
+    actualModelUsed = analysisResult.modelUsed;
     if (!analysisResult.success) {
       throw new Error(analysisResult.error || 'Context keyword analysis failed');
     }
@@ -184,18 +312,27 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    const modelUsed = cachedSettings.planner_context_model as string || agent.config.defaultModel || 'unknown';
+    routedMetadata ??= routingSession?.routingMetadata;
+    const logTarget = resolveKeywordLogTarget({
+      actualModelUsed,
+      routedMetadata,
+      configuredModel: cachedSettings.planner_context_model as string,
+      agent,
+    });
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({
       executionType: 'context-analysis',
-      modelUsed,
+      modelUsed: logTarget.modelUsed,
       executionTimeMs: durationMs,
       success,
       error: errorMessage,
       correlationId,
-      agentAlias: agent.config.alias,
-      metadata: { callType: 'keyword_extraction' },
+      agentAlias: logTarget.agentAlias,
+      metadata: {
+        callType: 'keyword_extraction',
+        ...(routedMetadata && { syntheticRouting: routedMetadata }),
+      },
       workRef: {
         workType: 'repository',
       },

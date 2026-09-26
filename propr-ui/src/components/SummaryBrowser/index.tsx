@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Folder, AlertCircle, Loader2, GitCommit, Clock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
@@ -10,6 +10,7 @@ import {
 import TreeNode from './TreeNode';
 import SummaryPanel from './SummaryPanel';
 import { formatRelativeTime } from '../headerUtils';
+import { resolveSummaryBranch } from '../../utils/summaryBrowser';
 
 const shortenHash = (hash: string | null): string => {
   if (!hash) return '';
@@ -19,6 +20,8 @@ const shortenHash = (hash: string | null): string => {
 export interface SummaryBrowserProps {
   owner: string;
   repo: string;
+  /** Resolved repository branch; undefined preserves the legacy HEAD fallback. */
+  branch?: string;
 }
 
 export interface TreeNodeState {
@@ -27,39 +30,60 @@ export interface TreeNodeState {
   loading: boolean;
 }
 
-const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
+const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo, branch }) => {
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatusResponse | null>(null);
   const [rootEntries, setRootEntries] = useState<SummaryEntry[]>([]);
   const [nodeStates, setNodeStates] = useState<Record<string, TreeNodeState>>({});
   const [selectedEntry, setSelectedEntry] = useState<SummaryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const resolvedBranch = resolveSummaryBranch(undefined, branch);
 
-  // Fetch indexing status and root entries on mount
+  // A Browse scope owns all tree, selection, status, and error state. Clear it
+  // before loading a new repository/branch so old data cannot be displayed
+  // while the new scope is in flight.
   useEffect(() => {
+    const generation = ++requestGenerationRef.current;
+    let active = true;
+    const isCurrent = () => active && requestGenerationRef.current === generation;
+
+    setIndexingStatus(null);
+    setRootEntries([]);
+    setNodeStates({});
+    setSelectedEntry(null);
+    setLoading(true);
+    setError(null);
+
     async function fetchInitialData() {
-      setLoading(true);
-      setError(null);
       try {
-        const status = await getIndexingStatus(owner, repo);
+        const status = await getIndexingStatus(owner, repo, resolvedBranch);
+        if (!isCurrent()) return;
         setIndexingStatus(status);
 
         if (status.indexed) {
-          const tree = await getDirectoryTree(owner, repo, '');
+          const tree = await getDirectoryTree(owner, repo, '', resolvedBranch);
+          if (!isCurrent()) return;
           setRootEntries(tree.entries);
         }
       } catch (err) {
+        if (!isCurrent()) return;
         setError(err instanceof Error ? err.message : 'Failed to load repository summaries');
       } finally {
-        setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     }
-    fetchInitialData();
-  }, [owner, repo]);
+    void fetchInitialData();
+
+    return () => {
+      active = false;
+    };
+  }, [owner, repo, resolvedBranch]);
 
   // Handle expanding/collapsing a directory
   const toggleDirectory = useCallback(
     async (entry: SummaryEntry) => {
+      const generation = requestGenerationRef.current;
       const currentState = nodeStates[entry.path] || {
         expanded: false,
         children: null,
@@ -81,15 +105,21 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
           }));
 
           try {
-            const tree = await getDirectoryTree(owner, repo, entry.path);
+            const tree = await getDirectoryTree(owner, repo, entry.path, resolvedBranch);
+            if (requestGenerationRef.current !== generation) return;
             setNodeStates((prev) => ({
               ...prev,
-              [entry.path]: { expanded: true, children: tree.entries, loading: false },
+              ...(prev[entry.path]?.loading
+                ? { [entry.path]: { expanded: true, children: tree.entries, loading: false } }
+                : {}),
             }));
           } catch {
+            if (requestGenerationRef.current !== generation) return;
             setNodeStates((prev) => ({
               ...prev,
-              [entry.path]: { expanded: false, children: null, loading: false },
+              ...(prev[entry.path]?.loading
+                ? { [entry.path]: { expanded: false, children: null, loading: false } }
+                : {}),
             }));
           }
         } else {
@@ -100,7 +130,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         }
       }
     },
-    [owner, repo, nodeStates]
+    [owner, repo, resolvedBranch, nodeStates]
   );
 
   // Handle selecting an entry
@@ -230,7 +260,12 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         </div>
 
         {/* Summary Detail Panel - IDE Preview pane with header tab */}
-        <SummaryPanel selectedEntry={selectedEntry} owner={owner} repo={repo} />
+        <SummaryPanel
+          selectedEntry={selectedEntry}
+          owner={owner}
+          repo={repo}
+          branch={resolvedBranch}
+        />
       </div>
     </motion.div>
   );

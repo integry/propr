@@ -14,6 +14,6 @@
     "resolveJsonModule": true,
     "declaration": true
   },
-  "include": ["*.ts", "*.d.ts"],
+  "include": ["*.ts", "*.d.ts", "services/notificationBackgroundWorker.ts"],
   "exclude": ["node_modules", "dist"]
 }

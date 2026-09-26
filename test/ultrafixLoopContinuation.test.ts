@@ -7,6 +7,8 @@ import {
     loadState,
     clearState,
     completeLoop,
+    determineNextAction,
+    hasReviewReachedGoal,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -71,21 +73,20 @@ describe('Ultrafix loop continuation logic', () => {
         redis = createMockRedis();
     });
 
-    describe('review-success-stop: goal met after review', () => {
-        test('determineNextAction returns null when score meets goal', async () => {
+    describe('review-success-stop: explicitly clean review', () => {
+        test('determineNextAction returns null when the review is valid and clean', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'review', goal: 7 });
-            const decision = determineNextAction(state, 7);
+            const decision = determineNextAction(state, 7, 'valid_clean');
             assert.strictEqual(decision.action, null);
-            assert.ok(decision.reason.includes('Goal met'));
+            assert.ok(decision.reason.includes('no actionable findings'));
         });
 
-        test('determineNextAction returns null when score exceeds goal', async () => {
+        test('determineNextAction returns fix when a passing review still has blockers', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'review', goal: 7 });
-            const decision = determineNextAction(state, 9);
-            assert.strictEqual(decision.action, null);
-            assert.ok(decision.reason.includes('Goal met'));
+            const decision = determineNextAction(state, 9, 'valid_with_blockers');
+            assert.strictEqual(decision.action, 'fix');
         });
 
         test('goal completion is persisted as a successful terminal state', async () => {
@@ -93,7 +94,7 @@ describe('Ultrafix loop continuation logic', () => {
             await saveState(redis as any, state);
 
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
-            const decision = determineNextAction(state, 8);
+            const decision = determineNextAction(state, 8, 'valid_clean');
             assert.strictEqual(decision.action, null);
 
             await completeLoop(redis as any, {
@@ -113,10 +114,35 @@ describe('Ultrafix loop continuation logic', () => {
     });
 
     describe('review-success-continue: score below goal', () => {
+        test('clean review below goal stops without a fix and persists an unsuccessful completion', async () => {
+            const state = makeState({ lastAction: 'review', goal: 10 });
+            await saveState(redis as any, state);
+
+            const decision = determineNextAction(state, 8, 'valid_clean');
+            assert.strictEqual(decision.action, null);
+
+            const goalReached = hasReviewReachedGoal('valid_clean', 8, state.goal);
+            await completeLoop(redis as any, {
+                owner: 'acme',
+                repo: 'web',
+                pr: 42,
+                completionStatus: goalReached ? 'succeeded' : 'failed',
+                completionReason: decision.reason,
+                finalScore: 8,
+            });
+
+            const loaded = await loadState(redis as any, 'acme', 'web', 42);
+            assert.ok(loaded);
+            assert.strictEqual(loaded.active, false);
+            assert.strictEqual(loaded.completionStatus, 'failed');
+            assert.strictEqual(loaded.finalScore, 8);
+            assert.match(loaded.completionReason!, /manual review/i);
+        });
+
         test('determineNextAction returns fix when score is below goal', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'review', goal: 8 });
-            const decision = determineNextAction(state, 5);
+            const decision = determineNextAction(state, 5, 'valid_with_blockers');
             assert.strictEqual(decision.action, 'fix');
             assert.ok(decision.reason.includes('fix'));
         });
@@ -124,7 +150,7 @@ describe('Ultrafix loop continuation logic', () => {
         test('determineNextAction returns fix when score is null', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'review', goal: 7 });
-            const decision = determineNextAction(state, null);
+            const decision = determineNextAction(state, null, 'valid_with_blockers');
             assert.strictEqual(decision.action, 'fix');
         });
     });
@@ -221,7 +247,7 @@ describe('Ultrafix loop continuation logic', () => {
             assert.strictEqual(state.cycleCount, 0);
 
             // After review completes, score is 5 → next is fix
-            let decision = determineNextAction(state, 5);
+            let decision = determineNextAction(state, 5, 'valid_with_blockers');
             assert.strictEqual(decision.action, 'fix');
 
             // Record fix
@@ -237,10 +263,10 @@ describe('Ultrafix loop continuation logic', () => {
             updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action: 'review' });
             assert.strictEqual(updated!.cycleCount, 1); // review doesn't increment
 
-            // Score improved to 8 → goal met
-            decision = determineNextAction(updated!, 8);
+            // The next review is explicitly clean → success
+            decision = determineNextAction(updated!, 8, 'valid_clean');
             assert.strictEqual(decision.action, null);
-            assert.ok(decision.reason.includes('Goal met'));
+            assert.ok(decision.reason.includes('no actionable findings'));
         });
 
         test('stops at max cycles even if goal not met', async () => {
@@ -270,14 +296,22 @@ describe('Ultrafix loop continuation logic', () => {
 
             while (updated && stepCount < 10) {
                 updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action });
-                const decision = determineNextAction(updated!, action === 'review' ? 1 : null);
+                const decision = determineNextAction(
+                    updated!,
+                    action === 'review' ? 1 : null,
+                    action === 'review' ? 'valid_with_blockers' : 'invalid',
+                );
                 assert.notStrictEqual(decision.action, null, `loop stopped early after ${stepCount} steps`);
                 action = decision.action!;
                 stepCount += 1;
             }
 
             updated = await recordAction(redis as any, { owner: 'acme', repo: 'web', pr: 42, action });
-            const finalDecision = determineNextAction(updated!, action === 'review' ? 1 : null);
+            const finalDecision = determineNextAction(
+                updated!,
+                action === 'review' ? 1 : null,
+                action === 'review' ? 'valid_with_blockers' : 'invalid',
+            );
             assert.strictEqual(stepCount, 10);
             assert.strictEqual(updated!.reviewCount, 5);
             assert.strictEqual(updated!.fixCount, 5);

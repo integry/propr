@@ -209,6 +209,8 @@ async function enqueueIssueForModel(
 ): Promise<void> {
     const { correlationId, correlatedLogger, modelName, agentAlias } = options;
     const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${agentAlias}-${modelName}`;
+    // This legacy poller does not resolve the label-applier's stable GitHub ID.
+    // Leave userId absent so user-scoped queue views exclude the unowned job.
     const issueJob: IssueJobData = {
         repoOwner: issue.repoOwner,
         repoName: issue.repoName,

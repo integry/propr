@@ -7,7 +7,8 @@
 
 import { Command } from "commander";
 import { listLlmLogs, LlmLogEntry } from "../api/index.js";
-import { printOutput } from "../utils/index.js";
+import { parsePositiveInteger, printOutput } from "../utils/index.js";
+import { presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Truncates a string to a maximum length.
@@ -161,15 +162,10 @@ Examples:
             draftId?: string;
           } = {};
 
-          const limit = parseInt(options.limit, 10);
-          if (!isNaN(limit) && limit > 0) {
-            listOptions.limit = Math.min(limit, 100);
-          }
+          const limit = parsePositiveInteger(options.limit, "Limit");
+          listOptions.limit = Math.min(limit, 100);
 
-          const page = parseInt(options.page, 10);
-          if (!isNaN(page) && page > 0) {
-            listOptions.page = page;
-          }
+          listOptions.page = parsePositiveInteger(options.page, "Page");
 
           if (options.model) {
             listOptions.model = options.model;
@@ -215,17 +211,10 @@ Examples:
             );
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
-            console.error(
-              "Error: Unauthorized. Please run 'propr login' first."
-            );
-          } else {
-            console.error(`Error listing logs: ${errorMessage}`);
-          }
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view logs.",
+            fallbackMessage: (message) => `Error listing logs: ${message}`,
+          });
           process.exit(1);
         }
       }

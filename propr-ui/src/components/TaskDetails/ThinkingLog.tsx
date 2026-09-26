@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
+import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare } from 'lucide-react';
 import { formatReviewPromptOverview } from './reviewPromptOverview';
 
 // Simple thought type detection based on content
@@ -17,14 +17,21 @@ interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
 }
 
+// The entry's first line on the right is 14px text on `leading-relaxed`, i.e. a 1.4219rem line box.
+// The gutter's label row claims exactly that box and centres in it, so `ACTION` and the first line of
+// the entry start on the same horizontal line instead of the label floating a couple of pixels above.
+const gutterLabelRow = 'flex min-h-[1.4219rem] items-center gap-1.5';
+
 interface ThinkingLogProps {
   events: ThinkingLogEvent[];
   todos?: TodoItem[];
   highlightedTodoId?: string | null;
+  /** Surfaces that own the "Implementation log" utility header themselves (and the controls beside it) opt out of this one. */
+  showHeader?: boolean;
 }
 
 // Get category display info for gutter-style output
-// Icons use low-saturation colors (60% opacity), labels use slate-400
+// Icons use low-saturation colors (60% opacity), labels use accessible slate metadata tones.
 const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => {
   switch (type) {
     case 'summary':
@@ -55,6 +62,57 @@ const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => 
   }
 };
 
+// Operator steering message. Only the goal timeline merges these in; task detail
+// streams never contain a `user_input` event, so this branch stays unreachable there.
+const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
+  <div data-testid="goal-user-message" className="py-3 border-b border-slate-50 last:border-b-0">
+    <div className="flex items-start gap-3">
+      {/* Left Gutter - distinct YOU label and icon */}
+      <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
+        <div className="flex items-center gap-1.5">
+          <MessageSquare className="h-3 w-3 text-amber-500" />
+          <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-amber-600">
+            YOU
+          </span>
+        </div>
+        {event.relativeTime && (
+          <span className="font-mono text-[10px] text-slate-500 mt-0.5 ml-[18px]">
+            {event.relativeTime}
+          </span>
+        )}
+      </div>
+
+      {/* Right Pane - the message exactly as it was sent */}
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="border-l-2 border-amber-400 bg-amber-50/60 px-3 py-2">
+          <p className="m-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
+            {event.content}
+          </p>
+          {(event.inputState === 'pending' || event.inputState === 'undeliverable' || !!event.attachmentCount) && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              {event.inputState === 'pending' && (
+                <span className="rounded border border-amber-300 bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">
+                  Queued
+                </span>
+              )}
+              {event.inputState === 'undeliverable' && (
+                <span className="rounded border border-red-200 bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-600">
+                  Not delivered
+                </span>
+              )}
+              {!!event.attachmentCount && (
+                <span className="text-[10px] text-slate-500">
+                  {event.attachmentCount} attachment{event.attachmentCount === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
 interface TerminalLogEntryProps {
   event: ThinkingLogEvent;
   todoContext?: string;
@@ -62,6 +120,10 @@ interface TerminalLogEntryProps {
 }
 
 const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext, isHighlighted }) => {
+  if (event.type === 'user_input') {
+    return <UserMessageEntry event={event} />;
+  }
+
   const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
   const thoughtType = detectThoughtType(displayContent || '');
   const categoryInfo = getCategoryInfo(thoughtType);
@@ -77,22 +139,22 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
       <div className="flex items-start gap-3">
         {/* Left Gutter (100px) - Icon, Category Label, Timestamp */}
         <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
-          {/* Icon + Category Label Row */}
-          <div className="flex items-center gap-1.5">
+          {/* Icon + Category Label Row, on the same line box as the entry's first line of text */}
+          <div className={gutterLabelRow}>
             <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
-            <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-400">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-500">
               {categoryInfo.label}
             </span>
           </div>
           {/* Timestamp below category label */}
           {event.relativeTime && (
-            <span className="font-mono text-[10px] text-slate-300 mt-0.5 ml-[18px]">
+            <span className="font-mono text-[10px] text-slate-500 mt-0.5 ml-[18px]">
               {event.relativeTime}
             </span>
           )}
           {/* Todo context if available */}
           {todoContext && (
-            <span className="text-[9px] text-slate-300 truncate mt-0.5 ml-[18px]">
+            <span className="text-[9px] text-slate-500 truncate mt-0.5 ml-[18px]">
               → {todoContext}
             </span>
           )}
@@ -161,7 +223,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId }) => {
+const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, showHeader = true }) => {
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
@@ -234,14 +296,16 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
   return (
     <div id="thinking-log-section" className="min-w-0 overflow-hidden">
       {/* Section Header */}
-      <div className="mb-4 flex items-center gap-2">
-        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
-          IMPLEMENTATION LOG
-        </h4>
-        <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
-          {events.length}
+      {showHeader && (
+        <div className="mb-4 flex items-center gap-2">
+          <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
+            IMPLEMENTATION LOG
+          </h4>
+          <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
+            {events.length}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Grouped Events - terminal style log feed */}
       <div className="space-y-3 min-w-0">

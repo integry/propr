@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
+import { SystemAlert } from './ui/SystemAlert';
 
 interface RepositoryBreakdownProps {
   limit?: number;
@@ -75,7 +76,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <div className="text-red-500 text-center py-4">{error}</div>
+        <SystemAlert>{error}</SystemAlert>
       </div>
     );
   }
@@ -119,7 +120,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
                 </td>
                 <td className="py-2 px-2 text-right">
                   <span className={`text-xs font-medium ${
-                    repo.successRate >= 80 ? 'text-emerald-600' :
+                    repo.successRate >= 90 ? 'text-slate-900' :
                     repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
                   }`}>
                     {repo.successRate}%

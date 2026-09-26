@@ -9,6 +9,7 @@ import {
   createMemberCatalogRouteEntries,
   registerRouteEntries,
 } from '../routeRegistry.js';
+import { SUMMARY_TREE_ROUTE_PATH } from '../routes/summaryBrowserRoutes.js';
 
 after(async () => closeConnection());
 
@@ -25,7 +26,9 @@ function handlerCollection(): never {
 function createAuthorizationTestApp() {
   const app = express();
   app.use((req, _res, next) => {
-    const admin = req.header('x-test-role') === 'admin';
+    const role = req.header('x-test-role');
+    const admin = role === 'admin';
+    const demo = role === 'demo';
     req.authorization = {
       role: admin ? 'admin' : 'member',
       permissions: admin
@@ -36,7 +39,7 @@ function createAuthorizationTestApp() {
             'instance.manage_settings',
           ]
         : [],
-      source: admin ? 'local' : 'implicit',
+      source: admin ? 'local' : demo ? 'demo' : 'implicit',
     };
     next();
   });
@@ -45,10 +48,12 @@ function createAuthorizationTestApp() {
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes: handlerCollection() }),
     ...createManagementRouteEntries({
       adminRoutes: handlerCollection(),
+      adminMcpRoutes: handlerCollection(),
       agentLoginRoutes: handlerCollection(),
       agentRuntimeRoutes: handlerCollection(),
       agentVersionRoutes: handlerCollection(),
       configRoutes: handlerCollection(),
+      visualPreviewAuthRoutes: handlerCollection(),
     }),
   ];
   assertNoDuplicateRoutes(routes);
@@ -57,9 +62,10 @@ function createAuthorizationTestApp() {
 }
 
 async function withServer(
-  callback: (origin: string) => Promise<void>
+  callback: (origin: string) => Promise<void>,
+  app = createAuthorizationTestApp(),
 ): Promise<void> {
-  const server = createAuthorizationTestApp().listen(0, '127.0.0.1');
+  const server = app.listen(0, '127.0.0.1');
   try {
     await new Promise<void>(resolve => server.once('listening', resolve));
     const { port } = server.address() as AddressInfo;
@@ -74,16 +80,40 @@ async function withServer(
 const managementRequests = [
   ['GET', '/api/config/settings'],
   ['GET', '/api/config/agents'],
+  ['GET', '/api/config/synthetic-agents'],
+  ['POST', '/api/config/synthetic-agents'],
+  ['GET', '/api/config/agent-tank/usage'],
   ['GET', '/api/admin/members'],
+  ['GET', '/api/config/preview-storage'],
+  ['GET', '/api/config/visual-preview-auth'],
+  ['POST', '/api/config/visual-preview-auth'],
+  ['PUT', '/api/config/visual-preview-auth/token'],
+  ['DELETE', '/api/config/visual-preview-auth'],
   ['GET', '/api/agent-runtime/packages'],
+  ['POST', '/api/agent-runtime/packages/verify'],
   ['GET', '/api/agents/codex/images'],
   ['POST', '/api/agents/codex/login-sessions'],
 ] as const;
 
 describe('assembled instance permission routes', () => {
+  test('captures Express 5 named wildcard parameters as path segments', async () => {
+    const app = express();
+    app.get(SUMMARY_TREE_ROUTE_PATH, (req, res) => res.json(req.params));
+
+    await withServer(async origin => {
+      const response = await fetch(`${origin}/api/summaries/integry/propr/tree/src/routes/file.ts`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        owner: 'integry',
+        repo: 'propr',
+        path: ['src', 'routes', 'file.ts'],
+      });
+    }, app);
+  });
+
   test('members can read only the sanitized catalog endpoints', async () => {
     await withServer(async origin => {
-      for (const path of ['/api/catalog', '/api/repositories/indexing-status']) {
+      for (const path of ['/api/catalog', '/api/instance/catalog', '/api/repositories/indexing-status']) {
         const response = await fetch(`${origin}${path}`);
         assert.equal(response.status, 200, path);
       }
@@ -106,6 +136,19 @@ describe('assembled instance permission routes', () => {
           headers: { 'x-test-role': 'admin' },
         });
         assert.equal(response.status, 200, `${method} ${path}`);
+      }
+    });
+  });
+
+  test('demo users can read only the synthetic Agent Tank usage feed', async () => {
+    await withServer(async origin => {
+      const headers = { 'x-test-role': 'demo' };
+      const usageResponse = await fetch(`${origin}/api/config/agent-tank/usage`, { headers });
+      assert.equal(usageResponse.status, 200);
+
+      for (const path of ['/api/config/agent-tank', '/api/config/agent-tank/status']) {
+        const response = await fetch(`${origin}${path}`, { headers });
+        assert.equal(response.status, 403, path);
       }
     });
   });

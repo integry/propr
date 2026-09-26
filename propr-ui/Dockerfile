@@ -1,7 +1,7 @@
 # Stage 1: Build the React app
 # NOTE: This Dockerfile should be built from the monorepo root with context set to include packages/shared
 # Example: docker build -f propr-ui/Dockerfile .
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 
 ARG VITE_API_BASE_URL
 ARG VITE_OAUTH_API_URL
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt
 # Copy root package files for workspace resolution
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
+COPY packages/client/package*.json ./packages/client/
 COPY propr-ui/package*.json ./propr-ui/
 
 RUN npm install
@@ -24,12 +25,23 @@ RUN npm install
 COPY packages/shared ./packages/shared
 RUN cd packages/shared && npm run build
 
+# The UI imports the shared client workspace source through its Vite alias.
+COPY packages/client ./packages/client
+RUN cd packages/client && npm run build
+
+# Desktop presentation code imports the browser-safe deep-link validators from
+# the desktop source boundary. Include that module's complete runtime-relative
+# closure; type-only desktop setup imports are erased by Vite and stay outside
+# the production UI image.
+COPY apps/desktop/src/security.ts ./apps/desktop/src/security.ts
+COPY apps/desktop/src/shared/contract.ts ./apps/desktop/src/shared/contract.ts
+
 # Copy UI source and build it
 COPY propr-ui ./propr-ui
 RUN cd propr-ui && npm run build
 
 # Stage 2: Serve the app with a lightweight server
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 COPY --from=build /app/propr-ui/dist /app/dist
 COPY propr-ui/serve.json /app/serve.json

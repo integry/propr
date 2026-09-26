@@ -11,7 +11,9 @@ interface KnexConfig {
     production: Knex.Config;
 }
 
-type BetterSqliteConnection = { pragma: (arg: string) => unknown };
+type BetterSqliteConnection = {
+    pragma: (arg: string, options?: { simple?: boolean }) => unknown;
+};
 
 // Default database path
 const defaultDbPath = path.join(__dirname, 'data', 'propr.sqlite');
@@ -28,6 +30,26 @@ function configureSqliteConnection(conn: BetterSqliteConnection): void {
     conn.pragma('journal_mode = WAL');
     conn.pragma('synchronous = NORMAL');
     conn.pragma('foreign_keys = ON');
+    conn.pragma('recursive_triggers = ON');
+
+    if (conn.pragma('foreign_keys', { simple: true }) !== 1) {
+        throw new Error('SQLite foreign_keys pragma must be enabled');
+    }
+    if (conn.pragma('recursive_triggers', { simple: true }) !== 1) {
+        throw new Error('SQLite recursive_triggers pragma must be enabled');
+    }
+}
+
+function configurePooledSqliteConnection(
+    conn: BetterSqliteConnection,
+    done: (err: Error | null) => void
+): void {
+    try {
+        configureSqliteConnection(conn);
+        done(null);
+    } catch (error) {
+        done(error as Error);
+    }
 }
 
 const config: KnexConfig = {
@@ -42,10 +64,7 @@ const config: KnexConfig = {
             tableName: 'knex_migrations'
         },
         pool: {
-            afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                configureSqliteConnection(conn);
-                done(null);
-            }
+            afterCreate: configurePooledSqliteConnection
         }
     },
 
@@ -60,10 +79,7 @@ const config: KnexConfig = {
             tableName: 'knex_migrations'
         },
         pool: {
-            afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                configureSqliteConnection(conn);
-                done(null);
-            }
+            afterCreate: configurePooledSqliteConnection
         }
     }
 };

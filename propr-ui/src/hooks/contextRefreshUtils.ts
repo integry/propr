@@ -77,3 +77,28 @@ export const isSignificantPromptChange = (prevPrompt: string, nextPrompt: string
 
   return overlapRatio < WORD_OVERLAP_THRESHOLD;
 };
+
+export interface SourceConfig {
+  prompt: string;
+  baseBranch: string;
+  filesLength: number;
+  compress: boolean;
+  manualFilesLength: number;
+}
+
+/**
+ * Compare the last fetched source config with the current one.
+ * isStrictlyStale: any source input changed; isSignificant: the change warrants an automatic refresh.
+ */
+export function compareSourceConfig(lastFetched: SourceConfig | null, current: SourceConfig): { isStrictlyStale: boolean; isSignificant: boolean } {
+  if (!lastFetched) return { isStrictlyStale: true, isSignificant: true };
+  const nonPromptChanged =
+    lastFetched.baseBranch !== current.baseBranch ||
+    lastFetched.filesLength !== current.filesLength ||
+    lastFetched.compress !== current.compress ||
+    lastFetched.manualFilesLength !== current.manualFilesLength;
+  return {
+    isStrictlyStale: nonPromptChanged || lastFetched.prompt !== current.prompt,
+    isSignificant: nonPromptChanged || isSignificantPromptChange(lastFetched.prompt, current.prompt)
+  };
+}

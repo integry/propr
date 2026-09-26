@@ -1,3 +1,14 @@
+import {
+    normalizeGitHubAttachmentPlanOverride,
+    ROUTING_STATUS_REDIS_KEY,
+    type GitHubAttachmentCapacity,
+    type GitHubAttachmentPlanOverride,
+    type ManagedPreviewStorageStatus,
+    type VisualPreviewOriginalCapability
+} from '@propr/shared';
+import { getIssueQueue } from '../queue/taskQueue.js';
+import { createManagedPreviewStorageClient } from '../services/previewStorage/runtime.js';
+import { loadGitHubAttachmentCapacity } from '../services/visualPreviewCapacityService.js';
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, saveConfig } from './configStore.js';
@@ -17,9 +28,51 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
+    cancelCiDuringFollowup?: boolean; // Defaults to false; cancels obsolete PR validation while a follow-up implements
+    // Exactly which validation workflows that option may cancel: workflow file
+    // paths, file names, display names or numeric workflow IDs. Nothing is
+    // cancelled while this is empty; eligibility is never inferred from a name.
+    cancelCiDuringFollowupWorkflows?: string[];
+    notificationsEnabled?: boolean; // Defaults to true; undefined (legacy configurations) reads as enabled
+    visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
+}
+
+export type VisualPreviewType = 'image' | 'video';
+
+export interface VisualPreviewSettings {
+    githubAttachmentPlan?: GitHubAttachmentPlanOverride;
+    /** Computed at runtime; never trusted from stored settings. */
+    githubAttachmentCapacity?: GitHubAttachmentCapacity;
+    /** Trusted runtime capability supplied by managed storage; never persisted or accepted from repository settings. */
+    originalEvidenceCapability?: VisualPreviewOriginalCapability;
+    enabled: boolean;
+    types: VisualPreviewType[];
+    instructions?: string;
+}
+
+export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPreviewSettings {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return { enabled: false, types: ['image'] };
+    }
+
+    const candidate = value as Partial<VisualPreviewSettings>;
+    const types = Array.isArray(candidate.types)
+        ? [...new Set(candidate.types.filter((type): type is VisualPreviewType => type === 'image' || type === 'video'))]
+        : [];
+    const instructions = typeof candidate.instructions === 'string' && candidate.instructions.trim()
+        ? candidate.instructions.trim()
+        : undefined;
+
+    return {
+        enabled: candidate.enabled === true,
+        ...(candidate.githubAttachmentPlan !== undefined ? { githubAttachmentPlan: normalizeGitHubAttachmentPlanOverride(candidate.githubAttachmentPlan) } : {}),
+        types: types.length > 0 ? types : ['image'],
+        ...(instructions ? { instructions } : {})
+    };
 }
 
 interface ConfigSettings {
@@ -119,6 +172,65 @@ export async function loadMonitoredReposRaw(): Promise<RepoToMonitor[]> {
     return rawRepos;
 }
 
+/**
+ * Resolve the branch-independent visual-preview policy for a repository.
+ * Multiple branch entries may exist for one repository; an explicitly enabled
+ * entry wins over disabled or legacy entries until the next synchronized save.
+ */
+export function resolveRepositoryVisualPreviewSettings(
+    repos: readonly RepoToMonitor[],
+    repository: string
+): VisualPreviewSettings {
+    const normalizedRepository = repository.trim().toLowerCase();
+    if (!normalizedRepository) return { enabled: false, types: ['image'] };
+
+    const matching = repos.filter(repo => repo.name.trim().toLowerCase() === normalizedRepository);
+    const configured = matching.find(repo => normalizeStoredVisualPreviewSettings(repo.visualPreview).enabled)
+        ?? matching.find(repo => repo.visualPreview !== undefined);
+    return normalizeStoredVisualPreviewSettings(configured?.visualPreview);
+}
+
+export async function loadRepositoryVisualPreviewSettings(repository: string): Promise<VisualPreviewSettings> {
+    try {
+        const settings = resolveRepositoryVisualPreviewSettings(await loadMonitoredReposRaw(), repository);
+        logger.info({ repository, enabled: settings.enabled, types: settings.types }, 'Loaded repository visual-preview settings');
+        const [githubAttachmentCapacity, originalEvidenceCapability] = await Promise.all([
+            loadGitHubAttachmentCapacity(settings.githubAttachmentPlan, repository),
+            settings.enabled ? loadOriginalEvidenceCapability() : undefined
+        ]);
+        return {
+            ...settings,
+            githubAttachmentCapacity,
+            ...(originalEvidenceCapability ? { originalEvidenceCapability } : {})
+        };
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load visual-preview settings; treating previews as disabled');
+        return { enabled: false, types: ['image'] };
+    }
+}
+
+async function loadManagedPreviewStorageStatus(): Promise<ManagedPreviewStorageStatus> {
+    const queue = await getIssueQueue();
+    const client = createManagedPreviewStorageClient(async () => (await queue.client).get(ROUTING_STATUS_REDIS_KEY));
+    return client.getStatus();
+}
+
+export async function loadOriginalEvidenceCapability(
+    loadStatus: () => Promise<ManagedPreviewStorageStatus> = loadManagedPreviewStorageStatus
+): Promise<VisualPreviewOriginalCapability | undefined> {
+    try {
+        const status = await loadStatus();
+        return status.state === 'enabled' && status.enabled && status.effective?.enabled
+            ? {
+                maxBytes: status.effective.maxObjectBytes,
+                allowedContentTypes: [...status.effective.allowedContentTypes]
+            }
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 export async function saveMonitoredRepos(repos: RepoToMonitor[], client?: Knex | Knex.Transaction): Promise<boolean> {
     await saveConfig('repos_to_monitor', repos, client);
     logger.info({ repos }, 'Successfully saved monitored repositories');
@@ -189,6 +301,45 @@ export async function savePrimaryProcessingLabels(primaryLabels: string[] | stri
     return true;
 }
 
+/**
+ * Resolves the full set of labels that opt a pull request into ProPR automation.
+ * Combines the primary processing labels, the PR label, and the AI primary tag
+ * into a deduplicated list of non-empty strings.
+ */
+export async function loadValidTriggerLabels(): Promise<string[]> {
+    const [primaryLabels, prLabel, aiPrimaryTag] = await Promise.all([
+        loadPrimaryProcessingLabels(),
+        loadPrLabel(),
+        loadAiPrimaryTag(),
+    ]);
+
+    const candidates = [...(Array.isArray(primaryLabels) ? primaryLabels : []), prLabel, aiPrimaryTag];
+    const unique = new Set<string>();
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'string') continue;
+        const trimmed = candidate.trim();
+        if (trimmed) unique.add(trimmed);
+    }
+    return [...unique];
+}
+
+/**
+ * Returns true when at least one of the given PR labels is a valid trigger label.
+ * Matching is case-sensitive, mirroring how GitHub labels are compared elsewhere.
+ * Accepts label objects (`{ name }`) or plain strings; null/undefined yields false.
+ */
+export async function hasValidTriggerLabel(labels: Array<{ name: string } | string> | null | undefined): Promise<boolean> {
+    if (!labels || !Array.isArray(labels) || labels.length === 0) return false;
+
+    const labelNames = labels
+        .map(label => (typeof label === 'string' ? label : label?.name))
+        .filter((name): name is string => typeof name === 'string' && name.length > 0);
+    if (labelNames.length === 0) return false;
+
+    const triggerLabels = await loadValidTriggerLabels();
+    return labelNames.some(name => triggerLabels.includes(name));
+}
+
 export {
     loadPrReviewModel,
     savePrReviewModel,
@@ -243,7 +394,10 @@ export {
 export {
     type CliVersionType,
     type AgentConfig,
+    AgentConfigPathUnavailableError,
     DEFAULT_CONFIG_PATHS,
+    assertCodexConfigPathAvailable,
+    resolveCodexConfigPath,
     resolveConfigPath,
     getDefaultConfigPath,
     loadAgents,
@@ -254,6 +408,12 @@ export {
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
+
+export {
+    SYNTHETIC_AGENTS_CONFIG_KEY,
+    loadSyntheticAgents,
+    saveSyntheticAgents
+} from './configManagerSyntheticAgents.js';
 
 // --- Auto Resolve Merge Conflicts ---
 

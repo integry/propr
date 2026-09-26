@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import multer from 'multer';
 import path from 'path';
@@ -26,7 +27,8 @@ import {
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
-import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createAbortGenerationHandler, createAbortRefinementHandler } from './plannerAbortHandlers.js';
 import {
   buildUpdatedExecutionConfig,
   ExecutionSettingsContextConfigError,
@@ -38,6 +40,7 @@ import {
 export { buildUpdatedExecutionConfig, mergeExecutionContextConfig } from './plannerExecutionSettings.js';
 import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
 import { isDemoMode } from '../demoMode.js';
+import { timeApiStage } from '../apiPerformanceTiming.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -62,6 +65,7 @@ const upload = multer({
 });
 
 export const attachmentUpload = upload.single('file');
+export const goalAttachmentUpload = upload.array('files', 10);
 
 interface PlannerRoutesDeps { db: Knex; }
 
@@ -128,16 +132,18 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         });
       }
 
-      let drafts = await query
+      let drafts = await timeApiStage('sql.drafts.list', () => query
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
-        .orderBy('updated_at', 'desc');
+        .orderBy('updated_at', 'desc'));
 
       if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
       const paginatedDrafts = drafts.slice(offset, offset + limit);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
-        const issues = await db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status');
+        const issues = await timeApiStage('sql.drafts.issue-status', () =>
+          db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status')
+        );
         const issueSummaries = buildIssueSummaryMap(issues);
         attachIssueSummaries(paginatedDrafts as Array<Record<string, unknown> & { draft_id: string }>, issueSummaries);
       }
@@ -184,7 +190,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function getDraft(req: Request, res: Response): Promise<void> {
+  async function getDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
@@ -209,7 +215,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function updateDraft(req: Request, res: Response): Promise<void> {
+  async function updateDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
@@ -238,7 +244,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function deleteDraft(req: Request, res: Response): Promise<void> {
+  async function deleteDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');
@@ -254,12 +260,15 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier }));
+  const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({
+    verifyOwnership: ownershipVerifier,
+    tempRoot: uploadDir,
+  }));
   const getContextStats = withAuthCheck(db, createGetContextStatsHandler({ verifyOwnership: ownershipVerifier }));
   const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput, db }));
   const deleteAttachment = withAuthCheck(db, createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier }));
 
-  async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
+  async function resetDraftToSetup(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');
@@ -294,7 +303,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const abortRefinement = createAbortRefinementHandler(db);
   const reviseDraft = createReviseDraftHandler(db);
 
-  async function draftPauseAction(req: Request, res: Response, action: 'pause' | 'resume'): Promise<void> {
+  async function draftPauseAction(req: FlatRequest, res: Response, action: 'pause' | 'resume'): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     try {
@@ -308,10 +317,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       res.status(500).json({ error: `Failed to ${action} draft execution` });
     }
   }
-  const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
-  const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
+  const pauseDraftExecution = (req: FlatRequest, res: Response) => draftPauseAction(req, res, 'pause');
+  const resumeDraftExecution = (req: FlatRequest, res: Response) => draftPauseAction(req, res, 'resume');
 
-  async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
+  async function updateExecutionSettings(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');

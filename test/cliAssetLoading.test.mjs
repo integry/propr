@@ -6,8 +6,10 @@ import { test } from 'node:test';
 const orchestratorPath = new URL('../packages/cli/dist/orchestrator/orchestrator.mjs', import.meta.url);
 const manifestPath = new URL('../packages/cli/dist/orchestrator/manifest.json', import.meta.url);
 const envExamplePath = new URL('../packages/cli/dist/assets/env.example.txt', import.meta.url);
+const skillPath = new URL('../packages/cli/dist/skill/propr/SKILL.md', import.meta.url);
+const skillMetadataPath = new URL('../packages/cli/dist/skill/propr/agents/openai.yaml', import.meta.url);
 
-const distReady = existsSync(orchestratorPath) && existsSync(manifestPath) && existsSync(envExamplePath);
+const distReady = existsSync(orchestratorPath) && existsSync(manifestPath) && existsSync(envExamplePath) && existsSync(skillPath) && existsSync(skillMetadataPath);
 
 // Building the CLI workspace inside a unit test is slow and environment-
 // dependent, so it only happens when explicitly requested. CI should build
@@ -26,6 +28,8 @@ test('built CLI can load bundled orchestrator assets', { skip: !distReady && !bu
   assert.equal(existsSync(orchestratorPath), true);
   assert.equal(existsSync(manifestPath), true);
   assert.equal(existsSync(envExamplePath), true);
+  assert.equal(existsSync(skillPath), true);
+  assert.equal(existsSync(skillMetadataPath), true);
 
   const { loadOrchestrator } = await import('../packages/cli/dist/orchestrator/index.js');
   const orchestrator = await loadOrchestrator();

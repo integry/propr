@@ -98,10 +98,10 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
   const [input, setInput] = useState('');
   const [requestError, setRequestError] = useState<string>();
   const [sending, setSending] = useState(false);
-  const sessionRef = useRef<AgentLoginSession>();
-  const startPromiseRef = useRef<Promise<AgentLoginSession>>();
-  const startAgentIdRef = useRef<string>();
-  const cancelTimerRef = useRef<{ id: number; agentId: string }>();
+  const sessionRef = useRef<AgentLoginSession | undefined>(undefined);
+  const startPromiseRef = useRef<Promise<AgentLoginSession> | undefined>(undefined);
+  const startAgentIdRef = useRef<string | undefined>(undefined);
+  const cancelTimerRef = useRef<{ id: number; agentId: string } | undefined>(undefined);
   const cancelledSessionIdsRef = useRef(new Set<string>());
   const closingRef = useRef(false);
   const outputRef = useRef<HTMLDivElement>(null);

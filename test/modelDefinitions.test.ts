@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
@@ -11,11 +11,9 @@ test('Mistral Medium uses the OpenRouter pricing model ID', () => {
     );
 });
 
-test('Devstral Small uses the OpenRouter pricing model ID', () => {
-    assert.strictEqual(
-        MODEL_INFO_MAP['devstral-small']?.openRouterId,
-        'mistralai/devstral-2512'
-    );
+test('Vibe catalog matches the current hosted model set', () => {
+    assert.deepStrictEqual(VIBE_MODELS.map(model => model.id), ['mistral-medium-3.5']);
+    assert.strictEqual(MODEL_INFO_MAP['devstral-small'], undefined);
 });
 
 test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', () => {
@@ -34,7 +32,23 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
     }
 });
 
-test('Claude Opus 5 and Sonnet 5 are current Claude Code models', () => {
+test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () => {
+    assert.strictEqual(CLAUDE_MODELS[0]?.id, 'claude-opus-5-5');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultModels[0], 'claude-opus-5-5');
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.githubLabel, 'llm-claude-opus55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.shortAlias, 'opus55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.openRouterId, 'anthropic/claude-opus-5.5');
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.contextWindow, '1M');
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
+    // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
+    assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.280');
+});
+
+test('Claude Fable 5.1, Opus 5, and Sonnet 5 are current Claude Code models', () => {
+    assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-fable-5-1'));
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.githubLabel, 'llm-claude-fable51');
+    assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.minAgentVersion, '2.1.257');
     assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-opus-5'));
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5']?.githubLabel, 'llm-claude-opus5');
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5']?.minAgentVersion, '2.1.219');
@@ -42,21 +56,49 @@ test('Claude Opus 5 and Sonnet 5 are current Claude Code models', () => {
 });
 
 test('OpenCode catalog matches the current built-in free model set', () => {
-    const modelIds = new Set(OPENCODE_MODELS.map(model => model.id));
-    assert.ok(!modelIds.has('opencode-minimax-m3-free'));
-    assert.ok(modelIds.has('opencode-laguna-s-2.1-free'));
-    assert.ok(modelIds.has('opencode-ling-3.0-flash-free'));
-    assert.ok(modelIds.has('opencode-north-mini-code-free'));
+    assert.deepStrictEqual(OPENCODE_MODELS.map(model => model.id), [
+        'opencode-big-pickle',
+        'opencode-ling-3.0-flash-fin-free',
+        'opencode-mimo-v2.5-free',
+        'opencode-muse-spark-1.2-contributor-free',
+        'opencode-muse-spark-1.3-contributor-free',
+        'opencode-nemotron-3-ultra-free',
+        'opencode-nemotron-3.5-lightning-free',
+    ]);
 });
 
-test('GPT-5.6 Sol is the preferred Codex default and Codex CLI pin supports it', () => {
-    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-5.6-sol');
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-5.6-sol');
+test('GPT-6 Astra is the preferred Codex default and Codex CLI pin supports it', () => {
+    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6-astra');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
     assert.ok(
-        AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.144.0', undefined, { numeric: true }) >= 0,
-        `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.144.0`
+        AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.153.1', undefined, { numeric: true }) >= 0,
+        `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.153.1`
     );
+});
+
+test('Gemini 3.8 Flash tiers are namespaced Antigravity models with 1M limits', () => {
+    const expectedModels = [
+        ['medium', 'llm-antigravity-flash38-medium'],
+        ['high', 'llm-antigravity-flash38-high'],
+        ['low', 'llm-antigravity-flash38-low'],
+    ] as const;
+
+    for (const [tier, githubLabel] of expectedModels) {
+        const modelId = `antigravity-gemini-3.8-flash-${tier}`;
+        const model = MODEL_INFO_MAP[modelId];
+        assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+        assert.strictEqual(model?.githubLabel, githubLabel);
+        assert.strictEqual(model?.shortAlias, `flash38-${tier}`);
+        assert.strictEqual(model?.openRouterId, 'google/gemini-3.8-flash');
+        assert.strictEqual(model?.minAgentVersion, '1.1.25');
+        assert.strictEqual(model?.contextWindow, '1M');
+        assert.strictEqual(model?.maxTokens, 1_000_000);
+    }
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
 });
 
 test('long model labels use the configured agent alias', () => {

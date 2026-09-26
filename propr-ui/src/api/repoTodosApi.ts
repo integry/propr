@@ -1,5 +1,11 @@
 // Repository To-Dos API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
+
+const refreshDesktopActiveWork = (): void => {
+  if (typeof window !== 'undefined') {
+    void window.proprDesktop?.app.refreshActiveWork().catch(() => undefined);
+  }
+};
 
 /**
  * Represents a to-do category for organizing to-dos
@@ -236,7 +242,9 @@ export const createTodo = async (params: CreateTodoParams): Promise<RepoTodo> =>
     credentials: 'include'
   });
   await handleApiResponse(response);
-  return response.json();
+  const todo = await response.json();
+  refreshDesktopActiveWork();
+  return todo;
 };
 
 /**
@@ -260,7 +268,9 @@ export const updateTodo = async (
     }
   );
   await handleApiResponse(response);
-  return response.json();
+  const todo = await response.json();
+  refreshDesktopActiveWork();
+  return todo;
 };
 
 /**
@@ -279,6 +289,7 @@ export const deleteTodo = async (todoId: string): Promise<boolean> => {
   );
   await handleApiResponse(response);
   const data = await response.json();
+  refreshDesktopActiveWork();
   return data.success;
 };
 

@@ -4,7 +4,7 @@
  * Client wrapper for the /api/tasks backend routes.
  * Provides methods to list, get, stop, and delete tasks.
  */
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // ============================================================================
 // Type Definitions
@@ -182,8 +182,8 @@ export interface FileChange {
 export interface ListTasksOptions {
   /** Filter by repository (full name like owner/repo) */
   project?: string;
-  /** Filter by task status */
-  status?: TaskStatus | 'all';
+  /** Filter by task status; lifecycle aliases map onto worker states server-side */
+  status?: TaskStatus | 'active' | 'implementing' | 'waiting' | 'all';
   /** Maximum number of tasks to return */
   limit?: number;
   /** Number of tasks to skip for pagination */

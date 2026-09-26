@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import {
   buildSummaryContext,
   runLightweightLLMAnalysis,
@@ -12,7 +13,8 @@ import {
   getMessagesForRepository,
   saveMessage,
   deleteMessage as deleteMessageFromDb,
-  clearMessagesForRepository
+  clearMessagesForRepository,
+  resolveConfiguredModel
 } from '@propr/core';
 
 interface ChatMessage {
@@ -109,7 +111,7 @@ export function createRepoChatRoutes() {
    * DELETE /api/repos/chat/messages/:messageId
    * Delete a single chat message
    */
-  async function deleteMessage(req: Request, res: Response): Promise<void> {
+  async function deleteMessage(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { messageId } = req.params;
 
@@ -226,7 +228,7 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
 
       // Get model settings - use requested model or fall back to settings
       const settings = await loadSettings();
-      const model = requestedModel || settings.planner_context_model || 'haiku';
+      const model = await resolveConfiguredModel(requestedModel || settings.planner_context_model);
 
       // Estimate input tokens and duration for the request
       const estimatedInputTokens = estimateTokens(fullPrompt);

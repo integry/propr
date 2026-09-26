@@ -20,9 +20,11 @@ import {
     UsageLimitError,
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { randomUUID } from 'node:crypto';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import {
     assertReasoningLevelCliVersionSupported,
+    resolveConfigPath,
     loadModelReasoningLevel,
     resolveAgentModelReasoningLevel,
     resolveClaudeReasoningLevel,
@@ -32,10 +34,30 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import {
+    claudeSessionTranscriptExists,
+    claudeSessionTranscriptPath,
+    executeClaudeNativeGoal,
+} from './claudeNativeGoal.js';
 
 export { UsageLimitError };
+
+function resolveClaudeAnalysisWorkspace(
+    readOnlyWorkspacePath: string | undefined,
+    allowReadOnlyCommands: boolean
+): { path: string; tools: string; readOnly: boolean; repositoryInspection: boolean } {
+    if (!readOnlyWorkspacePath) {
+        return { path: '/tmp/claude-analysis', tools: '', readOnly: false, repositoryInspection: false };
+    }
+    return {
+        path: readOnlyWorkspacePath,
+        tools: '',
+        readOnly: true,
+        repositoryInspection: allowReadOnlyCommands,
+    };
+}
 
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
@@ -63,6 +85,7 @@ export function resolveAnalysisOutcome(claudeOutput: ClaudeOutput, stderr: strin
 
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -77,7 +100,8 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel
+            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
+            executionMode = 'task', metadata
         } = options;
 
         const startTime = Date.now();
@@ -90,6 +114,8 @@ export class ClaudeAgent implements Agent {
             issueNumber: issueRef.number, repository: repo, worktreePath,
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
         }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
+
+        if (executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
 
         try {
             const prompt = buildClaudePrompt({
@@ -110,7 +136,8 @@ export class ClaudeAgent implements Agent {
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
-                    worktreePath, stdinData: prompt, taskId
+                    worktreePath, stdinData: prompt, taskId,
+                    streamToRedis: true, preserveOutputOnTimeout: true
                 })
             );
 
@@ -128,7 +155,7 @@ export class ClaudeAgent implements Agent {
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
                 executionTime, correctedTokenUsage, taskId, prNumber,
-                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics
+                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics, metadata
             });
 
             if (!response.success) {
@@ -159,9 +186,58 @@ export class ClaudeAgent implements Agent {
         }
     }
 
+    /**
+     * Runs one attempt of a native `/goal` session. Claude owns the goal loop
+     * through its Stop hook; ProPR steers input, checkpoints, and stops over
+     * the session's stream-json stdin and resumes the exact session later.
+     */
+    private async executeNativeGoal(options: AgentTaskOptions, model: string): Promise<AgentExecutionResult> {
+        const {
+            worktreePath, issueRef, githubToken, systemPrompt, tools, environment, taskId,
+            reasoningLevel, resumeSessionId,
+        } = options;
+        const startTime = Date.now();
+        try {
+            await setWorktreeOwnership(worktreePath, issueRef.number, {
+                protectGitMetadata: environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+            });
+            const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, model);
+            const sessionId = resumeSessionId ?? randomUUID();
+            const transcriptPath = claudeSessionTranscriptPath(resolveConfigPath(this.config.configPath), sessionId);
+            // An identity persisted before the provider wrote its first
+            // transcript record has nothing to resume; start it under that id.
+            const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
+            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
+                worktreePath, githubToken, modelName: model, issueNumber: issueRef.number,
+                systemPrompt, tools, environment, taskId,
+                reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
+                ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+            });
+            const response = await executeClaudeNativeGoal(
+                { ...options, resumeSessionId: resumable ? sessionId : undefined },
+                { dockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
+            );
+            if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
+            if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            logger.info({
+                taskId, sessionId, success: response.success, error: response.error, agentAlias: this.config.alias,
+            }, 'Claude native goal attempt finished');
+            return response;
+        } catch (error) {
+            if (error instanceof UsageLimitError) throw error;
+            logger.error({ taskId, error: (error as Error).message, agentAlias: this.config.alias }, 'Claude native goal attempt failed');
+            return {
+                success: false, error: (error as Error).message, executionTimeMs: Date.now() - startTime,
+                logs: (error as Error).message, modifiedFiles: [], commitMessage: null,
+                modelUsed: model,
+            };
+        }
+    }
+
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -169,11 +245,11 @@ export class ClaudeAgent implements Agent {
             requestedModel: model, taskId, executionType
         }, 'Running lightweight analysis via Claude agent...');
 
-        const effectiveModel = model || resolveModelAlias('haiku');
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const analysisWorkspace = resolveClaudeAnalysisWorkspace(readOnlyWorkspacePath, allowReadOnlyCommands);
 
         try {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(
@@ -182,9 +258,11 @@ export class ClaudeAgent implements Agent {
                 useConfiguredReasoningLevel
             );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
+                worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
-                tools: '', taskId, executionType,
+                tools: analysisWorkspace.tools, taskId, executionType,
+                readOnlyWorkspace: analysisWorkspace.readOnly,
+                repositoryInspection: analysisWorkspace.repositoryInspection,
                 reasoningLevel: effectiveReasoningLevel
             });
 
@@ -201,6 +279,13 @@ export class ClaudeAgent implements Agent {
 
             const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, analysisPrompt);
             const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
+
+            if (result.timedOut) {
+                return {
+                    response: '', modelUsed: effectiveModel, executionTimeMs, success: false,
+                    error: result.stderr
+                };
+            }
 
             const outcome = resolveAnalysisOutcome(claudeOutput, result.stderr);
             if (outcome.isSuccess) {
@@ -284,7 +369,7 @@ export class ClaudeAgent implements Agent {
     private async persistExecutionLogs(params: PersistLogsParams): Promise<void> {
         const {
             result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime,
-            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics
+            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics, metadata
         } = params;
         const claudeOutput = parseStreamJsonOutput(result);
 
@@ -299,7 +384,7 @@ export class ClaudeAgent implements Agent {
             sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId, repository,
             agentAlias: this.config.alias,
             reasoningLevel,
-            metadata: { isRetry, retryReason, conversationId: claudeOutput.conversationId },
+            metadata: { ...metadata, isRetry, retryReason, conversationId: claudeOutput.conversationId },
             usageMetrics: usageMetrics ? {
                 preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,
                 delta: usageMetrics.delta, timestamp: usageMetrics.timestamp, agent: usageMetrics.agent

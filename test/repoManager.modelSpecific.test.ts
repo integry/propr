@@ -300,20 +300,21 @@ describe('Repository Manager - Model Integration Edge Cases', () => {
     });
     
     test('ensures uniqueness even with same parameters', () => {
-        function generateMultipleNames(issueId: number, title: string, modelName: string | null, count = 5): string[] {
-            const names: string[] = [];
-            for (let i = 0; i < count; i++) {
-                const randomString = Math.random().toString(36).substring(2, 5);
+        function generateMultipleNames(issueId: number, title: string, modelName: string | null, randomStrings: string[]): string[] {
+            return randomStrings.map(randomString => {
                 const sanitizedTitle = title.toLowerCase().replace(/[^a-z0-9_\\-]/g, '-').substring(0, 25);
                 const timestamp = '20240528-1430';
                 const modelSuffix = modelName ? `-${modelName}` : '';
-                const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
-                names.push(branchName);
-            }
-            return names;
+                return `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
+            });
         }
-        
-        const names = generateMultipleNames(42, 'Test Issue', 'opus', 10);
+
+        // The random component is supplied rather than sampled from Math.random():
+        // ten live three-character suffixes collide often enough (~1 run in 1000)
+        // to fail the exact-uniqueness assertion below. Distinct suffixes still
+        // prove the generator carries the random component into every name.
+        const randomStrings = ['a1b', 'c2d', 'e3f', 'g4h', 'i5j', 'k6l', 'm7n', 'o8p', 'q9r', 's0t'];
+        const names = generateMultipleNames(42, 'Test Issue', 'opus', randomStrings);
         
         const uniqueNames = new Set(names);
         assert.strictEqual(uniqueNames.size, names.length, 'All generated names should be unique');

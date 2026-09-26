@@ -89,8 +89,11 @@ class EventPublisher {
     previousState?: string;
     repository?: string;
     issueNumber?: number;
+    version?: number;
+    updatedAt?: string;
+    timestamp?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const payload: TaskUpdatePayload = {
       eventType: TASK_UPDATE,
       taskId: params.taskId,
@@ -98,10 +101,11 @@ class EventPublisher {
       previousState: params.previousState,
       repository: params.repository,
       issueNumber: params.issueNumber,
-      timestamp: new Date().toISOString(),
+      timestamp: params.updatedAt ?? params.timestamp ?? new Date().toISOString(),
+      version: params.version,
       metadata: params.metadata
     };
-    await this.publish(REDIS_CHANNELS.TASKS, payload);
+    return this.publish(REDIS_CHANNELS.TASKS, payload);
   }
 
   /**
@@ -110,6 +114,7 @@ class EventPublisher {
    */
   async publishDraftUpdate(params: {
     draftId: string;
+    runId?: string;
     step: string;
     status: StepStatus;
     data?: Record<string, unknown>;
@@ -119,6 +124,7 @@ class EventPublisher {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,
       draftId: params.draftId,
+      runId: params.runId,
       step: params.step,
       status: params.status,
       timestamp: new Date().toISOString(),

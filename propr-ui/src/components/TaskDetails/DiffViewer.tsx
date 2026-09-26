@@ -1,8 +1,7 @@
 import React from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { X, FileCode, Plus, Minus } from 'lucide-react';
 import { FileChange } from '../../api/fileChangesApi';
+import { SyntaxHighlighter, vscDarkPlus } from './syntaxHighlighter';
 
 interface DiffViewerProps {
   file: FileChange;

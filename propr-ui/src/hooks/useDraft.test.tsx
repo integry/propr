@@ -166,6 +166,85 @@ describe('useDraft', () => {
     });
   });
 
+  it('does not apply a socket snapshot from a replaced generation run', async () => {
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'generating',
+      attachments: [],
+      created_at: '2026-05-05T00:00:00Z',
+      generation_trace: {
+        runId: 'generation-run-2',
+        steps: [{ name: 'context', status: 'in_progress' }],
+      },
+    });
+    const { result } = renderHook(() => useDraft('draft-1'));
+
+    await waitFor(() => expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-2'));
+    await act(async () => {
+      await Promise.all([...draftUpdateListeners].map(listener => listener({
+        eventType: 'draft:update',
+        draftId: 'draft-1',
+        runId: 'generation-run-1',
+        step: 'complete',
+        status: 'failed',
+        timestamp: '2026-05-05T00:00:10Z',
+        draftStatus: 'failed',
+        generationTrace: {
+          runId: 'generation-run-1',
+          steps: [{ name: 'context', status: 'failed' }],
+          error: 'stale failure',
+        },
+      })));
+    });
+
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-2');
+    expect(mockGetDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs the next run ID before accepting its first socket snapshot', async () => {
+    const initialDraft = {
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'failed',
+      attachments: [],
+      created_at: '2026-05-05T00:00:00Z',
+      generation_trace: {
+        runId: 'generation-run-1',
+        steps: [{ name: 'llm', status: 'failed' as const }],
+        error: 'Previous run failed',
+      },
+    };
+    const { result } = renderHook(() => useDraft('draft-1', { initialData: initialDraft as never }));
+
+    act(() => result.current.activateGenerationRun('generation-run-2'));
+    await waitFor(() => expect(draftUpdateListeners.size).toBeGreaterThan(0));
+    await act(async () => {
+      await Promise.all([...draftUpdateListeners].map(listener => listener({
+        eventType: 'draft:update',
+        draftId: 'draft-1',
+        runId: 'generation-run-2',
+        step: 'context',
+        status: 'in_progress',
+        timestamp: '2026-05-05T00:00:10Z',
+        draftStatus: 'generating',
+        generationTrace: {
+          runId: 'generation-run-2',
+          steps: [{ name: 'context', status: 'in_progress' }],
+        },
+      })));
+    });
+
+    expect(result.current.draft?.status).toBe('generating');
+    expect(result.current.draft?.generation_trace?.runId).toBe('generation-run-2');
+    expect(result.current.draft?.generation_trace?.steps).toEqual([
+      { name: 'context', status: 'in_progress' },
+    ]);
+  });
+
   it('applies terminal draft status from the socket before the follow-up fetch resolves', async () => {
     const deferredFetch = createDeferred<Awaited<ReturnType<typeof getDraft>>>();
 

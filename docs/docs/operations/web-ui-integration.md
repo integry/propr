@@ -36,7 +36,7 @@ The UI is not served by the API container. In both the launcher stack and the de
 
 ## Authentication
 
-- Browser sessions use GitHub OAuth (`GET /api/auth/github` → `GET /api/auth/github/callback`). Configure `GH_OAUTH_CLIENT_ID`, `GH_OAUTH_CLIENT_SECRET`, and `GH_OAUTH_CALLBACK_URL`; the callback URL must match the GitHub OAuth App settings and the public API origin.
+- Browser sessions start at `GET /api/auth/github` and finish at `GET /api/auth/github/callback`. Relay-enrolled stacks use `PROPR_WEB_AUTH_MODE=connect` for local loopback URLs and hosted tunnels: Connect owns the shared GitHub OAuth client and hands the instance a short-lived one-use code. Custom deployments may use `PROPR_WEB_AUTH_MODE=github` with their own `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET`.
 - Sessions are stored in Redis (`propr:session:` prefix) and sent as cookies; all frontend fetches use `credentials: 'include'`.
 - All `/api/*` routes require authentication; CORS is configured from `FRONTEND_URL`.
 - Bearer token authentication (GitHub tokens validated against the GitHub API, cached briefly in Redis) is enabled by default for the CLI; disable it with `ENABLE_BEARER_AUTH=false`.
@@ -51,6 +51,8 @@ The frontend uses the dashboard API rather than a mock layer. Common integration
 - `GET /api/queue/stats` for queue depth and throughput
 - `GET /api/tasks` and the `/api/task/:taskId/...` detail endpoints for execution history, live details, file changes, and Docker logs
 - `GET /api/stats/tasks`, `/api/stats/repositories`, and `/api/stats/overview` for dashboard statistics
+- `GET /api/dashboard/summary`, `/api/dashboard/attention`, `/api/dashboard/active`, and `/api/dashboard/outcomes` for what needs attention, what is running, and what just happened; each accepts `repository=all` or `repository=owner/repo`. Attention is derived from task and plan-issue state, never from notification read or dismissal state
+- `GET /api/stats/dashboard?period=7d|30d` for the dashboard's historical section (completed, success rate, recorded spend, daily chart) with a previous-period comparison
 - `GET /api/llm-logs` and `GET /api/llm-metrics` for per-call LLM records and aggregates
 - `GET /api/config/*` routes for repositories, settings, agents, and follow-up configuration
 - `/api/planner/*` routes for Planner Studio drafts, generation, and execution

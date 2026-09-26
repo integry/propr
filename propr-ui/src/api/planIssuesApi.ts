@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 /**
  * Status enum for plan issues.
@@ -26,9 +26,9 @@ export interface PlanIssue {
   model_name: string | null;
   followup_count: number;
   task_id: string | null;
-  run_ultrafix: boolean | null;
-  ultrafix_goal: number | null;
-  ultrafix_max_cycles: number | null;
+  run_ultrafix?: boolean | null;
+  ultrafix_goal?: number | null;
+  ultrafix_max_cycles?: number | null;
   created_at: string;
   updated_at: string;
 }

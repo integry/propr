@@ -112,7 +112,7 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
 
                 {/* Todo content */}
                 <span
-                  className={`leading-6 ${
+                  className={`min-w-0 break-words leading-6 ${
                     isCompleted
                       ? isTaskActive
                         ? 'text-gray-400 line-through' // Live task: gray + strikethrough for completed items

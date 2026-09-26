@@ -163,7 +163,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
         }}
         disabled={disabled}
         title={disabled ? 'Demo mode is read-only' : 'Quick add to-do'}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Quick add to-do"
       >
         <ListPlus className="w-4 h-4" />
@@ -173,7 +173,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
       {/* Popover */}
       {isOpen && (
         <div
-          className="absolute right-0 top-full mt-1 w-[320px] bg-white border border-slate-200 shadow-xl z-50"
+          className="desktop-toolbar-popover absolute right-0 top-full z-50 mt-1 w-[320px] border border-slate-200 bg-white shadow-xl"
           style={{ minWidth: '320px' }}
         >
           {showSuccess ? (

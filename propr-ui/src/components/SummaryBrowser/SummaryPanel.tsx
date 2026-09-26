@@ -2,11 +2,13 @@ import React from 'react';
 import { FileText, Folder, FileCode, FileJson, File, ExternalLink, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { SummaryEntry } from '../../api/summaryApi';
+import { LEGACY_SUMMARY_BRANCH, normalizeSummaryBranch } from '../../utils/summaryBrowser';
 
 interface SummaryPanelProps {
   selectedEntry: SummaryEntry | null;
   owner: string;
   repo: string;
+  branch?: string;
 }
 
 /**
@@ -56,7 +58,11 @@ function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text).catch(console.error);
 }
 
-const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo }) => {
+const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo, branch }) => {
+  const githubBranch = encodeURIComponent(normalizeSummaryBranch(branch) ?? LEGACY_SUMMARY_BRANCH);
+  const githubOwner = encodeURIComponent(owner);
+  const githubRepo = encodeURIComponent(repo);
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <AnimatePresence mode="wait">
@@ -88,7 +94,7 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo 
                 <Copy className="w-3.5 h-3.5" />
               </button>
               <a
-                href={`https://github.com/${owner}/${repo}/${selectedEntry.entryType === 'directory' ? 'tree' : 'blob'}/HEAD/${selectedEntry.path}`}
+                href={`https://github.com/${githubOwner}/${githubRepo}/${selectedEntry.entryType === 'directory' ? 'tree' : 'blob'}/${githubBranch}/${selectedEntry.path.split('/').map(encodeURIComponent).join('/')}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 p-1.5 text-slate-400 hover:text-blue-600 hover:bg-slate-200 rounded transition-colors"

@@ -41,6 +41,8 @@ import {
     type UltrafixAction,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
+import type { ReviewOutputStatus } from '../src/jobs/reviewCommentGatherer.js';
 
 // --- Mock Redis ---
 
@@ -53,6 +55,18 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); lists.delete(key); return 1; },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [epochKey, deferredKey] = args;
+            if (script.includes("redis.call('INCR'")) {
+                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
+                store.set(epochKey, String(nextEpoch));
+                store.delete(deferredKey);
+                return nextEpoch;
+            }
+            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
+            store.set(deferredKey, args[3]);
+            return 1;
+        },
         async llen(key: string) { return (lists.get(key) ?? []).length; },
         async lpush(key: string, ...values: string[]) {
             if (!lists.has(key)) lists.set(key, []);
@@ -76,6 +90,8 @@ interface SimulatedContinuationInput {
     labelPresent: boolean;
     /** Simulated: latest review score (null if not available or after fix) */
     latestScore: number | null;
+    /** Simulated structured result of the completed review. */
+    reviewStatus?: ReviewOutputStatus;
     /** Simulated: are all CI checks passing? */
     allChecksPassing: boolean;
     /** Simulated: are there follow-up ultrafix jobs in queue? */
@@ -96,6 +112,7 @@ interface SimulatedContinuationResult {
 
 async function simulateContinuation(input: SimulatedContinuationInput): Promise<SimulatedContinuationResult> {
     const { redis, owner, repo, pr, completedAction, labelPresent, latestScore,
+            reviewStatus = 'valid_with_blockers',
             allChecksPassing, hasFollowUpJobs, hasPendingComments } = input;
 
     // 1. Load state
@@ -120,7 +137,7 @@ async function simulateContinuation(input: SimulatedContinuationInput): Promise<
     const score = completedAction === 'review' ? latestScore : null;
 
     // 5. Determine next action
-    const decision = determineNextAction(updated, score);
+    const decision = determineNextAction(updated, score, reviewStatus);
 
     // 6. If loop should stop
     if (decision.action === null) {
@@ -134,7 +151,11 @@ async function simulateContinuation(input: SimulatedContinuationInput): Promise<
     }
 
     // 7. Readiness gating
-    const readiness = checkReadiness({ allChecksPassing, hasFollowUpJobs, hasPendingComments });
+    const readiness = checkReadiness({
+        allChecksPassing: !requiresPassingChecks(decision.action) || allChecksPassing,
+        hasFollowUpJobs,
+        hasPendingComments,
+    });
 
     if (!readiness.ready) {
         await saveDeferredContinuation(redis as any, {
@@ -179,7 +200,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
 
     // --- Goal-met terminal ---
 
-    test('completed review with score >= goal stops the loop', async () => {
+    test('completed valid-clean review stops the loop', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 7 }, false);
 
         const result = await simulateContinuation({
@@ -187,13 +208,14 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             completedAction: 'review',
             labelPresent: true,
             latestScore: 8,
+            reviewStatus: 'valid_clean',
             allChecksPassing: true,
             hasFollowUpJobs: false,
             hasPendingComments: false,
         });
 
         assert.strictEqual(result.continued, false);
-        assert.ok(result.reason.includes('Goal met'));
+        assert.ok(result.reason.includes('no actionable findings'));
         assert.strictEqual(result.score, 8);
 
         // State should be cleared
@@ -201,7 +223,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
         assert.strictEqual(state, null);
     });
 
-    test('completed review with score exactly at goal stops the loop', async () => {
+    test('completed clean review stops even when score exactly meets goal', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 7 }, false);
 
         const result = await simulateContinuation({
@@ -209,13 +231,14 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             completedAction: 'review',
             labelPresent: true,
             latestScore: 7,
+            reviewStatus: 'valid_clean',
             allChecksPassing: true,
             hasFollowUpJobs: false,
             hasPendingComments: false,
         });
 
         assert.strictEqual(result.continued, false);
-        assert.ok(result.reason.includes('Goal met'));
+        assert.ok(result.reason.includes('no actionable findings'));
     });
 
     // --- Continue loop ---
@@ -315,14 +338,15 @@ describe('Ultrafix worker integration — full continuation flow', () => {
         assert.strictEqual(result.enqueuedMode, 'review');
         assert.strictEqual(result.cycleCount, 2);
 
-        // Step 5: review completes with score >= goal → stop
+        // Step 5: review completes explicitly clean → stop
         result = await simulateContinuation({
             ...defaults,
             completedAction: 'review',
             latestScore: 9,
+            reviewStatus: 'valid_clean',
         });
         assert.strictEqual(result.continued, false);
-        assert.ok(result.reason.includes('Goal met'));
+        assert.ok(result.reason.includes('no actionable findings'));
     });
 
     test('mode transitions strictly alternate: review->fix->review->fix', async () => {
@@ -433,7 +457,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
 
     // --- Readiness gating ---
 
-    test('defers when checks are not passing', async () => {
+    test('continues review-to-fix when checks are not passing', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
 
         const result = await simulateContinuation({
@@ -446,14 +470,29 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             hasPendingComments: false,
         });
 
+        assert.strictEqual(result.continued, true);
+        assert.strictEqual(result.nextAction, 'fix');
+        assert.strictEqual(result.deferred, undefined);
+        assert.strictEqual(await loadDeferredContinuation(redis as any, O, R, PR), null);
+    });
+
+    test('defers fix-to-review when checks are not passing', async () => {
+        await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
+
+        const result = await simulateContinuation({
+            redis, owner: O, repo: R, pr: PR,
+            completedAction: 'fix',
+            labelPresent: true,
+            latestScore: null,
+            allChecksPassing: false,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+
         assert.strictEqual(result.continued, false);
         assert.strictEqual(result.deferred, true);
         assert.ok(result.reason.includes('checks_not_passing'));
-
-        // Deferred record should exist
-        const deferred = await loadDeferredContinuation(redis as any, O, R, PR);
-        assert.ok(deferred);
-        assert.strictEqual(deferred!.nextAction, 'fix');
+        assert.strictEqual((await loadDeferredContinuation(redis as any, O, R, PR))?.nextAction, 'review');
     });
 
     test('defers when follow-up jobs exist', async () => {
@@ -506,7 +545,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
         });
 
         assert.strictEqual(result.deferred, true);
-        assert.ok(result.reason.includes('checks_not_passing'));
+        assert.ok(!result.reason.includes('checks_not_passing'));
         assert.ok(result.reason.includes('follow_up_jobs_active'));
         assert.ok(result.reason.includes('pending_comments_exist'));
     });
@@ -524,7 +563,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             latestScore: 5,
             allChecksPassing: false,
             hasFollowUpJobs: false,
-            hasPendingComments: false,
+            hasPendingComments: true,
         });
 
         const deferred = await loadDeferredContinuation(redis as any, O, R, PR);
@@ -557,7 +596,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
     test('deferred record is cleared when continuation proceeds', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
 
-        // First: defer due to checks failing
+        // First: defer due to pending batched comments
         await simulateContinuation({
             redis, owner: O, repo: R, pr: PR,
             completedAction: 'review',
@@ -565,7 +604,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             latestScore: 5,
             allChecksPassing: false,
             hasFollowUpJobs: false,
-            hasPendingComments: false,
+            hasPendingComments: true,
         });
 
         // Deferred should exist

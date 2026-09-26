@@ -1,10 +1,15 @@
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 
 const {
   buildExecutionContextConfig,
   parseContextConfig
 } = await import('../packages/core/src/services/taskExecutionService.ts');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+
+after(async () => {
+  await closeConnection();
+});
 
 describe('taskExecutionService context_config persistence', () => {
   test('parses string context_config objects without dropping unrelated keys', () => {

@@ -10,22 +10,34 @@ export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';
 export { createLLMMetricsRoutes } from './llmMetricsRoutes.js';
 export { createLlmLogsRoutes } from './llmLogsRoutes.js';
-export { createPlannerRoutes, attachmentUpload } from './plannerRoutes.js';
+export { createPlannerRoutes, attachmentUpload, goalAttachmentUpload } from './plannerRoutes.js';
 export { createRelevanceRoutes } from './relevanceRoutes.js';
 export { createAgentRoutes } from './agentRoutes.js';
 export { createInstanceCatalogRoutes } from './instanceCatalogRoutes.js';
 export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
-export { createSummaryBrowserRoutes } from './summaryBrowserRoutes.js';
+export { createDashboardRoutes } from './dashboardRoutes.js';
+export {
+  createSummaryBrowserRoutes,
+  SUMMARY_PATH_ROUTE_PATH,
+  SUMMARY_TREE_ROUTE_PATH,
+} from './summaryBrowserRoutes.js';
 export { createRepoChatRoutes } from './repoChatRoutes.js';
 export { createRepoImprovementsRoutes } from './repoImprovementsRoutes.js';
 export { createRepoTodoRoutes } from './repoTodoRoutes.js';
 export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js';
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
+export { createNotificationRoutes } from './notificationRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';
 export {
   createHostedFleetRoutes,
   isHostedFleetControlEnabled,
   registerHostedFleetRoutes
 } from './hostedFleetRoutes.js';
+export { createAdminMcpRoutes } from './adminMcpRoutes.js';
+export { createDesktopAuthRoutes } from './desktopAuthRoutes.js';
+export { createActiveWorkRoutes } from './activeWorkRoutes.js';
+export { createGoalRoutes } from './goalRoutes.js';
+export { createVisualPreviewAuthRoutes } from './visualPreviewAuthRoutes.js';
+export { createVoiceRoutes } from './voiceRoutes.js';

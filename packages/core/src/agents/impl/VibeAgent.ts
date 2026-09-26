@@ -2,15 +2,22 @@ import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
+import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
-import { executeWithUsageTracking } from './utils/index.js';
+import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
 import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { resolveAgentTerminationReason } from '../termination.js';
+import {
+    buildVibeRepositoryScoutConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+    REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS,
+} from './utils/repositoryScoutMcpServer.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -18,6 +25,10 @@ export { getMistralApiKeyFromSettings, readLatestVibeSessionTokenUsage } from '.
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
+
+function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined): AgentExecutionResult {
+    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown' };
+}
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -32,10 +43,12 @@ interface VibeDockerArgsParams {
     promptFilePath?: string;
     envFilePath?: string;
     runtimeHomePath?: string;
+    repositoryInspection?: boolean;
 }
 
 export class VibeAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = false;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -46,7 +59,7 @@ export class VibeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -94,6 +107,7 @@ export class VibeAgent implements Agent {
                     taskId,
                     streamToRedis: true,
                     streamStderrToRedis: true,
+                    preserveOutputOnTimeout: true,
                     streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
@@ -103,7 +117,8 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
@@ -121,6 +136,7 @@ export class VibeAgent implements Agent {
                 sessionId: parsedOutput.sessionId,
                 conversationLog,
                 error,
+                terminationReason,
                 tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -137,7 +153,7 @@ export class VibeAgent implements Agent {
                 draftId: taskId,
                 repository,
                 agentAlias: this.config.alias,
-                metadata: buildLogMetadata({ isRetry, retryReason }, result, !success),
+                metadata: { ...metadata, ...buildLogMetadata({ isRetry, retryReason }, result, !success) },
                 usageMetrics: usage.metrics,
                 usageMetricRecords: usage.records,
                 workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
@@ -154,18 +170,9 @@ export class VibeAgent implements Agent {
         } catch (error) {
             if (error instanceof UsageLimitError) throw error;
             const executionTimeMs = Date.now() - startTime;
-            const err = error as Error;
+            const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias }, 'Error during Vibe agent execution');
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: effectiveModel || 'unknown'
-            };
+            return buildFailedExecutionResult(err, executionTimeMs, effectiveModel);
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
@@ -175,12 +182,11 @@ export class VibeAgent implements Agent {
 
     // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
-        const effectiveModel = model || this.config.defaultModel || 'mistral-medium-3.5';
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
 
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Vibe agent...');
@@ -190,10 +196,14 @@ export class VibeAgent implements Agent {
         let envFilePath: string | undefined;
         let runtimeHomePath: string | undefined;
         try {
-            analysisWorkspace = ensureAnalysisWorkspace();
+            analysisWorkspace = readOnlyWorkspacePath || ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
             const mistralApiKey = await this.getMistralApiKey();
-            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken: process.env.GITHUB_TOKEN });
+            const repositoryInspection = !!readOnlyWorkspacePath && allowReadOnlyCommands;
+            envFilePath = writeVibeSecretEnvFile({
+                mistralApiKey,
+                githubToken: repositoryInspection ? undefined : process.env.GITHUB_TOKEN,
+            });
             runtimeHomePath = prepareRuntimeHome(taskId);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
@@ -207,7 +217,8 @@ export class VibeAgent implements Agent {
                 mode: 'analysis',
                 promptFilePath,
                 envFilePath,
-                runtimeHomePath
+                runtimeHomePath,
+                repositoryInspection,
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
@@ -220,7 +231,7 @@ export class VibeAgent implements Agent {
             const parsedOutput = parseVibeOutput(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const analysisText = (parsedOutput.summary || '').trim();
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const success = !result.timedOut && isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const usage = formatUsageMetrics(usageMetrics);
 
             if (success && analysisText) {
@@ -283,7 +294,7 @@ export class VibeAgent implements Agent {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
             cleanupRuntimeHome(runtimeHomePath);
-            if (analysisWorkspace) {
+            if (analysisWorkspace && !readOnlyWorkspacePath) {
                 try { fs.rmSync(analysisWorkspace, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
             }
         }
@@ -346,9 +357,9 @@ export class VibeAgent implements Agent {
         return args;
     }
 
-    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string }): string[] {
-        const { cleanModelName, mode, maxTurns, runtimeHomePath } = params;
-        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
+    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string; repositoryInspection?: boolean }): string[] {
+        const { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection = false } = params;
+        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars, repositoryInspection);
         for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
         envVars.push('-e', 'PROPR_AGENT_TYPE=vibe');
@@ -358,6 +369,10 @@ export class VibeAgent implements Agent {
         if (mode === 'analysis') {
             const analysisDirs = ['VIBE_READ_ONLY_CONFIG=1', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', 'XDG_DATA_HOME=/tmp/propr-vibe-data', 'UV_CACHE_DIR=/tmp/propr-uv-cache', 'HOME=/tmp/propr-vibe-home', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', 'XDG_STATE_HOME=/tmp/propr-vibe-state', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'];
             for (const dir of analysisDirs) envVars.push('-e', dir);
+        }
+        if (repositoryInspection) {
+            envVars.push('-e', 'PROPR_REPOSITORY_INSPECTION=1');
+            envVars.push('-e', `PROPR_REPOSITORY_SCOUT_VIBE_CONFIG=${buildVibeRepositoryScoutConfig()}`);
         }
         envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
         return envVars;
@@ -380,27 +395,35 @@ export class VibeAgent implements Agent {
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath } = params;
+        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath, repositoryInspection = false } = params;
+        if (repositoryInspection && mode !== 'analysis') {
+            throw new Error('Repository inspection requires analysis mode');
+        }
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
-        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath });
+        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection });
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs();
+        if (repositoryInspection) {
+            for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) {
+                cliArgs.push('--enabled-tools', tool);
+            }
+        }
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
         const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
-            '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
+            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMountMode}`,
             ...configMountArgs, ...promptMountArgs, ...runtimeHomeMountArgs, ...mistralEnvFileArgs,
             ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
         logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');
-        if (mode === 'analysis') return dockerArgs;
+        if (mode === 'analysis') return [dockerArgs[0], ...buildAgentContainerResourceArgs(), ...dockerArgs.slice(1)];
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 

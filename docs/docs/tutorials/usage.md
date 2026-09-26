@@ -21,7 +21,7 @@ Use the Web UI to:
 
 Environment variables and CLI commands are mostly for install and development work.
 
-{/* SCREENSHOT PLACEHOLDER (P1 — one capture also serves operations/metrics.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the dashboard home page with at least a few completed tasks, showing queue stats, success rate, and the recent task list. Run two or three small test issues first so the dashboard has real data. */}
+{/* SCREENSHOT PLACEHOLDER (P1 — one capture also serves operations/metrics.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the dashboard home page with at least a few completed tasks, showing Happening now, and Completed. Run two or three small test issues first so the dashboard has real data. */}
 
 ## Run Work From An Issue
 
@@ -40,7 +40,7 @@ The exact labels and model IDs come from your repository and AI Agent settings.
 
 - **Trigger/processing labels** (configurable, e.g. `AI`, `propr`) start a run. "Trigger label" and "processing label" refer to the same label you add yourself.
 - **State labels** are applied automatically as the run progresses: `<trigger>-processing`, `<trigger>-done`, and `<trigger>-failed-*` variants on failure (for example `AI-processing`, `AI-done`).
-- **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus5`, `llm-codex-gpt56-sol`, `llm-antigravity-pro-high`, `llm-opencode-deepseek-v4-flash-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
+- **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-fable51`, `llm-codex-astra`, `llm-antigravity-flash38-high`, `llm-opencode-big-pickle`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
 - **`level-<level>`** overrides the configured reasoning level for that issue, for example `level-xhigh` or `level-max`. Valid levels are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. Claude receives `auto` as adaptive effort; Codex omits the override for `auto` and uses its own default selection. Unlike model labels, adding a reasoning level does not fan out extra runs; if multiple reasoning labels are present, the highest-priority valid level applies to every run created for the issue. For PR follow-ups, a level label directly on the PR takes precedence over labels inherited from its linked issue.
 

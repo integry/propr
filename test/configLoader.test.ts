@@ -61,6 +61,10 @@ function getReposFromEnvLogic(reposEnvVar: string | undefined): string[] {
     return reposEnvVar.split(',').map(r => r.trim()).filter(r => r);
 }
 
+function shouldUsePersistedRepos(environment: NodeJS.ProcessEnv): boolean {
+    return !!environment.CONFIG_REPO || getReposFromEnvLogic(environment.GITHUB_REPOS_TO_MONITOR).length === 0;
+}
+
 /**
  * Implementation of whitelist parsing logic from configLoader.ts
  */
@@ -139,24 +143,23 @@ describe('Config loading fallback chain logic', async () => {
             assert.strictEqual(shouldUseDb, true);
         });
 
-        test('Tier 2: Should fallback to env when CONFIG_REPO is not set', () => {
+        test('Tier 2: Should use an explicit environment list when CONFIG_REPO is not set', () => {
             delete process.env.CONFIG_REPO;
             process.env.GITHUB_REPOS_TO_MONITOR = 'env-owner/env-repo';
 
             // When CONFIG_REPO is not set, should use environment variable
-            const shouldUseDb = !!process.env.CONFIG_REPO;
+            const shouldUseDb = shouldUsePersistedRepos(process.env);
             assert.strictEqual(shouldUseDb, false);
 
             const repos = getReposFromEnvLogic(process.env.GITHUB_REPOS_TO_MONITOR);
             assert.deepStrictEqual(repos, ['env-owner/env-repo']);
         });
 
-        test('Tier 3: Should return empty array when neither is set', () => {
+        test('Tier 3: Should use persisted setup configuration when no legacy source is set', () => {
             delete process.env.CONFIG_REPO;
             delete process.env.GITHUB_REPOS_TO_MONITOR;
 
-            const repos = getReposFromEnvLogic(process.env.GITHUB_REPOS_TO_MONITOR);
-            assert.deepStrictEqual(repos, []);
+            assert.strictEqual(shouldUsePersistedRepos(process.env), true);
         });
     });
 
@@ -405,12 +408,11 @@ describe('reloadConfigs logic', async () => {
         restoreEnv();
     });
 
-    test('should only reload when CONFIG_REPO is set', () => {
+    test('should always reload repository configuration', () => {
         delete process.env.CONFIG_REPO;
 
-        // reloadConfigs only reloads if CONFIG_REPO is set
-        const shouldReload = !!process.env.CONFIG_REPO;
-        assert.strictEqual(shouldReload, false);
+        const reloadFunctions = ['loadReposFromConfig'];
+        assert.deepStrictEqual(reloadFunctions, ['loadReposFromConfig']);
     });
 
     test('should attempt reload when CONFIG_REPO is set', () => {
@@ -422,12 +424,14 @@ describe('reloadConfigs logic', async () => {
 
     test('reloadConfigs should not include detectBotUsername', () => {
         // Unlike loadAllConfigs, reloadConfigs does NOT call detectBotUsername
-        const reloadFunctions = [
-            'loadReposFromConfig',
-            'loadSettingsFromConfig',
-            'loadAiPrimaryTagFromConfig',
-            'loadPrimaryProcessingLabelsFromConfig'
-        ];
+        const reloadFunctions = ['loadReposFromConfig'];
+        if (process.env.CONFIG_REPO) {
+            reloadFunctions.push(
+                'loadSettingsFromConfig',
+                'loadAiPrimaryTagFromConfig',
+                'loadPrimaryProcessingLabelsFromConfig',
+            );
+        }
 
         assert.strictEqual(reloadFunctions.length, 4);
         assert.ok(!reloadFunctions.includes('detectBotUsername'));

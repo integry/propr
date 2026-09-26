@@ -17,6 +17,7 @@ interface CodexEventContext { events: Array<Record<string, unknown>>; setTodos: 
 interface ParseLineResult { newTodos?: TodoItem[]; tokenUsage?: TokenUsage; }
 export interface ClaudeMessageContent {
   type: string; text?: string; name?: string;
+  internalReasoning?: boolean;
   input?: { todos?: TodoItem[]; subagent_type?: string; description?: string };
   id?: string; tool_use_id?: string; content?: unknown; is_error?: boolean;
 }
@@ -99,7 +100,11 @@ function consumePendingCommandStart(
 
 function parseCompletedCodexItem(event: ReturnType<typeof parseCodexStreamOutput>['conversationLog'][number], context: CodexEventContext): boolean {
   const { events, setTodos, pendingCommandStarts, timestamp } = context;
-  if ((event.item?.type === 'reasoning' || event.item?.type === 'agent_message') && event.item.text) {
+  if (event.item?.type === 'reasoning' && event.item.text) {
+    events.push({ type: 'thought', content: event.item.text, internalReasoning: true, timestamp });
+    return true;
+  }
+  if (event.item?.type === 'agent_message' && event.item.text) {
     events.push({ type: 'thought', content: event.item.text, timestamp });
     return true;
   }
@@ -219,7 +224,12 @@ export function appendClaudeAssistantMessageEvents(contentArray: ClaudeMessageCo
       ? content.text
       : (typeof content.content === 'string' ? content.content : '');
     if (content.type === 'text' && textContent) {
-      context.events.push({ type: 'thought', content: textContent, timestamp: context.timestamp });
+      context.events.push({
+        type: 'thought',
+        content: textContent,
+        ...(content.internalReasoning ? { internalReasoning: true } : {}),
+        timestamp: context.timestamp,
+      });
       handled = true;
       continue;
     }
@@ -396,4 +406,3 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
   const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
 }
-

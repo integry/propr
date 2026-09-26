@@ -8,7 +8,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SetupBridge, SetupCancelledError, buildSetupPrompts, type SetupPrompt } from "./SetupApp.js";
-import type { GithubAuthModeResult } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
+import { runSetup, type SetupActions, type SetupPrompts } from "../commands/setup/engine.js";
 
 /** Subscribe and capture every event the bridge emits. */
 function capture(bridge: SetupBridge): SetupPrompt[] {
@@ -110,6 +111,114 @@ test("buildSetupPrompts keeps existing GitHub auth when 'keep' is chosen", async
   assert.equal(prompts[0].kind, "select");
   bridge.resolve(prompts[0].id, "keep");
   assert.deepEqual(await decision, { keep: true });
+});
+
+test("buildSetupPrompts offers the official ProPR App install as a default-yes action", async () => {
+  const bridge = new SetupBridge();
+  const prompts = capture(bridge);
+  const hooks = buildSetupPrompts(bridge);
+  const answer = hooks.confirmGithubAppInstall!({
+    url: "https://github.com/apps/propr-dev/installations/new",
+  });
+
+  assert.equal(prompts[0].kind, "confirm");
+  assert.equal(prompts[0].kind === "confirm" && prompts[0].defaultValue, true);
+  bridge.resolve(prompts[0].id, true);
+  assert.equal(await answer, true);
+});
+
+test("Ink setup recovers from zero installations before opening its legacy picker", async () => {
+  const bridge = new SetupBridge();
+  const promptTitles: string[] = [];
+  bridge.subscribe((event) => {
+    if (event.type !== "prompt") return;
+    const prompt = event.prompt;
+    promptTitles.push(prompt.title);
+    queueMicrotask(() => {
+      if (prompt.kind === "confirm") bridge.resolve(prompt.id, true);
+      else if (prompt.kind === "select") {
+        assert.ok(prompt.options.length > 0, "the legacy Ink picker must never receive an empty list");
+        bridge.resolve(prompt.id, prompt.options[0].value);
+      }
+    });
+  });
+
+  const legacy = buildSetupPrompts(bridge);
+  const prompts: SetupPrompts = {
+    ...legacy,
+    resolveStackRoot: async ({ currentRoot }) => ({ rootDir: currentRoot, reinitialize: false }),
+    selectAgents: async () => [],
+    configureGithubAuth: async () => ({
+      mode: "relay",
+      enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+    }),
+    configureIntake: async () => ({ keep: true }),
+    confirmStartStack: async () => true,
+    confirmAgentLogin: async () => [],
+    configureWhitelist: async () => null,
+    addRepository: async () => null,
+    launchUi: async () => false,
+  };
+  const env: Record<string, string> = { GITHUB_EVENT_INTAKE_MODE: "polling" };
+  const opened: string[] = [];
+  let discoveries = 0;
+  let enrolledId: string | undefined;
+  const actions = {
+    runChecks: async ({ root }: { root?: string }) => ({ rootDir: root ?? "/stack", anyFail: false, results: [
+      { name: "Docker daemon", group: "Docker", status: "ok", detail: "ready" },
+    ] }),
+    inspectStackInit: (rootDir: string) => ({ rootDir, envExists: true,
+      dirs: { data: true, logs: true, repos: true }, initialized: true }),
+    inspectDatastoreAdministrators: async () => ({ status: "has-admin", databasePath: "/stack/data/propr.sqlite" }),
+    persistStackRoot: async () => undefined,
+    readEnvVars: () => ({ ...env }),
+    applyEnvSelection: (_root: string, vars: Record<string, string>) => {
+      Object.assign(env, vars);
+      return { written: Object.keys(vars), skipped: [] };
+    },
+    clearEnvKeys: () => undefined,
+    detectGithubAuthMode: () => env.GH_AUTH_MODE === "relay"
+      ? { mode: "relay", warnings: [] }
+      : { mode: "none", warnings: [] },
+    prepareAgentCredentialDir: () => undefined,
+    pullImages: async () => ({ pulledCore: [], pulledAgents: [], failedCore: [], failedAgents: [] }),
+    isStackRunning: async () => true,
+    checkBackendHealth: async () => ({ healthy: true, detail: "ready" }),
+    configureVisualPreviewCredential: async () => ({ status: "already-configured" }),
+    addRepository: async () => undefined,
+    resolveUiUrl: async () => undefined,
+    openUrl: async (url: string) => { opened.push(url); },
+    saveWhitelistSetting: async () => undefined,
+    hasGithubToken: () => true,
+    fetchRelayInstallations: async () => ({
+      username: "octocat",
+      installations: ++discoveries === 1
+        ? []
+        : [{ installation_id: 42, account_login: "octo-org", account_type: "Organization" }],
+    }),
+    enrollRelay: async ({ relayUrl, installationId }: { relayUrl: string; installationId: string }) => {
+      enrolledId = installationId;
+      return { relayUrl, token: "prt_test" };
+    },
+    loginWithGithub: async () => true,
+    listAgents: async () => [],
+    addAgent: async () => undefined,
+    loginableAgents: async () => [],
+    loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async () => [],
+  } as unknown as SetupActions;
+
+  const result = await runSetup({ root: "/stack", prompts, actions });
+
+  assert.equal(result.completed, true);
+  assert.equal(discoveries, 3);
+  assert.equal(enrolledId, "42");
+  assert.deepEqual(opened, ["https://github.com/apps/propr-dev/installations/new"]);
+  assert.deepEqual(promptTitles, [
+    "Install the default ProPR GitHub App?",
+    "GitHub App installation complete?",
+    "Choose a GitHub App installation",
+  ]);
 });
 
 test("buildSetupPrompts collects GitHub App vars across chained inputs", async () => {

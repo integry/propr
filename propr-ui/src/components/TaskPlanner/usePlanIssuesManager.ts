@@ -4,7 +4,7 @@ import { getInstanceCatalog } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload, type InstanceCatalogAgent } from '@propr/shared';
-import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData } from './planIssuesManagerUtils';
+import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 

@@ -44,7 +44,7 @@ if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
   exit 1
 fi
 
-for required_tool in docker grep sed cut basename cp mv; do
+for required_tool in docker curl grep sed cut basename cp mkdir mv sleep; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "Error: Required tool '$required_tool' is not installed"
         exit 1
@@ -68,6 +68,14 @@ UI_PORT=$((10000 + PR_NUMBER))
 API_PORT=$((20000 + PR_NUMBER))
 DOCS_PORT=$((30000 + PR_NUMBER))
 REDIS_EXTERNAL_PORT=$((50000 + PR_NUMBER))
+REDIS_EXTERNAL_BIND_HOST=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+
+case "$REDIS_EXTERNAL_BIND_HOST" in
+  ''|*[!0-9.]*)
+    echo "Error: Could not determine the Docker host gateway used for private Redis access"
+    exit 1
+    ;;
+esac
 
 echo "============================================"
 echo "Deploying PR Preview Environment"
@@ -76,6 +84,7 @@ echo "  PR Number:  #$PR_NUMBER"
 echo "  UI Port:    $UI_PORT"
 echo "  API Port:   $API_PORT"
 echo "  Docs Port:  $DOCS_PORT"
+echo "  Redis Bind: $REDIS_EXTERNAL_BIND_HOST (Docker host gateway only)"
 echo "  UI URL:     https://pr-${PR_NUMBER}.gitfix.dev"
 echo "  API URL:    https://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
@@ -178,8 +187,10 @@ write_sanitized_preview_env() {
 
 # Re-inject a small allowlist of auth keys (stripped by sanitization) from the
 # staging env into the preview env, copying each value verbatim. Used to restore
-# real GitHub login and prod session sharing for maintainer-gated previews.
-# Only call with non-secret-bearing key names you have deliberately vetted.
+# real GitHub login, backend GitHub access, and prod session sharing for
+# maintainer-gated previews. Every key in this allowlist is a credential and must
+# be deliberately vetted; the checkout is excluded from fork previews and the
+# generated .env is excluded from the Docker build context.
 reinject_env_keys() {
     source_env_file=$1
     dest_env_file=$2
@@ -242,22 +253,28 @@ else
     ENV_FILE_ARG=""
 fi
 
+# Keep the trusted staging env path for resolving the seed database after the
+# sanitized preview env replaces ENV_FILE below.
+STAGING_SOURCE_ENV_FILE="$ENV_FILE"
+
 # Docker Compose env_file entries are relative to the PR checkout, but the PR
 # checkout is also the Docker build context. We start from a sanitized preview
 # .env (no secrets), then re-inject ONLY the auth keys needed for real GitHub
-# login and prod session sharing. All other secrets (webhook/app/system
-# secrets, tokens, DB password, PEM files) stay stripped. This deliberately
-# places OAuth + session secrets into PR-controlled source, so access is gated:
+# login, relay-backed GitHub API access, and prod session sharing. All other
+# secrets (webhook/app/system secrets, agent tokens, DB password, PEM files)
+# stay stripped. This deliberately places the allowlisted credentials into
+# PR-controlled source, so access is gated:
 # the pr-preview.yml authorize job restricts deploys to same-repo PRs approved
 # by a write/admin collaborator applying the preview-env label; forks are blocked.
 PREVIEW_ENV_FILE="$REPO_ROOT/.env"
 if [ -n "${PR_SOURCE_DIR:-}" ]; then
     write_sanitized_preview_env "$ENV_FILE" "$PREVIEW_ENV_FILE"
     reinject_env_keys "$ENV_FILE" "$PREVIEW_ENV_FILE" \
-        GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_OAUTH_CALLBACK_URL SESSION_SECRET
+        GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_OAUTH_CALLBACK_URL SESSION_SECRET \
+        PROPR_GH_RELAY_TOKEN
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_GITHUB_WEBHOOKS" "false"
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_BEARER_AUTH" "false"
-    echo "Preview env re-injects OAuth/session keys for real login; webhooks and bearer auth disabled"
+    echo "Preview env re-injects OAuth/session and relay auth keys; webhooks and bearer auth disabled"
 elif [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
     cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
 fi
@@ -272,7 +289,46 @@ if [ -f "$PREVIEW_ENV_FILE" ]; then
     echo "Using preview env file: $ENV_FILE"
 fi
 
-# 4. Deploy using the main compose file
+# 4. Seed the preview database before any service starts. Backend startup owns
+# schema migration, so replacing SQLite after startup would discard the schema
+# that workers just migrated and leave their open connections on a stale file.
+SEED_DB_PATH="${STAGING_DB_PATH:-}"
+if [ -n "$SEED_DB_PATH" ] && [ ! -f "$SEED_DB_PATH" ]; then
+    echo "Warning: Explicit STAGING_DB_PATH not found at $SEED_DB_PATH; falling back to DB_FILENAME"
+    SEED_DB_PATH=""
+fi
+if [ -z "$SEED_DB_PATH" ] && [ -n "$STAGING_SOURCE_ENV_FILE" ]; then
+    SEED_DB_PATH=$(grep -E '^DB_FILENAME=' "$STAGING_SOURCE_ENV_FILE" 2>/dev/null | cut -d= -f2-)
+fi
+SEED_DB_PATH="${SEED_DB_PATH:-/usr/src/app/data/propr.sqlite}"
+
+PREVIEW_DB_CONFIG_PATH=""
+if [ -n "$ENV_FILE" ]; then
+    PREVIEW_DB_CONFIG_PATH=$(grep -E '^DB_FILENAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+fi
+PREVIEW_DB_FILENAME=$(basename "${PREVIEW_DB_CONFIG_PATH:-$SEED_DB_PATH}")
+PREVIEW_DB_PATH="$REPO_ROOT/data/$PREVIEW_DB_FILENAME"
+
+if [ -f "$SEED_DB_PATH" ]; then
+    # A prior deployment may still hold this bind-mounted SQLite file open.
+    # Stop every database consumer before replacing it; `up` below restarts
+    # them and applies all pending migrations to the copied schema.
+    STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" stop api daemon worker analysis-worker indexing-worker
+    mkdir -p "$REPO_ROOT/data"
+    if [ "$SEED_DB_PATH" = "$PREVIEW_DB_PATH" ]; then
+        echo "Preview database already seeded at $PREVIEW_DB_PATH"
+    else
+        echo "Copying database from staging site ($SEED_DB_PATH)..."
+        cp "$SEED_DB_PATH" "$PREVIEW_DB_PATH"
+        echo "Database seeded successfully"
+    fi
+else
+    echo "Warning: Staging database not found at $SEED_DB_PATH"
+fi
+
+# 5. Deploy using the main compose file
 # -f: Points to the compose file at repository root
 # -p: Sets the project name (isolates the stack)
 # --env-file: Load staging .env as base configuration
@@ -290,6 +346,7 @@ UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 DOCS_PORT=$DOCS_PORT \
 REDIS_EXTERNAL_PORT=$REDIS_EXTERNAL_PORT \
+REDIS_EXTERNAL_BIND_HOST=$REDIS_EXTERNAL_BIND_HOST \
 API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_OAUTH_API_URL="https://api.gitfix.dev" \
@@ -302,37 +359,65 @@ PR_SOURCE_DIR="" \
 PR_HEAD_SHA="" \
 $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build
 
-# 5. Database State Handling - copy from staging site
-CONTAINER_ID=$(STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q api 2>/dev/null || true)
+# `docker compose up -d` succeeds once containers are created, even when an
+# entrypoint exits immediately. Wait for the API endpoint and then verify every
+# backend process is still running so a broken preview cannot be announced as
+# successfully deployed.
+service_is_running() {
+    service_name=$1
+    service_container_id=$(STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" ps -q "$service_name" 2>/dev/null || true)
 
-if [ -n "$CONTAINER_ID" ]; then
-    echo "Preview environment deployed successfully!"
-    echo "API container: $CONTAINER_ID"
+    if [ -z "$service_container_id" ]; then
+        return 1
+    fi
 
-    # Copy database from staging site. Prefer an explicit STAGING_DB_PATH, then
-    # DB_FILENAME from the staging env file, then the historical default.
-    SEED_DB_PATH="${STAGING_DB_PATH:-}"
-    if [ -n "$SEED_DB_PATH" ] && [ ! -f "$SEED_DB_PATH" ]; then
-        echo "Warning: Explicit STAGING_DB_PATH not found at $SEED_DB_PATH; falling back to DB_FILENAME"
-        SEED_DB_PATH=""
+    [ "$(docker inspect --format '{{.State.Running}}' "$service_container_id" 2>/dev/null || true)" = "true" ]
+}
+
+API_HEALTHY=false
+attempt=1
+while [ "$attempt" -le 30 ]; do
+    if ! service_is_running api; then
+        break
     fi
-    if [ -z "$SEED_DB_PATH" ] && [ -n "$ENV_FILE" ]; then
-        SEED_DB_PATH=$(grep -E '^DB_FILENAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+        API_HEALTHY=true
+        break
     fi
-    SEED_DB_PATH="${SEED_DB_PATH:-/usr/src/app/data/propr.sqlite}"
-    # Extract just the filename for the destination path
-    DB_FILENAME=$(basename "$SEED_DB_PATH")
-    if [ -f "$SEED_DB_PATH" ]; then
-        echo "Copying database from staging site ($SEED_DB_PATH)..."
-        if docker cp "$SEED_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/"$DB_FILENAME"; then
-            echo "Database seeded successfully"
-        else
-            echo "Warning: Failed to copy database"
-        fi
-    else
-        echo "Warning: Staging database not found at $SEED_DB_PATH"
+    sleep 2
+    attempt=$((attempt + 1))
+done
+
+FAILED_SERVICES=""
+for service_name in api daemon worker analysis-worker indexing-worker; do
+    if ! service_is_running "$service_name"; then
+        FAILED_SERVICES="${FAILED_SERVICES} ${service_name}"
     fi
+done
+
+if [ "$API_HEALTHY" != "true" ] || [ -n "$FAILED_SERVICES" ]; then
+    if [ "$API_HEALTHY" != "true" ]; then
+        echo "Error: Preview API did not become healthy at http://127.0.0.1:${API_PORT}/health"
+    fi
+    if [ -n "$FAILED_SERVICES" ]; then
+        echo "Error: Preview backend services are not running:${FAILED_SERVICES}"
+    fi
+    echo "Backend container status:"
+    STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" ps -a || true
+    echo "Backend startup logs:"
+    STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" logs --no-color --tail=100 \
+        api daemon worker analysis-worker indexing-worker || true
+    exit 1
 fi
+
+echo "Preview environment deployed successfully!"
+echo "API health check passed: http://127.0.0.1:${API_PORT}/health"
 
 UI_URL="https://pr-${PR_NUMBER}.gitfix.dev"
 

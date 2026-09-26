@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
+import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
+import { SETTINGS_LABEL } from './settingsStyles';
 import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
@@ -42,7 +44,7 @@ function conciseBuildError(value?: string): string | null {
     const line = [...lines].reverse().find(candidate => pattern.test(candidate));
     if (line) return line.slice(0, 240);
   }
-  return (lines.at(-1) || value).slice(0, 240);
+  return (lines[lines.length - 1] || value).slice(0, 240);
 }
 
 interface PackageAutocompleteProps {
@@ -95,13 +97,13 @@ const PackageAutocomplete: React.FC<PackageAutocompleteProps> = ({
           aria-controls="agent-runtime-package-suggestions"
           aria-activedescendant={activeSuggestion >= 0 ? `agent-runtime-package-${activeSuggestion}` : undefined}
           disabled={disabled || validating}
-          className="h-8 w-full rounded border border-gray-300 px-2.5 text-sm focus:border-primary-500 focus:ring-primary-500 disabled:bg-gray-100"
+          className="h-8 w-full rounded border border-slate-300 bg-white px-2.5 text-sm text-slate-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:bg-slate-100"
         />
         {showSuggestions && input.trim().length >= 2 && (
           <div
             id="agent-runtime-package-suggestions"
             role="listbox"
-            className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded border border-gray-200 bg-white py-1 shadow-lg"
+            className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded border border-slate-200 bg-white py-1 shadow-lg"
           >
             {searching ? (
               <div className="flex h-9 items-center gap-2 px-2.5 text-xs text-gray-500">
@@ -134,7 +136,7 @@ const PackageAutocomplete: React.FC<PackageAutocompleteProps> = ({
         disabled={!input.trim() || disabled || validating}
         title="Add package"
         aria-label="Add package"
-        className="inline-flex h-8 w-8 flex-none items-center justify-center rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-8 w-8 flex-none items-center justify-center rounded border border-slate-300 bg-white text-slate-600 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {validating ? <LoaderCircle size={16} className="animate-spin" /> : <PackagePlus size={16} />}
       </button>
@@ -147,11 +149,11 @@ const PackageAutocomplete: React.FC<PackageAutocompleteProps> = ({
   </>
 );
 
-function runtimeStatusColor(status: AgentRuntimePackageState['status']): string {
-  if (status === 'ready') return 'bg-green-500';
-  if (status === 'failed') return 'bg-red-500';
-  if (status === 'pending' || status === 'building') return 'bg-amber-500';
-  return 'bg-gray-300';
+function runtimeStatusTone(status: AgentRuntimePackageState['status']): SettingsStatusTone {
+  if (status === 'ready') return 'ok';
+  if (status === 'failed') return 'error';
+  if (status === 'pending' || status === 'building') return 'warn';
+  return 'pending';
 }
 
 const AgentRuntimePackagesSection: React.FC = () => {
@@ -301,18 +303,14 @@ const AgentRuntimePackagesSection: React.FC = () => {
     }
   };
 
-  const statusColor = runtimeStatusColor(state.status);
-
   return (
-    <div className="border-t border-gray-200 pt-6">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Agent Runtime Packages</h4>
-        <span className="flex items-center gap-1.5 text-[11px] text-gray-500">
-          <span className={`h-1.5 w-1.5 rounded-full ${statusColor}`} />
-          {state.status}
-        </span>
-      </div>
-
+    <SettingsSection
+      title="Agent Runtime Packages"
+      description="Extra system packages installed into every agent image built for this installation."
+      status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
+    >
+      <div className="mb-6 max-w-2xl">
+      <p className={`${SETTINGS_LABEL} mb-1.5`} id="agent-runtime-package-label">Add a package</p>
       <PackageAutocomplete
         input={input}
         suggestions={suggestions}
@@ -330,14 +328,14 @@ const AgentRuntimePackagesSection: React.FC = () => {
         onAdd={candidate => void addPackage(candidate)}
       />
 
-      <div className="mt-3 divide-y divide-gray-100 border-y border-gray-100">
+      <div className="mt-3 divide-y divide-slate-100 border-y border-slate-200">
         {packages.length === 0 ? (
-          <div className="py-3 text-xs text-gray-400">No additional system packages</div>
+          <div className="py-3 text-[12px] text-slate-500">No additional system packages</div>
         ) : packages.map(packageName => (
           <div key={packageName} className="flex h-9 items-center justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <Check size={12} className="flex-none text-green-600" aria-hidden="true" />
-              <code className="min-w-0 truncate text-xs text-gray-700">{packageName}</code>
+            <span className="flex min-w-0 items-center gap-2">
+              <Check size={12} className="flex-none text-slate-400" aria-hidden="true" />
+              <code className="min-w-0 truncate text-xs text-slate-700">{packageName}</code>
             </span>
             <button
               type="button"
@@ -345,7 +343,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
               disabled={building}
               title={`Remove ${packageName}`}
               aria-label={`Remove ${packageName}`}
-              className="inline-flex h-7 w-7 items-center justify-center text-gray-400 hover:text-red-600 disabled:opacity-50"
+              className="inline-flex h-7 w-7 items-center justify-center text-slate-400 hover:text-red-600 disabled:opacity-50"
             >
               <X size={14} />
             </button>
@@ -354,14 +352,14 @@ const AgentRuntimePackagesSection: React.FC = () => {
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="text-[11px] text-gray-500">
+        <span className="text-[12px] text-slate-500">
           {state.activePackages.length} active across {Object.keys(state.images).length} agent image{Object.keys(state.images).length === 1 ? '' : 's'}
         </span>
         <button
           type="button"
           onClick={() => void apply()}
           disabled={(!dirty && state.status !== 'failed') || saving || building || validating}
-          className="inline-flex items-center gap-1.5 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <RefreshCw size={13} className={building ? 'animate-spin' : ''} />
           Apply
@@ -369,17 +367,18 @@ const AgentRuntimePackagesSection: React.FC = () => {
       </div>
 
       {(error || state.error) && (
-        <p className="mt-2 break-words text-xs text-red-600">{error || conciseBuildError(state.error)}</p>
+        <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(state.error)}</p>
       )}
       {state.status === 'failed' && (state.buildLog || (state.error && state.error.length > 240)) && (
-        <details className="mt-2 text-xs text-gray-500">
+        <details className="mt-2 text-[12px] text-slate-500">
           <summary className="cursor-pointer select-none">Build details</summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-gray-200 pl-2 text-[10px] leading-4 text-gray-500">
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-slate-200 pl-2 text-[10px] leading-4 text-slate-500">
             {state.buildLog || state.error}
           </pre>
         </details>
       )}
-    </div>
+      </div>
+    </SettingsSection>
   );
 };
 

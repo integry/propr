@@ -33,6 +33,10 @@ export async function updateRepositoryStatus(
     updated_at: db.fn.now()
   };
 
+  if (iconPath !== undefined) {
+    updateData.icon_path = iconPath;
+  }
+
   if (status === 'completed') {
     updateData.last_indexed_at = db.fn.now();
     if (lastIndexedHash) {
@@ -40,9 +44,6 @@ export async function updateRepositoryStatus(
     }
     if (lastIndexedCommitMessage) {
       updateData.last_indexed_commit_message = lastIndexedCommitMessage;
-    }
-    if (iconPath !== undefined) {
-      updateData.icon_path = iconPath;
     }
   }
 
@@ -55,7 +56,7 @@ export async function updateRepositoryStatus(
       updated_at: db.fn.now(),
       last_indexed_hash: lastIndexedHash || null,
       last_indexed_commit_message: lastIndexedCommitMessage || null,
-      icon_path: iconPath || null,
+      icon_path: iconPath ?? null,
       ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
     })
     .onConflict(['full_name', 'branch'])

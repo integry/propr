@@ -7,6 +7,11 @@ test('validateTaskId accepts model-derived task IDs with dotted versions', () =>
   assert.equal(result.valid, true);
 });
 
+test('validateTaskId accepts legacy provider-qualified issue-task IDs', () => {
+  const result = validateTaskId('integry-propr-test-1511-opencode-opencode-openai/gpt-5.6-luna-99667e8e-59a6-4aa2-9e2f-448fa02827ef');
+  assert.equal(result.valid, true);
+});
+
 test('validateTaskId still rejects unsafe path characters', () => {
   assert.equal(validateTaskId('../bad-task').valid, false);
   assert.equal(validateTaskId('bad/task').valid, false);

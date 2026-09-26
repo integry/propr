@@ -1,8 +1,7 @@
 import React from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { LiveEvent, TaskInfo } from './types';
 import { formatDisplayPath } from './utils';
+import { SyntaxHighlighter, vscDarkPlus } from './syntaxHighlighter';
 import {
   FileText,
   FileCode,
@@ -16,7 +15,8 @@ import {
   XCircle,
   Wrench,
   Lightbulb,
-  Globe
+  Globe,
+  MessageSquare
 } from 'lucide-react';
 import {
   getFileIconType,
@@ -68,6 +68,9 @@ export const EventIcon: React.FC<{ event: LiveEvent }> = ({ event }) => {
   const iconType = getEventIconType(event);
 
   switch (iconType) {
+    case 'user':
+      // Amber marks operator steering apart from every agent-produced row
+      return <MessageSquare className="h-3.5 w-3.5 text-amber-300" />;
     case 'thought':
       // Readable gray-blue for AI thoughts
       return <Lightbulb className="h-3.5 w-3.5 text-slate-300" />;
@@ -88,7 +91,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
 
   if (!cleanPath || !cleanPath.includes('/') || cleanPath.startsWith('http')) {
     return (
-      <span className="font-mono text-xs flex items-center gap-1 text-zinc-300">
+      <span className="flex min-w-0 items-center gap-1 break-all font-mono text-xs text-zinc-300">
         <FileIcon filePath={cleanPath} />
         {cleanPath}
       </span>
@@ -101,7 +104,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
 
   if (!REPO_BASE_URL) {
     return (
-      <span className="font-mono text-xs flex items-center gap-1 text-zinc-300">
+      <span className="flex min-w-0 items-center gap-1 break-all font-mono text-xs text-zinc-300">
         <FileIcon filePath={cleanPath} />
         {cleanPath}
       </span>
@@ -113,7 +116,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
       href={`${REPO_BASE_URL}/${cleanPath}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-mono text-xs text-sky-300/90 hover:text-sky-200 underline flex items-center gap-1"
+      className="flex min-w-0 items-center gap-1 break-all font-mono text-xs text-sky-300/90 underline hover:text-sky-200"
     >
       <FileIcon filePath={cleanPath} />
       {cleanPath}

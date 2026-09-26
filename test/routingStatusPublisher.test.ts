@@ -1,14 +1,15 @@
-import { after, beforeEach, afterEach, test, mock } from 'node:test';
+import { beforeEach, afterEach, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeConnection, type RoutingWebSocketIntakeService } from '@propr/core';
-import { startRoutingStatusPublisher } from '../src/daemon/routingStatusPublisher.js';
+import type { RoutingWebSocketIntakeService } from '@propr/core';
+import type { RoutingStatusPublisher } from '../src/daemon/routingStatusPublisher.js';
 
-// Importing @propr/core eagerly opens the shared DB connection pool; close it so
-// the test process can exit cleanly instead of hanging on the open pool.
-after(async () => {
-    await closeConnection();
+await mock.module('@propr/core', {
+    namedExports: {
+        logger: { error: mock.fn() },
+    },
 });
+const { startRoutingStatusPublisher } = await import('../src/daemon/routingStatusPublisher.js');
 
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 
@@ -43,11 +44,24 @@ function makeFakeService(status: Record<string, unknown>) {
     };
 }
 
+const activePublishers = new Set<RoutingStatusPublisher>();
+
+async function startTestPublisher(
+    service: RoutingWebSocketIntakeService,
+    redis: Parameters<typeof startRoutingStatusPublisher>[1],
+): Promise<RoutingStatusPublisher> {
+    const publisher = await startRoutingStatusPublisher(service, redis);
+    activePublishers.add(publisher);
+    return publisher;
+}
+
 beforeEach(() => {
     mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
 });
 
-afterEach(() => {
+afterEach(async () => {
+    for (const publisher of activePublishers) await publisher.stop();
+    activePublishers.clear();
     mock.timers.reset();
     mock.restoreAll();
 });
@@ -56,7 +70,7 @@ test('publishes the routing status with a TTL on startup', async () => {
     const redis = makeFakeRedis();
     const service = makeFakeService({ connected: true, lastDeliveryId: 'd1' });
 
-    await startRoutingStatusPublisher(
+    await startTestPublisher(
         service as unknown as RoutingWebSocketIntakeService,
         redis as never,
     );
@@ -75,7 +89,7 @@ test('re-publishes on the periodic refresh interval', async () => {
     const redis = makeFakeRedis();
     const service = makeFakeService({ connected: true });
 
-    await startRoutingStatusPublisher(
+    await startTestPublisher(
         service as unknown as RoutingWebSocketIntakeService,
         redis as never,
     );
@@ -90,7 +104,7 @@ test('publishes promptly (debounced) when the routing status changes', async () 
     const redis = makeFakeRedis();
     const service = makeFakeService({ connected: false });
 
-    await startRoutingStatusPublisher(
+    await startTestPublisher(
         service as unknown as RoutingWebSocketIntakeService,
         redis as never,
     );
@@ -111,13 +125,14 @@ test('stop() clears the published status and stops publishing', async () => {
     const redis = makeFakeRedis();
     const service = makeFakeService({ connected: true });
 
-    const publisher = await startRoutingStatusPublisher(
+    const publisher = await startTestPublisher(
         service as unknown as RoutingWebSocketIntakeService,
         redis as never,
     );
     const publishesBeforeStop = redis.set.mock.calls.length;
 
     await publisher.stop();
+    activePublishers.delete(publisher);
 
     // The key is deleted so status consumers immediately see the routing path down.
     assert.equal(redis.del.mock.calls.length, 1);
@@ -135,13 +150,14 @@ test('stop() unsubscribes the status-change listener from the service', async ()
     const redis = makeFakeRedis();
     const service = makeFakeService({ connected: true });
 
-    const publisher = await startRoutingStatusPublisher(
+    const publisher = await startTestPublisher(
         service as unknown as RoutingWebSocketIntakeService,
         redis as never,
     );
     assert.equal(service.hasListener(), true);
 
     await publisher.stop();
+    activePublishers.delete(publisher);
 
     // The publisher detaches its listener so the service no longer retains the
     // publisher's closure (which would leak if the service were restarted).

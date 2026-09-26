@@ -3,12 +3,13 @@ import assert from 'node:assert';
 
 const mockRedis = {
     on: mock.fn(),
+    connect: mock.fn(async () => {}),
     quit: mock.fn(async () => {}),
 };
 
 await mock.module('ioredis', {
     namedExports: {
-        default: function Redis() {
+        Redis: function Redis() {
             return mockRedis;
         }
     }
@@ -48,7 +49,9 @@ await mock.module('bullmq', {
     }
 });
 
-const { issueQueue, createWorker, shutdownQueue } = await import('../src/queue/taskQueue.ts');
+const { issueQueue, getIssueQueue, createWorker, shutdownQueue } = await import('../packages/core/src/queue/taskQueue.ts');
+
+await getIssueQueue();
 
 test('issueQueue is created successfully', () => {
     assert.ok(issueQueue);
@@ -84,19 +87,20 @@ test('shutdownQueue closes queue and Redis connection', async () => {
     
     await shutdownQueue();
     
-    assert.strictEqual(mockQueue.close.mock.calls.length, 1);
+    assert.strictEqual(mockQueue.close.mock.calls.length, 3);
     assert.strictEqual(mockRedis.quit.mock.calls.length, 1);
 });
 
 test('queue can add jobs', async () => {
     mockQueue.add.mock.resetCalls();
+    const queue = await getIssueQueue();
     
     const jobData = { 
         repoOwner: 'test',
         repoName: 'repo',
         number: 123
     };
-    const result = await issueQueue.add('testJob', jobData);
+    const result = await queue.add('testJob', jobData);
     
     assert.strictEqual(mockQueue.add.mock.calls.length, 1);
     const calls = mockQueue.add.mock.calls as Array<{ arguments: unknown[] }>;

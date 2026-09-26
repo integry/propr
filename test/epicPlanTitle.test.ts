@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { resolveEpicTitleGenerationModel } from '../packages/core/src/services/epicTitleModel.js';
 
 /**
  * Unit tests for epic/plan title generation logic.
@@ -120,6 +121,29 @@ describe('buildTitlePrompt', () => {
     const prompt = buildTitlePrompt(tasks);
 
     assert.ok(prompt.toLowerCase().includes('all'), 'Prompt should instruct LLM to consider ALL titles');
+  });
+});
+
+describe('resolveEpicTitleGenerationModel', () => {
+  test('uses the configured summarization model', () => {
+    assert.strictEqual(
+      resolveEpicTitleGenerationModel('gemini:gemini-3-flash-preview'),
+      'gemini:gemini-3-flash-preview'
+    );
+  });
+
+  test('does not silently choose a model when the setting is missing', () => {
+    assert.throws(
+      () => resolveEpicTitleGenerationModel(undefined),
+      /Select a Summarization Model/
+    );
+  });
+
+  test('treats blank configured values as missing', () => {
+    assert.throws(
+      () => resolveEpicTitleGenerationModel('  '),
+      /Select a Summarization Model/
+    );
   });
 });
 

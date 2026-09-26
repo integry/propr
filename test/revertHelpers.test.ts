@@ -1,4 +1,4 @@
-import { test, describe, beforeEach, afterEach, mock } from 'node:test';
+import { test, describe, beforeEach, afterEach, after, mock } from 'node:test';
 import assert from 'node:assert';
 
 /**
@@ -56,14 +56,15 @@ const mockLogger = {
     debug: mock.fn(() => {}),
     withCorrelation: mock.fn(() => mockLogger)
 };
+const actualCore = await import('@propr/core');
 
 await mock.module('@propr/core', {
     namedExports: {
         getUserWhitelist: mock.fn(() => ['alice', 'bob']),
         getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
         generateCorrelationId: () => 'test-correlation',
-        generateAuthToken: (await import('@propr/core')).generateAuthToken,
-        buildAuthPayload: (await import('@propr/core')).buildAuthPayload,
+        generateAuthToken: actualCore.generateAuthToken,
+        buildAuthPayload: actualCore.buildAuthPayload,
         logger: mockLogger
     }
 });
@@ -76,6 +77,10 @@ const {
     verifyAppRepoAccess,
     validateRevertRequestBody
 } = await import('../packages/api/routes/revertHelpers.ts');
+
+after(async () => {
+    await actualCore.closeConnection();
+});
 
 describe('checkRevertAuthorization — route-level', () => {
     beforeEach(() => {

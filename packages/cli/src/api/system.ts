@@ -60,7 +60,8 @@ export interface SystemStatus {
   routing?: RoutingState;
 
   /**
-   * Claude authentication status ('connected' | 'disconnected').
+   * Claude authentication status ('connected' | 'disconnected' |
+   * 'not_applicable' | 'unknown').
    */
   claudeAuth: string;
 

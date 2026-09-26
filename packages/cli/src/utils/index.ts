@@ -6,6 +6,8 @@
 
 export {
   resolveProject,
+  resolveOptionalProject,
+  configureProjectOptionInheritance,
   ProjectResolutionError,
   isValidProjectSlug,
   normalizeProjectSlug,
@@ -23,3 +25,5 @@ export {
 export type { FormatOutputOptions } from "./io.js";
 
 export { parseOnOffState, ParseStateError } from "./parseState.js";
+
+export { parsePositiveInteger } from "./positiveInteger.js";

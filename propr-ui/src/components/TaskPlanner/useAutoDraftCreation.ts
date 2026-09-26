@@ -8,6 +8,7 @@ import {
   DraftWithPlan,
   DraftContextConfig
 } from '../../api/proprApi';
+import { getDraftContextConfig } from './setupWizardDraftConfig';
 
 export type DraftSetupSnapshot = Pick<
   DraftContextConfig,
@@ -31,19 +32,15 @@ export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: Draf
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: setupSnapshot ? { ...draft.context_config, ...setupSnapshot } : draft.context_config,
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot },
     refinement_result: undefined
   };
 }
 
 export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setupSnapshot?: DraftSetupSnapshot): T & { context_config?: DraftContextConfig } {
-  if (!setupSnapshot) {
-    return draft;
-  }
-
   return {
     ...draft,
-    context_config: { ...draft.context_config, ...setupSnapshot }
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot }
   };
 }
 
@@ -106,6 +103,9 @@ export function useAutoDraftCreation({
   const [autoCreateError, setAutoCreateError] = useState<string | null>(null);
   const [autoCreateWarning, setAutoCreateWarning] = useState<string | null>(null);
   const draftCreatedRef = useRef(false);
+  // In-flight creation promise, keyed by selection, so concurrent callers for the same selection share a single draft
+  const creationPromiseRef = useRef<{ selectionKey: string; promise: Promise<PlannerDraft | null> } | null>(null);
+  const createdDraftRef = useRef<PlannerDraft | null>(null);
   const lastSelectionKeyRef = useRef(`${selectedRepo}:${resolvedBaseBranch}`);
 
   // Reset when the selected repository entry changes, including duplicate owner/repo entries on another branch.
@@ -113,13 +113,22 @@ export function useAutoDraftCreation({
     const selectionKey = `${selectedRepo}:${resolvedBaseBranch}`;
     if (selectionKey !== lastSelectionKeyRef.current) {
       draftCreatedRef.current = false;
+      createdDraftRef.current = null;
       lastSelectionKeyRef.current = selectionKey;
     }
   }, [selectedRepo, resolvedBaseBranch]);
 
   // Create draft function
-  const createDraftNow = useCallback(async (repo: string, currentPrompt: string) => {
-    if (!repo || !currentPrompt.trim() || draftCreatedRef.current) return;
+  const createDraftNowInner = useCallback(async (repo: string, currentPrompt: string, selectionKey: string): Promise<PlannerDraft | null> => {
+    if (!repo || !currentPrompt.trim() || draftCreatedRef.current) return null;
+    // A creation started for a previous selection must not update state owned by the current selection
+    const isCurrentSelection = () => lastSelectionKeyRef.current === selectionKey;
+    const finishObsolete = () => {
+      if (!creationPromiseRef.current || creationPromiseRef.current.selectionKey === selectionKey) {
+        setIsAutoCreating(false);
+      }
+      return null;
+    };
 
     setIsAutoCreating(true);
     setAutoCreateError(null);
@@ -140,6 +149,7 @@ export function useAutoDraftCreation({
         }
       }
 
+      if (!isCurrentSelection()) return finishObsolete();
       draftCreatedRef.current = true;
 
       // Upload any local files
@@ -151,10 +161,12 @@ export function useAutoDraftCreation({
         }
       }
 
+      if (!isCurrentSelection()) return finishObsolete();
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
       // Use in-place update if callback provided (preserves focus, no navigation)
       // Otherwise fall back to navigation with router state
       const draftWithResolvedBranch = attachResolvedBaseBranch(newDraft, hydratedSetupSnapshot);
+      createdDraftRef.current = draftWithResolvedBranch;
       if (onDraftCreatedInPlace) {
         onDraftCreatedInPlace(draftWithResolvedBranch);
         setIsAutoCreating(false);
@@ -170,11 +182,24 @@ export function useAutoDraftCreation({
           }
         });
       }
+      return draftWithResolvedBranch;
     } catch (err) {
+      if (!isCurrentSelection()) return finishObsolete();
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);
+      return null;
     }
   }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, resolvedBaseBranch, setupSnapshot, todoIds]);
+
+  const createDraftNow = useCallback((repo: string, currentPrompt: string): Promise<PlannerDraft | null> => {
+    const selectionKey = `${repo}:${resolvedBaseBranch}`;
+    if (creationPromiseRef.current?.selectionKey === selectionKey) return creationPromiseRef.current.promise;
+    const promise = createDraftNowInner(repo, currentPrompt, selectionKey).finally(() => {
+      if (creationPromiseRef.current?.promise === promise) creationPromiseRef.current = null;
+    });
+    creationPromiseRef.current = { selectionKey, promise };
+    return promise;
+  }, [createDraftNowInner, resolvedBaseBranch]);
 
   // Debounced create draft
   const debouncedCreateDraft = useMemo(
@@ -206,5 +231,15 @@ export function useAutoDraftCreation({
     };
   }, [isNewMode, selectedRepo, resolvedBaseBranch, prompt, debouncedCreateDraft]);
 
-  return { isAutoCreating, autoCreateError, autoCreateWarning };
+  // Immediately create the draft (skipping the debounce) and return it.
+  // Returns the already-created draft if one exists, or null if creation is not possible.
+  const ensureDraftCreated = useCallback(async (): Promise<PlannerDraft | null> => {
+    debouncedCreateDraft.cancel();
+    if (creationPromiseRef.current?.selectionKey === `${selectedRepo}:${resolvedBaseBranch}`) return creationPromiseRef.current.promise;
+    if (draftCreatedRef.current) return createdDraftRef.current;
+    if (!isNewMode || !selectedRepo || !resolvedBaseBranch) return null;
+    return createDraftNow(selectedRepo, prompt);
+  }, [debouncedCreateDraft, createDraftNow, isNewMode, selectedRepo, resolvedBaseBranch, prompt]);
+
+  return { isAutoCreating, autoCreateError, autoCreateWarning, ensureDraftCreated };
 }

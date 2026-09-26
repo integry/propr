@@ -1,0 +1,216 @@
+name: Packaged Connect Discovery Guard
+
+# The workflow-level path filter this used to carry matched on filenames only,
+# so a manifest edit confined to a backend test script pulled in the whole
+# packaged Connect matrix, and a filter list here could never see a shared or
+# classifier change the way the classifier does. Selection now happens once, in
+# the shared classifier, and is visible in this run's job summary.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-connect-discovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      desktop: ${{ steps.classify.outputs.desktop }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
+  packaged-connect-discovery:
+    name: Packaged Connect (${{ matrix.target }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the matrix. `!cancelled()` keeps
+    # superseded-run cancellation intact.
+    if: ${{ !cancelled() && needs.classify.outputs.desktop != 'false' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - target: darwin-arm64
+            runner: macos-15
+            platform: darwin
+            arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          # Windows package validation is paused alongside Windows delivery.
+          # Keep platform-specific steps below for when these targets return.
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up target-native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify selected host architecture
+        shell: bash
+        run: |
+          test "$(node -p process.platform)" = "${{ matrix.platform }}"
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install native Linux package and credential tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+
+      - name: Verify encoded Windows PowerShell ACL helper success streams
+        if: matrix.platform == 'win32'
+        run: npm run test:windows-fixture-acl -w @propr/desktop
+
+      - name: Verify Windows packaged launcher authority
+        if: matrix.platform == 'win32'
+        run: node --test apps/desktop/scripts/windows-packaged-connect-staging.test.mjs
+
+      - name: Package the target-native desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          # electron-forge fetches the Electron runtime zip from GitHub
+          # releases on a cache miss, and that download returns a transient 5xx
+          # often enough to fail otherwise-green matrix legs. Only the download
+          # is unreliable, so retry the whole package rather than the job.
+          for attempt in 1 2 3; do
+            if npm run desktop:package; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Packaging failed after $attempt attempts." >&2
+              exit 1
+            fi
+            delay=$((attempt * 15))
+            echo "Package attempt $attempt failed; retrying in $delay seconds..." >&2
+            sleep "$delay"
+          done
+
+      - name: Verify Connect account confirmation and pairing regressions
+        if: matrix.platform == 'linux' || matrix.platform == 'darwin'
+        run: >-
+          npx tsx --test
+          apps/desktop/scripts/packaged-connect-journey.test.mjs
+          apps/desktop/scripts/packaged-connect-evidence.test.mjs
+          apps/desktop/src/packaged-connect-account-confirmation.test.ts
+          apps/desktop/src/saved-accounts.test.ts
+
+      - name: Inspect the unsigned target-native desktop app
+        run: npm run desktop:smoke:inspect
+
+      - name: Run packaged Linux main-to-renderer discovery
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sandbox="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chown root:root "$sandbox"
+          sudo chmod 4755 "$sandbox"
+          test "$(stat -c '%U:%G:%a' "$sandbox")" = 'root:root:4755'
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+          ' bash "$keyring_root"
+
+      - name: Run packaged Darwin main-to-renderer discovery
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: >-
+          node apps/desktop/scripts/run-bounded-darwin-command.mjs
+          --timeout-ms 480000
+          --termination-grace-ms 90000
+          --max-output-bytes 1048576
+          --forward-output true
+          -- bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh '${{ matrix.arch }}'
+
+      - name: Run packaged Windows main-to-renderer discovery as an ordinary user
+        if: matrix.platform == 'win32'
+        shell: powershell
+        run: >-
+          & apps/desktop/scripts/run-packaged-windows-connect-smoke.ps1
+          -Architecture '${{ matrix.arch }}'
+
+  packaged-connect-guard:
+    # Stable aggregate over the matrix above. It is not an unconditional green
+    # placeholder: it passes only when every leg succeeded, or when the shared
+    # classifier proved the desktop surface inapplicable and the matrix was
+    # skipped for exactly that reason.
+    name: Packaged Connect Discovery Guard
+    needs: [classify, packaged-connect-discovery]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce packaged Connect discovery results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          DESKTOP_DECISION: ${{ needs.classify.outputs.desktop }}
+          MATRIX_RESULT: ${{ needs.packaged-connect-discovery.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "Desktop decision: ${DESKTOP_DECISION:-none}"
+          echo "Packaged Connect matrix: ${MATRIX_RESULT:-did not run}"
+          inapplicable=0
+          if [ "${CLASSIFY_RESULT:-}" = success ] \
+            && [ "${CLASSIFY_STATUS:-}" = ok ] \
+            && [ "${DESKTOP_DECISION:-}" = false ]; then
+            inapplicable=1
+          fi
+          if [ "$inapplicable" -eq 1 ] && [ "${MATRIX_RESULT:-}" = skipped ]; then
+            echo "Packaged Connect discovery is not applicable to this change set." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Packaged Connect discovery proved inapplicable; see the classifier job summary for the reasons."
+            exit 0
+          fi
+          if [ "${MATRIX_RESULT:-}" != success ]; then
+            echo "::error::Packaged Connect discovery finished with result '${MATRIX_RESULT:-did not run}'."
+            exit 1
+          fi

@@ -38,6 +38,14 @@ After the upgrade, the API's public `/api/compatibility` endpoint reports the st
 
 The unified agent image replaces the older per-agent image families. After confirming the upgraded worker is healthy, reclaim disk used by stale local agent images with `docker image ls 'propr/*agent*'` and remove only obsolete per-agent repositories that are no longer referenced by your running containers or configuration.
 
+If installation-wide runtime packages are enabled, verify their derived images after the upgrade or any base-image replacement:
+
+```bash
+propr runtime packages verify
+```
+
+This check is read-only and uses the same current base-image configuration as agent execution. It exits nonzero for stale lineage, missing derived images or packages, pinned-version mismatches, incorrect ProPR labels/final users, and desired-versus-active drift. Repair an unhealthy profile with `propr runtime packages apply --wait`, then verify again. Use `--json` for structured per-image diagnostics. A disabled/empty profile succeeds explicitly without starting a check container.
+
 ### Refreshing agent image package pins
 
 `Dockerfile.agent` pins its Debian packages with `*_VERSION_PREFIX` build args and verifies the GitHub CLI apt keyring against `GITHUBCLI_KEYRING_SHA256`. Two external events can break the base-stage build (which surfaces as a failed local build fallback when the registry image is unavailable):

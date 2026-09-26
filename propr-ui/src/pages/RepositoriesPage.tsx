@@ -4,10 +4,13 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, ArrowLeft } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useRepositoryManagement } from '../hooks/useRepositoryManagement';
+import { buildRepositoriesForDisplay, defaultVisualPreview, type VisualPreviewSettings } from '../hooks/repositoryVisualPreview';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { RepoActionContainer } from '../components/Repositories';
 import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFooter';
 import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
+import { getRepoStatusKey } from '../api/repoIndexingApi';
+import { RepositorySettingsBar } from '../components/RepositorySettingsBar';
 import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
@@ -23,12 +26,16 @@ const RepositoriesPage: React.FC = () => {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
+    handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows,
+    handleToggleNotifications, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
 
   const [newRepo, setNewRepo] = useState<string>('');
   const [newAlias, setNewAlias] = useState<string>('');
   const [newBaseBranch, setNewBaseBranch] = useState<string>('');
+  const [autoFollowupOnFailedCi, setAutoFollowupOnFailedCi] = useState<boolean>(false);
+  const [newVisualPreview, setNewVisualPreview] = useState<VisualPreviewSettings>(defaultVisualPreview);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
@@ -54,6 +61,8 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setAutoFollowupOnFailedCi(false);
+    setNewVisualPreview(defaultVisualPreview());
     setIsModalOpen(true);
   };
 
@@ -62,14 +71,18 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setAutoFollowupOnFailedCi(false);
+    setNewVisualPreview(defaultVisualPreview());
   };
 
   const handleAddRepoSubmit = () => {
     if (isReadOnly) return;
-    if (handleAddRepo(newRepo, newAlias, newBaseBranch)) {
+    if (handleAddRepo(newRepo, newAlias, newBaseBranch, autoFollowupOnFailedCi, newVisualPreview)) {
       setNewRepo('');
       setNewAlias('');
       setNewBaseBranch('');
+      setAutoFollowupOnFailedCi(false);
+      setNewVisualPreview(defaultVisualPreview());
       setIsModalOpen(false);
     }
   };
@@ -78,7 +91,27 @@ const RepositoriesPage: React.FC = () => {
     setSelectedRepoId(prevId => prevId === repoId ? null : repoId);
   };
 
-  const selectedRepo = repos.find(r => r.id === selectedRepoId);
+  // Match the list's shared settings, including when the selected entry is hidden.
+  const selectedRepo = buildRepositoriesForDisplay(repos).find(r => r.id === selectedRepoId);
+  const settingsContent = selectedRepo ? (
+    <RepositorySettingsBar
+      key={selectedRepo.id}
+      repo={selectedRepo}
+      indexingStatus={indexingStatuses[getRepoStatusKey(selectedRepo.name, selectedRepo.baseBranch)]}
+      onToggle={handleToggleRepo}
+      onRemove={handleRemoveRepo}
+      onStopIndexing={handleStopIndexing}
+      onReindex={handleReindexRepo}
+      onToggleStar={handleToggleStar}
+      onToggleHidden={handleToggleHidden}
+      onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
+      onToggleCancelCiDuringFollowup={handleToggleCancelCiDuringFollowup}
+      onUpdateCancelCiWorkflows={handleUpdateCancelCiWorkflows}
+      onToggleNotifications={handleToggleNotifications}
+      onUpdateVisualPreview={handleUpdateVisualPreview}
+      isReadOnly={isReadOnly}
+    />
+  ) : null;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -108,8 +141,9 @@ const RepositoriesPage: React.FC = () => {
               </span>
             </div>
             <div className="flex-1 min-h-0">
-              <RepoActionContainer selectedRepo={selectedRepo} initialTab={navActiveTab} />
+              <RepoActionContainer selectedRepo={selectedRepo} initialTab={navActiveTab} settingsContent={settingsContent} />
             </div>
+            <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
           </div>
         ) : (
           <div className="h-full bg-white flex flex-col">
@@ -120,15 +154,8 @@ const RepositoriesPage: React.FC = () => {
                 error={error}
                 indexingStatuses={indexingStatuses}
                 selectedRepoId={selectedRepoId}
-                onToggle={handleToggleRepo}
-                onRemove={handleRemoveRepo}
-                onStopIndexing={handleStopIndexing}
-                onReindex={handleReindexRepo}
-                onToggleStar={handleToggleStar}
-                onToggleHidden={handleToggleHidden}
                 onSelect={handleSelectRepo}
                 onRetry={handleRetry}
-                isReadOnly={isReadOnly}
               />
             </div>
             <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
@@ -148,15 +175,8 @@ const RepositoriesPage: React.FC = () => {
                   error={error}
                   indexingStatuses={indexingStatuses}
                   selectedRepoId={selectedRepoId}
-                  onToggle={handleToggleRepo}
-                  onRemove={handleRemoveRepo}
-                  onStopIndexing={handleStopIndexing}
-                  onReindex={handleReindexRepo}
-                  onToggleStar={handleToggleStar}
-                  onToggleHidden={handleToggleHidden}
                   onSelect={handleSelectRepo}
                   onRetry={handleRetry}
-                  isReadOnly={isReadOnly}
                 />
               </div>
               <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
@@ -170,7 +190,7 @@ const RepositoriesPage: React.FC = () => {
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
               <div className="flex-1 min-h-0">
-                <RepoActionContainer selectedRepo={selectedRepo || null} initialTab={navActiveTab} />
+                <RepoActionContainer selectedRepo={selectedRepo || null} initialTab={navActiveTab} settingsContent={settingsContent} />
               </div>
             </div>
           </Panel>
@@ -182,10 +202,14 @@ const RepositoriesPage: React.FC = () => {
         newRepo={newRepo}
         newAlias={newAlias}
         newBaseBranch={newBaseBranch}
+        autoFollowupOnFailedCi={autoFollowupOnFailedCi}
+        visualPreview={newVisualPreview}
         availableRepos={availableRepos}
         onRepoChange={setNewRepo}
         onAliasChange={setNewAlias}
         onBaseBranchChange={setNewBaseBranch}
+        onAutoFollowupOnFailedCiChange={setAutoFollowupOnFailedCi}
+        onVisualPreviewChange={setNewVisualPreview}
         onAdd={handleAddRepoSubmit}
         onClose={handleCloseModal}
         isReadOnly={isReadOnly}

@@ -38,6 +38,12 @@ describe('VALID_SETTING_KEYS includes new ultrafix keys', () => {
     assert.ok(VALID_SETTING_KEYS.includes('ultrafix_pause_seconds'));
   });
 
+  test('should include PR review context settings', () => {
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_context_enabled'));
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_context_model'));
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_max_context_tokens'));
+  });
+
   test('should keep expected setting keys valid', () => {
     const expectedKeys = [
       'pr_review_model',
@@ -86,6 +92,41 @@ describe('parseSettingValue for pr_review_model', () => {
 
   test('should accept empty string', () => {
     assert.strictEqual(parseSettingValue('pr_review_model', ''), '');
+  });
+});
+
+describe('parseSettingValue for PR review context', () => {
+  test('parses the enable switch', () => {
+    assert.strictEqual(parseSettingValue('pr_review_context_enabled', 'false'), false);
+  });
+
+  test('accepts automatic and explicit context token limits', () => {
+    assert.strictEqual(parseSettingValue('pr_review_max_context_tokens', '0'), 0);
+    assert.strictEqual(parseSettingValue('pr_review_max_context_tokens', '200000'), 200000);
+  });
+
+  test('rejects context token limits below the supported explicit minimum', () => {
+    assert.throws(
+      () => parseSettingValue('pr_review_max_context_tokens', '9999'),
+      /must be 0 \(no legacy cap\) or an integer between 10000 and 2000000/,
+    );
+  });
+
+  test('accepts review context budget percentages in 10% increments', () => {
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_context_budget_percent'));
+    assert.strictEqual(parseSettingValue('pr_review_context_budget_percent', '10'), 10);
+    assert.strictEqual(parseSettingValue('pr_review_context_budget_percent', '100'), 100);
+    assert.strictEqual(parseSettingValue('pr_review_context_budget_percent', '60%'), 60);
+  });
+
+  test('rejects unsupported review context budget percentages', () => {
+    for (const invalid of ['0', '5', '15', '110', '50.5', 'abc', '-10']) {
+      assert.throws(
+        () => parseSettingValue('pr_review_context_budget_percent', invalid),
+        /must be one of 10, 20, 30, 40, 50, 60, 70, 80, 90, 100/,
+        invalid,
+      );
+    }
   });
 });
 

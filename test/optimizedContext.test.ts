@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCompactRepomixConfig, planFilesToRemoveForTokenLimit } from '../packages/core/src/services/context/optimizedContext.ts';
+import {
+  buildCompactRepomixConfig,
+  filterExplicitFilesByPackedPaths,
+  planFilesToRemoveForTokenLimit,
+} from '../packages/core/src/services/context/optimizedContext.ts';
 
 test('plans a direct cut to fit the context token budget', () => {
   const files = ['important.ts', 'useful.ts', 'huge.html', 'least-relevant.html'];
@@ -22,7 +26,7 @@ test('plans a direct cut to fit the context token budget', () => {
   assert.ok(plan.estimatedRemainingTokens <= 500);
 });
 
-test('removes all files when non-file overhead already exceeds the limit', () => {
+test('preserves a measurable singleton when non-file overhead already exceeds the limit', () => {
   const plan = planFilesToRemoveForTokenLimit(
     ['a.ts', 'b.ts'],
     { 'a.ts': 100, 'b.ts': 100 },
@@ -30,8 +34,20 @@ test('removes all files when non-file overhead already exceeds the limit', () =>
     500,
   );
 
-  assert.deepEqual(plan.filesToRemove, ['a.ts', 'b.ts']);
+  assert.deepEqual(plan.filesToRemove, ['b.ts']);
   assert.equal(plan.targetFileTokens, 0);
+});
+
+test('preserves the highest-priority singleton when the safety target rejects every file', () => {
+  const plan = planFilesToRemoveForTokenLimit(
+    ['highest-priority.ts', 'second.ts'],
+    { 'highest-priority.ts': 990, 'second.ts': 990 },
+    3_980,
+    3_000,
+  );
+
+  assert.deepEqual(plan.filesToRemove, ['second.ts']);
+  assert.equal(plan.estimatedRemainingTokens, 2_990);
 });
 
 test('treats large formatted output deltas as file expansion instead of fixed overhead', () => {
@@ -79,6 +95,37 @@ test('removes at least one file when token counts are unavailable', () => {
   );
 
   assert.deepEqual(plan.filesToRemove, ['b.ts']);
+});
+
+test('stops removing when the last file has no measured token count', () => {
+  const plan = planFilesToRemoveForTokenLimit(
+    ['a.ts'],
+    {},
+    1_000,
+    500,
+  );
+
+  assert.deepEqual(plan.filesToRemove, []);
+});
+
+test('filters explicit optimization candidates to files Repomix actually packed', () => {
+  assert.deepEqual(
+    filterExplicitFilesByPackedPaths(
+      ['oversized.ts', 'missing.ts'],
+      { 'oversized.ts': 5_000 },
+    ),
+    ['oversized.ts'],
+  );
+});
+
+test('normalizes explicit paths while preserving priority and removing duplicates', () => {
+  assert.deepEqual(
+    filterExplicitFilesByPackedPaths(
+      ['./src/first.ts', 'src\\second.ts', 'src/first.ts'],
+      { 'src/second.ts': 200, 'src/first.ts': 100 },
+    ),
+    ['src/first.ts', 'src/second.ts'],
+  );
 });
 
 test('compact repomix config disables metadata before files are dropped', () => {

@@ -1,13 +1,16 @@
 import {
   getAuthenticatedOctokit,
   MODEL_INFO_MAP,
+  safeAddLabel,
+  safeRemoveLabel,
   safeUpdateLabels,
   logger,
   ensureEpicPR,
   updatePlanIssue,
   PlanIssueStatus,
-  loadSettings,
   AgentRegistry,
+  resolvePlanIssueDefaultSelection,
+  NoDefaultModelConfiguredError,
   toProprOpenCodeModelId,
   buildDynamicLlmLabel,
   buildAgentModelLlmLabel,
@@ -22,6 +25,7 @@ export interface ImplementIssueContext {
   owner: string;
   repo: string;
   issueNumber: number;
+  userId: string;
   implementLabel: string;
   epicLabelName: string | null;
   autoMerge: boolean;
@@ -49,21 +53,24 @@ export interface EpicPRParams {
   labelLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
-async function enqueueIssueImplementationJob(params: {
+export async function enqueueIssueImplementationJob(params: {
   owner: string;
   repo: string;
   issueNumber: number;
+  userId: string;
   triggeringLabel: string;
+  correlationId?: string;
 }): Promise<void> {
-  const { owner, repo, issueNumber, triggeringLabel } = params;
+  const { owner, repo, issueNumber, userId, triggeringLabel } = params;
   const queue = await getIssueQueue();
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   await queue.add('processGitHubIssue', {
     repoOwner: owner,
     repoName: repo,
     number: issueNumber,
+    userId,
     triggeringLabel,
-    correlationId: generateCorrelationId()
+    correlationId: params.correlationId || generateCorrelationId()
   }, {
     jobId,
     attempts: 3,
@@ -73,29 +80,35 @@ async function enqueueIssueImplementationJob(params: {
   });
 }
 
-/**
- * Gets the default model from the configured default agent.
- * Falls back to the latest Claude Sonnet model if no default agent is configured.
- */
-async function getConfiguredDefaultModel(): Promise<string> {
-  try {
-    const settings = await loadSettings();
-    const defaultAgentAlias = settings.default_agent_alias as string | undefined;
+async function publishImplementationLabels(params: {
+  octokit: ImplementIssueContext['octokit'];
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  implementLabel: string;
+  labelsToRemove: string[];
+  labelsToAdd: string[];
+  labelLogger: ImplementIssueContext['labelLogger'];
+}): Promise<void> {
+  const { octokit, owner, repo, issueNumber, implementLabel, labelsToRemove, labelsToAdd, labelLogger } = params;
+  const context = { octokit, owner, repo, issueNumber, logger: labelLogger };
 
-    if (defaultAgentAlias) {
-      const registry = AgentRegistry.getInstance();
-      await registry.ensureInitialized();
-      const agent = registry.getAgentByAlias(defaultAgentAlias);
-
-      if (agent?.config.defaultModel) {
-        return agent.config.defaultModel;
-      }
-    }
-  } catch (err) {
-    logger.warn({ error: (err as Error).message }, 'Failed to get configured default model, using fallback');
+  if (!await safeRemoveLabel(context, implementLabel)) {
+    throw new Error(`Failed to suspend '${implementLabel}' while updating implementation labels`);
   }
 
-  return 'claude-sonnet-5'; // Fallback
+  const selectorUpdate = await safeUpdateLabels(
+    context,
+    labelsToRemove.filter(label => label !== implementLabel),
+    labelsToAdd.filter(label => label !== implementLabel)
+  );
+  if (!selectorUpdate.success) {
+    throw new Error(`Failed to update implementation labels: ${selectorUpdate.errors.join('; ')}`);
+  }
+
+  if (!await safeAddLabel(context, implementLabel)) {
+    throw new Error(`Failed to publish '${implementLabel}' after updating implementation labels`);
+  }
 }
 
 /**
@@ -103,15 +116,22 @@ async function getConfiguredDefaultModel(): Promise<string> {
  * Falls back to the default agent's model if model_name is null.
  */
 export async function getLlmLabel(modelName: string | null, agentAlias?: string | null): Promise<string | null> {
-  const effectiveModel = modelName || await getConfiguredDefaultModel();
+  let effectiveModel = modelName;
+  let effectiveAgentAlias = agentAlias;
+  if (!effectiveModel) {
+    const selection = await resolvePlanIssueDefaultSelection();
+    effectiveModel = selection.model_name;
+    effectiveAgentAlias = effectiveAgentAlias || selection.agent_alias;
+  }
+  if (!effectiveModel) throw new NoDefaultModelConfiguredError();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
-  if (modelInfo?.githubLabel && !agentAlias) return modelInfo.githubLabel;
+  if (modelInfo?.githubLabel && !effectiveAgentAlias) return modelInfo.githubLabel;
 
   try {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    let agent = agentAlias ? registry.getAgentByAlias(agentAlias) : undefined;
+    let agent = effectiveAgentAlias ? registry.getAgentByAlias(effectiveAgentAlias) : undefined;
     if (!agent) {
       agent = registry.getAllAgents().find(a =>
         a.config.supportedModels.some(model => {
@@ -158,7 +178,7 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
 
   const labelsToRemove = [`${implementLabel}-processing`, `${implementLabel}-done`];
   if (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) labelsToRemove.push(oldLlmLabel);
-  const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
+  const labelsToAdd = Array.from(newLlmLabels);
 
   if (epicLabelName) {
     labelsToAdd.push(epicLabelName);
@@ -168,14 +188,12 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
     labelsToAdd.push('auto-merge');
   }
 
-  await safeUpdateLabels(
-    { octokit, owner, repo, issueNumber, logger: labelLogger },
-    labelsToRemove,
-    labelsToAdd
-  );
+  await publishImplementationLabels({
+    octokit, owner, repo, issueNumber, implementLabel, labelsToRemove, labelsToAdd, labelLogger
+  });
 
   try {
-    await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+    await enqueueIssueImplementationJob({ owner, repo, issueNumber, userId: params.userId, triggeringLabel: implementLabel });
   } catch (err) {
     labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; relies on webhook or polling being enabled to process the labeled issue');
   }
@@ -207,7 +225,7 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
   const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue } = params;
 
   const llmLabel = await getLlmLabel(planIssue.model_name, planIssue.agent_alias);
-  const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+  const labelsToAdd = llmLabel ? [llmLabel] : [];
 
   if (epicLabelName) {
     labelsToAdd.push(epicLabelName);
@@ -217,14 +235,19 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
     labelsToAdd.push('auto-merge');
   }
 
-  await safeUpdateLabels(
-    { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(`implement-single-${draftId}-${issueNumber}`) },
-    [`${implementLabel}-processing`, `${implementLabel}-done`],
-    labelsToAdd
-  );
+  await publishImplementationLabels({
+    octokit,
+    owner,
+    repo,
+    issueNumber,
+    implementLabel,
+    labelsToRemove: [`${implementLabel}-processing`, `${implementLabel}-done`],
+    labelsToAdd,
+    labelLogger: logger.withCorrelation(`implement-single-${draftId}-${issueNumber}`)
+  });
 
   try {
-    await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+    await enqueueIssueImplementationJob({ owner, repo, issueNumber, userId: params.userId, triggeringLabel: implementLabel });
   } catch (err) {
     labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; relies on webhook or polling being enabled to process the labeled issue');
   }

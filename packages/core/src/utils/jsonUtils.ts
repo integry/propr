@@ -141,3 +141,49 @@ export function parseLlmJson<T>(text: string): T {
     }
   }
 }
+
+/**
+ * Returns the index of the bracket closing the JSON value opened at `start`,
+ * honoring string literals, or -1 when the value is unbalanced or unterminated.
+ */
+function findBalancedJsonEnd(text: string, start: number): number {
+  const closers: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') closers.push('}');
+    else if (char === '[') closers.push(']');
+    else if (char === '}' || char === ']') {
+      if (closers.pop() !== char) return -1;
+      if (closers.length === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Extracts every top-level balanced JSON object/array substring from LLM output,
+ * in order. Unlike a greedy first-`{`-to-last-`}` match, this survives responses
+ * that contain the same JSON document more than once or trailing prose with braces.
+ */
+export function extractJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    if (char !== '{' && char !== '[') { i++; continue; }
+    const end = findBalancedJsonEnd(text, i);
+    if (end === -1) { i++; continue; }
+    candidates.push(text.slice(i, end + 1));
+    i = end + 1;
+  }
+  return candidates;
+}

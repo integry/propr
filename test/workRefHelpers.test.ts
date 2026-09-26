@@ -8,9 +8,14 @@
  * These tests import the real helpers from llmLogger.ts to catch regressions
  * in the production code directly.
  */
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert';
 import { buildTaskWorkRef, buildAnalysisWorkRef } from '../packages/core/src/utils/llmLogger.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+  await closeConnection();
+});
 
 // ---------------------------------------------------------------------------
 // Task execution flow

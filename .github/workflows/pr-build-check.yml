@@ -9,94 +9,667 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate Changes
-    runs-on: [self-hosted, linux, x64, propr]
+  # One shared classifier decides which surfaces this pull request touches. The
+  # rules live in scripts/ci-change-classification.mjs and are exercised by
+  # test/ciChangeClassification.test.mjs; nothing in this file restates them.
+  classify:
+    name: Classify changed surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: write
-
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      broad: ${{ steps.classify.outputs.broad }}
+      cli: ${{ steps.classify.outputs.cli }}
+      connect: ${{ steps.classify.outputs.connect }}
+      ui: ${{ steps.classify.outputs.ui }}
+      desktop: ${{ steps.classify.outputs.desktop }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the merge base of the captured base and head is a
+          # real commit rather than a shallow boundary.
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Check Node.js
+      - name: Classify changed surfaces
+        id: classify
+        uses: ./.github/actions/classify-changes
+
+  cli-node-matrix:
+    name: CLI Agent Skill (Node ${{ matrix.node }})
+    needs: classify
+    # Only an explicit `false` skips. A failed, cancelled or missing decision
+    # leaves the output empty, which runs the job. `!cancelled()` keeps
+    # superseded-run cancellation intact.
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
+    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Isolate job state from the shared host
+        if: runner.environment == 'self-hosted'
         run: |
-          node --version
-          npm --version
+          set -euo pipefail
+          ./scripts/ci-rootless-preflight.sh
+          job_root="$RUNNER_TEMP/ci"
+          rm -rf -- "$job_root"
+          mkdir -p "$job_root/home" "$job_root/pw"
+          # TMPDIR is a private 0700 directory directly under the sticky /tmp,
+          # the same ancestry tests get on hosted runners. The runner's own
+          # tree can have a group-writable ancestor, which the CLI's private
+          # directory checks rightly reject, and its long path overflows
+          # Chromium's singleton socket path.
+          tmp_dir="$(mktemp -d /tmp/propr-ci.XXXXXX)"
+          {
+            echo "HOME=$job_root/home"
+            echo "DOCKER_CONFIG=$job_root/home/.docker"
+            echo "TMPDIR=$tmp_dir"
+            echo "PROPR_CI_TMPDIR=$tmp_dir"
+            echo "XDG_CONFIG_HOME=$job_root/home/.config"
+            echo "XDG_CACHE_HOME=$job_root/home/.cache"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$job_root/pw"
+          } >> "$GITHUB_ENV"
+
+      - name: Record runner placement
+        run: ./scripts/ci-runner-evidence.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # One clean install and one dependency build now serve every Linux CLI
+      # command for this Node version. The commands that used to run as the
+      # separate `CLI init JSON (Node N)` job are constituents below: each
+      # keeps its own step and outcome, and the gate at the end fails this
+      # check closed if any of them failed or did not run.
+      - name: Build workspace dependencies
+        id: workspace_build
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
+
+      - name: Typecheck and test the CLI Agent Skill
+        id: agent_skill
+        continue-on-error: true
+        run: |
+          npm run typecheck -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+
+      # Ran as its own job and its own `npm ci` until this consolidation. It
+      # needs exactly the dependency build above, so it stays independent of
+      # the Agent Skill result: both constituents report on every run.
+      - name: Parse init JSON output
+        id: init_json
+        continue-on-error: true
+        run: npx tsx --test packages/cli/src/commands/initCommands.test.ts
+
+      - name: Build the CLI and verify packaged skill and native assets
+        id: cli_build
+        continue-on-error: true
+        run: |
+          npm run build -w @propr/cli
+          test -f packages/cli/dist/skill/propr/SKILL.md
+          test -f packages/cli/dist/skill/propr/agents/openai.yaml
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/darwin-x64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-x64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/connect-authority-broker
+          test -f packages/cli/dist/native/prebuilds/darwin-x64/connect-authority-broker
+
+      # Fails closed: anything other than an explicit success for a
+      # constituent, including a skipped or cancelled step, fails the check.
+      - name: Enforce combined CLI validation results
+        if: always()
+        env:
+          WORKSPACE_BUILD_RESULT: ${{ steps.workspace_build.outcome }}
+          AGENT_SKILL_RESULT: ${{ steps.agent_skill.outcome }}
+          INIT_JSON_RESULT: ${{ steps.init_json.outcome }}
+          CLI_BUILD_RESULT: ${{ steps.cli_build.outcome }}
+        run: |
+          status=0
+          require() {
+            echo "$1: ${2:-did not run}"
+            if [ "${2:-}" != success ]; then
+              echo "::error::$1 finished with result '${2:-did not run}'."
+              status=1
+            fi
+          }
+          require "Workspace dependency build" "$WORKSPACE_BUILD_RESULT"
+          require "CLI Agent Skill typecheck and tests" "$AGENT_SKILL_RESULT"
+          require "CLI init JSON output" "$INIT_JSON_RESULT"
+          require "CLI build and packaged asset assertions" "$CLI_BUILD_RESULT"
+          exit "$status"
+
+      - name: Remove job files from the persistent workspace
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          git -C "$GITHUB_WORKSPACE" clean -ffdxq
+          case "${PROPR_CI_TMPDIR:-}" in /tmp/propr-ci.*) rm -rf -- "$PROPR_CI_TMPDIR" ;; esac
+
+  cli-agent-skill-glibc-231:
+    name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
+    runs-on: ubuntu-latest
+    container:
+      image: node:22.22.3-bullseye-slim@sha256:f81e523790f0a2c86827ff6356a28fad2edbe0fe36bc3c4275a4d1e16304bf43
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare the checked-out workspace for the non-root test user
+        run: |
+          test "$(id -u node)" -ne 0
+          chown -R node:node "$GITHUB_WORKSPACE"
+
+      - name: Verify the supported compatibility baseline as non-root
+        run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
+          test "$(uname -m)" = x86_64
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
+          test "$(node -p 'process.platform')" = linux
+          test "$(node -p 'process.arch')" = x64
+          test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+          NON_ROOT
+
+      - name: Install dependencies as non-root
+        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
+
+      - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
+        run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          NON_ROOT
+
+  cli-agent-skill-darwin:
+    name: CLI Agent Skill (Darwin arm64, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the native Darwin Agent Skill workflow
+        run: |
+          test "$(node -p process.platform)" = darwin
+          test "$(node -p process.arch)" = arm64
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
+          npm run typecheck -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          npm run build -w @propr/cli
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          skill_fixture="$RUNNER_TEMP/propr-skill-built-cli"
+          mkdir -p "$skill_fixture/home"
+          skill_targets=(codex claude antigravity opencode)
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/install.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="installed")) process.exit(1)' \
+            "$skill_fixture/install.json"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill status "${skill_targets[@]}" --json > "$skill_fixture/status.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.state!=="current-managed")) process.exit(1)' \
+            "$skill_fixture/status.json"
+          printf '\nBuilt-CLI managed update fixture.\n' >> packages/cli/dist/skill/propr/SKILL.md
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/update.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="updated")) process.exit(1)' \
+            "$skill_fixture/update.json"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill remove "${skill_targets[@]}" --json > "$skill_fixture/remove.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="removed")) process.exit(1)' \
+            "$skill_fixture/remove.json"
+          test ! -e "$skill_fixture/codex/skills/propr"
+          test ! -e "$skill_fixture/home/.claude/skills/propr"
+          test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
+          test ! -e "$skill_fixture/xdg/opencode/skills/propr"
+
+  windows-connect-discovery:
+    name: Windows Connect Discovery (ordinary user, Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.connect != 'false' }}
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build discovery workspaces
+        shell: bash
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/core
+          npm run build -w @propr/local-setup
+          npm run typecheck -w @propr/cli
+          npm run build -w @propr/cli
+
+      - name: Run CLI and API discovery as a non-administrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userName = 'propr-discovery'
+          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+          New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
+          $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
+          if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'discovery test user is an administrator' }
+          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $fixture = Join-Path $env:SystemDrive ("propr-discovery-" + [Guid]::NewGuid().ToString('N'))
+          $stackRoot = Join-Path $fixture 'stack-private-path-SENTINEL'
+          $dataRoot = Join-Path $stackRoot 'data'
+          $envFile = Join-Path $stackRoot '.env'
+          $identityFile = Join-Path $dataRoot 'public-instance-identity.json'
+          $fakePowerShell = Join-Path $fixture 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'propr-discovery.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'propr-discovery.stderr'
+          try {
+            New-Item -ItemType Directory -Path $fixture,$stackRoot,$dataRoot | Out-Null
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            [IO.File]::WriteAllText($envFile, "PROPR_STACK=authorized`n", $utf8)
+            [IO.File]::WriteAllText($identityFile, "{`"schemaVersion`":1,`"publicInstanceIdentity`":`"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`"}`n", $utf8)
+            New-Item -ItemType Directory -Path (Split-Path -Parent $fakePowerShell) -Force | Out-Null
+            [IO.File]::WriteAllBytes($fakePowerShell, [byte[]]@(0x4d, 0x5a))
+            $userIdentity = [Security.Principal.NTAccount]::new("$env:COMPUTERNAME\$userName")
+            $systemIdentity = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+            $adminIdentity = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+            function Set-DiscoveryAcl([string]$Path, [bool]$Directory, [Security.Principal.IdentityReference]$Owner) {
+              $acl = if ($Directory) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
+              $acl.SetOwner($Owner)
+              $acl.SetAccessRuleProtection($true, $false)
+              foreach ($identity in @($userIdentity, $systemIdentity, $adminIdentity)) {
+                $rights = [Security.AccessControl.FileSystemRights]::FullControl
+                $accessType = [Security.AccessControl.AccessControlType]::Allow
+                $rule = if ($Directory) {
+                  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+                  $propagation = [Security.AccessControl.PropagationFlags]::None
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, $rights, $inheritance, $propagation, $accessType)
+                } else {
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, $rights, $accessType)
+                }
+                $acl.AddAccessRule($rule) | Out-Null
+              }
+              Set-Acl -LiteralPath $Path -AclObject $acl
+            }
+            Set-DiscoveryAcl $fixture $true $adminIdentity
+            Set-DiscoveryAcl $stackRoot $true $userIdentity
+            Set-DiscoveryAcl $dataRoot $true $userIdentity
+            Set-DiscoveryAcl $envFile $false $userIdentity
+            Set-DiscoveryAcl $identityFile $false $userIdentity
+            $node = (Get-Command node.exe).Source
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName, $fixture) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout
+            if ($process.ExitCode -ne 0) {
+              Get-Content -LiteralPath $stderr
+              throw "ordinary-user discovery proof exited $($process.ExitCode)"
+            }
+            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'ordinary-user discovery proof wrote stderr' }
+          } finally {
+            Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+          }
+
+  connect-authority-darwin:
+    name: Connect Discovery and Darwin ACL (Node 22)
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.connect != 'false' }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Connect discovery dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build -w @propr/shared
+          npm run build -w @propr/core
+          npm run build -w @propr/local-setup
+          npm run typecheck -w @propr/cli
+          npm run build -w @propr/cli
+
+      - name: Run platform-safe focused Connect suites
+        shell: bash
+        run: node scripts/verify-platform-safe-connect.mjs
+
+      - name: Require complete native Connect authority proof
+        shell: bash
+        run: node scripts/verify-native-connect-authority.mjs
+
+  validate:
+    name: Validate Changes
+    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    env:
+      ACTIONLINT_IMAGE: rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history: the shared classifier diffs the merge base of the
+          # captured base and head, which a shallow checkout may not contain.
+          fetch-depth: 0
+          # Do not leave the token in .git/config on a persistent runner.
+          persist-credentials: false
+
+      - name: Isolate job state from the shared host
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          # RUNNER_TEMP is private to this job on this runner worker and
+          # emptied by the runner, so tests never read or write the host's
+          # /root or shared caches. TMPDIR is this job's own directory under
+          # /tmp, removed by the last step.
+          ./scripts/ci-rootless-preflight.sh
+          job_root="$RUNNER_TEMP/ci"
+          rm -rf -- "$job_root"
+          mkdir -p "$job_root/home" "$job_root/pw"
+          # TMPDIR is a private 0700 directory directly under the sticky /tmp,
+          # the same ancestry tests get on hosted runners. The runner's own
+          # tree can have a group-writable ancestor, which the CLI's private
+          # directory checks rightly reject, and its long path overflows
+          # Chromium's singleton socket path.
+          tmp_dir="$(mktemp -d /tmp/propr-ci.XXXXXX)"
+          {
+            echo "HOME=$job_root/home"
+            echo "DOCKER_CONFIG=$job_root/home/.docker"
+            echo "TMPDIR=$tmp_dir"
+            echo "PROPR_CI_TMPDIR=$tmp_dir"
+            echo "XDG_CONFIG_HOME=$job_root/home/.config"
+            echo "XDG_CACHE_HOME=$job_root/home/.cache"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$job_root/pw"
+          } >> "$GITHUB_ENV"
+
+      - name: Record runner placement
+        run: ./scripts/ci-runner-evidence.sh
+
+      - name: Initialize diagnostic log
+        if: always()
+        run: |
+          echo "Build check diagnostics for run ${{ github.run_id }}, attempt ${{ github.run_attempt }}" > build_log.txt
+          echo "Checkout outcome: ${{ steps.checkout.outcome }}" >> build_log.txt
+
+      - name: Lint GitHub Actions workflows
+        id: actionlint
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- GitHub Actions workflow lint ---"
+            # Standalone shellcheck below owns the release scripts; disabling
+            # actionlint's embedded shellcheck keeps this focused on workflows.
+            # Tool containers have their own limits and no network; the rootless
+            # pilot also caps each worker user and all sibling containers together.
+            if ! docker image inspect "$ACTIONLINT_IMAGE" >/dev/null 2>&1; then
+              for attempt in 1 2 3; do
+                if docker pull "$ACTIONLINT_IMAGE"; then
+                  break
+                fi
+                if [ "$attempt" -eq 3 ]; then
+                  echo "Failed to pull actionlint image after $attempt attempts." >&2
+                  exit 1
+                fi
+                delay=$((attempt * 5))
+                echo "Pull attempt $attempt failed; retrying in $delay seconds..." >&2
+                sleep "$delay"
+              done
+            fi
+            docker run --rm --pull=never \
+              --network none --memory 1g --memory-swap 1g --cpus 1 --pids-limit 256 \
+              --mount "type=bind,source=$GITHUB_WORKSPACE,target=/work,readonly" \
+              --workdir /work \
+              "$ACTIONLINT_IMAGE" \
+              -color -shellcheck=
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Lint release shell scripts
+        id: release_shellcheck
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Release shell script lint ---"
+            docker run --rm \
+              --network none --memory 1g --memory-swap 1g --cpus 1 --pids-limit 256 \
+              --mount "type=bind,source=$GITHUB_WORKSPACE,target=/work,readonly" \
+              --workdir /work \
+              --entrypoint shellcheck \
+              "$ACTIONLINT_IMAGE" \
+              --exclude=SC2016 \
+              scripts/build-images.sh \
+              scripts/ci-install-chromium.sh \
+              scripts/ci-redis.sh \
+              scripts/ci-runner-evidence.sh \
+              scripts/ci-rootless-preflight.sh \
+              scripts/smoke-test-images.sh \
+              scripts/smoke-test-preview-runtime-images.sh \
+              scripts/smoke-test-sqlite-startup.sh \
+              scripts/verify-antigravity-image.sh
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Enforce pre-setup validation
+        id: preflight
+        if: steps.actionlint.outcome == 'failure' || steps.release_shellcheck.outcome == 'failure'
+        run: |
+          echo "Pre-setup validation failed; see captured lint output above." | tee -a build_log.txt >&2
+          exit 1
+
+      - name: Set up Node.js
+        id: node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Check toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Toolchain ---"
+            node --version
+            npm --version
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Install Dependencies
         id: install
-        run: npm ci
-
-      - name: Run Fast Unit Tests
-        id: unit_tests
         run: |
-          echo "Running fast unit tests (no Redis/Docker dependencies)..."
-          npm run test:unit
-          echo "✅ Fast unit tests passed"
+          set -euo pipefail
+          {
+            echo
+            echo "--- Dependency installation ---"
+            npm ci
+          } > >(tee -a build_log.txt) 2>&1
 
-      - name: Run Hosted Tunnel Regression Tests
-        id: tunnel_tests
-        run: |
-          echo "Running hosted tunnel regression tests..."
-          # Build @propr/shared first: the tsx and UI tests below import from it,
-          # so a stale or missing dist in a clean checkout would fail or use old
-          # output. Build once, up front, before anything that depends on it.
-          npm run build -w @propr/shared
-          PROPR_DEMO_MODE=true npx tsx --test \
-            test/orchestratorConfig.test.mjs \
-            packages/cli/src/commands/tunnelCommand.test.ts \
-            test/orchestratorTunnelLifecycle.test.mjs \
-            test/orchestratorTunnelStatus.test.mjs \
-            test/orchestratorProprUrlsDrift.test.ts \
-            test/routingWebSocketProtocol.test.ts \
-            test/routingWebSocketIntakeService.test.ts \
-            packages/api/test/corsValidation.test.ts
-          npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
-          echo "✅ Hosted tunnel regression tests passed"
+      - name: Verify release-candidate metadata
+        id: release_metadata
+        env:
+          RELEASE_CANDIDATE: 'true'
+        run: npm run release:verify
 
+      # The focused MCP, fast-unit, hosted-tunnel and notification suites used
+      # to run here as well. `Run Full Test Suite` discovers and runs every one
+      # of those files, plus the propr-ui vitest files their UI halves name, on
+      # every pull request. test/ciWorkflowDeduplication.test.mjs proves that
+      # mapping file by file and fails if any of them stops being covered.
+      # `npm run test:unit`, `test:mcp`, `test:hosted-tunnel`,
+      # `test:notifications` and `test:visual-previews` stay available for
+      # local, focused runs.
+
+      # cli:pack builds @propr/shared, @propr/local-setup and @propr/cli into
+      # the staging package itself, so it needs no separate workspace build.
       - name: Verify CLI Release Package
         id: cli_pack
         run: |
-          echo "Verifying propr-cli release package..."
-          npm run cli:pack
-          echo "✅ propr-cli release package verified"
+          set -euo pipefail
+          {
+            echo
+            echo "--- CLI release package ---"
+            echo "Verifying propr-cli release package..."
+            npm run cli:pack
+            echo "✅ propr-cli release package verified"
+          } > >(tee -a build_log.txt) 2>&1
+          # cli:pack builds @propr/shared, @propr/local-setup and @propr/cli.
+          # Recorded only after it succeeded, so the changed-area checks below
+          # can reuse this job's own output instead of running tsc over
+          # byte-identical sources again. Nothing is shared between jobs,
+          # runners or commits: the flag lives in this job's environment and is
+          # re-verified against the built files on use.
+          echo "PROPR_CLI_WORKSPACE_DIST_READY=1" >> "$GITHUB_ENV"
 
+      # One shared classifier, the same rules the gating jobs above used, so a
+      # path can never mean one thing here and another thing there. This job
+      # runs for every pull request, so an unresolvable change set fails here
+      # rather than silently reporting the conservative fallback with empty
+      # file lists.
       - name: Detect Changes
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: ./.github/actions/classify-changes
         with:
-          filters: |
-            core:
-              - 'src/**'
-              - 'Dockerfile*'
-              - 'package*.json'
-              - 'packages/shared/**'
-            ui:
-              - 'propr-ui/**'
-              - 'packages/shared/**'
-            docs:
-              - 'docs/**'
-            api:
-              - 'packages/api/**'
-              - 'packages/shared/**'
-            core_package:
-              - 'packages/core/**'
-              - 'packages/shared/**'
+          require-resolution: 'true'
+
+      # The PWA and mobile browser smoke test below runs Playwright `*.pw.ts`
+      # specs. Full-suite discovery matches only `*.test.*`/`*.spec.*`, and the
+      # propr-ui vitest config excludes the Playwright directory, so these
+      # assertions exist nowhere else and stay here.
+      - name: Install Chromium for PWA Smoke Test
+        # `!= 'false'` and not `== 'true'`: an empty decision is never read as
+        # permission to skip.
+        if: steps.filter.outputs.ui != 'false'
+        run: ./scripts/ci-install-chromium.sh
+
+      - name: Run PWA and Mobile Browser Smoke Test
+        if: steps.filter.outputs.ui != 'false'
+        run: |
+          set -euo pipefail
+          # The Playwright web server builds propr-ui, which imports
+          # @propr/shared through its package main. CLI packaging above already
+          # built it from this same checkout and toolchain; build it here only
+          # if that output is not present. @propr/client needs no build: the UI
+          # vite config aliases it to the workspace source.
+          test -f packages/shared/dist/index.js || npm run build -w @propr/shared
+          npm run test:browser --workspace=propr-ui
 
       - name: Run Checks
         id: build
         continue-on-error: true
+        env:
+          CORE_PACKAGE_SOURCE_FILES: ${{ steps.filter.outputs.core_package_source_files }}
+          # Decisions reach the script as environment data, and each section
+          # runs unless its surface was explicitly reported inapplicable.
+          FILTER_CORE: ${{ steps.filter.outputs.core }}
+          FILTER_UI: ${{ steps.filter.outputs.ui }}
+          FILTER_DOCS: ${{ steps.filter.outputs.docs }}
+          FILTER_CORE_PACKAGE: ${{ steps.filter.outputs.core_package }}
+          FILTER_CLI: ${{ steps.filter.outputs.cli }}
+          FILTER_API: ${{ steps.filter.outputs.api }}
         run: |
-          # Initialize log
+          # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
           EXIT_CODE=0
-          echo "Starting validation process..." > build_log.txt
+          echo "Starting changed-area validation process..." >> build_log.txt
           SHARED_BUILT=0
           SHARED_FAILED=0
-          CORE_PKG_BUILT=0
-          CORE_PKG_FAILED=0
+          LOCAL_SETUP_BUILT=0
+          LOCAL_SETUP_FAILED=0
+          CORE_BUILD_ATTEMPTED=0
+          CORE_BUILD_FAILED=0
+
+          # The CLI packaging step above already built @propr/shared and
+          # @propr/local-setup from this job's own checkout, on this runner,
+          # with this toolchain, and no step since then changed their sources.
+          # Reuse them only when that step recorded success and the built entry
+          # point is actually present; otherwise build here as before.
+          if [ "${PROPR_CLI_WORKSPACE_DIST_READY:-}" = '1' ] && [ -f packages/shared/dist/index.js ]; then
+            SHARED_BUILT=1
+            echo "Reusing this job's @propr/shared build from CLI packaging." >> build_log.txt
+          fi
+          if [ "${PROPR_CLI_WORKSPACE_DIST_READY:-}" = '1' ] && [ -f packages/local-setup/dist/index.js ]; then
+            LOCAL_SETUP_BUILT=1
+            echo "Reusing this job's @propr/local-setup build from CLI packaging." >> build_log.txt
+          fi
 
           build_shared_once() {
             if [ $SHARED_BUILT -eq 1 ]; then
@@ -114,24 +687,40 @@ jobs:
             return 0
           }
 
+          build_local_setup_once() {
+            if [ $LOCAL_SETUP_BUILT -eq 1 ]; then
+              return $LOCAL_SETUP_FAILED
+            fi
+
+            echo "Building @propr/local-setup (dependency)..."
+            LOCAL_SETUP_OUTPUT=$(npm run build -w @propr/local-setup 2>&1) || {
+              LOCAL_SETUP_FAILED=1
+              LOCAL_SETUP_BUILT=1
+              return 1
+            }
+
+            LOCAL_SETUP_BUILT=1
+            return 0
+          }
+
           build_core_package_once() {
-            if [ $CORE_PKG_BUILT -eq 1 ]; then
-              return $CORE_PKG_FAILED
+            if [ $CORE_BUILD_ATTEMPTED -eq 1 ]; then
+              return $CORE_BUILD_FAILED
             fi
 
             echo "Building @propr/core (dependency)..."
             CORE_BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
-              CORE_PKG_FAILED=1
-              CORE_PKG_BUILT=1
+              CORE_BUILD_FAILED=1
+              CORE_BUILD_ATTEMPTED=1
               return 1
             }
 
-            CORE_PKG_BUILT=1
+            CORE_BUILD_ATTEMPTED=1
             return 0
           }
 
           # --- CORE ---
-          if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
+          if [ "${FILTER_CORE:-}" != 'false' ]; then
             echo -e "\n--- Core Service: Lint & Build ---" >> build_log.txt
             CORE_FAILED=0
 
@@ -146,6 +735,16 @@ jobs:
               echo "✅ Core Lint passed" >> build_log.txt
             fi
 
+            # The root tsconfig maps @propr/core and @propr/shared to their
+            # sources, but packages/api imports @propr/local-setup through its
+            # published types, so that one has to exist as built output.
+            if ! build_local_setup_once; then
+              echo "❌ Local Setup Package Build FAILED (core dependency)" >> build_log.txt
+              echo "$LOCAL_SETUP_OUTPUT" >> build_log.txt
+              CORE_FAILED=1
+              EXIT_CODE=1
+            fi
+
             BUILD_OUTPUT=$(npm run build 2>&1) || {
               echo "❌ Core Source Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
@@ -158,8 +757,8 @@ jobs:
           fi
 
           # --- UI ---
-          if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
-            echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
+          if [ "${FILTER_UI:-}" != 'false' ]; then
+            echo -e "\n--- UI: Typecheck, Lint & Build ---" >> build_log.txt
             UI_FAILED=0
 
             # Dependencies already installed in earlier step
@@ -168,6 +767,30 @@ jobs:
               echo "$SHARED_OUTPUT" >> build_log.txt
               UI_FAILED=1
               EXIT_CODE=1
+            fi
+
+            if [ $UI_FAILED -eq 0 ]; then
+              CLIENT_OUTPUT=$(npm run typecheck -w @propr/client 2>&1 && npm test -w @propr/client 2>&1 && npm run build -w @propr/client 2>&1) || {
+                echo "❌ Client Package Validation FAILED (UI transport dependency)" >> build_log.txt
+                echo "$CLIENT_OUTPUT" >> build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ Client Package validation passed" >> build_log.txt
+              fi
+            fi
+
+            if [ $UI_FAILED -eq 0 ]; then
+              TYPECHECK_OUTPUT=$(npm run typecheck -w propr-ui 2>&1) || {
+                echo "❌ UI Typecheck FAILED" >> build_log.txt
+                echo "$TYPECHECK_OUTPUT" >> build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ UI Typecheck passed" >> build_log.txt
+              fi
             fi
 
             if [ $UI_FAILED -eq 0 ]; then
@@ -195,7 +818,7 @@ jobs:
           fi
 
           # --- DOCS ---
-          if [ "${{ steps.filter.outputs.docs }}" == 'true' ]; then
+          if [ "${FILTER_DOCS:-}" != 'false' ]; then
             echo -e "\n--- Docs: Typecheck & Build ---" >> build_log.txt
             DOCS_FAILED=0
             
@@ -234,48 +857,85 @@ jobs:
           fi
 
           # --- CORE PACKAGE ---
-          if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
+          if [ "${FILTER_CORE_PACKAGE:-}" != 'false' ]; then
             echo -e "\n--- Core Package: Build & Lint ---" >> build_log.txt
-            CORE_PKG_FAILED=0
+            CORE_SECTION_FAILED=0
 
             # Dependencies already installed in earlier step
             if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (core dependency)" >> build_log.txt
               echo "$SHARED_OUTPUT" >> build_log.txt
-              CORE_PKG_FAILED=1
+              CORE_SECTION_FAILED=1
               EXIT_CODE=1
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 1. Build Verification
               if ! build_core_package_once; then
                 echo "❌ Core Package Build FAILED" >> build_log.txt
                 echo "$CORE_BUILD_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               fi
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Build passed" >> build_log.txt
               fi
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
-              # 2. Lint Verification
-              echo "Linting @propr/core..."
-              LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
+              # 2. Lint added and modified package sources. The package currently
+              # has warnings in untouched files, so a whole-package lint would
+              # fail unrelated changes when --max-warnings is zero.
+              echo "Linting changed @propr/core sources..."
+              LINT_OUTPUT=$(node --input-type=module <<'NODE' 2>&1
+                import { spawnSync } from 'node:child_process';
+
+                const serializedFiles = process.env.CORE_PACKAGE_SOURCE_FILES?.trim();
+                const files = JSON.parse(serializedFiles || '[]')
+                  .map(file => file.replace(/^packages\/core\//, ''));
+
+                if (files.length === 0) {
+                  console.log('No added or modified @propr/core source files to lint.');
+                  process.exit(0);
+                }
+
+                const result = spawnSync(
+                  'npx',
+                  ['eslint', ...files, '--max-warnings', '0'],
+                  { cwd: 'packages/core', stdio: 'inherit' },
+                );
+                if (result.error) throw result.error;
+                process.exit(result.status ?? 1);
+          NODE
+              ) || {
                 echo "❌ Core Package Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               }
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Lint passed" >> build_log.txt
               fi
             fi
           fi
 
+          # --- CLI ---
+          if [ "${FILTER_CLI:-}" != 'false' ]; then
+            echo -e "\n--- CLI: Lint ---" >> build_log.txt
+            CLI_FAILED=0
+            CLI_LINT_OUTPUT=$(npm run lint -w @propr/cli -- --max-warnings 0 2>&1) || {
+              echo "❌ CLI Lint FAILED" >> build_log.txt
+              echo "$CLI_LINT_OUTPUT" >> build_log.txt
+              CLI_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $CLI_FAILED -eq 0 ]; then
+              echo "✅ CLI Lint passed" >> build_log.txt
+            fi
+          fi
+
           # --- API ---
-          if [ "${{ steps.filter.outputs.api }}" == 'true' ]; then
+          if [ "${FILTER_API:-}" != 'false' ]; then
             echo -e "\n--- API: Build & Lint ---" >> build_log.txt
             API_FAILED=0
 
@@ -329,49 +989,164 @@ jobs:
 
           exit $EXIT_CODE
 
-      - name: Post Failure Comment
-        if: steps.build.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Finalize failure diagnostics
+        if: always() && (failure() || steps.build.outcome == 'failure')
         run: |
-          LOG_FILE=build_log.txt
-          if [ ! -f "$LOG_FILE" ]; then
-            printf '%s\n' 'Log file missing.' > "$LOG_FILE"
-          fi
+          {
+            echo
+            echo "--- Stage outcomes ---"
+            echo "Workflow lint: ${{ steps.actionlint.outcome }}"
+            echo "Release shell lint: ${{ steps.release_shellcheck.outcome }}"
+            echo "Pre-setup gate: ${{ steps.preflight.outcome }}"
+            echo "Node setup: ${{ steps.node.outcome }}"
+            echo "Toolchain: ${{ steps.toolchain.outcome }}"
+            echo "Dependency install: ${{ steps.install.outcome }}"
+            echo "Release metadata: ${{ steps.release_metadata.outcome }}"
+            echo "CLI packaging: ${{ steps.cli_pack.outcome }}"
+            echo "Change detection: ${{ steps.filter.outcome }}"
+            echo "Changed-area checks: ${{ steps.build.outcome }}"
+          } >> build_log.txt
 
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
+      - name: Sanitize failure log
+        if: always() && (failure() || steps.build.outcome == 'failure')
+        env:
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+        run: node scripts/sanitize-ci-output.mjs build_log.txt build_log.sanitized.txt
 
-          log = Path("build_log.txt").read_text()
-          if len(log) > 60000:
-              log = log[:60000] + "\n\n...(truncated)"
+      - name: Remove raw build output
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/build_log.txt"
 
-          run_url = os.environ["RUN_URL"]
-          body = "\n".join([
-              "### Checks Failed",
-              "Linting or build errors were detected.",
-              "",
-              "<details>",
-              "<summary>View Logs</summary>",
-              "",
-              "~~~text",
-              log,
-              "~~~",
-              "</details>",
-              "",
-              f"**[View Workflow]({run_url})**",
-          ])
-
-          Path("failure_comment.md").write_text(body)
-          PY
-          gh api \
-            --method POST \
-            repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-            -f body="$(cat failure_comment.md)"
+      - name: Upload failure log
+        if: always() && (failure() || steps.build.outcome == 'failure')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build_log.sanitized.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Fail Job
         if: steps.build.outcome == 'failure'
         run: exit 1
+
+      # Self-hosted only, also on failure and cancellation: removes this job's
+      # untracked and ignored files (node_modules, dist, logs) from its own
+      # persistent workspace. .git stays for the checkout post step.
+      - name: Remove job files from the persistent workspace
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          git -C "$GITHUB_WORKSPACE" clean -ffdxq
+          case "${PROPR_CI_TMPDIR:-}" in /tmp/propr-ci.*) rm -rf -- "$PROPR_CI_TMPDIR" ;; esac
+
+  comment:
+    name: Report Build Failure
+    needs: validate
+    if: >-
+      ${{ always() && needs.validate.result == 'failure' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download failure log
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Post failure comment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let log = 'Log file missing.';
+            try { log = fs.readFileSync('build_log.sanitized.txt', 'utf8'); } catch {}
+            log = log.replace(/~~~/g, '~~\u200b~');
+            if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
+            const marker = '<!-- propr-build-check-results -->';
+            const body = [
+              marker,
+              '### Checks Failed',
+              'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
+              '',
+              '<details>',
+              '<summary>View Logs</summary>',
+              '',
+              '~~~text',
+              log,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  compatibility-guard:
+    # Stable aggregate over the CLI and Connect compatibility jobs above. It is
+    # not an unconditional green placeholder: each constituent must have
+    # succeeded, or have been skipped because the shared classifier proved its
+    # surface inapplicable. A failure, a cancellation or an unexpected skip
+    # still fails this check.
+    name: CLI and Connect Compatibility Guard
+    needs:
+      - classify
+      - cli-node-matrix
+      - cli-agent-skill-glibc-231
+      - cli-agent-skill-darwin
+      - windows-connect-discovery
+      - connect-authority-darwin
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce compatibility results
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLASSIFY_STATUS: ${{ needs.classify.outputs.status }}
+          CLI_DECISION: ${{ needs.classify.outputs.cli }}
+          CONNECT_DECISION: ${{ needs.classify.outputs.connect }}
+          CLI_MATRIX_RESULT: ${{ needs.cli-node-matrix.result }}
+          CLI_GLIBC_RESULT: ${{ needs.cli-agent-skill-glibc-231.result }}
+          CLI_DARWIN_RESULT: ${{ needs.cli-agent-skill-darwin.result }}
+          CONNECT_WINDOWS_RESULT: ${{ needs.windows-connect-discovery.result }}
+          CONNECT_DARWIN_RESULT: ${{ needs.connect-authority-darwin.result }}
+        run: |
+          set -euo pipefail
+          echo "Classifier job: ${CLASSIFY_RESULT:-did not run} (status=${CLASSIFY_STATUS:-none})"
+          echo "CLI decision: ${CLI_DECISION:-none}; Connect decision: ${CONNECT_DECISION:-none}"
+          classifier_trusted=0
+          if [ "${CLASSIFY_RESULT:-}" = success ] && [ "${CLASSIFY_STATUS:-}" = ok ]; then
+            classifier_trusted=1
+          fi
+          status=0
+          # $3 is the decision for this job's surface. A skip is acceptable only
+          # when a trusted classifier explicitly reported that surface as false.
+          require() {
+            echo "$1: ${2:-did not run}"
+            if [ "${2:-}" = success ]; then
+              return
+            fi
+            if [ "${2:-}" = skipped ] && [ "$classifier_trusted" -eq 1 ] && [ "${3:-}" = false ]; then
+              echo "::notice::$1 was skipped: the shared classifier proved its surface inapplicable."
+              return
+            fi
+            echo "::error::$1 finished with result '${2:-did not run}'."
+            status=1
+          }
+          require 'CLI Agent Skill matrix' "${CLI_MATRIX_RESULT:-}" "${CLI_DECISION:-}"
+          require 'CLI Agent Skill glibc 2.31' "${CLI_GLIBC_RESULT:-}" "${CLI_DECISION:-}"
+          require 'CLI Agent Skill Darwin' "${CLI_DARWIN_RESULT:-}" "${CLI_DECISION:-}"
+          require 'Windows Connect discovery' "${CONNECT_WINDOWS_RESULT:-}" "${CONNECT_DECISION:-}"
+          require 'Darwin Connect authority' "${CONNECT_DARWIN_RESULT:-}" "${CONNECT_DECISION:-}"
+          exit "$status"

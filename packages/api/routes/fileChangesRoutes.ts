@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import {
   getStoredFileChanges,
@@ -12,15 +13,16 @@ import {
 
 interface FileChangesRoutesDeps {
   db: Knex;
+  normalizeJobReferences?: boolean;
 }
 
 export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
   const { db } = deps;
 
-  async function getFileChanges(req: Request, res: Response): Promise<void> {
+  async function getFileChanges(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
-      const taskId = normalizeTaskId(jobId);
+      const taskId = deps.normalizeJobReferences === false ? jobId : normalizeTaskId(jobId);
 
       console.log(`[file-changes] jobId: ${jobId}, taskId: ${taskId}`);
 

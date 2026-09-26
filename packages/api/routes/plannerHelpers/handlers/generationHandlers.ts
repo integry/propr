@@ -111,7 +111,7 @@ export function createRefineHandler(deps: RefineDeps) {
           });
           console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
         } catch (error) {
-          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
+          console.error('[refine] Plan refinement failed', { draftId, error });
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
             status: 'review', updated_at: deps.db.fn.now()
           });

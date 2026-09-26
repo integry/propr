@@ -110,7 +110,7 @@ function processCodexItemCompleted(
   switch (item.type) {
     case 'reasoning':
       if (item.text) {
-        events.push({ type: 'thought', content: item.text, timestamp });
+        events.push({ type: 'thought', content: item.text, internalReasoning: true, timestamp });
       }
       break;
     case 'command_execution':

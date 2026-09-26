@@ -233,16 +233,17 @@ ${currentIssueData.body || 'No description provided'}
 2. Use \`gh issue view ${issueRef.number} --comments\` to read all issue comments for additional context
    (Note: Operational comments from propr bot are automatically filtered out)
 3. You are working in the directory: ${worktreePath}
-4. Make your changes and commit them to the current branch: ${branchName}
-5. When creating a Pull Request, use EXACTLY these details:
+4. Make your changes directly in the worktree. Do not commit them; ProPR handles commits after you finish.
+5. Do not create a Pull Request. ProPR will create it using EXACTLY these details:
    - Repository: ${issueRef.repoOwner}/${issueRef.repoName}
    - Head branch: ${branchName}
    - Base branch: ${baseBranch}
    - DO NOT hallucinate or guess repository names
 6. The PR should reference issue #${issueRef.number}
-7. Test your changes thoroughly before creating the PR
+7. Test your changes thoroughly
+8. In your final response, do not report that changes are uncommitted or that you did not create a commit
 
-Please analyze the complete issue and comments, implement a solution, and create a Pull Request with the exact repository information provided above.`;
+Please analyze the complete issue and comments and implement a solution. ProPR will commit, push, and create the Pull Request.`;
 
     return prompt;
 }

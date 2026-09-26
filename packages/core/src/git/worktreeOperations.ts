@@ -1,8 +1,11 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
+import { createHooklessGit } from './hooklessGit.js';
+import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
+import { redactAuthenticatedGitUrl } from './repoBranching.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -54,7 +57,7 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         await createRetentionMarker(worktreePath, retentionHours);
     }
 
-    const git: SimpleGit = simpleGit(localRepoPath);
+    const git: SimpleGit = createHooklessGit(localRepoPath);
 
     try {
         await git.raw(['worktree', 'remove', worktreePath, '--force']);
@@ -263,8 +266,8 @@ export async function safePruneWorktrees(localRepoPath: string, minAgeHours: num
 
 export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
     try {
-        const { execSync } = await import('child_process');
-        execSync(`sudo chown -R 1000:1000 "${worktreePath}"`, {
+        const { execFileSync } = await import('child_process');
+        execFileSync('sudo', ['chown', '-R', '1000:1000', '--', worktreePath], {
             stdio: 'inherit',
             timeout: 10000
         });
@@ -335,18 +338,23 @@ export async function setupWorktreeRemote(worktreeGit: SimpleGit, parentGit: Sim
 
             if (originRemote && originRemote.refs.fetch) {
                 await worktreeGit.addRemote('origin', originRemote.refs.fetch);
-                logger.info({ worktreePath, remoteUrl: originRemote.refs.fetch }, 'Successfully added origin remote to worktree');
+                logger.info({ worktreePath, remoteName: originRemote.name }, 'Successfully added origin remote to worktree');
             } else {
-                logger.error({ worktreePath, parentRemotes }, 'Could not find origin remote in parent repository');
+                logger.error({ worktreePath, remoteNames: parentRemotes.map(remote => remote.name) }, 'Could not find origin remote in parent repository');
             }
         } else {
             logger.debug({ worktreePath }, 'Origin remote already exists in worktree');
         }
     } catch (remoteError) {
-        logger.error({ worktreePath, error: (remoteError as Error).message, stack: (remoteError as Error).stack }, 'Failed to set up remote in worktree - push operations WILL fail');
+        const error = remoteError as Error;
+        logger.error({
+            worktreePath,
+            error: redactAuthenticatedGitUrl(error.message),
+            stack: error.stack ? redactAuthenticatedGitUrl(error.stack) : undefined
+        }, 'Failed to set up remote in worktree - push operations WILL fail');
     }
 }
 
 export function getWorktreePath(owner: string, repoName: string, worktreeDirName: string): string {
-    return path.join(WORKTREES_BASE_PATH, owner, repoName, worktreeDirName);
+    return resolveRepositoryWorktreePath(WORKTREES_BASE_PATH, owner, repoName, worktreeDirName);
 }

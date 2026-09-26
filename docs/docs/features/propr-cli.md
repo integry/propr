@@ -14,7 +14,9 @@ This page documents the end-user CLI. For developing or operating ProPR itself f
 npm install -g propr-cli
 ```
 
-The host CLI requires **Node.js 22 or newer** (the Docker launcher image is separate and unaffected). The package is published at [npmjs.com/package/propr-cli](https://www.npmjs.com/package/propr-cli); the installed command is `propr`.
+The host CLI is validated on **Node.js 22 and 24** (the Docker launcher image is separate and unaffected). The published package engine minimum remains Node.js `>=22`. The package is published at [npmjs.com/package/propr-cli](https://www.npmjs.com/package/propr-cli); the installed command is `propr`.
+
+Linux `amd64` is the native, recommended production path. The CLI and launcher have also been exercised successfully on Apple Silicon macOS through Docker Desktop running the published Linux `amd64` images under emulation; native `arm64` images are not yet available. See [System Requirements](../tutorials/setup.md#system-requirements) for the full host contract.
 
 ## Local Stack Control Plane
 
@@ -45,6 +47,8 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 |--------|-------------|
 | `--root <dir>` | Stack root directory where `.env`, `data/`, `logs/`, and `repos/` live (default: current directory) |
 | `--no-tui` | Skip the full-screen wizard and prompt line-by-line instead (use over SSH or in shells without raw-mode support) |
+| `--install-skill <targets>` | Install the ProPR Operator Agent Skill for comma-separated explicit targets |
+| `--no-skill` | Do not offer Agent Skill installation |
 | `--skip-remote-image-check` | Skip the slow registry round-trip that checks whether stack images already exist |
 
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
@@ -54,6 +58,22 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [on|off] [--url <url>]` toggles [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the state to print the current setting).
 
+### Agent Skill
+
+The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity CLI, OpenCode, and Vibe. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, or `all`; status defaults to all targets:
+
+```bash
+propr skill install codex claude  # install, adopt an exact copy, or update a managed copy
+propr skill status                # inspect all target paths and content identities
+propr skill remove codex          # remove an unmodified ProPR-managed copy
+```
+
+Interactive `propr setup` detects configured tools, shows their exact target paths, and offers installation once; declining the prompt or passing `--no-skill` leaves them unchanged. Setup never installs the skill without this opt-in. When stdin is non-interactive, it does not infer targets or write to agent homes unless `--install-skill <comma-separated-targets>` explicitly names them.
+
+Skill operations refuse unsafe paths and, by default, refuse to overwrite or remove foreign or user-modified content. `propr skill install <targets> --force` first moves replaced content to a timestamped sibling backup. Removal without `--force` accepts only unmodified ProPR-managed copies and preserves the removed tree as a timestamped backup; forced removal also preserves foreign or modified content as a backup rather than deleting it.
+
+The skill treats GitHub as the primary orchestration surface and the CLI as an optional aid for installation, host lifecycle, and observability. AI agents using it must not recursively delegate ProPR-orchestration work back into ProPR.
+
 :::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
 :::
@@ -62,7 +82,7 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge behind the shared App, routing WebSocket, relay tokens, and managed UI tunnels; see [GitHub Authentication](../operations/github-auth.md) for the token configuration details.
 
-**The easiest path is `propr setup`:** choose **Token relay** at the GitHub-authentication step and it enrolls for you — it reuses your `propr login` token, discovers your installation (auto-selecting when there is exactly one, prompting when there are several), mints the relay token, and writes `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, and `GH_INSTALLATION_ID` to the stack `.env`. If you are not logged in yet, the line-by-line wizard offers to run `propr login` first. No separate enroll step is needed.
+**The easiest path is `propr setup`:** accept **ProPR Connect (default ProPR GitHub App)** and setup logs in through the GitHub CLI when needed, offers to install the official App when none is available, discovers the installation, mints the relay token, and writes the relay, routing, and Connect browser-login settings to the stack `.env`. A fresh stack also uses the verified GitHub user as its initial administrator and trigger whitelist. No separate OAuth App or enroll command is needed.
 
 To manage relay tokens directly — or to enroll outside the wizard — use `propr relay`. Run these from the initialized stack directory (the one holding `.env`), so the token is written to the right `.env`:
 
@@ -84,6 +104,7 @@ The hosted ProPR UI at `https://app.propr.dev` can drive a locally-running stack
 | `propr tunnel on` | Start the cloudflared sidecar; requires a configured token and a running stack (`--force` starts it ahead of the stack) |
 | `propr tunnel off` | Stop the sidecar; the token and env values are left untouched |
 | `propr tunnel verify` | Check the sidecar plus the public `/api/status` (expects OK/auth), `/` (expects 404), and `/socket.io/` (expects reachable) |
+| `propr connect status --json --root <explicit-root>` | Emit the bounded secret-free desktop discovery contract and verify that the remote API origin and public stack identity match |
 
 Architecture, the full configuration, enablement semantics, verification, and troubleshooting live on the dedicated [Hosted UI Tunnel](../operations/hosted-ui-tunnel.md) page — including the two facts that catch operators most often: `PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare credential to keep out of source control and logs, and enabling the tunnel on an already-running stack requires `propr start --restart` (or `propr tunnel setup --start`) before OAuth redirects and cookies use the hosted URLs.
 
@@ -129,6 +150,8 @@ propr runtime packages list
 propr runtime packages add chromium ffmpeg --wait
 propr runtime packages remove ffmpeg --wait
 propr runtime packages apply --wait
+propr runtime packages verify
+propr runtime packages verify --json
 propr runtime status --json
 ```
 
@@ -137,6 +160,8 @@ Use runtime packages for Debian system tools needed across repositories or by a 
 The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 
 Package search and validation inspect the unified agent image with the local Docker daemon, so the image must be present locally (pulled by the launcher/worker or built with `scripts/build-images.sh`) before the package UI or these CLI commands can be used. A remote-only registry reference is not enough.
+
+Run `propr runtime packages verify` after replacing or pulling an agent base image, after applying runtime-package changes, or when local Docker images may have been pruned. Verification is read-only: it compares desired and active profiles, checks the current base-image lineage and derived-image labels/final user, and queries installed Debian packages in a short-lived container with networking disabled. It does not install packages or rebuild images. An unhealthy result exits nonzero and identifies missing images or packages, pinned-version mismatches, stale lineage, and profile drift; repair these with `propr runtime packages apply --wait` and verify again. An empty profile reports `DISABLED` successfully.
 
 ## Plans
 
@@ -183,6 +208,9 @@ The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number
 propr task list                            # All tasks
 propr task list -s processing              # Filter by status
 propr task list --search "auth" -l 100     # Search with a result limit
+propr task inspect                         # Active tasks, including queued work
+propr task inspect --state queued          # One exact server lifecycle state
+propr task inspect <task-id>               # Current details and full run history
 propr task get <task-id>                   # Details with run history
 propr task stop <task-id>                  # Stop a running task
 propr task delete <task-id> --force        # Force-delete an active task
@@ -191,17 +219,52 @@ propr task revert owner/repo <pr> <sha> <issue>   # Revert a commit from a PR
 
 Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`. These are queue-level filters; task details additionally display the finer-grained worker states `claude_execution` ("Executing", agent run for any agent type) and `post_processing` (see [Worker Runtime](../architecture/worker-runtime.md)).
 
+### Inspect active tasks
+
+`propr task inspect` is the read-only view for operators and automation. With
+no ID, it sends explicit server-side filters for every canonical active state:
+`pending`, `queued`, `processing`, `claude_execution`, and `post_processing`.
+Use `--state <state>` to request one exact lifecycle state, `--project
+owner/repo` to restrict the repository, and `--limit` to cap the combined
+result. The human table separates Queued, Processing, Executing, and
+Post-processing work and includes repository, title, agent/model, elapsed time,
+and last update.
+
+With a task ID, the same command uses the existing task details/history endpoint:
+
+```bash
+propr task inspect <task-id>
+propr task inspect <task-id> --json
+```
+
+`--json` has a deterministic, versioned contract. Lists use `version`,
+`kind: "task-list"`, `states`, `tasks`, and `total`; each task always has `id`,
+`repository`, `title`, `state`, `agent`, `model`, `elapsedMs`, and `updatedAt`.
+Details use `kind: "task-detail"` and a `task` object containing those identity
+and timing fields plus status flags, failure/PR data, `details`, and the full
+`history`. Missing scalar values are `null`, timestamps are ISO 8601, and
+durations are integer milliseconds.
+
 ## Repositories
 
 ```bash
 propr repo list                              # Monitored repositories
 propr repo add owner/repo -a "Alias" -b dev  # Add with alias and base branch
+propr repo add owner/repo --auto-ci-followup # Enable automatic follow-up for failed CI
 propr repo remove owner/repo
 propr repo toggle owner/repo --enable        # Enable/disable monitoring
+propr repo toggle owner/repo --auto-ci-followup     # Enable failed-CI follow-up
+propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-up
+propr repo toggle owner/repo --visual-previews --preview-types image,video
+propr repo toggle owner/repo --no-visual-previews
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
 ```
+
+Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.
+
+Visual previews are also per-repository and **off by default**. `--preview-types` accepts `image`, `video`, or `image,video`; use `--preview-instructions` to add project-specific capture details. See [Visual Previews](./visual-previews.md) for generation and publication behavior.
 
 ## Agents
 
@@ -209,17 +272,23 @@ propr repo status                            # Indexing status for all repos
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
 propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
-propr agent add opencode -t opencode -m opencode-deepseek-v4-flash-free \
-  -d opencode-deepseek-v4-flash-free --config-path ~/.config/opencode
+propr agent add opencode -t opencode -m opencode-big-pickle \
+  -d opencode-big-pickle --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)
 propr agent enable my-agent                  # Enable / disable without deleting
 propr agent disable my-agent
 propr agent delete my-agent --force
+
+propr agent pool list --json > pools.json
+propr agent pool apply pools.json       # Also accepts '-' for stdin
+propr agent pool delete balanced-pool
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
+
+Synthetic pool commands replace one complete, nested configuration document. JSON from `pool list --json` can be passed unchanged to `pool apply`; validation failures retain the backend's nested field message. See [Synthetic Pools](./synthetic-pools.md) for schemas and routing behavior.
 
 ## To-Dos
 

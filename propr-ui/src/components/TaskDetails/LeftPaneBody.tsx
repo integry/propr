@@ -47,9 +47,27 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
   onTodoHover,
 }) => {
   const ultrafixMeta = useMemo(() => getUltrafixMeta(history), [history]);
+  const routingAttempts = useMemo(
+    () => history.flatMap(item => item.metadata?.syntheticRouting ? [item.metadata.syntheticRouting] : []),
+    [history],
+  );
 
   return (
     <div className="p-3 lg:p-4 space-y-2">
+      {routingAttempts.length > 0 && (
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+          <div className="font-medium text-slate-900">
+            Synthetic {routingAttempts[0].virtualAgentAlias} · {routingAttempts[0].virtualModel}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-600">
+            {routingAttempts.map(attempt => (
+              <span key={`${attempt.callId}:${attempt.attemptNumber}`} className="mr-2 inline-block">
+                #{attempt.attemptNumber} {attempt.physicalAgentAlias} · {attempt.physicalModel}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <TaskStatusTable history={history} compact={true} commandMode={taskInfo?.commandMode} />
 
       {ultrafixMeta && (
@@ -88,7 +106,7 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
       {consumedReviewCommentIds && consumedReviewCommentIds.length > 0 && (
         <div className="bg-amber-50 border border-amber-100 rounded-md px-3 py-2 text-xs text-amber-700">
           Addressed {consumedReviewCommentIds.length} review comment{consumedReviewCommentIds.length > 1 ? 's' : ''}{' '}
-          <span className="font-mono text-[10px] text-amber-600">
+          <span className="break-all font-mono text-[10px] text-amber-600">
             (IDs: {consumedReviewCommentIds.join(', ')})
           </span>
         </div>

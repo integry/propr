@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, ScrollText, ListTodo, ChevronRight } from 'lucide-react';
+import { Bot, ScrollText, ListTodo, ChevronRight, RefreshCw, WifiOff } from 'lucide-react';
 import { RunningItem } from '../hooks/useHeaderStats';
 
 // Utility function for formatting time ago
@@ -39,25 +39,47 @@ const useClickOutside = (onClose: () => void, isOpen: boolean) => {
 interface AIActivityMonitorProps {
   runningItems: RunningItem[];
   runningCount: number;
+  status?: 'checking' | 'available' | 'unavailable';
 }
 
-const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, runningCount }) => {
+const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, runningCount, status = 'available' }) => {
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
 
-  // Don't render if nothing is running
+  if (status !== 'available') {
+    const checking = status === 'checking';
+    return (
+      <div
+        className="flex h-full items-center px-3"
+        role="status"
+        aria-label={checking ? 'Checking AI activity' : 'AI activity unavailable'}
+      >
+        <div className="flex items-center gap-1.5 border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700">
+          {checking
+            ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            : <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />}
+          <span className="text-xs font-medium">{checking ? 'Checking activity' : 'Activity unavailable'}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Don't render if a current snapshot proves nothing is running.
   if (runningCount === 0) {
     return null;
   }
 
   const handleItemClick = (item: RunningItem) => {
+    const destination = item.type === 'plan'
+      ? `/studio/${item.id}`
+      : item.navigationId
+        ? `/tasks/${item.navigationId}`
+        : undefined;
+    if (!destination) return;
+
     setIsOpen(false);
-    if (item.type === 'plan') {
-      navigate(`/studio/${item.id}`);
-    } else {
-      navigate(`/tasks/${item.id}`);
-    }
+    navigate(destination);
   };
 
   return (
@@ -109,41 +131,46 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
                 <p className="text-sm text-slate-500">No active processes</p>
               </div>
             ) : (
-              runningItems.map((item, index) => (
-                <div
-                  key={item.id}
-                  onClick={() => handleItemClick(item)}
-                  className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 overflow-hidden ${
-                    index === runningItems.length - 1 ? 'border-b-0' : ''
-                  }`}
-                >
-                  {/* Line 1: Icon + Type Badge + Status + Time */}
-                  <div className="flex items-center gap-2 mb-0.5">
-                    {item.type === 'plan' ? (
-                      <ScrollText className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" />
-                    ) : (
-                      <ListTodo className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
-                    )}
-                    <span className="text-xs text-slate-500">
-                      {getRepoName(item.repository)}
-                    </span>
-                    <span className="text-slate-300">•</span>
-                    <span className="px-1.5 py-0.5 bg-blue-50 border border-blue-200 text-xs font-mono text-blue-600">
-                      {item.status}
-                    </span>
-                    <span className="text-xs text-slate-400 ml-auto">
-                      {formatTimeAgo(item.createdAt)}
-                    </span>
-                    <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                  {/* Line 2: Title */}
-                  <div className="w-full min-w-0 pl-5">
-                    <p className="text-sm font-medium text-slate-900 truncate group-hover:text-primary-600">
-                      {item.label}
-                    </p>
-                  </div>
-                </div>
-              ))
+              runningItems.map((item, index) => {
+                const isNavigable = item.type === 'plan' || Boolean(item.navigationId);
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    disabled={!isNavigable}
+                    onClick={isNavigable ? () => handleItemClick(item) : undefined}
+                    className={`w-full px-4 py-2.5 text-left transition-colors border-b border-slate-50 overflow-hidden ${
+                      isNavigable ? 'hover:bg-slate-50 group cursor-pointer' : 'cursor-default'
+                    } ${index === runningItems.length - 1 ? 'border-b-0' : ''}`}
+                  >
+                    {/* Line 1: Icon + Type Badge + Status + Time */}
+                    <div className="flex items-center gap-2 mb-0.5">
+                      {item.type === 'plan' ? (
+                        <ScrollText className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" />
+                      ) : (
+                        <ListTodo className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                      )}
+                      <span className="text-xs text-slate-500">
+                        {getRepoName(item.repository)}
+                      </span>
+                      <span className="text-slate-300">·</span>
+                      <span className="px-1.5 py-0.5 bg-blue-50 border border-blue-200 text-xs font-mono text-blue-600">
+                        {item.status}
+                      </span>
+                      <span className="text-xs text-slate-400 ml-auto">
+                        {formatTimeAgo(item.createdAt)}
+                      </span>
+                      {isNavigable && <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />}
+                    </div>
+                    {/* Line 2: Title */}
+                    <div className="w-full min-w-0 pl-5">
+                      <p className="text-sm font-medium text-slate-900 truncate group-hover:text-primary-600">
+                        {item.label}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>

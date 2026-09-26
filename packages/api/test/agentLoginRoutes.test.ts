@@ -6,7 +6,8 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, afterEach, describe, test } from 'node:test';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import type { AgentConfig } from '@propr/core';
 import { closeConnection, shutdownQueue } from '@propr/core';
 import {
@@ -24,6 +25,8 @@ import {
   resolveAgentLoginConfigPath,
 } from '../services/agentLoginDocker.js';
 
+const defaultCodexConfigPath = os.tmpdir();
+
 function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     id: 'codex-1',
@@ -31,7 +34,7 @@ function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     alias: 'codex',
     enabled: true,
     dockerImage: 'propr/agent:test',
-    configPath: '/tmp/propr-test-codex',
+    configPath: defaultCodexConfigPath,
     supportedModels: ['gpt-test'],
     ...overrides,
   };
@@ -97,12 +100,12 @@ describe('agent login session manager', () => {
     const args = buildAgentLoginCreateArgs(
       agent(),
       AGENT_LOGIN_DESCRIPTORS.codex,
-      '/tmp/propr-test-codex',
+      defaultCodexConfigPath,
       'propr-agent-login-test',
     );
 
     assert.deepEqual(args.slice(-3), ['codex', 'login', '--device-auth']);
-    assert.ok(args.includes('/tmp/propr-test-codex:/home/node/.codex:rw'));
+    assert.ok(args.includes(`${defaultCodexConfigPath}:/home/node/.codex:rw`));
     assert.ok(args.includes('PROPR_AGENT_TYPE=codex'));
     assert.equal(args.some(value => value.includes('GH_TOKEN')), false);
     assert.equal(args.some(value => value.includes('ANTHROPIC_API_KEY')), false);
@@ -178,6 +181,51 @@ describe('agent login session manager', () => {
       else process.env.CODEX_CONFIG_PATH = previousCodexPath;
       if (previousHostCodexPath === undefined) delete process.env.HOST_CODEX_DIR;
       else process.env.HOST_CODEX_DIR = previousHostCodexPath;
+    }
+  });
+
+  test('uses the same Codex host mapping for login when backend HOME differs', () => {
+    const previousHome = process.env.HOME;
+    const previousContainerized = process.env.PROPR_CONTAINERIZED;
+    const previousCodexPath = process.env.CODEX_CONFIG_PATH;
+    const previousHostCodexPath = process.env.HOST_CODEX_DIR;
+    try {
+      process.env.HOME = '/root';
+      process.env.PROPR_CONTAINERIZED = '1';
+      process.env.CODEX_CONFIG_PATH = defaultCodexConfigPath;
+      process.env.HOST_CODEX_DIR = '/home/wrong-account/.codex';
+
+      assert.equal(
+        resolveAgentLoginConfigPath(agent({ configPath: '~/.codex' })),
+        defaultCodexConfigPath,
+      );
+      assert.equal(resolveAgentLoginConfigPath(agent({ configPath: os.tmpdir() })), os.tmpdir());
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+      else process.env.PROPR_CONTAINERIZED = previousContainerized;
+      if (previousCodexPath === undefined) delete process.env.CODEX_CONFIG_PATH;
+      else process.env.CODEX_CONFIG_PATH = previousCodexPath;
+      if (previousHostCodexPath === undefined) delete process.env.HOST_CODEX_DIR;
+      else process.env.HOST_CODEX_DIR = previousHostCodexPath;
+    }
+  });
+
+  test('rejects unavailable non-managed Codex directories before Docker can create them', () => {
+    const previousCodexPath = process.env.CODEX_CONFIG_PATH;
+    const missingPath = path.join(os.tmpdir(), `propr-agent-login-missing-${process.pid}`);
+    try {
+      process.env.CODEX_CONFIG_PATH = missingPath;
+      const isUnavailableInputError = (error: unknown) => error instanceof AgentLoginInputError
+        && /credential directory is unavailable/.test(error.message);
+      assert.throws(
+        () => resolveAgentLoginConfigPath(agent({ configPath: '~/.codex' })),
+        isUnavailableInputError,
+      );
+    } finally {
+      if (previousCodexPath === undefined) delete process.env.CODEX_CONFIG_PATH;
+      else process.env.CODEX_CONFIG_PATH = previousCodexPath;
     }
   });
 
@@ -325,7 +373,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: 'codex-1' },
       user: { username: 'owner' },
-    } as unknown as Request, startedResponse.response);
+    } as unknown as FlatRequest, startedResponse.response);
 
     assert.equal(startedResponse.record.status, 202);
     const session = startedResponse.record.body as { id: string; status: string };
@@ -335,7 +383,7 @@ describe('agent login routes', () => {
     await routes.getLogin({
       params: { agentId: 'codex-1', sessionId: session.id },
       user: { username: 'other-user' },
-    } as unknown as Request, otherResponse.response);
+    } as unknown as FlatRequest, otherResponse.response);
 
     assert.equal(otherResponse.record.status, 404);
     assert.deepEqual(otherResponse.record.body, { error: 'Agent login session not found' });
@@ -355,7 +403,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: disabledAgent.alias },
       user: { username: 'owner' },
-    } as unknown as Request, startedResponse.response);
+    } as unknown as FlatRequest, startedResponse.response);
     const session = startedResponse.record.body as { id: string; status: string };
     assert.equal(session.status, 'running');
 
@@ -363,7 +411,7 @@ describe('agent login routes', () => {
     await routes.getLogin({
       params: { agentId: disabledAgent.alias, sessionId: session.id },
       user: { username: 'owner' },
-    } as unknown as Request, getResponse.response);
+    } as unknown as FlatRequest, getResponse.response);
     assert.equal(getResponse.record.status, 200);
     assert.equal((getResponse.record.body as { agentId: string }).agentId, disabledAgent.id);
   });
@@ -384,7 +432,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: 'vibe-1' },
       user: { username: 'owner' },
-    } as unknown as Request, response);
+    } as unknown as FlatRequest, response);
 
     assert.equal(record.status, 400);
     assert.deepEqual(record.body, { error: 'vibe does not support interactive login' });

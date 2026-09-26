@@ -1,0 +1,291 @@
+import { normalizeApiBaseUrl } from '@propr/client';
+import { isProprLoopbackHostname, parseProprConnectEndpoint } from '@propr/shared';
+import type { DesktopBridge, DesktopDiscoveryCandidate, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
+import { getDesktopConnectionScope, setDesktopConnectionScope } from '../api/apiClient';
+import { DesktopAuthenticationError, type DesktopAdapters, type DesktopPlatform, type DesktopProfile } from './types';
+import type { DesktopPairingApprovalActionResult } from './types';
+import { reportPackagedAcceptanceRendererLifecycle } from './packagedAcceptanceRendererLifecycle';
+
+const platform = (value: string): DesktopPlatform => {
+  const normalized = value.toLowerCase();
+  if (normalized.includes('mac')) return 'macos';
+  if (normalized.includes('win')) return 'windows';
+  return 'linux';
+};
+
+const isLocal = (baseUrl: string): boolean => {
+  return isProprLoopbackHostname(new URL(baseUrl).hostname);
+};
+
+const fromStoredProfile = (profile: StoredDesktopProfile): DesktopProfile => ({
+  account: profile.account,
+  id: profile.id,
+  name: profile.label,
+  baseUrl: profile.apiBaseUrl,
+  kind: isLocal(profile.apiBaseUrl) ? 'local' : 'remote',
+  lastConnectedAt: profile.updatedAt,
+});
+
+const toStoredProfile = (profile: DesktopProfile) => ({
+  id: profile.id,
+  label: profile.name,
+  apiBaseUrl: normalizeApiBaseUrl(profile.baseUrl),
+});
+
+const fromDiscoveryCandidate = (candidate: DesktopDiscoveryCandidate): DesktopProfile | null => {
+  const endpoint = parseProprConnectEndpoint(candidate.apiBaseUrl);
+  if (
+    !endpoint
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(candidate.id)
+    || candidate.label.length === 0
+    || candidate.label.length > 80
+  ) return null;
+  return {
+    id: candidate.id,
+    name: candidate.label,
+    baseUrl: endpoint.origin,
+    kind: 'remote',
+  };
+};
+
+const snapshotStorage = (storage: Storage): [string, string][] => {
+  const snapshot: [string, string][] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key !== null) snapshot.push([key, storage.getItem(key) ?? '']);
+  }
+  return snapshot;
+};
+
+const restoreStorage = (storage: Storage, snapshot: [string, string][]): void => {
+  const expected = new Set(snapshot.map(([key]) => key));
+  for (let index = storage.length - 1; index >= 0; index -= 1) {
+    const key = storage.key(index);
+    if (key !== null && !expected.has(key)) storage.removeItem(key);
+  }
+  snapshot.forEach(([key, value]) => storage.setItem(key, value));
+};
+
+const clearRendererProfileState = (): boolean => {
+  let localSnapshot: [string, string][] = [];
+  let sessionSnapshot: [string, string][] = [];
+  try {
+    localSnapshot = snapshotStorage(window.localStorage);
+    sessionSnapshot = snapshotStorage(window.sessionStorage);
+    window.localStorage.clear();
+    if (window.localStorage.length !== 0) throw new Error('Local storage was not cleared');
+    window.sessionStorage.clear();
+    if (window.sessionStorage.length !== 0) throw new Error('Session storage was not cleared');
+    return true;
+  } catch {
+    try { restoreStorage(window.localStorage, localSnapshot); } catch { /* fail closed below */ }
+    try { restoreStorage(window.sessionStorage, sessionSnapshot); } catch { /* fail closed below */ }
+    return false;
+  }
+};
+
+const safePairingApprovalActionResult = (value: unknown): DesktopPairingApprovalActionResult => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 'failed' };
+  const result = value as Record<string, unknown>;
+  return Object.keys(result).length === 1
+    && ['succeeded', 'unavailable', 'failed'].includes(result.status as string)
+    ? { status: result.status as DesktopPairingApprovalActionResult['status'] }
+    : { status: 'failed' };
+};
+
+export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAdapters => {
+  let publishedProfile: { id: string; origin: string; identityEpoch: string } | null = null;
+  const pairingOperations = new Map<string, string>();
+  const desktopPlatform = platform(navigator.platform || navigator.userAgent);
+  return {
+  savedAccounts: true,
+  platform: desktopPlatform,
+  app: {
+    ...(bridge.app.hasStartupConnectIntent ? {
+      hasStartupConnectIntent: () => bridge.app.hasStartupConnectIntent!(),
+    } : {}),
+    onDeepLink: listener => bridge.app.onDeepLink(listener),
+    onNativeCommand: listener => bridge.app.onNativeCommand(listener),
+    setNativeNavigationState: state => bridge.app.setNativeNavigationState?.(state) ?? Promise.resolve(),
+    quit: () => bridge.app.quit(),
+    minimize: () => bridge.app.minimize(),
+    toggleMaximize: () => bridge.app.toggleMaximize(),
+    closeWindow: () => bridge.app.closeWindow(),
+  },
+  profiles: {
+    async list() {
+      return (await bridge.profiles.list()).profiles.map(fromStoredProfile);
+    },
+    async save(profile) {
+      await bridge.profiles.save(toStoredProfile(profile));
+    },
+    async remove(profileId) {
+      await bridge.authentication.cancel(profileId);
+      await bridge.profiles.remove(profileId);
+    },
+    async getActiveId() {
+      return (await bridge.profiles.list()).activeProfileId;
+    },
+    async setActiveId(profileId) {
+      await bridge.profiles.setActive(profileId);
+      if (profileId === null) {
+        setDesktopConnectionScope(null);
+      }
+    },
+  },
+  discovery: {
+    supported: bridge.discovery.supported,
+    async discover() {
+      return (await bridge.discovery.discover())
+        .map(fromDiscoveryCandidate)
+        .filter((profile): profile is DesktopProfile => profile !== null);
+    },
+  },
+  managedTunnelRecovery: {
+    async rediscover(profileId) {
+      const candidate = await bridge.discovery.rediscover(profileId);
+      if (!candidate || candidate.id !== profileId) return null;
+      return fromDiscoveryCandidate(candidate);
+    },
+  },
+  notifications: bridge.notifications,
+  ...(bridge.acceptance ? {
+    acceptance: {
+      reportJourneyStage: stage => bridge.acceptance!.reportJourneyStage(stage),
+    },
+  } : {}),
+  authentication: {
+    async authenticate(profile, onProgress) {
+      const { operationId } = await bridge.authentication.admit(profile.id);
+      pairingOperations.set(profile.id, operationId);
+      const unsubscribe = bridge.authentication.onProgress?.(progress => {
+        if (progress.profileId === profile.id && progress.operationId === operationId) onProgress?.(progress.stage);
+      }) ?? (() => undefined);
+      try {
+        const result = await bridge.authentication.pair(toStoredProfile(profile), operationId);
+        if (!result.paired) throw new DesktopAuthenticationError(result.code);
+      } finally {
+        unsubscribe();
+        if (pairingOperations.get(profile.id) === operationId) pairingOperations.delete(profile.id);
+      }
+    },
+    async cancel(profileId) {
+      pairingOperations.delete(profileId);
+      return bridge.authentication.cancel(profileId);
+    },
+    ...(desktopPlatform !== 'windows' ? {
+      async reopenApproval(profileId: string) {
+        const operationId = pairingOperations.get(profileId);
+        if (!operationId) return { status: 'unavailable' as const };
+        return safePairingApprovalActionResult(
+          await bridge.authentication.reopenApproval(profileId, operationId),
+        );
+      },
+      async copyApproval(profileId: string) {
+        const operationId = pairingOperations.get(profileId);
+        if (!operationId) return { status: 'unavailable' as const };
+        return safePairingApprovalActionResult(
+          await bridge.authentication.copyApproval(profileId, operationId),
+        );
+      },
+    } : {}),
+  },
+  externalBrowser: { open: url => bridge.external.open(url) },
+  localSetup: {
+    supported: desktopPlatform === 'linux',
+    status: () => bridge.localSetup.status(),
+    start: request => bridge.localSetup.start(request),
+    retry: request => bridge.localSetup.retry(request),
+    cancel: () => bridge.localSetup.cancel(),
+    selectPrivateKey: () => bridge.localSetup.selectPrivateKey(),
+    acquireWebhookSecret: () => bridge.localSetup.acquireWebhookSecret(),
+    resolveGithubInstallation: decision => bridge.localSetup.resolveGithubInstallation(decision),
+    onProgress: listener => bridge.localSetup.onProgress(listener),
+  },
+  connection: {
+    async probe(profile) {
+      return bridge.connection.probe(toStoredProfile(profile));
+    },
+    async activate(profile, result, isCurrent = () => true) {
+      if (result.activationTicket === undefined) throw new Error('Desktop activation ticket is missing.');
+      const previousProfileId = (await bridge.profiles.list()).activeProfileId;
+      const activated = await bridge.connection.activate(result.activationTicket);
+      const discard = async () => {
+        await bridge.connection.discard({
+          profileId: activated.profileId,
+          transportScope: activated.transportScope,
+        }).catch(() => undefined);
+        const currentScope = getDesktopConnectionScope();
+        if (currentScope?.profileId === activated.profileId
+          && currentScope.transportScope === activated.transportScope) {
+          setDesktopConnectionScope(null);
+        }
+      };
+      if (activated.profileId !== profile.id || !isCurrent()) {
+        await discard();
+        return {
+          status: 'authentication-required',
+          message: 'This connection changed while it was being activated. Check it again to continue.',
+          version: result.version,
+          authentication: result.authentication,
+        };
+      }
+      const intendedOrigin = normalizeApiBaseUrl(profile.baseUrl);
+      if (!/^[A-Za-z0-9_-]{22}$/.test(activated.identityEpoch)) {
+        await discard();
+        return {
+          status: 'authentication-required',
+          message: 'This connection changed while it was being activated. Check it again to continue.',
+          version: result.version,
+          authentication: result.authentication,
+        };
+      }
+      const isReplacement = publishedProfile === null
+        || previousProfileId !== profile.id
+        || publishedProfile.id !== profile.id
+        || publishedProfile.origin !== intendedOrigin
+        || publishedProfile.identityEpoch !== activated.identityEpoch;
+      if (isReplacement && !clearRendererProfileState()) {
+        await discard();
+        return {
+          status: 'offline',
+          message: 'Desktop storage isolation failed. Restart ProPR Desktop before connecting again.',
+        };
+      }
+      return {
+        status: 'ready',
+        version: result.version,
+        authentication: result.authentication,
+        profileId: activated.profileId,
+        transportScope: activated.transportScope,
+        identityEpoch: activated.identityEpoch,
+      };
+    },
+    publishActivation(profile, result) {
+      if (result.transportScope === undefined) throw new Error('Desktop transport scope is missing.');
+      if (result.identityEpoch === undefined) throw new Error('Desktop credential identity is missing.');
+      if (result.profileId === undefined || result.profileId !== profile.id) {
+        setDesktopConnectionScope(null);
+        throw new Error('Desktop activation profile changed before publication.');
+      }
+      setDesktopConnectionScope({
+        bridge,
+        profileId: result.profileId,
+        transportScope: result.transportScope,
+      }, profile.baseUrl);
+      reportPackagedAcceptanceRendererLifecycle('profile-activation-published', {
+        profileActivationPublished: true,
+        connectionScope: 'available',
+      });
+      publishedProfile = {
+        id: profile.id,
+        origin: normalizeApiBaseUrl(profile.baseUrl),
+        identityEpoch: result.identityEpoch,
+      };
+    },
+    deactivate() {
+      setDesktopConnectionScope(null);
+    },
+  },
+  };
+};

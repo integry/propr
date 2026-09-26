@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
-import { MODEL_LIMITS } from '../../config/modelLimits.js';
+import { getModelHardLimit } from '../../config/modelLimits.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
+import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { GitFileInfo } from './summaryFileFilter.js';
 import { getSummarizationMetricsSummary, getSummarizationCallHistory } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
@@ -11,6 +13,7 @@ import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, pu
 import { isProcessableFile } from './summaryFileFilter.js';
 import { processSingleBatch, type BatchFile } from './summaryMinerBatch.js';
 import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -91,8 +94,33 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
-  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  let budgetModelId = modelId;
+  let firstRoutingSession: SyntheticRoutingSession | undefined;
+  if (agent instanceof SyntheticAgent) {
+    const registry = AgentRegistry.getInstance();
+    firstRoutingSession = registry.beginRoutingSession({
+      requestedAgentAlias: agent.config.alias,
+      requestedModel: modelId,
+    });
+    const model = agent.syntheticConfig.models.find(item => item.id === modelId);
+    const enabledMembers = model?.members.filter(member => {
+      const directAgent = registry.getAgentByAlias(member.directAgentAlias);
+      return member.enabled
+        && directAgent?.config.enabled
+        && directAgent.config.supportedModels.includes(member.model);
+    }) ?? [];
+    if (enabledMembers.length > 0) {
+      const conservativeMember = enabledMembers.reduce((smallest, member) =>
+        getModelHardLimit(`${member.directAgentAlias}:${member.model}`)
+          < getModelHardLimit(`${smallest.directAgentAlias}:${smallest.model}`)
+          ? member
+          : smallest);
+      budgetModelId = `${conservativeMember.directAgentAlias}:${conservativeMember.model}`;
+    }
+  }
+  const maxTokens = getModelHardLimit(budgetModelId);
+  const budgetModelName = budgetModelId.includes(':') ? budgetModelId.slice(budgetModelId.indexOf(':') + 1) : budgetModelId;
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(budgetModelName);
   const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
   const defaultMaxBatchFiles = modelBatchLimitOverride?.maxItemsPerBatch ?? DEFAULT_MAX_BATCH_FILES;
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
@@ -105,7 +133,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     maxBatchTokens,
     maxBatchTokensCap,
     maxBatchFiles,
-    model: modelId,
+    model: budgetModelId,
     modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
   }, 'Calculated batch budget');
 
@@ -133,6 +161,17 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     fallbackAgentAliasSetting
   };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
+  let availableRoutingSession = firstRoutingSession;
+  const takeRoutingSession = async (currentAgent: Agent, currentModel: string): Promise<SyntheticRoutingSession | undefined> => {
+    if (!(currentAgent instanceof SyntheticAgent)) return undefined;
+    const route = availableRoutingSession
+      && availableRoutingSession.requestedAgentAlias === currentAgent.config.alias
+      && availableRoutingSession.requestedModel === currentModel
+      ? availableRoutingSession
+      : AgentRegistry.getInstance().beginRoutingSession({ requestedAgentAlias: currentAgent.config.alias, requestedModel: currentModel });
+    availableRoutingSession = route.fork();
+    return route;
+  };
 
   for (const file of files) {
     // Check for cancellation before processing each file
@@ -167,6 +206,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       const currentConfig = await getCurrentConfig();
       logBatchAgentIfChanged(log, initialConfig, currentConfig);
       const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const routingSession = await takeRoutingSession(currentConfig.agent, currentModelId);
       const batchResult = await processSingleBatch({
         fullName,
         batch: currentBatch,
@@ -179,7 +219,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         fallbackModelOverride: currentConfig.fallbackModelOverride,
         fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
         fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
-        branch
+        branch,
+        routingSession,
       });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
@@ -248,6 +289,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     const currentConfig = await getCurrentConfig();
     logBatchAgentIfChanged(log, initialConfig, currentConfig);
     const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const routingSession = await takeRoutingSession(currentConfig.agent, currentModelId);
     const batchResult = await processSingleBatch({
       fullName,
       batch: currentBatch,
@@ -260,7 +302,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       fallbackModelOverride: currentConfig.fallbackModelOverride,
       fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
       fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
-      branch
+      branch,
+      routingSession,
     });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;

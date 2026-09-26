@@ -2,7 +2,7 @@
  * Worktree operations for GitHub issue job.
  */
 
-import { createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree } from '@propr/core';
+import { materializeSubmissionAttachments, createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree } from '@propr/core';
 import type { ExecuteWorktreeParams, ExecuteWorktreeResult } from './types.js';
 import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
@@ -13,11 +13,12 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
   const { issueRef, agentAlias, modelName, taskId, correlatedLogger, stateManager, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
   const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
+  await materializeSubmissionAttachments(issueRef, worktreeInfo.worktreePath);
   await job.updateProgress(75);
 
   // Construct the task dashboard URL
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-  const taskUrl = `${frontendUrl}/tasks/${taskId}`;
+  const taskUrl = `${frontendUrl}/tasks/${encodeURIComponent(taskId)}`;
 
   await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
     owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,

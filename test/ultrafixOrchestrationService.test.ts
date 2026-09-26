@@ -6,15 +6,25 @@ import {
     createDefaultState,
     determineInitialAction,
     determineNextAction,
+    hasReviewReachedGoal,
     saveState,
     loadState,
     clearState,
+    clearUltrafixStateIfCurrent,
+    invalidateUltrafixAutomaticWork,
     startLoop,
     recordAction,
+    retainOriginalScope,
+    recordReviewFindings,
+    markFindingsSelected,
     stopLoop,
     type UltrafixLoopState,
     type StartLoopOptions,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import {
+    clearUltrafixStateForLabelRemoval,
+    withUltrafixLabelTransition,
+} from '../packages/core/src/utils/ultrafixLabelTransition.js';
 
 // --- Mock Redis ---
 
@@ -25,6 +35,22 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [epochKey, targetKey] = args;
+            if (script.includes("redis.call('INCR'")) {
+                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
+                store.set(epochKey, String(nextEpoch));
+                store.delete(targetKey);
+                return nextEpoch;
+            }
+            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
+                store.delete(targetKey);
+                return 1;
+            }
+            store.set(targetKey, args[3]);
+            return 1;
+        },
     };
 }
 
@@ -63,6 +89,7 @@ describe('createDefaultState', () => {
         assert.strictEqual(state.lastAction, null);
         assert.strictEqual(state.lastActionTimestamp, null);
         assert.strictEqual(state.active, true);
+        assert.strictEqual(state.originalScopeCaptured, false);
     });
 
     test('respects overrides', () => {
@@ -109,16 +136,43 @@ describe('determineNextAction', () => {
         assert.ok(decision.reason.includes('inactive'));
     });
 
-    test('stops when goal is met', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 8);
+    test('stops when a review is explicitly clean', () => {
+        const decision = determineNextAction(makeState({ goal: 7, lastAction: 'review' }), 8, 'valid_clean');
         assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+        assert.ok(decision.reason.includes('no actionable findings'));
     });
 
-    test('stops when score exactly meets goal', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 7);
+    test('stops for manual review when a clean-looking review had partial diff coverage', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            9,
+            'valid_clean',
+            true,
+        );
         assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+        assert.match(decision.reason, /partial diff coverage/i);
+        assert.match(decision.reason, /manual review/i);
+        assert.strictEqual(hasReviewReachedGoal('valid_clean', 9, 7, true), false);
+    });
+
+    test('still fixes known blockers found by a partial review', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            6,
+            'valid_with_blockers',
+            true,
+        );
+        assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('a passing score does not override actionable findings', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            8,
+            'valid_with_blockers',
+        );
+        assert.strictEqual(decision.action, 'fix');
+        assert.ok(decision.reason.includes('Actionable'));
     });
 
     test('stops when max cycles reached', () => {
@@ -134,7 +188,7 @@ describe('determineNextAction', () => {
             reviewCount: 5,
             fixCount: 4,
             lastAction: 'review',
-        }), 4);
+        }), 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -155,7 +209,7 @@ describe('determineNextAction', () => {
     });
 
     test('returns fix after review', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -165,13 +219,99 @@ describe('determineNextAction', () => {
     });
 
     test('continues when score is below goal', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6);
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
     test('continues when score is null (no score yet)', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), null);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), null, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('does not schedule a fix when a review has suggestions only', () => {
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, 'valid_clean');
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /no actionable findings/i);
+        assert.match(decision.reason, /below goal 10\/10/i);
+        assert.match(decision.reason, /manual review/i);
+        assert.strictEqual(hasReviewReachedGoal('valid_clean', 8, 10), false);
+    });
+
+    test('retries an invalid review instead of treating it as clean', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 1, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, 'review');
+        assert.match(decision.reason, /invalid/i);
+    });
+
+    test('stops invalid review retries for manual intervention at the review limit', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 3, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /Invalid review output/);
+    });
+});
+
+describe('immutable scope and finding lifecycle', () => {
+    test('captures original scope once and ignores later expansion', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 1 }));
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Original objective' }), 'Original objective');
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Expanded review prose' }), 'Original objective');
+    });
+
+    test('retains an initially empty scope instead of adopting later text', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 3 }));
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: '',
+        }), '');
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: 'Objective added later',
+        }), '');
+
+        const state = await loadState(redis as any, 'o', 'r', 3);
+        assert.strictEqual(state?.originalScope, '');
+        assert.strictEqual(state?.originalScopeCaptured, true);
+    });
+
+    test('preserves a legacy captured scope when the initialization flag is absent', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 4 });
+        legacyState.originalScope = 'Legacy objective';
+        delete legacyState.originalScopeCaptured;
+        await saveState(redis as any, legacyState);
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 4, scope: 'Replacement objective',
+        }), 'Legacy objective');
+        const state = await loadState(redis as any, 'o', 'r', 4);
+        assert.strictEqual(state?.originalScopeCaptured, true);
+    });
+
+    test('tracks selected blockers through fix and resolves them on the next review', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 2 }));
+        const finding = { id: 'F1', sourceCommentId: 10, title: 'Terminal resurrection' };
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        await markFindingsSelected(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        let state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'selected');
+
+        await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 2, action: 'fix' });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'addressed');
+
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [] });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'resolved');
     });
 });
 
@@ -236,6 +376,74 @@ describe('startLoop', () => {
         }, true);
 
         assert.strictEqual(initialAction, 'fix');
+    });
+
+    test('commits an explicitly reserved epoch atomically', async () => {
+        const redis = createMockRedis();
+        const workEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+
+        const { state } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, workEpoch,
+        }, false);
+
+        assert.strictEqual(state.workEpoch, 1);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), state);
+    });
+
+    test('rejects stale startup commits and epoch-conditioned rollback preserves newer state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const newerState = createDefaultState({ owner: 'o', repo: 'r', pr: 1, workEpoch: secondEpoch });
+        newerState.goal = 9;
+        await saveState(redis as any, newerState);
+
+        await assert.rejects(
+            startLoop(redis as any, {
+                owner: 'o', repo: 'r', pr: 1, goal: 5, workEpoch: firstEpoch,
+            }, false),
+            /superseded before state commit/,
+        );
+        assert.strictEqual(
+            await clearUltrafixStateIfCurrent(
+                redis as any,
+                { owner: 'o', repo: 'r', pr: 1 },
+                firstEpoch,
+            ),
+            false,
+        );
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('stale mutations cannot change a newer loop state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1, workEpoch: firstEpoch }, false);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const { state: newerState } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, workEpoch: secondEpoch,
+        }, false);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: firstEpoch,
+        });
+
+        assert.strictEqual(updated, null);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('treats legacy unversioned state as epoch zero', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        delete (legacyState as Partial<UltrafixLoopState>).workEpoch;
+        await saveState(redis as any, legacyState);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: 0,
+        });
+
+        assert.strictEqual(updated?.workEpoch, 0);
+        assert.strictEqual((await loadState(redis as any, 'o', 'r', 1))?.workEpoch, 0);
     });
 });
 
@@ -309,7 +517,7 @@ describe('mode transitions', () => {
 
         // After review → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 5);
+        decision = determineNextAction(state, 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
 
         // After fix → review
@@ -320,7 +528,7 @@ describe('mode transitions', () => {
 
         // After review again → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 6);
+        decision = determineNextAction(state, 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -328,15 +536,15 @@ describe('mode transitions', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'fix';
         state.cycleCount = 1;
-        const decision = determineNextAction(state, 4);
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'review', 'After fix, next must be review');
     });
 
-    test('review never follows review (when score is below goal)', () => {
+    test('a blocker review is followed by a fix', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'review';
-        const decision = determineNextAction(state, 4);
-        assert.strictEqual(decision.action, 'fix', 'After review with low score, next must be fix');
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
+        assert.strictEqual(decision.action, 'fix', 'After a blocker review, next must be fix');
     });
 });
 
@@ -364,5 +572,117 @@ describe('Serialization', () => {
         assert.strictEqual(restored.reviewModel, 'claude-opus-4-6');
         assert.strictEqual(restored.active, true);
         assert.strictEqual(typeof restored.lastActionTimestamp, 'string');
+    });
+});
+
+describe('shared label transition ownership', () => {
+    function createTransitionRedis() {
+        const store = new Map<string, string>();
+        const expiries = new Map<string, number>();
+        return {
+            store,
+            async set(key: string, value: string, _mode: string, ttl: number, condition: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
+                if (condition === 'NX' && store.has(key)) return null;
+                store.set(key, value);
+                expiries.set(key, Date.now() + ttl);
+                return 'OK';
+            },
+            async eval(_script: string, _keyCount: number, key: string, token: string, ttl?: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
+                if (store.get(key) !== token) return 0;
+                if (_script.includes("redis.call('PEXPIRE'")) {
+                    expiries.set(key, Date.now() + Number(ttl));
+                    return 1;
+                }
+                store.delete(key);
+                expiries.delete(key);
+                return 1;
+            },
+        };
+    }
+
+    test('serializes startup and teardown transitions for the same PR', async () => {
+        const redis = createTransitionRedis();
+        const identity = { owner: 'acme', repo: 'web', pr: 42 };
+        const order: string[] = [];
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await firstGate;
+            order.push('first-end');
+        });
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.deepStrictEqual(order, ['first-start']);
+        releaseFirst();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('renews ownership when an operation exceeds its initial lease', async () => {
+        const redis = createTransitionRedis();
+        const identity = { owner: 'acme', repo: 'web', pr: 43 };
+        const order: string[] = [];
+        const timing = { ttlMs: 40, renewIntervalMs: 10, waitMs: 500 };
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await new Promise(resolve => setTimeout(resolve, 120));
+            order.push('first-end');
+        }, timing);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        }, timing);
+
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('a delayed removal event preserves state after a newer startup re-adds the label', async () => {
+        const redis = createTransitionRedis();
+        let cleared = false;
+        const result = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => true,
+            async () => { cleared = true; },
+        );
+
+        assert.strictEqual(result, 'label_present');
+        assert.strictEqual(cleared, false);
+    });
+
+    test('confirmed current label removal clears state, while failed verification preserves it', async () => {
+        const redis = createTransitionRedis();
+        let clearCount = 0;
+        const clearedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => false,
+            async () => { clearCount += 1; },
+        );
+        const unverifiedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => { throw new Error('GitHub unavailable'); },
+            async () => { clearCount += 1; },
+        );
+
+        assert.strictEqual(clearedResult, 'cleared');
+        assert.strictEqual(unverifiedResult, 'unverified');
+        assert.strictEqual(clearCount, 1);
     });
 });

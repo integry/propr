@@ -36,8 +36,23 @@ export {
   applyAgentRuntimePackages,
   getAgentRuntimePackages,
   updateAgentRuntimePackages,
+  verifyAgentRuntimePackages,
 } from './agentRuntime.js';
-export type { AgentRuntimeBuildStatus, AgentRuntimePackageState } from './agentRuntime.js';
+
+export {
+  getVisualPreviewAuthStatus,
+  saveVisualPreviewUploadToken,
+} from './visualPreviewAuth.js';
+export type { VisualPreviewAuthStatus } from './visualPreviewAuth.js';
+export type {
+  AgentRuntimeBuildStatus,
+  AgentRuntimeImageVerification,
+  AgentRuntimePackageCheck,
+  AgentRuntimePackageState,
+  AgentRuntimePackageVerificationResult,
+  AgentRuntimeVerificationIssue,
+  AgentRuntimeVerificationStatus,
+} from './agentRuntime.js';
 
 // Plan Management API
 export {
@@ -123,6 +138,7 @@ export {
 
 export type {
   MonitoredRepo,
+  VisualPreviewSettings,
   GetReposResponse,
   AddRepoOptions,
   UpdateRepoOptions,
@@ -147,6 +163,18 @@ export type {
   AddAgentOptions,
   SaveAgentsResponse,
 } from "./agents.js";
+
+// Synthetic agent pools configuration API
+export {
+  listSyntheticAgents,
+  saveSyntheticAgents,
+  deleteSyntheticAgent,
+} from "./syntheticPools.js";
+
+export type {
+  SyntheticAgentsResponse,
+  SaveSyntheticAgentsResponse,
+} from "./syntheticPools.js";
 
 // System Settings API
 export {

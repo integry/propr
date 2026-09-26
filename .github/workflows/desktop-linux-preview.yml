@@ -1,0 +1,399 @@
+name: Desktop Linux Preview Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Stage a private draft, or explicitly publish its already-staged bytes as a prerelease
+        required: true
+        type: choice
+        default: stage-draft
+        options:
+          - stage-draft
+          - publish-draft
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+      runtime_app_image:
+        description: Stage only - propr/app:<source SHA>@sha256:<digest> published multi-arch image
+        required: false
+        type: string
+      runtime_ui_image:
+        description: Stage only - propr/ui:<source SHA>@sha256:<digest> published multi-arch image
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-linux-preview-${{ inputs.source_revision }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Bind Linux preview identity to main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+      version: ${{ steps.identity.outputs.version }}
+      tag: ${{ steps.identity.outputs.tag }}
+      source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
+      runtime_app_image: ${{ steps.identity.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.identity.outputs.runtime_ui_image }}
+    steps:
+      - name: Require dispatch of the reviewed workflow from main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo 'Dispatch Desktop Linux Preview Release from the main branch workflow only.' >&2
+            exit 1
+          fi
+
+      - name: Checkout the exact requested source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate immutable source, version, and preview runtime inputs
+        id: identity
+        shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
+          REQUESTED_SHA: ${{ inputs.source_revision }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RUNTIME_APP_IMAGE: ${{ inputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ inputs.runtime_ui_image }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo 'source_revision must be a full lowercase 40-character commit SHA.' >&2
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
+          git merge-base --is-ancestor "$REQUESTED_SHA" "$WORKFLOW_SHA" || {
+            echo 'source_revision must already be reachable from the dispatched main revision.' >&2
+            exit 1
+          }
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo 'apps/desktop/package.json must contain a canonical semantic package version.' >&2
+            exit 1
+          }
+          tag="desktop-linux-preview-v${version}-${REQUESTED_SHA:0:12}"
+          if [ "$OPERATION" = stage-draft ]; then
+            app_pattern="propr/app:${REQUESTED_SHA}@sha256:"
+            ui_pattern="propr/ui:${REQUESTED_SHA}@sha256:"
+            [[ "$RUNTIME_APP_IMAGE" =~ ^${app_pattern}[a-f0-9]{64}$ ]] || {
+              echo "runtime_app_image must be a published, digest-pinned propr/app image tagged with $REQUESTED_SHA." >&2
+              exit 1
+            }
+            [[ "$RUNTIME_UI_IMAGE" =~ ^${ui_pattern}[a-f0-9]{64}$ ]] || {
+              echo "runtime_ui_image must be a published, digest-pinned propr/ui image tagged with $REQUESTED_SHA." >&2
+              exit 1
+            }
+          elif [ "$OPERATION" = publish-draft ]; then
+            test -z "$RUNTIME_APP_IMAGE" && test -z "$RUNTIME_UI_IMAGE" || {
+              echo 'runtime image inputs belong only to stage-draft; omit them when publishing an existing draft.' >&2
+              exit 1
+            }
+          else
+            echo 'Unsupported preview operation.' >&2
+            exit 1
+          fi
+          {
+            echo "release_sha=$REQUESTED_SHA"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "source_date_epoch=$(git show -s --format=%ct HEAD)"
+            echo "runtime_app_image=$RUNTIME_APP_IMAGE"
+            echo "runtime_ui_image=$RUNTIME_UI_IMAGE"
+          } >> "$GITHUB_OUTPUT"
+
+  runtime-preflight:
+    name: Verify published preview runtime manifests
+    if: inputs.operation == 'stage-draft'
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Verify both digest-pinned runtime images contain x64 and arm64
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+          RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+        run: |
+          node apps/desktop/scripts/desktop-runtime-manifest.mjs verify-release \
+            --source-revision "$RELEASE_SHA" \
+            --app-image "$RUNTIME_APP_IMAGE" \
+            --ui-image "$RUNTIME_UI_IMAGE"
+
+  package:
+    name: Build unsigned Linux preview ${{ matrix.arch }} DEB/RPM
+    if: inputs.operation == 'stage-draft'
+    needs: [identity, runtime-preflight]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    env:
+      PROPR_DESKTOP_VERSION: ${{ needs.identity.outputs.version }}
+      PROPR_DESKTOP_RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+      RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+      RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+    steps:
+      - name: Prove preview packaging has no signing or update credentials
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const forbidden = Object.keys(process.env).filter(name =>
+            /^PROPR_DESKTOP_(?:MAC_CERTIFICATE|WINDOWS_CERTIFICATE|APPLE_API_KEY|UPDATE_PRIVATE_KEY)/.test(name));
+          if (forbidden.length) throw new Error(`Protected release credentials reached Linux preview packaging: ${forbidden.join(', ')}`);
+          if (process.env.PROPR_DESKTOP_ENABLE_UPDATES || process.env.PROPR_DESKTOP_PRODUCTION_RELEASE) {
+            throw new Error('Linux preview packaging must not enable self-updates or production release mode');
+          }
+          NODE
+
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Set up native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify native Linux runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!=="linux"||process.arch!==process.env.EXPECTED_ARCH) throw new Error(`Expected linux-${process.env.EXPECTED_ARCH}, got ${process.platform}-${process.arch}`)'
+
+      - name: Audit and install locked dependencies
+        run: |
+          npm run audit:runtime
+          npm run desktop:audit:packaging
+          npm ci
+
+      - name: Install native package and smoke-test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm unzip xdg-utils xvfb zip
+
+      - name: Generate the exact source-aligned published runtime manifest
+        run: |
+          runtime_manifest="$RUNNER_TEMP/propr-linux-preview-runtime/manifest.json"
+          node apps/desktop/scripts/desktop-runtime-manifest.mjs release \
+            --source-revision "$PROPR_DESKTOP_RELEASE_SHA" \
+            --app-image "$RUNTIME_APP_IMAGE" \
+            --ui-image "$RUNTIME_UI_IMAGE" \
+            --api-compatibility 2026-06-27 \
+            --output "$runtime_manifest"
+          echo "PROPR_DESKTOP_RUNTIME_MANIFEST=$runtime_manifest" >> "$GITHUB_ENV"
+
+      - name: Build and test unsigned DEB/RPM packages
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:typecheck
+          npm run desktop:test
+          PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1 \
+            npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+          deb="$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)"
+          rpm_package="$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)"
+          dpkg-deb --info "$deb" >/dev/null
+          rpm -qip "$rpm_package" >/dev/null
+          test "$(dpkg-deb --field "$deb" Version)" = "$PROPR_DESKTOP_VERSION"
+          test "$(rpm -qp --qf '%{VERSION}' "$rpm_package")" = "$PROPR_DESKTOP_VERSION"
+
+      - name: Launch the packaged application without enabling self-update
+        run: |
+          sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-linux-preview-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"
+
+      - name: Stage architecture-verified preview packages
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs stage \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile linux-preview-v1 \
+            --platform linux \
+            --arch "${{ matrix.arch }}" \
+            --make-directory apps/desktop/out/make \
+            --output "desktop-linux-preview-${{ matrix.arch }}"
+
+      - name: Upload immutable preview fragment
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-linux-preview-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-linux-preview-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize:
+    name: Finalize Linux preview identity and checksums
+    if: inputs.operation == 'stage-draft'
+    needs: [identity, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact preview source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Install cross-format package inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio rpm
+
+      - name: Download both native package fragments
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-linux-preview-*-${{ github.run_id }}
+          path: desktop-linux-preview-fragments
+
+      - name: Revalidate matrix and create preview-only metadata
+        env:
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+          RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          SOURCE_DATE_EPOCH: ${{ needs.identity.outputs.source_date_epoch }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$RELEASE_VERSION" \
+            --profile linux-preview-v1 \
+            --input desktop-linux-preview-fragments \
+            --output desktop-linux-preview-validated
+          node apps/desktop/scripts/linux-preview-release.mjs prepare \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --runtime-app-image "$RUNTIME_APP_IMAGE" \
+            --runtime-ui-image "$RUNTIME_UI_IMAGE" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --input desktop-linux-preview-validated \
+            --output desktop-linux-preview-final
+          (cd desktop-linux-preview-final && sha256sum --check SHA256SUMS)
+          test ! -e desktop-linux-preview-final/desktop-release.json
+          test ! -e desktop-linux-preview-final/desktop-release.json.sig
+
+      - name: Upload the exact draft candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-linux-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-linux-preview-final
+          if-no-files-found: error
+          retention-days: 90
+
+  stage-draft:
+    name: Stage private Linux preview draft release
+    if: inputs.operation == 'stage-draft'
+    needs: [identity, finalize]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the exact finalized draft candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-linux-preview-final-${{ needs.identity.outputs.tag }}-${{ github.run_id }}
+          path: desktop-linux-preview-final
+
+      - name: Create or safely resume a private draft without publishing it
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+        run: |
+          node apps/desktop/scripts/linux-preview-release.mjs stage-draft \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --repository "${{ github.repository }}" \
+            --directory desktop-linux-preview-final
+
+  publish-draft:
+    name: Explicitly authorize public Linux preview prerelease
+    if: inputs.operation == 'publish-draft'
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: desktop-linux-preview-publication
+    permissions:
+      contents: write
+    steps:
+      - name: Require the configured protected publication environment
+        env:
+          PUBLICATION_AUTHORIZED: ${{ vars.PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED }}
+        run: |
+          if [ "$PUBLICATION_AUTHORIZED" != 1 ]; then
+            echo 'Configure the protected desktop-linux-preview-publication environment, required reviewers, and PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED=1 before public preview publication.' >&2
+            exit 1
+          fi
+
+      - name: Checkout the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install native package inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio rpm
+
+      - name: Re-download, hash, inspect, and explicitly publish only the draft bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
+        run: |
+          node apps/desktop/scripts/linux-preview-release.mjs publish-draft \
+            --version "$RELEASE_VERSION" \
+            --source-revision "$RELEASE_SHA" \
+            --repository "${{ github.repository }}"

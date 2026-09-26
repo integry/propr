@@ -1,6 +1,6 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadAutoResolveMergeConflicts } from '../config/configManager.js';
+import { loadAutoResolveMergeConflicts, hasValidTriggerLabel } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
@@ -14,6 +14,7 @@ export type ConflictDetectionOutcome =
     | 'skipped_draft'
     | 'skipped_duplicate'
     | 'skipped_not_conflicted'
+    | 'skipped_no_trigger_label'
     | 'queued';
 
 export interface ConflictDetectionResult {
@@ -31,6 +32,18 @@ interface PRConflictInfo {
     isDraft: boolean;
     mergeable: boolean | null;
     mergeableState: string;
+    labels?: Array<{ name: string }>;
+}
+
+/**
+ * Normalizes GitHub label payloads (objects or bare strings) into `{ name }` records.
+ */
+function normalizeLabels(labels: unknown): Array<{ name: string }> {
+    if (!Array.isArray(labels)) return [];
+    return labels
+        .map(label => (typeof label === 'string' ? label : (label as { name?: unknown } | null)?.name))
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+        .map(name => ({ name }));
 }
 
 const IDEMPOTENCY_TTL_SECONDS = 24 * 3600; // 24 hours
@@ -46,6 +59,12 @@ async function detectAndEnqueueForPR(
     const log = logger.withCorrelation(correlationId);
     const repository = `${owner}/${repoName}`;
     const { number: prNumber } = prInfo;
+
+    // Only PRs that were explicitly opted into ProPR automation may be acted on.
+    if (!await hasValidTriggerLabel(prInfo.labels)) {
+        log.info({ repository, prNumber, labels: (prInfo.labels ?? []).map(l => l.name), outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
+        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
+    }
 
     // Skip draft PRs
     if (prInfo.isDraft) {
@@ -137,6 +156,7 @@ async function fetchPRConflictInfo(
                 isDraft: pr.draft ?? false,
                 mergeable: pr.mergeable,
                 mergeableState: (pr as Record<string, unknown>).mergeable_state as string ?? 'unknown',
+                labels: normalizeLabels(pr.labels),
             };
         }
 
@@ -164,6 +184,7 @@ async function fetchPRConflictInfo(
         isDraft: pr.draft ?? false,
         mergeable: pr.mergeable,
         mergeableState: (pr as Record<string, unknown>).mergeable_state as string ?? 'unknown',
+        labels: normalizeLabels(pr.labels),
     };
 }
 
@@ -171,20 +192,22 @@ export interface HandleMergeCommandOptions {
     owner: string;
     repoName: string;
     prNumber: number;
+    userId?: string;
     redisClient: Redis;
     correlationId: string;
 }
 
 /**
  * Handles a /merge comment on a PR by enqueuing a merge conflict resolution job.
- * This bypasses the auto_resolve_merge_conflicts setting since the user explicitly requested it.
+ * This bypasses the auto_resolve_merge_conflicts setting since the user explicitly requested it,
+ * but still requires the PR to carry a valid trigger label (AI, propr, or a configured primary label).
  * Unlike automatic detection, this does not check if the PR is actually conflicted —
  * it will perform the merge regardless (clean or with conflicts).
  */
 export async function handleMergeCommand(
     options: HandleMergeCommandOptions
 ): Promise<ConflictDetectionResult | null> {
-    const { owner, repoName, prNumber, correlationId } = options;
+    const { owner, repoName, prNumber, userId, correlationId } = options;
     const log = logger.withCorrelation(correlationId);
     const repository = `${owner}/${repoName}`;
 
@@ -200,8 +223,16 @@ export async function handleMergeCommand(
         return null;
     }
 
+    // Defense in depth: never enqueue merge work for a PR that was not opted into ProPR.
+    const prLabels = normalizeLabels(pr.labels);
+    if (!await hasValidTriggerLabel(prLabels)) {
+        log.info({ repository, prNumber, labels: prLabels.map(l => l.name), outcome: 'skipped_no_trigger_label' }, '/merge command: PR has no valid trigger label, skipping');
+        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
+    }
+
     const jobCorrelationId = generateCorrelationId();
     const jobData: MergeConflictJobData = {
+        ...(userId ? { userId } : {}),
         pullRequestNumber: prNumber,
         repoOwner: owner,
         repoName,
@@ -255,6 +286,14 @@ export async function handlePullRequestConflictDetection(
 
     const [owner, repoName] = payload.repository.full_name.split('/');
     const prNumber = payload.pull_request.number;
+    const repository = `${owner}/${repoName}`;
+
+    // Verify the PR opted into ProPR automation before making any external API requests.
+    const payloadLabels = normalizeLabels(payload.pull_request.labels);
+    if (!await hasValidTriggerLabel(payloadLabels)) {
+        log.info({ repository, prNumber, labels: payloadLabels.map(l => l.name), outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
+        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
+    }
 
     const prInfo = await fetchPRConflictInfo(owner, repoName, prNumber);
     if (!prInfo) {
@@ -309,8 +348,24 @@ export async function handlePushConflictDetection(
 
     log.info({ repository, branchName, prCount: openPRs.length }, 'Merge conflict detection: found open PRs to check');
 
+    // Only PRs carrying a valid trigger label are eligible for automated conflict resolution.
     const results: ConflictDetectionResult[] = [];
+    const eligiblePRs: typeof openPRs = [];
     for (const pr of openPRs) {
+        if (await hasValidTriggerLabel(normalizeLabels(pr.labels))) {
+            eligiblePRs.push(pr);
+        } else {
+            log.info({ repository, prNumber: pr.number, outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
+            results.push({ outcome: 'skipped_no_trigger_label', prNumber: pr.number, repository });
+        }
+    }
+
+    if (eligiblePRs.length === 0) {
+        log.debug({ repository, branchName }, 'Merge conflict detection: no open PRs with a valid trigger label');
+        return results;
+    }
+
+    for (const pr of eligiblePRs) {
         try {
             const prInfo = await fetchPRConflictInfo(owner, repoName, pr.number);
             if (!prInfo) continue;

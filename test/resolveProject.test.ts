@@ -128,16 +128,16 @@ test("resolveProject", async (t) => {
     cleanupTempDir(tempDir);
   });
 
-  await t.test("should handle empty string project in options by treating it as falsy", async () => {
+  await t.test("should reject an empty explicit project instead of using the default", async () => {
     tempDir = createTempDir();
     configManager = new ConfigManager(tempDir);
     await configManager.init();
     await configManager.setDefaultProject("fallback/project");
 
-    // Empty string is falsy, so should fall back to default
-    const result = resolveProject({ project: "" }, configManager);
-
-    assert.strictEqual(result, "fallback/project");
+    assert.throws(
+      () => resolveProject({ project: "" }, configManager),
+      ProjectResolutionError
+    );
 
     cleanupTempDir(tempDir);
   });

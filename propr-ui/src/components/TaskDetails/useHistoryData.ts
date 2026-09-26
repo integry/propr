@@ -12,8 +12,15 @@ export interface HistoryDerivedData {
 export const getHistoryDerivedData = (history: HistoryItem[], taskInfo: TaskInfo | null): HistoryDerivedData => {
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
   const currentStatus = history[history.length - 1]?.state?.toUpperCase() || '';
+  const routedItem = [...history].reverse().find(item => item.metadata?.syntheticRouting?.virtualModel);
   const modelItem = history.find(item => item.metadata?.model);
-  const modelName = formatModelName(modelItem?.metadata?.model || taskInfo?.modelName);
+  // Task-list/header identity stays virtual; physical execution is shown on the
+  // attempt rows in task details.
+  const modelName = formatModelName(
+    routedItem?.metadata?.syntheticRouting?.virtualModel
+      || modelItem?.metadata?.model
+      || taskInfo?.modelName,
+  );
   
   const completedStep = [...history].reverse().find(item => {
     const state = item.state?.toUpperCase();

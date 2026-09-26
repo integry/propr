@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@propr/core';
+import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -33,6 +33,10 @@ interface AgentModelToProcess {
 type IssueQueueAdd = typeof issueQueue.add;
 
 interface DispatcherDeps {
+    findSubmission: typeof findIssueSubmission;
+    recordDispatch: (id: string, triggerEventId?: string) => Promise<void>;
+    resolveSubmissionRetry: typeof resolveTaskSubmissionRetry;
+    recordDispatchFailure: (id: string, error: string) => Promise<void>;
     getAuthenticatedOctokit: typeof getAuthenticatedOctokit;
     withRetry: typeof withRetry;
     retryConfigs: typeof retryConfigs;
@@ -75,6 +79,10 @@ async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promi
 
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
     return handleDispatchWithDeps(job, {
+        findSubmission: findIssueSubmission,
+        resolveSubmissionRetry: resolveTaskSubmissionRetry,
+        recordDispatchFailure: async (id, error) => { await db('task_submissions').where({ id, dispatch_complete: false }).update({ state: 'failed', error }); },
+        recordDispatch: async (id, triggerEventId) => { await db('task_submissions').where({ id }).update({ dispatch_complete: true, state: 'queued', error: null, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) }); },
         getAuthenticatedOctokit,
         withRetry,
         retryConfigs,
@@ -88,8 +96,108 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
     });
 }
 
+async function resolveDispatchTargets(
+    context: { currentIssueData: CurrentIssueData; repoValidation: RepoValidation; issueNumber: number },
+    deps: DispatcherDeps,
+    correlatedLogger: Logger,
+) {
+    const { currentIssueData, repoValidation, issueNumber } = context;
+    const defaultBranch = repoValidation.repoData?.defaultBranch || 'main';
+    const labels = currentIssueData.data.labels.map(l => l.name);
+
+    const baseLabels = labels.filter(l => l.startsWith('base-'));
+    const llmLabels = labels.filter(l => l.startsWith('llm-'));
+    const reasoningLevel = parseReasoningLevelFromLabels(currentIssueData.data.labels);
+    const reasoningLevelLabels = labels.filter(isReasoningLevelLabel);
+    if (reasoningLevelLabels.length > 1) {
+        correlatedLogger.warn({
+            issue: issueNumber,
+            reasoningLevel,
+            labels: reasoningLevelLabels
+        }, 'Multiple reasoning level labels found; using highest-priority label');
+    }
+
+    // Get all configured custom labels from agents
+    const customLabels = await deps.getAllCustomLabels();
+    const customLabelMatches = labels.filter(l =>
+        customLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
+    );
+
+    const basesToProcess: BaseToProcess[] = baseLabels.length > 0
+        ? baseLabels.map(l => ({ branch: l.substring('base-'.length), label: l }))
+        : [{ branch: defaultBranch, label: null }];
+
+    // Resolve LLM labels and custom labels to agent + model pairs
+    const agentModelsToProcess: AgentModelToProcess[] = [];
+
+    // First, process standard llm- prefixed labels
+    if (llmLabels.length > 0) {
+        for (const label of llmLabels) {
+            const llmPart = label.substring('llm-'.length);
+            const resolution = await deps.resolveLlmLabel(llmPart);
+            agentModelsToProcess.push({
+                agentAlias: resolution.agentAlias,
+                model: resolution.model,
+                label
+            });
+            correlatedLogger.debug({
+                label,
+                resolvedAgent: resolution.agentAlias,
+                resolvedModel: resolution.model
+            }, 'Resolved LLM label');
+        }
+    }
+
+    // Then, process custom labels (that don't overlap with llm- labels)
+    if (customLabelMatches.length > 0) {
+        for (const label of customLabelMatches) {
+            const resolution = await deps.resolveCustomLabel(label);
+            if (resolution) {
+                agentModelsToProcess.push({
+                    agentAlias: resolution.agentAlias,
+                    model: resolution.model,
+                    label
+                });
+                correlatedLogger.debug({
+                    label,
+                    resolvedAgent: resolution.agentAlias,
+                    resolvedModel: resolution.model
+                }, 'Resolved custom label');
+            }
+        }
+    }
+
+    // If no LLM or custom labels found, use the default agent
+    if (agentModelsToProcess.length === 0) {
+        // No LLM or custom labels - use default agent from settings
+        const { agentAlias, modelToUse } = await deps.resolveDefaultAgentForDispatcher(correlatedLogger);
+        const resolvedModel = modelToUse || process.env.DEFAULT_CLAUDE_MODEL || deps.getDefaultModel();
+
+        if (!resolvedModel) {
+            throw new NoDefaultModelConfiguredError();
+        }
+
+        agentModelsToProcess.push({
+            agentAlias,
+            model: resolvedModel,
+            label: null
+        });
+    }
+
+    return { basesToProcess, agentModelsToProcess, reasoningLevel };
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
+    const submission = await deps.findSubmission(issueRef);
+    const trigger = submission ? await deps.resolveSubmissionRetry(submission) : null;
+    const retry = submission?.dispatch_complete ? trigger : null;
+    if (submission?.dispatch_complete && !retry) return { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: issueRef.number };
+    if (submission) {
+        [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
+        issueRef.userId = submission.user_id;
+        issueRef.correlationId = retry ? `${submission.id}-${retry.eventId}` : submission.id;
+    }
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     correlatedLogger.info({ jobId, issueRef: issueRef.number }, 'Running as matrix dispatcher...');
@@ -121,87 +229,9 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             throw new Error(errorMessage);
         }
 
-        const defaultBranch = repoValidation.repoData?.defaultBranch || 'main';
-        const labels = currentIssueData.data.labels.map(l => l.name);
-
-        const baseLabels = labels.filter(l => l.startsWith('base-'));
-        const llmLabels = labels.filter(l => l.startsWith('llm-'));
-        const reasoningLevel = parseReasoningLevelFromLabels(currentIssueData.data.labels);
-        const reasoningLevelLabels = labels.filter(isReasoningLevelLabel);
-        if (reasoningLevelLabels.length > 1) {
-            correlatedLogger.warn({
-                issue: issueRef.number,
-                reasoningLevel,
-                labels: reasoningLevelLabels
-            }, 'Multiple reasoning level labels found; using highest-priority label');
-        }
-
-        // Get all configured custom labels from agents
-        const customLabels = await deps.getAllCustomLabels();
-        const customLabelMatches = labels.filter(l =>
-            customLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
+        const { basesToProcess, agentModelsToProcess, reasoningLevel } = await resolveDispatchTargets(
+            { currentIssueData, repoValidation, issueNumber: issueRef.number }, deps, correlatedLogger,
         );
-
-        const basesToProcess: BaseToProcess[] = baseLabels.length > 0
-            ? baseLabels.map(l => ({ branch: l.substring('base-'.length), label: l }))
-            : [{ branch: defaultBranch, label: null }];
-
-        // Resolve LLM labels and custom labels to agent + model pairs
-        const agentModelsToProcess: AgentModelToProcess[] = [];
-
-        // First, process standard llm- prefixed labels
-        if (llmLabels.length > 0) {
-            for (const label of llmLabels) {
-                const llmPart = label.substring('llm-'.length);
-                const resolution = await deps.resolveLlmLabel(llmPart);
-                agentModelsToProcess.push({
-                    agentAlias: resolution.agentAlias,
-                    model: resolution.model,
-                    label
-                });
-                correlatedLogger.debug({
-                    label,
-                    resolvedAgent: resolution.agentAlias,
-                    resolvedModel: resolution.model
-                }, 'Resolved LLM label');
-            }
-        }
-
-        // Then, process custom labels (that don't overlap with llm- labels)
-        if (customLabelMatches.length > 0) {
-            for (const label of customLabelMatches) {
-                const resolution = await deps.resolveCustomLabel(label);
-                if (resolution) {
-                    agentModelsToProcess.push({
-                        agentAlias: resolution.agentAlias,
-                        model: resolution.model,
-                        label
-                    });
-                    correlatedLogger.debug({
-                        label,
-                        resolvedAgent: resolution.agentAlias,
-                        resolvedModel: resolution.model
-                    }, 'Resolved custom label');
-                }
-            }
-        }
-
-        // If no LLM or custom labels found, use the default agent
-        if (agentModelsToProcess.length === 0) {
-            // No LLM or custom labels - use default agent from settings
-            const { agentAlias, modelToUse } = await deps.resolveDefaultAgentForDispatcher(correlatedLogger);
-            const resolvedModel = modelToUse || process.env.DEFAULT_CLAUDE_MODEL || deps.getDefaultModel();
-
-            if (!resolvedModel) {
-                throw new NoDefaultModelConfiguredError();
-            }
-
-            agentModelsToProcess.push({
-                agentAlias,
-                model: resolvedModel,
-                label: null
-            });
-        }
 
         let jobsEnqueued = 0;
         for (const base of basesToProcess) {
@@ -221,12 +251,14 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
 
                 // Deterministic jobId for deduplication - prevents duplicate child jobs
                 // when multiple webhook events trigger the dispatcher for the same issue
-                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}`;
+                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}${retry ? `-trigger-${retry.eventId}` : ''}`;
 
                 await deps.issueQueue.add(jobName, newJobData, {
                     jobId: childJobId,
-                    removeOnComplete: true,
-                    removeOnFail: true,
+                    // Retain the initial delivery until its durable dispatch receipt exists.
+                    // Late webhook deliveries consult that receipt, even after queue cleanup.
+                    removeOnComplete: !submission,
+                    removeOnFail: !submission,
                 });
                 jobsEnqueued++;
                 correlatedLogger.info({
@@ -241,10 +273,12 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             }
         }
 
+        if (submission) await deps.recordDispatch(submission.id, trigger?.eventId);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };
 
     } catch (error) {
+        if (submission) await deps.recordDispatchFailure(submission.id, (error as Error).message);
         correlatedLogger.error({
             jobId,
             issue: issueRef.number,

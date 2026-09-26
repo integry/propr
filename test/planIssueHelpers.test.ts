@@ -11,7 +11,7 @@ after(async () => {
 });
 
 test('getLlmLabel returns static model labels unchanged', async () => {
-  assert.strictEqual(await getLlmLabel('opencode-deepseek-v4-flash-free'), 'llm-opencode-deepseek-v4-flash-free');
+  assert.strictEqual(await getLlmLabel('opencode-big-pickle'), 'llm-opencode-big-pickle');
 });
 
 test('getLlmLabel uses the configured agent alias for static model labels', async () => {
@@ -56,7 +56,7 @@ test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider
         dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: ['opencode-openai/gpt-5.5', 'opencode-go/qwen3.7-max'],
-        defaultModel: 'opencode-deepseek-v4-flash-free'
+        defaultModel: 'opencode-big-pickle'
       }
     }
   ]);
@@ -85,7 +85,7 @@ test('getLlmLabel hashes long dynamic labels to fit GitHub limits', async () => 
         dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: [longModel],
-        defaultModel: 'opencode-deepseek-v4-flash-free'
+        defaultModel: 'opencode-big-pickle'
       }
     }
   ]);

@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDraft, previewContext } from '../api/proprApi';
 import { useContextRefresh } from './useContextRefresh';
 
@@ -111,5 +111,123 @@ describe('useContextRefresh', () => {
     await expect(previewFinished).resolves.toBe(true);
     expect(result.current.preview.isLoading).toBe(false);
     expect(result.current.preview.data?.fileTokenCounts).toEqual({ 'src/index.ts': 100 });
+  });
+  describe('autoRefresh', () => {
+    const onBranchError = vi.fn();
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('does not start a countdown or auto-fetch when autoRefresh is disabled', async () => {
+      vi.useFakeTimers();
+      const { result, rerender } = renderHook(
+        ({ prompt }: { prompt: string }) => useContextRefresh({
+          draftId: 'draft-1',
+          config: { ...config, prompt },
+          onBranchError,
+          autoRefresh: false,
+        }),
+        { initialProps: { prompt: config.prompt } }
+      );
+
+      expect(result.current.isContextStale).toBe(true);
+      expect(result.current.timeUntilRefresh).toBeNull();
+
+      rerender({ prompt: 'Build a completely different feature with new requirements' });
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+
+      expect(result.current.isContextStale).toBe(true);
+      expect(result.current.timeUntilRefresh).toBeNull();
+      expect(mockPreviewContext).not.toHaveBeenCalled();
+    });
+
+    it('defaults to autoRefresh disabled', async () => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useContextRefresh({
+        draftId: 'draft-1',
+        config,
+        onBranchError,
+      }));
+
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+
+      expect(result.current.timeUntilRefresh).toBeNull();
+      expect(mockPreviewContext).not.toHaveBeenCalled();
+    });
+
+    it('starts the countdown when autoRefresh is enabled', () => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useContextRefresh({
+        draftId: 'draft-1',
+        config,
+        onBranchError,
+        autoRefresh: true,
+      }));
+
+      expect(result.current.isContextStale).toBe(true);
+      expect(result.current.timeUntilRefresh).toBe(20);
+    });
+
+    it('fetches context on manual refresh when autoRefresh is disabled', async () => {
+      const { result } = renderHook(() => useContextRefresh({
+        draftId: 'draft-1',
+        config,
+        onBranchError,
+        autoRefresh: false,
+      }));
+
+      act(() => {
+        void result.current.handleManualRefresh();
+      });
+      await act(async () => Promise.resolve());
+
+      expect(mockPreviewContext).toHaveBeenCalledTimes(1);
+      expect(mockPreviewContext).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-1', prompt: config.prompt }), expect.anything());
+      expect(result.current.isContextStale).toBe(false);
+      expect(result.current.preview.isLoading).toBe(true);
+    });
+
+    it('uses the override draft ID when the draftId prop has not propagated yet', async () => {
+      const { result } = renderHook(() => useContextRefresh({
+        draftId: '',
+        config,
+        onBranchError,
+      }));
+
+      act(() => {
+        void result.current.handleManualRefresh('draft-new');
+      });
+      await act(async () => Promise.resolve());
+
+      expect(mockPreviewContext).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-new' }), expect.anything());
+    });
+
+    it('marks context stale again when the prompt changes after a completed preview', async () => {
+      mockPreviewContext.mockResolvedValue(completedDraft.context_config.lastPreview);
+      const { result, rerender } = renderHook(
+        ({ prompt }: { prompt: string }) => useContextRefresh({
+          draftId: 'draft-1',
+          config: { ...config, prompt },
+          onBranchError,
+        }),
+        { initialProps: { prompt: config.prompt } }
+      );
+
+      await act(async () => {
+        await result.current.handleManualRefresh();
+      });
+      expect(result.current.isContextStale).toBe(false);
+      expect(result.current.preview.data).not.toBeNull();
+
+      rerender({ prompt: `${config.prompt} with tests` });
+
+      expect(result.current.isContextStale).toBe(true);
+      expect(result.current.timeUntilRefresh).toBeNull();
+    });
   });
 });

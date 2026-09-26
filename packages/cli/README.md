@@ -12,6 +12,14 @@ The host CLI requires Node.js 22 or newer. The Docker launcher image is separate
 and remains dependency-free on Node 20 because it does not load the Ink-based
 interactive CLI.
 
+Using the CLI as the local stack control plane additionally requires a Linux
+`amd64` host, a maintained Docker Engine release, direct read/write access to
+`/var/run/docker.sock`, and the GitHub CLI (`gh`) for the guided setup's default
+Connect login (or authenticate first with `propr login <token>`). Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for
+a single-task evaluation; 8 GB RAM or more is recommended for normal or
+concurrent use. `propr check` validates Docker access before startup. See the
+full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
+
 ## Quick Start
 
 ```bash
@@ -89,7 +97,13 @@ Useful follow-up commands:
 propr tunnel verify      # check cloudflared + /api/status, /, /socket.io/
 propr tunnel off         # stop only the sidecar; token/env values stay in .env
 propr tunnel on          # restart the sidecar later
+propr connect status --json --root /path/to/stack  # secret-free desktop discovery
 ```
+
+`connect status` requires an explicit caller-owned stack root and never scans the
+filesystem. Its JSON stdout contains no tokens, account/repository/host identity,
+environment values, or paths. Exit codes are 0 ready, 2 known not ready, 3
+incompatible, 4 invalid configuration/root, 5 timeout, and 1 internal failure.
 
 `propr tunnel off` intentionally leaves the Connect-written `.env` values in
 place. If you are switching the same stack back to a local or custom self-hosted
@@ -106,6 +120,33 @@ cd .propr && npm install <package>
 ```
 
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
+
+## Agent Runtime Packages
+
+Runtime-package administration uses the installation runtime-management permission. After changing packages, replacing an agent base image, or pruning local images, verify the images ProPR currently uses:
+
+```bash
+propr runtime packages apply --wait
+propr runtime packages verify
+propr runtime packages verify --json
+```
+
+Verification is read-only and exits nonzero for desired/active drift, stale or missing images, missing packages, pinned-version mismatches, or incorrect runtime labels/final users. Package inspection runs in a short-lived network-disabled container. Use `propr runtime packages apply --wait` to rebuild an unhealthy profile, then run verification again. An empty runtime-package profile returns a successful explicit disabled result.
+
+## ProPR Operator Agent Skill
+
+`propr setup` detects configured agent tools and offers once to install the bundled ProPR Operator skill, showing every destination before writing. Skip the offer with `--no-skill`, or choose targets explicitly with `--install-skill codex,claude`. A setup-time skill error is reported with a recovery command and does not invalidate an otherwise healthy stack. Piped/CI setup never writes agent homes unless explicit targets are passed.
+
+The standalone command manages only the ProPR skill:
+
+```bash
+propr skill install codex claude
+propr skill status                 # all targets, with content identities
+propr skill remove codex           # refuses modified or foreign content
+propr skill install codex --force  # preserves a timestamped backup first
+```
+
+Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), and `~/.vibe/skills/propr`. Run `propr skill --help` for the exact mapping.
 
 ### Authentication
 
@@ -128,6 +169,12 @@ To use a Personal Access Token instead:
 | `-p, --project <project>` | Specify the target project (owner/repo) |
 | `-V, --version` | Output the version number |
 | `-h, --help` | Display help information |
+
+Project may be supplied globally (`propr -p owner/repo plan list`) or on a
+command that advertises the option (`propr plan list -p owner/repo`). If both
+forms are present, the nested command option wins; otherwise the global option
+wins, followed by the configured default project. Project values are trimmed
+and must use `owner/repo` format.
 
 Most commands support `--json` (`-j`) for machine-readable output.
 
@@ -171,7 +218,7 @@ Implement GitHub issues from plans using AI agents.
 propr issue implement <draft-id>/<issue-number>              # Trigger implementation
 propr issue implement <draft-id>/1 --wait                    # Wait for completion
 propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agent/model
-propr issue implement <draft-id>/1 -a opencode -m opencode-deepseek-v4-flash-free
+propr issue implement <draft-id>/1 -a opencode -m opencode-big-pickle
 propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
@@ -197,6 +244,9 @@ propr task list                          # List all tasks
 propr task list -s processing            # Filter by status
 propr task list -p owner/repo            # Filter by project
 propr task list --search "auth" -l 100   # Search with limit
+propr task inspect                       # Inspect all active tasks
+propr task inspect --state queued        # Fetch one exact lifecycle state
+propr task inspect <task-id>             # Current details and full run history
 propr task get <task-id>                 # View task details with history
 propr task stop <task-id>                # Stop a running task
 propr task delete <task-id>              # Delete a task (with confirmation)
@@ -210,10 +260,34 @@ propr task revert owner/repo 123 abc 456 # Revert a commit from a PR
 | `-s, --status` | `list` | Filter by status (see below) |
 | `-l, --limit` | `list` | Max results (default: 50) |
 | `--search` | `list` | Search by term |
+| `-s, --state` | `inspect` | Fetch one exact lifecycle state |
+| `-p, --project` | `inspect` | Filter active tasks by project |
+| `-l, --limit` | `inspect` | Max combined results (default: 50) |
+| `-j, --json` | `inspect` | Stable version 1 inspection JSON |
 | `-f, --force` | `delete` | Force deletion of active tasks |
 | `-o, --owner` | `revert` | Repo owner if not in owner/repo format |
 
 **Status values:** `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`
+
+`task inspect` is the focused, read-only operator workflow. With no ID it
+requests the canonical active states from the server—`pending`, `queued`,
+`processing`, `claude_execution`, and `post_processing`—so queued work is not
+lost to client-side filtering. `--state` selects any one canonical lifecycle
+state. With an ID, the command uses the task details endpoint and includes the
+complete available run history.
+
+Human output distinguishes queueing and execution and shows the task ID,
+repository, title, state, agent/model, elapsed time, and last update. JSON is
+versioned and always uses one of these top-level shapes:
+
+```json
+{"version":1,"kind":"task-list","states":["pending"],"tasks":[],"total":0}
+{"version":1,"kind":"task-detail","task":{"id":"task-id","repository":"owner/repo","title":"Title","state":"processing","agent":"codex","model":"gpt-5.6-sol","elapsedMs":1200,"updatedAt":"2026-08-25T20:00:00.000Z","inProgress":true,"completed":false,"failed":false,"failureReason":null,"pr":null,"details":{},"history":[]}}
+```
+
+List task objects always contain `id`, `repository`, `title`, `state`, `agent`,
+`model`, `elapsedMs`, and `updatedAt`. Unavailable values are `null`; timestamps
+are ISO 8601 strings and durations are integer milliseconds.
 
 ---
 
@@ -246,7 +320,7 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled   # Add in disabled state
-propr agent add opencode -t opencode -m opencode-deepseek-v4-flash-free -d opencode-deepseek-v4-flash-free --config-path /home/your-user/.config/opencode
+propr agent add opencode -t opencode -m opencode-big-pickle -d opencode-big-pickle --config-path /home/your-user/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
@@ -266,7 +340,7 @@ mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth
 
 OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Use `~/.config/opencode` as the agent `configPath`.
 
-The example model `opencode-deepseek-v4-flash-free` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs with ProPR's `opencode-` prefix, such as `opencode-openai/gpt-5.5`. ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time and does not add authenticated provider models by default.
+The example model `opencode-big-pickle` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs with ProPR's `opencode-` prefix, such as `opencode-openai/gpt-5.5`. ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time and does not add authenticated provider models by default.
 Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` separator is an intentional public contract — these labels are persisted on GitHub issues and resolved later for execution routing.
 
 **JSON file format** for `--file`:
@@ -275,8 +349,8 @@ Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode
 {
   "alias": "opencode",
   "type": "opencode",
-  "models": ["opencode-deepseek-v4-flash-free"],
-  "defaultModel": "opencode-deepseek-v4-flash-free",
+  "models": ["opencode-big-pickle"],
+  "defaultModel": "opencode-big-pickle",
   "dockerImage": "propr/agent:latest",
   "configPath": "/home/your-user/.config/opencode",
   "enabled": true,
@@ -420,8 +494,8 @@ propr plan issues <draft-id>
 propr issue implement <draft-id>/1 --wait --auto-merge
 
 # Monitor tasks
-propr task list -s processing
-propr task get <task-id>
+propr task inspect
+propr task inspect <task-id>
 ```
 
 ### Managing To-Dos
@@ -447,7 +521,8 @@ propr status                             # System health
 propr queue                              # Queue statistics
 propr log list --failed                  # Failed LLM executions
 propr log list -l 100 --success          # Successful executions
-propr task get <task-id>                 # Detailed task info
+propr task inspect                       # Queued and executing work
+propr task inspect <task-id>             # Detailed task info and run history
 ```
 
 ### Managing Multiple Projects
@@ -486,6 +561,7 @@ End-to-end tests run against a live ProPR instance and exercise the full workflo
 | `PROPR_E2E_REPO` | Yes | — | Test repo (e.g., `integry/propr-e2e-test`) |
 | `PROPR_E2E_SKIP_SLOW` | No | — | Set to `1` to skip plan/implementation tests |
 | `PROPR_E2E_NO_CLEANUP` | No | — | Set to `1` to keep all created resources |
+| `PROPR_E2E_MODEL_TASK_TIMEOUT_MS` | No | `1800000` | Maximum wait per live model-matrix phase (30 minutes) |
 
 ### Running
 

@@ -1,5 +1,4 @@
 import { RedisClientType } from 'redis';
-import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import type { Knex } from 'knex';
 export { validateAgentsConfig, normalizeAgentsConfig } from './configAgentValidation.js';
@@ -36,6 +35,11 @@ export class ConfigRouteError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+export function resolveConfigStore(overrides?: Partial<typeof configManager>): typeof configManager {
+  // Preserve the production namespace identity so raw persisted settings can
+  // bypass the filtered public settings projection without losing unknown keys.
+  return overrides ? { ...configManager, ...overrides } : configManager;
 }
 const EXTEND_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], tonumber(ARGV[2]))
@@ -127,17 +131,19 @@ async function releaseLock(redisClient: RedisClientType, lockKey: string, lockVa
 }
 export async function upsertConfigValue(trx: Knex.Transaction, key: string, value: unknown): Promise<void> {
   const jsonValue = JSON.stringify(value);
+  const transactionFunctions = (trx as Knex.Transaction & { fn?: { now?: () => unknown } }).fn;
+  const now = (): unknown => transactionFunctions?.now?.() ?? new Date();
   await trx('system_configs')
     .insert({
       key,
       value: jsonValue,
-      updated_at: db.fn.now(),
-      created_at: db.fn.now()
+      updated_at: now(),
+      created_at: now()
     })
     .onConflict('key')
     .merge({
       value: jsonValue,
-      updated_at: db.fn.now()
+      updated_at: now()
     });
 }
 export function buildMergedSettings(previousSettings: Record<string, unknown>, settingsPatch: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -214,7 +220,13 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
   const context: ConfigLockContext = {
     assertLockHeld: async () => {
       if (lostLock.detected) throwLockLossError();
-      const renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
+      let renewed = false;
+      try {
+        renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
+      } catch (error) {
+        markLockLost('renewal_error', error);
+        throwLockLossError();
+      }
       if (!renewed) { markLockLost('ownership_lost'); throwLockLossError(); }
     },
     hasLockBeenLost: () => lostLock.detected,
@@ -230,6 +242,10 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
     lockAcquired = true;
     scheduleRenewal();
     result = await operation(context);
+    // A fast operation may finish before the first renewal timer fires. Verify
+    // ownership once more so lock replacement cannot pass unnoticed simply
+    // because the critical section completed within the renewal interval.
+    await context.assertLockHeld();
     if (lostLock.detected) {
       if (committed) {
         return buildCommittedLockLossResponse(result, lostLock.reason);

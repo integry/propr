@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle, XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CheckCircle, XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { getWorkTypeLabel } from './llmLogsUtils';
@@ -11,6 +11,23 @@ export const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
   }
   return <XCircle size={18} className="text-red-500" />;
 };
+
+export const LlmLogsBlockingState: React.FC<{ error?: string }> = ({ error }) => (
+  <div className="flex flex-col h-full">
+    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+      <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
+    </div>
+    <div className="flex-1 overflow-auto px-6 py-6">
+      {error ? (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
+      ) : (
+        <div role="status" className="flex items-center gap-2 text-gray-500">
+          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading logs...
+        </div>
+      )}
+    </div>
+  </div>
+);
 
 // Expand/Collapse button component
 export const ExpandButton: React.FC<{
@@ -28,6 +45,40 @@ export const ExpandButton: React.FC<{
     )}
   </button>
 );
+
+function syntheticRoutingMetadata(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+const stringMetadata = (value: unknown): string | null => typeof value === 'string' ? value : null;
+const numberMetadata = (value: unknown): number | null => typeof value === 'number' ? value : null;
+
+export const SyntheticRoutingModelSummary: React.FC<{ value: unknown }> = ({ value }) => {
+  const routing = syntheticRoutingMetadata(value);
+  if (!routing) return null;
+  return (
+    <div className="mt-0.5 text-[10px] text-slate-500" title="Synthetic virtual identity and physical execution attempt">
+      {String(routing.virtualAgentAlias ?? '-')} · {String(routing.virtualModel ?? '-')}
+      {' → '}{String(routing.physicalAgentAlias ?? '-')} · {String(routing.physicalModel ?? '-')}
+      {' · #'}{String(routing.attemptNumber ?? '-')}
+    </div>
+  );
+};
+
+const SyntheticRoutingDetails: React.FC<{ value: unknown }> = ({ value }) => {
+  const routing = syntheticRoutingMetadata(value);
+  if (!routing) return null;
+  return (
+    <div className="space-y-2">
+      <h4 className="font-medium text-gray-700">Synthetic routing</h4>
+      <div className="space-y-1 rounded border border-slate-200 bg-white p-3 font-mono text-xs text-slate-800">
+        <div><span className="font-sans text-slate-500">Virtual:</span> {String(routing.virtualAgentAlias ?? '-')} · {String(routing.virtualModel ?? '-')}</div>
+        <div><span className="font-sans text-slate-500">Physical:</span> {String(routing.physicalAgentAlias ?? '-')} · {String(routing.physicalModel ?? '-')}</div>
+        <div><span className="font-sans text-slate-500">Attempt:</span> {String(routing.attemptNumber ?? '-')}</div>
+      </div>
+    </div>
+  );
+};
 
 // Work reference sub-component to reduce complexity
 const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
@@ -56,7 +107,7 @@ const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
           <div>
             <span className="text-gray-500">Task ID:</span>{' '}
             <Link
-              to={`/tasks/${log.taskId}`}
+              to={`/tasks/${encodeURIComponent(log.taskId)}`}
               className="font-mono text-teal-600 hover:text-teal-800 hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
@@ -101,18 +152,15 @@ const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 
 // Expanded row detail component
 export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
-  const reasoningLevel = typeof log.metadata?.reasoningLevel === 'string'
-    ? log.metadata.reasoningLevel
-    : null;
-  const reasoningOutputTokens = typeof log.metadata?.reasoningOutputTokens === 'number'
-    ? log.metadata.reasoningOutputTokens
-    : null;
-
+  const reasoningLevel = stringMetadata(log.metadata?.reasoningLevel);
+  const reasoningOutputTokens = numberMetadata(log.metadata?.reasoningOutputTokens);
   return (
     <tr className="bg-gray-50">
       <td colSpan={8} className="px-4 py-4">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <WorkReferenceSection log={log} />
+
+          <SyntheticRoutingDetails value={log.metadata?.syntheticRouting} />
 
           {/* IDs Section */}
           <div className="space-y-2">

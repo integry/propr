@@ -14,6 +14,7 @@ export { VALID_GRANULARITIES, validateContextRepositories, validatePreviewInput,
 
 // Repository setup utilities
 export { setupRepoContext, getRefineRepoContext } from './repoSetup.js';
+export { resolveEffectiveContextRepositories, verifyPlannerRepositoryAccess } from './repositoryAuthorization.js';
 
 // Background refinement
 export { runBackgroundRefinement } from './refineBackground.js';
@@ -31,7 +32,7 @@ export {
 } from './operationGuard.js';
 
 // Utility functions
-export { updateDraftContextConfig, runBackgroundGeneration, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';
+export { updateDraftContextConfig, runBackgroundGeneration, selectRefinementModel, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';
 
 // Handlers
 export * from './handlers/index.js';

@@ -1,0 +1,145 @@
+.ai-agents-pane {
+  container-type: inline-size;
+}
+
+.ai-agents-pane-header {
+  min-height: 3.25rem;
+  padding: 0.625rem clamp(0.75rem, 3cqw, 1.25rem);
+}
+
+.ai-agents-pane-header h2 {
+  font-size: 1rem;
+}
+
+.ai-agents-heading-compact,
+.ai-agents-add-compact {
+  display: none;
+}
+
+.ai-agents-add-button {
+  min-height: 2rem;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+}
+
+.ai-agents-configuration-content {
+  min-width: 0;
+  padding: 1rem clamp(0.75rem, 4cqw, 1.25rem);
+}
+
+.ai-agents-resize-handle {
+  touch-action: none;
+}
+
+.ai-agents-resize-line {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  background: #e2e8f0;
+  transform: translateX(-50%);
+  transition: background-color 150ms ease, width 150ms ease;
+}
+
+.ai-agents-resize-grip {
+  position: relative;
+  z-index: 1;
+  box-sizing: content-box;
+  border-radius: 9999px;
+  background: #fff;
+  padding: 0.2rem 0;
+  transition: color 150ms ease;
+}
+
+.ai-agents-resize-handle:hover .ai-agents-resize-line,
+.ai-agents-resize-handle[data-resize-handle-active] .ai-agents-resize-line,
+.ai-agents-resize-handle:focus-visible .ai-agents-resize-line {
+  width: 2px;
+  background: #14b8a6;
+}
+
+.ai-agents-resize-handle:hover .ai-agents-resize-grip,
+.ai-agents-resize-handle[data-resize-handle-active] .ai-agents-resize-grip,
+.ai-agents-resize-handle:focus-visible .ai-agents-resize-grip {
+  color: #0f766e;
+}
+
+.ai-agents-resize-handle:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(20, 184, 166, 0.35);
+}
+
+@container (max-width: 360px) {
+  .ai-agents-heading-wide,
+  .ai-agents-add-wide {
+    display: none;
+  }
+
+  .ai-agents-heading-compact,
+  .ai-agents-add-compact {
+    display: inline;
+  }
+
+  .ai-agents-pane-header h2 {
+    font-size: 0.875rem;
+  }
+
+  .ai-agents-add-button {
+    font-size: 0.75rem;
+  }
+
+  .ai-agent-card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .ai-agent-card-identity {
+    min-width: 0;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .ai-agent-card-identity code {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-agent-card-actions {
+    margin-left: auto;
+  }
+
+  .ai-agent-models {
+    margin-left: 0;
+  }
+
+  .ai-agent-model-header,
+  .ai-agent-model-context {
+    display: none;
+  }
+
+  .ai-agent-model-row {
+    flex-wrap: wrap;
+  }
+
+  .ai-agent-model-name,
+  .ai-agent-model-identifiers {
+    width: 100%;
+  }
+
+  .ai-agent-model-identifiers {
+    margin-top: 0.5rem;
+    justify-content: flex-start;
+  }
+}
+
+@container (max-width: 250px) {
+  .ai-agents-add-compact {
+    display: none;
+  }
+
+  .ai-agents-add-button {
+    width: 2rem;
+    padding-inline: 0;
+  }
+}

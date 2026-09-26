@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getInstanceCatalog, getTasks } from '../api/proprApi';
+import { getInstanceCatalog, getReadinessTaskExistence } from '../api/proprApi';
 
 /**
  * System readiness state for onboarding guidance
@@ -41,7 +41,7 @@ export function useSystemReadiness(): SystemReadinessState {
       // credential paths, environment variables, and disabled repositories.
       const [catalog, tasksResponse] = await Promise.all([
         getInstanceCatalog(),
-        getTasks('all', 1, 0), // Just check if any task exists
+        getReadinessTaskExistence(),
       ]);
 
       if (!isMountedRef.current) return;

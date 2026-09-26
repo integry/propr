@@ -203,6 +203,11 @@ export interface TaskInfo {
   modelName?: string;
 
   /**
+   * Agent alias used to execute the task.
+   */
+  agentAlias?: string;
+
+  /**
    * Correlation ID for tracking.
    */
   correlationId?: string;

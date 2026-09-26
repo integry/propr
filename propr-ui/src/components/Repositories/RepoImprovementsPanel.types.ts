@@ -63,6 +63,8 @@ export interface GenerateSuggestionsResult {
 }
 
 export interface RepoImprovementsPanelProps {
+  /** Operational model choices, including synthetic pools. */
+  agents?: import('@propr/shared').InstanceCatalogAgent[];
   /** Available repositories to use as reference */
   availableRepos?: ReferenceRepo[];
   /** Callback when generating suggestions is triggered - returns suggestions with timing */

@@ -3,8 +3,33 @@ import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { db, TaskStates } from '@propr/core';
+import { db, sanitizeAgentReport, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
+
+const RESTRICTED_FAILURE_DETAIL = 'Agent execution failed; detailed output is available in restricted logs.';
+const SAFE_AGENT_FAILURE_CLASSES: Array<{ pattern: RegExp; summary: string }> = [
+    { pattern: /\b(timeout|timed out|deadline)\b/i, summary: 'Agent execution timed out.' },
+    { pattern: /\b(rate limit|quota|too many requests)\b/i, summary: 'Agent service rate limit reached.' },
+    { pattern: /\b(auth(?:entication|orization)?|unauthorized|forbidden|credential)\b/i, summary: 'Agent authentication failed.' },
+    { pattern: /\b(cancelled|canceled|aborted)\b/i, summary: 'Agent execution was cancelled.' },
+];
+
+/**
+ * Returns a classified, user-safe failure summary. Full agent errors, logs, and
+ * raw output are persisted separately and must not be copied into task history.
+ */
+export function getAgentFailureDetail(result: {
+    error?: string | null;
+    logs?: unknown;
+    rawOutput?: unknown;
+}): string {
+    const detail = result.error?.trim();
+    if (!detail) {
+        return result.logs || result.rawOutput ? RESTRICTED_FAILURE_DETAIL : 'Unknown error';
+    }
+    return SAFE_AGENT_FAILURE_CLASSES.find(({ pattern }) => pattern.test(detail))?.summary
+        ?? RESTRICTED_FAILURE_DETAIL;
+}
 
 /**
  * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
@@ -45,6 +70,7 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - DO NOT commit your changes - the system will handle the commit for you.
+- Do not inspect or repair .git permissions. In your final response, do not mention that changes are uncommitted or that you did not create a commit; ProPR creates and reports the commit after you finish.
 - DO NOT create a new pull request.
 - The repository is ${repoOwner}/${repoName}.
 - Focus ONLY on finding and resolving merge conflicts. Do not make unrelated changes.
@@ -133,8 +159,9 @@ export function buildMergeConflictComment(options: {
         comment += '\n\n';
     }
 
-    if (resolutionSummary) {
-        comment += `### Resolution Summary\n\n${resolutionSummary}\n\n`;
+    const publishableSummary = sanitizeAgentReport(resolutionSummary);
+    if (publishableSummary) {
+        comment += `### Resolution Summary\n\n${publishableSummary}\n\n`;
     } else {
         comment += `An AI agent resolved the merge conflicts while preserving the PR intent.\n\n`;
     }
@@ -162,6 +189,7 @@ export function buildMergeConflictComment(options: {
  * Converts a MergeConflictJobData into a CommentJobData for the PR comment processing pipeline.
  */
 export function mergeConflictJobToCommentJob(mergeJob: {
+    userId?: string;
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -172,6 +200,7 @@ export function mergeConflictJobToCommentJob(mergeJob: {
     triggerSource: 'pull_request' | 'push' | 'auto_merge';
     correlationId: string;
 }): {
+    userId?: string;
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -181,6 +210,7 @@ export function mergeConflictJobToCommentJob(mergeJob: {
     autoResolveContext: AutoResolveContext;
 } {
     return {
+        ...(mergeJob.userId ? { userId: mergeJob.userId } : {}),
         pullRequestNumber: mergeJob.pullRequestNumber,
         repoOwner: mergeJob.repoOwner,
         repoName: mergeJob.repoName,

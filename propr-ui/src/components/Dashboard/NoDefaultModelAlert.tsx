@@ -39,7 +39,7 @@ export const NoDefaultModelAlert: React.FC<NoDefaultModelAlertProps> = ({ hasAge
       </div>
       <button
         onClick={() => navigate('/ai-agents')}
-        className="px-3 py-1.5 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-md flex-shrink-0"
+        className="flex-shrink-0 rounded-md border border-red-300 bg-transparent px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50"
       >
         Configure Agent
       </button>

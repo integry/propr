@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { createClient, type RedisClientType } from 'redis';
 import type { GitHubUser } from './authTypes.js';
+import { timeApiStage } from './apiPerformanceTiming.js';
 
 let tokenCacheClient: RedisClientType | null = null;
 let tokenCacheConnectPromise: Promise<RedisClientType> | null = null;
@@ -90,17 +91,20 @@ async function fetchGitHubUser(token: string): Promise<GitHubUser | null> {
 }
 
 export async function validateGitHubToken(token: string): Promise<GitHubUser | null> {
+    // ProPR OAuth credentials belong exclusively to /api/mcp. Reject them
+    // before cache lookup or GitHub forwarding, including when MCP is disabled.
+    if (token.startsWith('propr_mcp_')) return null;
     try {
-        const cached = await readCachedGitHubUser(token).catch(error => {
+        const cached = await timeApiStage('auth.bearer-cache-read', () => readCachedGitHubUser(token)).catch(error => {
             console.error('Bearer token cache read error:', error);
             return null;
         });
         if (cached) return cached;
 
-        const user = await fetchGitHubUser(token);
+        const user = await timeApiStage('auth.github-user-fetch', () => fetchGitHubUser(token));
         if (!user) return null;
 
-        await cacheGitHubUser(token, user).catch(error => {
+        await timeApiStage('auth.bearer-cache-write', () => cacheGitHubUser(token, user)).catch(error => {
             console.error('Bearer token cache write error:', error);
         });
         return user;

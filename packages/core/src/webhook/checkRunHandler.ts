@@ -15,6 +15,11 @@ import {
     type MergePRResult,
     type PRAutoMergeInfo
 } from './checkRunHelpers.js';
+import {
+    extractCheckRunFailure,
+    extractStatusFailure,
+    postCiFailureFollowup,
+} from './ciFailureFollowup.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export interface StatusEventPayload {
@@ -22,6 +27,8 @@ export interface StatusEventPayload {
     state: string;
     repository: { full_name: string };
     context?: string;
+    description?: string | null;
+    target_url?: string | null;
     [key: string]: unknown;
 }
 
@@ -168,6 +175,21 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
         return;
     }
 
+    // GitHub's PR mergeability result accounts for required checks that may not
+    // have registered a check run yet, branch protection, and merge conflicts.
+    // Requiring the authoritative clean state prevents an unrelated fast check
+    // from opening a premature merge window for an App that can bypass rules.
+    if (prInfo.mergeable !== true || prInfo.mergeableState !== 'clean') {
+        log.debug({
+            owner,
+            repoName,
+            prNumber,
+            mergeable: prInfo.mergeable,
+            mergeableState: prInfo.mergeableState,
+        }, 'GitHub does not report the PR as cleanly mergeable yet, skipping merge');
+        return;
+    }
+
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
     const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber);
@@ -205,7 +227,8 @@ export async function reevaluatePRAutoMerge(
 
 /**
  * Handles check_run webhook events.
- * When a check run completes successfully, checks if the PR should be auto-merged.
+ * Successful check runs drive auto-merge/Ultrafix. Failed check runs can post an
+ * automatic follow-up comment when that repository has opted in.
  */
 export async function handleCheckRunEvent(
     payload: CheckRunEvent,
@@ -225,15 +248,41 @@ export async function handleCheckRunEvent(
 
     if (payload.action !== 'completed') return;
 
-    const conclusion = payload.check_run.conclusion;
-    if (conclusion !== 'success' && conclusion !== 'skipped') {
-        log.debug({ owner, repoName, conclusion }, 'check_run skipped: not success/skipped');
-        return;
-    }
-
     const pullRequests = payload.check_run.pull_requests;
     if (!pullRequests || pullRequests.length === 0) {
         log.debug({ owner, repoName }, 'check_run skipped: no associated PRs');
+        return;
+    }
+
+    const conclusion = payload.check_run.conclusion;
+    const failure = extractCheckRunFailure(payload);
+    if (failure) {
+        for (const pr of pullRequests) {
+            try {
+                const currentPrHead = await getCurrentPRHead(owner, repoName, pr.number);
+                if (currentPrHead !== failure.sha) {
+                    log.debug({
+                        owner,
+                        repoName,
+                        prNumber: pr.number,
+                        failedCiSha: failure.sha,
+                        currentPrHead,
+                    }, 'Failed check run SHA does not match current PR head, skipping follow-up');
+                    continue;
+                }
+                await postCiFailureFollowup({ owner, repo: repoName, prNumber: pr.number, evidence: failure }, correlationId);
+            } catch (error) {
+                log.warn(
+                    { owner, repoName, prNumber: pr.number, error: (error as Error).message },
+                    'Failed to post automatic failed-CI follow-up',
+                );
+            }
+        }
+        return;
+    }
+
+    if (conclusion !== 'success' && conclusion !== 'skipped') {
+        log.debug({ owner, repoName, conclusion }, 'check_run skipped: not success/skipped');
         return;
     }
 
@@ -270,8 +319,8 @@ export async function handleCheckRunEvent(
 
 /**
  * Handles legacy commit `status` webhook events.
- * When a commit status reports success, looks up associated open PRs
- * and fires the ultrafix hook so deferred continuations can resume.
+ * Failed/error statuses can post an opted-in automatic follow-up. Successful
+ * statuses fire the Ultrafix hook so deferred continuations can resume.
  */
 export async function handleStatusEvent(
     payload: StatusEventPayload,
@@ -282,9 +331,9 @@ export async function handleStatusEvent(
 
     log.debug({ owner, repoName, state: payload.state, sha: payload.sha, context: payload.context }, 'status event received');
 
-    if (payload.state !== 'success') return;
-
-    if (!_ultrafixCheckRunHook) return;
+    const failure = extractStatusFailure(payload);
+    if (!failure && payload.state !== 'success') return;
+    if (!failure && !_ultrafixCheckRunHook) return;
 
     const prs = await findPRsForCommit(owner, repoName, payload.sha);
     if (prs.length === 0) {
@@ -293,8 +342,31 @@ export async function handleStatusEvent(
     }
 
     for (const pr of prs) {
+        if (failure) {
+            try {
+                const currentPrHead = await getCurrentPRHead(owner, repoName, pr.number);
+                if (currentPrHead !== failure.sha) {
+                    log.debug({
+                        owner,
+                        repoName,
+                        prNumber: pr.number,
+                        failedCiSha: failure.sha,
+                        currentPrHead,
+                    }, 'Failed status SHA does not match current PR head, skipping follow-up');
+                    continue;
+                }
+                await postCiFailureFollowup({ owner, repo: repoName, prNumber: pr.number, evidence: failure }, correlationId);
+            } catch (error) {
+                log.warn(
+                    { owner, repoName, prNumber: pr.number, error: (error as Error).message },
+                    'Failed to post automatic failed-CI status follow-up',
+                );
+            }
+            continue;
+        }
+
         try {
-            await _ultrafixCheckRunHook(owner, repoName, pr.number, payload.sha);
+            await _ultrafixCheckRunHook!(owner, repoName, pr.number, payload.sha);
         } catch (error) {
             log.warn({ owner, repoName, prNumber: pr.number, error: (error as Error).message }, 'Ultrafix status hook failed');
         }

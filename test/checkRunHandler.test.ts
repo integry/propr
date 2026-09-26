@@ -1,4 +1,4 @@
-import { test, mock, describe } from 'node:test';
+import { after, test, mock, describe } from 'node:test';
 import assert from 'node:assert';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
@@ -8,6 +8,7 @@ const mockOctokit = {
 };
 
 const mockRedisGet = mock.fn(async () => null);
+const mockRedisDel = mock.fn(async () => 0);
 const redisConstructorCalls: unknown[][] = [];
 
 // Mock simple-git (transitive dependency)
@@ -20,14 +21,17 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis(...args: unknown[]) {
-        redisConstructorCalls.push(args);
-        return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
-    },
     namedExports: {
         Redis: function Redis(...args: unknown[]) {
             redisConstructorCalls.push(args);
-            return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
+            return {
+                on: mock.fn(),
+                get: mockRedisGet,
+                mget: mock.fn(async (...keys: string[]) => Promise.all(keys.map(key => mockRedisGet(key)))),
+                del: mockRedisDel,
+                quit: mock.fn(async () => {}),
+                disconnect: mock.fn(),
+            };
         }
     }
 });
@@ -35,8 +39,12 @@ await mock.module('ioredis', {
 // Mock bullmq
 await mock.module('bullmq', {
     namedExports: {
+        ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
         Queue: function Queue() {
             return { add: mock.fn(), close: mock.fn(), on: mock.fn() };
+        },
+        QueueEvents: function QueueEvents() {
+            return { waitUntilReady: mock.fn(async () => {}), close: mock.fn(async () => {}) };
         },
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };
@@ -88,6 +96,7 @@ const mockUpdatePlanIssueByPR = mock.fn(async () => {});
 
 await mock.module('../packages/core/src/config/planIssueManager.js', {
     namedExports: {
+        PlanIssueStatus: { MERGED: 'merged' },
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         findPlanIssueByRepoAndNumber: mockFindPlanIssueByRepoAndNumber,
         updatePlanIssueByPR: mockUpdatePlanIssueByPR
@@ -126,14 +135,23 @@ const {
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
-const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { handleCheckRunEvent, handleStatusEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
+
+after(async () => {
+    resetUltrafixStateRedisForTests();
+    await shutdownQueue();
+    await closeConnection();
+});
 
 // Helper to reset all mocks
 function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
     mockRedisGet.mock.resetCalls();
     mockRedisGet.mock.mockImplementation(async () => null);
+    mockRedisDel.mock.resetCalls();
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -545,7 +563,9 @@ describe('getPRAutoMergeInfo', () => {
 
     test('returns hasActiveUltrafixLoop true when Redis state is active', async () => {
         resetMocks();
-        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: true }));
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: true, workEpoch: 0 })
+            : null);
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
                 labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
@@ -559,9 +579,60 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.hasActiveUltrafixLoop, true);
     });
 
+    test('preserves a new loop published after the initial label snapshot', async () => {
+        resetMocks();
+        let newLoopPublished = false;
+        mockOctokit.request.mock.mockImplementation(async () => {
+            const response = {
+                data: {
+                    labels: [{ name: 'auto-merge' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            };
+            newLoopPublished = true;
+            return response;
+        });
+        mockRedisGet.mock.mockImplementation(async (key: string) => {
+            assert.strictEqual(newLoopPublished, true);
+            if (key.startsWith('ultrafix:state:')) {
+                return JSON.stringify({ active: true, workEpoch: 2 });
+            }
+            if (key.startsWith('ultrafix:automatic-work-epoch:')) return '2';
+            return null;
+        });
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+
+        assert.strictEqual(result.hasUltrafixLabel, false);
+        assert.strictEqual(result.hasActiveUltrafixLoop, true);
+        assert.strictEqual(mockRedisDel.mock.callCount(), 0);
+    });
+
+    test('returns hasActiveUltrafixLoop false for state from a superseded work epoch', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: true, workEpoch: 0 })
+            : '1');
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
+    });
+
     test('returns ultrafix completion status when loop finished', async () => {
         resetMocks();
-        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: false, completionStatus: 'failed' }));
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: false, completionStatus: 'failed' })
+            : null);
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
                 labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
@@ -575,6 +646,27 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.hasActiveUltrafixLoop, false);
         assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
     });
+
+    for (const completionStatus of ['failed', 'succeeded'] as const) {
+        test(`ignores stale ${completionStatus} completion status from a superseded work epoch`, async () => {
+            resetMocks();
+            mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+                ? JSON.stringify({ active: false, completionStatus, workEpoch: 0 })
+                : '1');
+            mockOctokit.request.mock.mockImplementation(async () => ({
+                data: {
+                    labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            }));
+
+            const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+            assert.strictEqual(result.hasActiveUltrafixLoop, false);
+            assert.strictEqual(result.ultrafixCompletionStatus, null);
+        });
+    }
 
     test('uses REDIS_URL for ultrafix state lookup when configured', async () => {
         resetMocks();
@@ -846,6 +938,60 @@ describe('mergePR', () => {
     });
 });
 
+// ============= deleteBranch Tests =============
+
+describe('deleteBranch', () => {
+    function mockPullRequestHead(head: Record<string, unknown>) {
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.startsWith('GET')) return { data: { head } };
+            return { data: {} };
+        });
+    }
+
+    function deleteRefCall() {
+        return mockOctokit.request.mock.calls.find((call: { arguments: [string, Record<string, unknown>] }) =>
+            call.arguments[0].startsWith('DELETE'));
+    }
+
+    test('deletes the branch when the head is in the base repository', async () => {
+        resetMocks();
+        mockPullRequestHead({ ref: 'feature', repo: { full_name: 'test-owner/test-repo', owner: { login: 'test-owner' } } });
+
+        await deleteBranch('test-owner', 'test-repo', 42, mockLogger);
+
+        const call = deleteRefCall();
+        assert.ok(call, 'Expected the branch ref to be deleted');
+        assert.strictEqual(call.arguments[1].ref, 'heads/feature');
+    });
+
+    test('keeps a same-owner fork branch, which is a different repository', async () => {
+        resetMocks();
+        mockPullRequestHead({ ref: 'feature', repo: { full_name: 'test-owner/test-repo-fork', owner: { login: 'test-owner' } } });
+
+        await deleteBranch('test-owner', 'test-repo', 42, mockLogger);
+
+        assert.strictEqual(deleteRefCall(), undefined, 'Expected no branch deletion for a same-owner fork');
+    });
+
+    test('keeps a different-owner fork branch', async () => {
+        resetMocks();
+        mockPullRequestHead({ ref: 'feature', repo: { full_name: 'contributor/test-repo', owner: { login: 'contributor' } } });
+
+        await deleteBranch('test-owner', 'test-repo', 42, mockLogger);
+
+        assert.strictEqual(deleteRefCall(), undefined, 'Expected no branch deletion for a fork');
+    });
+
+    test('keeps the branch when the head repository has been deleted', async () => {
+        resetMocks();
+        mockPullRequestHead({ ref: 'feature', repo: null });
+
+        await deleteBranch('test-owner', 'test-repo', 42, mockLogger);
+
+        assert.strictEqual(deleteRefCall(), undefined, 'Expected no branch deletion without a head repository');
+    });
+});
+
 // ============= getFirstCommitMessage Tests =============
 
 describe('getFirstCommitMessage', () => {
@@ -901,13 +1047,56 @@ describe('handleCheckRunEvent', () => {
         assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
     });
 
-    test('skips when conclusion is failure', async () => {
+    test('skips a failed check run when the PR has moved to a newer head', async () => {
         resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/pulls/')) {
+                return { data: { head: { sha: 'newer-sha' } } };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
 
-        const payload = createMockCheckRunPayload({ conclusion: 'failure' });
+        const payload = createMockCheckRunPayload({ conclusion: 'failure', headSha: 'stale-sha' });
         await handleCheckRunEvent(payload, 'test-correlation-id');
 
-        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 1);
+        assert.match(mockOctokit.request.mock.calls[0].arguments[0] as string, /\/pulls\/\{pull_number\}/);
+        assert.equal(
+            mockOctokit.request.mock.calls.some(call => (call.arguments[0] as string).startsWith('POST ')),
+            false,
+        );
+    });
+
+    test('skips a failed legacy status when the associated PR has moved to a newer head', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) {
+                return { data: [{ number: 42, state: 'open' }] };
+            }
+            if (endpoint.includes('/pulls/{pull_number}')) {
+                return { data: { head: { sha: 'newer-sha' } } };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
+
+        await handleStatusEvent({
+            sha: 'stale-sha',
+            state: 'failure',
+            context: 'legacy-ci',
+            repository: { full_name: 'test-owner/test-repo' },
+        }, 'test-correlation-id');
+
+        assert.deepStrictEqual(
+            mockOctokit.request.mock.calls.map(call => call.arguments[0]),
+            [
+                'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+            ],
+        );
+        assert.equal(
+            mockOctokit.request.mock.calls.some(call => (call.arguments[0] as string).startsWith('POST ')),
+            false,
+        );
     });
 
     test('skips when conclusion is cancelled', async () => {
@@ -936,6 +1125,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -970,6 +1161,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1047,6 +1240,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'different-sha-456' }, // Different SHA
                         body: ''
@@ -1078,6 +1273,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1104,6 +1301,36 @@ describe('handleCheckRunEvent', () => {
         assert.ok(mergeCall, 'Should merge when SHA matches');
     });
 
+    test('does not merge after one successful check while GitHub still reports required checks blocked', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }],
+                        draft: false,
+                        mergeable: false,
+                        mergeable_state: 'blocked',
+                        base: { ref: 'main' },
+                        head: { ref: 'feature', sha: 'abc123sha' },
+                        body: ''
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) {
+                return { data: { check_runs: [{ name: 'Unrelated fast check', status: 'completed', conclusion: 'success' }] } };
+            }
+            return { data: {} };
+        });
+
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+
+        const mergeCall = mockOctokit.request.mock.calls.find((call: { arguments: [string] }) =>
+            call.arguments[0].includes('merge')
+        );
+        assert.strictEqual(mergeCall, undefined);
+    });
+
     test('handles errors gracefully without throwing', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => {
@@ -1127,6 +1354,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1167,6 +1396,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1237,6 +1468,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: '800-epic-short-name-x7y', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1271,8 +1504,10 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
-                        head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                        head: { ref: 'feature', sha: 'abc123sha', repo: { full_name: 'test-owner/test-repo', owner: { login: 'test-owner' } } },
                         body: ''
                     }
                 };
@@ -1305,6 +1540,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: {
                             ref: 'feature',
@@ -1353,6 +1590,8 @@ describe('shouldAutoMergePR', () => {
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
+        mergeable?: boolean | null;
+        mergeableState?: string;
     }): PRMergeContext {
         const {
             owner = 'test-owner',
@@ -1366,7 +1605,9 @@ describe('shouldAutoMergePR', () => {
             ultrafixStateUnavailable = false,
             isDraft = false,
             baseBranch = 'main',
-            headBranch = 'feature-branch'
+            headBranch = 'feature-branch',
+            mergeable = true,
+            mergeableState = 'clean'
         } = options;
 
         return {
@@ -1382,7 +1623,9 @@ describe('shouldAutoMergePR', () => {
                 ultrafixStateUnavailable,
                 isDraft,
                 baseBranch,
-                headBranch
+                headBranch,
+                mergeable,
+                mergeableState
             },
             log: mockLogger.withCorrelation('test-correlation')
         };
@@ -1426,7 +1669,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
     });
 
-    test('does not hard-block auto-merge solely because the ultrafix label remains without Redis state', async () => {
+    test('keeps auto-merge blocked while the ultrafix label remains without a success state', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1436,10 +1679,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
+    test('fails closed when ultrafix state is unavailable while ultrafix is still labeled', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1449,10 +1692,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to linked issue auto-merge when ultrafix state is unavailable and PR has no direct label', async () => {
+    test('does not use a linked issue to bypass unavailable ultrafix state', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('pulls')) {
@@ -1472,7 +1715,7 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {

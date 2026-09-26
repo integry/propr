@@ -42,6 +42,15 @@ export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: n
   return title;
 };
 
+// Matches backend-generated PR task titles such as "Fix PR #2393: Add retries".
+const PR_WORKFLOW_TITLE_PATTERN = /^(Follow-up|Followup|Fix|Review|Ultrafix|Merge) PR #(\d+):\s*(.*)$/i;
+
+const normalizeWorkflowLabel = (raw: string): string => {
+  const lower = raw.toLowerCase();
+  if (lower === 'followup' || lower === 'follow-up') return 'Follow-up';
+  return raw.charAt(0).toUpperCase() + lower.slice(1);
+};
+
 export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
   const title = task.title || '';
 
@@ -59,10 +68,52 @@ export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
     };
   }
 
+  const prWorkflow = title.match(PR_WORKFLOW_TITLE_PATTERN);
+  if (prWorkflow) {
+    return {
+      type: 'pr-workflow',
+      cleanTitle: title,
+      workflowLabel: normalizeWorkflowLabel(prWorkflow[1]),
+      workflowPrNumber: Number(prWorkflow[2]),
+    };
+  }
+
   return {
     type: 'unknown',
     cleanTitle: title
   };
+};
+
+/**
+ * Title shown on the parent (newest) row of a task group. The parent names the
+ * entity the group is about, so PR-scoped tasks keep their full "Fix PR #N: ..." title.
+ */
+export const getParentDisplayTitle = (task: Task): string => {
+  const typeInfo = getTaskTypeInfo(task);
+  if (typeInfo.type === 'followup' && task.subtitle) return task.subtitle;
+  return typeInfo.cleanTitle || task.subtitle || 'No title';
+};
+
+/**
+ * Title shown on a nested child row. Children describe the delta against the
+ * parent entity (the specific fix, review, or follow-up request), so they never
+ * repeat the parent's pull request title. Issue tasks keep their issue title,
+ * because their subtitle is only a "Preparing a PR" placeholder.
+ */
+export const getChildDisplayTitle = (task: Task): string => {
+  const typeInfo = getTaskTypeInfo(task);
+  const subtitle = (task.subtitle || '').trim();
+
+  if (typeInfo.type === 'followup') {
+    return subtitle || typeInfo.cleanTitle || 'Update';
+  }
+
+  if (typeInfo.type === 'pr-workflow') {
+    if (subtitle && subtitle !== typeInfo.cleanTitle) return subtitle;
+    return `${typeInfo.workflowLabel} requested`;
+  }
+
+  return typeInfo.cleanTitle || subtitle || 'Update';
 };
 
 export const getStatusPill = (status: string) => {
@@ -91,8 +142,10 @@ export const getStatusPill = (status: string) => {
         </span>
       );
     case 'active':
+    case 'implementing':
     case 'claude_execution':
     case 'processing':
+    case 'post_processing':
       return (
         <span className={`${baseClasses} bg-teal-50 text-teal-700 border border-teal-200`}>
            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
@@ -101,6 +154,7 @@ export const getStatusPill = (status: string) => {
       );
     case 'waiting':
     case 'pending':
+    case 'queued':
       return (
         <span className={`${baseClasses} bg-purple-50 text-purple-700 border border-purple-200`}>
            <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
@@ -137,14 +191,30 @@ export const formatRelativeTime = (dateString: string | undefined): string => {
   return date.toLocaleDateString();
 };
 
-export const formatDuration = (startTime: string | undefined, endTime: string | undefined): string => {
+/**
+ * Elapsed time in the largest two units it actually needs.
+ *
+ * Seconds matter for a run that started a moment ago and stop mattering long
+ * before minutes run out: `240m 00s` is a raw minute count printed rather than
+ * a duration read, and nobody divides by sixty in their head to learn that a
+ * task has been going for four hours. So each unit hands over once the one
+ * above it is whole — `45m 12s`, then `4h 00m`, then `2d 06h` — and the value
+ * stays two fields wide at every scale, which is what keeps a column of them
+ * straight.
+ */
+export const formatDuration = (startTime: string | null | undefined, endTime: string | null | undefined): string => {
   if (!startTime) return '--';
 
   const end = endTime ? new Date(endTime) : new Date();
-  const duration = end.getTime() - new Date(startTime).getTime();
+  const duration = Math.max(0, end.getTime() - new Date(startTime).getTime());
 
-  const minutes = Math.floor(duration / 60000);
+  const totalMinutes = Math.floor(duration / 60000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const pad = (value: number): string => value.toString().padStart(2, '0');
+
+  if (totalHours >= 24) return `${Math.floor(totalHours / 24)}d ${pad(totalHours % 24)}h`;
+  if (totalMinutes >= 60) return `${totalHours}h ${pad(totalMinutes % 60)}m`;
+
   const seconds = Math.floor((duration % 60000) / 1000);
-
-  return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+  return `${totalMinutes}m ${pad(seconds)}s`;
 };

@@ -42,9 +42,11 @@ The browser origin (`app.propr.dev`) and the API host (`t-<id>.propr.dev`) diffe
 
 The browser uses the **same API base** for both REST calls and the Socket.IO connection, so they always target one origin — the proxy host when the tunnel is on, or same-origin localhost otherwise.
 
+The hosted PWA's manifest, service worker, installation, notification permission, and browser Push subscription all belong to the **UI origin** (`app.propr.dev`), not the per-instance API origin. The selected backend stores that subscription for the authenticated user. Disable Push before selecting another stack, then enable it again on the destination so the subscription is created for that stack's VAPID identity. See [PWA, Web Push, and Badges](./pwa-web-push.md#ui-and-api-origins).
+
 ### Compatibility check
 
-Before the hosted UI starts its normal auth/session checks, it calls the public `/api/compatibility` endpoint on the selected API origin. The endpoint returns the local stack version plus the API/UI compatibility contract. If the hosted UI cannot support that contract, it stops at a clear version-mismatch screen instead of running against incompatible endpoints or Socket.IO events. `/api/status` includes the same metadata for authenticated diagnostics.
+Before the hosted UI starts its normal auth/session checks, it calls the public `/api/compatibility` endpoint on the selected API origin. Desktop discovery uses the separately bounded, rate-limited, cache-disabled `/api/desktop/discovery` response. That response adds only the canonical managed endpoint and the stack's random public installation identity to version/capability metadata; it contains no credential or account state. Desktop main preserves that identity through Connect confirmation and encrypted profile persistence, then revalidates it without credentials before stored REST or Socket.IO authentication. Tunnel endpoint or identity rotation therefore creates a fresh pairing generation; no prior-origin credential, socket, or cookie state is carried across. If the hosted UI cannot support the compatibility contract, it stops at a clear version-mismatch screen instead of running against incompatible endpoints or Socket.IO events. `/api/status` includes the same version metadata for authenticated diagnostics.
 
 Only a **definitive** mismatch (the API reports a contract the UI knows it is too old or too new for) hard-blocks. A v1 rollout exception applies when the metadata is simply *absent* — an older API that predates `/api/compatibility` (returns 404) or returns no contract: the UI logs a console warning and continues, so an otherwise-working stack is never trapped mid-upgrade. This soft-warning fallback is temporary; once publishing the compatibility contract is a baseline expectation, missing metadata is intended to become a hard block like any other mismatch.
 
@@ -56,11 +58,11 @@ ProPR Connect provisions the Cloudflare Tunnel and instance id for Plus installa
 propr tunnel setup --token <connector-token> --url https://t-abc123.propr.dev --start
 ```
 
-This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
+This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`, `PROPR_WEB_AUTH_MODE=connect`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
 
 ### Manual `.env` fallback
 
-For older CLI versions or manual recovery, set the same values in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label: letters, digits, hyphens; 1-63 chars):
+For older CLI versions or manual recovery, set the same values in the stack `.env`. Replace `abc123` with your instance id (letters, digits, and hyphens; 1-61 chars so the complete `t-<id>` DNS label stays within 63 characters):
 
 ```bash
 # --- Hosted UI tunnel (v1, optional) ---
@@ -77,6 +79,7 @@ PROPR_UI_PUBLIC_API_URL=https://t-abc123.propr.dev   # explicit public API URL t
 FRONTEND_URL=https://app.propr.dev
 API_PUBLIC_URL=https://t-abc123.propr.dev
 GH_OAUTH_CALLBACK_URL=https://t-abc123.propr.dev/api/auth/github/callback
+PROPR_WEB_AUTH_MODE=connect
 
 # COOKIE_DOMAIN: leave UNSET for v1 — keep the line commented out (an empty
 # `COOKIE_DOMAIN=` may still count as set).
@@ -91,15 +94,17 @@ The three URL variables map directly onto the architecture above. Get these righ
 
 - **`FRONTEND_URL`** is the **browser origin** — the hosted UI at `https://app.propr.dev`. The API allows this origin through CORS and redirects to it after login. In tunnel mode it is derived to `https://app.propr.dev` when left unset; `propr tunnel setup` writes it explicitly so older localhost values never win.
 - **`API_PUBLIC_URL`** is the **proxy host** (`https://t-<id>.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. Derived from the instance id when left unset; `propr tunnel setup` writes it explicitly.
-- **`GH_OAUTH_CALLBACK_URL`** must point at the API on the **proxy host**: `https://t-<id>.propr.dev/api/auth/github/callback`. The callback lives on the API host — a callback pointing at `app.propr.dev` will fail, because the OAuth flow completes on the API. Derived when left unset; `propr tunnel setup` writes it explicitly. **Register this exact URL in your GitHub OAuth App.**
+- **`GH_OAUTH_CALLBACK_URL`** points at the API on the **proxy host**: `https://t-<id>.propr.dev/api/auth/github/callback`. Connect validates that this is an active managed tunnel before issuing a one-use login code. You do not register it in a GitHub OAuth App.
+- **`PROPR_WEB_AUTH_MODE=connect`** delegates browser login to Connect's shared GitHub App. A custom deployment can explicitly use `github` with its own OAuth client instead.
 - **`COOKIE_DOMAIN`** stays unset: the session cookie is host-only on the single `t-<id>.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across shared ProPR-managed tunnel hostnames is unsupported in v1.
+- **`PROPR_TRUSTED_PROXY_PEERS`** is injected in the reserved `self` mode by the launcher while tunnel mode is enabled. The cloudflared sidecar shares the API container's network namespace, so this trusts only the API's own non-loopback interface addresses rather than every peer on a private network. This lets the API use Cloudflare's forwarded client IP for quotas and forwarded HTTPS for secure session cookies. An explicit value in `.env` overrides the tunnel default; leave it unset outside proxy deployments.
 
 ### Enablement semantics
 
 Setting `PROPR_UI_TUNNEL_TOKEN` enables the tunnel by default, so the next `propr start` (or a restart) brings up the sidecar — you do not strictly need `propr tunnel on` first. `propr tunnel on|off` records an explicit choice that **overrides** the token-derived default and is honored by later starts; `propr tunnel on` additionally starts the sidecar immediately on an already-running stack, and `propr tunnel off` stops it while leaving the token in place. `PROPR_UI_TUNNEL_ENABLED=true` is an explicit alternative, but a token is still required — `propr check` fails if the tunnel is enabled without `PROPR_UI_TUNNEL_TOKEN`. See [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel) for the command reference.
 
 :::caution Restart the stack after enabling on a running stack
-`propr tunnel on` starts only the cloudflared sidecar; the already-running API/worker containers keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel localhost values until you run `propr start --restart`. `propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
+`propr tunnel on` starts only the cloudflared sidecar; the already-running API/worker containers keep the public URLs and proxy-trust setting they were started with, so OAuth redirects, secure cookies, per-client proxy quotas, and attachment links are not tunnel-ready until you run `propr start --restart`. `propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
 :::
 
 ## Verify
@@ -118,6 +123,20 @@ propr tunnel verify
 
 It exits non-zero if any check fails. `propr status` probes `<url>/api/status` for tunnel reachability for the same reason — the root `/` and the legacy `/health` path are unrouted through the tunnel.
 
+### Secret-free desktop discovery
+
+Desktop invokes an explicit stack root; the CLI never scans for installations:
+
+```bash
+propr connect status --json --root /explicit/stack/root
+```
+
+Stdout is exactly one schema-versioned JSON document. It reports only the canonical endpoint, public installation identity, configured/enabled/sidecar/API readiness, restart requirement, compatibility/version, and bounded reason codes. `configured` means that a valid canonical endpoint exists; it deliberately says nothing about whether any credential is present. Diagnostics go to stderr. It never reports token presence or values, GitHub/account/repository identity, host details, environment contents, or filesystem paths. Exit codes are stable: `0` ready, `2` known not ready, `3` incompatible discovery/API, `4` invalid configuration/root, `5` probe timeout, and `1` internal failure.
+
+The public identity is generated randomly in the stack's durable `data/` boundary. It survives normal restart, image upgrade, and tunnel rotation. Replacing/reinitializing that durable stack data generates a new identity. A sidecar is not `apiReady` until the remote discovery response matches both the expected canonical origin and this identity; consequently, `propr tunnel on` without an API restart reports `restartRequired` instead of a false-ready endpoint.
+
+ProPR Connect permanently retires a deleted managed tunnel hostname and does not reassign it to another installation. Identity matching remains mandatory defense in depth against stale DNS, proxy configuration, restore mistakes, and any failure of that allocation guarantee.
+
 ## Troubleshooting
 
 The most common failures, in the order to check them:
@@ -125,7 +144,7 @@ The most common failures, in the order to check them:
 1. **No token configured.** Starting the tunnel always requires `PROPR_UI_TUNNEL_TOKEN`; `propr tunnel on` fails clearly without one. Run the setup command shown in ProPR Connect.
 2. **Core stack down.** `propr tunnel on` refuses to start the sidecar when the stack is down — cloudflared would point at an unavailable `api:4000` and look superficially healthy. Run `propr start` first, or pass `--force` deliberately.
 3. **Tunnel enabled on an already-running stack.** OAuth and cookies still use localhost URLs until `propr start --restart` (see the caution above).
-4. **OAuth callback mismatch.** The GitHub OAuth App must have `https://t-<id>.propr.dev/api/auth/github/callback` registered — the exact URL in `GH_OAUTH_CALLBACK_URL`.
+4. **Hosted login mode or callback mismatch.** Confirm `PROPR_WEB_AUTH_MODE=connect` and that `GH_OAUTH_CALLBACK_URL` exactly matches the active tunnel URL shown by ProPR Connect.
 5. **Root URL returns 404.** Expected behavior; test `/api/status` instead.
 6. **Host port 4000 busy.** Irrelevant: Cloudflare forwards to the Docker-internal `http://api:4000` and bypasses the published host port entirely.
 

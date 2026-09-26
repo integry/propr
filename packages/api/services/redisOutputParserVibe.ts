@@ -94,7 +94,7 @@ function pushEvent(state: VibeParseState, event: ConversationEvent): void {
 
 function processVibeAssistantEvent(event: VibeTranscriptEvent, timestamp: string, state: VibeParseState): void {
   const reasoning = textFromValue(event.reasoning_content);
-  if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), timestamp });
+  if (reasoning) pushEvent(state, { type: 'thought' as const, content: truncateContent(reasoning), internalReasoning: true, timestamp });
 
   const content = textFromValue(event.content);
   if (content && !isGenericVibeCompletionContent(content)) {

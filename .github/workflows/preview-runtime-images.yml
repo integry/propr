@@ -1,0 +1,272 @@
+name: Preview Runtime Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Validate native app/UI artifacts, or explicitly publish their full-SHA manifests
+        required: true
+        type: choice
+        default: prepare
+        options:
+          - prepare
+          - publish
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-runtime-images-${{ inputs.source_revision }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Bind preview runtime source to main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_revision: ${{ steps.identity.outputs.source_revision }}
+      build_date: ${{ steps.identity.outputs.build_date }}
+    steps:
+      - name: Checkout the exact requested source with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatch trust, ancestry, and repository build metadata
+        id: identity
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          OPERATION: ${{ inputs.operation }}
+          REQUESTED_SHA: ${{ inputs.source_revision }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/preview-runtime-images.mjs identity \
+            --source-revision "$REQUESTED_SHA" \
+            --workflow-revision "$WORKFLOW_SHA" \
+            --dispatch-ref "$DISPATCH_REF" \
+            --operation "$OPERATION" \
+            --output "$GITHUB_OUTPUT"
+          echo "build_date=$(git show -s --format=%cI "$REQUESTED_SHA")" >> "$GITHUB_OUTPUT"
+
+  build-native:
+    name: Build and smoke app/UI on native linux/${{ matrix.architecture }}
+    needs: identity
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            node_architecture: x64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            node_architecture: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Prove the source build has no publication credential
+        run: |
+          node - <<'NODE'
+          const forbidden = ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN'].filter(name => process.env[name]);
+          if (forbidden.length) throw new Error(`Publication credentials reached source build: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Checkout the exact validated source with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.source_revision }}
+          persist-credentials: false
+
+      - name: Set up native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.node_architecture }}
+          package-manager-cache: false
+
+      - name: Verify native Linux architecture and toolchain
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          node -e 'const expected=process.env.EXPECTED_ARCHITECTURE; if(process.platform!=="linux"||process.arch!==(expected==="amd64"?"x64":"arm64")) throw new Error(`Expected native linux/${expected}, got ${process.platform}/${process.arch}`)'
+          docker version
+
+      - name: Build only app and UI with exact local full-SHA tags
+        env:
+          BUILD_DATE: ${{ needs.identity.outputs.build_date }}
+          DOCKERHUB_NS: propr
+          GIT_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: ./scripts/build-images.sh --sha-only --only app,ui
+
+      - name: Run the source-aligned app/UI smoke contract
+        env:
+          APP_IMAGE: propr/app:${{ needs.identity.outputs.source_revision }}
+          UI_IMAGE: propr/ui:${{ needs.identity.outputs.source_revision }}
+          SOURCE_REVISION: ${{ needs.identity.outputs.source_revision }}
+        run: ./scripts/smoke-test-preview-runtime-images.sh
+
+      - name: Package the smoke-tested native images
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs package \
+            --source-revision "$RELEASE_SHA" \
+            --architecture "${{ matrix.architecture }}" \
+            --output "preview-runtime-native/${{ matrix.architecture }}"
+
+      - name: Upload native image evidence without publishing it
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-preview-runtime-${{ matrix.architecture }}-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-runtime-native
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  assemble:
+    name: Verify and assemble exact two-architecture candidates
+    needs: [identity, build-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout only the reviewed workflow helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned OCI assembly client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Download both native evidence artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-preview-runtime-*-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-runtime-native
+          merge-multiple: true
+
+      - name: Validate checksums, source labels, image scope, and architecture matrix
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs assemble \
+            --source-revision "$RELEASE_SHA" \
+            --input preview-runtime-native \
+            --output preview-runtime-candidate
+
+      - name: Upload validation-only candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-preview-runtime-candidate-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-runtime-candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Summarize validation-only preparation
+        if: inputs.operation == 'prepare'
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          {
+            echo '### Preview runtime preparation verified'
+            echo
+            echo "Native linux/amd64 and linux/arm64 app/UI artifacts for \`$RELEASE_SHA\` passed smoke and immutable candidate validation."
+            echo 'No registry tag, npm package, stable release, desktop release, version tag, or latest tag was published.'
+            echo 'Use a separate `publish` dispatch for this SHA after protected-environment approval.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Explicitly publish exact full-SHA app/UI manifests
+    if: inputs.operation == 'publish'
+    needs: [identity, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: desktop-linux-preview-runtime-publication
+    permissions:
+      contents: read
+    outputs:
+      runtime_app_image: ${{ steps.publish.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.publish.outputs.runtime_ui_image }}
+    steps:
+      - name: Require the configured protected publication environment
+        env:
+          PUBLICATION_AUTHORIZED: ${{ vars.PROPR_DESKTOP_LINUX_PREVIEW_RUNTIME_PUBLICATION_AUTHORIZED }}
+        run: |
+          if [ "$PUBLICATION_AUTHORIZED" != 1 ]; then
+            echo 'Configure protected environment reviewers and PROPR_DESKTOP_LINUX_PREVIEW_RUNTIME_PUBLICATION_AUTHORIZED=1 before runtime publication.' >&2
+            exit 1
+          fi
+
+      - name: Checkout only the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned OCI publication client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Download only the verified candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-preview-runtime-candidate-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-runtime-candidate
+
+      - name: Prepare isolated Docker Hub credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-preview-runtime-docker-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Authenticate only after source build and candidate verification
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME" && test -n "$DOCKERHUB_TOKEN" || {
+            echo 'Protected Docker Hub credentials are required.' >&2
+            exit 1
+          }
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Preflight immutable tags, publish missing manifests, and emit verified digests
+        id: publish
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs publish \
+            --source-revision "$RELEASE_SHA" \
+            --input preview-runtime-candidate \
+            --github-output "$GITHUB_OUTPUT" \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker Hub credentials
+        if: always()
+        run: |
+          if [ -z "${DOCKER_CONFIG:-}" ]; then
+            exit 0
+          fi
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-preview-runtime-docker-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout docker.io >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"

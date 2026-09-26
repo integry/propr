@@ -1,5 +1,8 @@
 import { after, test, describe, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   CLAUDE_REASONING_LEVELS,
@@ -461,13 +464,19 @@ describe('settings save rollback path for model_reasoning_level', () => {
 });
 
 describe('agent runtime reasoning level wiring', () => {
+  // Codex refuses to build Docker args without an existing credential
+  // directory, so use a private one instead of depending on the host ~/.codex.
+  const codexConfigPath = mkdtempSync(join(tmpdir(), 'propr-reasoning-codex-'));
+  after(() => {
+    rmSync(codexConfigPath, { recursive: true, force: true });
+  });
   const codexConfig: AgentConfig = {
     id: 'codex',
     type: 'codex',
     alias: 'codex',
     enabled: true,
     dockerImage: 'propr/agent:latest',
-    configPath: '~/.codex',
+    configPath: codexConfigPath,
     supportedModels: ['gpt-5.5'],
     defaultModel: 'gpt-5.5',
   };

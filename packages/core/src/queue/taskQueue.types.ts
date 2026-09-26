@@ -6,6 +6,8 @@ import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandPa
 import type { ReasoningLevel } from '@propr/shared';
 
 export interface IssueJobData {
+    /** Stable GitHub user ID when a verified triggering recipient is known. */
+    userId?: string;
     repoOwner: string;
     repoName: string;
     number: number;
@@ -39,6 +41,8 @@ export interface AutoResolveContext {
 }
 
 export interface CommentJobData {
+    /** Stable GitHub user ID when a verified triggering recipient is known. */
+    userId?: string;
     pullRequestNumber: number;
     commentId?: number;
     commentBody?: string;
@@ -57,18 +61,32 @@ export interface CommentJobData {
     commandMeta?: CommandMeta;
     /** Flattened command mode for queue serialization; defaults to 'default' when absent */
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
-    /** Requested model labels for /review commands */
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
+    /** GitHub comment that established the queued command context. */
+    commandCommentId?: number;
+    /** Creation time of the GitHub comment that established the queued command context. */
+    commandCommentCreatedAt?: string;
+    /** GitHub resource type of the comment that established the queued command context. */
+    commandCommentType?: 'review' | 'issue';
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
+    /** Internal lease token persisted across BullMQ redelivery of this same job. */
+    prProcessingLockToken?: string;
+    /** Legacy original task whose live container a recovery job must wait for. */
+    containerCollisionTaskId?: string;
+    /** Every preceding task whose live container a recovery job must wait for. */
+    containerCollisionTaskIds?: string[];
 }
 
 export interface UnprocessedComment {
     id: number;
+    /** GitHub creation time used to order issue and review comments together. */
+    createdAt?: string;
     body: string;
     body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;
@@ -76,6 +94,7 @@ export interface UnprocessedComment {
     hasCodeContext?: boolean;
     commandMeta?: CommandMeta;
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
@@ -87,7 +106,25 @@ export interface TaskImportJobData {
     taskDescription: string;
     repository: string;
     correlationId: string;
+    /** Stable GitHub user ID used for user-scoped views. */
+    userId: string;
     user?: string;
+}
+
+/** One continuation of the same native provider goal task/session. */
+export interface GoalJobData {
+    goalId: string;
+    taskId: string;
+    repoOwner: string;
+    repoName: string;
+    generation: number;
+    /** Opaque durable claim for this exact generation. */
+    claimId: string;
+    /** Exact initial native command or an ordinary same-session continuation. */
+    input?: string;
+    recovery?: boolean;
+    /** Ordinary replies do not by themselves declare the provider-owned goal complete. */
+    continuationKind?: 'run' | 'input';
 }
 
 export interface AnalysisJobData {
@@ -106,6 +143,8 @@ export interface SystemTaskJobData {
     prBranch: string;
     owner: string;
     correlationId: string;
+    /** Stable GitHub user ID used for user-scoped views and bound by authToken. */
+    userId: string;
     requestingUser: string;
     authToken: string;
     authTimestamp: number;
@@ -128,6 +167,8 @@ export interface IndexingJobData {
 }
 
 export interface MergeConflictJobData {
+    /** Stable GitHub user ID for comment-triggered jobs; absent for system detection. */
+    userId?: string;
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -140,10 +181,11 @@ export interface MergeConflictJobData {
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
 
 export interface ClaudeOutputResult {
     type?: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
     total_cost_usd?: number;
@@ -169,6 +211,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
+    terminationReason?: 'timeout' | 'max_turns';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }
@@ -195,6 +238,7 @@ export interface AiMetrics {
 
 export interface WorkerCreateOptions {
     concurrency?: number;
+    autorun?: boolean;
 }
 
 export interface ActivityLog {

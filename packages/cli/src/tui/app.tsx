@@ -131,7 +131,7 @@ export async function renderSetupWizard(
   // engine catches it, settles the step, and returns its (incomplete) state.
   const result = await runSetup({ ...options, prompts: buildSetupPrompts(bridge), reporter });
 
-  bridge.finish(result.state);
+  bridge.finish(result.state, result.completed);
   await instance.waitUntilExit();
   return result;
 }

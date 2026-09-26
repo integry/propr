@@ -29,6 +29,9 @@ src/**/*.d.ts
 # Local image cache for AI processing (issue/PR specific)
 .propr/assets/
 
+# Transient visual preview evidence (published separately, never committed)
+.propr/previews/
+
 # E2E test reports (generated per run)
 test/reports/
 
@@ -37,3 +40,7 @@ apps/release-site-videos/
 
 # Standalone publish staging (scripts/build-publish.mjs)
 dist-publish/
+
+# Electron Forge build and package output
+apps/desktop/.vite/
+apps/desktop/out/

@@ -16,6 +16,7 @@ import TaskHeader from './TaskHeader';
 import ProgressBar from './ProgressBar';
 import LeftPaneBody from './LeftPaneBody';
 import SectionLabelHeader from './SectionLabelHeader';
+import TaskVisualPreviews from './TaskVisualPreviews';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
@@ -39,14 +40,14 @@ const MobileStickySummary: React.FC<{
 }> = ({ title, contextStripProps, actionBarProps, todos }) => (
   // Page-local sticky UI should sit below the global header dropdown stacking
   // context while remaining sticky within the task details route.
-  <div className="sm:hidden sticky top-0 z-10 bg-white">
+  <div className="task-mobile-sticky-summary sm:hidden sticky top-0 z-10 flex-shrink-0 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       <div className="flex flex-col gap-2">
         <div className="truncate text-xs font-semibold text-slate-700">{title}</div>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
-          <ActionBar {...actionBarProps} />
         </div>
+        <ActionBar {...actionBarProps} />
         <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
       </div>
     </div>
@@ -174,6 +175,7 @@ const TaskDetails: React.FC = () => {
     duration: totalDuration,
     tokenUsage,
     usageMetricRecords: taskData.usageMetricRecords,
+    synthetic: taskData.history.some(item => item.metadata?.syntheticRouting !== undefined),
   };
   const actionBarProps = {
     currentStatus: derivedData.currentStatus,
@@ -189,7 +191,7 @@ const TaskDetails: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full flex flex-col overflow-x-hidden bg-white sm:h-full sm:overflow-hidden">
+    <div data-testid="task-details" className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
@@ -221,9 +223,9 @@ const TaskDetails: React.FC = () => {
       />
 
       {/* Main Content Area - 30/70 Split */}
-      <div className="flex flex-col min-w-0 sm:flex-1 sm:overflow-hidden">
+      <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden">
         {/* Header Row - TIMELINE and section label */}
-        <div className="flex-shrink-0 flex border-b border-slate-200">
+        <div className="flex-shrink-0 flex border-b border-slate-200 sm:hidden lg:flex">
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
             <div className="py-2 lg:py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               TIMELINE
@@ -238,9 +240,22 @@ const TaskDetails: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="flex flex-col min-w-0 sm:flex-1 lg:flex-row lg:overflow-hidden">
+        <div
+          data-testid="task-workspace-scroll"
+          className="scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain lg:flex-row lg:overflow-hidden"
+        >
           {/* LEFT PANE (30%) */}
-          <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
+          <div
+            data-testid="task-timeline-scroll"
+            role="region"
+            aria-label="Task timeline"
+            className="w-full min-w-0 flex-shrink-0 border-b border-gray-200 lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r scrollbar-stealth"
+          >
+            <div className="sticky top-0 z-[1] hidden items-center border-b border-slate-200 bg-white px-4 sm:flex lg:hidden">
+              <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                TIMELINE
+              </div>
+            </div>
             <LeftPaneBody
               history={taskData.history}
               taskInfo={taskData.taskInfo}
@@ -254,8 +269,6 @@ const TaskDetails: React.FC = () => {
             />
           </div>
 
-          <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
-
           {/* RIGHT PANE (70%) */}
           <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
             {/* Mobile section header */}
@@ -263,12 +276,18 @@ const TaskDetails: React.FC = () => {
               commandMode={taskData.taskInfo?.commandMode}
               score={score}
               ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
-              className="lg:hidden flex-shrink-0 px-4 py-2 border-b border-slate-200 flex items-center gap-3"
+              className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white lg:hidden"
             />
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
             {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
             <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
-              <div className="min-w-0 overflow-x-hidden scrollbar-stealth lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+              <div
+                data-testid="task-output-scroll"
+                role="region"
+                aria-label="Task analysis and implementation log"
+                className="min-w-0 overflow-x-hidden scrollbar-stealth lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
+              >
+                <TaskVisualPreviews previews={taskData.previewMedia} />
                 {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
                     analysis={taskData.analysis}
@@ -296,7 +315,7 @@ const TaskDetails: React.FC = () => {
       {/* Execution Event Log Footer */}
       <div
         ref={executionLogRef}
-        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'max-h-[100vh] lg:flex-1 lg:flex lg:flex-col lg:min-h-0 lg:max-h-[60vh]'}`}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex h-[clamp(12rem,42dvh,22rem)] max-h-[60dvh] min-h-0 flex-col lg:h-auto lg:max-h-[60%] lg:flex-1'}`}
       >
         <ExecutionEventLog
           events={taskData.liveDetails.events}

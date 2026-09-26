@@ -5,7 +5,7 @@
 
 import { Job } from 'bullmq';
 import {
-  logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
+  db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
@@ -15,7 +15,7 @@ import type { PostProcessingResult } from './issueJobHelpers.js';
 import { performFinalValidation } from './issueJobPostProcessing.js';
 import {
   initializeJobContext, getAuthenticatedClient, checkLabelConditions,
-  executeWorktreeOperations, markTaskComplete
+  ensureProcessingLabel, executeWorktreeOperations, markTaskComplete
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
 
@@ -33,10 +33,18 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   await addModelSpecificDelay(modelName);
 
   try {
-    await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef, correlationId);
+    await stateManager.createTaskState(
+      taskId,
+      { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
+      correlationId,
+      jobId === undefined ? null : String(jobId),
+    );
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
   }
+
+  const submission = await findIssueSubmission(issueRef);
+  if (submission) await associateSubmissionTask(db, submission.id, taskId);
 
   // Update plan issue with task_id for progress tracking
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -87,9 +95,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     const labelCheck = checkLabelConditions(currentLabels, context);
     if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
 
-    if (!currentLabels.includes(AI_PROCESSING_TAG)) {
-      await safeAddLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
-    }
+    await ensureProcessingLabel(currentLabels, context, octokit);
 
     const updatedIssueRef: IssueJobData = { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` };
     await updateTaskTitleInStorage(taskId, updatedIssueRef, stateManager, correlatedLogger);

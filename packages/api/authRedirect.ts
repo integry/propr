@@ -1,5 +1,7 @@
 import { isIP } from 'net';
+import { canonicalProprHttpUrlOrigin, isProprLoopbackHostname } from '@propr/shared';
 import type { AllowedRedirectHost } from './authTypes.js';
+import { getMcpOriginSync } from './mcp/configResolver.js';
 
 function isValidHostname(hostname: string): boolean {
     if (!hostname || hostname.length > 253 || hostname.includes('..')) return false;
@@ -39,7 +41,9 @@ function parseAllowedRedirectHost(value: string, includeSubdomainsByDefault = fa
 }
 
 function getAllowedRedirectHosts(): AllowedRedirectHost[] {
+    const mcpOrigin = getMcpOriginSync();
     const hosts = [
+        mcpOrigin ? parseAllowedRedirectHost(mcpOrigin) : null,
         process.env.FRONTEND_URL ? parseAllowedRedirectHost(process.env.FRONTEND_URL) : null,
         process.env.COOKIE_DOMAIN ? parseAllowedRedirectHost(process.env.COOKIE_DOMAIN, process.env.COOKIE_DOMAIN.trim().startsWith('.')) : null,
         ...(process.env.AUTH_REDIRECT_ALLOWED_HOSTS || '').split(',').map(value => parseAllowedRedirectHost(value))
@@ -59,8 +63,8 @@ function isAllowedRedirectHost(hostname: string): boolean {
 }
 
 function isLocalHttpRedirectHost(hostname: string): boolean {
-    const normalized = normalizeHostname(hostname);
-    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+    const normalized = hostname.includes(':') ? `[${normalizeHostname(hostname)}]` : normalizeHostname(hostname);
+    return isProprLoopbackHostname(normalized);
 }
 
 // HTTPS is required for all non-local redirect targets by default. HTTP is only
@@ -79,6 +83,7 @@ export function getValidatedRedirectTo(redirectTo: string | undefined): string |
     try {
         const url = new URL(redirectTo);
         const hostname = normalizeHostname(url.hostname);
+        if (canonicalProprHttpUrlOrigin(redirectTo, { allowInsecureHttp: allowHttp }) !== url.origin) return undefined;
         if (url.protocol === 'https:' && isAllowedRedirectHost(hostname)) return url.toString();
         if (url.protocol === 'http:' && isAllowedRedirectHost(hostname) && (allowHttp || isLocalHttpRedirectHost(hostname))) return url.toString();
     } catch {

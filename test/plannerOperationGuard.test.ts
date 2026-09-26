@@ -30,10 +30,17 @@ before(async () => {
     table.timestamp('updated_at');
     table.text('generation_trace');
     table.text('refinement_result');
+    table.integer('mcp_revision').defaultTo(0);
   });
 });
 
 describe('planner operation guard', () => {
+  test('a revision precondition is checked atomically with the refinement claim', async () => {
+    await database('task_drafts').insert({ draft_id: 'revision-draft', user_id: 'user-1', status: 'review', mcp_revision: 2 });
+    assert.equal(await claimDraftOperation(database, 'revision-draft', 'refining', { expectedRevision: 1 }), false);
+    assert.equal((await database('task_drafts').where({ draft_id: 'revision-draft' }).first()).status, 'review');
+    assert.equal(await claimDraftOperation(database, 'revision-draft', 'refining', { expectedRevision: 2 }), true);
+  });
   test('recognizes statuses that represent active draft work', () => {
     assert.equal(isDraftOperationActive('generating'), true);
     assert.equal(isDraftOperationActive('refining'), true);

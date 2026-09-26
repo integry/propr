@@ -50,45 +50,44 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
 
   // Cache for repositories (they don't change often)
   const repositoriesCache = useRef<MonitoredRepo[]>([]);
+  const repositoriesReadyRef = useRef<Promise<void>>(Promise.resolve());
+  const repositoriesErrorRef = useRef<unknown>(null);
 
   // Debounce timer ref
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Abort controller for canceling previous requests
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // API helpers do not currently accept an AbortSignal, so a generation fence
+  // prevents late results from a previous query replacing the active query.
+  const requestGenerationRef = useRef(0);
 
   // Fetch all repositories once on mount
   useEffect(() => {
-    const fetchRepositories = async () => {
-      try {
-        const catalog = await getInstanceCatalog();
+    let active = true;
+    repositoriesErrorRef.current = null;
+    repositoriesReadyRef.current = getInstanceCatalog()
+      .then(catalog => {
+        if (!active) return;
         repositoriesCache.current = catalog.repositories.map(repository => ({
           ...repository,
           id: `${repository.name}:${repository.baseBranch || ''}`
         }));
-      } catch (err) {
+      })
+      .catch(err => {
+        if (!active) return;
+        repositoriesErrorRef.current = err;
         console.error('Failed to fetch repositories:', err);
-      }
+      });
+    return () => {
+      active = false;
     };
-    fetchRepositories();
   }, []);
 
   // Perform search
-  const performSearch = useCallback(async (searchQuery: string) => {
+  const performSearch = useCallback(async (searchQuery: string, generation: number) => {
     if (!searchQuery.trim()) {
-      setResults({ plans: [], tasks: [], repositories: [] });
-      setIsLoading(false);
+      if (generation === requestGenerationRef.current) setIsLoading(false);
       return;
     }
-
-    // Cancel any previous in-flight requests
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-
-    setIsLoading(true);
-    setError(null);
 
     try {
       const normalizedQuery = searchQuery.toLowerCase().trim();
@@ -97,7 +96,9 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
       const [plansResponse, tasksResponse] = await Promise.all([
         getDrafts({ search: searchQuery, limit: RESULTS_LIMIT }),
         getTasks({ search: searchQuery, limit: RESULTS_LIMIT }),
+        repositoriesReadyRef.current,
       ]);
+      if (repositoriesErrorRef.current) throw repositoriesErrorRef.current;
 
       // Filter repositories locally from cache
       const filteredRepositories = repositoriesCache.current
@@ -110,28 +111,30 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
       // Extract tasks from response
       const tasksData = (tasksResponse as { tasks: TaskSearchResult[] }).tasks || [];
 
+      if (generation !== requestGenerationRef.current) return;
       setResults({
         plans: plansResponse.drafts || [],
         tasks: tasksData,
         repositories: filteredRepositories,
       });
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        // Request was aborted, ignore
-        return;
-      }
+      if (generation !== requestGenerationRef.current) return;
       console.error('Search failed:', err);
       setError((err as Error).message);
       setResults({ plans: [], tasks: [], repositories: [] });
     } finally {
-      setIsLoading(false);
+      if (generation === requestGenerationRef.current) setIsLoading(false);
     }
   }, []);
 
   // Debounced query handler
   const setQuery = useCallback(
     (newQuery: string) => {
+      const generation = ++requestGenerationRef.current;
       setQueryState(newQuery);
+      setResults({ plans: [], tasks: [], repositories: [] });
+      setError(null);
+      setIsLoading(Boolean(newQuery.trim()));
 
       // Open dropdown when user starts typing
       if (newQuery.trim()) {
@@ -145,7 +148,7 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
 
       // Set new debounce timer
       debounceTimerRef.current = setTimeout(() => {
-        performSearch(newQuery);
+        void performSearch(newQuery, generation);
       }, DEBOUNCE_DELAY);
     },
     [performSearch]
@@ -157,11 +160,9 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
     setResults({ plans: [], tasks: [], repositories: [] });
     setIsOpen(false);
     setError(null);
+    setIsLoading(false);
+    requestGenerationRef.current += 1;
 
-    // Cancel any pending requests
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
@@ -173,9 +174,7 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      requestGenerationRef.current += 1;
     };
   }, []);
 

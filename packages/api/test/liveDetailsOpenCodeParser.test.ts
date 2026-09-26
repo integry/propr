@@ -53,6 +53,20 @@ test('parseOpenCodeOutputToConversationResult separates structured assistant tex
   assert.equal(result?.events[0]?.content, 'First part.\nSecond part.');
 });
 
+test('OpenCode reasoning remains identifiable for exclusion from narrated activity', async () => {
+  const { parseOpenCodeOutputToConversationResult } = await import('../routes/liveDetailsOpenCodeParser.js');
+  const output = JSON.stringify({
+    type: 'reasoning',
+    timestamp: '2026-09-13T10:00:00.000Z',
+    sessionID: 'opencode-session',
+    part: { type: 'reasoning', text: 'Private reasoning summary' },
+  });
+
+  const result = parseOpenCodeOutputToConversationResult(output);
+
+  assert.equal(result?.events[0]?.internalReasoning, true);
+});
+
 test('detectStoredOutputFormat recognizes whole-document pretty OpenCode JSON', async () => {
   const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
   const output = JSON.stringify({

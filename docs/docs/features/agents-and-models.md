@@ -21,6 +21,8 @@ Use routing when you want to:
 - Fall back to another provider when rate limits or quota are tight
 - Preserve the same PR follow-up workflow across providers
 
+For virtual routing across several configured direct agents, see [Synthetic Pools](./synthetic-pools.md).
+
 ## Supported Agents
 
 | Agent | Type | Docker image | Existing host credentials |
@@ -74,8 +76,8 @@ Adding **several** model labels to one issue fans the work out into one job per 
 
 ```text
 AI
-llm-claude-opus5
-llm-codex-gpt56-sol
+llm-claude-fable51
+llm-codex-astra
 ```
 
 This issue produces two tasks and two pull requests — one per model.
@@ -83,17 +85,21 @@ This issue produces two tasks and two pull requests — one per model.
 The same aliases work in PR comments (the `llm-` prefix is optional; the raw catalog model ids are accepted too):
 
 ```
-/switch claude-opus5      # future follow-ups on this PR use this model
-/use codex-gpt56-sol      # one follow-up with this model
-/review claude-opus5 codex-gpt56-sol   # independent reviews from two models
+/switch claude-fable51      # future follow-ups on this PR use this model
+/use codex-astra            # one follow-up with this model
+/review claude-fable51 codex-astra   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
 
 ## Claude Code Models
 
+Claude Opus 5.5 is the default Claude model and the target of the plain `opus` alias.
+
 | Model | Label | Context |
 |-------|-------|---------|
+| Claude Opus 5.5 | `llm-claude-opus55` | 1M |
+| Claude Fable 5.1 | `llm-claude-fable51` | 1M |
 | Claude Fable 5 | `llm-claude-fable` | 1M |
 | Claude Opus 5 | `llm-claude-opus5` | 1M |
 | Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
@@ -105,14 +111,15 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 | Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
 | Claude Haiku 4.5 | `llm-claude-haiku` | 200K |
 
-Some models require a minimum agent CLI version (for example, Opus 5 requires Claude Code ≥ 2.1.219); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Opus 5.5 requires Claude Code ≥ 2.1.280); ProPR records this in the catalog and the agent image is kept current.
 
 ## Codex Models
 
-GPT-5.6 Sol is the recommended default for complex implementation, research, and security work. GPT-5.6 Terra balances capability, speed, and cost for everyday work; GPT-5.6 Luna is the fastest and lowest-cost GPT-5.6 option. GPT-5.6 models require Codex CLI >= 0.144.0.
+GPT-6 Astra is the recommended default for complex implementation, research, and security work. GPT-5.6 Terra balances capability, speed, and cost for everyday work; GPT-5.6 Luna is the fastest and lowest-cost GPT-5.6 option. Astra requires Codex CLI >= 0.153.1, while GPT-5.6 models require Codex CLI >= 0.144.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
+| GPT-6 Astra | `llm-codex-astra` | 1.05M |
 | GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1.05M |
 | GPT-5.6 Terra | `llm-codex-gpt56-terra` | 1.05M |
 | GPT-5.6 Luna | `llm-codex-gpt56-luna` | 1.05M |
@@ -134,6 +141,8 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
+| Gemini 3.8 Flash Low / Medium / High | `llm-antigravity-flash38-low` / `-flash38-medium` / `-flash38-high` |
+| Gemini 3.7 Flash Low / Medium / High | `llm-antigravity-flash37-low` / `-flash37-medium` / `-flash37-high` |
 | Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
 | Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
 | Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
@@ -147,13 +156,13 @@ Built-in free models:
 
 | Model | Label | Context |
 |-------|-------|---------|
-| DeepSeek V4 Flash Free | `llm-opencode-deepseek-v4-flash-free` | 200K |
-| MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
-| Laguna S 2.1 Free | `llm-opencode-laguna-s21-free` | 256K |
-| Ling 3.0 Flash Free | `llm-opencode-ling30-flash-free` | 262K |
-| North Mini Code Free | `llm-opencode-north-mini-code-free` | 256K |
-| Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
 | Big Pickle | `llm-opencode-big-pickle` | 200K |
+| Ling 3.0 Flash Fin Free | `llm-opencode-ling30-flash-fin-free` | 262K |
+| MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
+| Muse Spark 1.2 Contributor Free | `llm-opencode-muse-spark12-free` | 1M |
+| Muse Spark 1.3 Contributor Free | `llm-opencode-muse-spark13-free` | 1M |
+| Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
+| Nemotron 3.5 Lightning Free | `llm-opencode-nemotron35-lightning-free` | 262K |
 
 OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
@@ -164,7 +173,6 @@ For an existing host account, install the CLI, run `opencode auth login`, and us
 | Model | Label | Context |
 |-------|-------|---------|
 | Mistral Medium 3.5 | `llm-vibe-mistral` | 256K |
-| Devstral Small | `llm-vibe-devstral` | 256K |
 
 ## Choosing Models per Phase
 

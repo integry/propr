@@ -17,7 +17,12 @@ export type { DetectedIssue };
 // Cache resolved label-applier per issue to avoid N+1 timeline API calls on
 // every poll cycle. Keyed by "owner/repo#number:updatedAt" so the entry is
 // invalidated whenever the issue changes.
-const labelApplierCache = new Map<string, string | null>();
+interface TriggerActor {
+    login: string;
+    userId: string;
+}
+
+const labelApplierCache = new Map<string, TriggerActor>();
 const LABEL_APPLIER_CACHE_MAX = 500;
 const LABEL_APPLIER_TIMELINE_PAGE_SIZE = 100;
 const LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT = 5;
@@ -43,7 +48,7 @@ interface GitHubIssue {
     created_at: string;
     updated_at: string;
     pull_request?: unknown;
-    user?: { login: string } | null;
+    user?: { id: number; login: string } | null;
 }
 
 interface GitHubSearchResponse {
@@ -54,20 +59,21 @@ interface GitHubSearchResponse {
 
 interface TimelineEvent {
     event: string;
-    actor?: { login: string } | null;
+    actor?: { id: number; login: string } | null;
     label?: { name: string };
 }
 
-function findLabelApplierInEvents(events: TimelineEvent[], normalizedTargetLabels: string[]): string | null {
+function findLabelApplierInEvents(events: TimelineEvent[], normalizedTargetLabels: string[]): TriggerActor | null {
     for (let i = events.length - 1; i >= 0; i--) {
         const ev = events[i];
         if (
             ev.event === 'labeled' &&
             ev.label?.name &&
             normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
-            ev.actor?.login
+            ev.actor?.login &&
+            Number.isSafeInteger(ev.actor.id)
         ) {
-            return ev.actor.login;
+            return { login: ev.actor.login, userId: String(ev.actor.id) };
         }
     }
     return null;
@@ -82,13 +88,13 @@ function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
 
 /**
  * Look up who most recently applied one of the given labels by walking the
- * issue timeline backwards. Returns the actor login, or `null` when the
- * labeler cannot be determined (API error, event pruned, etc.).
+ * issue timeline backwards. Returns the actor's login and stable GitHub ID,
+ * or `null` when the labeler cannot be determined (API error, event pruned,
+ * legacy response without an ID, etc.).
  *
- * Callers MUST treat `null` as "actor unknown" and fail closed (skip the
- * issue) rather than falling back to the issue author — otherwise an
- * attacker who applies the trigger label to a whitelisted user's issue
- * could bypass the whitelist whenever the timeline lookup fails.
+ * Callers MUST treat `null` as "actor unknown" and fail closed when the
+ * actor is required for whitelist authorization. Without a whitelist, the
+ * issue may still be processed, but must not receive stable user ownership.
  *
  * Trade-off: because we use the *most recent* labeled event, a
  * non-whitelisted user who toggles the label after a whitelisted user
@@ -103,7 +109,7 @@ async function resolveLabelApplier(opts: {
     issueNumber: number;
     targetLabels: string[];
     log?: Logger;
-}): Promise<string | null> {
+}): Promise<TriggerActor | null> {
     const { octokit, owner, repo, issueNumber, targetLabels } = opts;
     const normalizedTargetLabels = targetLabels.map(l => l.toLowerCase());
     // Let API errors propagate — the caller (resolveLabelApplierCached) decides
@@ -140,7 +146,7 @@ async function resolveLabelApplierCached(opts: {
     updatedAt: string;
     targetLabels: string[];
     log?: Logger;
-}): Promise<string | null> {
+}): Promise<TriggerActor | null> {
     const cacheKey = getLabelApplierCacheKey(opts.owner, opts.repo, opts.issueNumber, opts.updatedAt);
     const cached = labelApplierCache.get(cacheKey);
     if (cached !== undefined) return cached;
@@ -161,11 +167,12 @@ async function resolveLabelApplierCached(opts: {
         }
         return result;
     } catch (err) {
-        // Transient API error (rate limit, network blip). Return null (fail closed)
-        // but do NOT cache so the issue is retried on the next poll cycle.
+        // Transient API error (rate limit, network blip). Return null but do NOT
+        // cache so the issue is retried on the next poll cycle. The caller fails
+        // closed when actor identity is required for whitelist authorization.
         opts.log?.warn(
             { owner: opts.owner, repo: opts.repo, issueNumber: opts.issueNumber, error: (err as Error).message },
-            'Timeline API lookup failed — actor unknown, will skip issue (fail closed). Will retry on next poll.'
+            'Timeline API lookup failed — actor unknown. Will retry on next poll.'
         );
         return null;
     }
@@ -294,6 +301,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
             number: issue.number,
+            ...(issue.triggeredById ? { userId: issue.triggeredById } : {}),
             triggeringLabel: triggeringLabel,
             correlationId: generateCorrelationId()
         };
@@ -426,21 +434,24 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
             const results = await Promise.all(batch.map(async (issue) => {
                 const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
-                let triggeredBy: string | undefined = issue.user?.login;
-                if (hasWhitelist) {
-                    const labelApplier = await resolveLabelApplierCached({
-                        octokit, owner, repo, issueNumber: issue.number,
-                        updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
-                    });
-                    if (labelApplier === null) {
+                const labelApplier = await resolveLabelApplierCached({
+                    octokit, owner, repo, issueNumber: issue.number,
+                    updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                });
+                if (labelApplier === null) {
+                    if (hasWhitelist) {
                         correlatedLogger.warn(
                             { issueNumber: issue.number, repository: repoFullName },
                             'Could not determine label applier — skipping issue (fail closed). Will retry on timeline lookup failures; if the label event is too old to appear in the recent timeline window, remove and re-apply the processing label, or raise LABEL_APPLIER_TIMELINE_MAX_PAGES.'
                         );
                         return null;
                     }
-                    triggeredBy = labelApplier;
+                    correlatedLogger.warn(
+                        { issueNumber: issue.number, repository: repoFullName },
+                        'Could not determine label applier — processing without stable user ownership because no whitelist is configured.'
+                    );
                 }
+                const triggeredBy = labelApplier?.login ?? issue.user?.login;
                 return {
                     id: issue.id,
                     number: issue.number,
@@ -451,7 +462,8 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     labels,
                     createdAt: issue.created_at,
                     updatedAt: issue.updated_at,
-                    triggeredBy,
+                    ...(triggeredBy ? { triggeredBy } : {}),
+                    ...(labelApplier ? { triggeredById: labelApplier.userId } : {}),
                     source: 'polling' as const
                 };
             }));

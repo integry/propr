@@ -10,6 +10,7 @@ import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
+import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
 
@@ -135,12 +136,12 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     {implementing ? (
       <>
         <Loader2 size={14} className="animate-spin" />
-        <span className="hidden sm:inline">Starting...</span>
+        <span>Starting...</span>
       </>
     ) : (
       <>
         <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
-        <span className="hidden sm:inline">{label}</span>
+        <span>{label}</span>
       </>
     )}
   </button>
@@ -167,7 +168,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
 );
 
 export interface ViewProgressLinkProps { taskId: string; }
-export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${taskId}`} className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
+export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
 
 export interface RowActionsProps {
   isPending: boolean;
@@ -217,7 +218,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   const issueNumber = issue.issue_number;
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-1 lg:justify-end lg:gap-3">
       {isPending && (
         <AgentModelSelector
           agents={agents}
@@ -311,7 +312,7 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
 
                   return (
                     <div key={attachment.id} className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
-                      {isImage ? <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300"><img src={getAttachmentUrl(draftId, attachment.id)} alt={attachment.originalName} className="w-full h-full object-cover" crossOrigin="use-credentials" /></div> : renderAttachmentIcon()}
+                      {isImage ? <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300"><AuthenticatedAttachmentImage src={getAttachmentUrl(draftId, attachment.id)} alt={attachment.originalName} className="w-full h-full object-cover" /></div> : renderAttachmentIcon()}
                       <span className="text-gray-700 max-w-[150px] truncate" title={attachment.originalName}>
                         {attachment.originalName}
                       </span>
@@ -336,7 +337,7 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
   if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) return null;
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3 text-xs">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}

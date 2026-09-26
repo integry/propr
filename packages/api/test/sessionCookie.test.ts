@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import { getSessionCookieDomain, shouldUseSecureSessionCookie } from '../auth.js';
 
 const originalApiPublicUrl = process.env.API_PUBLIC_URL;
@@ -13,6 +14,10 @@ afterEach(() => {
   else process.env.COOKIE_DOMAIN = originalCookieDomain;
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = originalNodeEnv;
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 test('session cookie domain only comes from COOKIE_DOMAIN', () => {
@@ -38,6 +43,23 @@ test('secure session cookie follows API_PUBLIC_URL protocol for HTTPS and localh
 
   process.env.API_PUBLIC_URL = 'http://[::1]:4000';
   assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
+
+  process.env.API_PUBLIC_URL = 'http://api.dev.localhost:4000';
+  assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
+
+  process.env.API_PUBLIC_URL = 'http://127.42.7.9:4000';
+  assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
+
+  process.env.API_PUBLIC_URL = 'http://127.1:4000';
+  assert.equal(shouldUseSecureSessionCookie('.example.com'), true);
+});
+
+test('noncanonical HTTPS public URL keeps the session cookie secure in development', () => {
+  process.env.NODE_ENV = 'development';
+  delete process.env.COOKIE_DOMAIN;
+  process.env.API_PUBLIC_URL = 'https://api.example.test/path';
+
+  assert.equal(shouldUseSecureSessionCookie(undefined), true);
 });
 
 test('secure session cookie does not downgrade for non-localhost HTTP public URL', () => {

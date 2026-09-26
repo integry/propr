@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { RefreshCw, AlertCircle, Plus, Minus, Trash2, ArrowRight } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
 import { useSocket } from '../../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
+import { useLiveRefreshScheduler } from '../../hooks/useLiveRefreshScheduler';
+import { useCurrentUser } from '../../contexts/AuthContext';
+import { getDesktopSocketConfigurationKey } from '../../api/apiClient';
 
 interface LiveFileChipsProps {
   taskId: string;
@@ -46,15 +49,24 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected } = useSocket();
+  const currentUser = useCurrentUser();
+  const { onTaskUpdate, isConnected } = useSocket();
+  const activeTaskIdRef = useRef(taskId);
+  activeTaskIdRef.current = taskId;
+  const requestScopeKey = `${getDesktopSocketConfigurationKey()}\0${currentUser?.id ?? ''}\0${taskId}`;
+  const activeRequestScopeRef = useRef(requestScopeKey);
+  activeRequestScopeRef.current = requestScopeKey;
 
   // Fetch file changes
   const fetchFileChanges = useCallback(async () => {
+    const requestedScope = requestScopeKey;
     try {
       const response: FileChangesResponse = await getFileChanges(taskId);
+      if (activeRequestScopeRef.current !== requestedScope) return;
       setFileChanges(response.files);
       setError(null);
     } catch (err) {
+      if (activeRequestScopeRef.current !== requestedScope) return;
       // Don't show error for 404 (no changes yet) during active tasks
       if ((err as Error).message?.includes('404') && isActive) {
         setFileChanges([]);
@@ -63,38 +75,45 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
         setError((err as Error).message || 'Failed to load file changes');
       }
     } finally {
-      setIsLoading(false);
+      if (activeRequestScopeRef.current === requestedScope) setIsLoading(false);
     }
-  }, [taskId, isActive]);
+  }, [requestScopeKey, taskId, isActive]);
+
+  const scheduleFileChangesRefresh = useLiveRefreshScheduler({
+    isConnected,
+    refresh: fetchFileChanges,
+    scopeKey: requestScopeKey,
+  });
 
   // Handle task update from WebSocket - refetch file changes
   const handleTaskUpdate = useCallback((payload: TaskUpdatePayload) => {
-    if (payload.taskId !== taskId) return;
+    if (payload.taskId !== activeTaskIdRef.current) return;
 
     console.log('[LiveFileChips] Received task update, refreshing file changes:', payload);
-    fetchFileChanges();
-  }, [taskId, fetchFileChanges]);
+    scheduleFileChangesRefresh();
+  }, [scheduleFileChangesRefresh]);
 
   // Initial fetch
   useEffect(() => {
-    fetchFileChanges();
-  }, [fetchFileChanges]);
+    setIsLoading(true);
+    setError(null);
+    setSelectedFilePath(null);
+    void scheduleFileChangesRefresh.refreshNow();
+  }, [requestScopeKey, taskId, scheduleFileChangesRefresh]);
 
   // Subscribe to WebSocket events for this task
   useEffect(() => {
     if (!isActive || !isConnected) return;
 
-    // Subscribe to this specific task's room
-    subscribeToTask(taskId);
-
-    // Listen for task updates
+    // useTaskData owns the detail route's task-room subscription. This child
+    // only listens to the shared event fan-out, avoiding a duplicate room
+    // subscription and an early unsubscribe when the task becomes terminal.
     const unsubscribe = onTaskUpdate(handleTaskUpdate);
 
     return () => {
-      unsubscribeFromTask(taskId);
       unsubscribe();
     };
-  }, [taskId, isActive, isConnected, subscribeToTask, unsubscribeFromTask, onTaskUpdate, handleTaskUpdate]);
+  }, [isActive, isConnected, onTaskUpdate, handleTaskUpdate]);
 
   // Get selected file object
   const selectedFile = useMemo(() => {

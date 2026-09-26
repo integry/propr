@@ -1,11 +1,9 @@
 import 'dotenv/config';
-import { Job, Worker } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
-import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, MergeConflictJobData, JobResult } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
-import { db } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
@@ -16,6 +14,12 @@ import {
     buildAgentRuntimePackageProfile,
     type AgentRuntimeBuildJobData
 } from '@propr/core';
+import {
+    AGENT_IMAGE_PREPARATION_QUEUE_NAME,
+    createAgentImagePreparationQueue,
+    closeAgentImageBuildLock,
+    type AgentImagePreparationJobData,
+} from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
@@ -23,6 +27,17 @@ import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJo
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
+import { processGoalJob } from './jobs/processGoalJob.js';
+import { createConfiguredMainWorker } from './workerFactory.js';
+import type { MainWorker } from './workerFactory.js';
+import {
+    attachPRCommentTaskStateFinalizers,
+    type PRCommentTaskStateFinalizers,
+} from './jobs/prCommentTaskStateFinalizers.js';
+import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { recoverNonterminalGoals } from './goalRecovery.js';
+import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
+import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -138,7 +153,32 @@ Examples:
 `);
 }
 
-type MainWorker = Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData, JobResult>;
+async function refreshAgentRegistryForConfigUpdate(subtype: string): Promise<void> {
+    logger.info({ subtype }, 'Refreshing AgentRegistry due to agent configuration update...');
+    try {
+        const registry = AgentRegistry.getInstance();
+        if (subtype === 'agents_update') {
+            await registry.prepareImagesAndRefresh();
+        } else {
+            await registry.refresh();
+        }
+        const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
+        if (imageStatus.status !== 'ready') {
+            throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
+        }
+        const agents = registry.getAllAgents();
+        logger.info({
+            agentCount: agents.length,
+            agents: agents.map(agent => ({
+                alias: agent.config.alias,
+                type: agent.config.type,
+                enabled: agent.config.enabled,
+            })),
+        }, 'AgentRegistry refreshed successfully');
+    } catch (error) {
+        logger.error({ error: (error as Error).message }, 'Failed to refresh AgentRegistry');
+    }
+}
 
 export interface StartedWorker {
     worker: MainWorker;
@@ -154,18 +194,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     validateAttachmentBaseUrlConfig();
 
-    // Run migrations first, before loading any configs from the database
-    try {
-        logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({
-            error: err.message,
-            stack: err.stack
-        }, 'Database migration failed - worker will continue but database persistence may not work');
-    }
+    // No jobs may be claimed against a partially migrated schema.
+    await runMigrations();
 
     try {
         if (process.env.CONFIG_REPO) {
@@ -200,16 +230,78 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
 
+    const agentImagePreparationQueue: Queue<AgentImagePreparationJobData> = createAgentImagePreparationQueue();
+    await agentImagePreparationQueue.setGlobalConcurrency(1);
+    const agentImagePreparationWorker = new Worker<AgentImagePreparationJobData>(
+        AGENT_IMAGE_PREPARATION_QUEUE_NAME,
+        async (job) => {
+            await processAgentImagePreparationJob(job);
+            logger.info({ requestedImageTag: job.data.imageTag }, 'Worker-owned unified agent image preparation completed');
+        },
+        {
+            connection: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                maxRetriesPerRequest: null,
+            },
+            concurrency: 1,
+        },
+    );
+    agentImagePreparationWorker.on('failed', (job, error) => {
+        logger.error({ imageTag: job?.data.imageTag, error: error.message }, 'Worker-owned unified agent image preparation failed');
+    });
+
+    // Runtime-package preparation must stay available while startup waits for
+    // readiness: rebuilding a missing runtime image (and the registry refresh
+    // after it succeeds) can be exactly what establishes readiness.
+    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
+        AGENT_RUNTIME_BUILD_QUEUE_NAME,
+        async (job) => {
+            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
+            await job.updateProgress(5);
+            const state = await buildAgentRuntimePackageProfile(job.data);
+            if (state.buildId !== job.data.buildId) {
+                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+                return state;
+            }
+            await job.updateProgress(90);
+            await AgentRegistry.getInstance().refresh();
+            await job.updateProgress(100);
+            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
+            return state;
+        },
+        {
+            connection: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                maxRetriesPerRequest: null
+            },
+            concurrency: 1
+        }
+    );
+    runtimeBuildWorker.on('failed', (job, error) => {
+        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+    });
+
+    // Do not advertise or claim task capacity while an image is still building.
+    await prepareAgentRegistryAtStartup();
+
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
         retryStrategy: (times: number) => Math.min(times * 50, 2000)
     });
 
+    // Capacity travels with the heartbeat, in a hash keyed by the same worker
+    // ids. The dashboard can only say "all agents are busy" when it can compare
+    // the active job count against real capacity, and nothing else knows how
+    // many jobs this process was started to run at once.
     const sendHeartbeat = async (): Promise<void> => {
         try {
             await heartbeatRedis.sadd('system:status:workers', workerId);
             await heartbeatRedis.expire('system:status:workers', 90);
+            await heartbeatRedis.hset('system:status:worker-capacity', workerId, String(workerConcurrency));
+            await heartbeatRedis.expire('system:status:worker-capacity', 90);
             logger.debug('Worker heartbeat sent');
         } catch (error) {
             const err = error as Error;
@@ -220,21 +312,6 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     await sendHeartbeat();
 
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-
-    // Initialize the AgentRegistry which will ensure all configured agent Docker images exist
-    logger.info('Initializing agent registry and ensuring Docker images...');
-    try {
-        const registry = AgentRegistry.getInstance();
-        await registry.refresh();
-        const agents = registry.getAllAgents();
-        logger.info({
-            agentCount: agents.length,
-            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, dockerImage: a.config.dockerImage }))
-        }, 'Agent registry initialized successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
-    }
 
     setUltrafixDeps(createUltrafixDeps());
     logger.info('Ultrafix dependencies initialized for worker');
@@ -272,20 +349,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
                 logger.info({ event }, 'Received config update event');
 
                 // Handle agent config updates by refreshing the registry
-                if (event.subtype === 'agents_update') {
-                    logger.info('Refreshing AgentRegistry due to agents_update event...');
-                    try {
-                        const registry = AgentRegistry.getInstance();
-                        await registry.refresh();
-                        const agents = registry.getAllAgents();
-                        logger.info({
-                            agentCount: agents.length,
-                            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, enabled: a.config.enabled }))
-                        }, 'AgentRegistry refreshed successfully');
-                    } catch (agentError) {
-                        const err = agentError as Error;
-                        logger.error({ error: err.message }, 'Failed to refresh AgentRegistry');
-                    }
+                if (event.subtype === 'agents_update' || event.subtype === 'synthetic_agents_update') {
+                    await refreshAgentRegistryForConfigUpdate(event.subtype);
                 }
 
                 if (event.subtype === 'settings_update') {
@@ -305,58 +370,46 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
-    const worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData>): Promise<JobResult> => {
-        if (job.name === 'processGitHubIssue') {
-            return processGitHubIssueJob(job as Job<IssueJobData>);
-        } else if (job.name === 'processPullRequestComment') {
-            return processPullRequestCommentJob(job as Job<CommentJobData>);
-        } else if (job.name === 'processTaskImport') {
-            return processTaskImportJob(job as Job<TaskImportJobData>);
-        } else if (job.name === 'processSystemTask') {
-            return processSystemTaskJob(job as Job<SystemTaskJobData>);
-        } else if (job.name === 'processMergeConflict') {
-            return processMergeConflictJob(job as Job<MergeConflictJobData>);
-        } else {
-            throw new Error(`Unknown job type: ${job.name}`);
-        }
-    }, { concurrency: workerConcurrency });
-
-    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
-        AGENT_RUNTIME_BUILD_QUEUE_NAME,
-        async (job) => {
-            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
-            await job.updateProgress(5);
-            const state = await buildAgentRuntimePackageProfile(job.data);
-            if (state.buildId !== job.data.buildId) {
-                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
-                return state;
-            }
-            await job.updateProgress(90);
-            await AgentRegistry.getInstance().refresh();
-            await job.updateProgress(100);
-            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
-            return state;
+    let taskStateFinalizers: PRCommentTaskStateFinalizers | undefined;
+    const stateManager = getStateManager();
+    const worker = await createConfiguredMainWorker({
+        queueName: GITHUB_ISSUE_QUEUE_NAME,
+        concurrency: workerConcurrency,
+        workerFactory: createWorker,
+        processors: {
+            processGitHubIssueJob,
+            processPullRequestCommentJob,
+            processTaskImportJob,
+            processSystemTaskJob,
+            processMergeConflictJob,
+            processGoalJob,
         },
-        {
-            connection: {
-                host: process.env.REDIS_HOST || 'localhost',
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                maxRetriesPerRequest: null
-            },
-            concurrency: 1
-        }
-    );
-    runtimeBuildWorker.on('failed', (job, error) => {
-        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+        beforeRun: configuredWorker => {
+            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
+        },
+    });
+    if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
+    const attachedTaskStateFinalizers = taskStateFinalizers;
+    const taskStateRecovery = await startWorkerTaskStateRecovery({
+        stateManager,
+        recoverGoals: () => recoverNonterminalGoals(),
+        reconcileCiSuspensions: () => reconcileFollowupCiSuspensions(),
     });
 
     const close = async (): Promise<void> => {
-        await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
+        await taskStateRecovery.close();
+        await worker.close();
+        await attachedTaskStateFinalizers.close();
+        await closeStateManager();
+        await runtimeBuildWorker.close();
+        await agentImagePreparationWorker.close();
+        await agentImagePreparationQueue.close();
+        await closeAgentImageBuildLock();
+        await heartbeatRedis.srem('system:status:workers', workerId);
+        await heartbeatRedis.hdel('system:status:worker-capacity', workerId);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
-        await worker.close();
-        await runtimeBuildWorker.close();
     };
 
     process.on('SIGINT', async () => {
@@ -374,7 +427,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     return { worker, runtimeBuildWorker, close };
 }
 
-export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, startWorker };
+export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, processGoalJob, startWorker };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArguments();

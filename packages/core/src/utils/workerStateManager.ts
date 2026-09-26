@@ -4,9 +4,32 @@ import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
-    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
+    type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
+    type NonTerminalTaskScanResult,
+    type TaskStateUpdateResult,
+    type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
+import {
+    buildTaskStateTransition,
+    buildTaskStateMutation,
+    compareAndSetTaskStateData,
+    compareAndSetTaskState,
+    publishTaskStateTransition,
+} from './workerStateTransition.js';
+import { scanNonTerminalTaskStates } from './workerStateScan.js';
+
+const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
+const TERMINAL_TASK_STATES = new Set<TaskState>([
+    TaskStates.COMPLETED,
+    TaskStates.FAILED,
+    TaskStates.CANCELLED,
+]);
+
+async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
+    const delayMs = Math.min(5 * (2 ** attempt), 100);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+}
 
 export { TaskStates, type TaskState, type IssueRef };
 
@@ -38,17 +61,57 @@ export class WorkerStateManager {
      * @param taskId - Unique task identifier
      * @param issueRef - GitHub issue reference
      * @param correlationId - Correlation ID for tracking
+     * @param jobId - BullMQ job identifier used for durable recovery
      * @returns Task state data
      */
-    async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
-        const state: TaskStateData = {
-            taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING, createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(), attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
-        };
+    async createTaskState(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        jobId: string | null = null,
+    ): Promise<TaskStateData> {
+        const state = this.buildInitialTaskState(taskId, issueRef, correlationId);
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        await this.persistTaskStateCreation(state, jobId);
+        return state;
+    }
+
+    /**
+     * Creates a task state entry only when no state already exists.
+     * @param taskId - Unique task identifier
+     * @param issueRef - GitHub issue reference
+     * @param correlationId - Correlation ID for tracking
+     * @param jobId - BullMQ job identifier used for durable recovery
+     * @returns The created state, or the concurrently-created state when present
+     */
+    async createTaskStateIfAbsent(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        jobId: string | null = null,
+    ): Promise<TaskStateData | null> {
+        const state = this.buildInitialTaskState(taskId, issueRef, correlationId);
+        const key = this.getTaskKey(taskId);
+        const created = await this.redis.set(key, JSON.stringify(state), 'EX', this.stateExpiry, 'NX');
+        if (created !== 'OK') return this.getTaskState(taskId);
+
+        await this.persistTaskStateCreation(state, jobId);
+        return state;
+    }
+
+    private buildInitialTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null): TaskStateData {
+        const timestamp = new Date().toISOString();
+        return {
+            taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
+            state: TaskStates.PENDING, createdAt: timestamp,
+            updatedAt: timestamp, version: 1, attempts: 0,
+            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
+        };
+    }
+
+    private async persistTaskStateCreation(state: TaskStateData, jobId: string | null): Promise<void> {
+        const { taskId, issueRef } = state;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,
@@ -61,12 +124,20 @@ export class WorkerStateManager {
             const repoName = issueRef.repoName ?? 'unknown';
             const repository = `${repoOwner}/${repoName}`;
             const taskData = {
-                task_id: taskId, job_id: null, correlation_id: state.correlationId,
+                task_id: taskId, job_id: jobId, correlation_id: state.correlationId,
                 repository,
                 issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
                 model_name: issueRef.modelName ?? null, created_at: state.createdAt,
                 initial_job_data: JSON.stringify(issueRef)
             };
+            if (jobId !== null) {
+                // Deterministic BullMQ IDs (for example issue child jobs) are
+                // reused once the previous job is removed. The ID now belongs
+                // to this task; unlinking the older row keeps UNIQUE(job_id)
+                // from rejecting this insert and keeps the older row from
+                // adopting the new job's outcome during reconciliation.
+                await db('tasks').where({ job_id: jobId }).whereNot({ task_id: taskId }).update({ job_id: null });
+            }
             await db('tasks').insert(taskData).onConflict('task_id').ignore();
             const historyData = {
                 task_id: taskId, state: TaskStates.PENDING,
@@ -81,12 +152,13 @@ export class WorkerStateManager {
                 taskId,
                 state: TaskStates.PENDING,
                 repository,
-                issueNumber: issueRef.number
+                issueNumber: issueRef.number,
+                timestamp: state.updatedAt,
+                version: state.version,
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
         }
-        return state;
     }
 
     /**
@@ -98,68 +170,76 @@ export class WorkerStateManager {
      */
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const previousState = state.state;
-        state.state = newState;
-        state.updatedAt = new Date().toISOString();
-        state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
+            const current = JSON.parse(stateJson) as TaskStateData;
+            const isExplicitFailedRetry = current.state === TaskStates.FAILED
+                && newState === TaskStates.PROCESSING
+                && metadata.isRetry === true;
+            if (TERMINAL_TASK_STATES.has(current.state)
+                && current.state !== newState
+                && !isExplicitFailedRetry) {
+                logger.warn({ taskId, currentState: current.state, requestedState: newState },
+                    'Ignored state transition from a terminal task');
+                return current;
+            }
 
-        if (metadata.error) {
-            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: new Date().toISOString() };
-        }
-        if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
-        if (metadata.claudeResult) {
-            state.claudeResult = { success: metadata.claudeResult.success, sessionId: metadata.claudeResult.sessionId, executionTime: metadata.claudeResult.executionTime };
-        }
-        if (metadata.prResult) state.prResult = metadata.prResult;
-
-        state.history.push({
-            state: newState, timestamp: new Date().toISOString(),
-            reason: metadata.reason ?? `State changed from ${previousState}`,
-            metadata: metadata.historyMetadata ?? {}
-        });
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            previousState, newState, attempts: state.attempts
-        }, 'Task state updated');
-
-        try {
-            const historyData = {
-                task_id: taskId, state: newState, timestamp: new Date().toISOString(),
-                reason: metadata.reason ?? `State changed from ${previousState}`,
-                metadata: JSON.stringify({
-                    ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
-                    error: metadata.error, worktreeInfo: metadata.worktreeInfo,
-                    claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
-                    })
-                };
-                await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
-
-            // Publish real-time event for task state change
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: newState,
-                previousState,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                metadata: {
-                    attempts: state.attempts,
-                    reason: metadata.reason
-                }
+            const transition = buildTaskStateTransition(current, newState, metadata);
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state: transition.state,
             });
-        } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
+            if (updated) {
+                await publishTaskStateTransition(taskId, transition, metadata);
+                return transition.state;
+            }
+            await waitForAtomicUpdateRetry(attempt);
         }
-        return state;
+        throw new Error(`Task state update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+    }
+
+    /**
+     * Updates task state only if it has not changed since it was read.
+     * @returns Updated state, or null when the expectation no longer matches
+     */
+    async updateTaskStateIfCurrent(
+        taskId: string,
+        expectation: TaskStateExpectation,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+    ): Promise<TaskStateData | null> {
+        const result = await this.updateTaskStateIfCurrentDetailed(
+            taskId,
+            expectation,
+            newState,
+            metadata,
+        );
+        return result?.state ?? null;
+    }
+
+    /**
+     * Conditional state update with explicit database/event publication status.
+     */
+    async updateTaskStateIfCurrentDetailed(
+        taskId: string,
+        expectation: TaskStateExpectation,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+    ): Promise<TaskStateUpdateResult | null> {
+        const transition = await compareAndSetTaskState(this.redis, {
+            key: this.getTaskKey(taskId),
+            stateExpiry: this.stateExpiry,
+            expectation,
+            newState,
+            metadata,
+        });
+        if (!transition) return null;
+        const publication = await publishTaskStateTransition(taskId, transition, metadata);
+        return { state: transition.state, publication };
     }
 
     /**
@@ -182,39 +262,53 @@ export class WorkerStateManager {
      */
     async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) return null;
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) return null;
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        state.issueRef = { ...state.issueRef, ...issueRefPatch };
-        state.updatedAt = new Date().toISOString();
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId,
-            issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            updatedFields: Object.keys(issueRefPatch)
-        }, 'Task issue reference updated');
-
-        try {
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: state.state,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                metadata: {
-                    issueRefUpdated: true,
-                    updatedFields: Object.keys(issueRefPatch)
-                }
+            const current = JSON.parse(stateJson) as TaskStateData;
+            const state = buildTaskStateMutation(current, next => {
+                next.issueRef = { ...next.issueRef, ...issueRefPatch };
             });
-        } catch (error) {
-            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
-        }
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state,
+            });
+            if (!updated) {
+                await waitForAtomicUpdateRetry(attempt);
+                continue;
+            }
 
-        return state;
+            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
+            correlatedLogger.info({
+                taskId,
+                issueNumber: state.issueRef.number,
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                updatedFields: Object.keys(issueRefPatch),
+                version: state.version,
+            }, 'Task issue reference updated');
+
+            try {
+                await getEventPublisher().publishTaskUpdate({
+                    taskId,
+                    state: state.state,
+                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                    issueNumber: state.issueRef.number,
+                    timestamp: state.updatedAt,
+                    version: state.version,
+                    metadata: {
+                        issueRefUpdated: true,
+                        updatedFields: Object.keys(issueRefPatch)
+                    }
+                });
+            } catch (error) {
+                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
+            }
+            return state;
+        }
+        throw new Error(`Task issue reference update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -252,27 +346,46 @@ export class WorkerStateManager {
      */
     async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const historyIndex = state.history.findLastIndex(h => h.state === historyState);
+            const current = JSON.parse(stateJson) as TaskStateData;
+            const historyIndex = current.history.findLastIndex(h => h.state === historyState);
+            if (historyIndex < 0) {
+                logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+                return current;
+            }
 
-        if (historyIndex >= 0) {
-            state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
-            state.updatedAt = new Date().toISOString();
-            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+            const state = buildTaskStateMutation(current, next => {
+                next.history[historyIndex].metadata = {
+                    ...next.history[historyIndex].metadata,
+                    ...metadata,
+                };
+            });
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state,
+            });
+            if (!updated) {
+                await waitForAtomicUpdateRetry(attempt);
+                continue;
+            }
+
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
+            correlatedLogger.debug({ taskId, historyState, metadata, version: state.version }, 'Updated history metadata');
 
             // Publish real-time event for metadata update so UI can refresh
             try {
-                const eventPublisher = getEventPublisher();
-                await eventPublisher.publishTaskUpdate({
+                await getEventPublisher().publishTaskUpdate({
                     taskId,
                     state: state.state,
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
+                    timestamp: state.updatedAt,
+                    version: state.version,
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata)
@@ -281,10 +394,9 @@ export class WorkerStateManager {
             } catch (error) {
                 correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
             }
-        } else {
-            logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+            return state;
         }
-        return state;
+        throw new Error(`Task history metadata update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -364,6 +476,14 @@ export class WorkerStateManager {
     }
 
     /**
+     * Reads one bounded Redis SCAN page for crash recovery without blocking
+     * Redis with KEYS. Callers retain nextCursor between reconciliation runs.
+     */
+    async scanNonTerminalTasks(cursor = '0', count = 100): Promise<NonTerminalTaskScanResult> {
+        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, cursor, count);
+    }
+
+    /**
      * Clears completed and failed tasks older than specified time
      * @param maxAge - Maximum age in seconds (default: 24 hours)
      * @returns Number of tasks cleaned up
@@ -409,7 +529,7 @@ export class WorkerStateManager {
      * Closes Redis connection
      */
     async close(): Promise<void> {
-        await this.redis.quit();
+        this.redis.disconnect();
     }
 }
 

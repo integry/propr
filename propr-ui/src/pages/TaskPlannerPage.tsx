@@ -7,9 +7,11 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
-import { DraftWithPlan, Draft } from '../api/proprApi';
+import { DraftWithPlan, type PlannerDraft } from '../api/proprApi';
 
-const GeneratingView: React.FC<{ draft: Draft }> = ({ draft }) => (
+type GeneratingDraft = PlannerDraft & { task_title?: string; title?: string };
+
+const GeneratingView: React.FC<{ draft: GeneratingDraft }> = ({ draft }) => (
   <div className="h-[calc(100vh-120px)] p-4">
     <motion.div
       initial={{ opacity: 0 }}
@@ -63,7 +65,7 @@ const GeneratingView: React.FC<{ draft: Draft }> = ({ draft }) => (
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
-  const { draft, loading, error, refetch } = useDraft(draftId || '');
+  const { draft, loading, error, refetch, activateGenerationRun } = useDraft(draftId || '');
 
   // Set document title with plan/draft name or repository
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -127,6 +129,7 @@ const TaskPlannerPage: React.FC = () => {
     <SetupWizard 
       draft={draft} 
       onGenerateComplete={refetch}
+      onGenerationStarted={activateGenerationRun}
     />
   );
 };

@@ -136,9 +136,9 @@ Supported alternatives include:
 
 The hosted relay is the recommended default because it avoids inbound networking requirements and keeps GitHub App setup simpler.
 
-## Current Limitations
+## Hosted Instance Login
 
-Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://t-<id>.propr.dev/api/auth/github/callback`; you must register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
+Tunnel-based browser login uses the shared ProPR GitHub App through Connect. The local API keeps the browser's CSRF state, Connect verifies that the signed-in GitHub user may access the tunnel's installation, and the instance redeems a short-lived one-use code with its installation-bound relay credential. The shared App secret never leaves Connect, and users do not create an OAuth App or register a per-instance callback.
 
 Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token and setup command, and opens `app.propr.dev` with a validated `?tunnel=t-<id>.propr.dev` deep link. The setup command, configuration, and the handling of the live connector token are documented in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
@@ -160,3 +160,61 @@ Use a custom deployment path if you need to own every public endpoint, GitHub Ap
 - [Production Deployment](./deployment.md) documents issue intake modes and server deployment.
 - [Hosted UI Tunnel](./hosted-ui-tunnel.md) covers tunnel architecture, provisioning, and configuration.
 - [ProPR CLI](../features/propr-cli.md) documents the `propr relay` and `propr tunnel` commands.
+
+
+## Managed preview storage operations
+
+Managed originals require a live Connect routing connection, validated Plus
+`account_status` for the configured installation, and storage enabled by the
+server. The administrator-only `GET /api/config/preview-storage` endpoint returns
+an allowlisted status projection; it exposes no upload grants or credentials.
+The UI presents this under **Settings → Integrations → Visual preview uploads**.
+
+- **Quota:** Connect reports effective `quotaBytes`, `usedBytes`, `reservedBytes`,
+  and `maxObjectBytes`. V1 defaults are **25 GiB installation quota** and
+  **500 MiB per object**. Reservations count against available capacity. Connect
+  must reserve quota atomically and expire abandoned reservations. On
+  `quota_exceeded`, eligible GitHub attachments still publish. Wait for retention
+  cleanup or delete unneeded artifacts if the server advertises `deleteSupported`,
+  then request fresh evidence. Changing the GitHub plan override cannot increase quota.
+- **Retention and expiry:** The v1 default is **90-day retention**. All limits are
+  **server-reported effective values**, not locally configurable promises.
+  Expired PUT grants are not used or finalized. Expired or mismatched finalized
+  artifacts are not linked. The client does not automatically retry mutations;
+  request fresh capture/upload after recovery. Independently uploaded GitHub
+  attachments are unaffected by Connect retention.
+- **Private viewer links:** Configure `PROPR_CONNECT_URL` as the trusted HTTPS
+  origin (default `https://connect.propr.dev`). Published links have no credentials,
+  query tokens, or fragments and require Connect sign-in. Connect must authorize
+  repository access on every request, including private repositories, and deny
+  unauthenticated, unauthorized, deleted, or expired objects. A shared viewer URL
+  must never become a bearer credential. Viewer authorization and object deletion
+  require separate validation in the Connect server repository.
+- **Offline fallback:** A disconnected, missing, mismatched, or expired account
+  snapshot fails closed for managed storage. Older relays returning unsupported
+  endpoints also fall back to GitHub-only previews. An online Plus entitlement
+  never changes GitHub attachment sizing or replaces its upload credential.
+- **Log redaction:** Log bounded error codes and task identifiers. Never log raw
+  Connect/object-store errors, grants, object keys, relay tokens, or signed URLs.
+  Local `.propr/previews/`, `.propr/preview-src/`, and worker staging file references
+  are redacted from public prose and persisted task output. Use status codes and
+  Settings to diagnose failures rather than copying raw transport responses into
+  PRs, comments, or support tickets.
+
+Both `.propr/previews` and `.propr/preview-src` are transient, **never-committed**
+runtime directories. Preparation removes/restores their worktree contents before
+the implementation commit; the commit boundary also excludes them. Neither
+storage failure nor offline mode permits adding preview media or capture-only
+source to Git. Temporary staged evidence is cleaned up after publication.
+
+### Release validation
+
+Run `npm run test:visual-previews` from the repository root. This builds the shared
+packages and runs deterministic mocked Connect/GitHub coverage, API/settings
+checks, publication and log-redaction checks, and runtime-directory regression
+tests. It requires no live Connect storage credentials. The same command runs on
+pull requests in CI; the normal full test suite also discovers these tests.
+
+Keep the epic integration PR targeting `2280-epic-create-a-j2x` open for maintainer
+review. Validation must not merge the epic into `main`; only maintainers explicitly
+authorize that release step. The release test job has read-only repository access.

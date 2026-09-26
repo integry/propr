@@ -6,9 +6,10 @@ import { Job } from 'bullmq';
 import {
   logger, generateCorrelationId, getStateManager, loadSettings, resolveLlmLabel, AgentRegistry, NoDefaultModelConfiguredError
 } from '@propr/core';
+import { buildIssueTaskId } from '@propr/shared';
 import type { IssueJobData, Agent } from '@propr/core';
 import type { JobContext } from './types.js';
-import { DEFAULT_MODEL_NAME, getPrimaryProcessingLabels, getPrLabel } from './config.js';
+import { getPrimaryProcessingLabels, getPrLabel } from './config.js';
 
 export async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext> {
   const { id: jobId, name: jobName, data: issueRef } = job;
@@ -58,9 +59,10 @@ export async function initializeJobContext(job: Job<IssueJobData>): Promise<JobC
         agentAlias = firstValidAgent.config.alias;
         correlatedLogger.debug({ firstValidAgent: agentAlias }, 'Using first valid enabled agent');
       } else {
-        // Last resort: try the default agent from registry
+        // Last resort: use the registry default if it is configured.
         const defaultAgent = registry.getDefaultAgent();
-        agentAlias = defaultAgent?.config.alias || 'claude';
+        if (!defaultAgent) throw new NoDefaultModelConfiguredError();
+        agentAlias = defaultAgent.config.alias;
         correlatedLogger.debug({ fallbackAgent: agentAlias }, 'No enabled agents found, using fallback');
       }
     }
@@ -68,12 +70,20 @@ export async function initializeJobContext(job: Job<IssueJobData>): Promise<JobC
 
   // Get model if still missing (use agent's default model)
   const agent = registry.getAgentByAlias(agentAlias);
-  modelName = modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME || undefined;
+  if (!agent) throw new Error(`Configured agent not found: ${agentAlias}`);
+  modelName = modelName || agent.config.defaultModel;
   if (!modelName) {
     throw new NoDefaultModelConfiguredError();
   }
 
-  const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}-${correlationId}`;
+  const taskId = buildIssueTaskId({
+    repoOwner: issueRef.repoOwner,
+    repoName: issueRef.repoName,
+    issueNumber: issueRef.number,
+    agentAlias,
+    modelName,
+    correlationId,
+  });
 
   return {
     jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId,

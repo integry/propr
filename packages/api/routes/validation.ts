@@ -3,6 +3,8 @@
  * Provides consistent validation patterns across all route handlers.
  */
 
+import { isLegacyProviderTaskId, MAX_TASK_ID_LENGTH, TASK_ID_PATTERN } from '@propr/shared';
+
 /**
  * Validation result type for all validators.
  */
@@ -21,7 +23,7 @@ export interface PaginationParams {
 }
 
 // Common regex patterns
-export const TASK_ID_REGEX = /^[a-zA-Z0-9\-_.]+$/;
+export const TASK_ID_REGEX = TASK_ID_PATTERN;
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const REPOSITORY_REGEX = /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/;
 export const SESSION_ID_REGEX = /^[a-zA-Z0-9\-_]+$/;
@@ -42,7 +44,7 @@ export const ALLOWED_MIME_TYPES = [
 
 // Allowed file extensions for uploads
 export const ALLOWED_EXTENSIONS = [
-  '.txt', '.md', '.csv', '.json', '.pdf',
+  '.txt', '.md', '.csv', '.json', '.log', '.pdf',
   '.png', '.jpg', '.jpeg', '.gif', '.webp',
 ] as const;
 
@@ -60,11 +62,11 @@ export function validateTaskId(taskId: unknown): ValidationResult {
     return { valid: false, error: 'Task ID cannot be empty' };
   }
 
-  if (trimmed.length > 256) {
-    return { valid: false, error: 'Task ID is too long (max 256 characters)' };
+  if (trimmed.length > MAX_TASK_ID_LENGTH) {
+    return { valid: false, error: `Task ID is too long (max ${MAX_TASK_ID_LENGTH} characters)` };
   }
 
-  if (!TASK_ID_REGEX.test(trimmed)) {
+  if (!TASK_ID_REGEX.test(trimmed) && !isLegacyProviderTaskId(trimmed)) {
     return { valid: false, error: 'Task ID contains invalid characters' };
   }
 

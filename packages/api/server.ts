@@ -1,15 +1,21 @@
+import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
+import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
+import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
+/* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
+import { mountMcp, mcpResponseHeaders } from './mcp/server.js';
+import { getMcpOriginSync, isMcpEnabledSync, invalidateMcpConfigCache, resolveMcpConfig } from './mcp/configResolver.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
-import { createCorsOriginValidator } from './corsValidation.js';
+import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
@@ -21,39 +27,67 @@ import {
   createAgentRoutes, createAgentLoginRoutes,
   createAgentVersionRoutes,
   createStatsRoutes,
+  createDashboardRoutes,
   createSummaryBrowserRoutes,
+  SUMMARY_PATH_ROUTE_PATH,
+  SUMMARY_TREE_ROUTE_PATH,
   createRepoChatRoutes,
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
-  createAgentRuntimeRoutes,
+  createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
+  createAdminMcpRoutes,
+  createGoalRoutes,
+  createVisualPreviewAuthRoutes,
+  createVoiceRoutes,
   createInstanceCatalogRoutes,
+  createDesktopAuthRoutes,
+  createActiveWorkRoutes,
   attachmentUpload,
+  goalAttachmentUpload,
   registerHostedFleetRoutes
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
 import {
+  createManagedPreviewStorageClient,
   generateCorrelationId,
   processWebhookEvent,
   initializeWebhookHandler,
   buildRedisRuntimeConfig,
   db,
-  loadSettingsFromConfig,
+  reloadConfigs,
+  isMonitoredRepository,
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  notificationService,
+  runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
-import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
+import { resolveInstanceWebPushConfiguration } from './services/instanceWebPushConfiguration.js';
+import { WEB_PUSH_CONFIGURATION_WARNINGS, type ValidatedWebPushConfiguration } from './services/webPushConfiguration.js';
+import { assertInstanceAdministratorConfigured } from './authorization.js';
+import { resolveApiListenHost } from './listenAddress.js';
+import {
+  configureApiProxyTrust,
+  createApiRequestRateLimiter,
+  createDiscoveryRequestRateLimiter,
+  createWebhookRequestRateLimiter,
+} from './requestRateLimits.js';
+import { desktopAuthService } from './desktopAuthService.js';
+import { prohibitApiResponseCaching } from './apiCacheControl.js';
+import { createApiPerformanceTimingMiddleware } from './apiPerformanceTiming.js';
+import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
@@ -61,6 +95,17 @@ import {
   registerRouteEntries,
   type RouteEntry
 } from './routeRegistry.js';
+import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
+import {
+  startVisualPreviewOAuthRefreshScheduler,
+  type VisualPreviewOAuthRefreshScheduler,
+} from './services/visualPreviewOAuth.js';
+import { createVoiceBriefingService } from './services/voiceBriefingService.js';
+import {
+  startNotificationBackgroundService,
+  type NotificationBackgroundService,
+} from './services/notificationBackgroundService.js';
 
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
@@ -125,10 +170,19 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
-const PORT = process.env.DASHBOARD_API_PORT || 4000;
+const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
+const HOST = resolveApiListenHost();
 
-// Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
-app.set('trust proxy', 1);
+configureApiProxyTrust(app);
+
+// This is the earliest `/api` response boundary. Keep it before CORS and every
+// global or route limiter so success, failure, and saturation responses cannot
+// be cached by a browser or intermediary.
+app.use('/api', prohibitApiResponseCaching);
+
+// Disabled by default. When sampled, this remains ahead of CORS, limiting, body
+// parsing, sessions and Passport without recording any request contents.
+app.use('/api', createApiPerformanceTimingMiddleware());
 
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
@@ -147,38 +201,69 @@ try {
   process.exit(1);
 }
 
-app.use(cors({
-  origin: validateCorsOrigin,
-  credentials: true
-}));
+// Mark even parser/rate-limit/error responses at the instance boundary.
+app.use('/api/mcp', (req, res, next) => { if (isMcpEnabledSync()) { mcpResponseHeaders(req, res, next); } else { next(); } });
 
-// Prevent caching of API responses to avoid stale CORS issues
-app.use('/api', (_req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  next();
+app.use((req, res, next) => {
+  // Server-rendered MCP consent forms submit on the API's own public origin,
+  // which can differ from FRONTEND_URL. Known remote MCP web clients also need
+  // their exact origin accepted at the bearer-authenticated MCP endpoint. Keep
+  // the cookie-authenticated REST and Socket.IO CORS policy intact.
+  // Validate inside the callback and never pass a request-derived string as
+  // the `origin` option: the `cors` package echoes an allowed origin back
+  // verbatim, so reflecting `req.get('origin')` would read as a permissive,
+  // user-controlled configuration even when it is gated by an allowlist.
+  const mcpOrigin = getMcpOriginSync();
+  const validateRequestCorsOrigin: CorsOriginValidator = (origin, callback) => {
+    if (req.path.startsWith('/mcp/') && mcpOrigin && origin === mcpOrigin) {
+      callback(null, true);
+      return;
+    }
+    if (isTrustedMcpWebOrigin(req.path, origin)) {
+      callback(null, true);
+      return;
+    }
+    validateCorsOrigin(origin, callback);
+  };
+  cors({
+    origin: validateRequestCorsOrigin,
+    credentials: true,
+    maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
+  })(req, res, next);
 });
+// The `cors` package forwards rejected origins as middleware errors. Handle
+// those immediately so Express never renders its development HTML error page
+// (which contains stack traces and container paths).
+app.use(corsRejectionHandler);
 
-app.use('/webhook', express.raw({ type: 'application/json' }));
+app.use('/api', createApiRequestRateLimiter());
+setupWebhookRoute();
+
 app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const socketAuthMiddleware = setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
+let configReloadSubscription: ConfigReloadSubscription | undefined;
+let invalidateStatusAgentCache: (() => void) | undefined;
+let notificationBackground: NotificationBackgroundService | undefined;
+let webPushDispatcherConfigured = false;
+let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
+let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
+let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
     add: async () => { throw new Error('Task queue is disabled in demo mode'); },
     close: async () => undefined,
     getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
+    getActiveCount: async () => 0, getJobs: async () => [],
     getCompletedCount: async () => 0,
     getFailedCount: async () => 0,
     getDelayedCount: async () => 0,
@@ -215,25 +300,47 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  const statusRoutes = createStatusRoutes({ redisClient });
+  const statusRoutes = createStatusRoutes({
+    redisClient,
+    ...(notificationBackground === undefined ? {} : {
+      projectSystemSnapshot: (
+        snapshot: Record<string, unknown> & { timestamp: string },
+        additionalAdministratorIds: readonly string[],
+      ) => notificationBackground!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
+    }),
+  });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
-  // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
-  // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
-  // version-gate before the user logs in. This is the one deliberate exception to
-  // "everything under /api/* requires auth" — do not move it after the guard, and
-  // keep its handler returning only non-sensitive build metadata (version +
-  // compatibility dates). All other /api routes registered after this line are
-  // authenticated.
-  app.get('/api/compatibility', statusRoutes.getCompatibility);
+  invalidateStatusAgentCache = statusRoutes.invalidateAgentStatusCache;
+  const desktopAuthRoutes = createDesktopAuthRoutes();
+  // INTENTIONALLY UNAUTHENTICATED: compatibility/discovery and the bounded
+  // pairing bootstrap, poll, and browser entry are registered before the guard.
+  // They return only compatibility/capability metadata or pairing state gated by
+  // a high-entropy secret; all operational routes below remain authenticated.
+  app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
   // Machine-to-machine bootstrap verification has its own narrow service
   // credential and deliberately does not depend on a customer's OAuth session.
-  // Registration remains before the OAuth boundary and is a no-op unless Fleet
-  // control was explicitly enabled at startup.
+  // Register before registerDesktopApiBoundary installs the shared API guard;
+  // registration is a no-op unless Fleet control was enabled at startup.
   registerHostedFleetRoutes(app, {
     operationalStatus: statusRoutes.collectStatus,
     queueStatus: queueRoutes.collectQueueStats
   });
-  app.use('/api', ensureAuthenticated, resolveAuthorization);
+  // MCP authenticates its own bearer tokens before the shared API guard.
+  mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
+  registerDesktopApiBoundary(app, {
+    discovery: statusRoutes.getDesktopDiscovery,
+    startPairing: desktopAuthRoutes.startPairing,
+    pollPairing: desktopAuthRoutes.pollPairing,
+    activatePairing: desktopAuthRoutes.activatePairing,
+    cancelPairing: desktopAuthRoutes.cancelPairing,
+    openPairingApproval: desktopAuthRoutes.openPairingApproval,
+    revokeCurrentToken: desktopAuthRoutes.revokeCurrentToken,
+  });
+  app.get('/api/desktop/pairings/:pairingId/approval', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.getPairingApproval);
+  app.post('/api/desktop/pairings/:pairingId/approve', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.approvalOriginGuard, desktopAuthRoutes.approvePairing);
+  app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
+  app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
+  const repositoryMediaRoutes = createRepositoryMediaRoutes({ db });
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -249,23 +356,44 @@ function setupRoutes(): void {
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
   const statsRoutes = createStatsRoutes({ db });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured, resolvedWebPushConfiguration });
+  const voiceBriefingService = createVoiceBriefingService({
+    database: db,
+    taskQueue,
+    notificationService,
+  });
+  const voiceRoutes = createVoiceRoutes({ briefingService: voiceBriefingService });
   const adminRoutes = createAdminRoutes();
+  const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
+  const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
+    managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
+  });
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
+  const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
+  const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
+  const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
+
+  app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
 
   const operationalRoutes: RouteEntry[] = [
+    ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
+    ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit], ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get], ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
+    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
-    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask], ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
+    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
     ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
-    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
+    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/task/:taskId/cancel', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
     ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
     ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft], ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
     ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo], ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
@@ -274,35 +402,40 @@ function setupRoutes(): void {
     ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize], ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
     ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
     ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
-    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
-    ['get', '/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree], ['get', '/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
+    ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
+    ['get', '/api/dashboard/summary', dashboardRoutes.getSummary], ['get', '/api/dashboard/attention', dashboardRoutes.getAttention], ['get', '/api/dashboard/active', dashboardRoutes.getActive], ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
+    ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
+    ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree], ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
     ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
+    ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities], ['get', '/api/voice/briefing', voiceRoutes.getBriefing],
+    ['get', '/api/repos/media', repositoryMediaRoutes.getMedia],
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
-    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
+    ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/dismiss-all', notificationRoutes.dismissAll], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
   ];
   const routes = [
     ...operationalRoutes,
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,
+      adminMcpRoutes,
       agentLoginRoutes,
       agentRuntimeRoutes,
       agentVersionRoutes,
       configRoutes,
+      visualPreviewAuthRoutes,
     }),
   ];
   assertNoDuplicateRoutes(routes);
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
-
-  setupWebhookRoute();
 }
 
 function setupWebhookRoute(): void {
   if (demoMode) {
-    app.post('/webhook', (_req: Request, res: Response) => {
+    app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), (_req: Request, res: Response) => {
       res.status(403).send('Webhook processing is disabled in demo mode.');
     });
     console.log('[webhook] Webhook endpoint disabled in demo mode');
@@ -351,7 +484,7 @@ function setupWebhookRoute(): void {
   // via initializeWebhookHandler in start(), in this same API process — so a
   // direct_webhook delivery accepted here is processed in-process, not forwarded
   // to the daemon. The daemon's own handler registration is for the routing path.
-  app.post('/webhook', async (req: Request, res: Response) => {
+  app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
       await handleWebhookRequest(req, res, {
@@ -378,22 +511,69 @@ function setupWebhookRoute(): void {
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
 }
 
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok' });
-});
+app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
 
 // Create HTTP server to wrap Express app (required for Socket.IO)
 const httpServer: HttpServer = createServer(app);
 
+async function initializeNotificationBackground(): Promise<void> {
+  resolvedWebPushConfiguration = resolveInstanceWebPushConfiguration();
+  if (!resolvedWebPushConfiguration.configured && resolvedWebPushConfiguration.issue !== 'disabled') {
+    console.warn(`[notifications] Web Push unavailable: ${
+      WEB_PUSH_CONFIGURATION_WARNINGS[resolvedWebPushConfiguration.issue]
+    }`);
+  }
+  const vapidEnvironment = {
+    WEB_PUSH_VAPID_SUBJECT: process.env.WEB_PUSH_VAPID_SUBJECT,
+    WEB_PUSH_VAPID_PUBLIC_KEY: process.env.WEB_PUSH_VAPID_PUBLIC_KEY,
+    WEB_PUSH_VAPID_PRIVATE_KEY: process.env.WEB_PUSH_VAPID_PRIVATE_KEY,
+  };
+  try {
+    // Both background implementations read their startup configuration from
+    // the environment; the worker copies it before loading the dispatcher.
+    if (resolvedWebPushConfiguration.configured) {
+      process.env.WEB_PUSH_VAPID_SUBJECT = resolvedWebPushConfiguration.subject;
+      process.env.WEB_PUSH_VAPID_PUBLIC_KEY = resolvedWebPushConfiguration.publicKey;
+      process.env.WEB_PUSH_VAPID_PRIVATE_KEY = resolvedWebPushConfiguration.privateKey;
+    }
+    notificationBackground = await startNotificationBackgroundService(db);
+    webPushDispatcherConfigured = notificationBackground.webPushDispatcherConfigured;
+  } finally {
+    for (const [name, value] of Object.entries(vapidEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await runMigrations();
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      await initializeNotificationBackground();
+      // Every API process drops its MCP cache on a published config event, so an
+      // admin toggle applies across processes rather than waiting out the TTL.
+      // Re-resolve immediately: authRedirect and the CORS/header middleware read
+      // the resolved state synchronously and cannot trigger a resolve themselves,
+      // so dropping the cache alone would leave them on the pre-change values.
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, async () => {
+        invalidateMcpConfigCache();
+        await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+        await reloadConfigs();
+      }, console, subtype => {
+        if (subtype === 'agents_update' || subtype === 'synthetic_agents_update') {
+          invalidateStatusAgentCache?.();
+        }
+      });
+      // Subscribe first, then enqueue the initial load through the same serial
+      // chain so no settings update can race with the startup snapshot.
+      await configReloadSubscription.reload();
+      await initializePushSubscriptionMaintenance();
+      visualPreviewOAuthRefreshScheduler = await startVisualPreviewOAuthRefreshScheduler();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -405,11 +585,41 @@ async function start(): Promise<void> {
     } else {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
     }
+    // Prime MCP config cache before route registration so authRedirect and CORS
+    // middleware see the correct origin on the first request after startup.
+    // The env-managed path keeps its pre-toggle behavior: an invalid MCP_* value,
+    // or MCP_ENABLED=true in demo mode, aborts startup through start()'s catch
+    // rather than leaving the MCP server silently 404ing everywhere.
+    if (process.env.MCP_ENABLED === 'true' && demoMode) {
+      throw new Error('MCP_ENABLED cannot be enabled in demo mode. Demo remains read-only.');
+    }
+    if (!demoMode) {
+      if (process.env.MCP_ENABLED === 'true') {
+        await resolveMcpConfig(db);
+      } else {
+        await resolveMcpConfig(db).catch(error => { console.error('Failed to resolve MCP configuration:', error); });
+      }
+    }
     setupRoutes();
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      await desktopAuthService.cleanupPairings();
+      desktopPairingCleanupTimer = setInterval(() => {
+        void desktopAuthService.cleanupPairings().catch(error => {
+          console.warn('[desktop-auth] Pairing cleanup failed:', error);
+        });
+      }, 60 * 60_000);
+      desktopPairingCleanupTimer.unref();
+    }
+    if (!demoMode) {
+      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+        engineMiddleware: socketAuthMiddleware.engineMiddleware,
+        authenticate: authenticateSocketRequest,
+      });
       console.log('[WebSocket] Socket.IO server initialized');
-      socketService.initQueueFeatures({ taskQueue, redisClient, db });
+      socketService.initQueueFeatures({
+        taskQueue, redisClient, db,
+        notificationProjection: notificationBackground,
+      });
       console.log('[WebSocket] Queue features initialized for real-time updates');
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
@@ -430,7 +640,7 @@ async function start(): Promise<void> {
         enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
       });
       if (apiIntakeMode === 'direct_webhook') {
-        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
+        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, repositoryFilter: isMonitoredRepository });
         console.log('[webhook] Webhook handler initialized');
       }
       setInterval(async () => {
@@ -441,7 +651,7 @@ async function start(): Promise<void> {
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
@@ -451,8 +661,12 @@ async function start(): Promise<void> {
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },
         { name: 'redis client', close: () => redisClient.quit() }
       ];
+      if (desktopPairingCleanupTimer) clearInterval(desktopPairingCleanupTimer);
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'notification background service', close: () => notificationBackground?.close() ?? Promise.resolve() },
+          { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
+          { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

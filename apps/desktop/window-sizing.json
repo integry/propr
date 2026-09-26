@@ -1,0 +1,10 @@
+{
+  "preferred": {
+    "width": 1280,
+    "height": 820
+  },
+  "minimum": {
+    "width": 880,
+    "height": 620
+  }
+}

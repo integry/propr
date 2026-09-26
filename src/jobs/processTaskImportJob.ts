@@ -12,13 +12,14 @@ import {
 } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
-import { executeClaudeCode, UsageLimitError } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
+import { AgentRegistry, UsageLimitError } from '@propr/core';
 import { generateTaskImportPrompt } from '@propr/core';
 import { handleError } from '@propr/core';
 import { handleSimpleUsageLimitError } from './issueJobHelpers.js';
 import type { TaskImportJobData, JobResult } from '@propr/core';
 import type { GitHubToken } from './githubTypes.js';
+import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
+import { compactNotificationRecap } from './notificationRecap.js';
 
 interface TaskImportResult extends JobResult {
     repository?: string;
@@ -29,6 +30,24 @@ interface TaskImportResult extends JobResult {
         conversationTurns?: number;
         stdout?: string;
     };
+}
+
+function taskImportNotificationRecap(
+    result: { summary?: string; success: boolean },
+    repository: string,
+): string {
+    const summary = compactNotificationRecap(result.summary);
+    if (summary) return summary;
+    return result.success
+        ? `Imported repository tasks for ${repository}.`
+        : `Task import finished without importing tasks for ${repository}.`;
+}
+
+/** BullMQ retries keep the job ID, so every attempt shares one durable task. */
+function taskImportTaskId(repoOwner: string, repoName: string, jobId: string | undefined): string {
+    return jobId === undefined
+        ? `task-import-${repoOwner}-${repoName}-${Date.now()}`
+        : `task-import-${jobId}`;
 }
 
 export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
@@ -55,10 +74,15 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     let localRepoPath: string | undefined;
     let worktreeInfo: WorktreeInfo | undefined;
     const [repoOwner, repoName] = repository.split('/');
-    const taskId = `task-import-${repoOwner}-${repoName}-${Date.now()}`;
+    const taskId = taskImportTaskId(repoOwner, repoName, jobId);
 
     try {
-        await stateManager.createTaskState(taskId, { number: 0, repoOwner, repoName }, correlationId);
+        await stateManager.createTaskState(
+            taskId,
+            { number: 0, repoOwner, repoName, type: 'task-import' },
+            correlationId,
+            jobId === undefined ? null : String(jobId),
+        );
 
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -96,7 +120,13 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         const prompt = generateTaskImportPrompt(taskDescription, repoOwner, repoName, worktreeInfo.worktreePath);
 
 
-        const claudeResult: ClaudeCodeResponse = await executeClaudeCode({
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
+        const agent = registry.getAgentByAlias(resolvedAlias);
+        if (!agent) throw new Error(`Configured default agent not found: ${resolvedAlias}`);
+
+        const agentResult = await agent.executeTask({
             worktreePath: worktreeInfo.worktreePath,
             issueRef: {
                 number: 0,
@@ -104,44 +134,51 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
                 repoName
             },
             githubToken: githubToken.token,
-            customPrompt: prompt,
+            prompt,
             branchName: worktreeInfo.branchName,
-            modelName: 'claude-3-5-sonnet-20241022'
+            model: resolvedModel,
+            taskId,
         });
 
         correlatedLogger.info({
-            success: claudeResult.success,
-            executionTime: claudeResult.executionTime,
-            conversationTurns: claudeResult.conversationLog?.length || 0
-        }, 'Claude task import analysis completed');
+            agentAlias: resolvedAlias,
+            model: resolvedModel,
+            success: agentResult.success,
+            executionTime: agentResult.executionTimeMs,
+            conversationTurns: agentResult.conversationLog?.length || 0
+        }, 'Task import analysis completed');
 
-        if (claudeResult.success) {
+        if (agentResult.success) {
             correlatedLogger.info({
                 repository,
                 user,
-                stdout: claudeResult.output?.rawOutput || claudeResult.rawOutput
-            }, 'Task import job completed successfully - Claude executed gh commands');
+                stdout: agentResult.rawOutput || agentResult.logs
+            }, 'Task import job completed successfully - agent executed gh commands');
         } else {
             correlatedLogger.error({
                 repository,
                 user,
-                error: claudeResult.error
+                error: agentResult.error
             }, 'Task import job failed');
         }
 
         await stateManager.updateTaskState(taskId, TaskStates.POST_PROCESSING, { reason: 'Cleaning up worktree' });
-        await stateManager.markTaskCompleted(taskId, { status: 'complete', repository });
+        await stateManager.markTaskCompleted(taskId, {
+            status: 'complete',
+            repository,
+            notificationRecap: taskImportNotificationRecap(agentResult, repository),
+        });
 
         return {
             status: 'complete',
             repository,
-            success: claudeResult.success,
+            success: agentResult.success,
             jobId,
             claudeResult: {
-                success: claudeResult.success,
-                executionTime: claudeResult.executionTime,
-                conversationTurns: claudeResult.conversationLog?.length || 0,
-                stdout: claudeResult.output?.rawOutput || claudeResult.rawOutput
+                success: agentResult.success,
+                executionTime: agentResult.executionTimeMs,
+                conversationTurns: agentResult.conversationLog?.length || 0,
+                stdout: agentResult.rawOutput || agentResult.logs
             }
         };
 

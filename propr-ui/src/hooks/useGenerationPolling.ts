@@ -16,7 +16,7 @@ interface UseGenerationPollingResult {
   isGenerating: boolean;
   generationTrace: GenerationTrace | undefined;
   generationError: string | null;
-  startPolling: () => void;
+  startPolling: (runId?: string) => void;
   stopPolling: () => void;
   setGenerationError: (error: string | null) => void;
 }
@@ -31,12 +31,14 @@ export function useGenerationPolling({
   const [connectedActivityTick, setConnectedActivityTick] = useState(0);
   const isGeneratingRef = useRef<boolean>(false);
   const generationStartedAtRef = useRef<number>(0);
+  const activeRunIdRef = useRef<string | undefined>(undefined);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
 
   const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId || !isGeneratingRef.current) return;
+    if (activeRunIdRef.current && payload.runId !== activeRunIdRef.current) return;
 
     const payloadTime = Date.parse(payload.timestamp);
     if (Number.isFinite(payloadTime) && payloadTime < generationStartedAtRef.current) {
@@ -104,6 +106,9 @@ export function useGenerationPolling({
       }
 
       if (updatedDraft.generation_trace) {
+        if (updatedDraft.generation_trace.runId) {
+          activeRunIdRef.current = updatedDraft.generation_trace.runId;
+        }
         setGenerationTrace(updatedDraft.generation_trace);
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
         if (trace.error) {
@@ -166,14 +171,17 @@ export function useGenerationPolling({
   const stopPolling = useCallback(() => {
     setIsGenerating(false);
     isGeneratingRef.current = false;
+    activeRunIdRef.current = undefined;
   }, []);
 
-  const startPolling = useCallback(() => {
+  const startPolling = useCallback((runId?: string) => {
     generationStartedAtRef.current = Date.now();
+    activeRunIdRef.current = runId;
     setIsGenerating(true);
     isGeneratingRef.current = true;
     setConnectedActivityTick((tick) => tick + 1);
     setGenerationTrace({
+      ...(runId ? { runId } : {}),
       steps: [
         { name: 'relevance', status: 'in_progress' },
         { name: 'context', status: 'pending' },

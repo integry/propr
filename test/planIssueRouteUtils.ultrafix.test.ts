@@ -4,6 +4,9 @@ import assert from 'node:assert';
 await mock.module('@propr/core', {
   namedExports: {
     PlanIssueStatus: {},
+    logger: {
+      warn: mock.fn(),
+    },
   },
 });
 

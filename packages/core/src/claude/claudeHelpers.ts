@@ -4,9 +4,10 @@ import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
+import type { ExecutionResult } from './docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
+import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
@@ -68,8 +69,10 @@ export interface TokenUsage {
 
 export interface ClaudeOutputResult {
     type: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
+    num_turns?: number;
     total_cost_usd?: number;
     cost_usd?: number;
     model?: string;
@@ -100,6 +103,7 @@ export interface StorePromptOptions {
 
 interface JsonLineMessage {
     type?: string;
+    subtype?: string;
     message?: {
         id?: string;
         model?: string;
@@ -109,6 +113,7 @@ interface JsonLineMessage {
     conversation_id?: string;
     model?: string;
     result?: string;
+    num_turns?: number;
     is_error?: boolean;
     total_cost_usd?: number;
     cost_usd?: number;
@@ -151,15 +156,7 @@ export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
     return prompt;
 }
 
-export async function setWorktreeOwnership(worktreePath: string, issueNumber: number): Promise<void> {
-    try {
-        await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', worktreePath], { timeout: 10000 });
-        logger.debug({ issueNumber, worktreePath }, 'Set worktree ownership to UID 1000 for container compatibility');
-    } catch (chownError) {
-        const error = chownError as Error;
-        logger.warn({ issueNumber, worktreePath, error: error.message }, 'Failed to set worktree ownership - container may have permission issues');
-    }
-}
+export { setWorktreeOwnership } from './worktreeOwnership.js';
 
 export function verifyWorktreeStructure(worktreePath: string, issueNumber: number): string | null {
     const worktreeGitPath = path.join(worktreePath, '.git');
@@ -238,8 +235,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
     // Generate human-readable container name with unique suffix
     // TaskId format: {repo}-{issue}-{agent}-{model}-{correlationId}
     // Use the LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
-    const timestamp = Date.now().toString(36);
-    const shortId = taskId ? taskId.slice(-8) : timestamp;
+    const shortId = createContainerExecutionId(taskId);
     const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortId}`;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts
@@ -368,8 +364,10 @@ function processJsonLine(
 function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput): void {
     claudeOutput.finalResult = {
         type: jsonLine.type || 'result',
+        subtype: jsonLine.subtype,
         is_error: jsonLine.is_error,
         result: jsonLine.result,
+        num_turns: jsonLine.num_turns,
         total_cost_usd: jsonLine.total_cost_usd,
         cost_usd: jsonLine.cost_usd,
         model: jsonLine.model,
@@ -439,8 +437,7 @@ export async function storePromptInRedis(options: StorePromptOptions): Promise<v
             promptKeys.push(conversationKey);
         }
 
-        const timestamp = Date.now();
-        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${timestamp}`;
+        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${Date.now()}`;
         await redis.set(issueKey, JSON.stringify(promptData), 'EX', 86400 * 30);
         promptKeys.push(issueKey);
 

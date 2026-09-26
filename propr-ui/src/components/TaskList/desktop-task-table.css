@@ -1,0 +1,64 @@
+/* Anchor the elbow to the actual badge/button row, including wrapped chips.
+   Its stem joins the preceding row; the arm ends with an 8px chip gutter. */
+.task-thread-anchor::before,
+.task-thread-anchor::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  left: -2rem;
+}
+
+.task-thread-anchor::before {
+  top: calc(-.75rem - 1px);
+  bottom: calc(50% - 1px);
+  border-left: 2px solid #e5e7eb;
+}
+
+.task-thread-anchor::after {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.5rem;
+  border-top: 2px solid #e5e7eb;
+}
+
+/* Opted into by the macOS/Linux desktop context, including Recent Activity.
+   Respond to the list's available width, not the app window: the dashboard
+   shares its content area with an analytics rail. */
+.desktop-task-list {
+  container-type: inline-size;
+  width: 100%;
+  min-width: 0;
+}
+
+.desktop-task-list table { table-layout: fixed; }
+.desktop-task-list td { padding-left: .75rem; padding-right: .75rem; }
+.desktop-task-list .task-repository { width: 7.5rem; overflow-wrap: anywhere; }
+.desktop-task-list .task-summary { overflow-wrap: anywhere; }
+.desktop-task-list .task-status { width: 8.5rem; }
+.desktop-task-list .task-metadata { width: 7.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+.desktop-task-list .task-metadata > :first-child { color: #475569; }
+.desktop-task-list .task-inline-repository { display: none; }
+.desktop-task-list .task-badges { flex-wrap: wrap; gap: .375rem; }
+.desktop-task-list .task-badges > span { white-space: nowrap; }
+.desktop-task-list .task-model { min-width: 0; border: 0; border-radius: 0; background: transparent; padding: 0; }
+.desktop-task-list .task-model svg { flex-shrink: 0; }
+/* The narrow desktop pane stacks status above score instead of the two fixed
+   columns used on the web layout; both slots keep their place when empty. */
+.desktop-task-list .task-meta-grid { display: flex; flex-direction: column; align-items: flex-start; gap: .5rem; }
+.desktop-task-list .task-meta-grid > div { width: auto; max-width: 100%; justify-content: flex-start; }
+.desktop-task-list .task-meta-score:empty { display: none; }
+.desktop-task-list .task-meta-status > span { max-width: 100%; }
+.desktop-task-list .task-meta-status > span > span:first-child { flex-shrink: 0; }
+.desktop-task-list .task-title { text-align: left; border-radius: .125rem; line-height: 1.5; }
+.desktop-task-list .task-title:hover { color: #0f766e; text-decoration: underline; }
+.desktop-task-list .task-title:focus-visible { outline: 2px solid #0f766e; outline-offset: 3px; }
+.desktop-task-list tr:focus-within { background: #f0fdfa; }
+
+/* Keep titles useful in the narrower activity feed by placing repository
+   metadata above the parent title, retaining the existing nested row tree. */
+@container (max-width: 640px) {
+  .desktop-task-list .task-repository { display: none; }
+  .desktop-task-list .task-inline-repository { display: block; color: #64748b; font-size: .75rem; }
+  .desktop-task-list .task-status { width: 8rem; }
+  .desktop-task-list .task-metadata { width: 7rem; }
+}

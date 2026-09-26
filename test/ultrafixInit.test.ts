@@ -1,7 +1,12 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 import { resolveJobModulePath } from '../packages/api/services/ultrafixInit.ts';
+import { closeConnection } from '@propr/core';
+
+after(async () => {
+    await closeConnection();
+});
 
 test('resolveJobModulePath finds repo-root TypeScript jobs in dev layout', async () => {
     const resolved = await resolveJobModulePath('ultrafixBootstrap.js');

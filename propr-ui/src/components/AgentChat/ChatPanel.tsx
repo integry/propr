@@ -1,28 +1,22 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/proprApi';
-import { MODEL_INFO_MAP, AgentType } from '../../config/modelDefinitions';
+import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { Bot, User, Send } from 'lucide-react';
+import { Bot, Layers3, Send, User } from 'lucide-react';
+import type { SyntheticAgentConfig } from '@propr/shared';
+import ModelSelector, {
+  type AgentModelOption,
+  type AgentModelSelection,
+} from './ModelSelector';
 
-// Enhanced badge colors for selected state - more visually prominent
-const selectedBadgeColors: Record<AgentType, string> = {
-  claude: 'bg-orange-500 text-white border-orange-600 shadow-md ring-2 ring-orange-300',
-  codex: 'bg-green-500 text-white border-green-600 shadow-md ring-2 ring-green-300',
-  antigravity: 'bg-violet-500 text-white border-violet-600 shadow-md ring-2 ring-violet-300',
-  opencode: 'bg-cyan-500 text-white border-cyan-600 shadow-md ring-2 ring-cyan-300',
-  vibe: 'bg-pink-500 text-white border-pink-600 shadow-md ring-2 ring-pink-300'
-};
+export type { AgentModelSelection } from './ModelSelector';
 
 interface ChatPanelProps {
   agents: AgentConfig[];
+  syntheticAgents?: SyntheticAgentConfig[];
   selectedModels: AgentModelSelection[];
   onSelectedModelsChange: (selectedModels: AgentModelSelection[]) => void;
   disabled?: boolean;
-}
-
-export interface AgentModelSelection {
-  agentId: string;
-  modelId: string;
 }
 
 interface Message {
@@ -32,18 +26,9 @@ interface Message {
   timestamp: number;
 }
 
-// Represents an agent+model combination for selection
-interface AgentModelOption {
-  agentId: string;
-  agentAlias: string;
-  agentType: AgentType;
-  modelId: string;
-  modelName: string;
-}
-
 const isSameAgentModel = (
   left: AgentModelSelection,
-  right: AgentModelSelection
+  right: AgentModelSelection,
 ) => left.agentId === right.agentId && left.modelId === right.modelId;
 
 const haveSameSelections = (
@@ -56,6 +41,7 @@ const haveSameSelections = (
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
   agents,
+  syntheticAgents = [],
   selectedModels,
   onSelectedModelsChange,
   disabled = false
@@ -74,14 +60,24 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         options.push({
           agentId: agent.id,
           agentAlias: agent.alias,
-          agentType: agent.type as AgentType,
           modelId: modelId,
           modelName: modelInfo?.name || modelId
         });
       });
     });
+    syntheticAgents.filter(pool => pool.enabled).forEach(pool => {
+      pool.models.filter(model => model.enabled).forEach(model => {
+        options.push({
+          agentId: pool.id,
+          syntheticConfigId: pool.id,
+          agentAlias: pool.alias,
+          modelId: model.id,
+          modelName: model.displayName || model.id,
+        });
+      });
+    });
     return options;
-  }, [agents]);
+  }, [agents, syntheticAgents]);
 
   // Keep selections limited to combinations exposed by the Playground. If an
   // agent is disabled or removed, fall back to the first available option.
@@ -124,10 +120,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       ).join('\n');
 
       // Build queries with agent+model combinations
-      const queries: ChatQuery[] = selectedModels.map(selection => ({
-        agentId: selection.agentId,
-        model: selection.modelId
-      }));
+      const queries: ChatQuery[] = selectedModels.map(selection => {
+        const option = agentModelOptions.find(candidate => isSameAgentModel(candidate, selection));
+        return {
+          agentId: selection.agentId,
+          ...(option?.syntheticConfigId ? { syntheticConfigId: option.syntheticConfigId } : {}),
+          model: selection.modelId,
+        };
+      });
 
       const { results } = await chatWithAgents(queries, userMsg.content!, context);
 
@@ -163,67 +163,18 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
-  const toggleSelection = (option: AgentModelOption) => {
-    const selection = { agentId: option.agentId, modelId: option.modelId };
-    const isSelected = selectedModels.some(selected => isSameAgentModel(selected, selection));
-
-    onSelectedModelsChange(
-      isSelected
-        ? selectedModels.filter(selected => !isSameAgentModel(selected, selection))
-        : [...selectedModels, selection]
-    );
-  };
-
   return (
-    <div className="flex flex-col h-full bg-[#F8FAFC]">
-      {/* Compact model selector header */}
-      <div className="px-4 py-3 flex-shrink-0">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-gray-500 font-medium">Select models to test:</span>
-          <button
-            onClick={() => setMessages([])}
-            className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-white/50 transition-colors"
-            title="Clear History"
-          >
-            Clear
-          </button>
-        </div>
-        {/* Compact model selector with tiny chips - wraps to multiple rows */}
-        <div className="flex flex-wrap gap-1.5">
-          {agentModelOptions.length === 0 ? (
-            <p className="text-[10px] text-gray-500">No enabled models available.</p>
-          ) : (
-            agentModelOptions.map(option => {
-              const selection = { agentId: option.agentId, modelId: option.modelId };
-              const isSelected = selectedModels.some(selected => isSameAgentModel(selected, selection));
-              return (
-                <button
-                  key={JSON.stringify([option.agentId, option.modelId])}
-                  type="button"
-                  onClick={() => toggleSelection(option)}
-                  aria-label={`${option.agentAlias}: ${option.modelName}`}
-                  aria-pressed={isSelected}
-                  className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap ${
-                    isSelected
-                      ? selectedBadgeColors[option.agentType]
-                      : 'bg-white/70 border-gray-200 text-gray-400 hover:bg-white hover:border-gray-300 hover:text-gray-600'
-                  }`}
-                >
-                  <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />
-                  {option.modelName}
-                </button>
-              );
-            })
-          )}
-        </div>
-        {selectedModels.length === 0 && agentModelOptions.length > 0 && (
-          <p className="text-[10px] text-amber-600 mt-1.5">Select at least one model to start chatting</p>
-        )}
-      </div>
+    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-[#F8FAFC]">
+      <ModelSelector
+        options={agentModelOptions}
+        selectedModels={selectedModels}
+        onSelectedModelsChange={onSelectedModelsChange}
+        onClear={() => setMessages([])}
+      />
 
       {/* Messages Area - Studio Assistant styling */}
       <div
-        className="flex-1 overflow-y-auto px-4 pb-4 space-y-4"
+        className="flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 pb-3 sm:px-4 sm:pb-4"
         ref={scrollRef}
         style={{
           scrollbarWidth: 'thin',
@@ -231,7 +182,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         }}
       >
         {messages.length === 0 && (
-          <div className="px-2 py-4">
+          <div className="py-4 sm:px-2">
             <p className="text-sm text-gray-500">
               Test your agents by sending messages. Select one or more models above to compare responses side by side.
             </p>
@@ -242,14 +193,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             {msg.role === 'user' ? (
               <>
                 {/* Fixed 40px icon column for gutter alignment */}
-                <div className="w-10 flex-shrink-0 flex justify-center">
-                  <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center">
+                <div className="flex w-8 flex-shrink-0 justify-center sm:w-10">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white sm:h-8 sm:w-8">
                     <User size={16} className="text-slate-600" />
                   </div>
                 </div>
                 {/* User message - white card with shadow */}
-                <div className="flex-1 min-w-0 ml-3">
-                  <div className="bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 rounded-lg inline-block">
+                <div className="ml-2 min-w-0 flex-1 sm:ml-3">
+                  <div className="inline-block max-w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-slate-800 shadow-sm sm:px-4">
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                   </div>
                 </div>
@@ -257,21 +208,30 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             ) : (
               <>
                 {/* Fixed 40px icon column for gutter alignment */}
-                <div className="w-10 flex-shrink-0 flex justify-center pt-1">
-                  <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+                <div className="flex w-8 flex-shrink-0 justify-center pt-1 sm:w-10">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-700 sm:h-8 sm:w-8">
                     <Bot size={16} className="text-white" />
                   </div>
                 </div>
                 {/* AI responses - transparent background, horizontal scroll for multiple */}
-                <div className="flex-1 min-w-0 ml-3">
-                  <div className="flex gap-3 overflow-x-auto pb-2">
+                <div className="ml-2 min-w-0 flex-1 sm:ml-3">
+                  <div className="scrollbar-stealth flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 sm:snap-none">
                     {msg.results?.map((res, rIdx) => (
-                      <div key={rIdx} className={`flex-1 min-w-[220px] max-w-[300px] bg-transparent relative flex flex-col ${rIdx > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
-                        <div className="text-[10px] font-medium text-gray-500 mb-1 flex items-center gap-1.5">
-                          <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />
-                          <span>{res.agentAlias}</span>
-                          <span className="text-gray-400">· {res.model}</span>
+                      <div key={rIdx} className={`relative flex min-w-full max-w-full snap-start flex-col bg-transparent sm:min-w-[220px] sm:max-w-[300px] ${rIdx > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
+                        <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] font-medium text-gray-500">
+                          {res.virtualAgentAlias
+                            ? <Layers3 className="h-3 w-3" aria-hidden="true" />
+                            : <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />}
+                          <span className="flex-shrink-0">{res.virtualAgentAlias || res.agentAlias}</span>
+                          <span className="truncate text-gray-400">· {res.virtualModel || res.model}</span>
                         </div>
+                        {res.physicalAgentAlias && (
+                          <div className="mb-1 flex min-w-0 items-center gap-1 text-[10px] text-slate-500">
+                            <ProviderLogo provider={res.physicalAgentAlias} className="h-3 w-3" />
+                            <span className="truncate">Executed by {res.physicalAgentAlias} · {res.physicalModel}</span>
+                            {res.attemptNumber && <span>· attempt {res.attemptNumber}</span>}
+                          </div>
+                        )}
                         <div className="text-sm text-gray-800 whitespace-pre-wrap">
                           {res.error ? <span className="text-red-500">{res.error}</span> : res.response}
                         </div>
@@ -288,12 +248,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         ))}
         {isLoading && (
           <div className="flex items-start">
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center">
+            <div className="flex w-8 flex-shrink-0 justify-center sm:w-10">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 sm:h-8 sm:w-8">
                 <Bot size={16} className="text-gray-600 animate-pulse" />
               </div>
             </div>
-            <div className="flex-1 min-w-0 ml-3">
+            <div className="ml-2 min-w-0 flex-1 sm:ml-3">
               <div className="bg-slate-200 text-gray-600 italic p-3 rounded-lg inline-block">
                 <p className="text-sm animate-pulse">Thinking...</p>
               </div>
@@ -303,11 +263,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       </div>
 
       {/* Floating Input Bar - visually detached from bottom */}
-      <div className="flex-shrink-0 p-4">
-        <div className="flex gap-2 items-end bg-white rounded-lg shadow-md border border-slate-200 p-4">
+      <div className="flex-shrink-0 px-3 pb-16 pt-3 md:p-4">
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-2 shadow-md sm:items-end sm:gap-2 sm:p-4">
           <input
             type="text"
-            className="flex-1 bg-transparent px-3 py-2 focus:outline-none text-sm"
+            className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm focus:outline-none sm:px-3"
             placeholder="Type a message to test..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -315,11 +275,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             disabled={isLoading || selectedModels.length === 0 || disabled}
           />
           {/* Keyboard shortcut hint */}
-          <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
+          <span className="mr-1 hidden flex-shrink-0 self-center text-xs text-gray-400 md:block">↵</span>
           <button
             onClick={handleSend}
             disabled={isLoading || !input.trim() || selectedModels.length === 0 || disabled}
-            className="p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            aria-label="Send message"
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
             <Send size={16} />
           </button>

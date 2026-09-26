@@ -83,6 +83,15 @@ await mock.module('../packages/core/src/services/taskPlanningService.js', {
   },
 });
 
+await mock.module('../packages/core/src/config/planIssueDefaults.js', {
+  namedExports: {
+    resolvePlanIssueDefaultSelection: mock.fn(async (selection: { agent_alias?: string | null; model_name?: string | null }) => ({
+      agent_alias: selection.agent_alias ?? null,
+      model_name: selection.model_name ?? null,
+    })),
+  },
+});
+
 const { createPlanIssue, updatePlanIssue } = await import('../packages/core/src/config/planIssueManager.js');
 
 describe('planIssueManager ultrafix persistence', () => {

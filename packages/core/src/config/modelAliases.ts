@@ -59,15 +59,25 @@ export interface LlmLabelResolution {
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     // Fable aliases (top tier, above Opus)
-    'fable': 'claude-fable-5',
+    'fable': 'claude-fable-5-1',
+    'fable51': 'claude-fable-5-1',
+    'fable-5-1': 'claude-fable-5-1',
+    'claude-fable': 'claude-fable-5-1',
+    'claude-fable-5-1': 'claude-fable-5-1',
+
+    // Explicit Fable 5 aliases
     'fable5': 'claude-fable-5',
     'fable-5': 'claude-fable-5',
-    'claude-fable': 'claude-fable-5',
     'claude-fable-5': 'claude-fable-5',
 
     // Default aliases point to latest tier models
-    'opus': 'claude-opus-5',
-    'claude-opus': 'claude-opus-5',
+    'opus': 'claude-opus-5-5',
+    'claude-opus': 'claude-opus-5-5',
+
+    // Explicit 5.5 aliases
+    'opus55': 'claude-opus-5-5',
+    'opus-5-5': 'claude-opus-5-5',
+    'claude-opus-5-5': 'claude-opus-5-5',
 
     // Explicit 5 aliases
     'opus5': 'claude-opus-5',
@@ -127,6 +137,14 @@ function getOpenRouterId(internalModelId: ModelId): string {
     // OpenRouter slug so pricing/cost still resolves.
     const openCodeGoId = toOpenCodeGoOpenRouterId(internalModelId);
     if (openCodeGoId) return openCodeGoId;
+    // An agent can be configured with an alias ("fable", "fable51", "opus55"),
+    // and that raw string is what gets recorded against a run. Resolve it so
+    // cost uses the model's own published rates instead of falling through to
+    // OpenRouter's generic pricing for an ID it does not know.
+    if (internalModelId) {
+        const aliasedInfo = MODEL_INFO_MAP[resolveModelAlias(internalModelId)];
+        if (aliasedInfo?.openRouterId) return aliasedInfo.openRouterId;
+    }
     return internalModelId;
 }
 

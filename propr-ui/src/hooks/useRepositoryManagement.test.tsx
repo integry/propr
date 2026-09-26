@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useRepositoryManagement } from './useRepositoryManagement';
@@ -11,6 +12,7 @@ import {
   updateRepoConfig
 } from '../api/proprApi';
 import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
+import { CommittedConfigWriteError } from '../api/apiClient';
 
 const authState = vi.hoisted(() => ({
   permissions: ['instance.manage_settings']
@@ -108,7 +110,7 @@ describe('useRepositoryManagement', () => {
     mockGetUserRepoPreferences.mockResolvedValue({});
     mockStopRepositoryIndexing.mockResolvedValue({ success: true });
     mockTriggerRepositoryIndexing.mockResolvedValue({ success: true });
-    mockUpdateRepoConfig.mockResolvedValue({});
+    mockUpdateRepoConfig.mockResolvedValue({ success: true, repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] });
   });
 
   afterEach(() => {
@@ -171,13 +173,399 @@ describe('useRepositoryManagement', () => {
     expect(result.current.repos[0]).toMatchObject({
       name: 'integry/propr',
       enabled: true,
+      autoFollowupOnFailedCi: false,
+      visualPreview: { enabled: false, types: ['image'] },
       baseBranch: 'release/2026'
     });
 
     act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    act(() => result.current.handleToggleAutoCiFollowup(result.current.repos[0].id));
+    act(() => result.current.handleUpdateVisualPreview(result.current.repos[0].id, { enabled: true, types: ['video'] }));
 
     expect(result.current.repos[0].enabled).toBe(true);
+    expect(result.current.repos[0].autoFollowupOnFailedCi).toBe(false);
     expect(mockUpdateRepoConfig).not.toHaveBeenCalled();
+  });
+
+  it('preserves loaded automatic CI follow-up state and defaults legacy entries off', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: true },
+        { id: 'repo-2', name: 'integry/legacy', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, false]);
+    expect(result.current.repos.map(repo => repo.visualPreview)).toEqual([
+      { enabled: false, types: ['image'] },
+      { enabled: false, types: ['image'] }
+    ]);
+  });
+
+  it('synchronizes visual preview settings across repository branch entries', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release' },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.handleUpdateVisualPreview('repo-main', {
+      enabled: true,
+      types: ['image', 'video'],
+      instructions: 'Capture desktop and mobile.'
+    }));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos[0].visualPreview).toEqual(savedRepos[1].visualPreview);
+    expect(savedRepos[0].visualPreview).toEqual({
+      enabled: true,
+      types: ['image', 'video'],
+      instructions: 'Capture desktop and mobile.'
+    });
+    expect(savedRepos[2].visualPreview).toEqual({ enabled: false, types: ['image'] });
+  });
+
+  it('adds the selected automatic CI setting without changing existing repositories', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/new', 'New', 'main', true);
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos[0].autoFollowupOnFailedCi).toBe(false);
+    expect(savedRepos[1]).toMatchObject({
+      name: 'integry/new',
+      autoFollowupOnFailedCi: true,
+      alias: 'New',
+      baseBranch: 'main'
+    });
+  });
+
+  it('preserves enabled automatic CI follow-up when adding another branch unchecked', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoFollowupOnFailedCi: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/propr', '', 'release', false);
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos).toHaveLength(2);
+    expect(savedRepos[0].autoFollowupOnFailedCi).toBe(true);
+    expect(savedRepos[1]).toMatchObject({
+      name: 'integry/propr',
+      baseBranch: 'release',
+      autoFollowupOnFailedCi: false
+    });
+  });
+
+  it('enables visual previews for every branch when adding a repository with previews selected', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', visualPreview: { enabled: false, types: ['video'], instructions: 'Capture mobile.' } },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/propr', '', 'release', false, { enabled: true, types: ['image', 'video'], instructions: '  ' });
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    const expectedPreview = { enabled: true, types: ['image', 'video'], instructions: 'Capture mobile.' };
+    expect(savedRepos[0].visualPreview).toEqual(expectedPreview);
+    expect(savedRepos[1].visualPreview).toEqual({ enabled: false, types: ['image'] });
+    expect(savedRepos[2]).toMatchObject({ name: 'integry/propr', baseBranch: 'release', visualPreview: expectedPreview });
+  });
+
+  it('preserves enabled visual previews when adding another branch unchecked', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', visualPreview: { enabled: true, types: ['image'] } }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/propr', '', 'release', false, { enabled: false, types: ['video'], instructions: 'Ignored.' });
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.visualPreview)).toEqual([
+      { enabled: true, types: ['image'] },
+      { enabled: true, types: ['image'] }
+    ]);
+  });
+
+  it('saves the selected preview types and trimmed instructions when adding a repository', async () => {
+    mockGetRepoConfig.mockResolvedValue({ repos_to_monitor: [] });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/new', '', '', false, { enabled: true, types: ['video'], instructions: '  Capture desktop and mobile.  ' });
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    expect(mockUpdateRepoConfig.mock.calls[0][0][0].visualPreview).toEqual({
+      enabled: true,
+      types: ['video'],
+      instructions: 'Capture desktop and mobile.'
+    });
+  });
+
+  it('toggles automatic CI follow-up for one repository without changing others', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: true },
+        { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.handleToggleAutoCiFollowup('repo-2'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true]);
+  });
+
+  it('round-trips the validation workflow selection and shares it across branch entries', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        {
+          id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: [' pr-build-check.yml ', 'PR-Build-Check.yml']
+        },
+        // An entry written before the selection existed carries none of its own.
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release', cancelCiDuringFollowup: true },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.cancelCiDuringFollowupWorkflows)).toEqual([['pr-build-check.yml'], [], []]);
+    // Both branch entries of the repository show the one selection it has.
+    expect(result.current.filteredRepos.map(repo => repo.cancelCiDuringFollowupWorkflows))
+      .toEqual([['pr-build-check.yml'], ['pr-build-check.yml'], []]);
+
+    act(() => result.current.handleUpdateCancelCiWorkflows('repo-release', ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml']));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.cancelCiDuringFollowupWorkflows)).toEqual([
+      ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml'],
+      ['pr-build-check.yml', '.github/workflows/pr-test-on-label.yml'],
+      []
+    ]);
+  });
+
+  it('displays the whole repository-wide selection the worker may cancel, not just the first entry\u2019s', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        {
+          id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['a.yml']
+        },
+        {
+          id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release',
+          cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['b.yml', 'A.YML']
+        },
+        { id: 'repo-other', name: 'integry/other', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The worker cancels the union of both entries, so the settings must show it.
+    expect(result.current.filteredRepos.map(repo => repo.cancelCiDuringFollowupWorkflows))
+      .toEqual([['a.yml', 'b.yml'], ['a.yml', 'b.yml'], []]);
+  });
+
+  it('preserves per-entry automatic CI follow-up state while displaying duplicate branches consistently', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoFollowupOnFailedCi: false },
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release', autoFollowupOnFailedCi: true },
+        { id: 'repo-other', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([false, true, false]);
+    expect(result.current.filteredRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true, false]);
+
+    act(() => result.current.handleToggleAutoCiFollowup('repo-main'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([false, false, false]);
+  });
+
+  it('does not overwrite per-entry automatic CI follow-up state during an unrelated save', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoFollowupOnFailedCi: false },
+        { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release', autoFollowupOnFailedCi: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.handleToggleRepo('repo-main'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([false, true]);
+  });
+
+  it('defaults notifications on for legacy entries and writes the toggle to every branch entry', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release' },
+        { id: 'repo-other', name: 'integry/other', enabled: true },
+        'integry/legacy' as never
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.filteredRepos.map(repo => repo.notificationsEnabled)).toEqual([true, true, true, true]);
+
+    act(() => result.current.handleToggleNotifications('repo-main'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.notificationsEnabled)).toEqual([false, false, true, true]);
+  });
+
+  it('keeps notifications enabled unless every branch entry opts out', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', notificationsEnabled: false },
+        { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release' },
+        { id: 'repo-other', name: 'integry/other', enabled: true, notificationsEnabled: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.filteredRepos.map(repo => repo.notificationsEnabled)).toEqual([true, true, false]);
+
+    act(() => result.current.handleToggleNotifications('repo-release'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+    expect(mockUpdateRepoConfig.mock.calls[0][0].map(repo => repo.notificationsEnabled)).toEqual([false, false, false]);
+  });
+
+  it('does not save notification changes for read-only users', async () => {
+    authState.permissions = [];
+    mockGetInstanceCatalog.mockResolvedValue({
+      agents: [],
+      repositories: [{ name: 'integry/propr', enabled: true, notificationsEnabled: false }]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.repos[0].notificationsEnabled).toBe(false);
+
+    act(() => result.current.handleToggleNotifications(result.current.repos[0].id));
+    expect(mockUpdateRepoConfig).not.toHaveBeenCalled();
+  });
+
+  it('persists new repositories with notifications enabled and new branches with the shared setting', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', notificationsEnabled: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => { result.current.handleAddRepo('integry/new', '', '', false); });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+    act(() => { result.current.handleAddRepo('integry/propr', '', 'release', false); });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(2));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[1][0];
+    expect(savedRepos.map(repo => [repo.name, repo.baseBranch, repo.notificationsEnabled])).toEqual([
+      ['integry/propr', 'main', false],
+      ['integry/new', undefined, true],
+      ['integry/propr', 'release', false]
+    ]);
+  });
+
+  it('reloads authoritative repositories before surfacing a committed-write warning', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-current', name: 'integry/propr', enabled: true, alias: 'server-current', baseBranch: 'release/2026' }] });
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(409, {
+      committed: true,
+      warning: 'Repositories were saved, but the lock was lost afterward.',
+      lock_lost_after_commit: true,
+    }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(mockGetRepoConfig).toHaveBeenCalledTimes(2);
+    expect(result.current.repos[0]).toMatchObject({ id: 'repo-current', enabled: true, alias: 'server-current' });
+    expect(result.current.error).toContain('saved');
+  });
+
+  it('blocks a blind retry when committed repository state cannot be refreshed', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockRejectedValueOnce(new Error('refresh unavailable'));
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(500, { committed: true, error: 'Repositories were saved, but publication failed.' }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(result.current.error).toContain('Reload this page before editing repositories again');
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id)); expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1);
   });
 
   it('applies branch-aware websocket updates and clears stale progress for terminal states', async () => {

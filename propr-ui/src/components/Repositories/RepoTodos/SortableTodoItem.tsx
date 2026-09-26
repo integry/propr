@@ -103,6 +103,8 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
       {/* Selection checkbox (only for non-completed items) */}
       {!todo.isCompleted && (
         <button
+          aria-label={`Select todo: ${todo.content}`}
+          aria-pressed={isSelected}
           onClick={() => onToggleSelect(todo.todoId)}
           disabled={disabled}
           className={`flex-shrink-0 w-4 h-4 mt-0.5 rounded border transition-all

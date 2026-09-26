@@ -10,6 +10,17 @@ const NPM_REGISTRY_URL = 'https://registry.npmjs.org';
 // Cache for NPM responses (5 minute TTL)
 const npmCache = new Map<string, { data: NpmPackageInfo; expiry: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_NPM_PACKAGE_NAME_LENGTH = 214;
+const NPM_PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
+
+export function encodeNpmPackageName(packageName: string): string {
+    if (packageName.length > MAX_NPM_PACKAGE_NAME_LENGTH || !NPM_PACKAGE_NAME_PATTERN.test(packageName)) {
+        throw new Error('Invalid npm package name');
+    }
+    return packageName.startsWith('@')
+        ? `@${encodeURIComponent(packageName.slice(1))}`
+        : encodeURIComponent(packageName);
+}
 
 /**
  * Fetches package info from the NPM registry.
@@ -29,7 +40,7 @@ export async function fetchNpmPackageInfo(packageName: string): Promise<NpmPacka
     }
 
     // Fetch from registry
-    const encodedName = encodeURIComponent(packageName).replace('%40', '@');
+    const encodedName = encodeNpmPackageName(packageName);
     const url = `${NPM_REGISTRY_URL}/${encodedName}`;
 
     logger.debug({ packageName, url }, 'Fetching NPM package info');

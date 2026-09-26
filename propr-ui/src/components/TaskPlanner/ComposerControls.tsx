@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, FileText, Square, Layers, LayoutGrid } from 'lucide-react';
 import { Granularity } from '../../api/proprApi';
+import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 // Helper to estimate issue count based on granularity
 // Single: always exactly 1 issue
@@ -129,11 +130,10 @@ export const RemoteAttachmentChip: React.FC<{
     <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
       {isImage && previewUrl ? (
         <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300">
-          <img
+          <AuthenticatedAttachmentImage
             src={previewUrl}
             alt={name}
             className="w-full h-full object-cover"
-            crossOrigin="use-credentials"
           />
         </div>
       ) : isImage ? (

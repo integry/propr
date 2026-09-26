@@ -1,6 +1,6 @@
-import { test, describe, beforeEach, afterEach, mock } from 'node:test';
+import { test, describe, beforeEach, afterEach, after, mock } from 'node:test';
 import assert from 'node:assert';
-import { generateAuthToken } from '@propr/core';
+import { closeConnection, generateAuthToken } from '@propr/core';
 import type { SystemTaskJobData, JobResult } from '@propr/core';
 
 /**
@@ -14,8 +14,17 @@ import type { SystemTaskJobData, JobResult } from '@propr/core';
 
 const TEST_SECRET = 'test-secret-for-worker-tests';
 
+after(async () => {
+    await closeConnection();
+});
+
 // Track call order to prove auth runs before git operations
 let callOrder: string[] = [];
+
+const mockSimpleGit = {
+    reset: mock.fn(async () => { callOrder.push('git:reset'); }),
+    push: mock.fn(async () => { callOrder.push('git:push'); })
+};
 
 const mockOctokitInstance = {
     request: mock.fn(async (route: string, params: Record<string, unknown>) => {
@@ -98,18 +107,9 @@ await mock.module('@propr/core', {
         cleanupWorktree: mock.fn(async () => {
             callOrder.push('git:cleanup');
         }),
+        createHooklessGit: mock.fn(() => mockSimpleGit),
         generateAuthToken,
         buildAuthPayload: (await import('@propr/core')).buildAuthPayload
-    }
-});
-
-const mockSimpleGit = {
-    reset: mock.fn(async () => { callOrder.push('git:reset'); }),
-    push: mock.fn(async () => { callOrder.push('git:push'); })
-};
-await mock.module('simple-git', {
-    namedExports: {
-        simpleGit: mock.fn(() => mockSimpleGit)
     }
 });
 
@@ -156,6 +156,7 @@ function makeJobData(overrides: Partial<SystemTaskJobData> = {}): SystemTaskJobD
         authTimestamp: Date.now(),
         authToken: '',
         correlationId: 'test-correlation',
+        userId: 'github-user-1',
         ...overrides
     };
     return base;
@@ -453,6 +454,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'testorg' },
                                 name: 'testrepo',

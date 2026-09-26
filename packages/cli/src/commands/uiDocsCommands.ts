@@ -10,6 +10,7 @@ import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { parseOnOffState, ParseStateError } from "../utils/index.js";
+import { localhostServiceUrl } from "../utils/dockerPort.js";
 
 type ServiceName = "ui" | "docs";
 
@@ -28,7 +29,7 @@ async function toggleService(service: ServiceName, stateArg: string, root?: stri
     orch.ensureNetwork(cfg, (l: string) => console.log(l));
     orch.startService(cfg, service, { onLog: (l) => console.log(l) });
     const port = service === "ui" ? cfg.uiPort : cfg.docsPort;
-    console.log(`${service} is up on http://localhost:${port}`);
+    console.log(`${service} is up on ${localhostServiceUrl(port)}`);
   } else {
     console.log(`Stopping ${service}…`);
     orch.stopService(cfg, service, { remove: true, onLog: (l) => console.log(l) });

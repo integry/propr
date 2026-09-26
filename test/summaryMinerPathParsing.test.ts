@@ -122,4 +122,35 @@ describe('summary miner path parsing', () => {
       null
     );
   });
+  test('parses file summaries when the agent emits the JSON document twice', () => {
+    const doc = JSON.stringify({
+      summaries: [
+        { path: 'src/a.ts', summary: 'Handles {braces} and "quotes" in text.' },
+        { path: 'src/b.ts', summary: 'Second file.' }
+      ]
+    }, null, 2);
+    const parsed = parseBatchResponse(`${doc}\n${doc}`, ['src/a.ts', 'src/b.ts']);
+    assert.deepEqual(parsed, [
+      { path: 'src/a.ts', summary: 'Handles {braces} and "quotes" in text.' },
+      { path: 'src/b.ts', summary: 'Second file.' }
+    ]);
+  });
+
+  test('parses file summaries followed by trailing prose containing braces', () => {
+    const doc = JSON.stringify({ summaries: [{ path: 'src/a.ts', summary: 'Summary.' }] });
+    const parsed = parseBatchResponse(`Here you go:\n${doc}\nNote: see {other} files.`, ['src/a.ts']);
+    assert.deepEqual(parsed, [{ path: 'src/a.ts', summary: 'Summary.' }]);
+  });
+
+  test('parses file summaries wrapped in an array', () => {
+    const doc = JSON.stringify([{ summaries: [{ path: 'src/a.ts', summary: 'Summary.' }] }]);
+    const parsed = parseBatchResponse(doc, ['src/a.ts']);
+    assert.deepEqual(parsed, [{ path: 'src/a.ts', summary: 'Summary.' }]);
+  });
+
+  test('parses directory summaries when the agent emits the JSON document twice', () => {
+    const doc = JSON.stringify({ summaries: [{ path: 'integry/propr/src', summary: 'Source root directory.' }] });
+    const results = parseBatchDirectoryResponse(`${doc}\n${doc}`, ['integry/propr/src']);
+    assert.equal(results[0].summary, 'Source root directory.');
+  });
 });

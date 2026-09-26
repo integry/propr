@@ -7,7 +7,9 @@ import {
   AreaChart,
   Area,
 } from 'recharts';
+import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { tooltipStyle } from './chartConstants';
+import { SystemAlert } from './ui/SystemAlert';
 
 interface ActivitySparklineProps {
   data: Array<{ date: string; displayDate: string; count: number }>;
@@ -217,9 +219,17 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+          <SystemAlert
+            variant="empty"
+            icon={(
+              <span className="relative text-slate-300" aria-hidden="true">
+                <ChartNoAxesColumn className="h-5 w-5" />
+                <Slash className="absolute inset-0 h-5 w-5" />
+              </span>
+            )}
+          >
             No activity data
-          </div>
+          </SystemAlert>
         )}
       </div>
     </div>

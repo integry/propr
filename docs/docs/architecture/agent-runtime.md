@@ -49,7 +49,9 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 | OpenCode | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | Mistral Vibe | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | `VIBE_MAX_TURNS` | `1000` |
 
-These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Analysis calls use separate, shorter timeouts.
+These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Planner keyword extraction and semantic relevance scoring default to 30 minutes per call and can be adjusted with `CONTEXT_ANALYSIS_TIMEOUT_MS`.
+
+When an implementation run reaches its execution timeout or maximum turn limit, ProPR preserves any workspace changes produced before the interruption. If changes exist, it commits and pushes them, opens the issue PR or updates the existing follow-up PR, and marks the result as potentially incomplete with the agent's last available summary and explicit remaining-work guidance. Other execution errors still fail normally, and an interrupted run with no changes has nothing to publish.
 
 When tuning these values, consider repository size, task complexity, provider rate limits, worker concurrency, and host CPU and memory. Increase timeouts only after checking task and worker logs; a timeout may indicate missing context, provider slowness, a task that should be split, or an agent loop.
 
@@ -144,6 +146,9 @@ Common settings:
 HOST_CODEX_DIR=/home/your-user/.codex
 CODEX_TIMEOUT_MS=86400000
 CODEX_MAX_TURNS=1000
+CODEX_STREAM_TRANSPORT=websocket
+CODEX_STREAM_IDLE_TIMEOUT_MS=1800000
+CODEX_STREAM_MAX_RETRIES=5
 ```
 
 The entrypoint checks for `/home/node/.codex/config.toml`, prepares `sessions` and `rules`, and avoids recursively changing bind-mounted workspace ownership. Codex runs as:
@@ -152,7 +157,7 @@ The entrypoint checks for `/home/node/.codex/config.toml`, prepares `sessions` a
 codex exec --json --dangerously-bypass-approvals-and-sandbox --config features.multi_agent=false --skip-git-repo-check --cd /home/node/workspace -
 ```
 
-When a model is selected, ProPR adds `--model <id>`. Codex emits NDJSON events that ProPR parses into logs, result text, session metadata, and token usage.
+When a model is selected, ProPR adds `--model <id>`. By default, ProPR selects a WebSocket-capable OpenAI provider with a 30-minute stream idle timeout so long, quiet turns are not pinned to a single HTTP response body. Set `CODEX_STREAM_TRANSPORT=sse` when WebSockets are unavailable or `CODEX_STREAM_TRANSPORT=inherit` to preserve a custom provider from the mounted Codex configuration. Codex emits NDJSON events that ProPR parses into logs, result text, session metadata, and token usage; reconnect notices remain visible without making a later successful turn fail.
 
 ### Antigravity
 
@@ -215,7 +220,7 @@ By default the container receives `XDG_CONFIG_HOME=/home/node/.config` and `XDG_
 
 #### Model-ID Translation
 
-ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `opencode-deepseek-v4-flash-free`. ProPR converts these back to OpenCode's native `provider/model` syntax at execution time (`opencode-deepseek-v4-flash-free` becomes `opencode/deepseek-v4-flash-free`) and strips only the internal `opencode:` routing prefix, so provider-qualified model IDs remain intact. The OpenCode model list is dynamic: run `opencode models` on the host after changing auth providers, then register any desired authenticated provider IDs (for example `opencode-openai/gpt-5.5`) on the agent's supported models. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically. See [Agents and Models](../features/agents-and-models.md) for the catalog and label formats.
+ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `opencode-big-pickle`. ProPR converts these back to OpenCode's native `provider/model` syntax at execution time (`opencode-big-pickle` becomes `opencode/big-pickle`) and strips only the internal `opencode:` routing prefix, so provider-qualified model IDs remain intact. The OpenCode model list is dynamic: run `opencode models` on the host after changing auth providers, then register any desired authenticated provider IDs (for example `opencode-openai/gpt-5.5`) on the agent's supported models. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically. See [Agents and Models](../features/agents-and-models.md) for the catalog and label formats.
 
 ### Mistral Vibe
 

@@ -7,11 +7,14 @@ import { db } from '../db/connection.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import type { Knex } from 'knex';
 import {
-  updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
+import { resolveConfiguredModel } from '../config/configuredModel.js';
+import { AgentRegistry } from '../agents/AgentRegistry.js';
 
 // Re-export everything from the taskPlanning module
 export * from './taskPlanning/index.js';
@@ -30,14 +33,37 @@ import {
   type GeneratePlanOptions, type Plan, type TaskDraft
 } from './taskPlanning/index.js';
 
-/** Default model for context analysis (fast, cost-effective) */
-const DEFAULT_CONTEXT_MODEL = 'haiku';
-
-/** Default model for plan generation (high capability) */
-const DEFAULT_GENERATION_MODEL = 'opus';
-
 const MAX_ATTACHMENT_PERCENT = 0.25;
 const BUDGET_SAFETY_FACTOR = 0.85;
+
+function updateGenerationTrace(
+  draftId: string,
+  step: string,
+  status: Parameters<typeof updateTraceForRun>[2],
+  options: { runId: string; data?: Record<string, unknown> },
+) {
+  return updateTraceForRun(draftId, step, status, { expectedRunId: options.runId, data: options.data });
+}
+
+interface GenerationCompletionOptions {
+  database: Knex;
+  draftId: string;
+  runId: string;
+  expectedTrace: string;
+  updates: Record<string, unknown>;
+}
+
+export async function persistGenerationCompletion(options: GenerationCompletionOptions): Promise<boolean> {
+  const { database, draftId, runId, expectedTrace, updates } = options;
+  if (parseGenerationTrace(expectedTrace).runId !== runId) return false;
+
+  const query = database('task_drafts').where({
+    draft_id: draftId,
+    status: 'generating',
+    generation_trace: expectedTrace,
+  });
+  return Number(await query.update(updates)) === 1;
+}
 
 function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: number): number | undefined {
   if (imageCount <= 0) {
@@ -49,16 +75,26 @@ function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: numbe
 }
 
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
-  const { draftId, worktreePath, githubToken, correlationId } = options;
+  const { draftId, worktreePath, githubToken, correlationId, runId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!db) throw new Error('Database not available');
 
   // Load planner models from settings (used as defaults)
   const settings = await loadSettings();
-  const contextModel = settings.planner_context_model || DEFAULT_CONTEXT_MODEL;
-  const defaultGenerationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
-  correlatedLogger.info({ draftId, contextModel, defaultGenerationModel }, 'Starting plan generation');
+  const requestedContextModel = await resolveConfiguredModel(settings.planner_context_model);
+  const requestedDefaultGenerationModel = await resolveConfiguredModel(settings.planner_generation_model);
+  // JSON repair is deliberately handled by the configured default coding model,
+  // independently of whichever model was selected to generate the plan.
+  const requestedRepairModel = await resolveConfiguredModel();
+  const registry = AgentRegistry.getInstance();
+  await registry.ensureInitialized();
+  correlatedLogger.info({
+    draftId,
+    contextModel: requestedContextModel,
+    defaultGenerationModel: requestedDefaultGenerationModel,
+    jsonRepairModel: requestedRepairModel,
+  }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new Error(`Draft not found: ${draftId}`);
@@ -66,9 +102,21 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Parse context_config - generationModel from draft config takes priority over global setting
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
-  const config = parseContextConfig(parsedContextConfig, defaultGenerationModel);
+  const requestedGenerationModel = configModelFromDraft(parsedContextConfig) || requestedDefaultGenerationModel;
+  const generationRoute = registry.beginRoutingSession(parseRoutingModel(requestedGenerationModel));
+  const generationSelection = await generationRoute.select();
+  const generationModel = `${generationSelection.physicalAgentAlias}:${generationSelection.physicalModel}`;
+  // Keep this route lazy: selecting it is only necessary when generated JSON
+  // is malformed, and must not consume routing capacity for successful plans.
+  const repairRoute = registry.beginRoutingSession(parseRoutingModel(requestedRepairModel));
+  const contextRoute = registry.beginRoutingSession(parseRoutingModel(requestedContextModel));
+  const contextSelection = await contextRoute.select();
+  const contextModel = `${contextSelection.physicalAgentAlias}:${contextSelection.physicalModel}`;
+  const config = parseContextConfig(
+    { ...parsedContextConfig, generationModel } as NonNullable<Parameters<typeof parseContextConfig>[0]>,
+    generationModel,
+  );
   // Use the effective generation model: draft config > global setting
-  const generationModel = config.generationModel || defaultGenerationModel;
   correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel, generationModel, draftGenerationModel: config.generationModel }, 'Parsed context config for plan generation');
 
   // Parse and load attachments after context config so images can be sized for the selected token budget.
@@ -82,17 +130,20 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
-  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
+  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel, routingSession: contextRoute, branch: config.baseBranch });
 
   // Calculate estimated duration for context gathering based on file count
   const estimatedContextDuration = Math.min(5000 + (relevantFilePaths.length * 50), 30000);
   const contextStartedAt = new Date().toISOString();
 
   // Update trace with in_progress status and estimated duration
-  await updateTrace(draftId, 'context', 'in_progress', {
-    estimatedDuration: estimatedContextDuration,
-    startedAt: contextStartedAt,
-    fileCount: relevantFilePaths.length
+  await updateGenerationTrace(draftId, 'context', 'in_progress', {
+    runId,
+    data: {
+      estimatedDuration: estimatedContextDuration,
+      startedAt: contextStartedAt,
+      fileCount: relevantFilePaths.length
+    }
   });
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress, estimatedDurationMs: estimatedContextDuration }, 'Generating context');
 
@@ -113,14 +164,18 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Generate context with retry logic
   const { fullContext, contextResult } = await generateContextWithRetry({
     worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images,
-    draft, draftId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
+    draft, draftId, runId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
   });
 
-  await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
+  await updateGenerationTrace(draftId, 'context', 'completed', {
+    runId,
+    data: { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens }
+  });
 
   const { plan, enforcementMetadata } = await callLLMForPlan({
-    draftId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
-    correlationId, tokenLimit: config.tokenLimit, model: generationModel, granularity: config.granularity
+    draftId, runId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
+    correlationId, tokenLimit: config.tokenLimit, model: generationModel, repairModel: requestedRepairModel,
+    granularity: config.granularity, routingSession: generationRoute, repairRoutingSession: repairRoute,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -129,16 +184,20 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Add trace step for granularity enforcement if tasks were merged
   if (enforcementMetadata.enforced) {
-    await updateTrace(draftId, 'granularity_enforcement', 'completed', {
-      originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
-      granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+    await updateGenerationTrace(draftId, 'granularity_enforcement', 'completed', {
+      runId,
+      data: {
+        originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
+        granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+      }
     });
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  const finalTrace = await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = await updateGenerationTrace(draftId, 'llm', 'completed', { runId });
 
-  const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
+  // Persist the virtual request, never the implementation detail selected for this call.
+  const updatedContextConfig = { ...parsedContextConfig, generationModel: requestedGenerationModel, granularityEnforcement: enforcementMetadata };
 
   // Build initial chat history with user prompt summary and assistant confirmation
   const chatHistory = buildInitialChatHistory(draft.initial_prompt, validatedPlan.length);
@@ -153,16 +212,26 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     chatHistoryJson = '[]';
   }
 
-  await db('task_drafts').where({ draft_id: draftId }).update({
-    plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-    name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+  const completed = await persistGenerationCompletion({
+    database: db,
+    draftId,
+    runId,
+    expectedTrace: JSON.stringify(finalTrace),
+    updates: {
+      plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
+      generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
+      name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+    }
   });
+  if (!completed) {
+    throw new Error(`Planner generation run ${runId} is no longer active`);
+  }
 
   // Emit final completion event so the UI can transition without polling
   const eventPublisher = getEventPublisher();
   const published = await eventPublisher.publishDraftUpdate({
     draftId,
+    runId,
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',
@@ -173,4 +242,17 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   }
 
   return validatedPlan;
+}
+
+function configModelFromDraft(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const model = (value as { generationModel?: unknown }).generationModel;
+  return typeof model === 'string' && model.trim() ? model.trim() : undefined;
+}
+
+function parseRoutingModel(value: string): { requestedAgentAlias: string; requestedModel?: string } {
+  const separator = value.indexOf(':');
+  return separator < 0
+    ? { requestedAgentAlias: value }
+    : { requestedAgentAlias: value.slice(0, separator), requestedModel: value.slice(separator + 1) };
 }
