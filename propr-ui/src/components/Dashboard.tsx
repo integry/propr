@@ -7,9 +7,9 @@
  * no row of its own on a title or a toolbar: the panes start directly under the
  * global header, and the repository filter lives in that header.
  *
- * This file owns only three things — the shared repository filter, the socket
- * subscription that keeps every section current, and the responsive layout.
- * Each section reads its own slice of the dashboard API.
+ * This file owns only three things — the shared repository filter, the live
+ * activity subscription that tells each section when its own data changed, and
+ * the responsive layout. Each section reads its own slice of the dashboard API.
  *
  * The layout is a split-pane console, not a tray of cards. There are no boxes,
  * and a rule is spent only where a pane actually ends: one continuous vertical
@@ -23,7 +23,7 @@
  * halfway down the screen above a band of dead white space.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -35,9 +35,7 @@ import { ConnectSoftPromoBanner } from './ConnectPlusBanner';
 import { RepositorySelector, type RepoOption } from './RepositorySelector';
 import { useHeaderScopeSlot } from './headerScopeSlot';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
-import { useSocket } from '../contexts/useSocket';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
-import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import { isDefaultParamValue } from './TaskList/utils';
 import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
 import { HappeningNowSection } from './Dashboard/HappeningNowSection';
@@ -45,7 +43,7 @@ import { CompletedFeed } from './Dashboard/CompletedFeed';
 import { HistoricalStatsPanel } from './Dashboard/HistoricalStatsPanel';
 import { RepositoryIconProvider, type RepositoryIconInfo } from './Dashboard/sectionPrimitives';
 import { ALL_REPOSITORIES, REPOSITORY_PARAM } from './Dashboard/sectionState';
-import type { TaskUpdatePayload } from '@propr/shared';
+import { useSectionRefreshTokens } from './Dashboard/useSectionRefreshTokens';
 
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
@@ -92,29 +90,22 @@ const Dashboard: React.FC = () => {
     return icons;
   }, [repos]);
 
-  // Live updates. One coalesced refresh per burst of task events bumps a token
-  // every section reads, so ten events in a row cost one request per section.
-  const { onTaskUpdate, isConnected } = useSocket();
-  const [refreshToken, setRefreshToken] = useState(0);
-  const taskEventFingerprintsRef = useRef<Map<string, string>>(new Map());
+  /*
+    Live updates, per section.
 
-  const scheduleLiveRefresh = useLiveRefreshScheduler({
-    isConnected,
-    refresh: () => setRefreshToken(token => token + 1),
-  });
+    One shared token meant an agent's tool-call heartbeat re-ran the aggregate
+    completion-count query behind the historical stats panel. Each section now
+    gets a token bumped only by the changes it actually reflects, and the
+    client-side fingerprint heuristic is gone: the pushed envelope already states
+    the domain, the change and a revision, so the client no longer has to guess
+    from a worker state string whether a frame mattered.
 
-  useEffect(() => {
-    if (!isConnected) return;
-    const handleTaskUpdate = (payload: TaskUpdatePayload) => {
-      const fingerprint = `${payload.state}\0${payload.repository ?? ''}\0${payload.issueNumber ?? ''}`;
-      if (taskEventFingerprintsRef.current.get(payload.taskId) === fingerprint) return;
-      taskEventFingerprintsRef.current.set(payload.taskId, fingerprint);
-      scheduleLiveRefresh();
-    };
-    return onTaskUpdate(handleTaskUpdate);
-  }, [isConnected, onTaskUpdate, scheduleLiveRefresh]);
-
-  const sectionProps = { repository, refreshToken };
+    Coalescing, hidden-tab pausing, reconnect reconciliation and disconnected
+    fallback polling stay where they were — inside each section's own
+    `useDashboardSection` — so a dropped socket still leaves the last rows on
+    screen and still refreshes them.
+  */
+  const refreshTokens = useSectionRefreshTokens(repository);
 
   const headerScopeSlot = useHeaderScopeSlot();
   const showRepositoryFilter = reposLoading || repoOptions.length > 1;
@@ -235,19 +226,19 @@ const Dashboard: React.FC = () => {
         */}
         <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_minmax(min-content,1fr)]">
           <div className="min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-1">
-            <NeedsAttentionPanel {...sectionProps} />
+            <NeedsAttentionPanel repository={repository} refreshToken={refreshTokens.attention} />
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-1 lg:border-r">
-            <HappeningNowSection {...sectionProps} />
+            <HappeningNowSection repository={repository} refreshToken={refreshTokens.active} />
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-1 lg:row-start-2 lg:border-b-0 lg:border-r">
-            <CompletedFeed {...sectionProps} />
+            <CompletedFeed repository={repository} refreshToken={refreshTokens.completed} />
           </div>
 
           <div className="min-w-0 border-b border-slate-200 lg:col-start-2 lg:row-start-2 lg:border-b-0">
-            <HistoricalStatsPanel {...sectionProps} />
+            <HistoricalStatsPanel repository={repository} refreshToken={refreshTokens.stats} />
           </div>
         </div>
       </div>

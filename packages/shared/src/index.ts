@@ -46,6 +46,21 @@ export {
   type DraftUpdateGenerationTrace,
 } from './events.js';
 
+// Export the general activity push surface consumed by the dashboard, the
+// goals console and the header. It lives in its own module so producers and
+// consumers share one declaration of `domain` / `change` / scope.
+export {
+  ACTIVITY_UPDATE,
+  GOAL_UPDATE,
+  ACTIVITY_DOMAINS,
+  ACTIVITY_CHANGES,
+  isActivityUpdatePayload,
+  type ActivityDomain,
+  type ActivityChange,
+  type ActivityUpdatePayload,
+  type GoalUpdatePayload,
+} from './activityEvents.js';
+
 // Export usage configuration and metrics types
 export {
   type AgentTankConfig,
