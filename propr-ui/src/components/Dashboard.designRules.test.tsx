@@ -44,7 +44,13 @@ vi.mock('../api/dashboardApi', () => ({
 }));
 
 vi.mock('../contexts/useSocket', () => ({
-  useSocket: () => ({ isConnected: true, onTaskUpdate: () => () => {} }),
+  useSocket: () => ({
+    isConnected: true,
+    subscribeToActivity: () => {},
+    unsubscribeFromActivity: () => {},
+    onActivityUpdate: () => () => {},
+    onGoalUpdate: () => () => {},
+  }),
 }));
 
 vi.mock('../hooks/useSystemReadiness', () => ({

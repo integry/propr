@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Dashboard from './Dashboard';
+import { SocketContext, type SocketContextValue } from '../contexts/SocketContext';
 import { NeedsAttentionPanel } from './Dashboard/NeedsAttentionPanel';
 import {
   getDashboardActive,
@@ -9,7 +10,7 @@ import {
   getDashboardOutcomes,
   getDashboardStats,
 } from '../api/dashboardApi';
-import type { TaskUpdatePayload } from '@propr/shared';
+import type { ActivityChange, ActivityDomain, ActivityUpdatePayload } from '@propr/shared';
 import {
   activeItem,
   activeResponse,
@@ -28,19 +29,46 @@ vi.mock('../api/dashboardApi', () => ({
 }));
 
 let socketConnected = true;
-let taskUpdateHandler: ((payload: TaskUpdatePayload) => void) | null = null;
+let activityHandler: ((payload: ActivityUpdatePayload) => void) | null = null;
 
 vi.mock('../contexts/useSocket', () => ({
   useSocket: () => ({
     isConnected: socketConnected,
-    onTaskUpdate: (handler: (payload: TaskUpdatePayload) => void) => {
-      taskUpdateHandler = handler;
+    subscribeToActivity: () => {},
+    unsubscribeFromActivity: () => {},
+    onGoalUpdate: () => () => {},
+    onActivityUpdate: (handler: (payload: ActivityUpdatePayload) => void) => {
+      activityHandler = handler;
       return () => {
-        if (taskUpdateHandler === handler) taskUpdateHandler = null;
+        if (activityHandler === handler) activityHandler = null;
       };
     },
   }),
 }));
+
+/** One pushed activity frame, in the envelope the server publishes. */
+const activity = (
+  domain: ActivityDomain,
+  change: ActivityChange,
+  overrides: Partial<ActivityUpdatePayload> = {},
+): ActivityUpdatePayload => ({
+  eventType: 'activity:update',
+  domain,
+  change,
+  entityId: 'task-1',
+  repository: 'acme/app',
+  terminal: change === 'completed' || change === 'failed' || change === 'cancelled',
+  occurredAt: new Date().toISOString(),
+  ...overrides,
+});
+
+/** Delivers one frame in its own flush, so only coalescing can collapse a burst. */
+async function push(payload: ActivityUpdatePayload): Promise<void> {
+  await act(async () => {
+    activityHandler?.(payload);
+    await Promise.resolve();
+  });
+}
 
 vi.mock('../hooks/useSystemReadiness', () => ({
   useSystemReadiness: () => ({
@@ -90,15 +118,27 @@ const LocationProbe: React.FC = () => {
   return <span data-testid="location-search">{location.search}</span>;
 };
 
-function renderDashboard(initialEntry = '/') {
-  return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <LocationProbe />
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-      </Routes>
-    </MemoryRouter>,
+/*
+  The sections read the connection from the context rather than through
+  `useSocket`, so the provider is part of the tree under test: with it, an idle
+  dashboard is genuinely idle, and without a connection every section falls back
+  to its bounded poll.
+*/
+function dashboardTree(initialEntry = '/') {
+  return (
+    <SocketContext.Provider value={{ isConnected: socketConnected } as unknown as SocketContextValue}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <LocationProbe />
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+        </Routes>
+      </MemoryRouter>
+    </SocketContext.Provider>
   );
+}
+
+function renderDashboard(initialEntry = '/') {
+  return render(dashboardTree(initialEntry));
 }
 
 /** Every section has landed its first read. */
@@ -111,7 +151,7 @@ describe('Dashboard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     socketConnected = true;
-    taskUpdateHandler = null;
+    activityHandler = null;
     mockAttention.mockResolvedValue(attentionResponse());
     mockActive.mockResolvedValue(activeResponse([activeItem()]));
     mockOutcomes.mockResolvedValue(outcomesResponse([outcomeItem()]));
@@ -234,30 +274,40 @@ describe('Dashboard', () => {
     expect(mockStats).toHaveBeenCalledWith('acme/app', '7d');
   });
 
-  it('coalesces a burst of task updates into a single refresh per section', async () => {
-    renderDashboard();
-    await waitForSections();
+  it('coalesces a burst of activity into a single refresh per interested section', async () => {
+    // The clock is held still for the burst. Each frame is still delivered in
+    // its own flush, so only the scheduler's coalescing can collapse them —
+    // but on real timers a loaded machine can spend longer than the coalescing
+    // window delivering ten frames, which splits one burst into two windows and
+    // costs a second read. That is correct behaviour and a broken assertion, so
+    // the window is stepped explicitly instead of raced against.
+    vi.useFakeTimers();
+    try {
+      renderDashboard();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(screen.getByTestId('historical-stats-section')).toBeInTheDocument();
+      expect(mockActive).toHaveBeenCalledTimes(1);
+      expect(activityHandler).not.toBeNull();
 
-    await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(1));
-    expect(taskUpdateHandler).not.toBeNull();
+      for (let index = 0; index < 10; index += 1) {
+        await push(activity('task', 'completed', { entityId: `task-${index}` }));
+      }
+      // Still inside the window: the burst has cost nothing yet.
+      expect(mockActive).toHaveBeenCalledTimes(1);
 
-    // Each event is delivered in its own flush, so only the scheduler's
-    // coalescing can collapse them into one read per section.
-    for (let index = 0; index < 10; index += 1) {
-      await act(async () => {
-        taskUpdateHandler?.({
-          taskId: `task-${index}`,
-          state: 'claude_execution',
-          repository: 'acme/app',
-        } as TaskUpdatePayload);
-        await Promise.resolve();
-      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(mockActive).toHaveBeenCalledTimes(2);
+      expect(mockStats).toHaveBeenCalledTimes(2);
+      expect(mockAttention).toHaveBeenCalledTimes(2);
+      expect(mockOutcomes).toHaveBeenCalledTimes(2);
+
+      // And nothing trails in behind the coalesced read.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(mockActive).toHaveBeenCalledTimes(2);
+      expect(mockStats).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
     }
-
-    await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(2));
-    expect(mockAttention).toHaveBeenCalledTimes(2);
-    expect(mockOutcomes).toHaveBeenCalledTimes(2);
   });
 
   it('does not reorder running work under a pointer when live updates arrive', async () => {
@@ -276,9 +326,7 @@ describe('Dashboard', () => {
 
     // The server now reports the rows the other way round.
     mockActive.mockResolvedValue(activeResponse([second, first]));
-    await act(async () => {
-      taskUpdateHandler?.({ taskId: 'b', state: 'post_processing', repository: 'acme/app' } as TaskUpdatePayload);
-    });
+    await push(activity('task', 'progressed', { entityId: 'b' }));
     await waitFor(() => expect(mockActive).toHaveBeenCalledTimes(2));
 
     const titles = screen.getAllByText(/(Alpha|Beta) work/).map(node => /(Alpha|Beta) work/.exec(node.textContent ?? '')?.[0]);
@@ -291,14 +339,7 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText('Add retry budget')).toBeInTheDocument());
 
     socketConnected = false;
-    rerender(
-      <MemoryRouter initialEntries={['/']}>
-        <LocationProbe />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    rerender(dashboardTree());
 
     // The rows are the report. A dropped socket never blanks the dashboard,
     // and it no longer narrates itself across the top of the page either.

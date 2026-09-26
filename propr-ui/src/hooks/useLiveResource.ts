@@ -8,6 +8,9 @@ import type {
 import { useSocket } from '../contexts/useSocket';
 import { useLiveRefreshScheduler } from './useLiveRefreshScheduler';
 
+/** Scope value meaning every repository. */
+export const ALL_SCOPES = 'all';
+
 /** What a consumer cares about, declared once instead of filtered ad hoc. */
 export interface LiveResourceInterest {
   /** Activity domains that should trigger a refresh. */
@@ -52,6 +55,8 @@ export interface LiveResource<T> {
   data: T | null;
   error: string | null;
   loading: boolean;
+  /** True while a read for the current scope is in flight. */
+  refreshing: boolean;
   /** Force an immediate read, for a retry button. */
   refreshNow: () => void;
 }
@@ -62,22 +67,26 @@ interface ResourceState<T> {
   error: string | null;
   /** A read for this scope has settled, successfully or not. */
   settled: boolean;
+  refreshing: boolean;
 }
 
 const DEFAULT_FALLBACK_INTERVAL_MS = 30_000;
 
 const emptyState = <T,>(scopeKey: string): ResourceState<T> =>
-  ({ scopeKey, data: null, error: null, settled: false });
+  ({ scopeKey, data: null, error: null, settled: false, refreshing: false });
 
 export function matchesInterest(payload: ActivityUpdatePayload, interest: LiveResourceInterest): boolean {
   if (interest.domains && !interest.domains.includes(payload.domain)) return false;
   if (interest.changes && !interest.changes.includes(payload.change)) return false;
-  const scope = interest.repository ?? 'all';
+  const scope = interest.repository ?? ALL_SCOPES;
   // A null repository is instance-wide and always relevant; anything else must
   // match the scope the caller is showing.
-  if (scope !== 'all' && payload.repository !== null && payload.repository !== scope) return false;
+  if (scope !== ALL_SCOPES && payload.repository !== null && payload.repository !== scope) return false;
   return true;
 }
+
+/** Alias retained for consumers of the dashboard activity hook. */
+export const matchesLiveInterest = matchesInterest;
 
 /**
  * Push-first read of one resource.
@@ -127,6 +136,10 @@ export function useLiveResource<T>({
     const scope = scopeRef.current;
     const controller = new AbortController();
     controllerRef.current = controller;
+    setState(previous => ({
+      ...(previous.scopeKey === scope ? previous : emptyState<T>(scope)),
+      refreshing: true,
+    }));
     // Two guards on every settlement, because both can invalidate a result: a
     // newer request has been issued, or the scope moved on while this one was
     // in flight.
@@ -136,15 +149,15 @@ export function useLiveResource<T>({
     try {
       const data = await readRef.current(controller.signal);
       if (superseded()) return;
-      setState({ scopeKey: scope, data, error: null, settled: true });
+      setState({ scopeKey: scope, data, error: null, settled: true, refreshing: false });
     } catch (error) {
       if (superseded()) return;
       const message = (error as Error)?.message || 'Request failed';
       // Keep the last good data on screen. A failed refresh is not evidence
       // that the work disappeared, so blanking the section would be a lie.
       setState(previous => (previous.scopeKey === scope
-        ? { ...previous, error: message, settled: true }
-        : { scopeKey: scope, data: null, error: message, settled: true }));
+        ? { ...previous, error: message, settled: true, refreshing: false }
+        : { scopeKey: scope, data: null, error: message, settled: true, refreshing: false }));
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
     }
@@ -202,8 +215,8 @@ export function useLiveResource<T>({
     ];
     if (goals) {
       unsubscribers.push(onGoalUpdate((payload: GoalUpdatePayload) => {
-        const scope = interestRef.current.repository ?? 'all';
-        if (scope === 'all' || payload.repository === scope) schedule();
+        const scope = interestRef.current.repository ?? ALL_SCOPES;
+        if (scope === ALL_SCOPES || payload.repository === null || payload.repository === scope) schedule();
       }));
     }
     if (notifications) {
@@ -233,6 +246,7 @@ export function useLiveResource<T>({
     data: current.data,
     error: current.error,
     loading: !disabled && !current.settled,
+    refreshing: !disabled && current.refreshing,
     refreshNow,
-  }), [current.data, current.error, current.settled, disabled, refreshNow]);
+  }), [current.data, current.error, current.settled, current.refreshing, disabled, refreshNow]);
 }

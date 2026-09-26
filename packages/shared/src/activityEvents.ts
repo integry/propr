@@ -87,8 +87,13 @@ export type GoalActivityState =
 export interface GoalUpdatePayload {
   eventType: typeof GOAL_UPDATE;
   goalId: string;
-  repository: string;
-  state: GoalActivityState;
+  repository: string | null;
+  /** Normalized state when supplied by the publisher. */
+  state?: GoalActivityState;
+  /** Raw transition fields supplied by goal publishers. */
+  taskId?: string | null;
+  desiredState?: string;
+  resultState?: string | null;
   /** The task currently executing the goal, when one is running. */
   currentTaskId?: string | null;
   occurredAt: string;
@@ -136,6 +141,7 @@ export function isActivityUpdatePayload(value: unknown): value is ActivityUpdate
   // forwarded and crash a consumer's switch statement.
   return candidate.eventType === ACTIVITY_UPDATE
     && typeof candidate.entityId === 'string'
+    && (candidate.repository === null || typeof candidate.repository === 'string')
     && typeof candidate.occurredAt === 'string'
     && !Number.isNaN(Date.parse(candidate.occurredAt))
     && (ACTIVITY_DOMAINS as readonly string[]).includes(candidate.domain as string)

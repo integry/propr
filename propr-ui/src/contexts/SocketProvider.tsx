@@ -217,6 +217,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
     const detachActivitySurface = activitySurface.attach(newSocket, isCurrentScope);
+    const detachGoalRefresh = activitySurface.subscriptions.onGoalUpdate(refreshDesktopActiveWork);
 
     setSocket(newSocket);
     reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
@@ -245,6 +246,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       newSocket.off(INDEXING_UPDATE, indexingUpdated);
       newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
+      detachGoalRefresh();
       detachActivitySurface();
       newSocket.disconnect();
     };
