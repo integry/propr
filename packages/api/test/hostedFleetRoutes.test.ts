@@ -177,15 +177,7 @@ describe('hosted fleet bootstrap status', () => {
     });
 
     test('rejects missing, non-positive, and unreasonably large initial administrator IDs', async () => {
-        for (const initialAdminGithubUserId of [
-            '',
-            'not-a-github-id',
-            '0',
-            '000',
-            '-1',
-            '1.5',
-            '1'.repeat(21),
-        ]) {
+        for (const initialAdminGithubUserId of ['', 'not-a-github-id', '0', '000', '-1', '1.5', '1'.repeat(21)]) {
             const { response, record } = recorder();
             await routes({ initialAdminGithubUserId }).getBootstrapStatus(fleetRequest(fleetSecret), response);
             assert.equal(record.status, 409);
@@ -437,10 +429,7 @@ describe('hosted fleet Express wiring', () => {
             const body = await response.json() as Record<string, unknown>;
             if (path.endsWith('/status')) {
                 assert.deepEqual(Object.keys(body).sort(), [
-                    'githubAuth',
-                    'githubAuthMode',
-                    'githubEventIntake',
-                    'githubEventIntakeStatus',
+                    'githubAuth', 'githubAuthMode', 'githubEventIntake', 'githubEventIntakeStatus',
                 ]);
             } else if (path.endsWith('/queue')) {
                 assert.deepEqual(body, { waiting: 2, active: 1 });
