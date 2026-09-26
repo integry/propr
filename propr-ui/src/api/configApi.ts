@@ -3,6 +3,7 @@ import type {
   MonitoredRepo,
   RepoBranchesResponse,
   RepoConfigResponse,
+  RepoWorkflowsResponse,
   SystemSettings,
 } from './proprTypes';
 import type { SyntheticAgentConfig } from '@propr/shared';
@@ -61,6 +62,8 @@ export const updateRepoConfig = (repos: MonitoredRepo[]): Promise<RepoConfigUpda
 export const getAvailableGithubRepos = (): Promise<GithubReposResponse> => getJson('/api/github/repos');
 export const getRepoBranches = (owner: string, repo: string): Promise<RepoBranchesResponse> =>
   getJson(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+export const getRepoWorkflows = (owner: string, repo: string): Promise<RepoWorkflowsResponse> =>
+  getJson(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/workflows`);
 export const getSettings = (): Promise<SystemSettings> => getJson('/api/config/settings');
 
 export interface ConfigUpdateResponse {

@@ -1,3 +1,5 @@
+import type { RepoWorkflow } from '../api/proprTypes';
+
 /** CSV-style quoting preserves commas and quotes inside exact workflow names. */
 export function formatWorkflowInput(selection: string[]): string {
   return selection.map(value => /[,"\r\n]/.test(value)
@@ -34,4 +36,16 @@ export function parseWorkflowInput(value: string): string[] | null {
   if (quoted) return null;
   append();
   return selection;
+}
+
+/** The identities the worker matches a stored entry against: ID, path, file name and display name, case-insensitively. */
+export function workflowMatchesEntry(workflow: RepoWorkflow, entry: string): boolean {
+  const normalized = entry.trim().toLowerCase();
+  return [String(workflow.id), workflow.path, workflow.file, workflow.name].some(identity => identity.toLowerCase() === normalized);
+}
+
+/** Selecting stores the file name; deselecting removes every entry that identifies the workflow, whichever spelling it used. */
+export function toggleWorkflowSelection(selection: string[], workflow: RepoWorkflow, selected: boolean): string[] {
+  const others = selection.filter(entry => !workflowMatchesEntry(workflow, entry));
+  return selected ? [...others, workflow.file] : others;
 }
