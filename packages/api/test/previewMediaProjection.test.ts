@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- projection regressions share cache, database, and route fixtures */
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
