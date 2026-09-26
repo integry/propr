@@ -47,6 +47,8 @@ export function createInertSocketContextValue(
     onTaskLiveUpdate: subscribe,
     onActivityUpdate: subscribe,
     onGoalUpdate: subscribe,
+    onNotificationUpdate: subscribe,
+    onUsageUpdate: subscribe,
     ...overrides,
   };
 }
