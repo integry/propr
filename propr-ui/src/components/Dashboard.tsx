@@ -140,7 +140,7 @@ const Dashboard: React.FC = () => {
           belongs rather than on a row of its own.
 
           From `lg` up the filter mounts in the global toolbar, immediately
-          left of search: the panes then start directly under that toolbar's
+          right of search: the panes then start directly under that toolbar's
           rule, with no page bar between them. A 36px bar holding a title on
           the left and this filter on the right spent a full row and 800px of
           empty width on one control.
