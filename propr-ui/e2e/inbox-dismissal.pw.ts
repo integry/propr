@@ -49,13 +49,69 @@ const notifications = [
   },
 ];
 
-async function stubInbox(page: Page): Promise<void> {
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const pullRequestLink = (prNumber: number) => ({
+  type: 'external_link', label: 'Open pull request', href: `https://github.com/integry/propr/pull/${prNumber}`,
+});
+function triageItem(id: string, minutes: number, fields: Record<string, unknown>) {
+  const occurredAt = minutesAgo(minutes);
+  return {
+    id, deduplicationKey: id, severity: 'success', actions: ['follow_up', 'open_pr', 'dismiss'],
+    occurredAt, createdAt: occurredAt, readAt: null, dismissedAt: null, ...fields,
+  };
+}
+
+// Rows with zero, one and two commands, generated titles and a clean review.
+const triageNotifications = [
+  triageItem('ready-2498', 6, {
+    kind: 'pull_request', severity: 'info',
+    target: { type: 'pull_request', repository: 'integry/propr', prNumber: 2498 },
+    metadata: { completedImplementationTaskId: 'task-2498' },
+    previewMedia: [{
+      title: 'Inbox rows', description: 'The denser Inbox list.', type: 'image',
+      url: 'https://github.com/user-attachments/assets/inbox-rows',
+    }],
+    title: 'PR #2498 ready for review',
+    body: 'Review deferred until the continuation pull request passes its exact-head checks.',
+    action: pullRequestLink(2498),
+  }),
+  triageItem('review-2511', 14, {
+    kind: 'review', target: { type: 'review', repository: 'integry/propr', prNumber: 2511, taskId: 'task-2511' },
+    title: '[Epic] MCP Operator Surface: Activity, Control And Observability',
+    body: 'Score 6/10 · 2 issues found: Check the head SHA before posting; Guard the empty activity page',
+    action: pullRequestLink(2511),
+  }),
+  triageItem('review-2519', 32, {
+    kind: 'review', target: { type: 'review', repository: 'integry/propr', prNumber: 2519, taskId: 'task-2519' },
+    title: 'Retry webhook deliveries that time out',
+    body: 'Score 3/10 · 4 issues found: Retries never back off; Delivery ids are reused',
+    action: pullRequestLink(2519), readAt: minutesAgo(20),
+  }),
+  triageItem('review-2528', 47, {
+    kind: 'review', target: { type: 'review', repository: 'integry/propr', prNumber: 2528, taskId: 'task-2528' },
+    title: 'Dashboard cleanup: remove unused widgets and tighten spacing',
+    body: 'Score 9/10 · 0 issues found',
+    action: pullRequestLink(2528),
+  }),
+  triageItem('merge-2490', 95, {
+    kind: 'pull_request', severity: 'info',
+    target: { type: 'pull_request', repository: 'integry/propr', prNumber: 2490 },
+    metadata: { completionType: 'merge' },
+    title: 'Merge completed for PR #2490',
+    body: 'Merged main into 2490/inbox-density cleanly.',
+    actions: ['open_pr', 'dismiss'], action: pullRequestLink(2490), readAt: minutesAgo(60),
+  }),
+];
+
+async function stubInbox(page: Page, items: readonly unknown[] = notifications): Promise<void> {
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
+  await page.route('https://github.com/user-attachments/assets/**', route => previewImage
+    ? route.fulfill({ contentType: 'image/png', body: previewImage }) : route.abort());
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     const dismissMatch = path.match(/^\/api\/notifications\/([^/]+)\/dismiss$/);
     if (dismissMatch) {
-      const notification = notifications.find(item => item.id === decodeURIComponent(dismissMatch[1]))!;
+      const notification = (items as typeof notifications).find(item => item.id === decodeURIComponent(dismissMatch[1]))!;
       return route.fulfill({ json: {
         notification: { ...notification, dismissedAt: '2026-09-16T20:01:00.000Z' },
         unreadCount: 1,
@@ -64,7 +120,7 @@ async function stubInbox(page: Page): Promise<void> {
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: false },
       '/api/auth/user': user,
-      '/api/notifications': { notifications, unreadCount: 2, nextCursor: null },
+      '/api/notifications': { notifications: items, unreadCount: 2, nextCursor: null },
       '/api/notifications/unread-count': { unreadCount: 2 },
       '/api/notifications/config': { push: { configured: false, vapidPublicKey: null } },
       '/api/notifications/preferences': {
@@ -77,6 +133,18 @@ async function stubInbox(page: Page): Promise<void> {
       ? { json: responses[path] }
       : { status: 503, json: { error: 'Optional API unavailable in Inbox fixture' } });
   });
+}
+
+let previewImage: Buffer | undefined;
+
+/** Opens the triage Inbox, using a real screenshot of it as the published preview image. */
+async function openTriageInbox(page: Page): Promise<void> {
+  await stubInbox(page, triageNotifications);
+  await page.goto('/inbox');
+  await expect(page.getByRole('article')).toHaveCount(triageNotifications.length);
+  previewImage ??= await page.screenshot();
+  await page.reload();
+  await expect(page.getByRole('img', { name: 'Inbox rows', exact: true })).toBeVisible();
 }
 
 async function capture(page: Page, name: string): Promise<void> {
@@ -128,14 +196,18 @@ test('desktop shows one newest-first list titled by PR, with only System collaps
   const [review, fix, plan] = [articles.nth(0), articles.nth(1), articles.nth(2)];
   await expect(review).toHaveAccessibleName(prTitle);
   await expect(review).toContainText('Review completed');
-  await expect(review.getByTitle('Pull Request #81')).toHaveText('PR81');
-  await expect(review.getByRole('button')).toHaveText(['', '/fix']);
+  await expect(review.getByTitle('Pull request #81')).toHaveText('PR #81');
+  await expect(review.getByRole('img', { name: 'Unread · Score 8/10 · 2 issues' })).toBeVisible();
+  await expect(review.getByRole('button')).toHaveText(['/fix', '']);
   await expect(fix).toContainText('Fix completed');
-  await expect(fix.getByRole('button')).toHaveText(['', '/review', '/ultrafix']);
+  await expect(fix.getByRole('button')).toHaveText(['/review', '/ultrafix', '']);
   await expect(plan).toHaveAccessibleName('Improve Inbox notifications');
   await expect(plan.getByRole('button')).toHaveCount(1);
   for (const article of await articles.all()) {
     await expect(article).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await expect(article).toHaveCSS('border-radius', '0px');
+    // Status, title and summary lines with the commands in the right rail, not a card per item.
+    expect((await article.boundingBox())!.height).toBeLessThanOrEqual(80);
   }
   await capture(page, 'inbox-cards-desktop.png');
 
@@ -148,13 +220,19 @@ test('desktop shows one newest-first list titled by PR, with only System collaps
   await expect(page.getByText('Notification dismissed.')).toHaveCount(0);
 });
 
-test('header keeps only an icon Clear all, and System sits in a grey panel below the feed', async ({ page }) => {
+test('header offers a labelled Clear all with confirmation, and System sits in a grey band below the feed', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await stubInbox(page);
   await page.goto('/inbox');
   await expect(page.getByText('Fixed 2 review findings in 3 files; tests pass.')).toBeVisible();
   await expect(page.getByRole('button', { name: /Refresh/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Clear all' })).toHaveText('');
+  const clearAll = page.getByRole('button', { name: 'Clear all' });
+  await expect(clearAll).toHaveText('Clear all');
+  await clearAll.click();
+  await expect(page.getByRole('dialog', { name: 'Clear all notifications?' })).toBeVisible();
+  await capture(page, 'inbox-clear-all-confirmation-desktop.png');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByText(/in one place/)).toHaveCount(0);
 
   const systemToggle = page.getByRole('button', { name: 'System 1' });
@@ -165,4 +243,114 @@ test('header keeps only an icon Clear all, and System sits in a grey panel below
   await expect(page.getByRole('article', { name: 'System component unhealthy: redis' })).toBeVisible();
   await page.getByRole('article', { name: 'System component unhealthy: redis' }).scrollIntoViewIfNeeded();
   await capture(page, 'inbox-header-system-desktop.png');
+});
+
+test('desktop rows stack title over summary, cluster time with the metadata, and end their text on one rail', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openTriageInbox(page);
+  const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
+  await expect(ready.getByRole('heading', { level: 3 })).toHaveText('Ready for review');
+  await expect(ready.getByTitle('Pull request #2498')).toHaveText('PR #2498');
+  await expect(ready.getByRole('button')).toHaveText(['/review', '/ultrafix', '']);
+  // The widest rail (thumbnail and two commands) still clears the dismiss button.
+  await expect(ready.getByRole('group', { name: 'Published visual previews' })).toBeVisible();
+  const ultrafix = (await ready.getByRole('button', { name: /ultrafix/ }).boundingBox())!;
+  const readyDismiss = (await ready.getByRole('button', { name: /^Dismiss/ }).boundingBox())!;
+  expect(ultrafix.x + ultrafix.width).toBeLessThanOrEqual(readyDismiss.x);
+
+  const clean = page.getByRole('article', { name: /^Dashboard cleanup/ });
+  await expect(clean.getByRole('button')).toHaveText(['']);
+  await expect(page.getByRole('article', { name: /^\[Epic\]/ }).getByRole('button')).toHaveText(['/fix', '']);
+
+  const thumbnail = (await ready.getByTitle('Inbox rows').boundingBox())!;
+  expect([thumbnail.width, thumbnail.height]).toEqual([48, 32]);
+
+  const articles = await page.getByRole('article').all();
+  expect(articles).toHaveLength(5);
+  const titleEdges = new Set<number>();
+  for (const article of articles) {
+    const title = (await article.getByRole('heading', { level: 3 }).boundingBox())!;
+    const summary = (await article.locator('p').boundingBox())!;
+    const repository = (await article.getByTitle('integry/propr').boundingBox())!;
+    const time = (await article.locator('time').boundingBox())!;
+    // The summary sits on its own line under the title, not after it.
+    expect(summary.y).toBeGreaterThanOrEqual(title.y + title.height - 1);
+    // The time follows the repository in the left cluster instead of floating mid-row.
+    expect(time.x - (repository.x + repository.width)).toBeLessThan(24);
+    titleEdges.add(Math.round(title.x + title.width));
+    expect((await article.boundingBox())!.height).toBeLessThanOrEqual(80);
+  }
+  expect([...titleEdges]).toHaveLength(1);
+
+  const dismiss = clean.getByRole('button', { name: /^Dismiss/ });
+  const dismissBox = (await dismiss.boundingBox())!;
+  expect(dismissBox.width).toBe(24);
+  await expect(page.getByRole('button', { name: 'Clear all' })).toHaveCSS('border-top-width', '1px');
+  await capture(page, 'inbox-rail-desktop.png');
+});
+
+test('phones keep one command line per row, with extra commands in a menu and a clear dismiss target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openTriageInbox(page);
+  const epic = page.getByRole('article', { name: /^\[Epic\]/ });
+  await expect(epic.getByRole('heading', { level: 3 })).toBeVisible();
+
+  const status = (await epic.getByRole('img').boundingBox())!;
+  const time = (await epic.locator('time').boundingBox())!;
+  const chip = (await epic.getByTitle('Pull request #2511').boundingBox())!;
+  const fix = (await epic.getByRole('button', { name: 'Send /fix to PR #2511' }).boundingBox())!;
+  const dismiss = (await epic.getByRole('button', { name: /^Dismiss/ }).boundingBox())!;
+  expect(Math.abs(time.y + time.height / 2 - (status.y + status.height / 2))).toBeLessThan(3);
+  // The PR chip and repository share the command line instead of squeezing line one.
+  expect(chip.y).toBeGreaterThan(time.y + 30);
+  expect(Math.abs(chip.y + chip.height / 2 - (fix.y + fix.height / 2))).toBeLessThan(3);
+  await expect(epic.getByTitle('integry/propr')).toHaveText('propr', { useInnerText: true });
+  expect(fix.height).toBeGreaterThanOrEqual(40);
+  // Dismiss is a 32px target on line one that stays clear of the time.
+  expect([dismiss.width, dismiss.height]).toEqual([32, 32]);
+  expect(Math.abs(dismiss.y + dismiss.height / 2 - (time.y + time.height / 2))).toBeLessThan(3);
+  expect(dismiss.x - (time.x + time.width)).toBeGreaterThanOrEqual(8);
+
+  // Two commands: /review stays inline beside the chip and /ultrafix moves to the overflow menu.
+  const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
+  await expect(ready.getByRole('button', { name: /ultrafix/ })).toHaveCount(0);
+  const readyChip = (await ready.getByTitle('Pull request #2498').boundingBox())!;
+  const review = (await ready.getByRole('button', { name: 'Send /review to PR #2498' }).boundingBox())!;
+  const more = ready.getByRole('button', { name: 'More commands for PR #2498' });
+  const moreBox = (await more.boundingBox())!;
+  const thumbnail = (await ready.getByTitle('Inbox rows').boundingBox())!;
+  for (const box of [review, moreBox, thumbnail]) {
+    expect(Math.abs(box.y + box.height / 2 - (readyChip.y + readyChip.height / 2))).toBeLessThan(3);
+  }
+  const readyRepository = ready.getByTitle('integry/propr');
+  expect(await readyRepository.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  // The shared chip and command line is the row's last line, so two commands don't add a fifth.
+  const readyBox = (await ready.boundingBox())!;
+  expect(readyBox.y + readyBox.height - (review.y + review.height)).toBeLessThanOrEqual(9);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  // The long title wraps to a second line rather than cutting off after a few words.
+  const titleBox = (await epic.getByRole('heading', { level: 3 }).boundingBox())!;
+  expect(titleBox.height).toBeGreaterThan(30);
+  await expect(page.getByRole('article', { name: /^Dashboard cleanup/ }).getByRole('button', { name: /^Send/ }))
+    .toHaveCount(0);
+  await capture(page, 'inbox-triage-mobile.png');
+
+  await more.click();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await expect(ready.getByRole('menuitem', { name: 'Send /ultrafix to PR #2498' })).toBeVisible();
+  await capture(page, 'inbox-overflow-menu-mobile.png');
+  await page.keyboard.press('Escape');
+  await expect(ready.getByRole('menu')).toHaveCount(0);
+});
+
+test('a preview image that fails to load leaves no placeholder beside the commands', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await stubInbox(page, triageNotifications);
+  await page.route('https://github.com/user-attachments/assets/**', route => route.abort());
+  await page.goto('/inbox');
+  const ready = page.getByRole('article', { name: 'PR #2498 ready for review' });
+  await expect(ready.getByRole('button', { name: 'Send /review to PR #2498' })).toBeVisible();
+  await expect(ready.getByRole('group', { name: 'Published visual previews' })).toBeHidden();
+  await expect(ready.getByRole('img', { name: /image unavailable/ })).toHaveCount(0);
 });

@@ -21,6 +21,13 @@ describe('preview thumbnails', () => {
     fireEvent.error(screen.getByAltText('Published screen 0'));
     expect(screen.getByRole('img', { name: /screen 0 — image unavailable/ })).toBeInTheDocument();
   });
+  it('drops a rail thumbnail whose image fails instead of showing a placeholder', () => {
+    render(<PreviewThumbnails media={media} limit={1} size="rail" />);
+    const group = screen.getByRole('group', { name: 'Published visual previews' });
+    fireEvent.error(screen.getByAltText('Published screen 0'));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(group).toBeEmptyDOMElement();
+  });
   it('renders nothing for legacy or disabled projections', () => {
     const { container } = render(<PreviewThumbnails />);
     expect(container).toBeEmptyDOMElement();

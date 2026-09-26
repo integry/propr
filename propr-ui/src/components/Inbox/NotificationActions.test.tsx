@@ -43,6 +43,13 @@ describe('Notification follow-up commands', () => {
     expect(notificationFollowupCommand(notification({}))).toBeNull();
     expect(notificationFollowupCommand(review)?.commands).toEqual(['/fix']);
     expect(notificationFollowupCommand(notification({ ...review, actions: ['dismiss'] }))).toBeNull();
+    // A clean review has nothing to fix; a failed reviewer still leaves /fix available.
+    expect(notificationFollowupCommand(notification({ ...review, body: 'Score 9/10 · 0 issues found' }))).toBeNull();
+    expect(notificationFollowupCommand(notification({
+      ...review, body: 'Score 9/10 · 0 issues found · 1 reviewer failed',
+    }))?.commands).toEqual(['/fix']);
+    expect(notificationFollowupCommand(notification({ ...review, body: 'Score 6/10 · 2 issues found: A; B' }))?.commands)
+      .toEqual(['/fix']);
     expect(notificationFollowupCommand(notification({
       kind: 'pull_request',
       severity: 'info',
@@ -70,6 +77,31 @@ describe('Notification follow-up commands', () => {
     await waitFor(() => expect(onCommandSent).toHaveBeenCalledTimes(1));
     expect(postTaskFollowup).toHaveBeenCalledWith('task-review', '/fix', 'pull_request');
     expect(screen.getByText('Sent /fix to PR #12.')).toBeInTheDocument();
+  });
+
+  test('keeps the first command inline and sends the others from the overflow menu', async () => {
+    vi.mocked(postTaskFollowup).mockResolvedValue({ success: true, message: 'Posted' });
+    const onCommandSent = vi.fn().mockResolvedValue(undefined);
+    const pullRequest = notification({
+      kind: 'pull_request',
+      severity: 'info',
+      target: { type: 'pull_request', repository: 'integry/propr', prNumber: 12 },
+      metadata: { completedImplementationTaskId: 'task-implementation' },
+    });
+    render(
+      <ToastProvider>
+        <NotificationActions notification={pullRequest} mutationsEnabled onCommandSent={onCommandSent} />
+      </ToastProvider>,
+    );
+
+    const more = screen.getByRole('button', { name: 'More commands for PR #12' });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Send /ultrafix to PR #12' }));
+
+    await waitFor(() => expect(onCommandSent).toHaveBeenCalledTimes(1));
+    expect(postTaskFollowup).toHaveBeenCalledWith('task-implementation', '/ultrafix', 'pull_request');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
   test('renders nothing in read-only mode', () => {
