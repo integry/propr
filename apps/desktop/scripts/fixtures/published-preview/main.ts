@@ -16,7 +16,10 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'propr-preview-proof', privilege
 } }]);
 
 app.whenReady().then(async () => {
-  const imagePath = process.argv[2];
+  // Electron can retain Chromium switches between the app entrypoint and its
+  // positional arguments, so the fixture-owned trailing argument is the only
+  // stable position across platforms and launch modes.
+  const imagePath = process.argv.at(-1);
   if (!imagePath) throw new Error('Published-preview fixture image path is required');
   const image = await readFile(imagePath);
   const desktopSession = session.fromPartition(`published-preview-${process.pid}`);
