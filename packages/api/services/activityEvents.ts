@@ -98,3 +98,23 @@ export function activityFromQueueStatsUpdate(payload: QueueStatsUpdatePayload): 
         occurredAt: payload.timestamp,
     };
 }
+
+/**
+ * Instance health moved.
+ *
+ * No run lifecycle event says that a worker or the daemon stopped, Redis went
+ * away or an agent stopped answering, so the health surfaces cannot be kept
+ * fresh by deriving this from the events above: it is published by
+ * `systemHealthWatcher`, which compares the status snapshot itself. The
+ * envelope carries no subject, so a consumer that suppresses repeats per
+ * subject still reacts to every health change.
+ */
+export function activityFromHealthChange(occurredAt: string): ActivityUpdatePayload {
+    return {
+        eventType: ACTIVITY_UPDATE,
+        domain: 'health',
+        change: 'updated',
+        terminal: false,
+        occurredAt,
+    };
+}

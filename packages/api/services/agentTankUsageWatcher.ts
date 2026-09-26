@@ -97,9 +97,12 @@ export class AgentTankUsageWatcher {
     if (snapshot === null || this.closed) return false;
     const previous = this.snapshot;
     this.snapshot = snapshot;
-    // The first probe seeds the snapshot: clients read on mount, so there is
-    // nothing to correct yet.
-    if (previous === null || previous === snapshot) return false;
+    if (previous === snapshot) return false;
+    // The first snapshot observed with listeners is published too. A sidebar
+    // that mounted before this probe read whatever Agent Tank showed then; if
+    // the quota moved in between, suppressing this would leave that sidebar
+    // showing the old value forever, because every later probe sees the same
+    // snapshot and stays silent.
     try {
       this.publish();
     } catch {

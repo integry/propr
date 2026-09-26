@@ -124,7 +124,7 @@ The UI subscribes to socket.io events, so the dashboard, task list, task detail,
 | What updates | When it updates | Event |
 | --- | --- | --- |
 | Header activity monitor, active plans, tasks awaiting review | a task, plan or queue change is published | `task:update`, `draft:update`, `queue:stats:update`, `activity:update` |
-| System health indicator and status modal | a repository index starts, finishes or fails, or agent capacity moves (per-file indexing progress is ignored) | `activity:update` (indexing, usage), `usage:update` |
+| System health indicator and status modal | a daemon, worker, Redis, GitHub-authentication or coding-agent state changes, a repository index starts, finishes or fails, or agent capacity moves (per-file indexing progress is ignored) | `activity:update` (health, indexing, usage), `usage:update` |
 | Inbox list and its unread badge | a notification is created, read or dismissed — including in another tab, or by a server-side cleanup such as a merged pull request | `notification:update` |
 | Agent Tank usage bars | a provider quota changes | `usage:update` |
 

@@ -75,7 +75,7 @@ because of that event.
 | `queue:stats:update` | queue depth or throughput changes | header activity monitor |
 | `notification:update` | a notification is created, read or dismissed | Inbox, unread badge |
 | `usage:update` | agent capacity or quota changes | usage sidebar, system status |
-| `activity:update` | derived from the lifecycle events above | header stats, shared system status (which ignores `change: 'progress'`) |
+| `activity:update` | derived from the lifecycle events above, plus the `health` domain when the instance's own health moves | header stats, shared system status (which ignores `change: 'progress'`) |
 
 `activity:update` is the general envelope (`domain`, `change`, `repository`,
 `subjectId`, `terminal`, `occurredAt`). It is derived in
@@ -124,10 +124,25 @@ above has one:
   event to the recipient's room.
 - `usage:update` is published when Agent Tank settings are saved, when a manual
   re-probe succeeds, and by `packages/api/services/agentTankUsageWatcher.ts`.
-  Agent Tank cannot call us, so that watcher is the one timer left in the
-  system: the API probes it for the whole instance — only while a client is
+  Agent Tank cannot call us, so that watcher is one of the two timers left in
+  the system: the API probes it for the whole instance — only while a client is
   connected — and publishes only when the snapshot actually moved. One backend
   probe replaces the same poll in every open tab.
+- `activity:update` with `domain: 'health'` is published by
+  `packages/api/services/systemHealthWatcher.ts`, the other remaining timer. A
+  worker, the daemon, Redis, GitHub authentication or a coding agent can stop
+  while the API and every client socket stay up, and no run lifecycle event says
+  so, so there is nothing to derive a health change from: the watcher compares
+  the same `/api/status` snapshot the clients read (the route exposes it as
+  `readStatusSnapshot`) against an allowlist of the health fields, ignoring the
+  response timestamp and routing diagnostics, and publishes only when what the
+  health surfaces show actually moved. The one snapshot it watches replaces the
+  30-second `/api/status` poll that used to run in every open tab.
+
+Both watchers publish the first state they observe while a client is connected.
+A client that read before the first probe may already be behind, and suppressing
+that first publication would strand it: every later probe sees the same state
+and stays silent, so nothing would ever correct it while its socket stays up.
 
 ## Running The UI In Development
 

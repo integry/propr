@@ -204,7 +204,14 @@ export type ActivityDomain =
   | 'indexing'
   | 'goal'
   | 'notification'
-  | 'usage';
+  | 'usage'
+  /**
+   * Instance health: daemon, workers, Redis, GitHub/agent authentication and
+   * agent reachability. Nothing in a run's lifecycle announces that a worker
+   * or the daemon stopped, so `health` is published by the watcher that looks
+   * at the status snapshot itself.
+   */
+  | 'health';
 
 /** What happened to the subject of an activity event */
 export type ActivityChange =

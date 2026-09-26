@@ -36,9 +36,23 @@ describe('agent tank usage watcher', { concurrency: false }, () => {
   test('says nothing while the numbers it already published hold', async () => {
     const harness = createWatcher();
 
-    assert.equal(await harness.watcher.probeOnce(), false, 'the first probe only seeds');
+    assert.equal(await harness.watcher.probeOnce(), true, 'the first probe announces its baseline');
     assert.equal(await harness.watcher.probeOnce(), false);
-    assert.equal(harness.published, 0);
+    assert.equal(await harness.watcher.probeOnce(), false);
+    assert.equal(harness.published, 1);
+  });
+
+  test('announces the first snapshot, which a mounted sidebar may already be behind', async () => {
+    // The sidebar mounts and reads A, the quota moves to B, and only then does
+    // the first probe run. Staying silent here would leave that sidebar on A
+    // for as long as it stays connected: every later probe sees B and matches.
+    const harness = createWatcher();
+    harness.setStatus({ claude: { used: 2 } });
+
+    assert.equal(await harness.watcher.probeOnce(), true);
+    assert.equal(harness.published, 1);
+    assert.equal(await harness.watcher.probeOnce(), false, 'B is now the baseline');
+    assert.equal(harness.published, 1);
   });
 
   test('publishes when a provider quota moves', async () => {
@@ -48,9 +62,9 @@ describe('agent tank usage watcher', { concurrency: false }, () => {
     harness.setStatus({ claude: { used: 2 } });
 
     assert.equal(await harness.watcher.probeOnce(), true);
-    assert.equal(harness.published, 1);
+    assert.equal(harness.published, 2);
     assert.equal(await harness.watcher.probeOnce(), false, 'the new value is now the baseline');
-    assert.equal(harness.published, 1);
+    assert.equal(harness.published, 2);
   });
 
   test('publishes when the integration is enabled or disabled behind the sidebar', async () => {
@@ -60,12 +74,11 @@ describe('agent tank usage watcher', { concurrency: false }, () => {
     harness.setSettings({ enabled: false, url: 'http://agent-tank.test' });
 
     assert.equal(await harness.watcher.probeOnce(), true);
-    assert.equal(harness.published, 1);
+    assert.equal(harness.published, 2);
   });
 
   test('does not probe when nobody is connected to be told', async () => {
     const harness = createWatcher();
-    await harness.watcher.probeOnce();
     harness.setListeners(false);
     harness.setStatus({ claude: { used: 3 } });
 
@@ -75,8 +88,6 @@ describe('agent tank usage watcher', { concurrency: false }, () => {
 
   test('stops probing once closed', async () => {
     const harness = createWatcher();
-    await harness.watcher.probeOnce();
-    harness.setStatus({ claude: { used: 4 } });
     await harness.watcher.close();
 
     assert.equal(await harness.watcher.probeOnce(), false);

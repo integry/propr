@@ -79,7 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared an interest in — a new `activity:update` envelope (`domain`,
   `change`, `repository`, `subjectId`, `terminal`) derived from the existing
   task, plan, indexing and queue events, plus `notification:update` published
-  into a recipient's room and `usage:update` for capacity. With the socket
+  into a recipient's room and `usage:update` for capacity. Instance health is
+  published too: nothing in a run's lifecycle says a worker, the daemon, Redis,
+  GitHub authentication or a coding agent went away, so the API watches the
+  `/api/status` snapshot once for the whole instance and publishes a `health`
+  change when it moves. With the socket
   connected and nothing happening, an open tab issues no requests after its
   initial load; polling is now the fallback for a client whose websocket is
   unavailable. A dismissal in one tab, or a server-side notification cleanup,

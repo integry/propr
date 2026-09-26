@@ -24,17 +24,18 @@ interface SystemStatusData {
 
 const SystemStatus: React.FC = () => {
   /*
-    Instance health moves with indexing and capacity, not with individual runs,
-    so those are the only pushed domains this reacts to. Reconnect
-    reconciliation - which this component already relied on - now comes from
-    the shared hook, along with hidden-tab pausing and the disconnected
-    fallback poll.
+    Instance health moves with the health snapshot itself (a worker, the daemon,
+    Redis, authentication or an agent going away), with indexing and with
+    capacity, not with individual runs, so those are the pushed domains this
+    reacts to. Reconnect reconciliation - which this component already relied on
+    - now comes from the shared hook, along with hidden-tab pausing and the
+    disconnected fallback poll.
   */
   const { data: status, error, isLoading } = useLiveResource<SystemStatusData>({
     read: () => getSystemStatus(),
     scopeKey: 'system-status',
     interest: {
-      domains: ['indexing', 'usage'],
+      domains: ['health', 'indexing', 'usage'],
       // Per-file indexing progress does not move the health rows.
       changes: ['created', 'started', 'completed', 'failed', 'cancelled', 'updated'],
       usage: true,

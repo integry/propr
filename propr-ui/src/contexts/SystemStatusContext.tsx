@@ -126,8 +126,11 @@ export const SystemStatusProvider: React.FC<{
 
   useEffect(() => {
     if (disabled || !socket?.isConnected) return;
-    // Instance health moves with indexing and capacity, not with individual
-    // runs, so those are the only pushed changes worth a read here.
+    // Instance health moves with the health snapshot itself, with indexing and
+    // with capacity, not with individual runs, so those are the only pushed
+    // changes worth a read here. A worker or the daemon stopping produces no run
+    // activity, so the `health` domain is what keeps this from holding a stale
+    // healthy snapshot while the socket stays connected.
     const refreshWhenVisible = () => {
       if (document.visibilityState !== 'hidden') void refreshStatus().catch(() => undefined);
     };
@@ -135,7 +138,9 @@ export const SystemStatusProvider: React.FC<{
       // Per-file indexing progress does not change what the health rows say,
       // so only a run starting, finishing or failing is worth a read.
       if (payload.change === 'progress') return;
-      if (payload.domain === 'indexing' || payload.domain === 'usage') refreshWhenVisible();
+      if (payload.domain === 'health'
+        || payload.domain === 'indexing'
+        || payload.domain === 'usage') refreshWhenVisible();
     });
     const unsubscribeUsage = socket.onUsageUpdate(refreshWhenVisible);
     return () => { unsubscribeActivity(); unsubscribeUsage(); };

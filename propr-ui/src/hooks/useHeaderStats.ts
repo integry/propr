@@ -65,12 +65,14 @@ const HEADER_INTERESTS: Record<HeaderStatsResource, {
     domains: ['task', 'plan'],
     changes: ['blocked', 'failed', 'completed', 'cancelled'],
   },
-  // Status is about the instance, not about one run: indexing and capacity are
-  // the only pushed changes that can move it, and per-file indexing progress
-  // does not change what the health rows say. Connect/reconnect reconciliation
-  // covers everything else.
+  // Status is about the instance, not about one run: health (a worker, the
+  // daemon, Redis, authentication or an agent), indexing and capacity are the
+  // pushed changes that move it, and per-file indexing progress does not change
+  // what the health rows say. A stopped worker produces no run activity at all,
+  // so without the `health` domain a connected client would keep its healthy
+  // snapshot until an unrelated trigger.
   status: {
-    domains: ['indexing', 'usage'],
+    domains: ['health', 'indexing', 'usage'],
     changes: ['created', 'started', 'completed', 'failed', 'cancelled', 'updated'],
   },
 };
