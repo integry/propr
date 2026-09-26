@@ -4,7 +4,51 @@ import { parseStructuredReview } from '../../../src/jobs/reviewOutputParser.js';
 import type { McpPrincipal } from './policy.js';
 import type { ToolDeps } from './tools.js';
 
-interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
+export interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
+
+/**
+ * GitHub's per-issue comments REST endpoint pages oldest-first only — it has no
+ * ordering parameters — so reading from the newest end has to go through the
+ * GraphQL comment connection with `last`/`before`.
+ */
+const NEWEST_COMMENTS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$last:Int!,$before:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      comments(last:$last,before:$before){
+        pageInfo{hasPreviousPage startCursor}
+        nodes{databaseId body url createdAt author{login}}
+      }
+    }
+  }
+}`;
+
+interface GraphCommentPage {
+  repository: { pullRequest: { comments: {
+    pageInfo: { hasPreviousPage: boolean; startCursor: string | null };
+    nodes: Array<{ databaseId: number | null; body: string | null; url: string; createdAt: string; author: { login: string } | null }>;
+  } | null } | null } | null;
+}
+
+/**
+ * The newest `limit` comments, newest first, with the cursor that continues
+ * backwards through the discussion. `nextCursor` is null at the first comment.
+ */
+export async function readNewestComments(
+  principal: McpPrincipal, target: { repository: string; pullRequest: number; limit: number; before?: string },
+): Promise<{ comments: ReviewComment[]; nextCursor: string | null }> {
+  const [owner, repo] = target.repository.split('/');
+  const response = await principal.github.graphql<GraphCommentPage>(NEWEST_COMMENTS_QUERY, {
+    owner, repo, number: target.pullRequest, last: target.limit, before: target.before ?? null,
+  });
+  const connection = response.repository?.pullRequest?.comments;
+  if (!connection) throw new McpError('NOT_FOUND', 'Pull request discussion is not readable.', 404);
+  // A connection window is always returned oldest-first; newest-first is its reverse.
+  const comments = [...connection.nodes].reverse().map(node => ({
+    id: Number(node.databaseId), body: node.body, html_url: node.url,
+    created_at: node.createdAt, user: node.author ? { login: node.author.login } : null,
+  }));
+  return { comments, nextCursor: connection.pageInfo?.hasPreviousPage ? connection.pageInfo.startCursor : null };
+}
 
 export async function projectDiscussionComment(deps: ToolDeps, comment: ReviewComment, target: { repository: string; pullRequest: number; head: string; bodyOffset: number }): Promise<Record<string, unknown>> {
   const body = comment.body || '';

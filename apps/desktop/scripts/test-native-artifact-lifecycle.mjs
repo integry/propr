@@ -133,8 +133,10 @@ const COMMAND_RESULT_CLASSES = Object.freeze([
 ]);
 
 // Distinguishes a bundle that really is still registered from an absence proof
-// that never got a readable answer out of `lsregister -dump`.
+// that never got a readable answer out of `lsregister -dump`, or one whose
+// re-issued `lsregister -u` kept failing while the bundle stayed listed.
 export const LAUNCH_SERVICES_STALE_REGISTRATION = 'STALE_REGISTRATION';
+export const LAUNCH_SERVICES_UNREGISTER_FAILED = 'UNREGISTER_FAILED';
 
 export class NativeLifecycleCommandFailure extends Error {
   constructor(resultClass) {
@@ -362,6 +364,7 @@ export class NativeLifecycleOperationFailure extends Error {
 const CLEANUP_RESULT_CLASSES = Object.freeze([
   ...COMMAND_RESULT_CLASSES,
   LAUNCH_SERVICES_STALE_REGISTRATION,
+  LAUNCH_SERVICES_UNREGISTER_FAILED,
 ]);
 
 export const describeCleanupFailure = ({ label, error }) => (
@@ -1130,15 +1133,16 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
   });
 
 // Carries why the absence proof ended without ever seeing the bundle gone: a
-// dump that kept listing it, or a dump that never produced a usable answer.
+// dump that kept listing it, a dump that never produced a usable answer, or a
+// bundle that stayed listed while the re-issued removal itself kept failing.
 export class LaunchServicesAbsenceFailure extends Error {
-  constructor(probeFailure) {
+  constructor(probeFailure, { unregisterFailed = false } = {}) {
     const resultClass = probeFailure === undefined
-      ? LAUNCH_SERVICES_STALE_REGISTRATION
+      ? unregisterFailed ? LAUNCH_SERVICES_UNREGISTER_FAILED : LAUNCH_SERVICES_STALE_REGISTRATION
       : probeFailure instanceof NativeLifecycleCommandFailure
         ? probeFailure.resultClass
         : 'COMMAND_FAILED';
-    super(resultClass === LAUNCH_SERVICES_STALE_REGISTRATION
+    super(probeFailure === undefined
       ? `Copied application remained registered with LaunchServices [result:${resultClass}]`
       : `Copied application registration could not be probed [result:${resultClass}]`);
     this.name = 'LaunchServicesAbsenceFailure';
@@ -1206,9 +1210,12 @@ export class LaunchServicesAuthority {
   async assertGone() {
     // The window is a deadline rather than a probe count, and it is only
     // consulted after a probe answered, so it always closes on evidence rather
-    // than on an unprobed timer.
+    // than on an unprobed timer. A failed re-issued removal does not prove the
+    // record stale either, so it also keeps the window running; it is retained
+    // so an exhausted window names why, since the CI log renders only the label.
     const deadline = this.now() + this.absenceBudgetMs;
     let lastProbeFailure;
+    let unregisterFailed = false;
     for (let attempt = 1; attempt <= this.absenceAttempts; attempt += 1) {
       try {
         if (!await this.isListed()) {
@@ -1232,10 +1239,12 @@ export class LaunchServicesAuthority {
       try {
         await this.unregister();
       } catch {
-        // Absence is concluded only from a dump, never from a -u exit status.
+        // Absence is concluded only from a dump, never from a -u exit status;
+        // the failure is only recorded so an exhausted window can name it.
+        unregisterFailed = true;
       }
     }
-    throw new LaunchServicesAbsenceFailure(lastProbeFailure);
+    throw new LaunchServicesAbsenceFailure(lastProbeFailure, { unregisterFailed });
   }
 }
 

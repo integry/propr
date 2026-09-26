@@ -207,7 +207,7 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
       try {
         assert.ok((await client.listTools()).tools.some(tool => tool.name === 'create_plan'));
         assert.ok(!(await client.listTools()).tools.some(tool => tool.name === 'merge_pull_request'));
-        assert.equal((await client.listResources()).resources.length, 4);
+        assert.equal((await client.listResources()).resources.length, 6);
         assert.equal((await client.getPrompt({ name: 'plan_change', arguments: { request: 'Improve reliability' } })).messages.length, 1);
         const connection = await client.callTool({ name: 'get_connection', arguments: {} });
         assert.equal((connection.structuredContent as ToolOutput).data.resource, resource);

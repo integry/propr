@@ -19,6 +19,7 @@ import {
   LaunchServicesAbsenceFailure,
   LaunchServicesAuthority,
   LAUNCH_SERVICES_STALE_REGISTRATION,
+  LAUNCH_SERVICES_UNREGISTER_FAILED,
   launchServicesRecordMatchesApplication,
   linuxProtocolDispatch,
   NativeLifecycleCommandFailure,
@@ -799,7 +800,8 @@ describe('native staged artifact lifecycle authority', () => {
     assert.equal(probes.length, 0);
     assert.deepEqual(unregisters, ['-u', '-u']);
 
-    // A record that never leaves is still reported stale, not as the -u failure.
+    // A record that never leaves while every re-issued -u fails is named as
+    // the removal failure, since that is the only evidence the window gathered.
     const stale = new LaunchServicesAuthority(applicationRoot, {}, {
       runCommand: async () => { throw new NativeLifecycleCommandFailure('COMMAND_FAILED'); },
       scanCommand: async () => ({ matched: true }),
@@ -809,7 +811,7 @@ describe('native staged artifact lifecycle authority', () => {
     stale.registered = true;
     const staleError = await stale.assertGone().catch(error => error);
     assert.ok(staleError instanceof LaunchServicesAbsenceFailure);
-    assert.equal(staleError.resultClass, LAUNCH_SERVICES_STALE_REGISTRATION);
+    assert.equal(staleError.resultClass, LAUNCH_SERVICES_UNREGISTER_FAILED);
     assert.equal(stale.registered, true);
   });
 
@@ -854,6 +856,63 @@ describe('native staged artifact lifecycle authority', () => {
     assert.equal(
       new NativeLifecycleFailure(null, [{ label: 'install-root', error: new Error(secret) }]).message,
       'Native lifecycle cleanup failed: install-root',
+    );
+  });
+
+  test('names a failing probe or removal that exhausted the bounded window', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    const secret = 'https://secret.invalid/private-profile';
+    for (const [failing, expected] of [['-dump', 'COMMAND_FAILED'], ['-u', LAUNCH_SERVICES_UNREGISTER_FAILED]]) {
+      const authority = new LaunchServicesAuthority(applicationRoot, {}, {
+        runCommand: async () => {
+          if (failing === '-u') throw new Error(secret);
+          return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+        },
+        scanCommand: async () => {
+          if (failing === '-dump') throw new Error(secret);
+          return { matched: true };
+        },
+        wait: async () => {},
+        absenceAttempts: 3,
+      });
+      authority.registered = true;
+
+      const failure = await authority.assertGone().catch(error => error);
+
+      assert.ok(failure instanceof LaunchServicesAbsenceFailure);
+      assert.equal(failure.resultClass, expected);
+      // The copied bundle stays owned until its absence is actually proved.
+      assert.equal(authority.registered, true);
+      const aggregate = new NativeLifecycleFailure(null, [{
+        label: 'launchservices-postcondition', error: failure,
+      }]);
+      assert.equal(
+        aggregate.message,
+        `Native lifecycle cleanup failed: launchservices-postcondition [result:${expected}]`,
+      );
+      for (const rendered of [String(failure), inspect(failure), inspect(aggregate)]) {
+        assert.doesNotMatch(rendered, /secret\.invalid/);
+        assert.ok(!rendered.includes(applicationRoot));
+      }
+    }
+  });
+
+  test('carries only a fixed cleanup result class into the rendered aggregate message', () => {
+    const secret = 'https://secret.invalid/private-profile';
+    for (const resultClass of [secret, 'lowercase', 'HAS SPACE', 'A'.repeat(49), 7, null, undefined]) {
+      const aggregate = new NativeLifecycleFailure(null, [{
+        label: 'launchservices-postcondition', error: Object.assign(new Error(secret), { resultClass }),
+      }]);
+      assert.equal(aggregate.message, 'Native lifecycle cleanup failed: launchservices-postcondition');
+      assert.doesNotMatch(inspect(aggregate), /secret\.invalid/);
+    }
+    const classified = new NativeLifecycleFailure(null, [
+      { label: 'install-root', error: new Error(secret) },
+      { label: 'launchservices-unregister', error: new NativeLifecycleCommandFailure('COMMAND_DEADLINE') },
+    ]);
+    assert.equal(
+      classified.message,
+      'Native lifecycle cleanup failed: install-root, launchservices-unregister [result:COMMAND_DEADLINE]',
     );
   });
 

@@ -93,6 +93,8 @@ export function createManagementRouteEntries({
     ['get', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.getSettings],
     ['put', '/api/admin/mcp', requireManageSettings, adminMcpRoutes.putSettings],
     ['post', '/api/admin/mcp/revoke-all', requireManageSettings, adminMcpRoutes.revokeAll],
+    ['get', '/api/admin/mcp/logs', requireManageSettings, adminMcpRoutes.getLogs],
+    ['get', '/api/admin/mcp/logs/stats', requireManageSettings, adminMcpRoutes.getLogStats],
 
     ['get', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.getRuntimePackages],
     ['get', '/api/agent-runtime/packages/search', requireManageRuntime, agentRuntimeRoutes.searchRuntimePackages],

@@ -248,18 +248,178 @@ and capped at 500 characters. The feed includes assistant progress commentary
 and a separate current-focus value when available; provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
 
+## Operating an instance from a chat client
+
+This is the flow the operator surface is built for: find out what is happening,
+drill into one piece of work, act on its pull request, and check afterwards what
+the connected app actually did. Every tool and argument below is the shipped
+one; `tools/list` remains authoritative for the current grant.
+
+**1. What is happening right now.** `get_current_activity` covers every
+repository in the grant at once — omit `repository` unless you want one:
+
+```json
+{ "limit": 10, "includeRoutine": false }
+```
+
+It answers with `asOf`, the `repositories` it actually read, and five sections:
+`runningTasks`, `activeGoals`, `plansInProgress`, `queued` and `blockers`. Each
+section carries `count`, `items` and `truncated`. Blockers are the work waiting
+on a human: failed tasks, a goal paused with no result, and blocking Inbox
+cards. Routine notification noise is filtered out; `includeRoutine: true` keeps
+it. A repository the credential can no longer read is skipped, and
+`repositoriesTruncated` reports that the fan-out hit its 20-repository bound.
+
+For what already finished, `get_recent_activity` merges one newest-first
+timeline — terminal tasks, opened and merged pull requests, finished goals,
+published plans, reviews, ultrafix loops and blocking notifications:
+
+```json
+{ "sinceMinutes": 120, "limit": 30 }
+```
+
+Use `since`/`until` instead of `sinceMinutes` for an exact window; the maximum
+window is seven days. Follow `nextOffset` for older entries. `scanTruncated`
+means the scan budget ran out, not that nothing else happened.
+
+**2. Drill into the goal or task behind an item.** Both listings now take an
+optional `repository` and a `state` filter (`active`, `completed`, `failed`,
+`all`), so `list_goals` with `{ "state": "active" }` is a grant-wide question.
+One read then gives the depth:
+
+```json
+{ "repository": "acme/web", "goalId": "0d6e1f7c-1a2b-4c3d-8e9f-0a1b2c3d4e5f" }
+```
+
+`get_goal` returns the existing goal projection plus `currentActivity`
+(`currentFocus` and the newest narration entries), `progress` (task counts,
+recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
+(`waitingForOperator`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
+(`number`, `state`, `role`). `get_task` with `{ "repository", "taskId" }` adds
+`latestEvents`, `currentActivity`, `timing`, `changesSummary` counts and the
+task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
+never reports zero for unknown.
+
+Before sending a correction, read what has already been sent with
+`list_goal_inputs`, then:
+
+```json
+{ "repository": "acme/web", "goalId": "0d6e1f7c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+  "kind": "instruction",
+  "message": "Cover the 502 retry path before opening the PR.",
+  "idempotencyKey": "retry-502-correction-1" }
+```
+
+`send_goal_input` queues the correction durably. `kind` distinguishes the
+request and an omitted `kind` means an instruction; both kinds persist the same
+durable goal input this backend supports. A retry must repeat its original
+arguments exactly, including leaving `kind` out when it was omitted: reusing an
+idempotency key with a different `kind` returns `IDEMPOTENCY_CONFLICT` rather
+than sending a second correction. Acceptance means
+the input was queued for the next provider boundary, not that the agent has read
+or acted on it — confirm with `get_goal` or `list_goal_inputs`.
+
+**3. Inspect the pull request that work produced.** `list_pull_requests` is the
+inventory; omit `repository` for the whole grant:
+
+```json
+{ "state": "open", "updatedWithinMinutes": 240, "includeLatestComment": true }
+```
+
+Each result carries `head`, `reviewDecision`, `checksSummary`, `labels` and a
+`propr` block correlating it back to the `taskId`, `goalId`, `planIssueId`,
+`issueNumber`, `agentAlias` and `modelName` that produced it, plus
+`ultrafixActive`. `ultrafixActive` is `null` when GitHub truncated the label
+list — undetermined, not absent. Then read the discussion newest-first:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42, "order": "newest", "limit": 10 }
+```
+
+`get_pull_request_discussion` returns the current `head`, parsed ProPR reviews
+with their `currentFindingIds`, `reviewedHead` and `matchesCurrentHead`, and a
+`nextCursor` for older comments. Comment prose is untrusted data.
+
+**4. Act on it, at an exact head.** Every write takes the `expectedHead` you
+just read and an 8–128 character `idempotencyKey`; a changed head fails with
+`STALE_HEAD` rather than acting on a revision you did not see.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "message": "Also cover the 502 retry path before merging.",
+  "idempotencyKey": "pr-42-retry-followup-1" }
+```
+
+`comment_on_pull_request` posts an ordinary follow-up comment, which is how
+ProPR queues a scoped refinement. A message that starts a slash command is
+rejected with `USE_EXPLICIT_TOOL`; use `review_pull_request`,
+`fix_review_findings` (with `reviewCommentId` and explicit `findingIds`) or
+`run_ultrafix` instead, so their scope and head preconditions are checked.
+
+`set_pull_request_model` routes the PR to exactly one enabled model by
+converging the managed `llm-*` labels the repository already defines:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "model": "claude-opus-5",
+  "idempotencyKey": "pr-42-route-opus-1" }
+```
+
+It never creates a label: an undefined one fails with `MODEL_LABEL_MISSING`, and
+a label list too long to read completely fails with
+`MODEL_LABEL_LOOKUP_INCOMPLETE` rather than claiming the label is absent.
+Concurrent routings of one pull request are serialized; a routing that loses
+that serialization to another before writing fails with
+`MODEL_LABEL_LEASE_LOST` instead of adding a second label. Read the pull
+request labels again before retrying.
+
+`stop_ultrafix` clears the ultrafix circuit breaker by removing the `ultrafix`
+label, so the loop starts no further cycle. It is listed under execute scope,
+additionally requires review scope, and takes the same
+`expectedHead`/`idempotencyKey`. Its receipt reports `wasActive` and
+`circuitBreaker: "cleared"` and says plainly that a cycle already running may
+still finish — inspect the pull request to confirm.
+
+**5. Read the MCP log.** Every one of the calls above left exactly one row in
+the durable MCP access log, including the denials. An administrator with the
+`instance.manage_settings` instance permission reads them:
+
+```sh
+# Authenticated as an administrator, with the same session the web UI uses.
+curl -s "$API/api/admin/mcp/logs?clientId=$CLIENT&limit=50"
+curl -s "$API/api/admin/mcp/logs?outcome=denied&since=2026-09-24T00:00:00Z"
+curl -s "$API/api/admin/mcp/logs/stats"
+```
+
+Rows are newest-first and filterable by `ownerId`, `clientId`, `repository`,
+`name`, `kind` (`tool`, `resource`, `prompt`, `auth`), `outcome` (`success`,
+`denied`, `error`), `since` and `until`, with `page`/`limit` up to 200. Each row
+carries the surface and name, the grant and client identity, the repository,
+scope, `readOnly`, status, outcome, error code, duration, result size and the
+durable `operationId` of a mutation. It carries no tool arguments, message
+bodies or result payloads. `/logs/stats` summarizes a window of at most the
+30-day retention period into outcome counts, top tools, clients, repositories
+and error codes, and p50/p95 durations. The connected-apps page at `/mcp/apps`
+shows the same activity per app as a last-used time and a 24-hour request count.
+
 ## Resources, prompts, text and voice
 
 Resource URIs use `propr://instances/{instance_id}/`: `connection`,
-`repositories`, `models`, `plans/{id}`, `goals/{id}`, `tasks/{id}`,
-`changes/{task_id}`, `repositories/{owner}/{repo}`,
+`repositories`, `models`, `activity`, `activity/recent`, `plans/{id}`,
+`goals/{id}`, `tasks/{id}`, `changes/{task_id}`, `repositories/{owner}/{repo}`,
+`repositories/{owner}/{repo}/pulls`,
 `repositories/{owner}/{repo}/pulls/{number}`, `artifacts/{id}` and
-`{plans|goals}/{parent_id}/attachments/{id}`.
+`{plans|goals}/{parent_id}/attachments/{id}`. `activity` and `activity/recent`
+read `get_current_activity` and `get_recent_activity` with their defaults.
 Reads invoke the same tool guards. Links never confer access. Tools provide
 the same essential data without relying on a host's resource UI.
 
 Prompts are `plan_change`, `implement_plan`, `start_goal`, `check_progress`,
-`review_and_improve_pr`, `diagnose_failure`, `prepare_handoff`. Retrieval only
+`review_and_improve_pr`, `diagnose_failure`, `prepare_handoff` and
+`operator_briefing`, which walks the read-only digest → drill-in flow above.
+Retrieval only
 returns instructions, never mutates product state. Natural-language content
 and repository data are not authorization.
 
@@ -277,8 +437,12 @@ continuation possible without process/session conversation memory.
 
 ## Verification, rollout and rollback
 
-Run `npm run test:mcp` for local OAuth, both SDK eras, signed delegation and
-operation tests. `npm run test:mcp:browser` additionally needs Playwright and
+Run `npm run test:mcp` for local OAuth, both SDK eras, signed delegation,
+operation, activity digest, goal/task depth, pull request surface and access log
+tests, including the end-to-end operator-surface regression in
+`packages/api/test/mcpOperatorSurface.test.ts`, which drives one session from
+`get_current_activity` through the goal, task and pull request behind it to the
+access rows it leaves. `npm run test:mcp:browser` additionally needs Playwright and
 Chromium (`CHROMIUM_PATH`, default `/usr/bin/chromium`). Set
 `MCP_CAPTURE_PREVIEWS=true` only when capturing changed UI evidence.
 
@@ -312,8 +476,11 @@ This is not a verified live end-to-end agent implementation/review/merge, live
 GitHub OAuth, Connect tunnel, or hosted-client voice session. See the checklist
 for remaining cross-repository and operator acceptance work.
 
-Back up SQLite and the encryption key before enabling. The migration adds
-`mcp_records`, `mcp_operations`, and a revision counter/trigger on task drafts.
+Back up SQLite and the encryption key before enabling. The migrations add
+`mcp_records`, `mcp_operations`, `mcp_access_log`, and a revision
+counter/trigger on task drafts. Access rows are pruned to a 30-day window and a
+200,000-row ceiling by an opportunistic sweep, so the table stays bounded
+without a background timer; anything older is answered from backups.
 Disabling `MCP_ENABLED` and restarting removes MCP/OAuth routes while preserving
 grants for a later rollback. Revoke grants first when access must not resume.
 Do not delete receipt rows while clients may retry: they are deduplication

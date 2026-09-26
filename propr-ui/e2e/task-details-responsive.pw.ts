@@ -175,9 +175,11 @@ for (const viewport of [
     const output = page.getByTestId('task-output-scroll');
     const analysisSection = page.getByTestId('task-analysis');
     await expect(taskDetails).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Follow Up' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Prompt' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Logs' })).toBeVisible();
+    // Scoped to the panel: the sidebar owns a 'Logs' navigation group button at
+    // these widths, so an unscoped role query is ambiguous.
+    await expect(taskDetails.getByRole('button', { name: 'Follow Up' })).toBeVisible();
+    await expect(taskDetails.getByRole('button', { name: 'Prompt' })).toBeVisible();
+    await expect(taskDetails.getByRole('button', { name: 'Logs' })).toBeVisible();
 
     if (viewport.width < 1024) {
       const metrics = await scrollRegionMetrics(workspace);
@@ -199,7 +201,7 @@ for (const viewport of [
       await expectReachableWithin(output.getByText(/Implementation log final marker/), output);
     }
 
-    await expect(page.getByRole('button', { name: 'Follow Up' })).toBeVisible();
+    await expect(taskDetails.getByRole('button', { name: 'Follow Up' })).toBeVisible();
 
     const executionSection = page.locator('#execution-event-log-section');
     const executionToggle = executionSection.getByRole('button');

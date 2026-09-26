@@ -8,7 +8,7 @@ This page is a tour of what each screen does. For how the UI is wired to the bac
 
 Two persistent elements frame every page.
 
-**Sidebar (left).** The primary navigation: **Dashboard**, **Plans**, **Tasks**, **Repositories**, **Coding Agents**, **Analytics**, **LLM Log**, and **Settings**. Tasks and Plans show live count badges, and an amber dot flags setup gaps (no repositories, no agents, or no tasks yet). Below the navigation, the [Agent Tank](../operations/agent-tank.md) usage section shows live per-provider capacity bars when the integration is enabled. The footer shows the running version and copyright.
+**Sidebar (left).** The primary navigation: **Dashboard**, **Plans**, **Tasks**, **Repositories**, **Coding Agents**, **Analytics**, **Logs** (a collapsible group holding **LLM Log** and, for operators with `instance.manage_settings`, **MCP Log**), and **Settings**. Tasks and Plans show live count badges, and an amber dot flags setup gaps (no repositories, no agents, or no tasks yet). Below the navigation, the [Agent Tank](../operations/agent-tank.md) usage section shows live per-provider capacity bars when the integration is enabled. The footer shows the running version and copyright.
 
 **Header (top).** A global **search** (focus with `Cmd/Ctrl+K`) spans tasks, plans, and repositories. To its right: an **AI activity monitor** (how many tasks are running now), an **active plans** dropdown, a **tasks awaiting review** dropdown grouped by repo/PR/issue, a **quick add to-do** popover (`Alt+T`), a **New Plan** button, a **system health** indicator that opens a status modal (daemon, workers, Redis, GitHub auth, indexing, and per-agent health), and your GitHub profile with sign-out.
 
@@ -78,6 +78,28 @@ Administrators can switch the configuration pane to **Synthetic Pools** to combi
 ## LLM Log
 
 **LLM Log** (`/llm-logs`) shows every model call with expandable rows and filters by execution type, model, status, and work type. What each record contains and how to use the page for cost analysis is covered in [Metrics](../operations/metrics.md).
+
+## MCP access log
+
+Every MCP call a connected app makes — tool invocations, resource reads, prompt
+fetches and authentication failures — is recorded in the durable MCP access log.
+It is read through `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`,
+both of which require the `instance.manage_settings` instance permission, the
+same permission as the other administrative MCP routes. A row carries the
+surface and tool name, the connected app and grant, the repository, scope,
+status, outcome, error code, duration, result size and the durable operation
+handle of a mutation; it deliberately carries no tool arguments, message bodies
+or result payloads. The connected-apps page at `/mcp/apps` summarizes the same
+data per app as a last-used time and a 24-hour request count.
+
+**MCP Log** (`/mcp-logs`) is the web view of this log. Open it from the
+sidebar's collapsible **Logs** group, which holds **LLM Log** and **MCP Log**
+(on mobile, from **More**). The entry and the page appear only for users with
+the `instance.manage_settings` permission. The page summarizes requests,
+outcomes, latency, top tools and connected apps for the selected time window,
+and lists rows newest first with filters for outcome, kind, tool or resource
+name, repository, connected app and user. See [Authenticated MCP](https://github.com/integry/propr/blob/main/docs/mcp.md)
+for the operator walkthrough and the log's filters.
 
 ## Settings
 

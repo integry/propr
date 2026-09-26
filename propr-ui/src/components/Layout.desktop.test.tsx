@@ -124,9 +124,14 @@ describe('Layout desktop instance selector', () => {
     expect(screen.getByTestId('global-header')).toHaveTextContent('GitHub user');
     const profile = screen.getByText('@octocat').closest('.desktop-sidebar-profile');
     expect(profile?.closest('aside')).not.toBeNull();
-    expect(screen.getByRole('link', { name: 'LLM Log' }).nextElementSibling).toBe(
+    // The collapsible Logs group takes the flat LLM Log entry's place in the
+    // resources zone, immediately ahead of Settings.
+    const logsGroup = screen.getByRole('button', { name: 'Logs' });
+    expect(logsGroup.parentElement?.nextElementSibling).toBe(
       screen.getByRole('link', { name: 'Settings' }),
     );
+    fireEvent.click(logsGroup);
+    expect(screen.getByRole('link', { name: 'LLM Log' })).toHaveAttribute('href', '/llm-logs');
 
     fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
     expect(mocks.logout).toHaveBeenCalledOnce();

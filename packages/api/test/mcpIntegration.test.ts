@@ -14,6 +14,8 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { up as initial } from '../../core/src/db/migrations/20251216000000_initial_sqlite_schema.js';
 import { up as planIssues } from '../../core/src/db/migrations/20260120000000_add_plan_issues.js';
+import { up as planIssueTasks } from '../../core/src/db/migrations/20260121000000_add_task_id_to_plan_issues.js';
+import { up as taskPullRequests } from '../../core/src/db/migrations/20260216000000_add_pr_number_to_tasks.js';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
@@ -26,7 +28,7 @@ after(async () => closeConnection());
 
 test('both official SDK protocol eras execute real draft/revision/publication/task transitions over the same HTTP endpoint', async () => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  await initial(db); await planIssues(db); await mcpMigration(db);
+  await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await mcpMigration(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await db.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('owner_id'); table.string('repository'); table.string('current_task_id');
@@ -68,8 +70,8 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         assert.ok(inventory.tools.some(tool => tool.name === 'create_plan'));
         assert.ok(inventory.tools.some(tool => tool.name === 'get_agent_activity'));
         assert.ok(!inventory.tools.some(tool => tool.name === 'merge_pull_request'));
-        const resources = await client.listResources(); assert.equal(resources.resources.length, 4);
-        const promptList = await client.listPrompts(); assert.equal(promptList.prompts.length, 7);
+        const resources = await client.listResources(); assert.equal(resources.resources.length, 6);
+        const promptList = await client.listPrompts(); assert.equal(promptList.prompts.length, 8);
         const prompt = await client.getPrompt({ name: 'plan_change', arguments: { request: 'Improve reliability' } }); assert.equal(prompt.messages.length, 1);
         assert.equal((await db('task_drafts').count('* as count').first())!.count, modern ? 0 : 1);
         const call = async (name: string, args: Record<string, unknown>) => {

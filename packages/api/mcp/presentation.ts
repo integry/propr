@@ -17,6 +17,7 @@ function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpCo
   else if (goalId) { resource = `goals/${encodeURIComponent(goalId)}`; ui = `${frontend}/goals/${encodeURIComponent(goalId)}`; }
   else if (taskId) { resource = `tasks/${encodeURIComponent(taskId)}`; ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`; }
   else if (args.pullRequest) { resource = `repositories/${args.repository}/pulls/${args.pullRequest}`; ui = `https://github.com/${args.repository}/pull/${args.pullRequest}`; }
+  else if (tool.name === 'list_pull_requests' && args.repository) { resource = `repositories/${args.repository}/pulls`; ui = `https://github.com/${args.repository}/pulls`; }
   else if (args.artifactId || result.artifactId) { const id = args.artifactId || result.artifactId; resource = `artifacts/${id}`; ui = `${origin}/mcp/artifacts/${id}`; }
   else if (args.notificationId) { resource = `notifications/${encodeURIComponent(args.notificationId)}`; ui = `${frontend}/inbox`; }
   else if (tool.name.includes('notification') && !tool.name.includes('preferences')) { resource = 'notifications'; ui = `${frontend}/inbox`; }
@@ -51,6 +52,15 @@ function notificationSummary(tool: McpTool, result: Args): string {
   return `${notification.title}: ${notification.severity} ${notification.kind}, ${state}.`;
 }
 
+/** Digest reads answer a whole-instance question, so they summarize by section. */
+const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
+  get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
+    .entries(result.sections as Record<string, { count: number }>)
+    .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
+    .join(', ')}.`,
+  get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.`,
+};
+
 function readSummary(tool: McpTool, args: Args, result: Args): string {
   if (tool.name === 'get_task') return `Task ${args.taskId}: ${result.latestEvent?.state || 'no execution state yet'}.`;
   if (tool.name === 'get_agent_activity') return agentActivitySummary(args, result);
@@ -68,7 +78,9 @@ export function presentResult(tool: McpTool, args: Args, data: Args, config: Pic
   const result = tool.readOnly && tool.name !== 'get_operation' ? data : data.result || {};
   const continuation = result.continuation || result;
   const targets = { planId: args.planId || continuation.planId, goalId: args.goalId || continuation.goalId, taskId: continuation.taskId || args.taskId };
-  const summary = tool.readOnly ? readSummary(tool, args, result) : mutationSummary(tool, data, result, targets);
+  const activity = ACTIVITY_SUMMARIES[tool.name];
+  const summary = activity ? activity(result)
+    : tool.readOnly ? readSummary(tool, args, result) : mutationSummary(tool, data, result, targets);
   return { summary, links: resultLinks(tool, args, result, config) };
 }
 
