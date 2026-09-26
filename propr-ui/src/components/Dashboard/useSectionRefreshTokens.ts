@@ -27,7 +27,7 @@ const SECTION_INTERESTS = {
   // issue awaiting review, or a dismissal that clears one.
   attention: {
     domains: ['task', 'goal', 'plan', 'notification'],
-    changes: ['blocked', 'failed', 'created', 'completed', 'cancelled', 'dismissed'],
+    changes: ['blocked', 'failed', 'created', 'started', 'completed', 'cancelled', 'dismissed'],
   },
   // The only section that legitimately wants progress: it is showing what is
   // happening right now, including queue depth.
@@ -84,6 +84,7 @@ export function useSectionRefreshTokens(repository: string): SectionRefreshToken
   const {
     subscribeToActivity,
     unsubscribeFromActivity,
+    onActivityReady,
     onActivityUpdate,
     onGoalUpdate,
   } = useSocket();
@@ -108,6 +109,7 @@ export function useSectionRefreshTokens(repository: string): SectionRefreshToken
         return next;
       });
     };
+    const unsubscribeReady = onActivityReady?.(() => bump(SECTION_NAMES));
     const unsubscribeActivity = onActivityUpdate((payload: ActivityUpdatePayload) => {
       bump(SECTION_NAMES.filter(name => isRelevant(payload, name, repositoryRef.current)));
     });
@@ -118,8 +120,8 @@ export function useSectionRefreshTokens(repository: string): SectionRefreshToken
       if (scope !== ALL_REPOSITORIES && payload.repository !== null && payload.repository !== scope) return;
       bump(GOAL_SECTIONS);
     });
-    return () => { unsubscribeActivity(); unsubscribeGoal(); };
-  }, [onActivityUpdate, onGoalUpdate]);
+    return () => { unsubscribeReady?.(); unsubscribeActivity(); unsubscribeGoal(); };
+  }, [onActivityReady, onActivityUpdate, onGoalUpdate]);
 
   /*
     Nothing here reacts to the connection state. A reconnect is reconciled, and

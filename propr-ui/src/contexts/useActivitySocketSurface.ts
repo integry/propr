@@ -30,6 +30,7 @@ export interface ActivitySocketSurface {
     SocketContextValue,
     | 'subscribeToActivity'
     | 'unsubscribeFromActivity'
+    | 'onActivityReady'
     | 'onActivityUpdate'
     | 'onGoalUpdate'
     | 'onNotificationUpdate'
@@ -60,6 +61,7 @@ const useRegistry = <T,>() => {
  * reference-counted, and the count has to outlive all of them.
  */
 export function useActivitySocketSurface(): ActivitySocketSurface {
+  const ready = useRegistry<void>();
   const activity = useRegistry<ActivityUpdatePayload>();
   const goal = useRegistry<GoalUpdatePayload>();
   const notification = useRegistry<NotificationUpdatePayload>();
@@ -92,23 +94,26 @@ export function useActivitySocketSurface(): ActivitySocketSurface {
       if (!isCurrentScope()) return;
       registry.listeners.current.forEach(callback => callback(payload));
     };
+    const activityReady = fanOut(ready);
     const activityUpdated = fanOut(activity);
     const goalUpdated = fanOut(goal);
     const notificationUpdated = fanOut(notification);
     const usageUpdated = fanOut(usage);
 
+    socket.on('activity:ready', activityReady);
     socket.on(ACTIVITY_UPDATE, activityUpdated);
     socket.on(GOAL_UPDATE, goalUpdated);
     socket.on(NOTIFICATION_UPDATE, notificationUpdated);
     socket.on(USAGE_UPDATE, usageUpdated);
 
     return () => {
+      socket.off('activity:ready', activityReady);
       socket.off(ACTIVITY_UPDATE, activityUpdated);
       socket.off(GOAL_UPDATE, goalUpdated);
       socket.off(NOTIFICATION_UPDATE, notificationUpdated);
       socket.off(USAGE_UPDATE, usageUpdated);
     };
-  }, [activity, goal, notification, usage]);
+  }, [activity, goal, notification, usage, ready]);
 
   const handleConnected = useCallback((socket: Socket) => {
     socketRef.current = socket;
@@ -152,6 +157,7 @@ export function useActivitySocketSurface(): ActivitySocketSurface {
     subscriptions: {
       subscribeToActivity,
       unsubscribeFromActivity,
+      onActivityReady: ready.subscribe,
       onActivityUpdate: activity.subscribe,
       onGoalUpdate: goal.subscribe,
       onNotificationUpdate: notification.subscribe,
@@ -159,6 +165,7 @@ export function useActivitySocketSurface(): ActivitySocketSurface {
     },
   }), [
     activity.subscribe,
+    ready.subscribe,
     attach,
     goal.subscribe,
     handleConnected,

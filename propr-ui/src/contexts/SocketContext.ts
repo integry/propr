@@ -41,6 +41,8 @@ export interface SocketContextValue {
   onQueueStatsUpdate: (callback: (payload: QueueStatsUpdatePayload) => void) => () => void;
   onTaskLiveUpdate: (callback: (payload: TaskLiveUpdatePayload) => void) => () => void;
   /** The general envelope: 'domain X changed in way Y, in repository Z'. */
+  /** Reconcile reads that may have completed before room authorization finished. */
+  onActivityReady?: (callback: () => void) => () => void;
   onActivityUpdate: (callback: (payload: ActivityUpdatePayload) => void) => () => void;
   onGoalUpdate: (callback: (payload: GoalUpdatePayload) => void) => () => void;
   /** Delivered only to the authenticated recipient's own room. */

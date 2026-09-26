@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import type { GoalJobData } from '@propr/core';
 import {
     db,
+    getEventPublisher,
     executeDockerCommand,
     getIssueQueue,
     getStateManager,
@@ -117,6 +118,7 @@ async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): P
         completed_at: database.fn.now(),
         updated_at: database.fn.now(),
     });
+    if (changed === 1) void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
     return changed === 1;
 }
 
@@ -149,6 +151,7 @@ async function recoverClaimedAttempt(
         updated_at: database.fn.now(),
     });
     if (changed !== 1) return false;
+    void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
     await enqueue({ queue, goal, generation, claimId, recovery: true });
     return true;
 }
@@ -282,6 +285,7 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (cancelled !== 1) return 'unchanged';
+        void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
         await reconcileTask({ ...goal, result_state: 'cancelled' });
         await database('goals').where({ goal_id: goal.goal_id, result_state: 'cancelled' })
             .whereNull('task_reconciled_at').update({ task_reconciled_at: database.fn.now(), updated_at: database.fn.now() });
@@ -311,6 +315,7 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (confirmed !== 1) return 'unchanged';
+        void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
         return goal.resume_requested
             ? await recoverClaimedAttempt(database, queue, { ...goal, pause_confirmed_at: new Date().toISOString() }) ? 'recovered' : 'unchanged'
             : 'recovered';

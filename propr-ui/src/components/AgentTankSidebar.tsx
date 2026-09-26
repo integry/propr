@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useLiveInvalidation } from '../hooks/useLiveInvalidation';
+import React, { useState, useCallback } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
@@ -378,18 +379,17 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
       setData(result);
     } catch (err) {
       console.error('Failed to fetch Agent Tank usage:', err);
-      setData({ enabled: false });
+      // Preserve the last successful usage snapshot on a transient failure.
     } finally {
       setLoading(false);
       if (isManualRefresh) setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchUsage(false);
-    const interval = setInterval(() => fetchUsage(false), REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchUsage]);
+  useLiveInvalidation({
+    refresh: () => fetchUsage(false), scopeKey: 'agent-usage',
+    interest: { domains: [], usage: true }, fallbackPollMs: REFRESH_INTERVAL,
+  });
 
   const toggleAgent = useCallback((agentName: string) => {
     setExpandedAgents(prev => {

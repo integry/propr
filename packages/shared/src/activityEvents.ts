@@ -22,6 +22,7 @@ export const ACTIVITY_DOMAINS = [
   'queue',
   'indexing',
   'usage',
+  'system',
 ] as const;
 export type ActivityDomain = (typeof ACTIVITY_DOMAINS)[number];
 

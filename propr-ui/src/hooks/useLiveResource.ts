@@ -109,6 +109,7 @@ export function useLiveResource<T>({
     isConnected,
     subscribeToActivity,
     unsubscribeFromActivity,
+    onActivityReady,
     onActivityUpdate,
     onGoalUpdate,
     onNotificationUpdate,
@@ -208,6 +209,7 @@ export function useLiveResource<T>({
   useEffect(() => {
     if (disabled) return;
     const unsubscribers: Array<() => void> = [
+      onActivityReady?.(() => schedule()) ?? (() => {}),
       onActivityUpdate((payload: ActivityUpdatePayload) => {
         // Filtered before scheduling: an irrelevant event must cost nothing.
         if (matchesInterest(payload, interestRef.current)) schedule();
@@ -231,6 +233,7 @@ export function useLiveResource<T>({
     goals,
     notifications,
     usage,
+    onActivityReady,
     onActivityUpdate,
     onGoalUpdate,
     onNotificationUpdate,

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { after, test, mock } from 'node:test';
 import knex from 'knex';
 import type { GoalRecoveryQueue } from '../src/goalRecovery.ts';
 
@@ -13,6 +13,8 @@ after(async () => {
 
 test('goal recovery repairs pause crashes and failed-before-claim jobs while preserving exact identity', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
+  const { getEventPublisher } = await import('@propr/core');
+  mock.method(getEventPublisher(), 'publishGoalUpdate', async () => true);
   const { recoverNonterminalGoals } = await import('../src/goalRecovery.ts');
   await database.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('current_task_id'); table.string('repository');

@@ -1,3 +1,4 @@
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { checkAndUpdateDraftStatus } from '../services/taskPlanningService.js';
@@ -119,6 +120,7 @@ export async function createPlanIssue(input: CreatePlanIssueInput): Promise<Plan
         });
 
         const planIssue = await db('plan_issues').where({ id }).first();
+        await getEventPublisher().publishActivity({ domain: 'plan', entityId: String(id), repository: input.repository, change: 'created' });
         logger.info({ planIssue }, 'Created plan issue');
         return planIssue;
     } catch (error) {
@@ -245,6 +247,7 @@ export async function updatePlanIssue(
             await checkAndUpdateDraftStatus(draftId);
         }
 
+        if (issue && updates.status !== undefined) await publishPlanIssueActivity(issue.repository, String(issue.id), updates.status);
         return issue || null;
     } catch (error) {
         const err = error as Error;
@@ -341,6 +344,7 @@ export async function updatePlanIssueStatus(
         // Check and update draft status after updating issue status
         if (planIssue?.draft_id) {
             await checkAndUpdateDraftStatus(planIssue.draft_id);
+            await publishPlanIssueActivity(repository, planIssue.draft_id, status);
         }
     } catch (error) {
         const err = error as Error;
@@ -429,6 +433,7 @@ export async function updatePlanIssueByPR(
         // Check and update draft status after updating issue status
         if (planIssue?.draft_id) {
             await checkAndUpdateDraftStatus(planIssue.draft_id);
+            await publishPlanIssueActivity(repository, planIssue.draft_id, updates.status!);
         }
     } catch (error) {
         const err = error as Error;
@@ -484,9 +489,11 @@ export async function batchUpdatePlanIssueConfig({
  */
 export async function deletePlanIssue(draftId: string, issueNumber: number): Promise<boolean> {
     try {
+        const issue = await db('plan_issues').where({ draft_id: draftId, issue_number: issueNumber }).first();
         const count = await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
             .delete();
+        if (count > 0 && issue) await publishPlanIssueActivity(issue.repository, String(issue.id), 'closed');
 
         logger.info({ draftId, issueNumber, deleted: count > 0 }, 'Deleted plan issue');
         return count > 0;
@@ -495,4 +502,10 @@ export async function deletePlanIssue(draftId: string, issueNumber: number): Pro
         logger.error({ error: err.message, draftId, issueNumber }, 'Failed to delete plan issue');
         throw error;
     }
+}
+
+async function publishPlanIssueActivity(repository: string, entityId: string, status: string): Promise<void> {
+    await getEventPublisher().publishActivity({ domain: 'plan', repository, entityId,
+        change: status === 'under_review' ? 'blocked' : status === 'merged' ? 'completed'
+            : status === 'closed' ? 'cancelled' : 'created' });
 }

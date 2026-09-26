@@ -399,3 +399,25 @@ describe('useLiveResource', () => {
     expect(socket.value.subscribeToActivity).not.toHaveBeenCalled();
   });
 });
+
+describe('hidden initial scopes', () => {
+  it('defers mounting and scope changes, then reads only the latest scope', async () => {
+    vi.useFakeTimers();
+    setVisibility('hidden');
+    const read = vi.fn(async () => 'latest');
+    const { result, rerender, unmount } = renderHook(({ scope }) => useLiveResource({
+      read, scopeKey: scope, interest: { goals: true },
+    }), { initialProps: { scope: 'first' } });
+    await flush();
+    rerender({ scope: 'second' });
+    await advance(60_000);
+    expect(read).not.toHaveBeenCalled();
+    setVisibility('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await advance(100);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.data).toBe('latest');
+    unmount();
+    vi.useRealTimers();
+  });
+});

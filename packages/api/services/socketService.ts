@@ -1,3 +1,4 @@
+import { ShellActivityBroadcaster } from './shellActivityBroadcaster.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Redis } from 'ioredis';
@@ -7,6 +8,8 @@ import { Knex } from 'knex';
 import type { WorkerStateManagerOptions } from '@propr/core';
 import {
   REDIS_CHANNELS,
+  ACTIVITY_UPDATE, GOAL_UPDATE, NOTIFICATION_UPDATE, USAGE_UPDATE, isActivityUpdatePayload, isTerminalActivityChange,
+  type ActivityChange, type ActivityDomain, type GoalUpdatePayload, type NotificationUpdatePayload,
   TASK_UPDATE,
   DRAFT_UPDATE,
   INDEXING_UPDATE,
@@ -26,7 +29,7 @@ import {
   type SocketAuthenticationOptions,
 } from './socketAuthentication.js';
 import {
-  INSTANCE_OPERATIONAL_ROOM,
+  INSTANCE_OPERATIONAL_ROOM, ACTIVITY_ROOM, activityUserRoom,
   SocketSubscriptionManager,
   taskRoom,
   userRoom,
@@ -39,6 +42,7 @@ type CorsOriginFunction = (origin: string | undefined, callback: CorsOriginCallb
 
 /** Dependencies for queue stats broadcasting */
 export interface QueueDependencies {
+  readSystemStatus?: () => Promise<Record<string, unknown>>;
   taskQueue: Queue;
   redisClient: RedisClientType;
   db: Knex;
@@ -109,6 +113,7 @@ export class SocketService {
   private io: SocketIOServer;
   private subscriber: InstanceType<typeof Redis>;
   private isSubscribed = false;
+  private shellBroadcaster: ShellActivityBroadcaster | null = null;
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private subscriptionManager: SocketSubscriptionManager;
@@ -163,6 +168,8 @@ export class SocketService {
    */
   initQueueFeatures(deps: QueueDependencies): void {
     this.queueDeps = deps;
+    this.shellBroadcaster = new ShellActivityBroadcaster(this.io, deps.readSystemStatus);
+    this.shellBroadcaster.start();
     this.taskWatcherManager.setDeps({ redisClient: deps.redisClient, db: deps.db });
     this.queueBroadcaster = new QueueBroadcaster(this.io, deps.taskQueue);
     this.queueBroadcaster.init();
@@ -188,6 +195,7 @@ export class SocketService {
 
     try {
       await this.subscriber.subscribe(
+        REDIS_CHANNELS.ACTIVITY,
         REDIS_CHANNELS.TASKS,
         REDIS_CHANNELS.DRAFTS,
         REDIS_CHANNELS.INDEXING,
@@ -215,6 +223,23 @@ export class SocketService {
    */
   private handleEvent(_channel: string, payload: EventPayload): void {
     switch (payload.eventType) {
+      case ACTIVITY_UPDATE:
+        if (isActivityUpdatePayload(payload)) this.io.to(ACTIVITY_ROOM).emit(ACTIVITY_UPDATE, payload);
+        break;
+      case GOAL_UPDATE:
+        void this.handleGoalUpdate(payload).catch(error => console.error('Goal broadcast failed:', error));
+        break;
+      case NOTIFICATION_UPDATE: {
+        const { recipientIds, ...frame } = payload as NotificationUpdatePayload;
+        if (!Array.isArray(recipientIds)) break;
+        for (const id of new Set(recipientIds)) {
+          if (typeof id === 'string') this.io.to(activityUserRoom(id)).emit(NOTIFICATION_UPDATE, frame);
+        }
+        break;
+      }
+      case USAGE_UPDATE:
+        this.io.to(ACTIVITY_ROOM).emit(USAGE_UPDATE, payload);
+        break;
       case TASK_UPDATE:
         this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
@@ -233,6 +258,30 @@ export class SocketService {
       default:
         console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
     }
+  }
+
+  private broadcastActivity(domain: ActivityDomain, entityId: string, repository: string | null,
+    change: ActivityChange, room = ACTIVITY_ROOM): void {
+    this.io.to(room).emit(ACTIVITY_UPDATE, { eventType: ACTIVITY_UPDATE, domain, entityId,
+      repository, change, terminal: isTerminalActivityChange(change), occurredAt: new Date().toISOString() });
+  }
+
+  private async handleGoalUpdate(payload: GoalUpdatePayload & { ownerId?: string }): Promise<void> {
+    if (!this.queueDeps || typeof payload.goalId !== 'string') return;
+    const goal = await this.queueDeps.db('goals').where({ goal_id: payload.goalId }).first();
+    const ownerId = goal?.owner_id ?? payload.ownerId;
+    if (typeof ownerId !== 'string') return;
+    const room = activityUserRoom(ownerId);
+    const frame: GoalUpdatePayload = { eventType: GOAL_UPDATE, goalId: payload.goalId,
+      repository: goal?.repository ?? payload.repository, occurredAt: payload.occurredAt,
+      desiredState: goal?.desired_state, resultState: goal?.result_state,
+      currentTaskId: goal?.current_task_id };
+    this.io.to(room).emit(GOAL_UPDATE, frame);
+    const change = goal?.result_state === 'completed' ? 'completed'
+      : goal?.result_state === 'failed' ? 'failed'
+      : goal?.result_state === 'cancelled' || !goal ? 'cancelled'
+      : goal?.desired_state === 'paused' ? 'blocked' : 'progressed';
+    this.broadcastActivity('goal', payload.goalId, frame.repository, change, room);
   }
 
   private enqueueTaskUpdate(payload: TaskUpdatePayload): void {
@@ -312,6 +361,18 @@ export class SocketService {
       .to(INSTANCE_OPERATIONAL_ROOM)
       .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
+    const state = payload.state.toLowerCase();
+    const change: ActivityChange = state === 'completed' ? 'completed' : state === 'failed' ? 'failed'
+      : state === 'cancelled' ? 'cancelled' : ['action_required', 'blocked', 'paused'].includes(state) ? 'blocked'
+      : state === 'pending' ? 'created' : 'started';
+    // Goal tasks are private; resolve their owner instead of emitting a public invalidation.
+    if (payload.taskId.startsWith('goal-')) {
+      const goal = this.queueDeps && await this.queueDeps.db('goals').where({ current_task_id: payload.taskId }).first('goal_id');
+      if (goal) await this.handleGoalUpdate({ eventType: GOAL_UPDATE, goalId: goal.goal_id,
+        repository: payload.repository ?? null, occurredAt: payload.timestamp });
+    } else if (payload.state !== payload.previousState || payload.metadata?.issueRefUpdated) {
+      this.broadcastActivity('task', payload.taskId, payload.repository ?? null, change);
+    }
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
     if (this.notificationProjection) {
       await this.notificationProjection.projectTaskUpdate(payload);
@@ -339,6 +400,9 @@ export class SocketService {
       .to(`draft:${payload.draftId}`)
       .to(userRoom(ownerId))
       .emit(DRAFT_UPDATE, payload);
+    this.broadcastActivity('plan', payload.draftId, null,
+      payload.draftStatus === 'failed' ? 'failed' : payload.draftStatus === 'merged' ? 'completed'
+        : payload.draftStatus === 'review' ? 'blocked' : 'created', activityUserRoom(ownerId));
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
     if (this.notificationProjection) {
       await this.notificationProjection.projectDraftUpdate(payload);
@@ -348,6 +412,7 @@ export class SocketService {
   private handleIndexingUpdate(payload: IndexingUpdatePayload): void {
     this.io.to(`indexing:${payload.repository}`).emit(INDEXING_UPDATE, payload);
     this.io.to('indexing:updates').emit(INDEXING_UPDATE, payload);
+    this.broadcastActivity('indexing', payload.repository, payload.repository, 'progressed');
     console.log(`[SocketService] Broadcasted ${INDEXING_UPDATE} for repository ${payload.repository}, phase: ${payload.phase}`);
     if (this.notificationProjection) {
       void this.notificationProjection.projectIndexingUpdate(payload).catch(error => {
@@ -363,6 +428,7 @@ export class SocketService {
 
   private handleQueueStatsUpdate(payload: QueueStatsUpdatePayload): void {
     this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+    this.broadcastActivity('queue', 'queue', null, 'progressed');
     console.log(`[SocketService] Broadcasted ${QUEUE_STATS_UPDATE}`);
   }
 
@@ -385,6 +451,7 @@ export class SocketService {
   /** Broadcast queue stats update (can be called externally) */
   async emitQueueStatsUpdate(payload: QueueStatsUpdatePayload): Promise<void> {
     this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+    this.broadcastActivity('queue', 'queue', null, 'progressed');
   }
 
   /** Check if there are clients subscribed to a specific task's live updates */
@@ -402,6 +469,7 @@ export class SocketService {
   /** Clean up resources on shutdown */
   async close(): Promise<void> {
     try {
+      this.shellBroadcaster?.close();
       if (this.queueBroadcaster) {
         await this.queueBroadcaster.close();
         this.queueBroadcaster = null;

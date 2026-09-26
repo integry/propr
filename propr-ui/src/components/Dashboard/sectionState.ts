@@ -73,6 +73,8 @@ export function useDashboardSection<T>(
   const [state, setState] = useState<SectionState<T>>({ scope, data: null, error: null });
   const [retryToken, setRetryToken] = useState(0);
   const requestRef = useRef(0);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const loadRef = useRef(load);
   loadRef.current = load;
   const isConnected = useContext(SocketContext)?.isConnected ?? false;
@@ -81,11 +83,11 @@ export function useDashboardSection<T>(
     const requestId = ++requestRef.current;
     await loadRef.current().then(
       data => {
-        if (requestId !== requestRef.current) return;
+        if (requestId !== requestRef.current || scope !== scopeRef.current) return;
         setState({ scope, data, error: null });
       },
       error => {
-        if (requestId !== requestRef.current) return;
+        if (requestId !== requestRef.current || scope !== scopeRef.current) return;
         // A failed refresh keeps the last known rows: it is not evidence that
         // the work disappeared, so blanking the section would be a lie. The
         // fallback interval keeps trying.
@@ -112,6 +114,7 @@ export function useDashboardSection<T>(
     // same path serves the retry control.
     setState(previous => (previous.scope === scope ? previous : { scope, data: null, error: null }));
     void refreshNow();
+    return () => { requestRef.current += 1; };
   }, [scope, retryToken, refreshNow]);
 
   useEffect(() => {

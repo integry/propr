@@ -92,6 +92,21 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
   });
 
+  it('defers the initial Goals list read in a background tab', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const view = render(<MemoryRouter><GoalsPage /></MemoryRouter>);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(goalsApi.listGoals).not.toHaveBeenCalled();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      fireEvent(document, new Event('visibilitychange'));
+      await waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledTimes(1));
+    } finally {
+      view.unmount();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    }
+  });
+
   it('renders up to three inline previews in the responsive goal row without per-row requests', async () => {
     const previewMedia = Array.from({ length: 5 }, (_, index) => ({ type: 'image' as const, title: `Preview ${index}`, url: `https://github.com/user-attachments/assets/goal-${index}` }));
     vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [{ ...goal, previewMedia }] });

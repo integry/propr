@@ -1,3 +1,5 @@
+import { getEventPublisher } from '../utils/eventPublisher.js';
+import type { NotificationChange } from '@propr/shared';
 /* eslint-disable max-lines -- event creation, preferences, and Inbox state share transactions */
 import { createHash, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
@@ -347,6 +349,16 @@ export class NotificationService {
             now: this.now,
             generateId: this.generateId
         });
+    }
+
+    private notifyAfterCommit(database: Database, recipientIds: string[], change: NotificationChange, eventId: string | null = null): void {
+        if (recipientIds.length === 0) return;
+        const committed = database.isTransaction
+            ? (database as Knex.Transaction).executionPromise : Promise.resolve();
+        // Never invalidate before the transaction becomes visible, or on rollback.
+        void committed.then(() => getEventPublisher().publishNotificationUpdate({
+            recipientIds: [...new Set(recipientIds)], change, eventId, repository: null,
+        })).catch(() => undefined);
     }
 
     async createNotificationEvent<K extends NotificationKind>(
@@ -891,6 +903,7 @@ export class NotificationService {
                     )
                 });
 
+            this.notifyAfterCommit(transaction, [userId], 'dismissed_all');
             return parseNotificationUnreadCountResponse({
                 unreadCount: await unreadCount(transaction, userId)
             });
@@ -1112,6 +1125,9 @@ export class NotificationService {
             .onConflict(['event_id', 'user_id'])
             .ignore();
 
+        this.notifyAfterCommit(transaction, eligibleRecipients.filter(recipient => recipient.inboxEnabled)
+            .map(recipient => recipient.userId), 'created', event.id);
+
         const pushRecipientIds = eligibleRecipients
             .filter(recipient => recipient.pushEnabled)
             .map(recipient => recipient.userId);
@@ -1235,8 +1251,11 @@ export class NotificationService {
                     'CASE WHEN created_at > ? THEN created_at ELSE ? END',
                     [timestamp, timestamp]
                 )
-            });
-        return Number(changed);
+            }).returning('user_id');
+        // RETURNING identifies the receipts actually changed by this write; a
+        // separate pre-read could miss a recipient inserted before the update.
+        this.notifyAfterCommit(database, changed.map(row => row.user_id), 'dismissed');
+        return changed.length;
     }
 
     private async updateInboxTimestamp(
@@ -1268,6 +1287,7 @@ export class NotificationService {
                 })
                 .first() as NotificationRow | undefined;
             if (!row) return null;
+            this.notifyAfterCommit(transaction, [userId], column === 'read_at' ? 'read' : 'dismissed', eventId);
 
             return parseNotificationStateResponse({
                 notification: toNotification(row),

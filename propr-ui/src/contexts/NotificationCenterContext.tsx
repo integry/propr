@@ -1,3 +1,4 @@
+import { useLiveInvalidation } from '../hooks/useLiveInvalidation';
 /* eslint-disable react-refresh/only-export-components */
 import React, {
   createContext,
@@ -94,7 +95,6 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
       commitUnreadCount(0);
       return;
     }
-    void refreshUnreadCount().catch(() => undefined);
     void getNotificationPreferences()
       .then(preferences => {
         if (preferenceGeneration !== preferenceGenerationRef.current) return;
@@ -107,22 +107,9 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
     };
   }, [commitBadgeEnabled, commitUnreadCount, identityKey, refreshUnreadCount]);
 
-  useEffect(() => {
-    if (identityKey === null) return;
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshUnreadCount().catch(() => undefined);
-      }
-    };
-    const interval = window.setInterval(refreshWhenVisible, 60_000);
-    window.addEventListener('focus', refreshWhenVisible);
-    document.addEventListener('visibilitychange', refreshWhenVisible);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshWhenVisible);
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
-    };
-  }, [identityKey, refreshUnreadCount]);
+  useLiveInvalidation({ refresh: refreshUnreadCount, scopeKey: identityKey ?? 'anonymous',
+    disabled: identityKey === null, interest: { domains: [], notifications: true },
+    fallbackPollMs: 60_000 });
 
   const value = useMemo(() => ({
     unreadCount,

@@ -158,6 +158,24 @@ describe('Dashboard', () => {
     mockStats.mockResolvedValue(statsResponse());
   });
 
+  it('defers all four initial section reads in a background tab', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const view = renderDashboard();
+    try {
+      await act(async () => { await Promise.resolve(); });
+      for (const read of [mockAttention, mockActive, mockOutcomes, mockStats]) expect(read).not.toHaveBeenCalled();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      fireEvent(document, new Event('visibilitychange'));
+      await waitForSections();
+      await waitFor(() => {
+        for (const read of [mockAttention, mockActive, mockOutcomes, mockStats]) expect(read).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      view.unmount();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    }
+  });
+
   it('keeps the attention section in place with an all-clear line when nothing needs attention', async () => {
     renderDashboard();
     await waitForSections();

@@ -201,7 +201,7 @@ describe('Socket.IO resource authorization', () => {
             return operator;
           },
           emit: (event: string, payload: DraftUpdatePayload) => {
-            emitted.push({ rooms, event, payload });
+            if (event === DRAFT_UPDATE) emitted.push({ rooms, event, payload });
           },
         };
         return operator;
