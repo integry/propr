@@ -21,6 +21,7 @@ import { handleMergeWithAgent } from './mergeConflictAgentRunner.js';
 import { resolvePullRequestGitTarget } from './prGitOperations.js';
 import type { PullRequestGitTarget } from './prGitOperations.js';
 import { PullRequestPublication } from './prPublication.js';
+import { releaseFollowupCiSuspensionsForTask, suspendObsoleteValidationForImplementation } from './followupCiSuspension.js';
 import type { Contribution } from './prContinuation.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
@@ -392,6 +393,12 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         ({ localRepoPath, worktreeInfo } = await publication.prepare(`pr-${pullRequestNumber}-merge-${timestamp}`));
         target = publication.target;
 
+        // The merge commit replaces the current head, so its validation is obsolete.
+        // Opt-in per repository; a failure there never stops the merge.
+        await suspendObsoleteValidationForImplementation({
+            ref: { repoOwner, repoName, pullRequestNumber }, continuation: publication.continuation, taskId, correlationId,
+        }, { octokit, log: correlatedLogger });
+
         correlatedLogger.info({
             worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName,
             headRepository: `${target.repoOwner}/${target.repoName}`,
@@ -438,6 +445,9 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             pullRequestNumber, correlatedLogger,
         });
     } finally {
+        // Released before the PR lock so the next job for this PR cannot cancel runs being restored.
+        await releaseFollowupCiSuspensionsForTask({ taskId }, { octokit: octokit ?? undefined, log: correlatedLogger })
+            .catch(error => correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Failed to release follow-up CI suspension; reconciliation will retry it'));
         await releaseMergeJobResources({ lockKey, correlationId, localRepoPath, worktreeInfo, jobSucceeded, correlatedLogger });
     }
 }

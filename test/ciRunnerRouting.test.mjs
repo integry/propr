@@ -544,6 +544,11 @@ describe('PR check routing', () => {
         assert.ok(nativeUnits.includes(nativeSetupUnit), 'the native harness unit is discoverable');
         const expected = nativeUnits.filter(unit => unit !== nativeSetupUnit);
         assert.ok(expected.length >= 2, 'the native Electron probes are discovered');
+        // Both long-lived probes must be among them: a discovery expression that
+        // matched nothing real would otherwise agree with an empty derivation.
+        for (const probe of ['electron-frame-semantics.test.mjs', 'electron-pairing-zstd.test.mjs']) {
+            assert.ok(expected.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
+        }
         assert.deepEqual([...units].sort(), expected);
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
