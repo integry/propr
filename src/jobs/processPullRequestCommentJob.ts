@@ -199,6 +199,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const {
         isFixMode,
         fixSelection,
+        resolution,
         selectedReviewComments,
         reviewCommentsSection,
     } = await prepareFixReviewFeedback({
@@ -206,10 +207,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
-        correlatedLogger.info(
-            { pullRequestNumber },
-            'Skipping fix processing because no actionable findings were selected',
-        );
+        correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
+            'Skipping fix processing because no review findings or suggestions were selected');
         await handleNoAuthorizedFindings({
             job,
             taskId,
@@ -223,6 +222,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             pullRequestNumber,
             correlatedLogger,
             correlationId,
+            // Naming the identifiers is what makes the posted explanation actionable.
+            unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
         });
         return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
     }
@@ -256,7 +257,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     // Opt-in per repository; a failure there never stops the implementation.
     await suspendObsoleteValidationForImplementation({ ref: context, continuation: publication.continuation, taskId, correlationId }, { octokit: state.octokit, log: correlatedLogger });
 
-    const requestBody = isFixMode ? (fixSelection.remainingInstructions || 'Apply only the selected review finding records below.') : combinedCommentBody;
+    const requestBody = isFixMode ? (fixSelection.instructions || 'Apply only the selected review records below.') : combinedCommentBody;
     const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
     let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
     if (job.data.ultrafixMeta) {

@@ -22,6 +22,9 @@ const {
     formatReviewCommentsSection: formatSelectedReviewRecords,
     hasAuthorizedFixFeedback,
     parseFixFindingSelection,
+    parseFixSelection,
+    prepareFixReviewFeedback,
+    resolveReviewFeedback,
     selectReviewFeedback,
 } = await import('../src/jobs/reviewFindingSelector.js');
 
@@ -235,7 +238,6 @@ describe('structured review finding extraction', () => {
         });
         assert.strictEqual(state.hasPendingReview, false);
         assert.strictEqual(state.reviewStatus, 'valid_clean');
-        assert.strictEqual(state.latestScore, 7);
         assert.strictEqual(state.unprocessedComments[0].suggestions.length, 1);
     });
 
@@ -256,7 +258,6 @@ describe('structured review finding extraction', () => {
         });
 
         assert.strictEqual(state.reviewStatus, 'valid_clean');
-        assert.strictEqual(state.latestScore, 7);
         assert.strictEqual(state.isPartial, true);
         assert.strictEqual(state.unprocessedComments[0].isPartial, true);
     });
@@ -482,6 +483,73 @@ describe('structured review finding extraction', () => {
         assert.deepStrictEqual(second[0].actionableFindings.map(finding => finding.id), ['F2']);
         assert.strictEqual(second[0].suggestions.length, 1, 'unselected suggestion remains informational');
     });
+
+    test('requesting only a suggestion consumes it without consuming any blocker', async () => {
+        const sets = new Map<string, Set<string>>();
+        const redis = {
+            async smembers(key: string) { return [...(sets.get(key) ?? [])]; },
+            async expire() { return 1; },
+            async eval(_script: string, _keyCount: number, _lockKey: string, processedKey: string, _token: string, _ttl: number, ...members: string[]) {
+                const values = sets.get(processedKey) ?? new Set<string>();
+                members.forEach(member => values.add(member));
+                sets.set(processedKey, values);
+                return 1;
+            },
+        };
+        const correlatedLogger = { debug() {}, info() {}, warn() {} };
+        const comments = [{
+            id: 71,
+            body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }];
+        const options = {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: redis as any,
+            correlatedLogger: correlatedLogger as any,
+            prProcessingLockKey: 'lock:pr:o:r:1',
+            prProcessingLockToken: 'attempt-token',
+        };
+        const gathered = await gatherStructuredReviewComments(comments, options);
+        const selected = selectReviewFeedback(gathered, parseFixSelection('S1'));
+        assert.deepStrictEqual(selected[0].actionableFindings, []);
+        assert.deepStrictEqual(selected[0].suggestions.map(suggestion => suggestion.id), ['S1']);
+
+        await markStructuredReviewFindingsProcessed(selected, options);
+        const consumed = [...(sets.get('processed-review-comments:o:r:1:findings') ?? [])];
+        assert.deepStrictEqual(consumed, ['71:S:S1'], 'only the requested suggestion is consumed');
+
+        const regathered = await gatherStructuredReviewComments(comments, options);
+        assert.deepStrictEqual(regathered[0].actionableFindings.map(finding => finding.id), ['F1'],
+            'the unaddressed merge blocker is still offered');
+        assert.deepStrictEqual(regathered[0].suggestions, [], 'a requested suggestion is not re-offered');
+
+        // The critical invariant: an optional follow-up never keeps the ultrafix
+        // loop running, before or after it is consumed.
+        const pendingAfter = await getStructuredPendingReviewState(comments, options);
+        assert.strictEqual(pendingAfter.hasPendingReview, true, 'the remaining blocker is still pending');
+    });
+
+    test('a pending suggestion alone is not pending review work', async () => {
+        const cleanWithSuggestion = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const options = {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        };
+        const state = await getStructuredPendingReviewState([{
+            id: 72,
+            body: `${cleanWithSuggestion}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], options);
+        assert.deepStrictEqual(state.unprocessedComments[0].suggestions.map(suggestion => suggestion.id), ['S1']);
+        assert.strictEqual(state.hasPendingReview, false);
+        assert.strictEqual(state.reviewStatus, 'valid_clean');
+    });
 });
 
 describe('/fix structured finding selection', () => {
@@ -513,40 +581,48 @@ describe('/fix structured finding selection', () => {
         assert.ok(!section.includes('Score: 7/10'));
     });
 
-    test('rejects suggestion selection syntax even after a blocker ID', () => {
-        const selection = parseFixFindingSelection('F1 include S1\nKeep the correction localized.');
-        assert.deepStrictEqual([...selection.actionableIds ?? []], []);
-        assert.strictEqual(selection.remainingInstructions, 'include S1\nKeep the correction localized.');
+    test('selects a suggestion alongside a blocker and renders both records', () => {
+        const selection = parseFixSelection('F1 S1\nKeep the correction localized.');
+        assert.deepStrictEqual(selection.findingIds, ['F1']);
+        assert.deepStrictEqual(selection.suggestionIds, ['S1']);
+        assert.strictEqual(selection.instructions, 'Keep the correction localized.');
 
-        const all = [reviewComment()];
-        const selected = selectReviewFeedback(all, selection);
-        assert.deepStrictEqual(selected, []);
-        const section = formatSelectedReviewRecords(selected);
-        assert.doesNotMatch(section, /Explicitly Authorized Suggestions/);
-        assert.doesNotMatch(section, /Consider a durable publication outbox/);
+        const resolution = resolveReviewFeedback([reviewComment()], selection);
+        assert.deepStrictEqual(resolution.selected, { findingIds: ['F1'], suggestionIds: ['S1'] });
+        assert.deepStrictEqual(resolution.comments[0].suggestions.map(suggestion => suggestion.id), ['S1']);
+        assert.strictEqual(hasAuthorizedFixFeedback(resolution), true);
 
-        const bareSuggestionId = parseFixFindingSelection('F1 S1');
-        assert.deepStrictEqual([...bareSuggestionId.actionableIds ?? []], []);
+        const section = formatSelectedReviewRecords(resolution.comments, resolution.selected);
+        assert.match(section, /Address actionable finding F1 and requested suggestion S1 only/);
+        assert.match(section, /### S1: Consider a durable publication outbox/);
+        assert.ok(section.includes('non-blocking follow-ups that were explicitly requested'));
     });
 
-    test('only extracts IDs from the dedicated leading selector clause', () => {
+    test('selecting only a suggestion leaves every blocker unaddressed', () => {
+        const resolution = resolveReviewFeedback([reviewComment()], parseFixSelection('S1'));
+        assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: ['S1'] });
+        assert.deepStrictEqual(resolution.comments[0].actionableFindings, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(resolution), true);
+        const section = formatSelectedReviewRecords(resolution.comments, resolution.selected);
+        assert.match(section, /Address requested suggestion S1 only/);
+        assert.doesNotMatch(section, /### F1:/);
+    });
+
+    test('only extracts IDs from the command line', () => {
         const selection = parseFixFindingSelection('F1; do not touch F2');
-        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
-        assert.strictEqual(selection.remainingInstructions, 'do not touch F2');
+        assert.deepStrictEqual(selection.findingIds, ['F1']);
+        assert.strictEqual(selection.instructions, 'do not touch F2');
 
         const proseOnly = parseFixFindingSelection('Do not touch F2 while addressing the regression.');
-        assert.strictEqual(proseOnly.actionableIds, null);
-        assert.strictEqual(proseOnly.remainingInstructions, 'Do not touch F2 while addressing the regression.');
+        assert.deepStrictEqual(proseOnly.findingIds, []);
+        assert.deepStrictEqual(proseOnly.suggestionIds, []);
+        assert.strictEqual(proseOnly.instructions, 'Do not touch F2 while addressing the regression.');
     });
 
     test('preserves a leading selector when instructions follow without a delimiter', () => {
         const selection = parseFixFindingSelection('F1 please keep the change localized');
-        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
-        assert.strictEqual(selection.remainingInstructions, 'please keep the change localized');
-
-        const includeInstruction = parseFixFindingSelection('F1 include a regression test');
-        assert.deepStrictEqual([...includeInstruction.actionableIds ?? []], ['F1']);
-        assert.strictEqual(includeInstruction.remainingInstructions, 'include a regression test');
+        assert.deepStrictEqual(selection.findingIds, ['F1']);
+        assert.strictEqual(selection.instructions, 'please keep the change localized');
 
         const comment = reviewComment();
         comment.actionableFindings.push({
@@ -558,38 +634,90 @@ describe('/fix structured finding selection', () => {
         assert.deepStrictEqual(selected[0].actionableFindings.map(finding => finding.id), ['F1']);
     });
 
-    test('fails closed when a leading selector is attempted but malformed', () => {
-        const selection = parseFixFindingSelection('include please keep the change localized');
-        assert.notStrictEqual(selection.actionableIds, null);
-        assert.deepStrictEqual([...selection.actionableIds!], []);
-        const selected = selectReviewFeedback([reviewComment()], selection);
-        assert.deepStrictEqual(selected, []);
-        assert.strictEqual(hasAuthorizedFixFeedback(selected), false);
+    test('reports selector-shaped typos instead of silently selecting nothing', () => {
+        const selection = parseFixSelection('S0 please keep the change localized');
+        assert.deepStrictEqual(selection.malformedIds, ['S0']);
+        assert.strictEqual(selection.instructions, 'please keep the change localized');
+        // The request fails closed rather than quietly becoming a bare `/fix`
+        // over every pending blocker, and the malformed identifier travels with
+        // the resolution so the posted explanation can name it.
+        const resolution = resolveReviewFeedback([reviewComment()], selection);
+        assert.deepStrictEqual(resolution.comments, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(resolution), false);
+        assert.deepStrictEqual(resolution.malformedIds, ['S0']);
+
+        // A valid identifier beside the typo is not acted on either.
+        const partly = resolveReviewFeedback([reviewComment()], parseFixSelection('F1 S0'));
+        assert.deepStrictEqual(partly.comments, []);
+        assert.deepStrictEqual(partly.malformedIds, ['S0']);
+    });
+
+    test('an ultrafix-initiated fix selects blockers only, whatever its instructions say', async () => {
+        const comments = [{
+            id: 80,
+            body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }];
+        const job = { data: { commandMode: 'fix', ultrafixMeta: { workEpoch: 1 }, commandInstructions: 'F1 S1' } };
+        const prepared = await prepareFixReviewFeedback({
+            job: job as any,
+            allComments: comments as any,
+            repoOwner: 'o',
+            repoName: 'r',
+            pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+        assert.deepStrictEqual(prepared.resolution.selected, { findingIds: ['F1'], suggestionIds: [] });
+        assert.deepStrictEqual(prepared.selectedReviewComments[0].suggestions, []);
+        // The loop's own instructions are still forwarded verbatim.
+        assert.strictEqual(prepared.fixSelection.instructions, 'F1 S1');
+    });
+
+    test('a manual fix hands the prompt the stripped instruction text', async () => {
+        const comments = [{
+            id: 81,
+            body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }];
+        const job = { data: { commandMode: 'fix', commandInstructions: 'F1 S1\n\nAlso rename the helper.' } };
+        const prepared = await prepareFixReviewFeedback({
+            job: job as any,
+            allComments: comments as any,
+            repoOwner: 'o',
+            repoName: 'r',
+            pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+        assert.deepStrictEqual(prepared.resolution.selected, { findingIds: ['F1'], suggestionIds: ['S1'] });
+        // The agent never sees the raw token list.
+        assert.strictEqual(job.data.commandInstructions, 'Also rename the helper.');
+        assert.doesNotMatch(prepared.reviewCommentsSection, /^F1 S1$/m);
     });
 
     test('does not authorize execution for unknown IDs or a bare fix with no blockers', () => {
-        const unknownSelection = selectReviewFeedback(
-            [reviewComment()],
-            parseFixFindingSelection('F999'),
-        );
-        assert.deepStrictEqual(unknownSelection, []);
-        assert.strictEqual(hasAuthorizedFixFeedback(unknownSelection), false);
+        const unknown = resolveReviewFeedback([reviewComment()], parseFixSelection('F999 S999'));
+        assert.deepStrictEqual(unknown.comments, []);
+        assert.deepStrictEqual(unknown.unresolved, { findingIds: ['F999'], suggestionIds: ['S999'] });
+        assert.strictEqual(hasAuthorizedFixFeedback(unknown), false);
 
         const suggestionOnlyReview = reviewComment();
         suggestionOnlyReview.actionableFindings = [];
         const bareSelection = selectReviewFeedback(
             [suggestionOnlyReview],
-            parseFixFindingSelection(''),
+            parseFixSelection(''),
         );
         assert.deepStrictEqual(bareSelection, []);
         assert.strictEqual(hasAuthorizedFixFeedback(bareSelection), false);
 
-        const rejectedSuggestion = selectReviewFeedback(
-            [suggestionOnlyReview],
-            parseFixFindingSelection('include S1'),
-        );
-        assert.deepStrictEqual(rejectedSuggestion, []);
-        assert.strictEqual(hasAuthorizedFixFeedback(rejectedSuggestion), false);
+        // An explicitly named suggestion is a real request even when the review
+        // publishes no blocker at all.
+        const requestedSuggestion = resolveReviewFeedback([suggestionOnlyReview], parseFixSelection('S1'));
+        assert.strictEqual(hasAuthorizedFixFeedback(requestedSuggestion), true);
+        assert.deepStrictEqual(requestedSuggestion.selected, { findingIds: [], suggestionIds: ['S1'] });
     });
 
     test('selects permanent IDs across comments and resolves legacy duplicate IDs to the newest review', () => {

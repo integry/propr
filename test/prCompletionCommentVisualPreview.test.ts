@@ -97,3 +97,65 @@ test('omits agent-side commit housekeeping from a committed follow-up report', a
     assert.doesNotMatch(commitMessage, /No commits|uncommitted/i);
     assert.doesNotMatch(comment, /No commits|uncommitted/i);
 });
+
+test('names the findings and the suggestions a fix run addressed', async () => {
+    const comments: UnprocessedComment[] = [{
+        id: 5700144816,
+        body: '/fix F20 S3 S5',
+        author: 'integry',
+        createdAt: new Date().toISOString(),
+    }];
+    const result: ClaudeCodeResponse = {
+        success: true,
+        executionTime: 1000,
+        output: null,
+        logs: '',
+        exitCode: 0,
+        finalResult: null,
+        modifiedFiles: ['src/config.ts'],
+        commitMessage: null,
+        summary: 'Rejected stale revisions and extracted the retry helper.',
+    };
+
+    const comment = await buildCompletionComment({ commitHash: 'abcdef1234567890' }, comments, {
+        changesSummary: result.summary!,
+        commitMessage: 'fix: reject stale revisions',
+        llm: 'claude-opus-5',
+        authorsText: '@integry',
+        consumedReviewCommentIds: [960],
+        addressedFeedback: { findingIds: ['F20'], suggestionIds: ['S3', 'S5'] },
+    }, result);
+
+    // Blocking and optional work stay visually separate in the receipt.
+    assert.match(comment, /> Addressed finding F20 · suggestions S3, S5/);
+});
+
+test('omits the addressed line when a run addressed no review record', async () => {
+    const comments: UnprocessedComment[] = [{
+        id: 5700144817,
+        body: 'Please tidy the helper',
+        author: 'integry',
+        createdAt: new Date().toISOString(),
+    }];
+    const result: ClaudeCodeResponse = {
+        success: true,
+        executionTime: 1000,
+        output: null,
+        logs: '',
+        exitCode: 0,
+        finalResult: null,
+        modifiedFiles: ['src/config.ts'],
+        commitMessage: null,
+        summary: 'Tidied the helper.',
+    };
+
+    const comment = await buildCompletionComment({ commitHash: 'abcdef1234567890' }, comments, {
+        changesSummary: result.summary!,
+        commitMessage: 'chore: tidy the helper',
+        llm: 'claude-opus-5',
+        authorsText: '@integry',
+        addressedFeedback: { findingIds: [], suggestionIds: [] },
+    }, result);
+
+    assert.doesNotMatch(comment, /> Addressed/);
+});

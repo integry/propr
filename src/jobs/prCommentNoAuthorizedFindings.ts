@@ -8,6 +8,11 @@ import {
     type WorkerStateManager,
     getAuthenticatedOctokit,
 } from '@propr/core';
+import {
+    type ReviewFeedbackSelection,
+    describeReviewFeedbackSelection,
+    isEmptyReviewFeedbackSelection,
+} from '@propr/shared';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 
@@ -24,12 +29,17 @@ interface NoAuthorizedFindingsParams {
     pullRequestNumber: number;
     correlatedLogger: Logger;
     correlationId: string;
+    /** Requested identifiers no current review offers. */
+    unresolved?: ReviewFeedbackSelection;
+    /** Selector-shaped tokens that are not valid identifiers, e.g. `S0`. */
+    malformedIds?: string[];
 }
 
 export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsParams): Promise<void> {
     const {
         job, taskId, taskUrl, stateManager, octokit, unprocessedComments, redisClient,
         repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
+        unresolved, malformedIds,
     } = params;
     if (job.data.ultrafixMeta) {
         const body = '⚠️ **Ultrafix could not apply this fix because no unprocessed actionable review findings remain.** The queued review may have been removed, consumed, or become invalid. Ultrafix will request a fresh review, or stop for manual review if its retry limit has been reached.';
@@ -60,7 +70,27 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
     const commentIdsSuffix = commentIds.length > 0
         ? `\n\n---\n_Processing comment ID${commentIds.length > 1 ? 's' : ''}: ${commentIds.map(id => `${id}✓`).join(', ')}_`
         : '';
-    const body = `ℹ️ **No authorized review findings were selected.**\n\nNo files were changed because this \`/fix\` command did not select an actionable F# finding. Suggestions require a separate ordinary follow-up request.\n\n[View Task Execution](${taskUrl})${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;
+    // Naming the failures is the difference between an actionable message and a
+    // dead end. A user who typed `S0`, or named a suggestion from a superseded
+    // review, otherwise has no way to tell a typo from a stale reference.
+    const problems: string[] = [];
+    if (malformedIds && malformedIds.length > 0) {
+        problems.push(`These are not valid review identifiers: ${malformedIds.join(', ')}. `
+            + 'Nothing was applied, because a request that is partly not understood is not acted on. '
+            + 'Correct them and run `/fix` again.');
+    }
+    if (unresolved && !isEmptyReviewFeedbackSelection(unresolved)) {
+        problems.push(`No current review offers ${describeReviewFeedbackSelection(unresolved)}. `
+            + 'They may have been addressed already, or they belong to a review of an older head.');
+    }
+    const body = [
+        'ℹ️ **No review findings or suggestions were selected.**',
+        'No files were changed because this `/fix` command resolved to no review record.',
+        ...problems,
+        'Name at least one `F#` finding or `S#` suggestion from a current review comment, for example `/fix F20 S3`. '
+            + 'Any text after the identifiers, and every line below the command, is passed through as instructions.',
+        `[View Task Execution](${taskUrl})`,
+    ].join('\n\n') + `${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;
     const completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body,
     }) as { data: { html_url: string; body?: string } };
@@ -70,6 +100,12 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
             commandMode: 'fix',
             notificationRecap: 'No files were changed because no authorized review findings were selected.',
             noAuthorizedReviewFindings: true,
+            // Recorded only when something was actually named, so a bare `/fix`
+            // with nothing pending keeps the recap it has always had.
+            ...(malformedIds && malformedIds.length > 0 && { malformedReviewFeedbackIds: malformedIds }),
+            ...(unresolved && !isEmptyReviewFeedbackSelection(unresolved) && {
+                unresolvedReviewFeedback: { findingIds: unresolved.findingIds, suggestionIds: unresolved.suggestionIds },
+            }),
             githubComment: { url: completionComment.data.html_url, body: completionComment.data.body ?? body },
         },
     });

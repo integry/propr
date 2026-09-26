@@ -256,6 +256,10 @@ export {
   type ReviewInputCeilingLimit,
 } from './reviewContextBudget.js';
 
+// One identifier grammar for /fix selections, shared by the worker's comment
+// parser and the MCP tool's array validator so the two cannot drift.
+export * from './reviewFeedbackIds.js';
+
 // Export the owner/repo slug parser shared by the CLI and API
 export { parseProjectSlug } from './projectSlug.js';
 

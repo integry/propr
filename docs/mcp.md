@@ -354,8 +354,12 @@ just read and an 8–128 character `idempotencyKey`; a changed head fails with
 `comment_on_pull_request` posts an ordinary follow-up comment, which is how
 ProPR queues a scoped refinement. A message that starts a slash command is
 rejected with `USE_EXPLICIT_TOOL`; use `review_pull_request`,
-`fix_review_findings` (with `reviewCommentId` and explicit `findingIds`) or
-`run_ultrafix` instead, so their scope and head preconditions are checked.
+`fix_review_findings` (with `reviewCommentId` and explicit `findingIds` and/or
+`suggestionIds`, plus optional `instructions`) or `run_ultrafix` instead, so
+their scope and head preconditions are checked. `fix_review_findings` needs at
+least one identifier across the two arrays; an identifier the referenced review
+does not currently offer is rejected by name rather than dropped. Selecting a
+suggestion does not change how merge blockers are treated.
 
 `set_pull_request_model` routes the PR to exactly one enabled model by
 converging the managed `llm-*` labels the repository already defines:

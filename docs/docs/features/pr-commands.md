@@ -20,7 +20,7 @@ To **take over an existing PR** for ongoing work (so that natural follow-up comm
 | Command | Use it when | Changes code? | Details |
 |---|---|---|---|
 | `/review` | You want AI review comments on the PR | No | [`/review`](#review) |
-| `/fix` | You want to apply a `/review`'s pending suggestions | Yes | [`/fix`](#fix) |
+| `/fix` | You want to apply a `/review`'s findings, or named suggestions | Yes | [`/fix`](#fix) |
 | `/merge` | You want the base branch merged into the PR branch | Maybe, if conflicts need resolution | [`/merge`](#merge) |
 | `/switch <model-id>` | You want future PR work to use a different model | No, unless you include follow-up instructions | [`/switch`](#switch) |
 | `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes | [`/use`](#use) |
@@ -154,14 +154,39 @@ Post:
 /fix
 ```
 
-Or narrow the scope — text after `/fix` (same line or below) becomes extra instructions:
+Or name exactly what to address. A review publishes merge-blocking findings as
+`F1`, `F2`, … and non-blocking follow-ups as `S1`, `S2`, …; list them in any
+order, mixed freely:
+
+```text
+/fix F20 S3 S5
+Keep the public helper signature unchanged.
+```
+
+- Identifiers are read from the command line only, and are case-insensitive
+  (`/fix f20 s3` is `/fix F20 S3`).
+- Everything after the last identifier on that line, plus every following line,
+  is passed to the agent as instructions. The identifiers themselves are not.
+- An identifier no current review offers is reported back on the pull request
+  instead of being ignored.
+- A malformed identifier such as `S0` or `F007` fails the whole command closed:
+  nothing is applied, and ProPR names the invalid identifiers so you can correct
+  them. A partly misunderstood request is never acted on in part.
+- Selecting a suggestion changes nothing about merge blockers: blockers stay
+  required, suggestions are implemented only because you asked for them, and an
+  unselected blocker is never treated as in scope.
+- `/ultrafix` continues to select findings only; it never takes on a suggestion
+  on its own.
+
+With no identifiers, `/fix` keeps its original meaning — every pending merge
+blocker, no suggestions — and any text you add becomes extra instructions:
 
 ```text
 /fix
 Only address the critical findings.
 ```
 
-`/fix` applies a `/review`'s pending suggestions: it collects the unprocessed AI review comments on the PR (identified by their `propr:ai-review` marker), applies them in one implementation pass, and then marks them processed. Comments that reported an error (`error="true"`) are excluded. User-authored comments are ignored by `/fix`; ProPR processes those directly as natural follow-ups.
+`/fix` applies a `/review`'s pending feedback: it collects the unprocessed AI review comments on the PR (identified by their `propr:ai-review` marker), narrows them to what you selected, applies them in one implementation pass, and then marks exactly those records processed. Unselected findings stay pending for a later `/fix`, and a suggestion is only ever included when you name it. Comments that reported an error (`error="true"`) are excluded. User-authored comments are ignored by `/fix`; ProPR processes those directly as natural follow-ups.
 
 Two separate time windows govern which comments `/fix` touches:
 

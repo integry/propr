@@ -67,7 +67,15 @@ export async function projectDiscussionComment(deps: ToolDeps, comment: ReviewCo
       const consumed = processedComments.includes(String(comment.id)) || processedFindings.includes(`${comment.id}:F:${finding.id}`);
       return { ...finding, consumed, current: eligible && !consumed };
     });
+    // Suggestions get the identical consumed filtering as findings: a suggestion
+    // an earlier /fix run already implemented must not be selectable again, or a
+    // retry would silently redo work and its receipt would misreport the scope.
+    const suggestions = parsed.suggestions.map(suggestion => {
+      const consumed = processedComments.includes(String(comment.id)) || processedFindings.includes(`${comment.id}:S:${suggestion.id}`);
+      return { ...suggestion, consumed, current: eligible && !consumed };
+    });
     review = { ...parsed, actionableFindings: findings, currentFindingIds: findings.filter(finding => finding.current).map(finding => finding.id),
+      suggestions, currentSuggestionIds: suggestions.filter(suggestion => suggestion.current).map(suggestion => suggestion.id),
       reviewedHead, matchesCurrentHead: reviewedHead === null ? null : reviewedHead === target.head,
       partial: /\bpartial="true"/.test(metadata), coverage: reviewedHead === null ? 'legacy_head_unknown' : /\bpartial="true"/.test(metadata) ? 'partial' : 'full_diff',
       taskId: taskId ? decodeTaskId(taskId) : null };
