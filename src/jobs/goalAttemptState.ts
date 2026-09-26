@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import { db, type GoalExecutionControl, type GoalJobData } from '@propr/core';
+import { db, publishGoalTransition, type GoalExecutionControl, type GoalJobData } from '@propr/core';
 import type { GoalArtifact } from '@propr/core';
 import { publishDirectGoalCheckpoint, rejectDirectGoalCheckpoint } from './goalCheckpointPublisher.js';
 
@@ -52,6 +52,9 @@ function attemptWhere(query: Knex.QueryBuilder, job: GoalJobData): Knex.QueryBui
 }
 
 export async function claimGoalAttempt(job: GoalJobData): Promise<GoalRow | null> {
+    // Read before claiming so the announcement below can tell a goal starting
+    // for the first time from one resuming an attempt it had already started.
+    const previous = await attemptWhere(db<GoalRow>('goals'), job).first() as GoalRow | null;
     const claimed = await attemptWhere(db('goals'), job)
         .where({ desired_state: 'running' })
         .whereNull('claimed_at')
@@ -63,7 +66,11 @@ export async function claimGoalAttempt(job: GoalJobData): Promise<GoalRow | null
             updated_at: db.fn.now(),
         });
     if (claimed !== 1) return null;
-    return attemptWhere(db<GoalRow>('goals'), job).first() as Promise<GoalRow | null>;
+    const goal = await attemptWhere(db<GoalRow>('goals'), job).first() as GoalRow | null;
+    // The one place a goal starts executing. Announced from the claim itself so
+    // 'queued' becoming 'running' is pushed rather than discovered by polling.
+    await publishGoalTransition({ previous, next: goal });
+    return goal;
 }
 
 export async function fencedGoal(job: GoalJobData): Promise<GoalRow | null> {

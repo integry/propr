@@ -7,6 +7,9 @@ import {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  GOAL_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type DraftStatus,
@@ -20,6 +23,9 @@ import {
   type TodoItem,
   type TokenUsageInfo,
   type QueueStatsData,
+  type GoalUpdatePayload,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
   type EventPayload
 } from '@propr/shared';
 
@@ -27,9 +33,19 @@ import {
  * Event publisher for real-time updates via Redis pub/sub.
  * Publishes events that will be consumed by the SocketService in the dashboard.
  */
+/**
+ * How long to leave the publisher offline after a failed connection.
+ *
+ * Without it, every publish during an outage builds a fresh client that keeps
+ * retrying in the background: one unreachable Redis turns a burst of events
+ * into a connection storm, and the abandoned clients keep the process alive.
+ */
+const CONNECT_RETRY_COOLDOWN_MS = 5_000;
+
 class EventPublisher {
   private redis: InstanceType<typeof Redis> | null = null;
   private isInitialized = false;
+  private connectRetryAfter = 0;
 
   /**
    * Initialize the Redis connection for publishing events.
@@ -37,8 +53,9 @@ class EventPublisher {
    */
   private async ensureInitialized(): Promise<void> {
     if (this.isInitialized) return;
+    if (Date.now() < this.connectRetryAfter) return;
 
-    this.redis = new Redis({
+    const client = new Redis({
       host: process.env.REDIS_HOST ?? '127.0.0.1',
       port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
       maxRetriesPerRequest: null,
@@ -46,17 +63,22 @@ class EventPublisher {
       lazyConnect: true
     });
 
-    this.redis.on('error', (error: Error) => {
+    client.on('error', (error: Error) => {
       logger.warn({ error: error.message }, 'Redis error in EventPublisher');
     });
 
     try {
-      await this.redis.connect();
+      await client.connect();
+      this.redis = client;
       this.isInitialized = true;
       logger.debug('EventPublisher Redis connection established');
     } catch (error) {
-      logger.warn({ error: (error as Error).message }, 'Failed to connect EventPublisher to Redis');
+      // Drop the client for real. Nulling the reference alone would leave it
+      // reconnecting forever behind our back.
+      client.disconnect();
       this.redis = null;
+      this.connectRetryAfter = Date.now() + CONNECT_RETRY_COOLDOWN_MS;
+      logger.warn({ error: (error as Error).message }, 'Failed to connect EventPublisher to Redis');
     }
   }
 
@@ -203,10 +225,45 @@ class EventPublisher {
   }
 
   /**
+   * Publish a goal lifecycle transition.
+   * Called from the transition itself rather than from a sweep, so the Goals
+   * console stops polling to discover a pause or a completion it could have
+   * been told about.
+   */
+  async publishGoalUpdate(params: Omit<GoalUpdatePayload, 'eventType'>): Promise<void> {
+    await this.publish(REDIS_CHANNELS.GOALS, { eventType: GOAL_UPDATE, ...params });
+  }
+
+  /**
+   * Publish a notification create/read/dismiss change.
+   * `recipientIds` is carried so the API can fan out to per-user rooms; it is
+   * narrowed to the receiving recipient before the frame reaches a browser.
+   */
+  async publishNotificationUpdate(
+    params: Omit<NotificationUpdatePayload, 'eventType'>
+  ): Promise<void> {
+    await this.publish(REDIS_CHANNELS.NOTIFICATIONS, {
+      eventType: NOTIFICATION_UPDATE,
+      ...params
+    });
+  }
+
+  /**
+   * Publish an agent usage change.
+   * Deliberately payload-free beyond its source: the client re-reads the
+   * existing usage endpoint, which already owns the projection and the
+   * permission check.
+   */
+  async publishUsageUpdate(params: Omit<UsageUpdatePayload, 'eventType'>): Promise<void> {
+    await this.publish(REDIS_CHANNELS.USAGE, { eventType: USAGE_UPDATE, ...params });
+  }
+
+  /**
    * Close the Redis connection.
    * Should be called during application shutdown.
    */
   async close(): Promise<void> {
+    this.connectRetryAfter = 0;
     if (this.redis) {
       await this.redis.quit();
       this.redis = null;

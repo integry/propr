@@ -22,6 +22,7 @@ import {
     type NotificationEventAction,
     type NotificationEvent,
     type NotificationKind,
+    type NotificationChange,
     type NotificationListResponse,
     type NotificationPreferenceChannels,
     type NotificationPreferencesResponse,
@@ -30,10 +31,13 @@ import {
     type NotificationStateResponse,
     type NotificationUnreadCountResponse,
     type NotificationTargetFor,
+    type NotificationUpdatePayload,
     type PushSubscription,
     type PushSubscriptionInput
 } from '@propr/shared';
 import { db } from '../db/connection.js';
+import logger from '../utils/logger.js';
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import {
     decodeNotificationCursor,
     encodeNotificationCursor,
@@ -57,6 +61,32 @@ import {
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
 const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
+
+/**
+ * One Inbox change to announce after its transaction has committed.
+ *
+ * Collected during the write instead of published from it: a client that reacts
+ * to the event by re-reading must never be able to observe state older than the
+ * event that woke it.
+ */
+interface NotificationAnnouncement {
+    change: NotificationChange;
+    eventId: string | null;
+    recipientIds: readonly string[];
+    repository: string | null;
+}
+
+/** Publishes an Inbox change. Injected in tests; failures are swallowed. */
+export type NotificationUpdatePublisher = (
+    payload: Omit<NotificationUpdatePayload, 'eventType'>
+) => Promise<void>;
+
+/** The repository an event is about, when its target names one. */
+function announcementRepository(target: unknown): string | null {
+    if (!target || typeof target !== 'object') return null;
+    const repository = (target as { repository?: unknown }).repository;
+    return typeof repository === 'string' && repository ? repository : null;
+}
 
 export interface NotificationRecipientInput {
     userId: string;
@@ -98,6 +128,8 @@ export interface NotificationServiceOptions extends PushSubscriptionPolicyOption
     database?: Knex;
     now?: () => TimestampInput;
     generateId?: () => string;
+    /** Overridden in tests so Inbox pushes can be asserted without Redis. */
+    publishUpdate?: NotificationUpdatePublisher;
 }
 
 export interface SystemFailureTransitionInput {
@@ -336,11 +368,14 @@ export class NotificationService {
     private readonly now: () => TimestampInput;
     private readonly generateId: () => string;
     private readonly pushSubscriptions: PushSubscriptionService;
+    private readonly publishUpdate: NotificationUpdatePublisher;
 
     constructor(options: NotificationServiceOptions = {}) {
         this.database = options.database ?? db;
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
+        this.publishUpdate = options.publishUpdate
+            ?? (payload => getEventPublisher().publishNotificationUpdate(payload));
         this.pushSubscriptions = new PushSubscriptionService({
             ...options,
             database: this.database,
@@ -355,9 +390,17 @@ export class NotificationService {
     ): Promise<NotificationEvent<K>> {
         const event = this.prepareNotificationEvent(input);
         const normalizedRecipients = normalizeRecipients(recipients);
+        const announcements: NotificationAnnouncement[] = [];
 
-        return this.database.transaction(transaction =>
-            this.persistNotificationEvent(transaction, event, normalizedRecipients));
+        const stored = await this.database.transaction(transaction =>
+            this.persistNotificationEvent(
+                transaction,
+                event,
+                normalizedRecipients,
+                announcements
+            ));
+        await this.flushAnnouncements(announcements);
+        return stored;
     }
 
     /**
@@ -376,10 +419,18 @@ export class NotificationService {
         const event = this.prepareNotificationEvent(input);
         const normalizedRecipients = normalizeRecipients(recipients);
 
-        return this.database.transaction(async transaction => {
+        const announcements: NotificationAnnouncement[] = [];
+        const stored = await this.database.transaction(async transaction => {
             if (!await this.pullRequestIsOpen(transaction, repository, prNumber)) return null;
-            return this.persistNotificationEvent(transaction, event, normalizedRecipients);
+            return this.persistNotificationEvent(
+                transaction,
+                event,
+                normalizedRecipients,
+                announcements
+            );
         });
+        await this.flushAnnouncements(announcements);
+        return stored;
     }
 
     /**
@@ -416,7 +467,8 @@ export class NotificationService {
             throw new TypeError('indexing notification target must match its source activity');
         }
 
-        return this.database.transaction(async transaction => {
+        const announcements: NotificationAnnouncement[] = [];
+        const stored = await this.database.transaction(async transaction => {
             if (
                 input.target.type === 'task'
                 && input.target.prNumber !== undefined
@@ -445,8 +497,15 @@ export class NotificationService {
                 || current.last_activity_at !== lastActivityAt
             ) return null;
 
-            return this.persistNotificationEvent(transaction, event, normalizedRecipients);
+            return this.persistNotificationEvent(
+                transaction,
+                event,
+                normalizedRecipients,
+                announcements
+            );
         });
+        await this.flushAnnouncements(announcements);
+        return stored;
     }
 
     /**
@@ -463,12 +522,14 @@ export class NotificationService {
         const event = this.prepareNotificationEvent(input);
         const normalizedRecipients = normalizeRecipients(recipients);
 
-        return this.database.transaction(async transaction => {
+        const announcements: NotificationAnnouncement[] = [];
+        const stored = await this.database.transaction(async transaction => {
             if (!await this.pullRequestIsOpen(transaction, repository, prNumber)) return null;
             const storedEvent = await this.persistNotificationEvent(
                 transaction,
                 event,
-                normalizedRecipients
+                normalizedRecipients,
+                announcements
             );
             const matching = () => this.matchingPullRequestAttentionEvents(
                 transaction,
@@ -485,11 +546,14 @@ export class NotificationService {
                     matching().select('event.event_id').whereNot({
                         'event.event_id': newest.event_id
                     }),
-                    transaction
+                    transaction,
+                    { into: announcements, repository }
                 );
             }
             return storedEvent;
         });
+        await this.flushAnnouncements(announcements);
+        return stored;
     }
 
     /**
@@ -506,8 +570,9 @@ export class NotificationService {
         assertIdentifier(input.status, 'notification system status');
         const snapshotAt = normalizeISO8601Timestamp(input.snapshotAt);
         const normalizedRecipients = normalizeRecipients(recipients);
+        const announcements: NotificationAnnouncement[] = [];
 
-        return this.database.transaction(async transaction => {
+        const outcome = await this.database.transaction(async transaction => {
             // Acquire SQLite's write reservation before reading. Concurrent
             // instances therefore observe transitions in commit order instead
             // of both reading the same pre-transition snapshot.
@@ -535,7 +600,8 @@ export class NotificationService {
                     transaction,
                     input,
                     snapshotAt,
-                    normalizedRecipients
+                    normalizedRecipients,
+                    announcements
                 );
             }
 
@@ -570,7 +636,8 @@ export class NotificationService {
                     transaction('notification_events')
                         .select('event_id')
                         .where({ deduplication_key: superseded.deduplicationKey }),
-                    transaction
+                    transaction,
+                    { into: announcements, repository: null }
                 );
             }
 
@@ -586,22 +653,29 @@ export class NotificationService {
                 event: await this.persistNotificationEvent(
                     transaction,
                     event,
-                    normalizedRecipients
+                    normalizedRecipients,
+                    announcements
                 )
             };
         });
+        await this.flushAnnouncements(announcements);
+        return outcome;
     }
 
+    // eslint-disable-next-line max-params -- one bootstrap transition, its recipients and the announcements it produces
     private async reconcileInitialSystemFailureReceipts(
         transaction: Knex.Transaction,
         input: SystemFailureTransitionInput,
         failureStartedAt: ISO8601Timestamp,
-        normalizedRecipients: NormalizedRecipient[]
+        normalizedRecipients: NormalizedRecipient[],
+        announcements?: NotificationAnnouncement[]
     ): Promise<SystemFailureTransitionResult> {
         let priorEvents = this.matchingTargetEvents(['system_failure'], transaction)
             .whereRaw("json_extract(event.target_json, '$.component') = ?", [input.component]);
         if (input.healthy) {
-            await this.dismissReceiptQuery(priorEvents, transaction);
+            await this.dismissReceiptQuery(priorEvents, transaction, announcements
+                ? { into: announcements, repository: null }
+                : undefined);
             return { accepted: true, event: null };
         }
         const eventInput = await input.eventFor(input.status, failureStartedAt);
@@ -609,15 +683,48 @@ export class NotificationService {
         priorEvents = priorEvents.whereNot({
             'event.deduplication_key': currentEvent.deduplicationKey
         });
-        await this.dismissReceiptQuery(priorEvents, transaction);
+        await this.dismissReceiptQuery(priorEvents, transaction, announcements
+            ? { into: announcements, repository: null }
+            : undefined);
         return {
             accepted: true,
             event: await this.persistNotificationEvent(
                 transaction,
                 currentEvent,
-                normalizedRecipients
+                normalizedRecipients,
+                announcements
             )
         };
+    }
+
+    /**
+     * Announce committed Inbox changes to their recipients.
+     *
+     * Failures are logged and swallowed: an unreachable Redis degrades the
+     * Inbox to the polling it already falls back on, and must never fail the
+     * insert or the dismissal that produced the change.
+     */
+    private async flushAnnouncements(
+        announcements: readonly NotificationAnnouncement[]
+    ): Promise<void> {
+        for (const announcement of announcements) {
+            const recipientIds = [...new Set(announcement.recipientIds)];
+            if (recipientIds.length === 0) continue;
+            try {
+                await this.publishUpdate({
+                    change: announcement.change,
+                    eventId: announcement.eventId,
+                    recipientIds,
+                    repository: announcement.repository,
+                    occurredAt: new Date().toISOString()
+                });
+            } catch (error) {
+                logger.warn(
+                    { change: announcement.change, error: (error as Error).message },
+                    'Could not publish notification update event'
+                );
+            }
+        }
     }
 
     private prepareNotificationEvent<K extends NotificationKind>(
@@ -649,7 +756,8 @@ export class NotificationService {
     private async persistNotificationEvent<K extends NotificationKind>(
         transaction: Knex.Transaction,
         event: NotificationEvent<K>,
-        normalizedRecipients: NormalizedRecipient[]
+        normalizedRecipients: NormalizedRecipient[],
+        announcements?: NotificationAnnouncement[]
     ): Promise<NotificationEvent<K>> {
         await transaction('notification_events')
             .insert({
@@ -676,7 +784,15 @@ export class NotificationService {
             .first();
         if (!storedRow) throw new Error('Notification event was not persisted');
         const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
-        await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
+        const assigned = await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
+        announcements?.push({
+            change: 'created',
+            eventId: storedEvent.id,
+            // Only the recipients that actually received a receipt: a user whose
+            // preferences filtered this kind out has nothing new to re-read.
+            recipientIds: assigned,
+            repository: announcementRepository(storedEvent.target)
+        });
         return storedEvent;
     }
 
@@ -687,17 +803,26 @@ export class NotificationService {
         assertIdentifier(eventId, 'notification eventId');
         const normalizedRecipients = normalizeRecipients(recipients);
 
+        const announcements: NotificationAnnouncement[] = [];
         await this.database.transaction(async (transaction) => {
             const eventRow = await transaction<NotificationEventRow>('notification_events')
                 .where({ event_id: eventId })
                 .first();
             if (!eventRow) throw new NotificationEventNotFoundError(eventId);
-            await this.assignRecipients(
+            const event = toNotificationEvent(eventRow);
+            const assigned = await this.assignRecipients(
                 transaction,
-                toNotificationEvent(eventRow),
+                event,
                 normalizedRecipients
             );
+            announcements.push({
+                change: 'created',
+                eventId,
+                recipientIds: assigned,
+                repository: announcementRepository(event.target)
+            });
         });
+        await this.flushAnnouncements(announcements);
     }
 
     async getNotificationPreferences(userId: string): Promise<NotificationPreferencesResponse> {
@@ -880,8 +1005,9 @@ export class NotificationService {
         assertIdentifier(userId, 'notification userId');
         const timestamp = normalizeISO8601Timestamp(this.now());
 
-        return this.database.transaction(async transaction => {
-            await transaction('notification_user_states')
+        const announcements: NotificationAnnouncement[] = [];
+        const response = await this.database.transaction(async transaction => {
+            const changed = await transaction('notification_user_states')
                 .where({ user_id: userId, inbox_enabled: true })
                 .whereNull('dismissed_at')
                 .update({
@@ -891,18 +1017,36 @@ export class NotificationService {
                     )
                 });
 
+            // One bulk change with no single subject: the recipient reconciles
+            // the whole list instead of receiving a frame per closed card.
+            if (Number(changed) > 0) {
+                announcements.push({
+                    change: 'dismissed_all',
+                    eventId: null,
+                    recipientIds: [userId],
+                    repository: null
+                });
+            }
+
             return parseNotificationUnreadCountResponse({
                 unreadCount: await unreadCount(transaction, userId)
             });
         });
+        await this.flushAnnouncements(announcements);
+        return response;
     }
 
     /** Dismiss every Inbox receipt for one immutable audit event. */
     async dismissNotificationReceipts(eventId: string): Promise<number> {
         assertIdentifier(eventId, 'notification eventId');
-        return this.dismissReceiptQuery(
-            this.database('notification_events').select('event_id').where({ event_id: eventId })
+        const announcements: NotificationAnnouncement[] = [];
+        const dismissed = await this.dismissReceiptQuery(
+            this.database('notification_events').select('event_id').where({ event_id: eventId }),
+            this.database,
+            { into: announcements, repository: null }
         );
+        await this.flushAnnouncements(announcements);
+        return dismissed;
     }
 
     /**
@@ -914,11 +1058,16 @@ export class NotificationService {
         prNumber: number
     ): Promise<number> {
         this.assertPullRequestIdentity(repository, prNumber);
-        return this.dismissReceiptQuery(
+        const announcements: NotificationAnnouncement[] = [];
+        const dismissed = await this.dismissReceiptQuery(
             this.matchingTargetEvents(['task', 'review', 'pull_request'])
                 .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
-                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber])
+                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]),
+            this.database,
+            { into: announcements, repository }
         );
+        await this.flushAnnouncements(announcements);
+        return dismissed;
     }
 
     /** Persist a merged marker and close all existing PR receipts atomically. */
@@ -930,7 +1079,8 @@ export class NotificationService {
         this.assertPullRequestIdentity(repository, prNumber);
         const normalizedMergedAt = normalizeISO8601Timestamp(mergedAt);
 
-        return this.database.transaction(async transaction => {
+        const announcements: NotificationAnnouncement[] = [];
+        const dismissed = await this.database.transaction(async transaction => {
             await transaction('notification_pull_request_state')
                 .insert({
                     repository,
@@ -946,9 +1096,12 @@ export class NotificationService {
                 )
                     .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
                     .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]),
-                transaction
+                transaction,
+                { into: announcements, repository }
             );
         });
+        await this.flushAnnouncements(announcements);
+        return dismissed;
     }
 
     /** Keep only the newest PR-attention event visible for a repository/PR. */
@@ -958,7 +1111,8 @@ export class NotificationService {
     ): Promise<number> {
         this.assertPullRequestIdentity(repository, prNumber);
 
-        return this.database.transaction(async (transaction) => {
+        const announcements: NotificationAnnouncement[] = [];
+        const dismissed = await this.database.transaction(async (transaction) => {
             const matching = () => transaction('notification_events as event')
                 .where({ 'event.kind': 'pull_request' })
                 .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
@@ -974,18 +1128,26 @@ export class NotificationService {
                 matching().select('event.event_id').whereNot({
                     'event.event_id': newest.event_id
                 }),
-                transaction
+                transaction,
+                { into: announcements, repository }
             );
         });
+        await this.flushAnnouncements(announcements);
+        return dismissed;
     }
 
     /** Dismiss active failure cards for one system-health component. */
     async dismissSystemFailureNotifications(component: string): Promise<number> {
         assertIdentifier(component, 'notification system component');
-        return this.dismissReceiptQuery(
+        const announcements: NotificationAnnouncement[] = [];
+        const dismissed = await this.dismissReceiptQuery(
             this.matchingTargetEvents(['system_failure'])
-                .whereRaw("json_extract(event.target_json, '$.component') = ?", [component])
+                .whereRaw("json_extract(event.target_json, '$.component') = ?", [component]),
+            this.database,
+            { into: announcements, repository: null }
         );
+        await this.flushAnnouncements(announcements);
+        return dismissed;
     }
 
     private async readPreferenceSnapshot(
@@ -1064,12 +1226,13 @@ export class NotificationService {
             .merge(values);
     }
 
+    /** Insert the Inbox receipts, returning the recipients that received one. */
     private async assignRecipients(
         transaction: Knex.Transaction,
         event: NotificationEvent,
         recipients: NormalizedRecipient[]
-    ): Promise<void> {
-        if (recipients.length === 0) return;
+    ): Promise<string[]> {
+        if (recipients.length === 0) return [];
         const preferenceRows = await transaction<NotificationPreferenceRow>(
             'notification_preferences'
         )
@@ -1095,7 +1258,7 @@ export class NotificationService {
                 ? [{ ...recipient, inboxEnabled, pushEnabled }]
                 : [];
         });
-        if (eligibleRecipients.length === 0) return;
+        if (eligibleRecipients.length === 0) return [];
         const now = normalizeISO8601Timestamp(this.now());
         const assignedAt: ISO8601Timestamp = now < event.createdAt ? event.createdAt : now;
 
@@ -1112,10 +1275,11 @@ export class NotificationService {
             .onConflict(['event_id', 'user_id'])
             .ignore();
 
+        const assigned = eligibleRecipients.map(recipient => recipient.userId);
         const pushRecipientIds = eligibleRecipients
             .filter(recipient => recipient.pushEnabled)
             .map(recipient => recipient.userId);
-        if (pushRecipientIds.length === 0) return;
+        if (pushRecipientIds.length === 0) return assigned;
 
         // Snapshot one job per subscription that was active when this recipient
         // was first assigned. The event/subscription unique index makes duplicate
@@ -1148,7 +1312,7 @@ export class NotificationService {
                 expiration.whereNull('subscription.expires_at')
                     .orWhere('subscription.expires_at', '>', now);
             }) as PushDeliveryFanoutRow[];
-        if (fanoutRows.length === 0) return;
+        if (fanoutRows.length === 0) return assigned;
 
         for (
             let offset = 0;
@@ -1173,6 +1337,7 @@ export class NotificationService {
                 .onConflict(['event_id', 'subscription_id'])
                 .ignore();
         }
+        return assigned;
     }
 
     private assertPullRequestIdentity(repository: string, prNumber: number): void {
@@ -1223,9 +1388,24 @@ export class NotificationService {
 
     private async dismissReceiptQuery(
         eventIds: Knex.QueryBuilder,
-        database: Database = this.database
+        database: Database = this.database,
+        announce?: { into: NotificationAnnouncement[]; repository: string | null }
     ): Promise<number> {
         const timestamp = normalizeISO8601Timestamp(this.now());
+        // Read the receipts this update is about to close before closing them:
+        // afterwards they are indistinguishable from receipts an earlier
+        // dismissal already closed, and announcing those would tell a user their
+        // Inbox changed when it did not.
+        const affected = announce
+            ? await database('notification_user_states')
+                .select('event_id', 'user_id')
+                .where({ inbox_enabled: true })
+                .whereNull('dismissed_at')
+                .whereIn('event_id', eventIds.clone()) as Array<{
+                    event_id: string;
+                    user_id: string;
+                }>
+            : [];
         const changed = await database('notification_user_states')
             .where({ inbox_enabled: true })
             .whereNull('dismissed_at')
@@ -1236,6 +1416,24 @@ export class NotificationService {
                     [timestamp, timestamp]
                 )
             });
+        if (announce) {
+            // One frame per closed event rather than per receipt, so a card with
+            // many recipients costs one publish and the API fans it out.
+            const recipientsByEvent = new Map<string, string[]>();
+            for (const row of affected) {
+                const recipients = recipientsByEvent.get(row.event_id) ?? [];
+                recipients.push(row.user_id);
+                recipientsByEvent.set(row.event_id, recipients);
+            }
+            for (const [eventId, recipientIds] of recipientsByEvent) {
+                announce.into.push({
+                    change: 'dismissed',
+                    eventId,
+                    recipientIds,
+                    repository: announce.repository
+                });
+            }
+        }
         return Number(changed);
     }
 
@@ -1247,9 +1445,10 @@ export class NotificationService {
         assertIdentifier(userId, 'notification userId');
         assertIdentifier(eventId, 'notification eventId');
         const timestamp = normalizeISO8601Timestamp(this.now());
+        const announcements: NotificationAnnouncement[] = [];
 
-        return this.database.transaction(async (transaction) => {
-            await transaction('notification_user_states')
+        const state = await this.database.transaction(async (transaction) => {
+            const changed = await transaction('notification_user_states')
                 .where({
                     event_id: eventId,
                     user_id: userId,
@@ -1269,11 +1468,25 @@ export class NotificationService {
                 .first() as NotificationRow | undefined;
             if (!row) return null;
 
+            const notification = toNotification(row);
+            // Repeating a read or a dismissal changes nothing, so it announces
+            // nothing: the client that sent it already knows.
+            if (Number(changed) > 0) {
+                announcements.push({
+                    change: column === 'read_at' ? 'read' : 'dismissed',
+                    eventId,
+                    recipientIds: [userId],
+                    repository: announcementRepository(notification.target)
+                });
+            }
+
             return parseNotificationStateResponse({
-                notification: toNotification(row),
+                notification,
                 unreadCount: await unreadCount(transaction, userId)
             });
         });
+        await this.flushAnnouncements(announcements);
+        return state;
     }
 }
 

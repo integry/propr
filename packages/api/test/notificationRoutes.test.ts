@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import express, { type Request, type Response } from 'express';
-import { closeConnection, NotificationValidationError, PushSubscriptionConflictError,
+import { closeConnection, closeEventPublisher, NotificationValidationError, PushSubscriptionConflictError,
     PushSubscriptionQuotaError, PushSubscriptionRateLimitError } from '@propr/core';
 import { NOTIFICATION_KINDS, parseNotificationPreferencesResponse,
     parsePushSubscription } from '@propr/shared';
@@ -12,7 +12,12 @@ import { configureDemoMode, demoModeReadOnlyMiddleware, resetConfiguredDemoMode 
 import { createApiRequestRateLimiter } from '../requestRateLimits.js';
 import { createNotificationRoutes as buildNotificationRoutes, type NotificationRouteService } from '../routes/notificationRoutes.js';
 
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 function createNotificationRoutes(dependencies: Parameters<typeof buildNotificationRoutes>[0] = {}) {
     return buildNotificationRoutes({ getWebPushConfiguration: createVapidConfiguration, ...dependencies });

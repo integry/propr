@@ -18,6 +18,8 @@ import {
   nativeGoalPromptValidationError,
   generateGoalTitle,
   getAuthenticatedOctokit,
+  publishGoalActivity,
+  publishGoalTransition,
   goalTitleFallback,
   goalJobId,
   loadRepositoryVisualPreviewSettings,
@@ -256,6 +258,26 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const cleanupTemporaryUploads = deps.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const loadVisualPreviewSettings = deps.loadVisualPreviewSettings ?? loadRepositoryVisualPreviewSettings;
   const getOctokit = deps.getOctokit ?? getAuthenticatedOctokit;
+
+  /**
+   * Answer a control request with the goal it produced, announcing the
+   * transition first.
+   *
+   * Published from the handler that persisted the change rather than from a
+   * sweep, and only when the observable state actually moved: an idempotent
+   * retry or a control write that just bumps a generation must not wake every
+   * open Goals console. The publish never throws, so a Redis outage degrades to
+   * the polling clients already fall back on instead of failing the mutation
+   * that has already committed.
+   */
+  const respondWithGoalTransition = async (
+    res: Response,
+    previous: GoalRow | undefined,
+    updated: GoalRow,
+  ): Promise<void> => {
+    await publishGoalTransition({ previous, next: updated });
+    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated) });
+  };
 
   const uploadedFiles = (req: Request): MulterFile[] => Array.isArray(req.files)
     ? req.files as MulterFile[]
@@ -503,6 +525,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         });
       }
       const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
+      // A brand new goal has no prior state to compare against: announce it
+      // unconditionally so a console sees the queued goal without polling.
+      await publishGoalActivity(inserted);
       res.status(201).json({ goal: await serializeGoal(deps.db, deps.redisClient, inserted) });
     } finally {
       if (!attachmentsPersisted) await deleteGoalAttachments(attachments);
@@ -570,7 +595,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   async function addGoalInput(options: {
@@ -691,7 +716,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const cancel = async (req: Request, res: Response) => {
@@ -754,7 +779,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const remove = async (req: Request, res: Response) => {
@@ -852,7 +877,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   // eslint-disable-next-line complexity -- input delivery branches by persisted lifecycle and provider resume capability
@@ -983,7 +1008,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       if (inputBoundary?.pause_confirmed_at) await beginPausedContinuation(inputBoundary);
     }
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const input = async (req: Request, res: Response) => {

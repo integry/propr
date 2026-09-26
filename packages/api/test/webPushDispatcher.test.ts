@@ -13,6 +13,7 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { SendResult } from 'web-push';
 import { closeConnection, type BetterSqliteConnection } from '../../core/src/db/connection.js';
+import { closeEventPublisher } from '../../core/src/utils/eventPublisher.js';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
@@ -111,7 +112,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => database.destroy());
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 async function queuedEvent(options: {
   pushEnabled?: boolean;

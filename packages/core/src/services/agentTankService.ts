@@ -1,5 +1,7 @@
 import logger from '../utils/logger.js';
 import { loadAgentTankSettings } from '../config/configManager.js';
+import { observeAgentTankUsage } from './agentTankUsageEvents.js';
+import type { AgentStatusResponse } from './agentTankTypes.js';
 
 // Refresh can take 15-20 seconds when CLI agent needs cold start
 const DEFAULT_TIMEOUT_MS = 25000;
@@ -40,22 +42,14 @@ export function toProprAgent(agent: string): string {
     return PROPR_AGENT_ALIASES[agent] || agent;
 }
 
-/**
- * Response shape from GET /status/:agent
- *
- * Example call:
- *   const status = await getStatus('claude');
- *   // GET http://0.0.0.0:3456/status/claude
- *   // => { "name": "claude", "usage": { "session": { "percent": 42, ... }, ... }, ... }
- */
-export interface AgentStatusResponse {
-    name: string;
-    usage: Record<string, unknown>;
-    metadata?: Record<string, unknown>;
-    lastUpdated?: string;
-    error?: string | null;
-    isRefreshing?: boolean;
-}
+export type { AgentStatusResponse } from './agentTankTypes.js';
+
+export {
+    agentTankUsageFingerprint,
+    observeAgentTankUsage,
+    resetAgentTankUsageTracking,
+    type UsageUpdatePublisher
+} from './agentTankUsageEvents.js';
 
 /** Normalize a single Agent Tank status object to ProPR-facing agent names. */
 export function normalizeAgentTankStatus(status: AgentStatusResponse): AgentStatusResponse {
@@ -129,7 +123,12 @@ export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEO
             throw new Error(`Agent Tank returned HTTP ${response.status}: ${response.statusText}`);
         }
         const data = (await response.json()) as AgentStatusResponse;
-        return normalizeAgentTankStatus(data);
+        const normalized = normalizeAgentTankStatus(data);
+        // Published here rather than on a timer: this is the only component that
+        // reads the external service, so it is the only one that can tell a
+        // changed snapshot from an unchanged poll.
+        await observeAgentTankUsage(normalized);
+        return normalized;
     } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new Error(`Agent Tank request timed out after ${timeoutMs}ms`);

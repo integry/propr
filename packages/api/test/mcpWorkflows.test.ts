@@ -395,6 +395,6 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     redisBoundary.restore(); boundary.restore();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
     await Promise.all(attachmentDirectories.map(directory => rm(directory, { recursive: true, force: true })));
-    await core.closeConnection(); await rm(root, { recursive: true, force: true });
+    await core.closeConnection(); await core.closeEventPublisher(); await rm(root, { recursive: true, force: true });
   }
 });

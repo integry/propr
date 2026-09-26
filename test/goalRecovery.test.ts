@@ -8,7 +8,11 @@ const database = knex({ client: 'better-sqlite3', connection: { filename: ':memo
 after(async () => {
   await database.destroy();
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+  const { closeEventPublisher } = await import('../packages/core/src/utils/eventPublisher.ts');
   await closeConnection();
+  // Goal transitions now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
 });
 
 test('goal recovery repairs pause crashes and failed-before-claim jobs while preserving exact identity', async () => {

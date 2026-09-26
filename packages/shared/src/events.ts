@@ -1,3 +1,10 @@
+import type {
+  ActivityUpdatePayload,
+  GoalUpdatePayload,
+  NotificationUpdatePayload,
+  UsageUpdatePayload
+} from './activityEvents.js';
+
 /**
  * Event names for real-time updates via WebSocket
  * These events are published to Redis and broadcast to WebSocket clients
@@ -32,7 +39,16 @@ export const REDIS_CHANNELS = {
   /** Channel for live task details (Claude log updates) */
   LIVE_DETAILS: 'propr:events:live',
   /** Channel for queue statistics updates */
-  QUEUE_STATS: 'propr:events:queue'
+  QUEUE_STATS: 'propr:events:queue',
+  // Separate channels rather than one multiplexed channel so a process that
+  // only cares about notifications does not have to decode and discard every
+  // task frame on a busy instance.
+  /** Channel for goal lifecycle transitions */
+  GOALS: 'propr:events:goals',
+  /** Channel for notification create/read/dismiss changes */
+  NOTIFICATIONS: 'propr:events:notifications',
+  /** Channel for agent usage change triggers */
+  USAGE: 'propr:events:usage'
 } as const;
 
 /** Event payload for task updates */
@@ -182,4 +198,8 @@ export type EventPayload =
   | PlanStepUpdatePayload
   | IndexingUpdatePayload
   | TaskLiveUpdatePayload
-  | QueueStatsUpdatePayload;
+  | QueueStatsUpdatePayload
+  | GoalUpdatePayload
+  | NotificationUpdatePayload
+  | UsageUpdatePayload
+  | ActivityUpdatePayload;

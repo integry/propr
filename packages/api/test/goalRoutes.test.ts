@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex from 'knex';
-import { AgentRegistry, closeConnection } from '@propr/core';
+import { AgentRegistry, closeConnection, closeEventPublisher } from '@propr/core';
 import { up as createGoals } from '../../core/src/db/migrations/20260902000000_create_goals.js';
 import { up as hardenGoals } from '../../core/src/db/migrations/20260902010000_harden_native_goals.js';
 import { up as addGoalCheckpoints } from '../../core/src/db/migrations/20260903000000_add_direct_goal_checkpoints.js';
@@ -459,5 +459,8 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
     } finally {
         await database.destroy();
         await closeConnection();
+        // Goal transitions now publish a push event; close the publisher's Redis
+        // client so a test process is not held open by best-effort telemetry.
+        await closeEventPublisher();
     }
 });
