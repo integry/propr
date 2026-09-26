@@ -7,6 +7,7 @@ import knex, { type Knex } from 'knex';
 import { up as createInstanceMemberTables } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
 import { ensureAuthenticated } from '../auth.js';
 import { resolveAuthorization } from '../authorization.js';
+import { createApiRequestRateLimiter } from '../requestRateLimits.js';
 import { createQueueRoutes } from '../routes/queueRoutes.js';
 import { createStatusRoutes } from '../routes/statusRoutes.js';
 import {
@@ -97,8 +98,13 @@ async function fetchFromApp(
     }
 }
 
-function wiredApp(secret: string) {
+function wiredApp(secret: string, rateLimitMax = 600) {
     const app = express();
+    // Match production ordering: limit requests before Fleet and OAuth authentication.
+    app.use('/api', createApiRequestRateLimiter({
+        PROPR_API_RATE_LIMIT_MAX: String(rateLimitMax),
+        PROPR_API_RATE_LIMIT_WINDOW_MS: '60000',
+    }));
     const statusRoutes = createStatusRoutes({
         redisClient: {
             ping: async () => 'PONG',
@@ -381,6 +387,28 @@ describe('hosted fleet health status', () => {
 });
 
 describe('hosted fleet Express wiring', () => {
+    test('rate-limits requests before Fleet and OAuth authentication', async () => {
+        for (const secret of [fleetSecret, '']) {
+            for (const path of ['/api/internal/hosted/bootstrap', '/api/internal/hosted/status', '/api/internal/hosted/queue']) {
+                const { app } = wiredApp(secret, 1);
+                const unauthorized = await fetchFromApp(app, path);
+                assert.equal(unauthorized.status, 401, path);
+                assert.deepEqual(await unauthorized.json(), {
+                    error: secret ? 'Fleet authentication required' : 'Unauthorized',
+                });
+
+                const limited = await fetchFromApp(app, path, {
+                    headers: { 'x-propr-fleet-secret': fleetSecret },
+                });
+                assert.equal(limited.status, 429, path);
+                assert.deepEqual(await limited.json(), {
+                    code: 'RATE_LIMIT_EXCEEDED',
+                    error: 'Too many requests. Please try again later.',
+                });
+            }
+        }
+    });
+
     test('omits every hosted route when Fleet control is disabled', async () => {
         const { app, registered } = wiredApp('');
         assert.equal(registered, false);
