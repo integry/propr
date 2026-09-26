@@ -24,6 +24,7 @@ const stateManager = {
         return current;
     },
 };
+let pullRequestState: { state?: string; merged?: boolean } = {};
 const octokit = {
     auth: async () => ({ token: 'fixture-token' }),
     request: async (route: string, params: Record<string, unknown>) => {
@@ -31,7 +32,7 @@ const octokit = {
             events.push(`comment:${params.issue_number}`);
             return { data: { id: 123, html_url: 'https://github.com/upstream/project/issues/42#issuecomment-123' } };
         }
-        return { data: { head: { ref: 'fork-branch' }, labels: [{ name: 'propr' }], title: 'Contribution', body: '', user: { login: 'contributor' } } };
+        return { data: { head: { ref: 'fork-branch' }, labels: [{ name: 'propr' }], title: 'Contribution', body: '', user: { login: 'contributor' }, ...pullRequestState } };
     },
 };
 const noOp = async () => {};
@@ -124,8 +125,20 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 beforeEach(() => {
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
-    handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined;
+    handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
+
+for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'pull_request_closed']] as const) {
+    test(`a follow-up on a ${reason.replace('pull_request_', '')} pull request is skipped before any work`, async () => {
+        pullRequestState = pullRequest;
+        const result = await processPullRequestCommentJob(job('fix') as never);
+        assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'skipped', reason });
+        // No starting comment, no worktree for the deleted head branch, no agent.
+        assert.ok(!events.includes('comment:42'));
+        assert.ok(!events.includes('prepare'));
+        assert.ok(!events.includes('agent'));
+    });
+}
 
 for (const error of ['Preflight network error', 'Continuation creation failed']) {
     test(`${error} leaves a starting comment available to the error handler`, async () => {

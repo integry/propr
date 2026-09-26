@@ -30,8 +30,10 @@ const {
     isContainerCollisionCancellation,
     evaluatePRCommentPreExecutionRecovery,
     handlePRCommentLockContention,
+    prLockWaitDelay,
     schedulePRCommentRecovery,
 } = await import('../src/jobs/prCommentCollisionRecovery.js');
+const { DelayedError } = await import('bullmq');
 const {
     acquirePRProcessingLock,
     ensurePRProcessingLockToken,
@@ -280,3 +282,82 @@ describe('PR comment container collision recovery', () => {
         assert.equal(queueAdd.mock.callCount(), 0);
     });
 });
+
+describe('PR comment lock contention', () => {
+    function waitingJob(data: Record<string, unknown> = {}) {
+        const job = {
+            id: 'waiting-task',
+            token: 'worker-token',
+            data: { pullRequestNumber: 42, repoOwner: 'acme', repoName: 'web', prProcessingLockToken: 'lease-c', ...data },
+            updateData: mock.fn(async (next: Record<string, unknown>) => { job.data = next as typeof job.data; }),
+            moveToDelayed: mock.fn(async (_timestamp: number, _token: string) => {}),
+        };
+        return job;
+    }
+    const restoringRedis = (restored: string[]) => ({
+        async lrange() { return []; },
+        async lpush(_key: string, ...values: string[]) { restored.push(...values); return values.length; },
+        async expire() { return 1; },
+    });
+
+    test('backs off from 10 seconds to a 2 minute ceiling', () => {
+        assert.deepStrictEqual([0, 1, 2, 3, 4, 5, 20].map(prLockWaitDelay), [10_000, 20_000, 40_000, 80_000, 120_000, 120_000, 120_000]);
+    });
+
+    test('waits in place as the same job instead of leaving a cancelled task per retry', async () => {
+        queueAdd.mock.resetCalls();
+        const restored: string[] = [];
+        const job = waitingJob({ prLockWaitAttempts: 2 });
+        const comment = { id: 901, body: 'still wanted', author: 'alice', type: 'issue' as const };
+        const before = Date.now();
+
+        await assert.rejects(handlePRCommentLockContention({
+            job: job as never,
+            taskId: 'waiting-task',
+            stateManager: { getTaskState: async () => ({ state: 'pending', history: [] }) } as never,
+            redisClient: restoringRedis(restored) as never,
+            pickedUpComments: [comment],
+            correlatedLogger: { info: mock.fn() } as never,
+        }), (error: unknown) => error instanceof DelayedError);
+
+        assert.equal(queueAdd.mock.callCount(), 0, 'no replacement job, so no extra task');
+        assert.deepStrictEqual(restored.map(value => JSON.parse(value).id), [901]);
+        assert.equal(job.data.prLockWaitAttempts, 3);
+        assert.equal(job.data.prProcessingLockToken, 'lease-c', 'the job keeps its own lease identity');
+        const [timestamp, token] = job.moveToDelayed.mock.calls[0].arguments;
+        assert.equal(token, 'worker-token');
+        assert.ok(timestamp >= before + 40_000 && timestamp <= Date.now() + 40_000);
+    });
+
+    test('a job cancelled by the user while waiting stops instead of waiting again', async () => {
+        const job = waitingJob();
+        const decision = await handlePRCommentLockContention({
+            job: job as never,
+            taskId: 'waiting-task',
+            stateManager: { getTaskState: async () => ({ state: 'cancelled', history: [{ state: 'cancelled', reason: 'Cancelled by user' }] }) } as never,
+            redisClient: restoringRedis([]) as never,
+            pickedUpComments: [],
+            correlatedLogger: { info: mock.fn() } as never,
+        });
+        assert.equal(decision.reason, 'task_already_cancelled');
+        assert.equal(job.moveToDelayed.mock.callCount(), 0);
+    });
+
+    test('a replacement job starts its own backoff from the beginning', async () => {
+        queueAdd.mock.resetCalls();
+        await schedulePRCommentRecovery({
+            job: { name: 'processPullRequestComment', data: { pullRequestNumber: 42, repoOwner: 'acme', repoName: 'web', prLockWaitAttempts: 6, prProcessingLockToken: 'old' } } as never,
+            taskId: 'task-1',
+            stateManager: { createTaskStateIfAbsent: async () => null, getTaskState: async () => null, updateHistoryMetadata: async () => {} } as never,
+            redisClient: restoringRedis([]) as never,
+            pickedUpComments: [],
+            delay: 1000,
+            reason: 'agent_container_already_running',
+            correlatedLogger: { info: mock.fn(), warn: mock.fn() } as never,
+        });
+        const [, data] = queueAdd.mock.calls[0].arguments as unknown as [string, Record<string, unknown>];
+        assert.equal(data.prLockWaitAttempts, undefined);
+        assert.equal(data.prProcessingLockToken, undefined);
+    });
+});
+
