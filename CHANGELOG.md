@@ -73,6 +73,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Push-driven application shell**: the header stats, the Inbox and its unread
+  badge, the Agent Tank usage sidebar and the system-health surfaces no longer
+  poll on a timer. Each refreshes because the backend published a change it
+  declared an interest in — a new `activity:update` envelope (`domain`,
+  `change`, `repository`, `subjectId`, `terminal`) derived from the existing
+  task, plan, indexing and queue events, plus `notification:update` published
+  into a recipient's room and `usage:update` for capacity. With the socket
+  connected and nothing happening, an open tab issues no requests after its
+  initial load; polling is now the fallback for a client whose websocket is
+  unavailable. A dismissal in one tab, or a server-side notification cleanup,
+  is reflected in the other tabs without either of them resurrecting a card the
+  user already dismissed. Hidden tabs do no work and reconcile once on return,
+  and every surface keeps its last good data when a refresh fails.
+
 - **Rebuilt dashboard**: the home page now answers "what needs my attention right
   now" in five sections — a summary strip of four clickable counts, **Needs
   attention**, **Happening now**, **Recent outcomes**, and **Historical stats** —

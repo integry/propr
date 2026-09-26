@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React from 'react';
 import { getSystemStatus } from '../api/proprApi';
 import type { SystemAgentStatus } from '../api/proprTypes';
-import { useSocket } from '../contexts/useSocket';
+import { useLiveResource } from '../hooks/useLiveResource';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { Layers3 } from 'lucide-react';
@@ -23,37 +23,32 @@ interface SystemStatusData {
 }
 
 const SystemStatus: React.FC = () => {
-  const { isConnected } = useSocket();
-  const [status, setStatus] = useState<SystemStatusData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  /*
+    Instance health moves with indexing and capacity, not with individual runs,
+    so those are the only pushed domains this reacts to. Reconnect
+    reconciliation - which this component already relied on - now comes from
+    the shared hook, along with hidden-tab pausing and the disconnected
+    fallback poll.
+  */
+  const { data: status, error, isLoading } = useLiveResource<SystemStatusData>({
+    read: () => getSystemStatus(),
+    scopeKey: 'system-status',
+    interest: {
+      domains: ['indexing', 'usage'],
+      // Per-file indexing progress does not move the health rows.
+      changes: ['created', 'started', 'completed', 'failed', 'cancelled', 'updated'],
+      usage: true,
+    },
+  });
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await getSystemStatus();
-      setStatus(data);
-      setError(null);
-    } catch (err) {
-      setError('Failed to fetch system status');
-      console.error('Error fetching system status:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Fetch system status on mount and when WebSocket connection state changes
-  // This ensures we get fresh status when connectivity is restored
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus, isConnected]);
-
-  if (loading && !status) {
+  if (isLoading && !status) {
     return <div className="text-gray-500">Loading System Status...</div>;
   }
 
-  if (error) {
-    return <div className="text-red-600">Error: {error}</div>;
+  // A failed refresh keeps the last good snapshot on screen; only a first read
+  // that never succeeded leaves nothing to show.
+  if (error && !status) {
+    return <div className="text-red-600">Error: Failed to fetch system status</div>;
   }
 
   const getStatusColor = (status?: string): string => {

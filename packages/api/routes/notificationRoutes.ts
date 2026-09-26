@@ -12,13 +12,17 @@ import {
     type NotificationService
 } from '@propr/core';
 import {
+    NOTIFICATION_UPDATE,
     NOTIFICATION_PAYLOAD_LIMITS,
     parseNotificationCapabilitiesResponse,
     parseNotificationPreferencesResponse,
     parsePushSubscriptionEnrollmentResponse,
     parsePushSubscriptionsResponse,
-    parseNotificationUnreadCountResponse
+    parseNotificationUnreadCountResponse,
+    type NotificationChange,
+    type NotificationUpdatePayload
 } from '@propr/shared';
+import { getSocketService } from '../services/socketService.js';
 import {
     validateWebPushConfiguration,
     WEB_PUSH_CONFIGURATION_WARNINGS,
@@ -44,10 +48,24 @@ export type NotificationRouteService = Pick<
 
 export interface NotificationRouteDependencies {
     service?: NotificationRouteService;
+    /** Test seam; production publishes to the recipient's socket room. */
+    publishNotificationUpdate?: (payload: NotificationUpdatePayload) => void;
     resolvedWebPushConfiguration?: ValidatedWebPushConfiguration;
     getWebPushConfiguration?: () => WebPushServerConfiguration;
     webPushDispatcherConfigured?: boolean;
     logWarning?: (message: string) => void;
+}
+
+/**
+ * Tells a user's other open tabs that their Inbox changed.
+ *
+ * A dismissal made in one tab used to stay invisible in another until its next
+ * poll; publishing the change is what lets those tabs drop the poll entirely.
+ * The payload names the notification so the tab that made the change can
+ * recognise its own echo and leave its optimistic state alone.
+ */
+function publishToRecipientRoom(payload: NotificationUpdatePayload): void {
+    getSocketService()?.broadcastPushEvent(payload);
 }
 
 function authenticatedUserId(req: Request, res: Response): string | null {
@@ -155,6 +173,26 @@ export function createNotificationRoutes(
     dependencies: NotificationRouteDependencies = {}
 ) {
     const service = dependencies.service ?? notificationService;
+    const publishNotificationUpdate = dependencies.publishNotificationUpdate ?? publishToRecipientRoom;
+    const publishChange = (
+        recipientId: string,
+        change: NotificationChange,
+        details: { eventId?: string; unreadCount?: number } = {}
+    ): void => {
+        try {
+            publishNotificationUpdate({
+                eventType: NOTIFICATION_UPDATE,
+                change,
+                recipientId,
+                occurredAt: new Date().toISOString(),
+                ...details
+            });
+        } catch {
+            // The write already succeeded and the response is already sent. A
+            // failed publish costs the other tabs freshness until their next
+            // reconcile; it must not turn into a request failure.
+        }
+    };
     const getWebPushConfiguration = dependencies.getWebPushConfiguration
         ?? webPushConfigurationFromEnvironment;
     // The dispatcher owns the single process startup warning. Tests and other
@@ -220,6 +258,10 @@ export function createNotificationRoutes(
                 return;
             }
             res.json(response);
+            publishChange(userId, 'read', {
+                eventId: response.notification.id,
+                unreadCount: response.unreadCount
+            });
         } catch (error) {
             handleRouteError(res, error, 'mark notification as read');
         }
@@ -239,6 +281,10 @@ export function createNotificationRoutes(
                 return;
             }
             res.json(response);
+            publishChange(userId, 'dismissed', {
+                eventId: eventIdFromRequest(req),
+                unreadCount: response.unreadCount
+            });
         } catch (error) {
             handleRouteError(res, error, 'dismiss notification');
         }
@@ -249,9 +295,9 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            res.json(parseNotificationUnreadCountResponse(
-                await service.dismissAllNotifications(userId)
-            ));
+            const response = await service.dismissAllNotifications(userId);
+            res.json(parseNotificationUnreadCountResponse(response));
+            publishChange(userId, 'dismissed_all', { unreadCount: response.unreadCount });
         } catch (error) {
             handleRouteError(res, error, 'dismiss all notifications');
         }

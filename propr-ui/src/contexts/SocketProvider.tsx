@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 import type { Socket } from '@propr/client';
-import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, ACTIVITY_UPDATE, NOTIFICATION_UPDATE, USAGE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload, ActivityUpdatePayload, NotificationUpdatePayload, UsageUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 import {
   getDesktopConnectionScope,
@@ -53,6 +53,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const activityUpdateCallbacksRef = useRef<Set<(payload: ActivityUpdatePayload) => void>>(new Set());
+  const notificationUpdateCallbacksRef = useRef<Set<(payload: NotificationUpdatePayload) => void>>(new Set());
+  const usageUpdateCallbacksRef = useRef<Set<(payload: UsageUpdatePayload) => void>>(new Set());
   const socketConfigurationKey = useSyncExternalStore(
     subscribeDesktopConnectionScope,
     getDesktopSocketConfigurationKey,
@@ -203,11 +206,29 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     };
 
+    const activityUpdated = (payload: ActivityUpdatePayload) => {
+      if (!isCurrentScope()) return;
+      activityUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    };
+
+    const notificationUpdated = (payload: NotificationUpdatePayload) => {
+      if (!isCurrentScope()) return;
+      notificationUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    };
+
+    const usageUpdated = (payload: UsageUpdatePayload) => {
+      if (!isCurrentScope()) return;
+      usageUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    };
+
     newSocket.on(TASK_UPDATE, taskUpdated);
     newSocket.on(DRAFT_UPDATE, draftUpdated);
     newSocket.on(INDEXING_UPDATE, indexingUpdated);
     newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
+    newSocket.on(ACTIVITY_UPDATE, activityUpdated);
+    newSocket.on(NOTIFICATION_UPDATE, notificationUpdated);
+    newSocket.on(USAGE_UPDATE, usageUpdated);
 
     setSocket(newSocket);
     reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
@@ -233,6 +254,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       newSocket.off(INDEXING_UPDATE, indexingUpdated);
       newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
+      newSocket.off(ACTIVITY_UPDATE, activityUpdated);
+      newSocket.off(NOTIFICATION_UPDATE, notificationUpdated);
+      newSocket.off(USAGE_UPDATE, usageUpdated);
       newSocket.disconnect();
     };
   }, [
@@ -363,6 +387,27 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     };
   }, []);
 
+  const onActivityUpdate = useCallback((callback: (payload: ActivityUpdatePayload) => void) => {
+    activityUpdateCallbacksRef.current.add(callback);
+    return () => {
+      activityUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
+  const onNotificationUpdate = useCallback((callback: (payload: NotificationUpdatePayload) => void) => {
+    notificationUpdateCallbacksRef.current.add(callback);
+    return () => {
+      notificationUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
+  const onUsageUpdate = useCallback((callback: (payload: UsageUpdatePayload) => void) => {
+    usageUpdateCallbacksRef.current.add(callback);
+    return () => {
+      usageUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -383,6 +428,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     onIndexingUpdate,
     onQueueStatsUpdate,
     onTaskLiveUpdate,
+    onActivityUpdate,
+    onNotificationUpdate,
+    onUsageUpdate,
   };
 
   return (

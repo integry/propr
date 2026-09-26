@@ -3,13 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getQueueStats, getSystemStatus, getTasks } from '../api/proprApi';
 import { getDrafts } from '../api/plannerApi';
 import { useHeaderStats } from './useHeaderStats';
-import type { DraftUpdatePayload, QueueStatsUpdatePayload, TaskUpdatePayload } from '@propr/shared';
+import type {
+  ActivityUpdatePayload,
+  DraftUpdatePayload,
+  QueueStatsUpdatePayload,
+  TaskUpdatePayload,
+  UsageUpdatePayload,
+} from '@propr/shared';
 
 const socketState = vi.hoisted(() => ({
   isConnected: true,
   queueCallbacks: new Set<(payload: QueueStatsUpdatePayload) => void>(),
   taskCallbacks: new Set<(payload: TaskUpdatePayload) => void>(),
   draftCallbacks: new Set<(payload: DraftUpdatePayload) => void>(),
+  activityCallbacks: new Set<(payload: ActivityUpdatePayload) => void>(),
+  usageCallbacks: new Set<(payload: UsageUpdatePayload) => void>(),
 }));
 const runtimeState = vi.hoisted(() => ({ isDesktop: true }));
 const identityState = vi.hoisted(() => ({ configuration: 'instance-a', userId: 'user-a' }));
@@ -42,6 +50,14 @@ vi.mock('../contexts/useSocket', () => ({
     onQueueStatsUpdate: (callback: (payload: QueueStatsUpdatePayload) => void) => {
       socketState.queueCallbacks.add(callback);
       return () => socketState.queueCallbacks.delete(callback);
+    },
+    onActivityUpdate: (callback: (payload: ActivityUpdatePayload) => void) => {
+      socketState.activityCallbacks.add(callback);
+      return () => socketState.activityCallbacks.delete(callback);
+    },
+    onUsageUpdate: (callback: (payload: UsageUpdatePayload) => void) => {
+      socketState.usageCallbacks.add(callback);
+      return () => socketState.usageCallbacks.delete(callback);
     },
   }),
 }));
@@ -104,6 +120,8 @@ describe('useHeaderStats live recovery', () => {
     socketState.queueCallbacks.clear();
     socketState.taskCallbacks.clear();
     socketState.draftCallbacks.clear();
+    socketState.activityCallbacks.clear();
+    socketState.usageCallbacks.clear();
     runtimeState.isDesktop = true;
     identityState.configuration = 'instance-a';
     identityState.userId = 'user-a';

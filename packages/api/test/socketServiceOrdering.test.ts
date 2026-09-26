@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
-import { TASK_UPDATE, type TaskUpdatePayload } from '@propr/shared';
+import { ACTIVITY_UPDATE, TASK_UPDATE, type TaskUpdatePayload } from '@propr/shared';
 import {
   loadDurableTaskRevision,
   readCachedTaskRevision,
@@ -20,7 +20,7 @@ describe('SocketService task update ordering', () => {
 
   test('accepts a legacy event without seeding from durable versioned state', async () => {
     let durableReads = 0;
-    const broadcasts: Array<{ rooms: string[]; payload: TaskUpdatePayload }> = [];
+    const broadcasts: Array<{ rooms: string[]; event: string; payload: Record<string, unknown> }> = [];
     const service = Object.create(SocketService.prototype) as SocketService;
     const internals = service as unknown as {
       io: {
@@ -43,8 +43,8 @@ describe('SocketService task update ordering', () => {
             rooms.push(additionalRoom);
             return operator;
           },
-          emit: (_event: string, emittedPayload: TaskUpdatePayload) => {
-            broadcasts.push({ rooms, payload: emittedPayload });
+          emit: (event: string, emittedPayload: Record<string, unknown>) => {
+            broadcasts.push({ rooms, event, payload: emittedPayload });
           },
         };
         return operator;
@@ -69,9 +69,19 @@ describe('SocketService task update ordering', () => {
     await internals.handleTaskUpdate(payload);
 
     assert.equal(durableReads, 0);
-    assert.deepEqual(broadcasts, [
-      { rooms: ['instance:operational', 'task:legacy-task'], payload },
+    assert.deepEqual(broadcasts.map(broadcast => ({ rooms: broadcast.rooms, event: broadcast.event })), [
+      { rooms: ['instance:operational', 'task:legacy-task'], event: TASK_UPDATE },
+      // The same transition also reaches interest-based consumers as the
+      // derived envelope, without a second producer having to publish it.
+      { rooms: ['instance:operational'], event: ACTIVITY_UPDATE },
     ]);
+    assert.deepEqual(broadcasts[0].payload, payload);
+    assert.partialDeepStrictEqual(broadcasts[1].payload, {
+      domain: 'task',
+      change: 'started',
+      subjectId: 'legacy-task',
+      terminal: false,
+    });
   });
 
   test('rejects malformed incoming revisions before they can poison the cache', () => {
