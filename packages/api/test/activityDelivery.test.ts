@@ -37,9 +37,10 @@ test('core publication reaches an authorized real socket and reconciles the chan
     const publisher = new EventPublisher();
     // Replace only Redis transport: use the production publisher, relay, rooms,
     // Socket.IO transport and a client reconciliation read.
-    Object.assign(publisher, { isInitialized: true, redis: { publish: async (channel: string, message: string) => {
-      service.handleEvent(channel, JSON.parse(message)); return 1;
-    } } });
+    Object.assign(publisher, { isInitialized: true, redis: { status: 'ready',
+      publish: async (channel: string, message: string) => {
+        service.handleEvent(channel, JSON.parse(message)); return 1;
+      } } });
     const refreshed = new Promise<{ state: string }>(resolve => client.once(ACTIVITY_UPDATE, async payload => {
       assert.equal(payload.change, 'completed');
       resolve(await (await fetch(origin)).json() as { state: string });
@@ -54,7 +55,9 @@ test('core publication reaches an authorized real socket and reconciles the chan
     assert.equal((await goal)[0].resultState, 'completed');
     const notification = once(client, NOTIFICATION_UPDATE);
     await publisher.publishNotificationUpdate({ recipientIds: ['owner', 'someone-else'], eventId: 'event-1', change: 'read', repository: null });
-    assert.equal('recipientIds' in (await notification)[0], false);
+    // Narrowed, not stripped: the frame still satisfies its published contract,
+    // and it names only the recipient receiving it.
+    assert.deepEqual((await notification)[0].recipientIds, ['owner']);
   } finally { client.disconnect(); await io.close(); http.close(); }
 });
 
@@ -64,8 +67,14 @@ test('goal and notification events never enter public activity rooms', async () 
   Object.assign(service, { io: { to: (room: string) => ({ emit: (event: string, payload: unknown) => emissions.push({ room, event, payload }) }) },
     queueDeps: { db: () => ({ where: () => ({ first: async () => ({ owner_id: 'alice', repository: 'acme/private', result_state: 'failed' }) }) }) } });
   await service.handleGoalUpdate({ goalId: 'private-goal', occurredAt: new Date().toISOString() });
-  service.handleEvent('', { eventType: NOTIFICATION_UPDATE, recipientIds: ['bob'], eventId: 'private-event', change: 'created' });
-  assert.deepEqual(emissions.map(({ room }) => room), [activityUserRoom('alice'), activityUserRoom('alice'), activityUserRoom('bob')]);
+  // Whole frame: an announcement that does not satisfy its published contract is
+  // dropped at the trust boundary rather than forwarded to a browser.
+  service.handleEvent('', { eventType: NOTIFICATION_UPDATE, recipientIds: ['bob'], eventId: 'private-event',
+    change: 'created', repository: null, occurredAt: new Date().toISOString() });
+  // Two frames each - the producer event and the activity envelope derived from
+  // it - and every one of them inside the addressed user's own room.
+  assert.deepEqual(emissions.map(({ room }) => room), [activityUserRoom('alice'), activityUserRoom('alice'),
+    activityUserRoom('bob'), activityUserRoom('bob')]);
 });
 
 test('activity unsubscribe wins across an awaited adapter join', async () => {

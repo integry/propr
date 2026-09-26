@@ -6,7 +6,7 @@ import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { closeConnection } from '@propr/core';
 import { ACTIVITY_UPDATE, DRAFT_UPDATE, type DraftUpdatePayload } from '@propr/shared';
-import { ACTIVITY_ROOM } from '../services/activityBroadcast.js';
+import { ACTIVITY_ROOM, activityUserRoom } from '../services/activitySocketRooms.js';
 import type { SocketPrincipal } from '../auth.js';
 import { SocketService, type QueueDependencies } from '../services/socketService.js';
 import {
@@ -246,7 +246,7 @@ describe('Socket.IO resource authorization', () => {
             return operator;
           },
           emit: (event: string, payload: DraftUpdatePayload) => {
-            if (event === DRAFT_UPDATE) emitted.push({ rooms, event, payload });
+            emitted.push({ rooms, event, payload });
           },
         };
         return operator;
@@ -269,7 +269,7 @@ describe('Socket.IO resource authorization', () => {
       event: DRAFT_UPDATE,
       payload,
     }, {
-      rooms: ['user:owner'],
+      rooms: [activityUserRoom('owner')],
       event: ACTIVITY_UPDATE,
       payload: {
         eventType: ACTIVITY_UPDATE,

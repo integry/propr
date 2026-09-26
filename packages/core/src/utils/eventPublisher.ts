@@ -2,8 +2,9 @@ import { Redis } from 'ioredis';
 import logger from './logger.js';
 import {
   REDIS_CHANNELS,
-  ACTIVITY_UPDATE, GOAL_UPDATE, NOTIFICATION_UPDATE, USAGE_UPDATE, isTerminalActivityChange,
-  type ActivityUpdatePayload, type GoalUpdatePayload, type NotificationUpdatePayload,
+  ACTIVITY_UPDATE,
+  isTerminalActivityChange,
+  type ActivityUpdatePayload,
   TASK_UPDATE,
   DRAFT_UPDATE,
   INDEXING_UPDATE,
@@ -25,7 +26,7 @@ import {
   type TodoItem,
   type TokenUsageInfo,
   type QueueStatsData,
-  type GoalUpdatePayload,
+  type GoalUpdateTriggerPayload,
   type NotificationUpdatePayload,
   type UsageUpdatePayload,
   type EventPayload
@@ -357,33 +358,23 @@ class EventPublisher {
     });
   }
 
-  async publishGoalUpdate(params: Pick<GoalUpdatePayload, 'goalId'> & { repository?: string | null; ownerId?: string }): Promise<boolean> {
-    return this.publish(REDIS_CHANNELS.ACTIVITY, {
-      ...params, repository: params.repository ?? null,
-      eventType: GOAL_UPDATE, occurredAt: new Date().toISOString(),
-    });
-  }
-
-  async publishNotificationUpdate(params: Omit<NotificationUpdatePayload, 'eventType' | 'occurredAt'>): Promise<boolean> {
-    return this.publish(REDIS_CHANNELS.ACTIVITY, {
-      ...params, eventType: NOTIFICATION_UPDATE, occurredAt: new Date().toISOString(),
-    });
-  }
-
-  async publishUsageUpdate(): Promise<boolean> {
-    return this.publish(REDIS_CHANNELS.ACTIVITY, {
-      eventType: USAGE_UPDATE, source: 'agent-tank', occurredAt: new Date().toISOString(),
-    });
-  }
-
   /**
    * Publish a goal lifecycle transition.
+   *
    * Called from the transition itself rather than from a sweep, so the Goals
    * console stops polling to discover a pause or a completion it could have
-   * been told about.
+   * been told about. Writers that only know the goal moved publish its
+   * identity: the API completes the frame from the committed row, so a bare
+   * trigger is a valid publish here.
    */
-  async publishGoalUpdate(params: Omit<GoalUpdatePayload, 'eventType'>): Promise<void> {
-    await this.publish(REDIS_CHANNELS.GOALS, { eventType: GOAL_UPDATE, ...params });
+  async publishGoalUpdate(
+    params: Omit<GoalUpdateTriggerPayload, 'eventType' | 'occurredAt'> & { occurredAt?: string }
+  ): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.GOALS, {
+      ...params,
+      eventType: GOAL_UPDATE,
+      occurredAt: params.occurredAt ?? new Date().toISOString()
+    });
   }
 
   /**
@@ -392,11 +383,12 @@ class EventPublisher {
    * narrowed to the receiving recipient before the frame reaches a browser.
    */
   async publishNotificationUpdate(
-    params: Omit<NotificationUpdatePayload, 'eventType'>
-  ): Promise<void> {
-    await this.publish(REDIS_CHANNELS.NOTIFICATIONS, {
+    params: Omit<NotificationUpdatePayload, 'eventType' | 'occurredAt'> & { occurredAt?: string }
+  ): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.NOTIFICATIONS, {
+      ...params,
       eventType: NOTIFICATION_UPDATE,
-      ...params
+      occurredAt: params.occurredAt ?? new Date().toISOString()
     });
   }
 
@@ -406,8 +398,14 @@ class EventPublisher {
    * existing usage endpoint, which already owns the projection and the
    * permission check.
    */
-  async publishUsageUpdate(params: Omit<UsageUpdatePayload, 'eventType'>): Promise<void> {
-    await this.publish(REDIS_CHANNELS.USAGE, { eventType: USAGE_UPDATE, ...params });
+  async publishUsageUpdate(
+    params: Partial<Omit<UsageUpdatePayload, 'eventType'>> = {}
+  ): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.USAGE, {
+      eventType: USAGE_UPDATE,
+      source: params.source ?? 'agent-tank',
+      occurredAt: params.occurredAt ?? new Date().toISOString()
+    });
   }
 
   /**

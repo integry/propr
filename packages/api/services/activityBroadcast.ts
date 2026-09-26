@@ -17,7 +17,6 @@ import {
   type NotificationChange,
   type NotificationUpdatePayload,
   type TaskUpdatePayload,
-  type UsageUpdatePayload,
 } from '@propr/shared';
 import { userRoom } from './socketSubscriptions.js';
 

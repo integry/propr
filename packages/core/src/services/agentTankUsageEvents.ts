@@ -45,11 +45,12 @@ export function agentTankUsageFingerprint(status: AgentStatusResponse): string {
 /** Publishes a usage change trigger. Injected in tests; failures are swallowed. */
 export type UsageUpdatePublisher = () => Promise<void>;
 
-const defaultUsagePublisher: UsageUpdatePublisher = () =>
-    getEventPublisher().publishUsageUpdate({
+const defaultUsagePublisher: UsageUpdatePublisher = async () => {
+    await getEventPublisher().publishUsageUpdate({
         source: 'agent-tank',
         occurredAt: new Date().toISOString()
     });
+};
 
 /**
  * Record what one agent's snapshot looks like now.

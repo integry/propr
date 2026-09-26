@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import { ACTIVITY_UPDATE, TASK_UPDATE, type TaskUpdatePayload } from '@propr/shared';
+import { ACTIVITY_ROOM } from '../services/activitySocketRooms.js';
 import {
   loadDurableTaskRevision,
   readCachedTaskRevision,
@@ -44,7 +45,7 @@ describe('SocketService task update ordering', () => {
             return operator;
           },
           emit: (_event: string, emittedPayload: TaskUpdatePayload) => {
-            if (_event === TASK_UPDATE) broadcasts.push({ rooms, payload: emittedPayload });
+            broadcasts.push({ rooms, payload: emittedPayload });
           },
         };
         return operator;
@@ -74,7 +75,7 @@ describe('SocketService task update ordering', () => {
     assert.deepEqual(broadcasts, [
       { rooms: ['instance:operational', 'task:legacy-task'], payload },
       {
-        rooms: ['activity'],
+        rooms: [ACTIVITY_ROOM],
         payload: {
           eventType: ACTIVITY_UPDATE,
           domain: 'task',

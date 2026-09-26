@@ -29,8 +29,9 @@ export type GoalUpdatePublisher = (
     payload: Omit<GoalUpdatePayload, 'eventType'>
 ) => Promise<void>;
 
-const defaultPublisher: GoalUpdatePublisher = payload =>
-    getEventPublisher().publishGoalUpdate(payload);
+const defaultPublisher: GoalUpdatePublisher = async payload => {
+    await getEventPublisher().publishGoalUpdate(payload);
+};
 
 /**
  * The lifecycle state a consumer sees for a goal row.

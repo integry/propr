@@ -129,6 +129,24 @@ export interface GoalUpdatePayload {
   revision?: number;
 }
 
+/**
+ * A goal refresh trigger.
+ *
+ * The goal worker, its checkpoint publisher and leased recovery know that a
+ * goal row moved but not the whole frame a browser needs, so they publish the
+ * goal's identity and the API completes it from the committed row before any
+ * client sees it. Whatever a writer does already know is carried, so the API
+ * can prefer it over a value it would otherwise have to re-read.
+ */
+export interface GoalUpdateTriggerPayload
+  extends Partial<Omit<GoalUpdatePayload, 'eventType' | 'goalId' | 'occurredAt'>> {
+  eventType: typeof GOAL_UPDATE;
+  goalId: string;
+  /** The goal's owner when the writer already read it; used for room targeting. */
+  ownerId?: string;
+  occurredAt: string;
+}
+
 export const NOTIFICATION_CHANGES = ['created', 'read', 'dismissed', 'dismissed_all'] as const;
 export type NotificationChange = (typeof NOTIFICATION_CHANGES)[number];
 

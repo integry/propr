@@ -1,6 +1,7 @@
 import type {
   ActivityUpdatePayload,
   GoalUpdatePayload,
+  GoalUpdateTriggerPayload,
   NotificationUpdatePayload,
   UsageUpdatePayload
 } from './activityEvents.js';
@@ -196,6 +197,7 @@ export type CommandMode = 'default' | 'review' | 'fix';
 export type EventPayload =
   | ActivityUpdatePayload
   | GoalUpdatePayload
+  | GoalUpdateTriggerPayload
   | NotificationUpdatePayload
   | UsageUpdatePayload
   | TaskUpdatePayload

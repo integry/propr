@@ -70,6 +70,7 @@ export {
   type ActivityUpdatePayload,
   type GoalActivityState,
   type GoalUpdatePayload,
+  type GoalUpdateTriggerPayload,
   type NotificationChange,
   type NotificationUpdatePayload,
   type UsageSource,

@@ -20,6 +20,7 @@ import {
   ActivityBroadcaster,
   activityFromTask,
 } from '../services/activityBroadcast.js';
+import { ACTIVITY_ROOM as SOCKET_ACTIVITY_ROOM, activityUserRoom } from '../services/activitySocketRooms.js';
 import { SocketService } from '../services/socketService.js';
 
 after(async () => { await closeConnection(); });
@@ -369,6 +370,7 @@ describe('socket service activity dispatch', () => {
     const service = Object.create(SocketService.prototype) as SocketService;
     const internals = service as unknown as {
       io: typeof io;
+      queueDeps: unknown;
       taskRevisions: Map<string, { version: number; expiresAt: number }>;
       handleEvent: (channel: string, payload: unknown) => void;
       handleTaskUpdate: (payload: TaskUpdatePayload) => Promise<void>;
@@ -378,9 +380,19 @@ describe('socket service activity dispatch', () => {
     return { frames, internals };
   }
 
-  test('each producer event produces exactly one activity envelope per audience', () => {
+  test('each producer event produces exactly one activity envelope per audience', async () => {
     const { frames, internals } = dispatcher();
+    // A goal frame is completed from the committed row before it is emitted, so
+    // the dispatch needs the goals table to resolve its owner.
+    internals.queueDeps = {
+      db: () => ({ where: () => ({ first: async () => ({
+        owner_id: 'user-a', repository: 'integry/propr', result_state: 'completed',
+      }) }) }),
+    };
     internals.handleEvent('propr:events:goals', goalPayload);
+    // The goal read is awaited inside the dispatch; let it settle before the
+    // synchronous producers so the recorded order stays the published order.
+    await new Promise(resolve => setImmediate(resolve));
     internals.handleEvent('propr:events:notifications', {
       ...notificationPayload,
       recipientIds: ['user-a'],
@@ -391,9 +403,15 @@ describe('socket service activity dispatch', () => {
       'goal',
       'notification',
     ]);
+    // Both a goal and a notification are private to their audience: neither
+    // envelope may reach the instance-wide activity room.
     assert.deepEqual(
       frames.filter(frame => frame.event === ACTIVITY_UPDATE).map(frame => frame.room),
-      [ACTIVITY_ROOM, 'user:user-a'],
+      [activityUserRoom('user-a'), activityUserRoom('user-a')],
+    );
+    assert.deepEqual(
+      frames.filter(frame => frame.room === SOCKET_ACTIVITY_ROOM).map(frame => frame.event),
+      [USAGE_UPDATE],
     );
   });
 

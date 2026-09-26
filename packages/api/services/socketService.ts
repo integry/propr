@@ -280,8 +280,8 @@ export class SocketService {
   }
 
   private broadcastActivity(domain: ActivityDomain, entityId: string, repository: string | null,
-    change: ActivityChange, room = ACTIVITY_ROOM): void {
-    this.io.to(room).emit(ACTIVITY_UPDATE, { eventType: ACTIVITY_UPDATE, domain, entityId,
+    change: ActivityChange): void {
+    this.io.to(ACTIVITY_ROOM).emit(ACTIVITY_UPDATE, { eventType: ACTIVITY_UPDATE, domain, entityId,
       repository, change, terminal: isTerminalActivityChange(change), occurredAt: new Date().toISOString() });
   }
 

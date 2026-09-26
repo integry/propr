@@ -1,6 +1,5 @@
 import type { Socket } from 'socket.io';
 import type { SocketPrincipal } from '../auth.js';
-import { ACTIVITY_ROOM } from './activityBroadcast.js';
 import type { QueueBroadcaster } from './queueBroadcaster.js';
 import { revalidateSocketAuthentication } from './socketAuthentication.js';
 import type { QueueDependencies } from './socketService.js';
@@ -77,7 +76,6 @@ export class SocketSubscriptionManager {
     this.setupDraftHandlers(socket);
     this.setupIndexingHandlers(socket);
     this.setupQueueStatsHandlers(socket);
-    this.setupActivityHandlers(socket);
     this.setupDisconnectHandler(socket);
   }
 
@@ -228,6 +226,14 @@ export class SocketSubscriptionManager {
   }
 
   private setupActivityHandlers(socket: Socket): void {
+    // Instance-wide activity is opt-in, so a socket opened only to watch one
+    // task's live output does not receive every frame on the instance. The
+    // envelope carries ids, a repository and a change - strictly less than the
+    // task payloads every authenticated socket already receives in the
+    // instance-operational room - so it needs no further permission. Anything
+    // narrower than the instance, notification and planner activity, is emitted
+    // to its owner's room instead.
+    //
     // Serialize join/leave across awaited adapter operations. An unsubscribe
     // during authentication or join must not leave a late membership behind.
     let tail = Promise.resolve();
@@ -367,27 +373,6 @@ export class SocketSubscriptionManager {
       const room = 'queue:stats';
       this.cancelPendingSubscription(socket, room);
       await socket.leave(room);
-    });
-  }
-
-  private setupActivityHandlers(socket: Socket): void {
-    // Instance-wide activity is opt-in, so a socket opened only to watch one
-    // task's live output does not receive every frame on the instance. The
-    // envelope carries ids, a repository and a change - strictly less than the
-    // task payloads every authenticated socket already receives in the
-    // instance-operational room - so it needs no further permission. Anything
-    // narrower than the instance, notification and planner activity, is emitted
-    // to its owner's room instead and never reaches this one.
-    socket.on('subscribe:activity', async () => {
-      await this.join(socket, {
-        event: 'subscribe:activity',
-        room: ACTIVITY_ROOM,
-        authorize: () => true,
-      });
-    });
-    socket.on('unsubscribe:activity', async () => {
-      this.cancelPendingSubscription(socket, ACTIVITY_ROOM);
-      await socket.leave(ACTIVITY_ROOM);
     });
   }
 
