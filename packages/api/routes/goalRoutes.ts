@@ -6,6 +6,7 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
+  getEventPublisher,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   GOAL_LAUNCH_STRATEGIES,
@@ -490,6 +491,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         }
         throw error;
       }
+      await getEventPublisher().publishGoalUpdate({ goalId, repository: `${repoOwner}/${repoName}` });
       const data: GoalJobData = {
         goalId, taskId, repoOwner, repoName, generation: 0, claimId,
         input: initialPrompt,
@@ -570,6 +572,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository });
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
@@ -691,6 +694,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository });
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
@@ -754,6 +758,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository });
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
@@ -801,6 +806,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     await deleteGoalAttachmentDirectory(row.goal_id).catch(error => {
       logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal attachments');
     });
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository, ownerId: row.owner_id });
     res.status(204).send();
   };
 
@@ -852,6 +858,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository });
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
@@ -983,6 +990,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       if (inputBoundary?.pause_confirmed_at) await beginPausedContinuation(inputBoundary);
     }
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository });
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 

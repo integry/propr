@@ -1,7 +1,8 @@
+import { ACTIVITY_ROOM } from './activitySocketRooms.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Queue, QueueEvents } from 'bullmq';
 import {
-  QUEUE_STATS_UPDATE,
+  QUEUE_STATS_UPDATE, ACTIVITY_UPDATE,
   type QueueStatsUpdatePayload,
   type QueueStatsData
 } from '@propr/shared';
@@ -73,7 +74,7 @@ export class QueueBroadcaster {
     // Broadcast queue stats every 5 seconds to ensure UI stays updated
     this.queueStatsInterval = setInterval(async () => {
       const room = this.io.sockets.adapter.rooms.get('queue:stats');
-      if (room && room.size > 0) {
+      if ((room && room.size > 0) || this.io.sockets.adapter.rooms.get(ACTIVITY_ROOM)?.size) {
         await this.broadcastQueueStats();
       }
     }, 5000);
@@ -121,6 +122,9 @@ export class QueueBroadcaster {
       };
 
       this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+      this.io.to(ACTIVITY_ROOM).emit(ACTIVITY_UPDATE, { eventType: ACTIVITY_UPDATE,
+        domain: 'queue', change: 'progressed', entityId: 'queue', repository: null, terminal: false,
+        occurredAt: payload.timestamp });
     } catch (error) {
       console.error('[QueueBroadcaster] Failed to broadcast queue stats:', error);
     }

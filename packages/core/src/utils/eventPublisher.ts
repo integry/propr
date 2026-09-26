@@ -2,6 +2,8 @@ import { Redis } from 'ioredis';
 import logger from './logger.js';
 import {
   REDIS_CHANNELS,
+  ACTIVITY_UPDATE, GOAL_UPDATE, NOTIFICATION_UPDATE, USAGE_UPDATE, isTerminalActivityChange,
+  type ActivityUpdatePayload, type GoalUpdatePayload, type NotificationUpdatePayload,
   TASK_UPDATE,
   DRAFT_UPDATE,
   INDEXING_UPDATE,
@@ -200,6 +202,32 @@ class EventPublisher {
       timestamp: new Date().toISOString()
     };
     await this.publish(REDIS_CHANNELS.QUEUE_STATS, payload);
+  }
+
+  async publishActivity(params: Omit<ActivityUpdatePayload, 'eventType' | 'occurredAt' | 'terminal'>): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.ACTIVITY, {
+      ...params, eventType: ACTIVITY_UPDATE, occurredAt: new Date().toISOString(),
+      terminal: isTerminalActivityChange(params.change),
+    });
+  }
+
+  async publishGoalUpdate(params: Pick<GoalUpdatePayload, 'goalId'> & { repository?: string | null; ownerId?: string }): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.ACTIVITY, {
+      ...params, repository: params.repository ?? null,
+      eventType: GOAL_UPDATE, occurredAt: new Date().toISOString(),
+    });
+  }
+
+  async publishNotificationUpdate(params: Omit<NotificationUpdatePayload, 'eventType' | 'occurredAt'>): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.ACTIVITY, {
+      ...params, eventType: NOTIFICATION_UPDATE, occurredAt: new Date().toISOString(),
+    });
+  }
+
+  async publishUsageUpdate(): Promise<boolean> {
+    return this.publish(REDIS_CHANNELS.ACTIVITY, {
+      eventType: USAGE_UPDATE, source: 'agent-tank', occurredAt: new Date().toISOString(),
+    });
   }
 
   /**

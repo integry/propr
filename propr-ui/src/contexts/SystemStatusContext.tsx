@@ -1,3 +1,4 @@
+import { useLiveInvalidation } from '../hooks/useLiveInvalidation';
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router-dom';
@@ -97,31 +98,21 @@ export const SystemStatusProvider: React.FC<{
 
   useEffect(() => {
     setState({ scopeKey, isLoading: !disabled, error: null });
-    if (!disabled) void refreshStatus().catch(() => undefined);
   }, [disabled, refreshStatus, scopeKey]);
 
-  useEffect(() => {
-    if (disabled) return;
-    const refreshWhenVisible = () => {
-      if (document.visibilityState !== 'hidden') void refreshStatus().catch(() => undefined);
-    };
-    const interval = window.setInterval(refreshWhenVisible, STATUS_REFRESH_INTERVAL_MS);
-    window.addEventListener('focus', refreshWhenVisible);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshWhenVisible);
-    };
-  }, [disabled, refreshStatus]);
+  const schedule = useLiveInvalidation({ refresh: refreshStatus, scopeKey, disabled,
+    interest: { domains: ['system'], usage: true },
+    fallbackPollMs: STATUS_REFRESH_INTERVAL_MS });
 
   useEffect(() => {
     if (disabled) return;
     const handleAuthorizationChange = () => {
       setState({ scopeKey, isLoading: true, error: null });
-      void refreshStatus().catch(() => undefined);
+      schedule();
     };
     window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChange);
     return () => window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChange);
-  }, [disabled, refreshStatus, scopeKey]);
+  }, [disabled, schedule, scopeKey]);
 
   const activeState = state.scopeKey === scopeKey
     ? state

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import type { Job } from 'bullmq';
 import {
     AgentRegistry,
+    getEventPublisher,
     GOAL_CONTINUE_INPUT,
     TaskStates,
     buildGoalPolicyEnvironment,
@@ -189,13 +190,15 @@ async function finalizeGoal(
         run_claim: job.claimId,
         desired_state: 'running',
     }).whereNull('result_state');
-    return await query.update({
+    const changed = await query.update({
         result_state: resultState,
         failure_reason: failureReason ?? null,
         active_turn_id: null,
         completed_at: db.fn.now(),
         updated_at: db.fn.now(),
     }) === 1;
+    if (changed) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    return changed;
 }
 
 async function markGoalTaskReconciled(job: GoalJobData, resultState: string): Promise<void> {

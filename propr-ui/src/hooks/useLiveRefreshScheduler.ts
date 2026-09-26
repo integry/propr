@@ -14,7 +14,7 @@ interface LiveRefreshSchedulerOptions {
 
 export interface LiveRefreshScheduler {
   (): void;
-  /** Run an initial or user-requested refresh without the coalescing delay. */
+  /** Refresh without the coalescing delay, deferring hidden-tab work until visible. */
   refreshNow: () => Promise<void>;
 }
 
@@ -56,6 +56,8 @@ export function useLiveRefreshScheduler({
 
     pendingRef.current = false;
     const promise = Promise.resolve().then(async () => {
+      if (!mountedRef.current || generation !== generationRef.current) return;
+      if (documentIsHidden()) { pendingRef.current = true; return; }
       await refreshRef.current();
     });
     inFlightRef.current = { generation, promise };
@@ -100,7 +102,7 @@ export function useLiveRefreshScheduler({
       if (existing?.generation === generation) await existing.promise;
       if (!mountedRef.current || generation !== generationRef.current) return;
       clearTimer();
-      if (pendingRef.current) await runRefresh(generation);
+      if (pendingRef.current && !documentIsHidden()) await runRefresh(generation);
     })();
     immediateRef.current = { generation, promise };
     void promise.finally(() => {

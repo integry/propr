@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db, getIssueQueue, goalJobId, type GoalJobData } from '@propr/core';
+import { getEventPublisher, db, getIssueQueue, goalJobId, type GoalJobData } from '@propr/core';
 import type { GoalRow } from './goalAttemptState.js';
 
 /** Rotate the operational attempt while preserving the one provider session and worktree. */
@@ -33,6 +33,7 @@ export async function enqueueNextGoalAttempt(
         updated_at: db.fn.now(),
     });
     if (changed !== 1) return false;
+    void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
     const [repoOwner, repoName] = goal.repository.split('/');
     const queue = await getIssueQueue();
     await queue.add('processGoal', {

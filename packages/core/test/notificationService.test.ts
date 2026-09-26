@@ -1,9 +1,10 @@
+import { getEventPublisher } from '../src/utils/eventPublisher.js';
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, afterEach, beforeEach, describe, test } from 'node:test';
+import { after, afterEach, beforeEach, describe, test, mock } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { NOTIFICATION_PAYLOAD_LIMITS } from '@propr/shared';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
@@ -92,6 +93,7 @@ async function createEvent(
 }
 
 beforeEach(async () => {
+    mock.method(getEventPublisher(), 'publishNotificationUpdate', async () => true);
     clock = Date.parse('2026-08-02T10:00:00.000Z');
     database = createDatabase();
     await up(database);
@@ -108,10 +110,47 @@ beforeEach(async () => {
     });
 });
 
-afterEach(async () => database.destroy());
+afterEach(async () => { await database.destroy(); mock.restoreAll(); });
 after(async () => closeConnection());
 
 describe('notification service', { concurrency: false }, () => {
+    test('does not publish a notification from a rolled-back transaction', async () => {
+        const frames: unknown[] = [];
+        mock.method(getEventPublisher(), 'publishNotificationUpdate', async payload => { frames.push(payload); return true; });
+        const internals = service as unknown as { assignRecipients: (...args: unknown[]) => Promise<void> };
+        const assign = internals.assignRecipients;
+        mock.method(internals, 'assignRecipients', async (...args: unknown[]) => {
+            await assign.apply(service, args);
+            throw new Error('abort after receipt assignment');
+        });
+        await assert.rejects(createEvent('rolled-back', '2026-08-02T09:00:00.000Z', ['user-a']), /abort after/);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(frames, []);
+        assert.equal(await service.getUnreadNotificationCount('user-a'), 0);
+    });
+
+    test('publishes committed recipient changes, including automatic receipt dismissal', async () => {
+        const frames: Array<{ change: string; recipientIds: string[] }> = [];
+        const snapshots: Promise<number>[] = [];
+        mock.method(getEventPublisher(), 'publishNotificationUpdate', async payload => {
+            frames.push(payload);
+            snapshots.push(service.getUnreadNotificationCount('user-a'));
+            return true;
+        });
+        await createEvent('live-event', '2026-08-02T09:00:00.000Z', ['user-a']);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(await Promise.all(snapshots.splice(0)), [1]);
+        await service.markNotificationRead('user-a', 'live-event');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(await Promise.all(snapshots.splice(0)), [0]);
+        await service.dismissNotificationReceipts('live-event');
+        await new Promise(resolve => setImmediate(resolve));
+        await Promise.all(snapshots);
+        assert.deepEqual(frames.map(frame => [frame.change, frame.recipientIds]), [
+            ['created', ['user-a']], ['read', ['user-a']], ['dismissed', ['user-a']],
+        ]);
+    });
+
     test('applies and rolls back badge preference validation on existing schemas', async () => {
         await removeBadgePreference(database);
         assert.equal(
