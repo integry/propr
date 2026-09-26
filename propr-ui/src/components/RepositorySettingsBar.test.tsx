@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MonitoredRepo } from '../api/proprApi';
@@ -189,12 +189,45 @@ describe('RepositorySettingsBar detected workflows', () => {
     expect(await screen.findByText(/Not found in this repository, so never cancelled: ci\.yml\./)).toBeInTheDocument();
   });
 
+  it('flags a stored selection only after an empty listing successfully loads', async () => {
+    let resolveListing!: (response: { workflows: RepoWorkflow[] }) => void;
+    getRepoWorkflows.mockReturnValue(new Promise(resolve => { resolveListing = resolve; }));
+    const { onUpdateCancelCiWorkflows } = renderBar({
+      cancelCiDuringFollowup: true,
+      cancelCiDuringFollowupWorkflows: ['ci.yml'],
+    });
+
+    expect(screen.getByText('Loading workflows from GitHub…')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await act(async () => { resolveListing({ workflows: [] }); });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Not found in this repository, so never cancelled: ci.yml. Remove or correct it below.',
+    );
+    expect(screen.queryByText('Loading workflows from GitHub…')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: workflowsName })).toHaveValue('ci.yml');
+    expect(onUpdateCancelCiWorkflows).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: workflowsName }), { target: { value: '' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not flag an empty selection after an empty listing successfully loads', async () => {
+    renderBar({ cancelCiDuringFollowup: true });
+    await waitFor(() => expect(screen.queryByText('Loading workflows from GitHub…')).not.toBeInTheDocument());
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Workflows in integry/propr' })).not.toBeInTheDocument();
+  });
+
   it('falls back to typing workflows when GitHub cannot list them', async () => {
     getRepoWorkflows.mockRejectedValue(new Error('offline'));
-    renderBar({ cancelCiDuringFollowup: true });
+    renderBar({ cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['ci.yml'] });
 
     expect(await screen.findByText(/Could not load this repository's workflows from GitHub/)).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: workflowsName })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: workflowsName })).toHaveValue('ci.yml');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('does not ask GitHub for workflows while the option is off', () => {

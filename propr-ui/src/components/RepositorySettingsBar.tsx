@@ -52,9 +52,10 @@ const DetectedWorkflows: React.FC<{
   if (state.status === 'error') {
     return <p role="status" className="text-slate-500">Could not load this repository&apos;s workflows from GitHub. Enter them below instead.</p>;
   }
-  if (state.workflows.length === 0) return null;
+  if (state.status !== 'loaded') return null;
 
   const unmatched = selection.filter(entry => !state.workflows.some(workflow => workflowMatchesEntry(workflow, entry)));
+  if (state.workflows.length === 0 && unmatched.length === 0) return null;
   return (
     <fieldset className="min-w-0">
       <legend className="mb-1">Workflows in {repoName}</legend>
