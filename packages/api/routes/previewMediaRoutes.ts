@@ -132,6 +132,33 @@ async function boundedBody(response: globalThis.Response, maximum: number): Prom
   return Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), length);
 }
 
+async function sendMediaResponse(
+  res: Response, media: globalThis.Response, expectedType: 'image' | 'video',
+): Promise<void> {
+  if (!media.ok) {
+    try { await media.body?.cancel(); } catch { /* Best-effort response disposal. */ }
+    res.status(media.status === 404 ? 404 : 502).json({ error: media.status === 404
+      ? 'Preview media is unavailable' : 'Preview media could not be loaded' });
+    return;
+  }
+  const contentType = media.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? '';
+  if (!MEDIA_TYPES.has(contentType) || (expectedType === 'image') !== contentType.startsWith('image/')) {
+    try { await media.body?.cancel(); } catch { /* Best-effort response disposal. */ }
+    res.status(502).json({ error: 'Preview media returned an invalid content type' });
+    return;
+  }
+  const body = await boundedBody(media, contentType.startsWith('image/') ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES);
+  res.set({
+    'Cache-Control': 'private, no-store',
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+    'Content-Type': contentType,
+    'Content-Length': String(body.byteLength),
+    Vary: 'Authorization, Cookie',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.status(200).send(body);
+}
+
 export function createPreviewMediaRoutes(dependencies: PreviewMediaDependencies = {}) {
   const reader = dependencies.reader ?? previewMediaReader;
   const resolveToken = dependencies.resolveToken ?? resolveGitHubMetadataToken;
@@ -166,28 +193,7 @@ export function createPreviewMediaRoutes(dependencies: PreviewMediaDependencies 
 
       const source = signedMediaUrl(response.data.body_html, parsed.assetId) ?? new URL(sourceUrl);
       const media = await fetchMedia(source, parsed.assetId, token, fetcher);
-      if (!media.ok) {
-        try { await media.body?.cancel(); } catch { /* Best-effort response disposal. */ }
-        res.status(media.status === 404 ? 404 : 502).json({ error: media.status === 404
-          ? 'Preview media is unavailable' : 'Preview media could not be loaded' });
-        return;
-      }
-      const contentType = media.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? '';
-      if (!MEDIA_TYPES.has(contentType)
-        || (preview.type === 'image') !== contentType.startsWith('image/')) {
-        try { await media.body?.cancel(); } catch { /* Best-effort response disposal. */ }
-        res.status(502).json({ error: 'Preview media returned an invalid content type' }); return;
-      }
-      const body = await boundedBody(media, contentType.startsWith('image/') ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES);
-      res.set({
-        'Cache-Control': 'private, no-store',
-        'Content-Security-Policy': "default-src 'none'; sandbox",
-        'Content-Type': contentType,
-        'Content-Length': String(body.byteLength),
-        Vary: 'Authorization, Cookie',
-        'X-Content-Type-Options': 'nosniff',
-      });
-      res.status(200).send(body);
+      await sendMediaResponse(res, media, preview.type);
     } catch (error) {
       if (await handleGitHubRepositoryAccessError(req, res, error)) return;
       if (error instanceof MediaResponseError) { res.status(error.status).json({ error: error.message }); return; }
