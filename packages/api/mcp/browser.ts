@@ -113,14 +113,21 @@ export function renderConnectedApp(grant: McpGrant, csrfField: string, activity?
     + '</div></div></li>';
 }
 
+/** The session's GitHub token was rejected (revoked or expired); only a fresh browser sign-in can replace it. */
+export class GitHubReauthRequired extends Error {}
+
 export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides: { accessibleRepositories?: (user: GitHubUser) => Promise<string[]> } = {}): void {
+  // A consent form POST cannot be replayed after sign-in, so it returns to the consent page instead.
+  const loginUrl = (req: Request): string => {
+    const target = req.method === 'POST' && req.path === '/consent' && typeof req.body?.request === 'string'
+      ? `/mcp/consent?request=${encodeURIComponent(req.body.request)}` : req.originalUrl;
+    return `/api/auth/github?redirect_to=${encodeURIComponent(oauth.config.origin + target)}`;
+  };
   app.use('/mcp', createAuthRequestRateLimiter(), express.urlencoded({ extended: false, limit: '16kb' }), (req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'DENY',
       'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
     if (isDemoMode()) { res.status(403).send('MCP grants are disabled in demo mode.'); return; }
-    if (!req.isAuthenticated() || !req.user?.accessToken) {
-      res.redirect(`/api/auth/github?redirectTo=${encodeURIComponent(oauth.config.origin + req.originalUrl)}`); return;
-    }
+    if (!req.isAuthenticated() || !req.user?.accessToken) { res.redirect(loginUrl(req)); return; }
     if (!isUserWhitelisted(req.user.username)) { res.status(403).send('Instance access denied.'); return; }
     const session = req.session as ConsentSession;
     session.mcpCsrf ||= secret();
@@ -134,7 +141,12 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
   async function repositories(req: Request): Promise<string[]> {
     if (overrides.accessibleRepositories) return overrides.accessibleRepositories(req.user!);
     const github = new Octokit({ auth: req.user!.accessToken, request: { timeout: 10000 } });
-    const { data } = await github.request('GET /user');
+    let data;
+    try { ({ data } = await github.request('GET /user')); }
+    catch (error) {
+      if ((error as { status?: number }).status === 401) throw new GitHubReauthRequired('GitHub rejected the session token');
+      throw error;
+    }
     if (String(data.id) !== req.user!.id) throw new Error('GitHub identity mismatch');
     const configured = (await loadMonitoredReposRaw()).filter(repo => repo.enabled);
     const allowed: string[] = [];
@@ -217,5 +229,15 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
     const goal = artifact.parentKind === 'goal';
     if (!await oauth.store.db(goal ? 'goals' : 'task_drafts').where({ [goal ? 'goal_id' : 'draft_id']: artifact.parentId, [goal ? 'owner_id' : 'user_id']: req.user!.id }).first()) { res.status(404).send('Artifact parent not found'); return; }
     res.set({ 'Content-Type': artifact.mimeType, 'Content-Disposition': `attachment; filename="${artifact.filename}"`, 'X-Content-Type-Options': 'nosniff' }).send(Buffer.from(artifact.data, 'base64'));
+  });
+  app.use('/mcp', (error: unknown, req: Request, res: Response, next: express.NextFunction) => {
+    if (!(error instanceof GitHubReauthRequired) || res.headersSent) { next(error); return; }
+    // Drop the dead token with the session so sign-in issues a fresh one, then resume where the user was.
+    const target = loginUrl(req);
+    console.warn('[mcp] GitHub session token rejected; redirecting to sign in again', { userId: req.user?.id });
+    req.session.destroy(destroyError => {
+      if (destroyError) console.error('[mcp] Could not destroy session after GitHub token rejection:', destroyError);
+      res.redirect(target);
+    });
   });
 }
