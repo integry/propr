@@ -594,9 +594,14 @@ describe('PR check routing', () => {
         assert.ok(nativeUnits.includes(nativeSetupUnit), 'the native harness unit is discoverable');
         const expected = nativeUnits.filter(unit => unit !== nativeSetupUnit);
         assert.ok(expected.length >= 2, 'the native Electron probes are discovered');
-        // Both long-lived probes must be among them: a discovery expression that
-        // matched nothing real would otherwise agree with an empty derivation.
-        for (const probe of ['electron-frame-semantics.test.mjs', 'electron-pairing-zstd.test.mjs']) {
+        // The existing probes and published-preview coverage must be among them:
+        // a discovery expression that matched nothing real would otherwise
+        // agree with an empty derivation.
+        for (const probe of [
+            'electron-frame-semantics.test.mjs',
+            'electron-pairing-zstd.test.mjs',
+            'published-preview-electron.test.mjs',
+        ]) {
             assert.ok(expected.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
         }
         assert.deepEqual([...units].sort(), expected);

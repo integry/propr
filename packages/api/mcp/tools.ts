@@ -105,6 +105,15 @@ export const listScopeShape = {
   state: z.enum(['active', 'completed', 'failed', 'all']).default('all').describe('active covers everything that has not reached a terminal result yet.'),
 };
 
+/** Plan lifecycle statuses this backend persists on a draft, mirroring the shared `DraftStatus` union. */
+export const PLAN_STATUSES = ['draft', 'generating', 'refining', 'review', 'approved', 'executed', 'executing', 'pr_created', 'merged', 'failed'] as const;
+/** A plan is done when every published issue merged, or when the plan itself failed. */
+export const TERMINAL_PLAN_STATUSES = ['merged', 'failed'] as const;
+/** The plan counterpart of `listScopeShape.state`, declared the same way so both filters behave alike. */
+export const planScopeShape = {
+  status: z.enum(['active', ...PLAN_STATUSES, 'all']).default('all').describe('active covers every plan that has not reached a terminal status (merged or failed).'),
+};
+
 /** Scope a list query to one exact repository, or to the granted repositories when none was given. */
 function scopeRepositories(query: Knex.QueryBuilder, column: string, repository: string | undefined, granted: string[] | null): void {
   if (repository) query.where(column, repository);
