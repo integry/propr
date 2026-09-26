@@ -7,7 +7,8 @@ import Dashboard from '../../../../../propr-ui/src/components/Dashboard';
 import { ToastProvider } from '../../../../../propr-ui/src/components/ui/Toast';
 import { AuthProvider } from '../../../../../propr-ui/src/contexts/AuthContext';
 import { NotificationCenterProvider } from '../../../../../propr-ui/src/contexts/NotificationCenterContext';
-import { SocketContext, type SocketContextValue } from '../../../../../propr-ui/src/contexts/SocketContext';
+import { SocketContext } from '../../../../../propr-ui/src/contexts/SocketContext';
+import { createInertSocketContextValue } from '../../../../../propr-ui/src/test/socketContext';
 import type { DesktopAdapters } from '../../../../../propr-ui/src/desktop/types';
 import { createElectronDesktopAdapters } from '../../../../../propr-ui/src/desktop/electronAdapters';
 import { DesktopDeepLinkInbox } from '../../../../../propr-ui/src/desktop-deep-link';
@@ -45,19 +46,9 @@ const adapters: DesktopAdapters = {
 const deepLinks = new DesktopDeepLinkInbox();
 adapters.app.onDeepLink(value => deepLinks.receive(value));
 
-const noop = () => undefined;
-const subscribe = () => noop;
-const socket: SocketContextValue = {
-  socket: null, isConnected: true,
-  subscribeToTask: noop, unsubscribeFromTask: noop,
-  subscribeToDraft: noop, unsubscribeFromDraft: noop,
-  subscribeToIndexing: noop, unsubscribeFromIndexing: noop,
-  subscribeToIndexingUpdates: noop, unsubscribeFromIndexingUpdates: noop,
-  subscribeToQueueStats: noop, unsubscribeFromQueueStats: noop,
-  subscribeToTaskLive: noop, unsubscribeFromTaskLive: noop,
-  onTaskUpdate: subscribe, onDraftUpdate: subscribe, onIndexingUpdate: subscribe,
-  onQueueStatsUpdate: subscribe, onTaskLiveUpdate: subscribe,
-};
+// Built from the shared inert value so the fixture cannot drift from the
+// context it stands in for: this one is typechecked with propr-ui.
+const socket = createInertSocketContextValue({ isConnected: true });
 
 createRoot(document.getElementById('root')!).render(
   <DesktopExperience adapters={adapters} deepLinks={deepLinks}>
