@@ -57,10 +57,21 @@ issue and starts the ordinary issue implementation workflow immediately, without
 a plan or goal. Repository write access is required. Optional `agentAlias` and
 `model` select supported routing; otherwise instance defaults apply.
 
+Optional automation matches `implement_plan`. `runUltrafix` (review scope) runs
+the review/fix loop on the resulting pull request as soon as it opens, bounded by
+`ultrafixGoal` (1-10, default 9) and `ultrafixMaxCycles` (1-10, default 3); both
+bounds apply only when `runUltrafix` is true. `autoMerge` (merge scope) merges
+the pull request once it is ready. Both opt-ins are applied as the shared
+`ultrafix` and `auto-merge` issue labels, so removing a label stops the
+automation exactly as it does for planned work.
+
 ```json
 {
   "repository": "owner/repo",
   "instruction": "Fix the invoice date format",
+  "runUltrafix": true,
+  "ultrafixGoal": 9,
+  "ultrafixMaxCycles": 3,
   "idempotencyKey": "invoice-date-fix-001"
 }
 ```

@@ -29,13 +29,20 @@ export function addTaskSubmissionTools(tools: McpTool[], deps: ToolDeps): void {
   const routes = createTaskSubmissionRoutes({ db: deps.db, services: deps.taskSubmissionServices });
   const shape = { repository: repositorySchema.toLowerCase(), submissionId: z.uuid() };
   const target = { table: 'task_submissions', column: 'id', arg: 'submissionId', owner: 'user_id' };
-  tools.push({ name: 'create_task', description: 'Create a GitHub issue and immediately START an ordinary one-off task, without a plan or goal. Uses configured agent/model defaults unless overridden. Keep the idempotencyKey stable; inspect the submission or operation before retrying.', scope: 'execute',
+  tools.push({ name: 'create_task', description: 'Create a GitHub issue and immediately START an ordinary one-off task, without a plan or goal. Uses configured agent/model defaults unless overridden. Set runUltrafix to run the review/fix loop on the resulting pull request as soon as it opens, and autoMerge to merge it once it is ready; ultrafixGoal and ultrafixMaxCycles apply only when runUltrafix is true and ultrafix is bounded to 10 cycles. Keep the idempotencyKey stable; inspect the submission or operation before retrying.', scope: 'execute',
     schema: z.object({ ...mutationShape, repository: shape.repository,
       instruction: z.string().min(1).max(50000).refine(value => !!value.trim(), 'Instruction must not be blank.'),
-      agentAlias: idSchema.optional(), model: idSchema.optional(),
+      agentAlias: idSchema.optional(), model: idSchema.optional(), autoMerge: z.boolean().default(false),
+      runUltrafix: z.boolean().default(false), ultrafixGoal: z.number().int().min(1).max(10).default(9),
+      ultrafixMaxCycles: z.number().int().min(1).max(10).default(3),
     }).strict(), run: async ({ principal, args, operationId }) => {
+      if (args.autoMerge) deps.policy.requireScope(principal, 'merge');
+      if (args.runUltrafix) deps.policy.requireScope(principal, 'review');
       const response = await callWorkflow(routes.submit, principal, {
-        body: { repository: args.repository, instruction: args.instruction, agentAlias: args.agentAlias, model: args.model },
+        body: { repository: args.repository, instruction: args.instruction, agentAlias: args.agentAlias, model: args.model,
+          autoMerge: args.autoMerge, runUltrafix: args.runUltrafix,
+          // Bounds travel only with the opt-in, exactly as implement_plan records them.
+          ...(args.runUltrafix ? { ultrafixGoal: args.ultrafixGoal, ultrafixMaxCycles: args.ultrafixMaxCycles } : {}) },
         // The operation identity isolates submission keys across clients/grants and the UI.
         idempotencyKey: `mcp-${operationId}`,
       });

@@ -530,27 +530,25 @@ describe('PR check routing', () => {
             cwd: REPOSITORY,
             encoding: 'utf8',
         }).stdout.trim().split('\n');
-        // Deriving the same set here from the sources, rather than pinning a
-        // snapshot, keeps the shell discovery honest — the glob, the helper name
-        // and the exclusion of the helper's own test all still hold — while a
-        // new native unit joins the job without editing this test.
-        const scriptsDirectory = join(REPOSITORY, 'apps', 'desktop', 'scripts');
-        const expected = readdirSync(scriptsDirectory)
-            .filter(file => file.endsWith('.test.mjs') && file !== 'electron-native-test-setup.test.mjs')
-            .filter(file => readFileSync(join(scriptsDirectory, file), 'utf8').includes('prepareNativeElectronTest('))
-            .map(file => `apps/desktop/scripts/${file}`)
-            .sort();
-        // The existing probes and published-preview coverage must be among them:
-        // a discovery expression that matched nothing real would otherwise
-        // agree with an empty derivation.
+        // The units the repository actually has, found without the workflow's
+        // shell, so the job is held to running every one of them while a new
+        // unit joins it without this assertion going stale.
+        const scripts = join(REPOSITORY, 'apps', 'desktop', 'scripts');
+        const native = readdirSync(scripts)
+            .filter(entry => entry.endsWith('.test.mjs') && entry !== 'electron-native-test-setup.test.mjs')
+            .filter(entry => readFileSync(join(scripts, entry), 'utf8').includes('prepareNativeElectronTest('))
+            .map(entry => `apps/desktop/scripts/${entry}`);
+        assert.ok(native.length >= 2, 'the repository has native Electron units to run');
+        // The long-lived probes and published-preview coverage must remain included,
+        // even as new units join.
         for (const probe of [
             'electron-frame-semantics.test.mjs',
             'electron-pairing-zstd.test.mjs',
             'published-preview-electron.test.mjs',
         ]) {
-            assert.ok(expected.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
+            assert.ok(native.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
         }
-        assert.deepEqual([...units].sort(), expected);
+        assert.deepEqual([...units].sort(), native.sort());
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
         assert.match(electron, /PROPR_TEST_SHARD_COUNT: ''\n/);

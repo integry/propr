@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import {
+    findIssueSubmission,
     findPlanIssueByRepoAndNumber,
     generateCompletionComment,
     getAuthenticatedOctokit,
@@ -14,6 +15,7 @@ import {
     type CommentEventConfig,
     type ClaudeCodeResponse,
     type IssueJobData,
+    type SubmissionPayload,
 } from '@propr/core';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -92,11 +94,77 @@ async function resolveEffectiveUltrafixSettings(planIssue: {
     };
 }
 
+const NO_ULTRAFIX = { runUltrafix: false, goal: null, maxCycles: null } as const;
+
+/**
+ * A directly submitted task's opt-in is applied as the shared `ultrafix` label,
+ * so the label owns the request and the stored payload only supplies its bounds.
+ * Reading the label again at pull request time is what lets a user withdraw the
+ * request while the agent runs, after the job's issue snapshot was taken.
+ */
+async function resolveCurrentSourceIssueLabels(
+    issueRef: IssueJobData,
+    snapshotLabels: ReadonlyArray<{ name: string }>,
+    correlatedLogger: Logger,
+): Promise<ReadonlyArray<{ name: string }>> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: issueRef.repoOwner,
+            repo: issueRef.repoName,
+            issue_number: issueRef.number,
+        });
+        const labels = response.data?.labels as Array<{ name?: string } | string> | undefined;
+        if (!Array.isArray(labels)) return snapshotLabels;
+        return labels
+            .map((label) => ({ name: typeof label === 'string' ? label : label?.name ?? '' }))
+            .filter((label) => label.name.length > 0);
+    } catch (error) {
+        // Without fresh evidence of a withdrawal the submitted request still stands.
+        correlatedLogger.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message,
+        }, 'Could not re-read source issue labels, using the labels from the start of the run');
+        return snapshotLabels;
+    }
+}
+
+/**
+ * A directly submitted task carries its own Ultrafix choice, so its bounds come
+ * from the submission the way a planned issue's come from Planner settings. The
+ * shared `ultrafix` label carries the opt-in itself, so removing it withdraws the
+ * request no matter what the stored payload says.
+ */
+async function resolveSubmissionUltrafixSettings(
+    issueRef: IssueJobData,
+    sourceIssueLabels: ReadonlyArray<{ name: string }>,
+    correlatedLogger: Logger,
+): Promise<{ runUltrafix: boolean; goal: number | null; maxCycles: number | null }> {
+    if (!sourceIssueLabels.some((label) => label.name === 'ultrafix')) return NO_ULTRAFIX;
+    try {
+        const submission = await findIssueSubmission(issueRef);
+        if (!submission) return NO_ULTRAFIX;
+        const payload = JSON.parse(submission.payload) as SubmissionPayload;
+        if (payload.runUltrafix !== true) return NO_ULTRAFIX;
+        return {
+            runUltrafix: true,
+            goal: sanitizeUltrafixGoal(payload.ultrafixGoal),
+            maxCycles: sanitizeUltrafixMaxCycles(payload.ultrafixMaxCycles),
+        };
+    } catch (error) {
+        correlatedLogger.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message,
+        }, 'Could not read submitted task ultrafix settings');
+        return NO_ULTRAFIX;
+    }
+}
+
 function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
     const parts = ['/ultrafix'];
     if (goal != null) parts.push(`goal=${goal}`);
     if (maxCycles != null) parts.push(`max=${maxCycles}`);
-    return `${parts.join(' ')}\nTriggered automatically by Planner execution settings.`;
+    return `${parts.join(' ')}\nTriggered automatically by the requested execution settings.`;
 }
 
 function createCommentConfig(): CommentEventConfig {
@@ -280,14 +348,19 @@ export async function handleCreatedPlanIssuePR(options: {
     await linkPRToPlanIssue(repository, issueRef.number, prNumber);
     correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue');
 
-    const hasAutoMergeLabel = currentIssueData.data.labels.some((label) => label.name === 'auto-merge');
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+    // A directly submitted task states every opt-in through the shared labels, so
+    // its automation reads them as they stand now rather than as the run began.
+    const sourceIssueLabels = planIssue
+        ? currentIssueData.data.labels
+        : await resolveCurrentSourceIssueLabels(issueRef, currentIssueData.data.labels, correlatedLogger);
+    const hasAutoMergeLabel = sourceIssueLabels.some((label) => label.name === 'auto-merge');
     const effectiveUltrafix = planIssue
         ? await resolveEffectiveUltrafixSettings(planIssue)
-        : { runUltrafix: false, goal: null, maxCycles: null };
+        : await resolveSubmissionUltrafixSettings(issueRef, sourceIssueLabels, correlatedLogger);
 
     const ultrafixTrigger = resolveImplementationPrUltrafixTrigger(
-        currentIssueData.data.labels,
+        sourceIssueLabels,
         effectiveUltrafix,
     );
 

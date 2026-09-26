@@ -205,3 +205,66 @@ test('interrupted dispatch reconciles published triggers and receipts before res
     } finally { await db.destroy(); }
   }
 });
+
+test('automation opt-ins label the issue before the trigger and keep ultrafix bounds tied to the opt-in', async () => {
+  configureDemoMode(false);
+  const cases = [
+    { key: 'plain', body: {}, labels: [['llm-issue-agent-model'], ['base-release'], ['AI']], stored: {} },
+    { key: 'ultrafix', body: { runUltrafix: true }, labels: [['llm-issue-agent-model'], ['base-release'], ['ultrafix'], ['AI']],
+      stored: { runUltrafix: true, ultrafixGoal: null, ultrafixMaxCycles: null } },
+    { key: 'bounded', body: { runUltrafix: true, ultrafixGoal: 7, ultrafixMaxCycles: 4, autoMerge: true },
+      labels: [['llm-issue-agent-model'], ['base-release'], ['auto-merge'], ['ultrafix'], ['AI']],
+      stored: { autoMerge: true, runUltrafix: true, ultrafixGoal: 7, ultrafixMaxCycles: 4 } },
+  ];
+  for (const scenario of cases) {
+    const db = await fixture();
+    const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
+    const routes = createTaskSubmissionRoutes({ db, services: {
+      authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'release' }),
+      routing: async () => ({ agentAlias: 'issue-agent', model: 'issue-model', routingLabel: 'llm-issue-agent-model' }),
+      getOctokit: async () => ({ request: async (route: string, body: Record<string, unknown>) => {
+        calls.push({ route, body });
+        if (route.endsWith('/issues')) return { data: { number: 42, html_url: 'https://github.com/owner/repo/issues/42' } };
+        return { data: {} };
+      } }) as never,
+      processingLabels: async () => ['AI'],
+      enqueue: async () => undefined,
+    } });
+    try {
+      const value = response();
+      await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix invoice dates', ...scenario.body }, scenario.key), value.res);
+      assert.equal(value.state.body.state, 'queued', scenario.key);
+      assert.deepEqual(calls.filter(call => call.route.endsWith('/labels')).map(call => call.body.labels), scenario.labels, scenario.key);
+      const payload = JSON.parse((await db('task_submissions').first()).payload);
+      assert.deepEqual(Object.fromEntries(['autoMerge', 'runUltrafix', 'ultrafixGoal', 'ultrafixMaxCycles']
+        .filter(field => payload[field] !== undefined).map(field => [field, payload[field]])), scenario.stored, scenario.key);
+    } finally { await db.destroy(); }
+  }
+});
+
+test('automation options are rejected when malformed, out of range, or bounded without an ultrafix opt-in', async () => {
+  configureDemoMode(false);
+  const db = await fixture();
+  const routes = createTaskSubmissionRoutes({ db, services: {
+    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'release' }),
+    getOctokit: async () => { assert.fail('Rejected options must not reach GitHub'); },
+  } });
+  try {
+    const invalid = [
+      { runUltrafix: 'yes' }, { autoMerge: 'yes' },
+      { runUltrafix: true, ultrafixGoal: 0 }, { runUltrafix: true, ultrafixGoal: 11 }, { runUltrafix: true, ultrafixGoal: 4.5 },
+      { runUltrafix: true, ultrafixMaxCycles: 0 }, { runUltrafix: true, ultrafixMaxCycles: 11 },
+      // Bounds without the opt-in would silently do nothing.
+      { ultrafixGoal: 9 }, { ultrafixMaxCycles: 3 }, { runUltrafix: false, ultrafixGoal: 9 },
+    ];
+    for (const options of invalid) {
+      const value = response();
+      await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix it', ...options }), value.res);
+      assert.equal(value.state.status, 400, JSON.stringify(options));
+    }
+    const bounded = response();
+    await routes.submit(request({ repository: 'owner/repo', instruction: 'Fix it', ultrafixGoal: 9 }), bounded.res);
+    assert.match(String(bounded.state.body.error), /runUltrafix must be true/);
+    assert.equal((await db('task_submissions').count('* as count').first())?.count, 0);
+  } finally { await db.destroy(); }
+});
