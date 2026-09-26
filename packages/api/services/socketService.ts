@@ -402,6 +402,11 @@ export class SocketService {
     this.io.to(INSTANCE_OPERATIONAL_ROOM).emit(payload.eventType, payload);
   }
 
+  /** Whether any client is connected to this instance, i.e. anyone to tell. */
+  hasConnectedClients(): boolean {
+    return this.io.sockets.sockets.size > 0;
+  }
+
   /** Get the Socket.IO server instance */
   getIO(): SocketIOServer {
     return this.io;

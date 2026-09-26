@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import type { NotificationUpdatePayload } from '@propr/shared';
+import type { NotificationChange, NotificationUpdatePayload } from '@propr/shared';
 import { useSocket } from '../contexts/useSocket';
 
 /** Fallback cadence, armed only while the websocket is unavailable. */
@@ -13,6 +13,13 @@ const DISCONNECTED_FALLBACK_INTERVAL_MS = 60_000;
  */
 const LOCAL_MUTATION_ECHO_MS = 10_000;
 
+/** The kinds of change this client makes itself, and therefore already knows. */
+export type LocalNotificationMutation = Extract<NotificationChange, 'read' | 'dismissed'>;
+
+const isLocalMutation = (change: NotificationChange): change is LocalNotificationMutation => (
+  change === 'read' || change === 'dismissed'
+);
+
 export interface InboxRefreshTriggerOptions {
   /** Whether reconciling is worth doing now: visible, online, and not clearing. */
   canReconcile: () => boolean;
@@ -22,13 +29,15 @@ export interface InboxRefreshTriggerOptions {
 
 export interface InboxRefreshTriggers {
   /**
-   * Records that this client mutated a notification itself.
+   * Records that this client made `change` to a notification itself.
    *
-   * The server echoes our own dismissal or read back, and we already know the
-   * outcome for those ids: re-reading on the echo can resurrect a card the user
-   * dismissed, or clobber a mutation that is still in flight.
+   * The server echoes our own dismissal or read back, and we already know that
+   * outcome: re-reading on the echo can resurrect a card the user dismissed, or
+   * clobber a mutation that is still in flight. Only that exact change is
+   * ignored - a *different* change to the same notification, such as another
+   * tab dismissing what we just read, is news and still reconciles.
    */
-  markLocallyMutated: (eventId: string) => void;
+  markLocallyMutated: (eventId: string, change: LocalNotificationMutation) => void;
 }
 
 /**
@@ -45,13 +54,20 @@ export function useInboxRefreshTriggers({
 }: InboxRefreshTriggerOptions): InboxRefreshTriggers {
   const { isConnected, onNotificationUpdate } = useSocket();
   const previousConnectedRef = useRef<boolean | null>(null);
-  const locallyMutatedRef = useRef(new Set<string>());
+  const locallyMutatedRef = useRef(new Map<string, Set<LocalNotificationMutation>>());
 
-  const markLocallyMutated = useCallback((eventId: string) => {
-    locallyMutatedRef.current.add(eventId);
-    // Forgotten after a short window so the set cannot grow without bound and
+  const markLocallyMutated = useCallback((eventId: string, change: LocalNotificationMutation) => {
+    const changes = locallyMutatedRef.current.get(eventId) ?? new Set<LocalNotificationMutation>();
+    changes.add(change);
+    locallyMutatedRef.current.set(eventId, changes);
+    // Forgotten after a short window so the map cannot grow without bound and
     // a later genuine change to the same notification is not ignored forever.
-    window.setTimeout(() => { locallyMutatedRef.current.delete(eventId); }, LOCAL_MUTATION_ECHO_MS);
+    window.setTimeout(() => {
+      const pending = locallyMutatedRef.current.get(eventId);
+      if (!pending) return;
+      pending.delete(change);
+      if (pending.size === 0) locallyMutatedRef.current.delete(eventId);
+    }, LOCAL_MUTATION_ECHO_MS);
   }, []);
 
   const reconcileWhenWorthwhile = useCallback(() => {
@@ -71,10 +87,12 @@ export function useInboxRefreshTriggers({
   useEffect(() => {
     if (!isConnected) return;
     return onNotificationUpdate((payload: NotificationUpdatePayload) => {
-      // A bulk clear has no single subject, so it always reconciles the list.
-      if (payload.change !== 'dismissed_all'
-        && payload.eventId
-        && locallyMutatedRef.current.has(payload.eventId)) return;
+      // Only the echo of the very change this client made is ignored: our read
+      // of X must not swallow another tab's dismissal of X, and a bulk clear
+      // has no single subject, so it always reconciles the list.
+      if (payload.eventId
+        && isLocalMutation(payload.change)
+        && locallyMutatedRef.current.get(payload.eventId)?.has(payload.change)) return;
       // A hidden tab does no work; the visibility handler above reconciles on
       // return, so nothing is lost by skipping here.
       reconcileWhenWorthwhile();

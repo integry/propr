@@ -1,25 +1,20 @@
 import { Request, Response } from 'express';
 import * as configManager from '@propr/core';
 import { normalizeAgentTankAgents, type AgentStatusResponse } from '@propr/core';
-import { USAGE_UPDATE } from '@propr/shared';
-import { getSocketService } from '../services/socketService.js';
-
 /**
  * Tells every open tab that capacity may have moved.
  *
  * The event is a trigger, not a snapshot: each client re-reads
  * `/api/config/agent-tank/usage`, which keeps owning the projection and its
- * permission check. A failed publish only costs the other tabs freshness, so it
- * must never fail the request that caused it.
+ * permission check. It goes out over Redis so a tab connected to another API
+ * instance hears about the change too, and a failed publish only costs those
+ * tabs freshness - it must never fail the request that caused it.
  */
 function publishUsageChanged(): void {
   try {
-    getSocketService()?.broadcastPushEvent({
-      eventType: USAGE_UPDATE,
-      occurredAt: new Date().toISOString()
-    });
+    void configManager.getEventPublisher().publishUsageUpdate();
   } catch {
-    // Freshness only; the re-probe itself already succeeded.
+    // Freshness only; the write that caused this already succeeded.
   }
 }
 
@@ -39,6 +34,10 @@ export function createAgentTankRoutes() {
       const { enabled, url } = req.body;
       await configManager.saveAgentTankSettings({ enabled: !!enabled, url: url || 'http://0.0.0.0:3456' });
       res.json({ success: true });
+      // Enabling, disabling or repointing the integration changes what every
+      // open sidebar should be showing, and the sidebar no longer polls to
+      // find that out for itself.
+      publishUsageChanged();
     } catch (error) {
       console.error('Error in /api/config/agent-tank POST:', error);
       res.status(500).json({ error: 'Failed to save Agent Tank settings' });

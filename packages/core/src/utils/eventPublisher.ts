@@ -7,6 +7,11 @@ import {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
+  type NotificationChange,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type DraftStatus,
@@ -203,6 +208,47 @@ class EventPublisher {
   }
 
   /**
+   * Publish a notification change for one recipient.
+   *
+   * Producers run outside the process that owns the websocket - the projection
+   * worker creates the notification, and server-side cleanup dismisses it - so
+   * the change reaches the recipient's open tabs through the same Redis relay
+   * as every other event rather than through a socket they cannot see.
+   */
+  async publishNotificationUpdate(params: {
+    change: NotificationChange;
+    recipientId: string;
+    eventId?: string;
+    unreadCount?: number;
+    occurredAt?: string;
+  }): Promise<boolean> {
+    const payload: NotificationUpdatePayload = {
+      eventType: NOTIFICATION_UPDATE,
+      change: params.change,
+      recipientId: params.recipientId,
+      ...(params.eventId === undefined ? {} : { eventId: params.eventId }),
+      ...(params.unreadCount === undefined ? {} : { unreadCount: params.unreadCount }),
+      occurredAt: params.occurredAt ?? new Date().toISOString()
+    };
+    return this.publish(REDIS_CHANNELS.NOTIFICATIONS, payload);
+  }
+
+  /**
+   * Publish an agent capacity/quota change.
+   *
+   * A bare trigger, not a snapshot: each client re-reads the usage endpoint,
+   * which keeps owning the projection and its permission check.
+   */
+  async publishUsageUpdate(params: { provider?: string } = {}): Promise<boolean> {
+    const payload: UsageUpdatePayload = {
+      eventType: USAGE_UPDATE,
+      ...(params.provider === undefined ? {} : { provider: params.provider }),
+      occurredAt: new Date().toISOString()
+    };
+    return this.publish(REDIS_CHANNELS.USAGE, payload);
+  }
+
+  /**
    * Close the Redis connection.
    * Should be called during application shutdown.
    */
@@ -214,6 +260,25 @@ class EventPublisher {
       logger.debug('EventPublisher Redis connection closed');
     }
   }
+}
+
+/**
+ * Relay a notification change to the recipient's open tabs, fire and forget.
+ *
+ * The producers that need this - the projection worker, and the webhook process
+ * closing a merged pull request's cards - run outside the process that owns the
+ * websocket, so the change travels the same Redis path as every other event.
+ * Losing it costs those tabs freshness until their next reconcile, never the
+ * write that caused it.
+ */
+export function publishNotificationUpdateThroughRedis(payload: {
+  change: NotificationChange;
+  recipientId: string;
+  eventId?: string;
+  unreadCount?: number;
+  occurredAt?: string;
+}): void {
+  void getEventPublisher().publishNotificationUpdate(payload).catch(() => undefined);
 }
 
 // Singleton instance

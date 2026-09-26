@@ -5,6 +5,7 @@ import type {
   IndexingUpdatePayload,
   TaskUpdatePayload,
 } from '@propr/shared';
+import { publishNotificationUpdateThroughRedis } from '@propr/core';
 import { createBackgroundDatabase, sqliteFilename } from './backgroundDatabase.js';
 import { NotificationProjectionService } from './notificationProjectionService.js';
 import { WebPushDispatcher } from './webPushDispatcher.js';
@@ -171,7 +172,10 @@ class LocalNotificationBackgroundService implements NotificationBackgroundServic
     } catch {
       console.warn('[notifications] Web Push dispatcher disabled: invalid dispatcher tuning configuration');
     }
-    const projection = new NotificationProjectionService({ database: background.database });
+    const projection = new NotificationProjectionService({
+      database: background.database,
+      publishNotificationUpdate: publishNotificationUpdateThroughRedis,
+    });
     projection.startStalledDetector();
     return new LocalNotificationBackgroundService(
       projection, dispatcher, background.close, configured,

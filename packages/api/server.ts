@@ -16,6 +16,7 @@ import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
+import { AgentTankUsageWatcher } from './services/agentTankUsageWatcher.js';
 import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
@@ -257,6 +258,7 @@ let webPushDispatcherConfigured = false;
 let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
+let agentTankUsageWatcher: AgentTankUsageWatcher | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -616,6 +618,10 @@ async function start(): Promise<void> {
         notificationProjection: notificationBackground,
       });
       console.log('[WebSocket] Queue features initialized for real-time updates');
+      // Agent Tank cannot call us, so this instance watches its quotas once for
+      // every connected client instead of each sidebar polling for itself.
+      agentTankUsageWatcher = new AgentTankUsageWatcher();
+      agentTankUsageWatcher.start();
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
       // actually serves webhooks — i.e. direct_webhook mode, where this process
@@ -663,6 +669,7 @@ async function start(): Promise<void> {
           { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
+          { name: 'agent tank usage watcher', close: () => agentTankUsageWatcher?.close() ?? Promise.resolve() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
         );

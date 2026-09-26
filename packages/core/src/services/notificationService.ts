@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- event creation, preferences, and Inbox state share transactions */
 import { createHash, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
+import { publishNotificationUpdateThroughRedis } from '../utils/eventPublisher.js';
 import {
     DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS,
     DEFAULT_NOTIFICATION_QUIET_HOURS,
@@ -20,6 +21,7 @@ import {
     type Notification,
     type NotificationAction,
     type NotificationEventAction,
+    type NotificationChange,
     type NotificationEvent,
     type NotificationKind,
     type NotificationListResponse,
@@ -94,10 +96,27 @@ export interface NotificationListOptions {
     includeDismissed?: boolean;
 }
 
+/** How a recipient's open tabs are told that their Inbox changed. */
+export type NotificationUpdatePublisher = (payload: {
+    change: NotificationChange;
+    recipientId: string;
+    eventId?: string;
+    occurredAt?: string;
+}) => void;
+
 export interface NotificationServiceOptions extends PushSubscriptionPolicyOptions {
     database?: Knex;
     now?: () => TimestampInput;
     generateId?: () => string;
+    /**
+     * Announces receipts closed by a pull request's lifecycle.
+     *
+     * Those dismissals happen in the webhook process, with no request behind
+     * them, so without this an Inbox showing the card has nothing to learn from
+     * — it stopped polling. The shared instance publishes through Redis; a
+     * service constructed without this stays silent.
+     */
+    publishNotificationUpdate?: NotificationUpdatePublisher;
 }
 
 export interface SystemFailureTransitionInput {
@@ -115,6 +134,22 @@ export interface SystemFailureTransitionInput {
 export interface SystemFailureTransitionResult {
     accepted: boolean;
     event: NotificationEvent<'system_failure'> | null;
+    /**
+     * Active Inbox receipts this transition dismissed.
+     *
+     * A component recovering dismisses its failure cards without creating a
+     * replacement, so this count is the only evidence a caller has that an open
+     * Inbox somewhere is now showing a card the server already cleaned up.
+     */
+    dismissed?: number;
+    /**
+     * Whether `event` is new rather than the card this component already had.
+     *
+     * A component that stays unhealthy re-persists the same deduplication key
+     * on every health snapshot, so `event` alone cannot tell a caller whether
+     * anything an Inbox shows actually changed.
+     */
+    created?: boolean;
 }
 
 export interface NotificationSourceActivityIdentity {
@@ -335,12 +370,14 @@ export class NotificationService {
     private readonly database: Knex;
     private readonly now: () => TimestampInput;
     private readonly generateId: () => string;
+    private readonly publishNotificationUpdate: NotificationUpdatePublisher;
     private readonly pushSubscriptions: PushSubscriptionService;
 
     constructor(options: NotificationServiceOptions = {}) {
         this.database = options.database ?? db;
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
+        this.publishNotificationUpdate = options.publishNotificationUpdate ?? (() => undefined);
         this.pushSubscriptions = new PushSubscriptionService({
             ...options,
             database: this.database,
@@ -528,7 +565,7 @@ export class NotificationService {
                 .where({ component: input.component })
                 .first();
             if (existing && snapshotAt < existing.last_snapshot_at) {
-                return { accepted: false, event: null };
+                return { accepted: false, event: null, dismissed: 0, created: false };
             }
             if (initializing) {
                 return this.reconcileInitialSystemFailureReceipts(
@@ -540,6 +577,9 @@ export class NotificationService {
             }
 
             const continuingFailure = isContinuingSystemFailure(existing, input);
+            // Receipts dismissed by this commit, so the caller can tell the
+            // recipients' open Inboxes that a card disappeared server-side.
+            let dismissed = 0;
             const failureStartedAt = input.healthy
                 ? null
                 : continuingFailure ? existing.failure_started_at : snapshotAt;
@@ -566,7 +606,7 @@ export class NotificationService {
                     existing.failure_status,
                     existing.failure_started_at as ISO8601Timestamp
                 );
-                await this.dismissReceiptQuery(
+                dismissed += await this.dismissReceiptQuery(
                     transaction('notification_events')
                         .select('event_id')
                         .where({ deduplication_key: superseded.deduplicationKey }),
@@ -575,7 +615,7 @@ export class NotificationService {
             }
 
             if (input.healthy || failureStartedAt === null) {
-                return { accepted: true, event: null };
+                return { accepted: true, event: null, dismissed, created: false };
             }
             const event = this.prepareNotificationEvent(await input.eventFor(
                 input.status,
@@ -587,7 +627,11 @@ export class NotificationService {
                     transaction,
                     event,
                     normalizedRecipients
-                )
+                ),
+                dismissed,
+                // A continuing failure re-persists the card this component
+                // already had; only a replaced one is news.
+                created: !continuingFailure
             };
         });
     }
@@ -601,22 +645,28 @@ export class NotificationService {
         let priorEvents = this.matchingTargetEvents(['system_failure'], transaction)
             .whereRaw("json_extract(event.target_json, '$.component') = ?", [input.component]);
         if (input.healthy) {
-            await this.dismissReceiptQuery(priorEvents, transaction);
-            return { accepted: true, event: null };
+            return {
+                accepted: true,
+                event: null,
+                dismissed: await this.dismissReceiptQuery(priorEvents, transaction),
+                created: false
+            };
         }
         const eventInput = await input.eventFor(input.status, failureStartedAt);
         const currentEvent = this.prepareNotificationEvent(eventInput);
         priorEvents = priorEvents.whereNot({
             'event.deduplication_key': currentEvent.deduplicationKey
         });
-        await this.dismissReceiptQuery(priorEvents, transaction);
+        const dismissed = await this.dismissReceiptQuery(priorEvents, transaction);
         return {
             accepted: true,
             event: await this.persistNotificationEvent(
                 transaction,
                 currentEvent,
                 normalizedRecipients
-            )
+            ),
+            dismissed,
+            created: true
         };
     }
 
@@ -914,11 +964,14 @@ export class NotificationService {
         prNumber: number
     ): Promise<number> {
         this.assertPullRequestIdentity(repository, prNumber);
-        return this.dismissReceiptQuery(
-            this.matchingTargetEvents(['task', 'review', 'pull_request'])
-                .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
-                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber])
-        );
+        const pullRequestEvents = () => this
+            .matchingTargetEvents(['task', 'review', 'pull_request'])
+            .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
+            .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]);
+        const receipts = await this.activeReceiptsFor(pullRequestEvents());
+        const dismissed = await this.dismissReceiptQuery(pullRequestEvents());
+        this.announceDismissedReceipts(receipts);
+        return dismissed;
     }
 
     /** Persist a merged marker and close all existing PR receipts atomically. */
@@ -930,7 +983,11 @@ export class NotificationService {
         this.assertPullRequestIdentity(repository, prNumber);
         const normalizedMergedAt = normalizeISO8601Timestamp(mergedAt);
 
-        return this.database.transaction(async transaction => {
+        // Announced after the transaction commits, never before: the Inbox
+        // re-reads on this event, so an announcement that outran a rollback
+        // would tell it to read the state it already had.
+        let receipts: Array<{ user_id: string; event_id: string }> = [];
+        const dismissed = await this.database.transaction(async transaction => {
             await transaction('notification_pull_request_state')
                 .insert({
                     repository,
@@ -939,16 +996,17 @@ export class NotificationService {
                 })
                 .onConflict(['repository', 'pr_number'])
                 .merge({ merged_at: normalizedMergedAt });
-            return this.dismissReceiptQuery(
-                this.matchingTargetEvents(
-                    ['task', 'review', 'pull_request'],
-                    transaction
-                )
-                    .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
-                    .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]),
+            const mergedPullRequestEvents = () => this.matchingTargetEvents(
+                ['task', 'review', 'pull_request'],
                 transaction
-            );
+            )
+                .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
+                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]);
+            receipts = await this.activeReceiptsFor(mergedPullRequestEvents(), transaction);
+            return this.dismissReceiptQuery(mergedPullRequestEvents(), transaction);
         });
+        this.announceDismissedReceipts(receipts);
+        return dismissed;
     }
 
     /** Keep only the newest PR-attention event visible for a repository/PR. */
@@ -1221,6 +1279,52 @@ export class NotificationService {
             .whereIn('event.kind', kinds);
     }
 
+    /** Active Inbox receipts the given event query still covers. */
+    private async activeReceiptsFor(
+        eventIds: Knex.QueryBuilder,
+        database: Database = this.database
+    ): Promise<Array<{ user_id: string; event_id: string }>> {
+        return database('notification_user_states')
+            .where({ inbox_enabled: true })
+            .whereNull('dismissed_at')
+            .whereIn('event_id', eventIds)
+            .select('user_id', 'event_id') as Promise<Array<{
+                user_id: string; event_id: string;
+            }>>;
+    }
+
+    /**
+     * Tells each recipient that cards disappeared from their Inbox.
+     *
+     * Called only once the dismissal has committed, and once per recipient: a
+     * pull request closing several of someone's cards still costs that Inbox a
+     * single re-read, and naming the notification only helps when there is
+     * exactly one to name.
+     */
+    private announceDismissedReceipts(
+        receipts: readonly { user_id: string; event_id: string }[]
+    ): void {
+        const eventIdsByRecipient = new Map<string, string[]>();
+        for (const receipt of receipts) {
+            const eventIds = eventIdsByRecipient.get(receipt.user_id) ?? [];
+            eventIds.push(receipt.event_id);
+            eventIdsByRecipient.set(receipt.user_id, eventIds);
+        }
+        const occurredAt = normalizeISO8601Timestamp(this.now());
+        for (const [recipientId, eventIds] of eventIdsByRecipient) {
+            try {
+                this.publishNotificationUpdate({
+                    change: 'dismissed',
+                    recipientId,
+                    ...(eventIds.length === 1 ? { eventId: eventIds[0] } : {}),
+                    occurredAt
+                });
+            } catch {
+                // Freshness only; the dismissal is already durable.
+            }
+        }
+    }
+
     private async dismissReceiptQuery(
         eventIds: Knex.QueryBuilder,
         database: Database = this.database
@@ -1297,7 +1401,9 @@ export {
     PushSubscriptionRateLimitError
 };
 
-export const notificationService = new NotificationService();
+export const notificationService = new NotificationService({
+    publishNotificationUpdate: publishNotificationUpdateThroughRedis
+});
 
 export const createNotificationEvent = notificationService.createNotificationEvent
     .bind(notificationService) as NotificationService['createNotificationEvent'];

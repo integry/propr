@@ -35,6 +35,8 @@ import { up as addPullRequestState } from '../src/db/migrations/20260829010000_a
 
 let database: Knex;
 let service: NotificationService;
+/** Everything the service told recipients' open Inboxes, in order. */
+let published: Array<{ change: string; recipientId: string; eventId?: string }>;
 let clock = Date.parse('2026-08-02T10:00:00.000Z');
 
 function generatedP256dhKey(privateKeyValue: number): string {
@@ -100,11 +102,13 @@ beforeEach(async () => {
     await addAdvertisedActions(database);
     await addSystemFailureState(database);
     await addPullRequestState(database);
+    published = [];
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
         generateId: () => 'generated-event',
-        allowInsecureLocalhost: false
+        allowInsecureLocalhost: false,
+        publishNotificationUpdate: payload => { published.push(payload); }
     });
 });
 
@@ -385,6 +389,67 @@ describe('notification service', { concurrency: false }, () => {
                 .then(row => Number(row?.count)),
             3,
             'immutable event audit rows remain'
+        );
+    });
+
+    test('tells each recipient when a closed pull request clears their cards', async () => {
+        await service.createNotificationEvent({
+            eventId: 'pr-attention-event',
+            deduplicationKey: 'pr-attention-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+            title: 'Pull request needs attention',
+            body: 'PR needs attention.',
+            recipients: ['user-a', 'user-b']
+        });
+        published.length = 0;
+
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 2);
+
+        assert.deepEqual(
+            published.map(payload => ({ ...payload, occurredAt: undefined })).sort(
+                (a, b) => a.recipientId.localeCompare(b.recipientId)
+            ),
+            [
+                { change: 'dismissed', recipientId: 'user-a', eventId: 'pr-attention-event', occurredAt: undefined },
+                { change: 'dismissed', recipientId: 'user-b', eventId: 'pr-attention-event', occurredAt: undefined }
+            ]
+        );
+
+        // A second close finds nothing active, so it has nothing to announce.
+        published.length = 0;
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 0);
+        assert.deepEqual(published, []);
+    });
+
+    test('announces a merged pull request once per recipient, after it commits', async () => {
+        for (const eventId of ['pr-task-event', 'pr-attention-event']) {
+            await service.createNotificationEvent({
+                eventId,
+                deduplicationKey: `${eventId}-key`,
+                kind: 'pull_request',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'Pull request needs attention',
+                body: 'PR needs attention.',
+                recipients: ['user-a']
+            });
+        }
+        published.length = 0;
+
+        assert.equal(
+            await service.markPullRequestMergedAndDismissNotifications('integry/propr', 42),
+            2
+        );
+
+        // Two cards, one Inbox, one re-read - and no id to name because the
+        // recipient lost more than one card.
+        assert.equal(published.length, 1);
+        assert.equal(published[0].change, 'dismissed');
+        assert.equal(published[0].recipientId, 'user-a');
+        assert.equal(published[0].eventId, undefined);
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            []
         );
     });
 

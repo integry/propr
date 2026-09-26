@@ -336,6 +336,34 @@ describe('Inbox page', () => {
     expect(listNotifications).toHaveBeenCalledTimes(2);
   });
 
+  test('re-reads when another tab dismisses a notification this client only read', async () => {
+    const notification = item('event-1', 'System component unhealthy: redis', null, {
+      kind: 'system_failure',
+      target: { type: 'system_failure', component: 'redis' },
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [notification], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    vi.mocked(markNotificationRead).mockResolvedValue({ notification, unreadCount: 0 });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: /System/ }));
+    fireEvent.click(screen.getByRole('button', {
+      name: /System component unhealthy: redis/, expanded: false,
+    }));
+    await waitFor(() => expect(markNotificationRead).toHaveBeenCalledWith('event-1'));
+    expect(listNotifications).toHaveBeenCalledTimes(1);
+
+    // Marking it read here says nothing about someone else dismissing it: only
+    // the echo of our own read may be ignored.
+    await pushNotificationUpdate('dismissed', 'event-1');
+
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(
+      screen.queryByText('System component unhealthy: redis'),
+    ).not.toBeInTheDocument());
+  });
+
   test('re-reads for a change to a notification this client did not touch', async () => {
     const mine = item('event-mine', 'Dismissed here', null, { actions: ['dismiss'] });
     const theirs = item('event-theirs', 'Dismissed elsewhere', null, {

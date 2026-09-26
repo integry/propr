@@ -302,7 +302,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     if (isDemoMode || dismissingRef.current.has(id)) return;
     const clearEpoch = clearEpochRef.current;
     mutationEpochRef.current += 1;
-    markLocallyMutated(id);
+    markLocallyMutated(id, 'dismissed');
     dismissingRef.current.add(id);
     hiddenIdsRef.current.add(id);
     const removed = notificationsRef.current.find(notification => notification.id === id);
@@ -377,7 +377,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     const current = notificationsRef.current.find(notification => notification.id === id);
     if (isDemoMode || !current || current.readAt !== null) return;
     mutationEpochRef.current += 1;
-    markLocallyMutated(id);
+    markLocallyMutated(id, 'read');
     const clearEpoch = clearEpochRef.current;
     const priorUnreadCount = unreadCount;
     const optimistic = { ...current, readAt: current.createdAt };

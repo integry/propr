@@ -108,6 +108,27 @@ optimistic dismissals must not be undone by a pushed refresh:
 Do not add a `setInterval` that fetches. If a surface needs to know about a
 change, publish an event for it.
 
+### Where The Producers Live
+
+A surface that stopped polling is only as fresh as its producer, so every event
+above has one:
+
+- `notification:update` is published by `packages/api/routes/notificationRoutes.ts`
+  for a read, dismissal or bulk clear, and — for the changes no request causes —
+  by `packages/api/services/notificationProjectionService.ts` (a notification the
+  projection creates, and the receipts its cleanup dismisses once a stalled or
+  failed activity resolves) and by `NotificationService` itself when a pull
+  request is merged or closed and its cards are cleared. Those producers run
+  outside the process that owns the websocket, so they publish through Redis
+  (`publishNotificationUpdateThroughRedis`) and the socket service relays the
+  event to the recipient's room.
+- `usage:update` is published when Agent Tank settings are saved, when a manual
+  re-probe succeeds, and by `packages/api/services/agentTankUsageWatcher.ts`.
+  Agent Tank cannot call us, so that watcher is the one timer left in the
+  system: the API probes it for the whole instance — only while a client is
+  connected — and publishes only when the snapshot actually moved. One backend
+  probe replaces the same poll in every open tab.
+
 ## Running The UI In Development
 
 1. Start the ProPR backend services you need for local development.
