@@ -1,8 +1,19 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MonitoredRepo } from '../api/proprApi';
+import type { RepoWorkflow } from '../api/proprTypes';
+import { clearRepoWorkflowsCache } from '../hooks/useRepoWorkflows';
 import { RepositorySettingsBar } from './RepositorySettingsBar';
+
+const getRepoWorkflows = vi.hoisted(() => vi.fn());
+vi.mock('../api/proprApi', async (importOriginal) => ({ ...await importOriginal<object>(), getRepoWorkflows }));
+
+beforeEach(() => {
+  clearRepoWorkflowsCache();
+  getRepoWorkflows.mockReset();
+  getRepoWorkflows.mockResolvedValue({ workflows: [] });
+});
 
 const repo: MonitoredRepo = {
   id: 'repo-1',
@@ -133,5 +144,94 @@ describe('RepositorySettingsBar follow-up CI cancellation', () => {
 
     expect(screen.queryByRole('checkbox', { name: controlName })).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: workflowsName })).not.toBeInTheDocument();
+  });
+});
+
+const workflow = (id: number, name: string, file: string, triggers: string[] | null): RepoWorkflow => ({
+  id, name, file, path: `.github/workflows/${file}`, triggers,
+  pullRequest: triggers ? triggers.some(event => event === 'pull_request' || event === 'pull_request_target') : null,
+});
+const detected = [
+  workflow(1, 'Build & Lint Check', 'pr-build-check.yml', ['pull_request']),
+  workflow(2, 'Full Test Suite', 'pr-test-on-label.yml', ['pull_request', 'workflow_dispatch']),
+  workflow(3, 'Docker Images', 'docker-images.yml', ['push']),
+];
+
+describe('RepositorySettingsBar detected workflows', () => {
+  it('offers the repository workflows and matches stored entries by any identity', async () => {
+    getRepoWorkflows.mockResolvedValue({ workflows: detected });
+    renderBar({ cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['Full Test Suite'] });
+
+    const fullSuite = await screen.findByRole('checkbox', { name: /Full Test Suite/ });
+    expect(getRepoWorkflows).toHaveBeenCalledWith('integry', 'propr');
+    expect(fullSuite).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /Build & Lint Check/ })).not.toBeChecked();
+    // Only pull request runs are cancelled, so a push-only workflow cannot be picked.
+    expect(screen.getByRole('checkbox', { name: /Docker Images/ })).toBeDisabled();
+  });
+
+  it('stores a picked workflow by file name and removes every spelling of an unpicked one', async () => {
+    getRepoWorkflows.mockResolvedValue({ workflows: detected });
+    const { onUpdateCancelCiWorkflows } = renderBar({ cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['Full Test Suite'] });
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Build & Lint Check/ }));
+    expect(onUpdateCancelCiWorkflows).toHaveBeenLastCalledWith('repo-1', ['Full Test Suite', 'pr-build-check.yml']);
+    expect(screen.getByRole('textbox', { name: workflowsName })).toHaveValue('Full Test Suite, pr-build-check.yml');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Full Test Suite/ }));
+    expect(onUpdateCancelCiWorkflows).toHaveBeenLastCalledWith('repo-1', ['pr-build-check.yml']);
+  });
+
+  it('flags stored entries that match no workflow in the repository', async () => {
+    getRepoWorkflows.mockResolvedValue({ workflows: detected });
+    renderBar({ cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['pr-build-check.yml', 'ci.yml'] });
+
+    expect(await screen.findByText(/Not found in this repository, so never cancelled: ci\.yml\./)).toBeInTheDocument();
+  });
+
+  it('flags a stored selection only after an empty listing successfully loads', async () => {
+    let resolveListing!: (response: { workflows: RepoWorkflow[] }) => void;
+    getRepoWorkflows.mockReturnValue(new Promise(resolve => { resolveListing = resolve; }));
+    const { onUpdateCancelCiWorkflows } = renderBar({
+      cancelCiDuringFollowup: true,
+      cancelCiDuringFollowupWorkflows: ['ci.yml'],
+    });
+
+    expect(screen.getByText('Loading workflows from GitHub…')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await act(async () => { resolveListing({ workflows: [] }); });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Not found in this repository, so never cancelled: ci.yml. Remove or correct it below.',
+    );
+    expect(screen.queryByText('Loading workflows from GitHub…')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: workflowsName })).toHaveValue('ci.yml');
+    expect(onUpdateCancelCiWorkflows).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: workflowsName }), { target: { value: '' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not flag an empty selection after an empty listing successfully loads', async () => {
+    renderBar({ cancelCiDuringFollowup: true });
+    await waitFor(() => expect(screen.queryByText('Loading workflows from GitHub…')).not.toBeInTheDocument());
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Workflows in integry/propr' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to typing workflows when GitHub cannot list them', async () => {
+    getRepoWorkflows.mockRejectedValue(new Error('offline'));
+    renderBar({ cancelCiDuringFollowup: true, cancelCiDuringFollowupWorkflows: ['ci.yml'] });
+
+    expect(await screen.findByText(/Could not load this repository's workflows from GitHub/)).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: workflowsName })).toHaveValue('ci.yml');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not ask GitHub for workflows while the option is off', () => {
+    renderBar();
+    expect(getRepoWorkflows).not.toHaveBeenCalled();
   });
 });

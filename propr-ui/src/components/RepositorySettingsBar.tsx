@@ -1,4 +1,5 @@
-import { formatWorkflowInput, parseWorkflowInput } from './workflowSelectionInput';
+import { formatWorkflowInput, parseWorkflowInput, toggleWorkflowSelection, workflowMatchesEntry } from './workflowSelectionInput';
+import { useRepoWorkflows, type RepoWorkflowsState } from '../hooks/useRepoWorkflows';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { Link } from 'react-router-dom';
 import React, { useEffect, useState } from 'react';
@@ -39,6 +40,64 @@ const AutoCiFollowupControl: React.FC<{
   );
 };
 
+const DetectedWorkflows: React.FC<{
+  repoName: string;
+  state: RepoWorkflowsState;
+  selection: string[];
+  onChange: (selection: string[]) => void;
+}> = ({ repoName, state, selection, onChange }) => {
+  if (state.status === 'loading' && state.workflows.length === 0) {
+    return <p role="status" className="text-slate-500">Loading workflows from GitHub…</p>;
+  }
+  if (state.status === 'error') {
+    return <p role="status" className="text-slate-500">Could not load this repository&apos;s workflows from GitHub. Enter them below instead.</p>;
+  }
+  if (state.status !== 'loaded') return null;
+
+  const unmatched = selection.filter(entry => !state.workflows.some(workflow => workflowMatchesEntry(workflow, entry)));
+  if (state.workflows.length === 0 && unmatched.length === 0) return null;
+  return (
+    <fieldset className="min-w-0">
+      <legend className="mb-1">Workflows in {repoName}</legend>
+      <ul className="flex flex-col gap-1" aria-label={`Workflows in ${repoName}`}>
+        {state.workflows.map(workflow => {
+          const checked = selection.some(entry => workflowMatchesEntry(workflow, entry));
+          // Only pull request runs are ever cancelled, so a workflow that never runs for one cannot be newly selected.
+          const inert = workflow.pullRequest === false && !checked;
+          return (
+            <li key={workflow.id}>
+              <label className={`flex min-w-0 items-start gap-2 ${inert ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-teal-600"
+                  checked={checked}
+                  disabled={inert}
+                  onChange={(event) => onChange(toggleWorkflowSelection(selection, workflow, event.target.checked))}
+                />
+                <span className="min-w-0">
+                  <span className="block text-slate-700">{workflow.name}</span>
+                  <span className="block break-all text-slate-500">
+                    <code>{workflow.file}</code>
+                    {' · '}
+                    {workflow.triggers === null ? 'triggers unknown'
+                      : workflow.pullRequest ? `runs on ${workflow.triggers.join(', ')}`
+                        : `does not run on pull requests (${workflow.triggers.join(', ') || 'no triggers'})`}
+                  </span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {unmatched.length > 0 && (
+        <p role="alert" className="mt-1 text-amber-700">
+          Not found in this repository, so never cancelled: {formatWorkflowInput(unmatched)}. Remove or correct {unmatched.length === 1 ? 'it' : 'them'} below.
+        </p>
+      )}
+    </fieldset>
+  );
+};
+
 const CancelCiDuringFollowupControl: React.FC<{
   repo: MonitoredRepo;
   onToggle: (repoId: string) => void;
@@ -53,9 +112,11 @@ const CancelCiDuringFollowupControl: React.FC<{
 
   useEffect(() => setWorkflows(storedSelection), [repo.id, storedSelection]);
 
+  const enabled = repo.cancelCiDuringFollowup === true;
+  const detected = useRepoWorkflows(repo.name, enabled && !isReadOnly);
+
   if (isReadOnly) return null;
 
-  const enabled = repo.cancelCiDuringFollowup === true;
   const commitWorkflows = () => {
     if (workflows === storedSelection) return;
     const next = parseWorkflowInput(workflows);
@@ -85,6 +146,12 @@ const CancelCiDuringFollowupControl: React.FC<{
 
       {enabled && (
         <div className="ml-4 mt-1 mb-2 flex min-w-0 flex-col items-stretch gap-1 border-l-2 border-slate-200 pl-4">
+          <DetectedWorkflows
+            repoName={repo.name}
+            state={detected}
+            selection={parseWorkflowInput(workflows) ?? selected}
+            onChange={(next) => { setWorkflows(formatWorkflowInput(next)); onUpdateWorkflows(repo.id, next); }}
+          />
           <label className="block w-full min-w-0">
             <span className="mb-1 block">Validation workflows to cancel</span>
             <textarea

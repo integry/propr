@@ -151,6 +151,20 @@ export interface RepoBranchesResponse {
   defaultBranch: string;
 }
 
+export interface RepoWorkflow {
+  id: number;
+  name: string;
+  path: string;
+  file: string;
+  /** Events from the workflow file's `on:` key; null when GitHub did not return a readable file. */
+  triggers: string[] | null;
+  pullRequest: boolean | null;
+}
+
+export interface RepoWorkflowsResponse {
+  workflows: RepoWorkflow[];
+}
+
 export interface StopExecutionResponse {
   success: boolean;
   containerStopped: boolean;
