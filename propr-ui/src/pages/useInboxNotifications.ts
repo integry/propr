@@ -1,3 +1,4 @@
+import { useLiveInvalidation } from '../hooks/useLiveInvalidation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Notification } from '@propr/shared';
 import {
@@ -207,7 +208,6 @@ export function useInboxNotifications(): InboxNotificationsState {
   }, [commitUnreadCount, hasVisibleActivity, reconcileIncoming]);
 
   useEffect(() => {
-    void loadFirstPage('initial');
     return () => { requestGenerationRef.current += 1; };
   }, [loadFirstPage]);
 
@@ -224,20 +224,14 @@ export function useInboxNotifications(): InboxNotificationsState {
 
   const refresh = useCallback(() => loadFirstPage('refresh'), [loadFirstPage]);
 
-  useEffect(() => {
-    const refreshWhenVisible = () => {
-      if (document.visibilityState !== 'visible' || !navigator.onLine || clearingRef.current) return;
-      void loadFirstPage('background');
-    };
-    const interval = window.setInterval(refreshWhenVisible, AUTO_REFRESH_INTERVAL_MS);
-    window.addEventListener('focus', refreshWhenVisible);
-    document.addEventListener('visibilitychange', refreshWhenVisible);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshWhenVisible);
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
-    };
-  }, [loadFirstPage]);
+  const schedule = useLiveInvalidation({
+    refresh: () => {
+      if (!navigator.onLine || clearingRef.current) return;
+      return loadFirstPage(initialLoading ? 'initial' : 'background');
+    },
+    scopeKey: 'inbox', interest: { domains: [], notifications: true },
+    fallbackPollMs: AUTO_REFRESH_INTERVAL_MS,
+  });
 
   const loadMore = useCallback(async () => {
     if (!nextCursor || loadingMore || refreshing || initialLoading) return;
@@ -372,10 +366,11 @@ export function useInboxNotifications(): InboxNotificationsState {
     } finally {
       mutationEpochRef.current += 1;
       clearingRef.current = false;
+      schedule();
       if (mountedRef.current) setClearing(false);
       void refreshUnreadCount().catch(() => undefined);
     }
-  }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount]);
+  }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount, schedule]);
 
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);

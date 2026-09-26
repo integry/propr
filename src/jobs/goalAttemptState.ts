@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import { db, publishGoalTransition, type GoalExecutionControl, type GoalJobData } from '@propr/core';
+import { getEventPublisher, db, publishGoalTransition, type GoalExecutionControl, type GoalJobData } from '@propr/core';
 import type { GoalArtifact } from '@propr/core';
 import { publishDirectGoalCheckpoint, rejectDirectGoalCheckpoint } from './goalCheckpointPublisher.js';
 
@@ -78,7 +78,11 @@ export async function fencedGoal(job: GoalJobData): Promise<GoalRow | null> {
 }
 
 export async function fencedGoalUpdate(job: GoalJobData, values: Record<string, unknown>): Promise<boolean> {
-    return await attemptWhere(db('goals'), job).update({ ...values, updated_at: db.fn.now() }) === 1;
+    const changed = await attemptWhere(db('goals'), job).update({ ...values, updated_at: db.fn.now() }) === 1;
+    if (changed && Object.keys(values).some(key => key !== 'attempt_heartbeat_at')) {
+        void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    }
+    return changed;
 }
 
 export function assertProviderIdentityMatches(
@@ -99,7 +103,7 @@ export async function saveFencedGoalSession(
     sessionId: string,
     conversationId?: string,
 ): Promise<boolean> {
-    return db.transaction(async trx => {
+    const changed = await db.transaction(async trx => {
         const existing = await attemptWhere(trx<GoalRow>('goals'), job)
             .first('session_id', 'conversation_id');
         if (!existing) return false;
@@ -111,6 +115,8 @@ export async function saveFencedGoalSession(
             updated_at: trx.fn.now(),
         }) === 1;
     });
+    if (changed) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    return changed;
 }
 
 export function createGoalExecutionControl(job: GoalJobData): GoalExecutionControl {
@@ -160,6 +166,7 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                     updated_at: trx.fn.now(),
                 });
             });
+            void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
         },
         async markInputUndeliverable(inputId, reason) {
             await db.transaction(async trx => {
@@ -183,6 +190,7 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                     updated_at: trx.fn.now(),
                 });
             });
+            void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
         },
         async publishCheckpoint(request, turnId) {
             const published = await publishDirectGoalCheckpoint(job, {

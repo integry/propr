@@ -6,6 +6,7 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
+  getEventPublisher,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   GOAL_LAUNCH_STRATEGIES,
@@ -18,6 +19,7 @@ import {
   nativeGoalPromptValidationError,
   generateGoalTitle,
   getAuthenticatedOctokit,
+  goalActivityState,
   publishGoalActivity,
   publishGoalTransition,
   goalTitleFallback,
@@ -264,9 +266,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
    * transition first.
    *
    * Published from the handler that persisted the change rather than from a
-   * sweep, and only when the observable state actually moved: an idempotent
-   * retry or a control write that just bumps a generation must not wake every
-   * open Goals console. The publish never throws, so a Redis outage degrades to
+   * sweep. Lifecycle transitions carry their normalized state; other control
+   * changes invalidate the projection so inputs and model changes appear too.
+   * Idempotent requests return before this helper. A Redis outage degrades to
    * the polling clients already fall back on instead of failing the mutation
    * that has already committed.
    */
@@ -275,7 +277,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     previous: GoalRow | undefined,
     updated: GoalRow,
   ): Promise<void> => {
-    await publishGoalTransition({ previous, next: updated });
+    if (previous && goalActivityState(previous) === goalActivityState(updated)) {
+      // Input and model changes still refresh the projection without announcing
+      // a lifecycle transition that did not happen.
+      await getEventPublisher().publishGoalUpdate({ goalId: updated.goal_id, repository: updated.repository });
+    } else {
+      await publishGoalTransition({ previous, next: updated });
+    }
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated) });
   };
 
@@ -512,6 +520,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         }
         throw error;
       }
+      const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
+      // Announce the durable creation even if queueing needs recovery.
+      await publishGoalActivity(inserted);
       const data: GoalJobData = {
         goalId, taskId, repoOwner, repoName, generation: 0, claimId,
         input: initialPrompt,
@@ -524,10 +535,6 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
           goalId,
         });
       }
-      const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
-      // A brand new goal has no prior state to compare against: announce it
-      // unconditionally so a console sees the queued goal without polling.
-      await publishGoalActivity(inserted);
       res.status(201).json({ goal: await serializeGoal(deps.db, deps.redisClient, inserted) });
     } finally {
       if (!attachmentsPersisted) await deleteGoalAttachments(attachments);
@@ -826,6 +833,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     await deleteGoalAttachmentDirectory(row.goal_id).catch(error => {
       logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal attachments');
     });
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository, ownerId: row.owner_id });
     res.status(204).send();
   };
 

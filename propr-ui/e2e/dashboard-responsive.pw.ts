@@ -245,7 +245,7 @@ test('the wide layout keeps live work in the main column and the supporting pane
   await capture(page, 'dashboard-responsive-1440');
 });
 
-test('the wide layout spends no row on a page bar: the filter sits left of search and both columns hang off the global header', async ({ page }) => {
+test('the wide layout spends no row on a page bar: the filter sits right of search and both columns hang off the global header', async ({ page }) => {
   await openDashboard(page, 1440);
 
   await expect(page.getByTestId('dashboard-scope-bar')).toBeHidden();
@@ -259,18 +259,19 @@ test('the wide layout spends no row on a page bar: the filter sits left of searc
       headerMiddle: Math.round(header.top + header.height / 2),
       headerBottom: Math.round(header.bottom),
       filterMiddle: Math.round(filter.top + filter.height / 2),
-      filterRight: Math.round(filter.right),
-      searchLeft: Math.round(search.left),
+      filterLeft: Math.round(filter.left),
+      searchRight: Math.round(search.right),
       running: Math.round(rect('[data-testid="happening-now-section"]').top),
       attention: Math.round(rect('[data-testid="needs-attention-panel"]').top),
     };
   });
 
   // The filter is in the global toolbar, on its center line, immediately
-  // left of search with nothing between them.
+  // right of search with nothing between them: search leads the bar as the
+  // toolbar's primary input, and the scope control sits beside what it scopes.
   expect(Math.abs(geometry.filterMiddle - geometry.headerMiddle)).toBeLessThanOrEqual(1);
-  expect(geometry.searchLeft - geometry.filterRight).toBeGreaterThan(0);
-  expect(geometry.searchLeft - geometry.filterRight).toBeLessThanOrEqual(8);
+  expect(geometry.filterLeft - geometry.searchRight).toBeGreaterThan(0);
+  expect(geometry.filterLeft - geometry.searchRight).toBeLessThanOrEqual(8);
   // Both columns start on the global header's own rule.
   expect(geometry.running).toBe(geometry.headerBottom);
   expect(geometry.attention).toBe(geometry.headerBottom);

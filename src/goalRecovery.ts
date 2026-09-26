@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import type { GoalJobData } from '@propr/core';
 import {
     db,
+    getEventPublisher,
     executeDockerCommand,
     getIssueQueue,
     getStateManager,
@@ -329,6 +330,7 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (confirmed !== 1) return 'unchanged';
+        void getEventPublisher().publishGoalUpdate({ goalId: goal.goal_id });
         return goal.resume_requested
             ? await recoverClaimedAttempt(database, queue, { ...goal, pause_confirmed_at: new Date().toISOString() }) ? 'recovered' : 'unchanged'
             : 'recovered';

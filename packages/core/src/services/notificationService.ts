@@ -385,7 +385,7 @@ export class NotificationService {
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
         this.publishUpdate = options.publishUpdate
-            ?? (payload => getEventPublisher().publishNotificationUpdate(payload));
+            ?? (async payload => { await getEventPublisher().publishNotificationUpdate(payload); });
         this.pushSubscriptions = new PushSubscriptionService({
             ...options,
             database: this.database,

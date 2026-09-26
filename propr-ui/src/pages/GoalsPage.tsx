@@ -27,6 +27,7 @@ import { RepositorySelector, type RepoOption } from '../components/RepositorySel
 import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { RepositoryChip } from '../components/ui/RepositoryChip';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useLiveResource } from '../hooks/useLiveResource';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { getModelDisplayName } from '../utils/modelDisplay';
 import { GoalAttachmentInput } from '../components/Goals/GoalAttachmentInput';
@@ -664,13 +665,7 @@ function GoalList() {
   const navigate = useNavigate();
   const newGoalButtonRef = useRef<HTMLButtonElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [hasSuccessfulRead, setHasSuccessfulRead] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-  const requestGenerationRef = useRef(0);
   const repositoryFilter = searchParams.get('repository') || 'all';
   const statusFilter = searchParams.get('status') || 'all';
   const urlSearch = searchParams.get('search') || '';
@@ -683,34 +678,30 @@ function GoalList() {
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete('new'); return next; }, { replace: true });
   }, [searchParams, setSearchParams]);
   useDocumentTitle('Goals');
-  const refresh = useCallback(async (initial = false) => {
-    const generation = ++requestGenerationRef.current;
-    if (initial) setInitialLoading(true);
-    else setRefreshing(true);
-    setError(null);
-    try {
-      const data = await listGoals();
-      if (generation !== requestGenerationRef.current) return;
-      setGoals(data.goals);
-      setHasSuccessfulRead(true);
-    } catch (err) {
-      if (generation !== requestGenerationRef.current) return;
-      setError((err as Error).message);
-    } finally {
-      if (generation === requestGenerationRef.current) {
-        setInitialLoading(false);
-        setRefreshing(false);
-      }
-    }
-  }, []);
-  useEffect(() => {
-    void refresh(true);
-    const timer = window.setInterval(() => { void refresh(); }, 10_000);
-    return () => {
-      requestGenerationRef.current += 1;
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+  /*
+    The queue refreshes because a goal changed, not because a timer fired.
+
+    A goal can run for hours, and its state was only observable by reading it
+    back, so the console polled every ten seconds for the whole run. `goal:update`
+    is published from the transition itself, so a pause, a block or a completion
+    arrives immediately, and task activity covers the progress in between. The
+    hook keeps the last known goals on screen if a refresh fails, does nothing
+    while the tab is hidden, and falls back to interval polling only while the
+    websocket is unavailable — so an instance without a socket behaves as before.
+
+    The interest is not repository-scoped: the queue lists every repository and
+    filters client-side, and the "x of y" count is over all of them.
+  */
+  const goalsResource = useLiveResource({
+    read: signal => listGoals({ signal }),
+    scopeKey: 'goals',
+    interest: { domains: ['goal', 'task'], goals: true },
+  });
+  const goals = useMemo(() => goalsResource.data?.goals ?? [], [goalsResource.data]);
+  const hasSuccessfulRead = goalsResource.data !== null;
+  const initialLoading = goalsResource.loading;
+  const refreshing = goalsResource.refreshing;
+  const error = goalsResource.error;
   const repositoryOptions = useMemo<RepoOption[]>(() => {
     const counts = new Map<string, number>();
     goals.forEach(goal => counts.set(goal.repository, (counts.get(goal.repository) || 0) + 1));
@@ -869,16 +860,46 @@ function GoalDetails({ goalId }: { goalId: string }) {
   );
   useDocumentTitle(goal?.title || 'Goal');
 
-  const refresh = useCallback(async () => {
-    try {
-      const data = await getGoal(goalId); setGoal(data.goal);
-      if (models.length === 0) {
-        const capabilityData = await getGoalCapabilities();
-        setModels(capabilityData.agents.find(agent => agent.agentId === data.goal.agent.id)?.models || [data.goal.requestedModel]);
-      }
-    } catch (err) { setError((err as Error).message); }
-  }, [goalId, models.length]);
-  useEffect(() => { refresh(); const timer = window.setInterval(refresh, 5_000); return () => window.clearInterval(timer); }, [refresh]);
+  /*
+    The open goal follows its own transitions instead of a five-second timer.
+
+    `goal:update` carries the transition, and task activity for the goal's own
+    task carries the progress between transitions. Scoping the read by goal id
+    means navigating to another goal discards the previous goal's in-flight
+    request rather than letting it land on the new one.
+  */
+  const goalResource = useLiveResource({
+    read: signal => getGoal(goalId, { signal }),
+    scopeKey: `goal::${goalId}`,
+    interest: { domains: ['goal', 'task'], goals: true, repository: goal?.repository },
+  });
+  useEffect(() => {
+    // Another goal's data is not this goal's data, so the console says it is
+    // loading rather than showing the goal that was open a moment ago.
+    setGoal(null);
+    setError(null);
+  }, [goalId]);
+  useEffect(() => {
+    // The read is the source of truth; a mutation's own response is applied
+    // immediately for feedback and replaced by the next pushed read.
+    if (goalResource.data) setGoal(goalResource.data.goal);
+  }, [goalResource.data]);
+  const agentId = goalResource.data?.goal.agent.id;
+  const requestedModel = goalResource.data?.goal.requestedModel;
+  useEffect(() => {
+    // The model list belongs to the agent, not to the goal's current state, so
+    // it is read once rather than alongside every refresh of the goal.
+    if (!agentId || models.length > 0) return;
+    let active = true;
+    void getGoalCapabilities()
+      .then(capabilityData => {
+        if (!active) return;
+        const agentModels = capabilityData.agents.find(agent => agent.agentId === agentId)?.models;
+        setModels(agentModels || (requestedModel ? [requestedModel] : []));
+      })
+      .catch(err => { if (active) setError((err as Error).message); });
+    return () => { active = false; };
+  }, [agentId, models.length, requestedModel]);
   useEffect(() => {
     if (!goal?.finalPr?.number) {
       setVisualPreviews([]);
@@ -890,7 +911,12 @@ function GoalDetails({ goalId }: { goalId: string }) {
       .then(data => { if (active && !data.unavailable) setVisualPreviews(trustedPreviewMedia(data.previews, 8)); })
       .catch(() => { /* Keep the last successfully fetched GitHub previews. */ });
     void refreshPreviews();
-    const timer = window.setInterval(refreshPreviews, 30_000);
+    // Previews are published to GitHub by the run rather than by a state change,
+    // so this one keeps an interval — but a backgrounded tab issues no request.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshPreviews();
+    }, 30_000);
     return () => { active = false; window.clearInterval(timer); };
   }, [goal?.finalPr?.number, goalId]);
   const act = async (operation: () => Promise<{ goal: Goal }>) => { if (isDemoMode) return; setBusy(true); setError(null); try { setGoal((await operation()).goal); } catch (err) { setError((err as Error).message); } finally { setBusy(false); } };
@@ -914,7 +940,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
     () => tokenTotal(live.tokenUsage || null) || goal?.liveSummary.nativeGoal?.tokensUsed || 0,
     [goal?.liveSummary.nativeGoal?.tokensUsed, live.tokenUsage],
   );
-  if (!goal) return <div className="p-6 text-slate-600">{error || 'Loading goal…'}</div>;
+  if (!goal) return <div className="p-6 text-slate-600">{error || goalResource.error || 'Loading goal…'}</div>;
   const terminal = Boolean(goal.resultState);
   const cancelling = !terminal && goal.desiredState === 'cancelled';
   const mutable = !terminal && !cancelling;

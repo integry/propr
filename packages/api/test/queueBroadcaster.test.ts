@@ -27,7 +27,9 @@ test('queue broadcasts active goal jobs separately from the aggregate active cou
 
   await new QueueBroadcaster(io as never, queue as never).broadcastQueueStats();
 
-  assert.equal(emitted.length, 1);
+  assert.equal(emitted.length, 2);
+  assert.equal(emitted[1].event, 'activity:update');
+  assert.equal(emitted[1].room, 'activity:updates');
   assert.equal(emitted[0].room, 'queue:stats');
   assert.equal(emitted[0].event, QUEUE_STATS_UPDATE);
   assert.deepEqual((emitted[0].payload as { stats: unknown }).stats, {
@@ -44,7 +46,7 @@ test('queue broadcasts active goal jobs separately from the aggregate active cou
 test('queue periodic snapshots emit only when the aggregate changes', async () => {
   const emitted: unknown[] = [];
   const io = {
-    to: () => ({ emit: (_event: string, payload: unknown) => emitted.push(payload) }),
+    to: () => ({ emit: (event: string, payload: unknown) => { if (event === QUEUE_STATS_UPDATE) emitted.push(payload); } }),
   };
   let active = 1;
   const queue = {

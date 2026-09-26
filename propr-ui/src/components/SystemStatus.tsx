@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { getSystemStatus } from '../api/proprApi';
 import type { SystemAgentStatus } from '../api/proprTypes';
-import { useSocket } from '../contexts/useSocket';
+import { useLiveInvalidation } from '../hooks/useLiveInvalidation';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { Layers3 } from 'lucide-react';
@@ -23,7 +23,6 @@ interface SystemStatusData {
 }
 
 const SystemStatus: React.FC = () => {
-  const { isConnected } = useSocket();
   const [status, setStatus] = useState<SystemStatusData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +41,8 @@ const SystemStatus: React.FC = () => {
     }
   }, []);
 
-  // Fetch system status on mount and when WebSocket connection state changes
-  // This ensures we get fresh status when connectivity is restored
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus, isConnected]);
+  useLiveInvalidation({ refresh: fetchStatus, scopeKey: 'system-status',
+    interest: { domains: ['system'], usage: true } });
 
   if (loading && !status) {
     return <div className="text-gray-500">Loading System Status...</div>;

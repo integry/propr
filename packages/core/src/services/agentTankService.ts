@@ -1,3 +1,4 @@
+import { getEventPublisher } from '../utils/eventPublisher.js';
 import logger from '../utils/logger.js';
 import { loadAgentTankSettings } from '../config/configManager.js';
 import { observeAgentTankUsage } from './agentTankUsageEvents.js';
@@ -92,6 +93,7 @@ export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TI
         if (!response.ok) {
             throw new Error(`Agent Tank refresh returned HTTP ${response.status}: ${response.statusText}`);
         }
+        await getEventPublisher().publishUsageUpdate();
     } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new Error(`Agent Tank refresh timed out after ${timeoutMs}ms`);

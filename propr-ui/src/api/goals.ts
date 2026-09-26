@@ -151,8 +151,12 @@ const multipartMutation = (payload: unknown, files: readonly File[]): RequestIni
 
 export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
-export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
-export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
+// The reads accept a signal so a push-driven caller can cut off a request whose
+// scope has already moved on (a different repository filter, another goal).
+export const listGoals = async (options: { signal?: AbortSignal } = {}) =>
+  request<{ goals: Goal[] }>('/api/goals', { signal: options.signal });
+export const getGoal = async (id: string, options: { signal?: AbortSignal } = {}) =>
+  request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`, { signal: options.signal });
 export const getGoalVisualPreviews = async (id: string) => {
   const response = await request<{ previews?: unknown[]; unavailable?: boolean }>(`/api/goals/${encodeURIComponent(id)}/previews`);
   return { previews: trustedPreviewMedia(response.previews), ...(response.unavailable === true ? { unavailable: true } : {}) };

@@ -1051,12 +1051,22 @@ const LAUNCH_SERVICES = '/System/Library/Frameworks/CoreServices.framework/Frame
 // window is a deadline rather than a probe count: one -dump costs milliseconds
 // on an idle host and seconds on a loaded CI runner, so counting probes gives
 // the shortest window exactly where LaunchServices is slowest to settle.
-const LAUNCH_SERVICES_ABSENCE_BUDGET_MS = 120_000;
+// The window admits two full-length dumps, so one slow dump can never be the
+// whole proof: a thirty-second flat probe cap used to kill four consecutive
+// darwin-x64 dumps and report the postcondition as COMMAND_DEADLINE.
+const LAUNCH_SERVICES_ABSENCE_BUDGET_MS = 240_000;
 const LAUNCH_SERVICES_ABSENCE_INTERVAL_MS = 1_000;
 // lsregister -dump emits megabytes, so a dump record is never read back through
 // the shared bounded-output helper: that would reduce the probe to whichever
 // records happened to land in the retained OUTPUT_CAP tail.
 const LAUNCH_SERVICES_DUMP_LINE_CAP = 64 * 1024;
+// A dump that is still emitting records is slow, not stuck, so the probe is
+// bounded by silence rather than by total runtime: a loaded Intel runner walks
+// the whole LaunchServices database well past any fixed cap that is short
+// enough to leave room for a retry. The absolute deadline stays as the backstop
+// for a dump that trickles forever.
+const LAUNCH_SERVICES_DUMP_STALL_MS = 30_000;
+const LAUNCH_SERVICES_DUMP_TIMEOUT_MS = 120_000;
 
 export const launchServicesRecordMatchesApplication = (line, applicationRoot) => {
   const record = line.trim();
@@ -1070,7 +1080,7 @@ export const launchServicesRecordMatchesApplication = (line, applicationRoot) =>
 // Streams a command's stdout line by line and stops at the first match. Only one
 // bounded line is ever retained, so an unbounded dump is scanned in full without
 // buffering it and without a truncation window deciding the answer.
-export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matchesLine) =>
+export const scanCommandLinesForMatch = (file, args, { env, timeout, stallTimeout } = {}, matchesLine) =>
   new Promise((resolveScan, reject) => {
     const child = spawn(file, args, { env, shell: false, stdio: ['ignore', 'pipe', 'ignore'] });
     let carry = '';
@@ -1080,13 +1090,25 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(stallTimer);
       if (error) reject(error); else resolveScan(value);
     };
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const expire = () => {
       timedOut = true;
       child.kill('SIGKILL');
-    }, timeout ?? COMMAND_TIMEOUT_MS);
+    };
+    const timer = setTimeout(expire, timeout ?? COMMAND_TIMEOUT_MS);
+    // An optional stall deadline bounds silence instead of runtime: every chunk
+    // restarts it, so a dump that keeps producing records is never killed for
+    // being slow, while one that stops answering still ends as COMMAND_DEADLINE.
+    let stallTimer;
+    const restartStallDeadline = () => {
+      if (stallTimeout === undefined || settled) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(expire, stallTimeout);
+    };
+    restartStallDeadline();
     const consume = line => {
       if (matchesLine(line)) {
         matched = true;
@@ -1102,6 +1124,7 @@ export const scanCommandLinesForMatch = (file, args, { env, timeout } = {}, matc
     });
     child.stdout.on('data', chunk => {
       if (matched) return;
+      restartStallDeadline();
       carry += chunk;
       let newline = carry.indexOf('\n');
       while (newline >= 0 && !matched) {
@@ -1196,7 +1219,11 @@ export class LaunchServicesAuthority {
     const { matched } = await this.scanCommand(
       LAUNCH_SERVICES,
       ['-dump'],
-      { env: this.environment, timeout: 30_000 },
+      {
+        env: this.environment,
+        timeout: LAUNCH_SERVICES_DUMP_TIMEOUT_MS,
+        stallTimeout: LAUNCH_SERVICES_DUMP_STALL_MS,
+      },
       line => launchServicesRecordMatchesApplication(line, this.applicationRoot),
     );
     return matched;

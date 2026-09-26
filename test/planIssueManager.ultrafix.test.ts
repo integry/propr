@@ -8,7 +8,8 @@ let nextId = 1;
 
 function makeKey(where: Record<string, unknown>): string {
   if ('id' in where) return `id:${where.id}`;
-  return `${where.draft_id}:${where.issue_number}`;
+  if ('draft_id' in where && 'issue_number' in where) return `${where.draft_id}:${where.issue_number}`;
+  return [...rows].find(([key, row]) => key.startsWith('id:') && Object.entries(where).every(([field, value]) => row[field] === value))?.[0] ?? 'missing';
 }
 
 function createBuilder(tableName: string) {
@@ -52,6 +53,12 @@ function createBuilder(tableName: string) {
       rows.set(`${next.draft_id}:${next.issue_number}`, next);
       return 1;
     },
+    async delete() {
+      const row = rows.get(makeKey(whereClause));
+      if (!row) return 0;
+      rows.delete(`id:${row.id}`); rows.delete(`${row.draft_id}:${row.issue_number}`);
+      return 1;
+    },
     async increment() {
       return this;
     }
@@ -92,13 +99,29 @@ await mock.module('../packages/core/src/config/planIssueDefaults.js', {
   },
 });
 
-const { createPlanIssue, updatePlanIssue } = await import('../packages/core/src/config/planIssueManager.js');
+const activity = mock.fn(async (_payload: unknown) => true);
+await mock.module('../packages/core/src/utils/eventPublisher.js', {
+  namedExports: { getEventPublisher: () => ({ publishActivity: activity }) },
+});
+
+const { createPlanIssue, updatePlanIssue, updatePlanIssueStatus, updatePlanIssueByPR, deletePlanIssue, PlanIssueStatus } = await import('../packages/core/src/config/planIssueManager.js');
 
 describe('planIssueManager ultrafix persistence', () => {
   beforeEach(() => {
+    activity.mock.resetCalls();
     rows.clear();
     nextId = 1;
     mockCheckAndUpdateDraftStatus.mock.resetCalls();
+  });
+
+  test('publishes every status entry point even when the aggregate draft status is unchanged', async () => {
+    await createPlanIssue({ draft_id: 'draft-1', repository: 'owner/repo', issue_number: 101 });
+    await updatePlanIssue('draft-1', 101, { pr_number: 42, status: PlanIssueStatus.UNDER_REVIEW });
+    await updatePlanIssueStatus('owner/repo', 101, PlanIssueStatus.MERGED);
+    await updatePlanIssueByPR('owner/repo', 42, { status: PlanIssueStatus.CLOSED });
+    await deletePlanIssue('draft-1', 101);
+    assert.deepEqual(activity.mock.calls.map(call => (call.arguments[0] as { change: string }).change),
+      ['created', 'blocked', 'completed', 'cancelled', 'cancelled']);
   });
 
   test('createPlanIssue persists ultrafix fields', async () => {

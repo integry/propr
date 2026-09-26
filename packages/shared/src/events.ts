@@ -32,6 +32,7 @@ export const QUEUE_STATS_UPDATE = 'queue:stats:update';
 export const REDIS_CHANNELS = {
   /** Channel for all task-related events */
   TASKS: 'propr:events:tasks',
+  ACTIVITY: 'propr:events:activity',
   /** Channel for draft/plan generation events */
   DRAFTS: 'propr:events:drafts',
   /** Channel for indexing events */
@@ -193,13 +194,13 @@ export type CommandMode = 'default' | 'review' | 'fix';
 
 /** Union type for all event payloads */
 export type EventPayload =
+  | ActivityUpdatePayload
+  | GoalUpdatePayload
+  | NotificationUpdatePayload
+  | UsageUpdatePayload
   | TaskUpdatePayload
   | DraftUpdatePayload
   | PlanStepUpdatePayload
   | IndexingUpdatePayload
   | TaskLiveUpdatePayload
-  | QueueStatsUpdatePayload
-  | GoalUpdatePayload
-  | NotificationUpdatePayload
-  | UsageUpdatePayload
-  | ActivityUpdatePayload;
+  | QueueStatsUpdatePayload;

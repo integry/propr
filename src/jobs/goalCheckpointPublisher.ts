@@ -4,6 +4,7 @@ import {
     cleanupPreparedVisualPreviewEvidence,
     commitChanges,
     db,
+    getEventPublisher,
     getAuthenticatedOctokit,
     getRepoUrl,
     getModelShortName,
@@ -321,6 +322,7 @@ async function publishLocked(
         }
         throw error;
     } finally {
+        void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
         await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
     }
 }
@@ -397,4 +399,5 @@ export async function rejectDirectGoalCheckpoint(
         }).whereNull('result_state').update({ checkpoint_error: request.error, updated_at: trx.fn.now() });
         if (updated !== 1) throw new Error('Goal checkpoint rejection was fenced');
     });
+    void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
 }

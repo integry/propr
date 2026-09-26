@@ -592,6 +592,7 @@ describe('Inbox page', () => {
     fireEvent.focus(window);
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
     expect(screen.getByRole('alert')).toHaveTextContent('Page failed');
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(3));
     await act(async () => refreshRequest.resolve({ notifications: [notification], unreadCount: 1, nextCursor: 'cursor-1' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });

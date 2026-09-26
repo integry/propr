@@ -21,8 +21,11 @@ vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => demoState }))
 const socket = vi.hoisted(() => ({
   isConnected: false as boolean, subscribeToTask: vi.fn(), unsubscribeFromTask: vi.fn(),
   subscribeToTaskLive: vi.fn(), unsubscribeFromTaskLive: vi.fn(),
+  subscribeToActivity: vi.fn(), unsubscribeFromActivity: vi.fn(),
   onTaskUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
   onTaskLiveUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
+  onActivityUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
+  onGoalUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
 }));
 vi.mock('../contexts/useSocket', () => ({ useSocket: () => socket }));
 
@@ -73,6 +76,8 @@ describe('GoalsPage', () => {
     socket.isConnected = false;
     socket.onTaskUpdate.mockImplementation(() => vi.fn());
     socket.onTaskLiveUpdate.mockImplementation(() => vi.fn());
+    socket.onActivityUpdate.mockImplementation(() => vi.fn());
+    socket.onGoalUpdate.mockImplementation(() => vi.fn());
     resizeImage.mockImplementation((file: File) => Promise.resolve(file));
     vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [capability] });
     vi.mocked(getInstanceCatalog).mockResolvedValue({ agents: [], repositories: [{ name: 'acme/web', enabled: true }] });
@@ -85,6 +90,21 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
     vi.mocked(goalsApi.deleteGoal).mockResolvedValue();
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
+  });
+
+  it('defers the initial Goals list read in a background tab', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const view = render(<MemoryRouter><GoalsPage /></MemoryRouter>);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(goalsApi.listGoals).not.toHaveBeenCalled();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      fireEvent(document, new Event('visibilitychange'));
+      await waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledTimes(1));
+    } finally {
+      view.unmount();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    }
   });
 
   it('renders up to three inline previews in the responsive goal row without per-row requests', async () => {
@@ -117,6 +137,87 @@ describe('GoalsPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Goals unavailable');
     expect(screen.queryByText('No goals yet')).not.toBeInTheDocument();
+  });
+
+  it('refreshes the queue once per goal transition, without a timer', async () => {
+    let goalHandler: ((payload: { goalId: string; repository: string | null }) => void) | undefined;
+    socket.onGoalUpdate.mockImplementation(handler => {
+      goalHandler = handler as unknown as (payload: { goalId: string; repository: string | null }) => void;
+      return vi.fn();
+    });
+    socket.isConnected = true;
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [goal] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    await screen.findByRole('heading', { name: goal.title });
+    expect(goalsApi.listGoals).toHaveBeenCalledTimes(1);
+
+    // The goal's own transition is the signal. A pause becomes visible because
+    // the goal changed, not because the next tick of a poll happened to see it.
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [{ ...goal, desiredState: 'paused' }] });
+    await act(async () => {
+      goalHandler?.({ goalId: goal.id, repository: goal.repository });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Paused')).toBeInTheDocument();
+    expect(goalsApi.listGoals).toHaveBeenCalledTimes(2);
+  });
+
+  it('issues no queue request on a timer while the socket is connected', async () => {
+    vi.useFakeTimers();
+    try {
+      socket.isConnected = true;
+      vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [goal] });
+      render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(goalsApi.listGoals).toHaveBeenCalledTimes(1);
+
+      // Six times the old ten-second poll interval, and nothing is happening on
+      // the instance: an open console costs nothing at all.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(goalsApi.listGoals).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to interval polling while the socket is down, keeping the rows on screen', async () => {
+    vi.useFakeTimers();
+    try {
+      socket.isConnected = false;
+      vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [goal] });
+      render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(goalsApi.listGoals).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(65_000); });
+      // Push is the normal path; without a socket the console degrades to a
+      // bounded poll rather than silently going stale.
+      expect(vi.mocked(goalsApi.listGoals).mock.calls.length).toBeGreaterThan(1);
+      // The rows are the report, and nothing narrates the connection.
+      expect(screen.getByRole('heading', { name: goal.title })).toBeInTheDocument();
+      expect(screen.queryByText(/Reconnecting/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconciles the queue exactly once when the socket comes back', async () => {
+    socket.isConnected = false;
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [goal] });
+    const view = render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    await screen.findByRole('heading', { name: goal.title });
+    expect(goalsApi.listGoals).toHaveBeenCalledTimes(1);
+
+    // One catch-up read after the transition, not one per frame that queued up
+    // while the socket was down.
+    socket.isConnected = true;
+    view.rerender(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+
+    await waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledTimes(2));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+    expect(goalsApi.listGoals).toHaveBeenCalledTimes(2);
   });
 
   it('creates exactly one native goal from repository, agent, model and objective', async () => {

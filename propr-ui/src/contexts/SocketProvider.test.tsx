@@ -1,5 +1,12 @@
 import { useEffect } from 'react';
-import { TASK_LIVE_UPDATE, TASK_UPDATE } from '@propr/shared';
+import {
+  ACTIVITY_UPDATE,
+  GOAL_UPDATE,
+  NOTIFICATION_UPDATE,
+  TASK_LIVE_UPDATE,
+  TASK_UPDATE,
+  USAGE_UPDATE,
+} from '@propr/shared';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocketProvider } from './SocketProvider';
@@ -262,6 +269,104 @@ describe('SocketProvider', () => {
       '[SocketContext] Received task live update:',
     ))).toEqual(['[SocketContext] Received task live update: 1 event(s)']);
     log.mockRestore();
+  });
+
+  it('reference-counts the activity room and rejoins it after a reconnect', () => {
+    const ActivityConsumer = () => {
+      const { subscribeToActivity, unsubscribeFromActivity } = useSocket();
+      useEffect(() => {
+        subscribeToActivity();
+        return unsubscribeFromActivity;
+      }, [subscribeToActivity, unsubscribeFromActivity]);
+      return null;
+    };
+    const emitted = (event: string) =>
+      sockets[0].emit.mock.calls.filter(call => call[0] === event).length;
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    const { rerender } = render(
+      <SocketProvider><ActivityConsumer /><ActivityConsumer /></SocketProvider>,
+    );
+
+    act(() => { sockets[0].handlers.get('connect')?.(); });
+    // Two subscribers, one join: a duplicate would double every frame's cost.
+    expect(emitted('subscribe:activity')).toBe(1);
+
+    rerender(<SocketProvider><ActivityConsumer /></SocketProvider>);
+    // The first consumer to leave must not unsubscribe the one still watching.
+    expect(emitted('unsubscribe:activity')).toBe(0);
+
+    act(() => { sockets[0].handlers.get('disconnect')?.('transport close'); });
+    act(() => { sockets[0].handlers.get('connect')?.(); });
+    // Room membership does not survive a reconnect, so it is re-emitted.
+    expect(emitted('subscribe:activity')).toBe(2);
+
+    rerender(<SocketProvider><div>no consumers</div></SocketProvider>);
+    expect(emitted('unsubscribe:activity')).toBe(1);
+    expect(emitted('subscribe:activity')).toBe(2);
+    // Room bookkeeping must never cost a connection: a surface whose identity
+    // changed per render would rebuild the Manager on every one of them.
+    expect(connectSocketMock).toHaveBeenCalledOnce();
+  });
+
+  it('delivers activity, goal, notification and usage events without logging their payloads', () => {
+    const observed = {
+      activity: vi.fn(),
+      goal: vi.fn(),
+      notification: vi.fn(),
+      usage: vi.fn(),
+    };
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const Observer = () => {
+      const { onActivityUpdate, onGoalUpdate, onNotificationUpdate, onUsageUpdate } = useSocket();
+      useEffect(() => onActivityUpdate(observed.activity), [onActivityUpdate]);
+      useEffect(() => onGoalUpdate(observed.goal), [onGoalUpdate]);
+      useEffect(() => onNotificationUpdate(observed.notification), [onNotificationUpdate]);
+      useEffect(() => onUsageUpdate(observed.usage), [onUsageUpdate]);
+      return null;
+    };
+    const activity = {
+      eventType: ACTIVITY_UPDATE,
+      domain: 'task',
+      change: 'completed',
+      entityId: 'task-1',
+      repository: 'acme/app',
+      terminal: true,
+      occurredAt: '2026-09-26T10:00:00.000Z',
+    };
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    render(<SocketProvider><Observer /></SocketProvider>);
+
+    act(() => { sockets[0].handlers.get(ACTIVITY_UPDATE)?.(activity); });
+    act(() => { sockets[0].handlers.get(GOAL_UPDATE)?.({ eventType: GOAL_UPDATE }); });
+    act(() => { sockets[0].handlers.get(NOTIFICATION_UPDATE)?.({ eventType: NOTIFICATION_UPDATE }); });
+    act(() => { sockets[0].handlers.get(USAGE_UPDATE)?.({ eventType: USAGE_UPDATE }); });
+
+    expect(observed.activity).toHaveBeenCalledWith(activity);
+    expect(observed.goal).toHaveBeenCalledOnce();
+    expect(observed.notification).toHaveBeenCalledOnce();
+    expect(observed.usage).toHaveBeenCalledOnce();
+    // These frames are frequent and name repositories; none of them is logged.
+    expect(log.mock.calls.filter(call => String(call[0]).includes('activity'))).toEqual([]);
+    log.mockRestore();
+  });
+
+  it('drops activity events delivered by an old desktop scope', () => {
+    const observed = vi.fn();
+    const Observer = () => {
+      const { onActivityUpdate } = useSocket();
+      useEffect(() => onActivityUpdate(observed), [onActivityUpdate]);
+      return null;
+    };
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    render(<SocketProvider><Observer /></SocketProvider>);
+    const staleActivityHandler = sockets[0].handlers.get(ACTIVITY_UPDATE);
+
+    publish(scope('profile-b', 'BBBBBBBBBBBBBBBBBBBBBB'));
+    act(() => { staleActivityHandler?.({ eventType: ACTIVITY_UPDATE } as never); });
+
+    expect(observed).not.toHaveBeenCalled();
+    act(() => { sockets[1].handlers.get(ACTIVITY_UPDATE)?.({ eventType: ACTIVITY_UPDATE } as never); });
+    expect(observed).toHaveBeenCalledOnce();
   });
 
   it('fully detaches listeners and disconnects on unmount', () => {

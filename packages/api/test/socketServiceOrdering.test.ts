@@ -44,7 +44,7 @@ describe('SocketService task update ordering', () => {
             return operator;
           },
           emit: (_event: string, emittedPayload: TaskUpdatePayload) => {
-            broadcasts.push({ rooms, payload: emittedPayload });
+            if (_event === TASK_UPDATE) broadcasts.push({ rooms, payload: emittedPayload });
           },
         };
         return operator;

@@ -29,6 +29,7 @@ export const ACTIVITY_DOMAINS = [
   'queue',
   'indexing',
   'usage',
+  'system',
 ] as const;
 export type ActivityDomain = (typeof ACTIVITY_DOMAINS)[number];
 
@@ -114,6 +115,9 @@ export interface GoalUpdatePayload {
   goalId: string;
   repository: string;
   state: GoalActivityState;
+  /** Persisted fields included when the API resolves a refresh trigger. */
+  desiredState?: string;
+  resultState?: string | null;
   /** The task currently executing the goal, when one is running. */
   currentTaskId?: string | null;
   occurredAt: string;

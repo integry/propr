@@ -34,6 +34,7 @@ import type {
 
 export type { RunningItem } from './useHeaderStatsHelpers';
 
+const documentIsHidden = () => document.visibilityState === 'hidden';
 const LIVE_INVALIDATION_COALESCE_MS = 100;
 const LIVE_REVALIDATION_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
@@ -175,7 +176,7 @@ export function useHeaderStats(): HeaderStats {
   const requestIdentityRef = useRef(requestIdentityKey);
 
   // WebSocket connection for real-time updates
-  const { onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, isConnected } = useSocket();
+  const { onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, onActivityReady, onActivityUpdate, onUsageUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
   const socketConnectedRef = useRef(isConnected);
   socketConnectedRef.current = isConnected;
 
@@ -405,13 +406,13 @@ export function useHeaderStats(): HeaderStats {
   // affected resources and reconcile each at most once after the burst.
   const scheduleLiveRefresh = useCallback((resources: readonly HeaderStatsResource[] = ALL_STATS_RESOURCES) => {
     resources.forEach(resource => liveRefreshPendingRef.current.add(resource));
-    if (document.visibilityState === 'hidden') return;
+    if (documentIsHidden()) return;
     if (liveRefreshTimerRef.current !== null || liveRefreshInFlightRef.current) return;
 
     const armRefresh = (delayMs: number) => {
       liveRefreshTimerRef.current = setTimeout(async () => {
         liveRefreshTimerRef.current = null;
-        if (!isMountedRef.current || liveRefreshPendingRef.current.size === 0) return;
+        if (!isMountedRef.current || liveRefreshPendingRef.current.size === 0 || documentIsHidden()) return;
 
         const pendingResources = [...liveRefreshPendingRef.current];
         liveRefreshPendingRef.current.clear();
@@ -427,7 +428,7 @@ export function useHeaderStats(): HeaderStats {
           const retryDelay = LIVE_REVALIDATION_RETRY_DELAYS_MS[liveRefreshRetryAttemptRef.current];
           liveRefreshRetryAttemptRef.current += 1;
           outcome.failedResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
-          if (document.visibilityState !== 'hidden') armRefresh(retryDelay);
+          if (!documentIsHidden()) armRefresh(retryDelay);
         } else {
           liveRefreshRetryAttemptRef.current = 0;
           if (outcome.failedResources.includes('queue')) {
@@ -437,7 +438,7 @@ export function useHeaderStats(): HeaderStats {
 
         if (liveRefreshPendingRef.current.size > 0
           && liveRefreshTimerRef.current === null
-          && document.visibilityState !== 'hidden') {
+          && !documentIsHidden()) {
           armRefresh(LIVE_INVALIDATION_COALESCE_MS);
         }
       }, delayMs);
@@ -491,7 +492,7 @@ export function useHeaderStats(): HeaderStats {
 
     // Initial fetch
     const initialResources = ALL_STATS_RESOURCES;
-    if (document.visibilityState === 'hidden') {
+    if (documentIsHidden()) {
       initialResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
     } else {
       void fetchStats(initialResources, true).then(outcome => {
@@ -558,16 +559,28 @@ export function useHeaderStats(): HeaderStats {
     };
   }, [isConnected, onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, scheduleLiveRefresh]);
 
+  useEffect(() => {
+    subscribeToActivity?.();
+    const unsubscribeReady = onActivityReady?.(() => scheduleLiveRefresh(ALL_STATS_RESOURCES));
+    const unsubscribe = onActivityUpdate?.(payload => {
+      if (payload.domain === 'goal' || payload.domain === 'queue') scheduleLiveRefresh(['queue']);
+      if (payload.domain === 'plan') scheduleLiveRefresh(['drafts', 'tasks']);
+      if (['system'].includes(payload.domain)) scheduleLiveRefresh(['status']);
+    });
+    const unsubscribeUsage = onUsageUpdate?.(() => scheduleLiveRefresh(['status']));
+    return () => { unsubscribeReady?.(); unsubscribe?.(); unsubscribeUsage?.(); unsubscribeFromActivity?.(); };
+  }, [onActivityReady, onActivityUpdate, onUsageUpdate, subscribeToActivity, unsubscribeFromActivity, scheduleLiveRefresh]);
+
   // Hidden tabs accumulate invalidations without issuing requests. Becoming
   // visible (or receiving focus after a suspended socket) performs one full
   // recovery snapshot. A disconnected visible tab keeps a bounded HTTP
   // fallback so the UI cannot remain stale forever.
   useEffect(() => {
     const recoverVisible = () => {
-      if (document.visibilityState !== 'hidden') scheduleLiveRefresh(ALL_STATS_RESOURCES);
+      if (!documentIsHidden()) scheduleLiveRefresh(ALL_STATS_RESOURCES);
     };
     const fallbackPoll = window.setInterval(() => {
-      if (!socketConnectedRef.current && document.visibilityState !== 'hidden') {
+      if (!socketConnectedRef.current && !documentIsHidden()) {
         scheduleLiveRefresh(ALL_STATS_RESOURCES);
       }
     }, FALLBACK_POLL_INTERVAL_MS);
