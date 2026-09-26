@@ -17,6 +17,10 @@ INSTANCE="${CI_REDIS_INSTANCE:-}"
 MEMORY_LIMIT="${CI_REDIS_MEMORY:-512m}"
 CPU_LIMIT="${CI_REDIS_CPUS:-1}"
 PIDS_LIMIT="${CI_REDIS_PIDS_LIMIT:-64}"
+# remove_container returns this instead of 1 when ownership is fully verified
+# but the daemon still refuses to remove the container. Distinct from 1 so an
+# ownership violation and a stuck container never collapse into one outcome.
+UNREMOVABLE_STATUS=3
 
 if [[ -n "$INSTANCE" && ! "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]]; then
   # Rejected rather than sanitized: rewriting characters could map two
@@ -102,12 +106,12 @@ remove_container() {
     echo "Refusing to remove $name: attempt label does not match" >&2
     return 1
   fi
-  docker rm --force "$id" >/dev/null || return 1
+  docker rm --force "$id" >/dev/null || return "$UNREMOVABLE_STATUS"
   echo "Stopped Redis container $name"
 }
 
 stop_redis() {
-  local name="$CONTAINER_NAME"
+  local name="$CONTAINER_NAME" status=0
 
   if [[ -f "$STATE_FILE" ]]; then
     name="$(<"$STATE_FILE")"
@@ -117,8 +121,30 @@ stop_redis() {
     return 1
   fi
 
-  remove_container "$name" || return 1
+  remove_container "$name" || status=$?
+  # The state file keeps recording the container while it still exists, so a
+  # later teardown of the same owner retries the removal instead of skipping it.
+  (( status == 0 )) || return "$status"
   rm -f "$STATE_FILE"
+}
+
+# The workflows' teardown step. It runs after the tests have already decided the
+# job's result, so a container the daemon cannot kill -- a zombie PID under a
+# rootless daemon, which no step in this job can reap -- is reported for host
+# cleanup rather than failing an otherwise green shard. Ownership violations and
+# every other stop failure still fail the step.
+stop_for_teardown() {
+  local status=0
+
+  stop_redis || status=$?
+  if (( status == UNREMOVABLE_STATUS )); then
+    echo "Docker could not remove $CONTAINER_NAME; leaving it for host cleanup." >&2
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      echo "::warning::Leaked CI Redis container $CONTAINER_NAME: the daemon could not remove it."
+    fi
+    return 0
+  fi
+  return "$status"
 }
 
 # Recover only older attempts owned by this exact run, job and instance.
@@ -147,10 +173,17 @@ start_redis() {
   # port candidates by owner and retry. A runner-local free-port probe cannot
   # see listeners in the host namespace, so Docker's bind is authoritative.
   local publish_port="" run_error run_status port_attempt
+
+  # `--init` makes tini PID 1 so it reaps the health-check processes the
+  # container's PID namespace reparents to PID 1 once their runc parent exits:
+  # redis-server does not reap them, and one check every 2s for the length of a
+  # shard both fills --pids-limit with zombies and leaves behind a container the
+  # daemon cannot kill at teardown.
   for port_attempt in 1 2 3 4 5; do
     if run_error="$(docker run \
       --detach \
       --rm \
+      --init \
       --name "$CONTAINER_NAME" \
       --label propr.ci.redis=true \
       --label "$LABEL_RUN" \
@@ -225,7 +258,7 @@ start_redis() {
 
 case "$ACTION" in
   start) start_redis ;;
-  stop) stop_redis ;;
+  stop) stop_for_teardown ;;
   name) printf '%s\n' "$CONTAINER_NAME" ;;
   *)
     echo "Usage: $0 start|stop|name" >&2

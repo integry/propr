@@ -125,6 +125,10 @@ case "$command" in
     ;;
   rm)
     name="\${@: -1}"; [[ "$name" == id-* ]] || exit 9; name="\${name#id-}"
+    if [[ -n "\${FAKE_UNREMOVABLE:-}" ]]; then
+      echo "Error response from daemon: cannot remove container \"$name\": could not kill container: container PID 1 is zombie and can not be killed" >&2
+      exit 1
+    fi
     rm -f "$state/$name"
     echo "rm $name" >> "$state/.log"
     ;;
@@ -359,6 +363,49 @@ describe('scripts/ci-redis.sh shared-host isolation', () => {
         assert.deepEqual(docker.containers(), [name, other].sort());
     });
 
+    test('reports an owned container the daemon cannot remove instead of failing teardown', () => {
+        const docker = createFakeDocker();
+        const env = { CI_REDIS_INSTANCE: 'shard-4' };
+        const name = startRedis(docker, env);
+        const result = runRedis(docker, 'stop', { ...env, FAKE_UNREMOVABLE: 'true', GITHUB_ACTIONS: 'true' });
+        // The shard's tests have already decided the job result, and no step in
+        // the job can reap a zombie PID, so teardown reports and continues.
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stderr, /is zombie and can not be killed/);
+        assert.match(result.stderr, new RegExp(`Docker could not remove ${name}`));
+        assert.match(result.stdout, new RegExp(`^::warning::Leaked CI Redis container ${name}:`, 'm'));
+        assert.deepEqual(docker.containers(), [name]);
+        assert.deepEqual(docker.removals(), []);
+        // The state file still records it, so a later teardown retries instead
+        // of reporting the name as already gone.
+        const retry = runRedis(docker, 'stop', env);
+        assert.equal(retry.status, 0, retry.stderr);
+        assert.deepEqual(docker.containers(), []);
+        assert.deepEqual(docker.removals(), [name]);
+    });
+
+    test('still fails start and ownership violations when a removal is refused', () => {
+        const docker = createFakeDocker();
+        // A leftover container of this caller's own name blocks the retry, so a
+        // start that cannot remove it must not continue.
+        const blocked = runRedis(docker, 'start', { FAKE_RUN_FAILURES: '1', FAKE_UNREMOVABLE: 'true' });
+        assert.notEqual(blocked.status, 0);
+        assert.match(blocked.stderr, /is zombie and can not be killed/);
+        assert.doesNotMatch(blocked.stderr, /leaving it for host cleanup/);
+        assert.deepEqual(docker.containers(), [redisName(docker, {})]);
+
+        // Teardown tolerance covers only the daemon's refusal, never a
+        // container this caller does not own.
+        const other = createFakeDocker();
+        const name = startRedis(other, {});
+        const file = join(other.state, name);
+        writeFileSync(file, readFileSync(file, 'utf8').replace('propr.ci.redis=true', 'propr.ci.redis=false'));
+        const refused = runRedis(other, 'stop', { FAKE_UNREMOVABLE: 'true' });
+        assert.equal(refused.status, 1, refused.stderr);
+        assert.match(refused.stderr, /Refusing to remove/);
+        assert.deepEqual(other.containers(), [name]);
+    });
+
     test('rejects invalid instances, attempts and Docker limits', () => {
         const docker = createFakeDocker();
         for (const env of [
@@ -378,6 +425,9 @@ describe('scripts/ci-redis.sh shared-host isolation', () => {
         assert.equal(option('--cpus'), '1');
         assert.equal(option('--pids-limit'), '64');
         assert.equal(option('--publish'), '127.0.0.1::6379');
+        // tini as PID 1 reaps the reparented health-check processes that would
+        // otherwise fill --pids-limit and leave an unkillable container.
+        assert.ok(args.includes('--init'));
         const overridden = docker.runArguments(startRedis(docker, { CI_REDIS_INSTANCE: 'limits', CI_REDIS_MEMORY: '1g', CI_REDIS_CPUS: '0.5' }));
         assert.equal(overridden[overridden.indexOf('--memory') + 1], '1g');
         assert.equal(overridden[overridden.indexOf('--cpus') + 1], '0.5');
@@ -796,6 +846,7 @@ set -eu
 case "$*" in
   *SecurityOptions*) echo "\${FAKE_SECURITY-name=rootless}" ;;
   *CgroupVersion*) echo "\${FAKE_CGROUPS-2/systemd}" ;;
+  *InitBinary*) echo "\${FAKE_INIT_BINARY-docker-init}" ;;
   *) exit 90 ;;
 esac
 `);
@@ -831,7 +882,8 @@ esac
             { DOCKER_HOST: 'unix:///run/docker.sock' }, { DOCKER_HOST: 'tcp://localhost:2375' },
             { DOCKER_CONTEXT: 'production' }, { DOCKER_TLS_VERIFY: '1' },
             { FAKE_SECURITY: 'name=seccomp' }, { FAKE_CGROUPS: '2/none' },
-            { FAKE_CGROUPS: '1/systemd' }, { GITHUB_WORKSPACE: '/nonexistent-propr-workspace' },
+            { FAKE_CGROUPS: '1/systemd' }, { FAKE_INIT_BINARY: '' },
+            { GITHUB_WORKSPACE: '/nonexistent-propr-workspace' },
         ]) {
             const result = preflight(overrides);
             assert.notEqual(result.status, 0, JSON.stringify(overrides));

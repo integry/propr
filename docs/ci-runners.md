@@ -73,7 +73,8 @@ expected contract, not a claim that the workers are configured or validated:
   `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH`. Job setup replaces
   HOME and Docker client config, so a saved HOME-based Docker context is not a
   reliable endpoint. `ci-rootless-preflight.sh` rejects default/remote/production
-  endpoints, checks the daemon reports rootless, and requires cgroup v2/systemd.
+  endpoints, checks the daemon reports rootless, requires cgroup v2/systemd, and
+  requires an init binary (the Redis helper starts `--init` containers).
   It does not prove socket ownership, host mount isolation or effective limits.
 - CI paths used as Docker bind sources must contain the same files at the same
   absolute path inside the runner and the daemon's host mount namespace. Map
@@ -290,10 +291,25 @@ older attempts matching the exact owner; it preserves newer attempts and all
 other owners. An unexpected owner fails closed. Existing callers with no
 instance, including nightly, retain one container per job and attempt.
 
+Each container runs with `--init`. The container's PID namespace reparents every
+health-check process to PID 1 once its runc parent exits, and `redis-server`
+does not reap them; one check every two seconds for the length of a shard
+therefore filled `--pids-limit` with zombies and left a container the rootless
+daemon could not kill, which failed the teardown step of a shard whose tests had
+all passed. tini as PID 1 reaps them instead.
+
+Teardown (`stop`) is the only caller that tolerates a failed removal. It runs
+after the tests have decided the job's result, and no step in the job can reap a
+zombie PID, so a container whose ownership fully verifies but which the daemon
+still refuses to remove is reported as a run warning and left for host cleanup.
+Its state file is kept, so a later teardown of the same owner retries. Ownership
+violations, and failed removals during `start`, still fail.
+
 Regression tests prove `job=shard, instance=default` and
 `job=shard-default, instance=<omitted>` coexist and either stop order preserves
 the other. They also cover foreign labels, tampered state, field-boundary
-collisions, retries and resource limits using a Docker CLI double.
+collisions, retries, resource limits, `--init` and the teardown tolerance using
+a Docker CLI double.
 
 ## Coverage, required check and partial reruns
 
