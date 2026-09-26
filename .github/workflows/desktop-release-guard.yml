@@ -358,17 +358,53 @@ jobs:
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
         shell: bash
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
-          keyring_root="$(mktemp -d)"
-          trap 'rm -rf -- "$keyring_root"' EXIT
-          dbus-run-session -- bash -euo pipefail -c '
-            export XDG_DATA_HOME="$1"
-            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
-            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
-            xvfb-run --auto-servernum npm run desktop:smoke
-          ' bash "$keyring_root"
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf -- "$smoke_root"' EXIT
+          for attempt in 1 2; do
+            keyring_root="$smoke_root/keyring-$attempt"
+            mkdir "$keyring_root"
+            smoke_log="$smoke_root/attempt-$attempt.log"
+            if dbus-run-session -- bash -euo pipefail -c '
+              export XDG_DATA_HOME="$1"
+              export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+              eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+              xvfb-run --auto-servernum npm run desktop:smoke
+            ' bash "$keyring_root" 2>&1 | tee "$smoke_log"; then
+              break
+            else
+              status=$?
+            fi
+            # ARM64 can segfault in native teardown after the transport proof and
+            # final quit. Retry the entire smoke once in a fresh session; never
+            # accept the crashed run as evidence or suppress a second failure.
+            if [ "$PACKAGE_ARCH" != arm64 ] || [ "$attempt" -eq 2 ]; then
+              exit "$status"
+            fi
+            if ! node --input-type=module - "$smoke_log" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const output = readFileSync(process.argv[2], 'utf8');
+          const records = output.split(/\r?\n/).flatMap(line => {
+            try { return [JSON.parse(line)]; } catch { return []; }
+          }).filter(record => record && typeof record === 'object');
+          const lastLaunch = records.findLastIndex(record => record.event === 'desktop.app.ready');
+          const launch = lastLaunch < 0 ? [] : records.slice(lastLaunch);
+          const last = launch.at(-1);
+          const retryable = output.includes('Error: Packaged desktop exited with code null (signal SIGSEGV)')
+            && launch.some(record => record.event === 'desktop.renderer.transport_smoke.ready')
+            && !launch.some(record => record.level === 'error')
+            && last?.event === 'desktop.app.shutdown_step' && last.step === 'final-quit';
+          process.exit(retryable ? 0 : 1);
+          NODE
+            then
+              exit "$status"
+            fi
+            echo '::warning::Packaged ARM64 smoke crashed after final quit; rerunning all four launches in a fresh session.'
+          done
 
       - name: Capture packaged Linux x64 visual and accessibility acceptance evidence
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
