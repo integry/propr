@@ -708,7 +708,16 @@ describe('processMergeConflictJob', () => {
 
     test('cleans up worktree and releases lock in finally block', async () => {
         const job = createMockJob();
-        await processMergeConflictJob(job);
+        let lockHeldDuringCleanup: boolean | undefined;
+        mockCleanupWorktree.mock.mockImplementation(async () => { lockHeldDuringCleanup = mockRedisStore.has('lock:pr:test-owner:test-repo:42'); });
+        try {
+            await processMergeConflictJob(job);
+        } finally {
+            mockCleanupWorktree.mock.mockImplementation(async () => {});
+        }
+
+        // The worktree holds the PR branch; the next job may only get the lock once it is gone.
+        assert.strictEqual(lockHeldDuringCleanup, true);
 
         // Lock should be released
         assert.ok(!mockRedisStore.has('lock:pr:test-owner:test-repo:42'));

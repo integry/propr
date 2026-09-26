@@ -114,6 +114,35 @@ async function handleExistingWorktreePath(worktreePath: string, localRepoPath: s
     }
 }
 
+/**
+ * Drops git's registration of one worktree whose directory is already gone,
+ * which `git worktree remove` refuses to touch. Only an entry git itself reports
+ * as prunable is removed, and only that entry: a global `git worktree prune` can
+ * race worktrees other tasks are still creating.
+ */
+export async function removeStaleWorktreeRegistration(git: SimpleGit, worktreePath: string): Promise<boolean> {
+    const target = path.resolve(worktreePath);
+    const listing = await git.raw(['worktree', 'list', '--porcelain']);
+    const entry = listing.split(/\n\s*\n/).find(block => {
+        const [first] = block.trim().split('\n');
+        return first.startsWith('worktree ') && path.resolve(first.slice('worktree '.length)) === target;
+    });
+    if (!entry || !/^prunable\b/m.test(entry)) return false;
+
+    const commonDir = (await git.raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
+    const adminRoot = path.join(commonDir, 'worktrees');
+    if (!await fs.pathExists(adminRoot)) return false;
+    for (const name of await fs.readdir(adminRoot)) {
+        const gitdirFile = path.join(adminRoot, name, 'gitdir');
+        if (!await fs.pathExists(gitdirFile)) continue;
+        const gitdir = (await fs.readFile(gitdirFile, 'utf8')).trim();
+        if (path.resolve(path.dirname(gitdir)) !== target) continue;
+        await fs.remove(path.join(adminRoot, name));
+        return true;
+    }
+    return false;
+}
+
 async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath: string, branchName: string): Promise<void> {
     logger.error({ branchName, error: error.message }, 'Branch is already checked out in another worktree');
 
@@ -123,8 +152,13 @@ async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath
         logger.info({ branchName, existingWorktreePath, newWorktreePath: worktreePath }, 'Attempting to remove existing worktree to allow new one');
 
         try {
-            await git.raw(['worktree', 'remove', existingWorktreePath, '--force']);
-            logger.info({ existingWorktreePath }, 'Successfully removed existing worktree');
+            try {
+                await git.raw(['worktree', 'remove', existingWorktreePath, '--force']);
+                logger.info({ existingWorktreePath }, 'Successfully removed existing worktree');
+            } catch (removeError) {
+                if (!await removeStaleWorktreeRegistration(git, existingWorktreePath)) throw removeError;
+                logger.warn({ branchName, existingWorktreePath }, 'Removed the stale registration of a worktree whose directory was already gone');
+            }
 
             const worktreeAddResult = await addWorktreeWithoutTracking(
                 git,

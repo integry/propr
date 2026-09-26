@@ -348,16 +348,19 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     await releaseFollowupCiSuspensionsForTask({ taskId: options.taskId }, { octokit: options.octokit, log: correlatedLogger })
         .catch(error => correlatedLogger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Failed to release follow-up CI suspension; reconciliation will retry it'));
 
-    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug('Released PR processing lock');
-    }
-
+    // The worktree still holds the PR branch until it is removed, and git lets a
+    // branch be checked out only once: the next job for this PR must not get the
+    // lease while that removal is still running.
     if (localRepoPath && worktreeInfo) {
         try {
             await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: true });
         } catch (cleanupError) {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
+    }
+
+    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
+        correlatedLogger.debug('Released PR processing lock');
     }
 
     try {
