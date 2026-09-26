@@ -9,6 +9,9 @@ import { mock, test } from 'node:test';
 const comments: Array<{ route: string; body: Record<string, unknown> }> = [];
 const autoMerges: number[] = [];
 let submission: { payload: string } | undefined;
+// The labels as they stand when the pull request opens, which is what a user
+// changes while the agent runs; `undefined` makes the re-read fail.
+let liveLabels: string[] | undefined;
 
 const findIssueSubmission = mock.fn(async () => submission);
 const processCommentEvent = mock.fn(async () => undefined);
@@ -20,6 +23,10 @@ await mock.module('@propr/core', {
         generateCompletionComment: mock.fn(async () => 'Completed.'),
         getAuthenticatedOctokit: mock.fn(async () => ({
             request: async (route: string, body: Record<string, unknown>) => {
+                if (route.startsWith('GET ')) {
+                    if (!liveLabels) throw new Error('issue read failed');
+                    return { data: { labels: liveLabels.map(name => ({ name })) } };
+                }
                 comments.push({ route, body });
                 return { data: { id: 7, user: { login: 'propr-dev[bot]' } } };
             },
@@ -49,10 +56,16 @@ const { handleCreatedPlanIssuePR } = await import('../src/jobs/issueJobPostProce
 const logger = { debug: mock.fn(), info: mock.fn(), warn: mock.fn(), error: mock.fn() } as never;
 const issueRef = { repoOwner: 'owner', repoName: 'repo', number: 42 } as never;
 
-async function runWithSubmission(payload: Record<string, unknown> | undefined, labels: string[]) {
+async function runWithSubmission(
+    payload: Record<string, unknown> | undefined,
+    labels: string[],
+    options: { liveLabels?: string[] | undefined } = {},
+) {
     comments.length = 0;
     autoMerges.length = 0;
     submission = payload ? { payload: JSON.stringify(payload) } : undefined;
+    liveLabels = 'liveLabels' in options ? options.liveLabels : labels;
+    processCommentEvent.mock.resetCalls();
     await handleCreatedPlanIssuePR({
         issueRef,
         currentIssueData: { data: { labels: labels.map(name => ({ name })) } },
@@ -91,4 +104,39 @@ test('a submitted task carries its own ultrafix bounds onto the new pull request
 test('a submitted auto-merge task without ultrafix enables auto-merge on the new pull request', async () => {
     assert.deepEqual(await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']), []);
     assert.deepEqual(autoMerges, [101]);
+});
+
+test('removing the ultrafix label before the pull request withdraws a submitted opt-in', async () => {
+    const withdrawn = await runWithSubmission(
+        { instruction: 'Fix dates', runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2 },
+        ['AI', 'ultrafix'],
+        { liveLabels: ['AI'] },
+    );
+
+    assert.deepEqual(withdrawn, []);
+    assert.equal(processCommentEvent.mock.callCount(), 0);
+    assert.deepEqual(autoMerges, []);
+});
+
+test('withdrawing ultrafix leaves a still-labelled auto-merge opt-in in place', async () => {
+    assert.deepEqual(
+        await runWithSubmission(
+            { instruction: 'Fix dates', runUltrafix: true, autoMerge: true },
+            ['AI', 'ultrafix', 'auto-merge'],
+            { liveLabels: ['AI', 'auto-merge'] },
+        ),
+        [],
+    );
+    assert.equal(processCommentEvent.mock.callCount(), 0);
+    assert.deepEqual(autoMerges, [101]);
+});
+
+test('an unreadable source issue keeps the opt-in stated when the run began', async () => {
+    const bounded = await runWithSubmission(
+        { instruction: 'Fix dates', runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2 },
+        ['AI', 'ultrafix'],
+        { liveLabels: undefined },
+    );
+
+    assert.deepEqual(bounded, ['/ultrafix goal=6 max=2\nTriggered automatically by the requested execution settings.']);
 });
