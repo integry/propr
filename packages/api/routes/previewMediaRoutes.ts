@@ -53,7 +53,7 @@ function parseRequest(req: Request, kind: Association['kind']): { repository: st
 }
 
 function decodedHtmlAttribute(value: string): string {
-  return value.replaceAll('&amp;', '&').replaceAll('&#38;', '&').replaceAll('&#x26;', '&');
+  return value.replace(/&(?:amp|#38|#x26);/gi, '&');
 }
 
 /** Select only GitHub-rendered media carrying the already-authorized attachment identity. */
