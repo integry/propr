@@ -165,10 +165,12 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     });
     assert.ok(sourceArtworkPixels.corner[3] <= 2, 'Displayed chooser artwork must retain its transparent corner');
     assert.ok(sourceArtworkPixels.center[3] >= 190, 'Displayed chooser artwork must retain its visible center');
-    const renderedArtwork = await sharp(await artwork.screenshot()).removeAlpha().raw().toBuffer();
-    const renderedCorner = [...renderedArtwork.subarray(0, 3)];
-    const renderedCenterOffset = (16 * 32 + 16) * 3;
-    const renderedCenter = [...renderedArtwork.subarray(renderedCenterOffset, renderedCenterOffset + 3)];
+    const { data: renderedArtwork, info: renderedArtworkInfo } = await sharp(await artwork.screenshot())
+      .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const renderedCorner = [...renderedArtwork.subarray(0, renderedArtworkInfo.channels)];
+    const renderedCenterOffset = (Math.floor(renderedArtworkInfo.height / 2) * renderedArtworkInfo.width
+      + Math.floor(renderedArtworkInfo.width / 2)) * renderedArtworkInfo.channels;
+    const renderedCenter = [...renderedArtwork.subarray(renderedCenterOffset, renderedCenterOffset + renderedArtworkInfo.channels)];
     assert.ok(renderedCorner.every(channel => channel >= 245), 'Transparent artwork corner must reveal the light production card');
     assert.ok(Math.max(...renderedCenter) - Math.min(...renderedCenter) >= 60, 'Rendered artwork center must remain visibly colored');
     await capture('linux-normal-active', 'Linux: normal, active');
