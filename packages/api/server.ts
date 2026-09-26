@@ -45,7 +45,8 @@ import {
   createDesktopAuthRoutes,
   createActiveWorkRoutes,
   attachmentUpload,
-  goalAttachmentUpload
+  goalAttachmentUpload,
+  registerHostedFleetRoutes
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -308,6 +309,7 @@ function setupRoutes(): void {
       ) => notificationBackground!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
     }),
   });
+  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   invalidateStatusAgentCache = statusRoutes.invalidateAgentStatusCache;
   const desktopAuthRoutes = createDesktopAuthRoutes();
   // INTENTIONALLY UNAUTHENTICATED: compatibility/discovery and the bounded
@@ -315,6 +317,14 @@ function setupRoutes(): void {
   // They return only compatibility/capability metadata or pairing state gated by
   // a high-entropy secret; all operational routes below remain authenticated.
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
+  // Machine-to-machine bootstrap verification has its own narrow service
+  // credential and deliberately does not depend on a customer's OAuth session.
+  // Register before registerDesktopApiBoundary installs the shared API guard;
+  // registration is a no-op unless Fleet control was enabled at startup.
+  registerHostedFleetRoutes(app, {
+    operationalStatus: statusRoutes.collectStatus,
+    queueStatus: queueRoutes.collectQueueStats
+  });
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
   registerDesktopApiBoundary(app, {
@@ -336,7 +346,6 @@ function setupRoutes(): void {
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const fileChangesRoutes = createFileChangesRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
-  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });

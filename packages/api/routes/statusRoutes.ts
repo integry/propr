@@ -252,107 +252,111 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     }
   }
 
-  async function getStatus(req: Request, res: Response): Promise<void> {
-    try {
-      const compatibility = getProprCompatibilityMetadata(!isDemoMode());
-      // In demo mode, return all-green status
-      if (isDemoMode()) {
-        res.json({
-          ...compatibility,
-          api: 'healthy',
-          redis: 'connected',
-          daemon: 'running',
-          worker: 'running',
-          workerCount: 3,
-          githubAuth: 'connected',
-          githubAuthMode: 'demo',
-          githubEventIntake: resolveIntakeMode(),
-          githubEventIntakeStatus: 'connected',
-          claudeAuth: 'connected',
-          indexing: 'idle',
-          warnings: [],
-          agents: [{
-            id: 'default-claude-agent',
-            type: 'claude',
-            alias: 'default',
-            status: 'connected'
-          }],
-          timestamp: new Date().toISOString()
-        });
-        return;
-      }
-
-      const status: Record<string, unknown> = {
+  async function collectStatus(): Promise<Record<string, unknown>> {
+    const compatibility = getProprCompatibilityMetadata(!isDemoMode());
+    // In demo mode, return all-green status
+    if (isDemoMode()) {
+      return {
         ...compatibility,
         api: 'healthy',
-        redis: 'unknown',
-        daemon: 'unknown',
-        worker: 'unknown',
-        githubAuth: 'unknown',
-        claudeAuth: 'unknown',
-        indexing: 'unknown',
+        redis: 'connected',
+        daemon: 'running',
+        worker: 'running',
+        workerCount: 3,
+        githubAuth: 'connected',
+        githubAuthMode: 'demo',
+        githubEventIntake: resolveIntakeMode(),
+        githubEventIntakeStatus: 'connected',
+        claudeAuth: 'connected',
+        indexing: 'idle',
         warnings: [],
-        agents: [],
+        agents: [{
+          id: 'default-claude-agent',
+          type: 'claude',
+          alias: 'default',
+          status: 'connected'
+        }],
         timestamp: new Date().toISOString()
       };
+    }
 
-      const runtimeStatus = await getRuntimeStatusSnapshot(redisClient);
-      Object.assign(status, runtimeStatus);
+    const status: Record<string, unknown> = {
+      ...compatibility,
+      api: 'healthy',
+      redis: 'unknown',
+      daemon: 'unknown',
+      worker: 'unknown',
+      githubAuth: 'unknown',
+      claudeAuth: 'unknown',
+      indexing: 'unknown',
+      warnings: [],
+      agents: [],
+      timestamp: new Date().toISOString()
+    };
 
-      // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
-      // GitHub events arrive) are independent — surface both so operators can tell
-      // a relay-auth + routing-websocket deployment apart from an app + webhook one.
-      const authMode = resolveAuthMode();
-      status.githubAuthMode = authMode;
-      // The coarse githubAuth health is derived from the resolved auth mode rather
-      // than GH_APP_* alone, so a valid relay-auth deployment reports 'connected'
-      // instead of a misleading 'disconnected'. Only 'none' (nothing configured)
-      // and 'unknown' (resolver error) report as disconnected.
-      status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
-        ? 'connected'
-        : 'disconnected';
-      const intakeMode = resolveIntakeMode();
-      status.githubEventIntake = intakeMode;
+    const runtimeStatus = await getRuntimeStatusSnapshot(redisClient);
+    Object.assign(status, runtimeStatus);
 
-      // Routing WebSocket runtime state, published to Redis by the daemon when the
-      // default routing_websocket intake path is active. Included only when present
-      // so non-routing deployments don't carry an empty field.
-      // Routing remains independently observable when another Redis operation
-      // fails, matching the previous partial-failure behavior.
-      const routing = runtimeStatus.routing;
-      applyRoutingStatus(status, intakeMode, routing);
+    // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
+    // GitHub events arrive) are independent — surface both so operators can tell
+    // a relay-auth + routing-websocket deployment apart from an app + webhook one.
+    const authMode = resolveAuthMode();
+    status.githubAuthMode = authMode;
+    // The coarse githubAuth health is derived from the resolved auth mode rather
+    // than GH_APP_* alone, so a valid relay-auth deployment reports 'connected'
+    // instead of a misleading 'disconnected'. Only 'none' (nothing configured)
+    // and 'unknown' (resolver error) report as disconnected.
+    status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
+      ? 'connected'
+      : 'disconnected';
+    const intakeMode = resolveIntakeMode();
+    status.githubEventIntake = intakeMode;
 
-      // The intake status is a stable, mode-aware health signal for the active
-      // GitHub event delivery path so operators can tell a healthy intake from a
-      // stalled one independent of the intake method name.
-      status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
+    // Routing WebSocket runtime state, published to Redis by the daemon when the
+    // default routing_websocket intake path is active. Included only when present
+    // so non-routing deployments don't carry an empty field.
+    // Routing remains independently observable when another Redis operation
+    // fails, matching the previous partial-failure behavior.
+    const routing = runtimeStatus.routing;
+    applyRoutingStatus(status, intakeMode, routing);
 
-      const [agentSnapshot, indexing, cachedWarnings] = await Promise.all([
-        timeApiStage('status.agent-health', agentStatusCache.read),
-        indexingStatusCache.read(),
-        systemWarningsCache.read(),
-      ]);
-      status.agents = agentSnapshot.agents;
-      status.claudeAuth = agentSnapshot.claudeAuth;
-      status.indexing = indexing;
-      // The operational warning below is request-local; never mutate the cached
-      // summarization warning array.
-      const warnings = [...cachedWarnings];
-      const agentRuntime = agentRegistry.getOperationalStatus?.();
-      if (agentRuntime) {
-        status.agentRuntime = agentRuntime;
-        const image = agentRuntime.unifiedAgentImage;
-        if (image.status === 'unavailable') {
-          warnings.push({
-            type: 'agent_runtime_unified_image_unavailable',
-            message: `Unified agent image is unavailable${image.imageTag ? ` (${image.imageTag})` : ''}: ${image.error || 'unknown error'}`
-          });
-        }
+    // The intake status is a stable, mode-aware health signal for the active
+    // GitHub event delivery path so operators can tell a healthy intake from a
+    // stalled one independent of the intake method name.
+    status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
+
+    const [agentSnapshot, indexing, cachedWarnings] = await Promise.all([
+      timeApiStage('status.agent-health', agentStatusCache.read),
+      indexingStatusCache.read(),
+      systemWarningsCache.read(),
+    ]);
+    status.agents = agentSnapshot.agents;
+    status.claudeAuth = agentSnapshot.claudeAuth;
+    status.indexing = indexing;
+    // The operational warning below is request-local; never mutate the cached
+    // summarization warning array.
+    const warnings = [...cachedWarnings];
+    const agentRuntime = agentRegistry.getOperationalStatus?.();
+    if (agentRuntime) {
+      status.agentRuntime = agentRuntime;
+      const image = agentRuntime.unifiedAgentImage;
+      if (image.status === 'unavailable') {
+        warnings.push({
+          type: 'agent_runtime_unified_image_unavailable',
+          message: `Unified agent image is unavailable${image.imageTag ? ` (${image.imageTag})` : ''}: ${image.error || 'unknown error'}`
+        });
       }
-      status.warnings = warnings;
+    }
+    status.warnings = warnings;
 
+    return status;
+  }
+
+  async function getStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const status = await collectStatus();
       res.json(status);
-      if (projectSystemSnapshot) {
+      if (!isDemoMode() && projectSystemSnapshot) {
         const additionalAdministratorIds = req.user
           && req.authorization?.permissions.includes('instance.manage_settings')
           ? [req.user.id]
@@ -371,6 +375,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   }
 
   return {
+    collectStatus,
     getCompatibility,
     getDesktopDiscovery,
     getStatus,
