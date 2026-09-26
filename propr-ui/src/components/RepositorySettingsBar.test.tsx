@@ -50,6 +50,7 @@ describe('RepositorySettingsBar follow-up CI cancellation', () => {
     expect(screen.getByText(/Only the validation workflows you select below are cancelled/)).toBeInTheDocument();
     expect(screen.getByText(/If you select nothing here, the instance-wide/)).toBeInTheDocument();
     expect(screen.getByText(/Checks start again on the new commit, or resume on the current one if no commit is produced\./)).toBeInTheDocument();
+    expect(screen.getByText(/also cancelled when a pull request is merged or closed/)).toBeInTheDocument();
     // The selection belongs to the enabled option; nothing to select while it is off.
     expect(screen.queryByRole('textbox', { name: workflowsName })).not.toBeInTheDocument();
   });

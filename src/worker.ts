@@ -37,6 +37,7 @@ import {
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
+import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
 import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
@@ -393,7 +394,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     const taskStateRecovery = await startWorkerTaskStateRecovery({
         stateManager,
         recoverGoals: () => recoverNonterminalGoals(),
-        reconcileCiSuspensions: () => reconcileFollowupCiSuspensions(),
+        reconcileCiSuspensions: async () => ({
+            ...await reconcileFollowupCiSuspensions(),
+            closedPullRequests: await cancelClosedPullRequestValidation(),
+        }),
     });
 
     const close = async (): Promise<void> => {
