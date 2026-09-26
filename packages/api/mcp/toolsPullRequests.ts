@@ -15,7 +15,7 @@ import {
 import { McpError } from './config.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { callWorkflow } from './adapter.js';
-import { type McpTool, type ToolDeps, repositorySchema, idSchema, mutationShape, ok, textSchema } from './tools.js';
+import { type Args, type McpTool, type ToolDeps, repositorySchema, idSchema, mutationShape, ok, textSchema } from './tools.js';
 import { ULTRAFIX_LABEL, type InventoryOptions, findRepositoryModelLabel, hasUltrafixLabel, labelNames, listPullRequestInventory, lookupRepositoryModelLabel, managedModelLabels, repositoryModelLabels, resolveEnabledModel } from './pullRequestInventory.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
@@ -74,6 +74,44 @@ async function withModelLabelLease<T>(redis: RedisClientType, repository: string
   return result;
 }
 
+/**
+ * Validate a `/fix` selection against the review comment it names and return the
+ * canonical identifiers for the posted command body. Kept out of the tool's `run`
+ * so the command-agnostic posting path stays one readable sequence; every
+ * rejection here names the identifiers it rejected instead of dropping them.
+ */
+async function resolveFixSelection(
+  deps: ToolDeps, principal: Parameters<McpTool['run']>[0]['principal'], args: Args, head: string,
+): Promise<ReviewFeedbackSelection> {
+  const canonical = canonicalizeReviewFeedbackSelection({ findingIds: args.findingIds, suggestionIds: args.suggestionIds });
+  // Fails closed: the schema should have caught these, but a namespace
+  // mismatch (a finding id under suggestionIds) only shows up here.
+  if (canonical.invalid.length) throw new McpError('INVALID_INPUT', `Not valid review identifiers for the field they were supplied in: ${canonical.invalid.join(', ')}. Use F# in findingIds and S# in suggestionIds.`);
+  const size = reviewFeedbackSelectionSize(canonical);
+  if (size === 0) throw new McpError('MISSING_INPUT', 'Select at least one review item: F# identifiers in findingIds, S# identifiers in suggestionIds, or both.');
+  if (size > MAX_REVIEW_FEEDBACK_SELECTION) throw new McpError('INVALID_INPUT', `Select at most ${MAX_REVIEW_FEEDBACK_SELECTION} review items in one fix request.`);
+  const comment = await readDiscussionComment(principal, { repository: args.repository, commentId: args.reviewCommentId, pullRequest: args.pullRequest });
+  const projected = await projectDiscussionComment(deps, comment, { repository: args.repository, pullRequest: args.pullRequest, head, bodyOffset: 0 });
+  const review = projected.review as { currentFindingIds: string[]; currentSuggestionIds?: string[]; matchesCurrentHead: boolean | null } | undefined;
+  if (!review) throw new McpError('STALE_FINDINGS', 'That comment is not a parseable ProPR review, so it offers no findings or suggestions to select.', 409);
+  if (review.matchesCurrentHead === false) throw new McpError('STALE_FINDINGS', 'That review was produced for an older head. Review the current head before fixing against it.', 409);
+  // Reported per identifier and per namespace. One generic message left a
+  // caller unable to tell a typo from an already-consumed item, which is
+  // the silent-drop behaviour this tool must not have.
+  const offeredSuggestions = review.currentSuggestionIds ?? [];
+  const unknownFindings = canonical.findingIds.filter(id => !review.currentFindingIds.includes(id));
+  const unknownSuggestions = canonical.suggestionIds.filter(id => !offeredSuggestions.includes(id));
+  if (unknownFindings.length || unknownSuggestions.length) {
+    throw new McpError('STALE_FINDINGS', [
+      unknownFindings.length ? `Findings not available in that review: ${unknownFindings.join(', ')}.` : '',
+      unknownSuggestions.length ? `Suggestions not available in that review: ${unknownSuggestions.join(', ')}.` : '',
+      `It currently offers findings ${review.currentFindingIds.join(', ') || '(none)'} and suggestions ${offeredSuggestions.join(', ') || '(none)'}.`,
+      'They may have been addressed already, or they belong to a review of an older head.',
+    ].filter(Boolean).join(' '), 409);
+  }
+  return canonical;
+}
+
 export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
   const tasks = createTaskRoutes({ db: deps.db, taskQueue: deps.taskQueue });
   const shape = { repository: repositorySchema, pullRequest: z.number().int().positive() };
@@ -126,9 +164,10 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         : ''), scope,
       // `findingIds` is widened from a required `.min(1)` array to an optional
       // one so existing clients that send only findings stay byte-compatible,
-      // while the combined "at least one" rule is enforced in `run` below: a
-      // cross-field `.superRefine` would return ZodEffects and break the
-      // `schema: z.ZodObject` contract that `tools/list` depends on.
+      // while the combined "at least one" rule is enforced in
+      // `resolveFixSelection` instead: a cross-field `.superRefine` would return
+      // ZodEffects and break the `schema: z.ZodObject` contract that
+      // `tools/list` depends on.
       schema: z.object({ ...mutation, instructions: textSchema.optional(), ...(command === 'fix' ? { reviewCommentId: z.number().int().positive(), findingIds: z.array(z.string().regex(REVIEW_FINDING_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]), suggestionIds: z.array(z.string().regex(REVIEW_SUGGESTION_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]) } : {}), ...(command === 'ultrafix' ? { goal: z.number().int().min(1).max(10).default(9), maxCycles: z.number().int().min(1).max(10).default(3) } : {}) }).strict(),
       run: async ({ principal, args, operationId }) => {
         if (command === 'ultrafix') deps.policy.requireScope(principal, 'review');
@@ -138,35 +177,9 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         // Canonical selection for the posted command body. Empty for the two
         // commands that take no identifiers, so the body composition below stays
         // a single expression.
-        let selection: ReviewFeedbackSelection = emptyReviewFeedbackSelection();
-        if (command === 'fix') {
-          const canonical = canonicalizeReviewFeedbackSelection({ findingIds: args.findingIds, suggestionIds: args.suggestionIds });
-          // Fails closed: the schema should have caught these, but a namespace
-          // mismatch (a finding id under suggestionIds) only shows up here.
-          if (canonical.invalid.length) throw new McpError('INVALID_INPUT', `Not valid review identifiers for the field they were supplied in: ${canonical.invalid.join(', ')}. Use F# in findingIds and S# in suggestionIds.`);
-          if (reviewFeedbackSelectionSize(canonical) === 0) throw new McpError('MISSING_INPUT', 'Select at least one review item: F# identifiers in findingIds, S# identifiers in suggestionIds, or both.');
-          if (reviewFeedbackSelectionSize(canonical) > MAX_REVIEW_FEEDBACK_SELECTION) throw new McpError('INVALID_INPUT', `Select at most ${MAX_REVIEW_FEEDBACK_SELECTION} review items in one fix request.`);
-          const comment = await readDiscussionComment(principal, { repository: args.repository, commentId: args.reviewCommentId, pullRequest: args.pullRequest });
-          const projected = await projectDiscussionComment(deps, comment, { repository: args.repository, pullRequest: args.pullRequest, head: pr.head.sha, bodyOffset: 0 });
-          const review = projected.review as { currentFindingIds: string[]; currentSuggestionIds?: string[]; matchesCurrentHead: boolean | null } | undefined;
-          if (!review) throw new McpError('STALE_FINDINGS', 'That comment is not a parseable ProPR review, so it offers no findings or suggestions to select.', 409);
-          if (review.matchesCurrentHead === false) throw new McpError('STALE_FINDINGS', 'That review was produced for an older head. Review the current head before fixing against it.', 409);
-          // Reported per identifier and per namespace. One generic message left a
-          // caller unable to tell a typo from an already-consumed item, which is
-          // the silent-drop behaviour this tool must not have.
-          const offeredSuggestions = review.currentSuggestionIds ?? [];
-          const unknownFindings = canonical.findingIds.filter(id => !review.currentFindingIds.includes(id));
-          const unknownSuggestions = canonical.suggestionIds.filter(id => !offeredSuggestions.includes(id));
-          if (unknownFindings.length || unknownSuggestions.length) {
-            throw new McpError('STALE_FINDINGS', [
-              unknownFindings.length ? `Findings not available in that review: ${unknownFindings.join(', ')}.` : '',
-              unknownSuggestions.length ? `Suggestions not available in that review: ${unknownSuggestions.join(', ')}.` : '',
-              `It currently offers findings ${review.currentFindingIds.join(', ') || '(none)'} and suggestions ${offeredSuggestions.join(', ') || '(none)'}.`,
-              'They may have been addressed already, or they belong to a review of an older head.',
-            ].filter(Boolean).join(' '), 409);
-          }
-          selection = canonical;
-        }
+        const selection: ReviewFeedbackSelection = command === 'fix'
+          ? await resolveFixSelection(deps, principal, args, pr.head.sha)
+          : emptyReviewFeedbackSelection();
         // Canonical upper-case identifiers on one line, instructions below it:
         // exactly the shape the worker's command parser documents, so the MCP
         // path and a hand-typed comment produce an identical fix run.
