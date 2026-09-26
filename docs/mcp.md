@@ -233,6 +233,12 @@ No tool downloads arbitrary remote URLs. Secret entry and browser push/login
 flows stay in the browser. Tool responses are bounded at 256 KiB and redact
 credential fields and recognizable token strings.
 
+`list_plans` takes an optional `status` filter alongside `offset`/`limit`:
+`active` (every plan that has not merged or failed), any persisted plan status
+(`draft`, `generating`, `refining`, `review`, `approved`, `executed`,
+`executing`, `pr_created`, `merged`, `failed`) or `all`, the default. The filter
+runs in the query, so `offset` and `limit` page the filtered set.
+
 List tools return bounded summaries rather than requiring one read per item.
 Task and goal entries include a concise title/summary, agent and model, linked
 pull request state, lifecycle timestamps, elapsed milliseconds, and a failure

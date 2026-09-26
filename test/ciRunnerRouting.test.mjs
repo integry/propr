@@ -540,9 +540,14 @@ describe('PR check routing', () => {
             .filter(file => readFileSync(join(scriptsDirectory, file), 'utf8').includes('prepareNativeElectronTest('))
             .map(file => `apps/desktop/scripts/${file}`)
             .sort();
-        // Both long-lived probes must be among them: a discovery expression that
-        // matched nothing real would otherwise agree with an empty derivation.
-        for (const probe of ['electron-frame-semantics.test.mjs', 'electron-pairing-zstd.test.mjs']) {
+        // The existing probes and published-preview coverage must be among them:
+        // a discovery expression that matched nothing real would otherwise
+        // agree with an empty derivation.
+        for (const probe of [
+            'electron-frame-semantics.test.mjs',
+            'electron-pairing-zstd.test.mjs',
+            'published-preview-electron.test.mjs',
+        ]) {
             assert.ok(expected.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
         }
         assert.deepEqual([...units].sort(), expected);
