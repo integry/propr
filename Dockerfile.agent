@@ -154,6 +154,21 @@ RUN case "${VIBE_CLI_VERSION}" in \
     && if [ ! -e /usr/local/bin/vibe-acp ]; then ln -s /usr/local/bin/vibe /usr/local/bin/vibe-acp; fi
 
 
+FROM agent-base AS agent-tank-cli
+# Pinned here, not in CI: this literal is part of the Dockerfile content that
+# feeds the agent bundle content hash, so bumping it produces a new image tag.
+# An env-only override in CI would NOT change the tag and would silently ship a
+# different binary under an existing tag - do not do that.
+ARG AGENT_TANK_CLI_VERSION=0.9.10
+USER root
+# node-pty compiles against the toolchain already present in agent-base
+# (build-essential + python3), which is why this needs no extra apt packages.
+RUN npm install -g "agent-tank@${AGENT_TANK_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && agent-tank --version
+
+
 FROM agent-base AS antigravity-cli
 ARG ANTIGRAVITY_CLI_VERSION=1.2.4
 ARG ANTIGRAVITY_CLI_RELEASE_ID=6085322963025920
@@ -196,18 +211,21 @@ ARG CODEX_CLI_VERSION=0.154.0
 ARG ANTIGRAVITY_CLI_VERSION=1.2.4
 ARG OPENCODE_CLI_VERSION=1.18.31
 ARG VIBE_CLI_VERSION=2.25.4
+ARG AGENT_TANK_CLI_VERSION=0.9.10
 
 LABEL dev.propr.agent-bundle="true" \
       dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
       dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
       dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
       dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
-      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}"
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
+      dev.propr.agent-tank.version="${AGENT_TANK_CLI_VERSION}"
 
 USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
 COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=agent-tank-cli /usr/local/lib/node_modules/agent-tank /usr/local/lib/node_modules/agent-tank
 COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
@@ -255,7 +273,8 @@ RUN set -eu; \
     && codex --version \
     && opencode --version \
     && vibe --version \
-    && agy --version
+    && agy --version \
+    && agent-tank --version
 
 USER node
 RUN git config --global user.name "ProPR Agent Bot" \

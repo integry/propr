@@ -1,4 +1,5 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
+import type { AgentTankMode } from '@propr/shared';
 import type { SummarizationSettings } from './proprTypes';
 
 export type { SummarizationSettings };
@@ -78,8 +79,8 @@ export const triggerReindexAll = async (ignoreCooldown = false): Promise<Trigger
 };
 
 // Agent Tank settings API
-export interface AgentTankSettingsResponse { enabled: boolean; url: string; }
-export interface AgentTankStatusResponse { available: boolean; reason?: string; }
+export interface AgentTankSettingsResponse { mode?: AgentTankMode; enabled: boolean; url: string; }
+export interface AgentTankStatusResponse { available: boolean; mode?: AgentTankMode; reason?: string; }
 
 export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, { credentials: 'include' });
@@ -87,7 +88,7 @@ export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse>
   return response.json();
 };
 
-export const updateAgentTankSettings = async (settings: { enabled: boolean; url: string }): Promise<void> => {
+export const updateAgentTankSettings = async (settings: { mode: AgentTankMode; url: string }): Promise<void> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings), credentials: 'include'
@@ -150,6 +151,8 @@ export const refreshAgentTank = async (): Promise<{ success: boolean; error?: st
 
 export interface AgentTankDetectResponse {
   detected: boolean;
+  /** Which mode the banner should offer: bundled needs no url. */
+  mode?: AgentTankMode;
   url?: string;
   reason?: string;
 }
@@ -160,11 +163,11 @@ export const detectAgentTank = async (): Promise<AgentTankDetectResponse> => {
   return response.json();
 };
 
-export const enableAgentTank = async (url: string): Promise<{ success: boolean }> => {
+export const enableAgentTank = async (mode: AgentTankMode, url?: string): Promise<{ success: boolean }> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled: true, url }),
+    body: JSON.stringify(url ? { mode, url } : { mode }),
     credentials: 'include'
   });
   await handleApiResponse(response);

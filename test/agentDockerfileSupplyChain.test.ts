@@ -65,3 +65,20 @@ test('the image build script uses the same pinned Antigravity version', () => {
   assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_RELEASE_ID=\$ANTIGRAVITY_CLI_RELEASE_ID"/);
   assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_SHA512=\$ANTIGRAVITY_CLI_SHA512"/);
 });
+
+test('bundled Agent Tank is installed at a pinned version, never latest', () => {
+  assert.match(dockerfile, /ARG AGENT_TANK_CLI_VERSION=\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /npm install -g "agent-tank@\$\{AGENT_TANK_CLI_VERSION\}"/);
+  assert.doesNotMatch(dockerfile, /agent-tank@latest/);
+  assert.doesNotMatch(dockerfile, /npm install -g agent-tank(\s|$)/m);
+  // The final stage must actually verify the binary it ships.
+  assert.match(dockerfile, /&& agent-tank --version/);
+});
+
+test('the image build script uses the same pinned Agent Tank version', () => {
+  const dockerVersion = dockerfile.match(/ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)/)?.[1];
+  const scriptVersion = buildScript.match(/AGENT_TANK_CLI_VERSION="\$\{AGENT_TANK_CLI_VERSION:-(\d+\.\d+\.\d+)\}"/)?.[1];
+  assert.ok(dockerVersion);
+  assert.equal(scriptVersion, dockerVersion);
+  assert.match(buildScript, /"--build-arg" "AGENT_TANK_CLI_VERSION=\$AGENT_TANK_CLI_VERSION"/);
+});

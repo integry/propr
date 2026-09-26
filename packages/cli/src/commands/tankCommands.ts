@@ -1,14 +1,14 @@
 /**
- * `propr tank on|off` — toggle Agent Tank LLM usage tracking.
+ * `propr tank bundled|external|off` — configure Agent Tank LLM usage tracking.
  *
- * Agent Tank is an external service, not a stack container, so this is a backend
+ * Agent Tank is a backend setting rather than a stack container, so this is a
  * setting flip routed through the running ProPR API.
  */
 
 import { Command } from "commander";
+import { AGENT_TANK_MODES, type AgentTankMode } from "@propr/shared";
 import { getAgentTank, setAgentTank } from "../api/agentTank.js";
 import { NetworkError, UnauthorizedError } from "../api/errors.js";
-import { parseOnOffState, ParseStateError } from "../utils/index.js";
 
 function handleApiError(error: unknown): never {
   if (error instanceof NetworkError) {
@@ -21,33 +21,66 @@ function handleApiError(error: unknown): never {
   process.exit(1);
 }
 
+/**
+ * `on` is kept as a deprecated alias for `external` rather than for `bundled`:
+ * an existing user typing `propr tank on` today means "use my host install",
+ * and silently repointing them at a container would change behavior under them.
+ */
+export function parseTankMode(value: string): AgentTankMode | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "off") return "disabled";
+  if (normalized === "on") return "external";
+  return (AGENT_TANK_MODES as readonly string[]).includes(normalized)
+    ? normalized as AgentTankMode
+    : undefined;
+}
+
+/** Only `external` talks to a URL, so only `external` prints one. */
+function describeSettings(mode: AgentTankMode, url?: string): string {
+  return mode === "external" && url ? `${mode}  (${url})` : mode;
+}
+
 export function createTankCommand(): Command {
   const tank = new Command("tank")
-    .description("Toggle Agent Tank LLM usage tracking (requires the stack running)")
-    .argument("[state]", "on or off (omit to show current setting)")
-    .option("--url <url>", "Agent Tank service URL")
+    .description("Configure Agent Tank LLM usage tracking (requires the stack running)")
+    .argument("[mode]", "bundled, external, or off (omit to show the current mode)")
+    .option("--url <url>", "Agent Tank service URL (external mode only)")
     .addHelpText("after", `
+Modes:
+  bundled   ProPR runs the Agent Tank CLI inside the agent image (no host install)
+  external  Talk to an Agent Tank daemon you run yourself
+  off       No usage tracking at all
+
 Examples:
-  $ propr tank              # show current setting
-  $ propr tank on
+  $ propr tank                                     # show current mode
+  $ propr tank bundled
+  $ propr tank external --url http://127.0.0.1:3456
   $ propr tank off
-  $ propr tank on --url http://127.0.0.1:3456
 `)
-    .action(async (state: string | undefined, options: { url?: string }) => {
+    .action(async (mode: string | undefined, options: { url?: string }) => {
       try {
-        if (!state) {
+        if (!mode) {
           const current = await getAgentTank();
-          console.log(`Agent Tank: ${current.enabled ? "on" : "off"}${current.url ? `  (${current.url})` : ""}`);
+          console.log(`Agent Tank: ${describeSettings(current.mode, current.url)}`);
           return;
         }
-        const enable = parseOnOffState(state);
-        const result = await setAgentTank(enable, options.url);
-        console.log(`Agent Tank ${result.enabled ? "enabled" : "disabled"}${result.url ? `  (${result.url})` : ""}.`);
-      } catch (error) {
-        if (error instanceof ParseStateError) {
-          console.error(`Error: ${error.message}`);
+
+        const parsed = parseTankMode(mode);
+        if (!parsed) {
+          console.error(`Error: invalid mode "${mode}". Use one of: ${AGENT_TANK_MODES.join(", ")}, off`);
           process.exit(1);
         }
+        if (options.url && parsed !== "external") {
+          console.error(`Error: --url only applies to external mode.`);
+          process.exit(1);
+        }
+        if (mode.trim().toLowerCase() === "on") {
+          console.warn(`Note: "propr tank on" is deprecated; use "propr tank external".`);
+        }
+
+        const result = await setAgentTank(parsed, options.url);
+        console.log(`Agent Tank set to ${describeSettings(result.mode, result.url)}.`);
+      } catch (error) {
         handleApiError(error);
       }
     });

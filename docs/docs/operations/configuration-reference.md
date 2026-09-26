@@ -140,11 +140,14 @@ Optional: expose a local stack's API to the hosted control plane at `https://app
 
 ## Agent Tank & Metrics
 
-These two variables are read from code but are not in `.env.example` — Agent Tank is normally connected through the Web UI or `propr agent-tank`, which save the URL as a backend setting. See [Agent Tank](./agent-tank.md).
+These variables are read from code but are not in `.env.example` — Agent Tank is normally configured through the Web UI or `propr tank`, which save the mode as a backend setting. The integration has three modes (`disabled`, `bundled`, `external`); see [Agent Tank](./agent-tank.md).
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `AGENT_TANK_URL` | Code falls back to `http://0.0.0.0:3456` when no saved setting exists | Fallback Agent Tank service URL used when no URL is saved in settings. Empty or `false` disables usage tracking for LLM calls. | Only when configuring Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_MODE` | `disabled` | Integration mode used when **no** Agent Tank setting has been saved yet: `disabled`, `bundled` (run the CLI inside the agent image), or `external` (talk HTTP to your own daemon). A saved setting always wins, and an unrecognized value is treated as `disabled`. | Only when configuring Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_URL` | Code falls back to `http://0.0.0.0:3456` when no saved setting exists | Fallback Agent Tank service URL used when no URL is saved in settings. **Applies to `external` mode only** — bundled mode contacts no URL. Empty or `false` disables usage tracking for LLM calls in external mode. | Only when configuring external Agent Tank via env instead of the UI/CLI. |
+| `AGENT_TANK_BUNDLED_TIMEOUT_MS` | `120000` | How long a bundled-mode refresh container may run before it is abandoned. A timeout degrades to "no usage data"; it never fails a task. | Optional, `bundled` mode only. |
+| `AGENT_TANK_BUNDLED_CACHE_TTL_MS` | `60000` | How long a bundled-mode usage snapshot stays fresh before the next refresh starts a container. Per-LLM-call probes only read this cache. | Optional, `bundled` mode only. |
 | `ANALYSIS_AGENT_TANK_TIMEOUT_MS` | `2000` | Timeout for the Agent Tank status fetch wrapped around each LLM call. | Optional. |
 
 ## Advanced

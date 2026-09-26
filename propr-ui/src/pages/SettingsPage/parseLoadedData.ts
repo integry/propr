@@ -1,6 +1,6 @@
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import { Settings } from './types';
-import { normalizeReviewContextBudgetPercent } from '@propr/shared';
+import { agentTankModeFromLegacyEnabled, isAgentTankMode, normalizeReviewContextBudgetPercent } from '@propr/shared';
 
 // Helper function to determine default agent alias
 function resolveDefaultAgentAlias(savedAlias: string | undefined, enabledAgents: AgentConfig[]): string {
@@ -80,6 +80,12 @@ export function parseLoadedData(results: any[]) {
       default_prompt: summarizationData.default_prompt,
       runtime: summarizationData.runtime,
     },
-    agentTankSettings: { enabled: atData.enabled || false, url: atData.url || 'http://0.0.0.0:3456' },
+    // An older backend answers with only `{ enabled, url }`; derive the mode
+    // from it so the UI never renders an undefined radio selection.
+    agentTankSettings: {
+      mode: isAgentTankMode(atData.mode) ? atData.mode : agentTankModeFromLegacyEnabled(atData.enabled),
+      enabled: atData.enabled || false,
+      url: atData.url || 'http://0.0.0.0:3456'
+    },
   };
 }

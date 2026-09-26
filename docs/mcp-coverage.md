@@ -54,7 +54,7 @@ remain separate gates.
 | Direct agent configuration | `get_agent_configuration`, `create_agent_configuration`, `update_agent_configuration`, `remove_agent_configuration`; actual types/models, alias, enablement, model labels/reasoning, CLI versions; new agents start disabled for secure login |
 | Synthetic-agent composition | `create_synthetic_agent`, `update_synthetic_agent`, `remove_synthetic_agent`; pool models/members, strategy, priority and usage thresholds; existing reference/default guards |
 | Advanced indexing policy | `get_indexing_configuration`, `update_indexing_configuration`; primary/fallback alias:model, prompt, enablement and runtime cooldown state |
-| Provider policy | `get_provider_policy`, `update_provider_policy`, `get_provider_status`, `get_provider_usage`, `refresh_provider_usage`, `detect_provider_service`; Agent Tank service origin and enablement, no credential entry |
+| Provider policy | `get_provider_policy`, `update_provider_policy`, `get_provider_status`, `get_provider_usage`, `refresh_provider_usage`, `detect_provider_service`; Agent Tank integration mode (`disabled`/`bundled`/`external`) and, for external, the service origin; no credential entry |
 | Execution/review/context | `get_execution_settings`, `update_execution_settings`; worker concurrency, analysis/planner models, review model/prompt/context enablement/model/budget, reasoning and bounded ultrafix defaults |
 | Workflow labels and keywords | `get_`/`update_` tools for `followup_keywords`, `followup_ignore_keywords`, `primary_processing_labels`, `pr_label`, `ai_primary_tag` |
 | Runtime package configuration/build | `get_runtime_configuration`, `update_runtime_configuration` |

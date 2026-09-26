@@ -263,7 +263,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'agent-tank',
       category: 'integrations',
-      searchText: 'LLM usage tracking Agent Tank daemon URL rate limit Claude Antigravity Codex CLI connection',
+      searchText: 'LLM usage tracking Agent Tank daemon URL rate limit Claude Antigravity Codex CLI connection mode bundled external disabled',
       content: (
         <AgentTankSection
           settings={agentTankSettings}

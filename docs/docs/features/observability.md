@@ -29,7 +29,7 @@ The task detail view exposes progress during execution, including streamed outpu
 
 ## Provider Capacity
 
-With the optional [Agent Tank](../operations/agent-tank.md) integration enabled, provider capacity becomes a visible signal too: the sidebar shows live usage bars per subscription provider, and each LLM log entry records the usage delta its call consumed. Turn it on from the dashboard banner ProPR shows when it detects a running instance, from **Settings → LLM Usage Tracking**, or with `propr tank on`.
+With the optional [Agent Tank](../operations/agent-tank.md) integration enabled, provider capacity becomes a visible signal too: the sidebar shows live usage bars per subscription provider, and each LLM log entry records the usage delta its call consumed. Turn it on from the dashboard banner, from **Settings → LLM Usage Tracking**, or with `propr tank bundled` — bundled mode runs Agent Tank inside the ProPR agent image, so there is nothing to install.
 
 ## Recovery
 
