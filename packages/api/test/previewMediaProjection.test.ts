@@ -9,14 +9,19 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import knex from 'knex';
 import type { Request, Response } from 'express';
-import { closeConnection, NotificationService, type RepoToMonitor } from '@propr/core';
+import { closeConnection, closeEventPublisher, NotificationService, type RepoToMonitor } from '@propr/core';
 import { parseNotification, TASK_UPDATE, trustedPreviewMedia, type Notification, type PublishedVisualPreview } from '@propr/shared';
 import { createPreviewMediaReader, goalPreviewSource, projectNotificationPreviews, projectTaskPreviewMedia, taskPreviewSource } from '../services/previewMediaProjection.js';
 import { createRepositoryMediaRoutes } from '../routes/repositoryMediaRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
 import { createNotificationProjectionTestHarness, countNotificationEvents } from './notificationProjectionTestHarness.js';
 
-after(closeConnection);
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 test('default task-list and identity-only preview consumers exit without opening a global database', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-preview-import-'));

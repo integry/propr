@@ -46,6 +46,29 @@ export {
   type DraftUpdateGenerationTrace,
 } from './events.js';
 
+// The general activity push surface. Exported from the barrel so the core
+// publishers, the API broadcaster and the UI socket provider all compile
+// against one definition of the wire format.
+export {
+  ACTIVITY_UPDATE,
+  GOAL_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
+  ACTIVITY_DOMAINS,
+  ACTIVITY_CHANGES,
+  isActivityTimestamp,
+  isActivityUpdatePayload,
+  isTerminalActivityChange,
+  type ActivityChange,
+  type ActivityDomain,
+  type ActivityUpdatePayload,
+  type GoalActivityState,
+  type GoalUpdatePayload,
+  type NotificationChange,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
+} from './activityEvents.js';
+
 // Export usage configuration and metrics types
 export {
   type AgentTankConfig,

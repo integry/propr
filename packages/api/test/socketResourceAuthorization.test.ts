@@ -5,7 +5,8 @@ import type { Socket } from 'socket.io';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { closeConnection } from '@propr/core';
-import { DRAFT_UPDATE, type DraftUpdatePayload } from '@propr/shared';
+import { ACTIVITY_UPDATE, DRAFT_UPDATE, type DraftUpdatePayload } from '@propr/shared';
+import { ACTIVITY_ROOM } from '../services/activityBroadcast.js';
 import type { SocketPrincipal } from '../auth.js';
 import { SocketService, type QueueDependencies } from '../services/socketService.js';
 import {
@@ -101,6 +102,50 @@ describe('Socket.IO resource authorization', () => {
     assert.equal(await manager.ownsDraft(ownerSocket, 'draft-1'), true);
     assert.equal(await manager.ownsDraft(otherSocket, 'draft-1'), false);
     assert.equal(await manager.ownsDraft(ownerSocket, 'missing'), false);
+  });
+
+  test('activity is opt-in, revalidated, and left on request', async () => {
+    const manager = subscriptionManager({
+      taskQueue: {} as Queue,
+      redisClient: {} as RedisClientType,
+      db: fakeDb({}),
+    });
+    const handlers = new Map<string, (payload?: unknown) => Promise<void> | void>();
+    const rooms = new Set<string>();
+    let sessionValid = true;
+    const socket = {
+      id: 'socket-1',
+      connected: true,
+      rooms,
+      data: {
+        principal: principal('owner'),
+        revalidateAuthentication: async () => sessionValid,
+      },
+      on: (event: string, handler: (payload?: unknown) => Promise<void> | void) => {
+        handlers.set(event, handler);
+      },
+      join: async (room: string) => { rooms.add(room); },
+      leave: async (room: string) => { rooms.delete(room); },
+      emit: () => undefined,
+      disconnect: () => undefined,
+    } as unknown as Socket;
+
+    manager.setup(socket);
+    // Joined on connection: the per-user room carries notification frames, which
+    // must not be missed between connect and a client's first subscribe call.
+    assert.equal(rooms.has('user:owner'), true);
+    // Instance-wide activity is not joined until asked for.
+    assert.equal(rooms.has(ACTIVITY_ROOM), false);
+
+    await handlers.get('subscribe:activity')?.();
+    assert.equal(rooms.has(ACTIVITY_ROOM), true);
+
+    await handlers.get('unsubscribe:activity')?.();
+    assert.equal(rooms.has(ACTIVITY_ROOM), false);
+
+    sessionValid = false;
+    await handlers.get('subscribe:activity')?.();
+    assert.equal(rooms.has(ACTIVITY_ROOM), false);
   });
 
   test('caps resource rooms without rejecting an idempotent re-subscription', () => {
@@ -217,10 +262,24 @@ describe('Socket.IO resource authorization', () => {
 
     await internals.handleDraftUpdate(payload);
 
+    // The draft frame, plus the activity envelope derived from it - which stays
+    // in the owner's room, because who owns which draft is not instance-wide.
     assert.deepEqual(emitted, [{
       rooms: ['draft:draft-1', 'user:owner'],
       event: DRAFT_UPDATE,
       payload,
+    }, {
+      rooms: ['user:owner'],
+      event: ACTIVITY_UPDATE,
+      payload: {
+        eventType: ACTIVITY_UPDATE,
+        domain: 'plan',
+        change: 'progressed',
+        entityId: 'draft-1',
+        repository: null,
+        terminal: false,
+        occurredAt: payload.timestamp,
+      } as unknown as DraftUpdatePayload,
     }]);
   });
 });

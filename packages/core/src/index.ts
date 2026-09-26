@@ -364,7 +364,10 @@ export {
     toAgentTankAgent,
     toProprAgent,
     normalizeAgentTankStatus,
-    normalizeAgentTankAgents
+    normalizeAgentTankAgents,
+    agentTankUsageFingerprint,
+    observeAgentTankUsage,
+    resetAgentTankUsageTracking
 } from './services/agentTankService.js';
 export type { AgentStatusResponse } from './services/agentTankService.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
@@ -454,7 +457,7 @@ export {
     getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
-export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions, NotificationSourceActivityIdentity } from './services/notificationService.js';
+export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions, NotificationSourceActivityIdentity, NotificationUpdatePublisher } from './services/notificationService.js';
 export { DEFAULT_NOTIFICATION_LIST_LIMIT, MAX_NOTIFICATION_LIST_LIMIT, NotificationQueryValidationError, parseNotificationListLimit, encodeNotificationCursor, decodeNotificationCursor } from './services/notificationPagination.js';
 export type { NotificationCursor } from './services/notificationPagination.js';
 

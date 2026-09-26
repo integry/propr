@@ -32,6 +32,7 @@ import {
 } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
 import { up as addSystemFailureState } from '../src/db/migrations/20260829000000_add_notification_system_failure_state.js';
 import { up as addPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
+import { closeEventPublisher } from '../src/utils/eventPublisher.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -109,7 +110,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => database.destroy());
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 describe('notification service', { concurrency: false }, () => {
     test('applies and rolls back badge preference validation on existing schemas', async () => {

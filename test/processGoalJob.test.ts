@@ -9,8 +9,12 @@ import { labelCompletedGoalPullRequest } from '../src/jobs/goalPullRequestLabel.
 after(async () => {
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
   const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
+  const { closeEventPublisher } = await import('../packages/core/src/utils/eventPublisher.ts');
   await closeStateManager();
   await closeConnection();
+  // Goal transitions now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
 });
 
 test('processGoalJob fails provider success without the exact open draft PR', async () => {

@@ -9,6 +9,7 @@ import {
     goalAttemptLabel,
     goalJobId,
     goalTitleFallback,
+    publishGoalTransition,
     TaskStates,
     logger,
 } from '@propr/core';
@@ -117,6 +118,11 @@ async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): P
         completed_at: database.fn.now(),
         updated_at: database.fn.now(),
     });
+    // Recovery is the only writer that knows this attempt is unrecoverable, so
+    // it owns announcing the failure a console would otherwise poll to find.
+    if (changed === 1) {
+        await publishGoalTransition({ previous: goal, next: { ...goal, result_state: 'failed' } });
+    }
     return changed === 1;
 }
 
@@ -149,6 +155,12 @@ async function recoverClaimedAttempt(
         updated_at: database.fn.now(),
     });
     if (changed !== 1) return false;
+    // A paused goal that recovery resumes is a state change no other writer
+    // reports: the operator asked for it, but only this sweep knows it landed.
+    await publishGoalTransition({
+        previous: goal,
+        next: { ...goal, desired_state: 'running', claimed_at: null },
+    });
     await enqueue({ queue, goal, generation, claimId, recovery: true });
     return true;
 }
@@ -282,6 +294,12 @@ async function recoverGoal(options: {
             updated_at: database.fn.now(),
         });
         if (cancelled !== 1) return 'unchanged';
+        // Silent when the cancellation was already announced at the request;
+        // reported here when this sweep is the first to observe it.
+        await publishGoalTransition({
+            previous: goal,
+            next: { ...goal, result_state: 'cancelled' },
+        });
         await reconcileTask({ ...goal, result_state: 'cancelled' });
         await database('goals').where({ goal_id: goal.goal_id, result_state: 'cancelled' })
             .whereNull('task_reconciled_at').update({ task_reconciled_at: database.fn.now(), updated_at: database.fn.now() });

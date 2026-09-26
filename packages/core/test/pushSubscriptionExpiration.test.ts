@@ -10,6 +10,7 @@ import { up as addPreferenceApis } from
 import { up as addAdvertisedActions } from
     '../src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationService } from '../src/services/notificationService.js';
+import { closeEventPublisher } from '../src/utils/eventPublisher.js';
 
 let database: Knex;
 let generatedId = 0;
@@ -52,7 +53,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => database.destroy());
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 describe('push subscription expiration lifecycle', { concurrency: false }, () => {
     test('requires object-form producers to declare Push eligibility', async () => {

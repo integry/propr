@@ -12,13 +12,20 @@ import {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  GOAL_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
   type EventPayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
-  type QueueStatsUpdatePayload
+  type QueueStatsUpdatePayload,
+  type GoalUpdatePayload,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload
 } from '@propr/shared';
+import { ActivityBroadcaster } from './activityBroadcast.js';
 import { QueueBroadcaster } from './queueBroadcaster.js';
 import { TaskWatcherManager } from './taskWatcher.js';
 import {
@@ -110,6 +117,7 @@ export class SocketService {
   private subscriber: InstanceType<typeof Redis>;
   private isSubscribed = false;
   private queueBroadcaster: QueueBroadcaster | null = null;
+  private activityBroadcaster: ActivityBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private subscriptionManager: SocketSubscriptionManager;
   private queueDeps: QueueDependencies | null = null;
@@ -171,6 +179,18 @@ export class SocketService {
   }
 
   /**
+   * Derives the general activity surface from the producer events this service
+   * already subscribes to, so 'a task changed' and 'activity happened' cannot
+   * drift apart, and so no second Redis subscription has to be opened and torn
+   * down for it. Resolved on first use because it needs nothing but this
+   * service's own Socket.IO server.
+   */
+  private get activity(): ActivityBroadcaster {
+    this.activityBroadcaster ??= new ActivityBroadcaster(this.io);
+    return this.activityBroadcaster;
+  }
+
+  /**
    * Set up Socket.IO connection handlers
    */
   private setupConnectionHandlers(): void {
@@ -192,7 +212,10 @@ export class SocketService {
         REDIS_CHANNELS.DRAFTS,
         REDIS_CHANNELS.INDEXING,
         REDIS_CHANNELS.LIVE_DETAILS,
-        REDIS_CHANNELS.QUEUE_STATS
+        REDIS_CHANNELS.QUEUE_STATS,
+        REDIS_CHANNELS.GOALS,
+        REDIS_CHANNELS.NOTIFICATIONS,
+        REDIS_CHANNELS.USAGE
       );
       this.isSubscribed = true;
       console.log('[SocketService] Subscribed to Redis channels:', Object.values(REDIS_CHANNELS));
@@ -229,6 +252,15 @@ export class SocketService {
         break;
       case QUEUE_STATS_UPDATE:
         this.handleQueueStatsUpdate(payload as QueueStatsUpdatePayload);
+        break;
+      case GOAL_UPDATE:
+        this.activity.goalUpdated(payload as GoalUpdatePayload);
+        break;
+      case NOTIFICATION_UPDATE:
+        this.activity.notificationUpdated(payload as NotificationUpdatePayload);
+        break;
+      case USAGE_UPDATE:
+        this.activity.usageUpdated(payload as UsageUpdatePayload);
         break;
       default:
         console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
@@ -312,6 +344,9 @@ export class SocketService {
       .to(INSTANCE_OPERATIONAL_ROOM)
       .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
+    // Derived after the ordering gate above, so a replayed or out-of-order task
+    // event cannot produce an activity frame the task feed itself rejected.
+    this.activity.taskUpdated(payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
     if (this.notificationProjection) {
       await this.notificationProjection.projectTaskUpdate(payload);
@@ -339,6 +374,7 @@ export class SocketService {
       .to(`draft:${payload.draftId}`)
       .to(userRoom(ownerId))
       .emit(DRAFT_UPDATE, payload);
+    this.activity.draftUpdated(payload, ownerId);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
     if (this.notificationProjection) {
       await this.notificationProjection.projectDraftUpdate(payload);

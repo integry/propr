@@ -63,3 +63,10 @@ export {
     type GoalArtifact,
     type GoalArtifactStats,
 } from './goals/goalArtifacts.js';
+export {
+    goalActivityState,
+    publishGoalActivity,
+    publishGoalTransition,
+    type GoalLifecycleSnapshot,
+    type GoalUpdatePublisher,
+} from './goals/goalActivityEvents.js';

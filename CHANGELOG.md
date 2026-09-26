@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Server-side activity push events**: the server now announces the changes the
+  dashboard, header, Goals console and Inbox currently poll for. `@propr/shared`
+  defines one general envelope, `activity:update` (`domain`, `change`,
+  `entityId`, `repository`, `terminal`, `occurredAt`, `revision`), alongside
+  `goal:update`, `notification:update` and `usage:update`. `@propr/core`
+  publishes goal transitions from the writes that persist them (create, pause,
+  resume, cancel, claim, completion, failure and leased recovery), Inbox changes
+  from the only writer of notification receipts, and an Agent Tank usage trigger
+  only when an observed snapshot actually differs — never on an unchanged poll.
+  The API derives `activity:update` from the task, planner, goal and notification
+  events it already subscribes to, so a producer cannot publish one without the
+  other, and emits over Socket.IO with an opt-in `activity` room and the existing
+  per-user room: notification frames name only their own recipient, so one
+  operator never learns what another is being notified about. Payloads carry ids,
+  a repository and a timestamp — no prose, tokens, diffs or agent output — and a
+  failed publish is logged and swallowed, so a Redis outage degrades to the
+  polling that exists today. No client change is required by this step: with
+  nothing subscribed, behaviour is unchanged.
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,
