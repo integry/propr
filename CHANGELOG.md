@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/fix` selects suggestions as well as findings**: a `/fix` command line now
+  accepts a review's non-blocking suggestion identifiers (`S1`, `S2`, …) beside
+  its merge-blocking findings (`F1`, `F2`, …), mixed freely and in any order, as
+  in `/fix F20 S3 S5`. Identifiers are case-insensitive on input and canonical
+  upper case everywhere they are stored, echoed or rendered; everything after the
+  last identifier on the command line, plus every following line, reaches the
+  agent as instructions without the token list. An identifier no current review
+  offers, or a malformed one such as `S0`, is now named back on the pull request
+  instead of being silently ignored, and the completion comment and task history
+  record which findings and which suggestions were addressed. Merge-blocker
+  semantics are unchanged: suggestions are acted on only when named, a pending
+  suggestion never extends an `/ultrafix` loop or moves a score gate, and
+  `/ultrafix` still selects findings only. The MCP tool `fix_review_findings`
+  gains an optional `suggestionIds` array beside `findingIds` (at least one
+  identifier across the two is required, `instructions` are forwarded unchanged)
+  and validates both namespaces against the referenced review, rejecting unknown,
+  consumed or mismatched identifiers by name rather than dropping them; a client
+  sending only `findingIds` behaves exactly as before.
+
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,

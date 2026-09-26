@@ -33,6 +33,8 @@ export async function markSelectedUltrafixFindings(
     selectedReviewComments: SelectedReviewComment[],
 ): Promise<void> {
     if (!job.data.ultrafixMeta || selectedReviewComments.length === 0) return;
+    // Findings only, explicitly. An automatic loop must never take on optional
+    // work: a suggestion is acted on solely because a human named it.
     await markFindingsSelected(redisClient, {
         ...identity,
         workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,

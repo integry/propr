@@ -164,7 +164,7 @@ ${commentHistory}${originalTaskSpec ? `**Immutable Original PR Objective:**\n${o
 - You are in directory: ${worktreeInfo.worktreePath}
 - Analyze the existing code on this branch and the comment history provided above.
 ${reviewCommentsSection
-        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, actionable F# records are the complete implementation scope. Suggestions cannot be selected by /fix and require a separate ordinary follow-up request.\n- If no actionable finding is selected, do not modify files.\n- Do not infer work from prior review prose, scores, or suggestion IDs.'
+        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, the listed records are the complete implementation scope. An S# suggestion record is listed only because it was explicitly requested; implement it without letting it widen, substitute for, or relax the correction required by any F# record.\n- If no record is listed, do not modify files.\n- Do not infer work from prior review prose, scores, or unlisted record IDs.'
         : '- Implement ONLY the changes requested in the **New Request(s)** section.'}
 - Treat the original PR objective as immutable context, not as permission to expand the requested work.
 - DO NOT commit your changes - the system will handle the commit for you

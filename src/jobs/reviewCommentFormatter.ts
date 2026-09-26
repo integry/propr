@@ -193,8 +193,8 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` to address F# merge blockers only.\n`;
-    comment += `> F# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. Suggestions require a separate ordinary follow-up request.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address every F# merge blocker, or name records explicitly, as in \`/fix F3 S5\`.\n`;
+    comment += `> F# and S# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. S# suggestions stay optional: they are implemented only when you name them, and they never relax a merge blocker.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

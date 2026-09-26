@@ -21,9 +21,12 @@ describe('buildReviewComment', () => {
             },
         );
 
-        assert.ok(comment.includes('F# IDs increment across review comments and remain permanent'));
+        assert.ok(comment.includes('F# and S# IDs increment across review comments and remain permanent'));
         assert.ok(comment.includes('`/fix F3 F5`'));
-        assert.ok(comment.includes('require a separate ordinary follow-up request.'));
+        // Suggestions are selectable now, and the hint must say they stay optional.
+        assert.ok(comment.includes('`/fix F3 S5`'));
+        assert.ok(comment.includes('implemented only when you name them'));
+        assert.ok(comment.includes('never relax a merge blocker'));
         assert.ok(!comment.includes('/fix include S'));
     });
 
