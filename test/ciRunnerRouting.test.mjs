@@ -530,10 +530,21 @@ describe('PR check routing', () => {
             cwd: REPOSITORY,
             encoding: 'utf8',
         }).stdout.trim().split('\n');
-        assert.deepEqual(units, [
-            'apps/desktop/scripts/electron-frame-semantics.test.mjs',
-            'apps/desktop/scripts/electron-pairing-zstd.test.mjs',
-        ]);
+        // Every desktop unit that opts into the native harness must reach this job,
+        // so the expectation is discovered from the repository rather than pinned to
+        // a list that a new native probe would silently fall out of.
+        const nativeSetupUnit = 'apps/desktop/scripts/electron-native-test-setup.test.mjs';
+        const nativeUnits = readdirSync(join(REPOSITORY, 'apps', 'desktop', 'scripts'))
+            .filter(name => name.endsWith('.test.mjs'))
+            .map(name => `apps/desktop/scripts/${name}`)
+            .filter(unit => readFileSync(join(REPOSITORY, unit), 'utf8').includes('prepareNativeElectronTest('))
+            .sort();
+        // The harness's own unit exercises prepareNativeElectronTest with injected
+        // platforms instead of launching Electron, so it stays on the shard route.
+        assert.ok(nativeUnits.includes(nativeSetupUnit), 'the native harness unit is discoverable');
+        const expected = nativeUnits.filter(unit => unit !== nativeSetupUnit);
+        assert.ok(expected.length >= 2, 'the native Electron probes are discovered');
+        assert.deepEqual([...units].sort(), expected);
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
         assert.match(electron, /PROPR_TEST_SHARD_COUNT: ''\n/);
