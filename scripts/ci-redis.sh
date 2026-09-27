@@ -102,7 +102,25 @@ remove_container() {
     echo "Refusing to remove $name: attempt label does not match" >&2
     return 1
   fi
-  docker rm --force "$id" >/dev/null || return 1
+  # Rootless Docker can report a missed exit event while the container is
+  # still shutting down. Retry only that transient error, using the same
+  # authorized ID so a replacement under this name can never be removed.
+  local removal_attempt removal_error
+  for removal_attempt in 1 2 3; do
+    if removal_error="$(docker rm --force "$id" 2>&1 >/dev/null)"; then
+      break
+    fi
+    # --rm may finish deleting the container between removal attempts.
+    if [[ "$removal_error" == *"No such container: $id"* ]]; then
+      break
+    fi
+    printf '%s\n' "$removal_error" >&2
+    if [[ "$removal_error" != *'did not receive an exit event'* ]] || (( removal_attempt == 3 )); then
+      return 1
+    fi
+    echo "Retrying removal of Redis container $name ($removal_attempt/3)" >&2
+    sleep 2
+  done
   echo "Stopped Redis container $name"
 }
 
@@ -135,12 +153,7 @@ remove_previous_attempts() {
   done <<< "$candidates"
 }
 
-start_redis() {
-  mkdir -p "$STATE_DIR"
-
-  stop_redis
-  remove_previous_attempts
-
+run_redis_container() {
   # Independent rootless daemons can each auto-allocate the same port (32768)
   # inside their namespaces, then collide when RootlessKit binds the host port.
   # Keep automatic allocation first; on a bind conflict, spread explicit high
@@ -186,24 +199,38 @@ start_redis() {
     publish_port=$((49152 + (16#${OWNER_HASH:0:8} + port_attempt * 7919) % 16384))
     echo "Retrying Redis startup with loopback port $publish_port" >&2
   done
+}
 
-  printf '%s\n' "$CONTAINER_NAME" > "$STATE_FILE"
+start_redis() {
+  mkdir -p "$STATE_DIR"
 
-  local ready=false
-  for _ in $(seq 1 30); do
-    if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || true)" == "healthy" ]]; then
-      ready=true
-      break
-    fi
-    sleep 1
-  done
+  stop_redis
+  remove_previous_attempts
 
-  if [[ "$ready" != "true" ]]; then
+  local ready=false startup_attempt
+  for startup_attempt in 1 2 3; do
+    run_redis_container
+    printf '%s\n' "$CONTAINER_NAME" > "$STATE_FILE"
+
+    for _ in $(seq 1 30); do
+      if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || true)" == "healthy" ]]; then
+        ready=true
+        break
+      fi
+      sleep 1
+    done
+    [[ "$ready" == true ]] && break
+
+    # Emit the startup failure before cleanup, which can itself fail. A
+    # stalled container on a busy rootless runner gets a bounded fresh start,
+    # but only after its owned predecessor has been successfully removed.
+    echo "Redis did not become healthy within 30 seconds (attempt $startup_attempt/3)" >&2
+    docker inspect --format '{{json .State}}' "$CONTAINER_NAME" >&2 || true
     docker logs "$CONTAINER_NAME" >&2 || true
-    stop_redis
-    echo "Redis did not become healthy within 30 seconds" >&2
-    return 1
-  fi
+    stop_redis || return 1
+    (( startup_attempt < 3 )) || return 1
+    echo 'Retrying Redis startup after readiness failure' >&2
+  done
 
   local mapping
   local port

@@ -118,13 +118,26 @@ case "$command" in
     if [[ "\${1:-}" == --format ]]; then
       case "$2" in
         '{{.Id}}') echo "id-$name" ;;
-        '{{.State.Health.Status}}') echo healthy ;;
+        '{{.State.Health.Status}}')
+          echo inspect >> "$state/.health-$name"
+          checks=$(wc -l < "$state/.health-$name")
+          if (( checks <= \${FAKE_HEALTH_FAILURES:-0} )); then echo starting; else echo healthy; fi
+          ;;
+        '{{json .State}}') echo '{"Status":"running","Health":{"Status":"starting"}}' ;;
         *) key="$(printf '%s' "$2" | cut -d'"' -f2)"; sed -n "s/^$key=//p" "$state/$name" ;;
       esac
     fi
     ;;
   rm)
     name="\${@: -1}"; [[ "$name" == id-* ]] || exit 9; name="\${name#id-}"
+    echo rm >> "$state/.rm-attempts-$name"
+    [[ -e "$state/$name" ]] || { echo "Error response from daemon: No such container: id-$name" >&2; exit 1; }
+    attempts=$(wc -l < "$state/.rm-attempts-$name")
+    if (( attempts <= \${FAKE_RM_FAILURES:-0} )); then
+      if [[ "\${FAKE_AUTO_REMOVE:-}" == true ]]; then rm -f "$state/$name"; fi
+      echo "\${FAKE_RM_ERROR:-could not kill container: tried to kill container, but did not receive an exit event}" >&2
+      exit 1
+    fi
     rm -f "$state/$name"
     echo "rm $name" >> "$state/.log"
     ;;
@@ -154,11 +167,14 @@ case "$command" in
       if $matched; then basename "$file"; fi
     done
     ;;
-  logs) ;;
+  logs) echo 'Redis container logs' ;;
   *) echo "unexpected docker $command" >&2; exit 1 ;;
 esac
 `);
     chmodSync(join(bin, 'docker'), 0o755);
+    // Readiness/retry deadlines are exercised without waiting in real time.
+    writeFileSync(join(bin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(bin, 'sleep'), 0o755);
     const containers = () => readdirSync(state).filter(name => !name.startsWith('.')).sort();
     const removals = () => (existsSync(join(state, '.log')) ? readFileSync(join(state, '.log'), 'utf8') : '')
         .split('\n').filter(line => line.startsWith('rm ')).map(line => line.slice(3));
@@ -195,6 +211,73 @@ function startRedis(docker, env) {
 }
 
 describe('scripts/ci-redis.sh shared-host isolation', () => {
+    test('recovers a readiness timeout and delayed Docker exit without touching another shard', () => {
+        const docker = createFakeDocker();
+        const other = startRedis(docker, { CI_REDIS_INSTANCE: 'shard-2' });
+        const file = join(docker.state, '../recovered.env');
+        const env = { CI_REDIS_INSTANCE: 'shard-1', CI_REDIS_ENV_FILE: file, FAKE_HEALTH_FAILURES: '30', FAKE_RM_FAILURES: '1' };
+        const result = runRedis(docker, 'start', env);
+        const name = redisName(docker, env);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stderr, /Redis did not become healthy/);
+        assert.match(result.stderr, /Redis container logs/);
+        assert.match(result.stderr, /did not receive an exit event/);
+        assert.equal(docker.publishedPorts(name).length, 2);
+        assert.deepEqual(docker.removals(), [name]);
+        assert.deepEqual(docker.containers(), [other, name].sort());
+        assert.equal(readFileSync(file, 'utf8').match(/^REDIS_PORT=/gm).length, 1);
+    });
+
+    test('waits for health before publishing settings without restarting a recovering container', () => {
+        const docker = createFakeDocker();
+        const env = { FAKE_HEALTH_FAILURES: '2' };
+        const name = startRedis(docker, env);
+        assert.equal(docker.publishedPorts(name).length, 1);
+        assert.deepEqual(docker.removals(), []);
+    });
+
+    test('bounds readiness retries and leaves no container or settings after persistent failure', () => {
+        const docker = createFakeDocker();
+        const file = join(docker.state, '../unhealthy.env');
+        const env = { CI_REDIS_ENV_FILE: file, FAKE_HEALTH_FAILURES: '999' };
+        const result = runRedis(docker, 'start', env);
+        const name = redisName(docker, env);
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /Redis did not become healthy.*attempt 3\/3/);
+        assert.equal(docker.publishedPorts(name).length, 3);
+        assert.deepEqual(docker.removals(), [name, name, name]);
+        assert.deepEqual(docker.containers(), []);
+        assert.equal(existsSync(file), false);
+        assert.equal(existsSync(join(docker.state, '../redis-state', `${name}.name`)), false);
+    });
+
+    test('fails with readiness diagnostics and retained cleanup state if Docker cannot remove the container', () => {
+        for (const extra of [{}, { FAKE_RM_ERROR: 'permission denied' }]) {
+            const docker = createFakeDocker();
+            const file = join(docker.state, '../cleanup-failed.env');
+            const env = { CI_REDIS_ENV_FILE: file, FAKE_HEALTH_FAILURES: '999', FAKE_RM_FAILURES: '99', ...extra };
+            const result = runRedis(docker, 'start', env);
+            const name = redisName(docker, env);
+            assert.equal(result.status, 1, result.stderr);
+            assert.match(result.stderr, /Redis did not become healthy/);
+            assert.match(result.stderr, /Redis container logs/);
+            assert.equal(docker.publishedPorts(name).length, 1, 'never restart before cleanup succeeds');
+            assert.equal(readFileSync(join(docker.state, `.rm-attempts-${name}`), 'utf8').trim().split('\n').length, extra.FAKE_RM_ERROR ? 1 : 3);
+            assert.deepEqual(docker.containers(), [name]);
+            assert.equal(existsSync(file), false);
+            assert.equal(existsSync(join(docker.state, '../redis-state', `${name}.name`)), true);
+            assert.equal(runRedis(docker, 'stop', {}).status, 0);
+        }
+    });
+
+    test('accepts automatic removal after Docker reports a delayed exit', () => {
+        const docker = createFakeDocker();
+        startRedis(docker, {});
+        const result = runRedis(docker, 'stop', { FAKE_RM_FAILURES: '1', FAKE_AUTO_REMOVE: 'true' });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(docker.containers(), []);
+    });
+
     test('recovers a RootlessKit host port collision and exports the successful mapping', () => {
         const docker = createFakeDocker();
         const other = startRedis(docker, { CI_REDIS_INSTANCE: 'shard-1' });
