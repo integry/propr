@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { closeEventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
 import { SilentRedis } from './silentRedisStub.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(HERE, '..', '..', '..');
 
 let redisHost: string | undefined;
 let redisPort: string | undefined;
@@ -80,4 +86,66 @@ describe('event publisher outage bounds', { concurrency: false }, () => {
 
         assert.ok(duration < 5_000, `closing the publisher took ${duration}ms`);
     });
+
+    test('an idle publisher does not keep its process alive', async () => {
+        // Publishing is best effort, so reaching a code path that publishes
+        // must not become a shutdown obligation. Suites that merely exercise a
+        // goal transition or a notification write do not know they published,
+        // and when the connection was left holding the event loop open they
+        // hung after their last assertion until the runner killed them.
+        const exit = await runFixture('publishThenExit.ts', 30_000);
+
+        assert.equal(
+            exit.code,
+            0,
+            `the publishing process did not exit cleanly (${exit.reason})\n${exit.output}`
+        );
+    });
 });
+
+/**
+ * Run a fixture to completion in its own process.
+ *
+ * The fixture is spawned rather than imported because the thing under test is
+ * process exit itself, which cannot be observed from inside the process that
+ * has to exit.
+ */
+async function runFixture(
+    name: string,
+    timeoutMs: number
+): Promise<{ code: number | null; reason: string; output: string }> {
+    // Node with tsx's loader rather than the `tsx` bin: that wrapper spawns the
+    // real process as a child of its own, which would survive the kill below
+    // and leave the very hang under test running after the run finished.
+    const loader = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'loader.mjs');
+    const child = spawn(process.execPath, ['--import', pathToFileURL(loader).href, join(HERE, 'fixtures', name)], {
+        cwd: REPO_ROOT,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // The parent supplies no Redis: the fixture starts its own stub and
+        // points the publisher at it.
+        env: { ...process.env, REDIS_HOST: undefined, REDIS_PORT: undefined }
+    });
+
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    try {
+        return await new Promise(resolve => {
+            child.on('error', error => {
+                resolve({ code: null, reason: `could not spawn: ${error.message}`, output });
+            });
+            child.on('close', (code, signal) => {
+                resolve({
+                    code,
+                    // A kill by our own timer is the hang this test exists for.
+                    reason: signal ? `killed with ${signal} after ${timeoutMs}ms` : `exit code ${code}`,
+                    output
+                });
+            });
+        });
+    } finally {
+        clearTimeout(timer);
+    }
+}

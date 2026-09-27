@@ -81,6 +81,36 @@ class EventPublisher {
   private publishRetryAfter = 0;
   /** Bumped by `close()`, so a connection still in flight is not adopted after it. */
   private generation = 0;
+  /** Publishes awaiting an answer. The socket is only ref'd while this is > 0. */
+  private inFlight = 0;
+
+  /**
+   * Hold the event loop open for this connection only while a publish needs it.
+   *
+   * The publisher connects lazily on the first event and then keeps the socket
+   * for reuse, which is a live libuv handle. In a server that is invisible -
+   * the HTTP listener or the queue worker already holds the process open - but
+   * it makes an idle publisher able to decide when anything else exits. A
+   * process that merely touched a publishing code path then hangs until
+   * something calls `closeEventPublisher()`, which is the wrong ownership:
+   * publishing is best effort, so nothing should have to know it happened in
+   * order to shut down.
+   *
+   * So the socket is unref'd whenever no publish is outstanding, and ref'd
+   * again for the duration of one. An in-flight event still keeps the process
+   * alive long enough to reach Redis - and it is bounded by
+   * `PUBLISH_TIMEOUT_MS` regardless - while an idle connection lets the process
+   * exit and take the socket with it. `close()` remains the way to release it
+   * within a living process.
+   */
+  private applySocketRef(client: InstanceType<typeof Redis>): void {
+    // ioredis replaces `stream` on every reconnect, so this is re-applied from
+    // the `connect` event rather than once at construction.
+    const stream = (client as { stream?: { ref?: () => void; unref?: () => void } }).stream;
+    if (!stream) return;
+    if (this.inFlight > 0) stream.ref?.();
+    else stream.unref?.();
+  }
 
   /**
    * Initialize the Redis connection for publishing events.
@@ -116,6 +146,11 @@ class EventPublisher {
 
     client.on('error', (error: Error) => {
       logger.warn({ error: error.message }, 'Redis error in EventPublisher');
+    });
+    // Registered before connecting so the very first socket is unref'd as soon
+    // as it exists, and every reconnect's replacement after that.
+    client.on('connect', () => {
+      this.applySocketRef(client);
     });
 
     try {
@@ -194,6 +229,10 @@ class EventPublisher {
       }
 
       const message = JSON.stringify(payload);
+      // Hold the event loop for this one event, so a process whose only
+      // remaining work is an outstanding publish still delivers it.
+      this.inFlight += 1;
+      this.applySocketRef(client);
       try {
         await client.publish(channel, message);
       } catch (error) {
@@ -202,6 +241,9 @@ class EventPublisher {
         // the batch would pay the same cost, so stop publishing for a while.
         this.suspendPublishing((error as Error).message);
         throw error;
+      } finally {
+        this.inFlight -= 1;
+        this.applySocketRef(client);
       }
       logger.debug({ channel, eventType: payload.eventType }, 'Published event');
       return true;

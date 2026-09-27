@@ -32,16 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polling that exists today. Publishing is also bounded: a disconnected
   publisher drops the event and a Redis that stops answering costs one second,
   so a notification request or a goal worker never waits out an outage after its
-  database write has committed. An operation that announces many changes is
-  bounded too — one timeout pauses publishing briefly instead of being charged
-  again per event, and a notification cleanup stops announcing once its flush
-  budget is spent — so closing a hundred notifications cannot cost a hundred
-  timeouts. Every frame decoded from Redis is validated against its whole
-  published contract — identifiers, states, repository scope, revisions and the
-  precomputed `terminal` flag — before the producer event or the activity
-  envelope derived from it is emitted, so a malformed publish is dropped and
-  reported instead of reaching a browser. No client change is required by this
-  step: with nothing subscribed, behaviour is unchanged.
+  database write has committed. An idle publisher also stops holding its process
+  open: the connection is kept for reuse but only keeps the event loop alive
+  while an event is actually in flight, so reaching a publishing code path never
+  becomes an obligation to shut the publisher down. An operation that announces
+  many changes is bounded too — one timeout pauses publishing briefly instead of
+  being charged again per event, and a notification cleanup stops announcing
+  once its flush budget is spent — so closing a hundred notifications cannot
+  cost a hundred timeouts. Every frame decoded from Redis is validated against
+  its whole published contract — identifiers, states, repository scope,
+  revisions and the precomputed `terminal` flag — before the producer event or
+  the activity envelope derived from it is emitted, so a malformed publish is
+  dropped and reported instead of reaching a browser. No client change is
+  required by this step: with nothing subscribed, behaviour is unchanged.
 - **MCP operator surface**: a connected agent can now run an instance rather than
   only read and write one object at a time. `get_current_activity` answers "what
   is happening right now" across every repository in the grant — running tasks,
