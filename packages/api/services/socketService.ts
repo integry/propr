@@ -38,6 +38,12 @@ import {
   taskRoom,
   userRoom,
 } from './socketSubscriptions.js';
+import {
+  admitTaskRevision,
+  DEFAULT_TASK_STATE_EXPIRY_SECONDS,
+  loadDurableTaskRevision,
+  type TaskRevisionCacheEntry,
+} from './taskRevisionOrdering.js';
 import type { NotificationProjectionSink } from './notificationBackgroundProtocol.js';
 
 /** CORS origin validation function type compatible with Socket.IO */
@@ -52,56 +58,6 @@ export interface QueueDependencies {
   db: Knex;
   workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'stateExpiry'>;
   notificationProjection?: NotificationProjectionSink;
-}
-
-const DEFAULT_TASK_STATE_EXPIRY_SECONDS = 7 * 24 * 3600;
-
-export interface TaskRevisionCacheEntry {
-  version: number;
-  expiresAt: number;
-}
-
-export function readCachedTaskRevision(
-  entry: TaskRevisionCacheEntry | undefined,
-  now = Date.now(),
-): number | undefined {
-  return entry && entry.expiresAt > now ? entry.version : undefined;
-}
-
-export function shouldBroadcastTaskUpdate(
-  latestVersion: number | undefined,
-  incomingVersion: number | undefined,
-  allowSeededEquality = false,
-): boolean {
-  if (incomingVersion !== undefined
-    && (!Number.isSafeInteger(incomingVersion) || incomingVersion < 0)) return false;
-  if (latestVersion === undefined) return true;
-  if (incomingVersion === undefined) return false;
-  return incomingVersion > latestVersion
-    || (allowSeededEquality && incomingVersion === latestVersion);
-}
-
-export async function loadDurableTaskRevision(
-  get: (key: string) => Promise<string | null>,
-  taskId: string,
-  options: Pick<WorkerStateManagerOptions, 'keyPrefix'> = {},
-): Promise<number | undefined> {
-  const stateValue = await get(`${options.keyPrefix ?? 'worker:state:'}${taskId}`);
-  const isValidRevision = (value: number): boolean => (
-    Number.isSafeInteger(value) && value >= 0
-  );
-  let stateRevision = Number.NaN;
-  if (stateValue) {
-    try {
-      const parsed = JSON.parse(stateValue) as { version?: unknown };
-      stateRevision = typeof parsed.version === 'number' && isValidRevision(parsed.version)
-        ? parsed.version
-        : Number.NaN;
-    } catch {
-      // A malformed/partially-written state cannot seed event ordering.
-    }
-  }
-  return isValidRevision(stateRevision) ? stateRevision : undefined;
 }
 
 /**
@@ -343,47 +299,23 @@ export class SocketService {
     this.draftUpdateTails.set(payload.draftId, current);
   }
 
+  /** Durable revision baseline for a task, or undefined when no store is wired. */
+  private async seedDurableTaskRevision(taskId: string): Promise<number | undefined> {
+    const deps = this.queueDeps;
+    if (!deps) return undefined;
+    return loadDurableTaskRevision(key => deps.redisClient.get(key), taskId, deps.workerStateOptions);
+  }
+
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
-    const now = Date.now();
-    const cachedRevision = this.taskRevisions.get(payload.taskId);
-    let latestVersion = readCachedTaskRevision(cachedRevision, now);
-    if (cachedRevision && latestVersion === undefined) this.taskRevisions.delete(payload.taskId);
-    let allowSeededEquality = false;
-    if (latestVersion === undefined && payload.version !== undefined && this.queueDeps) {
-      try {
-        latestVersion = await loadDurableTaskRevision(
-          key => this.queueDeps!.redisClient.get(key),
-          payload.taskId,
-          this.queueDeps.workerStateOptions,
-        );
-        allowSeededEquality = latestVersion !== undefined;
-      } catch (error) {
-        console.error(`[SocketService] Failed to seed task revision for ${payload.taskId}:`, error);
-        // A versioned pub/sub event is already self-ordering. Accept it as the
-        // live baseline when durable state is transiently unavailable rather
-        // than silently dropping the only update clients may receive.
-        if (payload.version === undefined) return;
-        latestVersion = undefined;
-      }
-    }
-    // During rolling upgrades, legacy events may be accepted until a
-    // versioned producer establishes the ordered stream for this task.
-    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version, allowSeededEquality)) return;
-    if (payload.version !== undefined) {
-      const stateExpirySeconds = Math.max(
-        1,
-        this.queueDeps?.workerStateOptions?.stateExpiry ?? DEFAULT_TASK_STATE_EXPIRY_SECONDS,
-      );
-      this.taskRevisions.delete(payload.taskId);
-      this.taskRevisions.set(payload.taskId, {
-        version: payload.version,
-        expiresAt: now + stateExpirySeconds * 1000,
-      });
-      if (this.taskRevisions.size > 10_000) {
-        const oldestTaskId = this.taskRevisions.keys().next().value;
-        if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);
-      }
-    }
+    const admitted = await admitTaskRevision({
+      cache: this.taskRevisions,
+      taskId: payload.taskId,
+      version: payload.version,
+      seed: taskId => this.seedDurableTaskRevision(taskId),
+      stateExpirySeconds: () => this.queueDeps?.workerStateOptions?.stateExpiry
+        ?? DEFAULT_TASK_STATE_EXPIRY_SECONDS,
+    });
+    if (!admitted) return;
     this.io
       .to(INSTANCE_OPERATIONAL_ROOM)
       .to(taskRoom(payload.taskId))

@@ -3,12 +3,12 @@ import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import { ACTIVITY_UPDATE, TASK_UPDATE, type TaskUpdatePayload } from '@propr/shared';
 import { ACTIVITY_ROOM } from '../services/activitySocketRooms.js';
+import { SocketService } from '../services/socketService.js';
 import {
   loadDurableTaskRevision,
   readCachedTaskRevision,
   shouldBroadcastTaskUpdate,
-  SocketService,
-} from '../services/socketService.js';
+} from '../services/taskRevisionOrdering.js';
 
 after(async () => { await closeConnection(); });
 
