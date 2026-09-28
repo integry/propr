@@ -30,6 +30,11 @@ export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js'
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
 export { createNotificationRoutes } from './notificationRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';
+export {
+  createHostedFleetRoutes,
+  isHostedFleetControlEnabled,
+  registerHostedFleetRoutes
+} from './hostedFleetRoutes.js';
 export { createAdminMcpRoutes } from './adminMcpRoutes.js';
 export { createDesktopAuthRoutes } from './desktopAuthRoutes.js';
 export { createActiveWorkRoutes } from './activeWorkRoutes.js';
