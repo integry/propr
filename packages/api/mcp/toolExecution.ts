@@ -65,6 +65,21 @@ function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string,
   if (!tool.readOnly) access.failure ??= receiptFailure(data);
 }
 
+/**
+ * Document content is already redacted as one normalized page before its
+ * offsets are calculated. Preserve that exact slice while retaining the
+ * dispatch safeguard for every other result field: re-redacting a continuation
+ * that happens to start with JSON can otherwise parse and reshape the text.
+ */
+function redactToolResult(tool: McpTool, result: unknown): Record<string, unknown> {
+  const data = redact(result) as Record<string, unknown>;
+  if (tool.name === 'get_doc' && result && typeof result === 'object') {
+    const content = (result as Record<string, unknown>).content;
+    if (typeof content === 'string') data.content = content;
+  }
+  return data;
+}
+
 async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
   access.repository = args.repository;
@@ -97,7 +112,7 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
     // projection consumes it.
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
       operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
-  const data = redact(result) as Record<string, unknown>;
+  const data = redactToolResult(tool, result);
   noteToolOutcome(tool, access, data);
   if (access.resultBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
   return { ...presentResult(tool, args, data, deps.policy.config), data };

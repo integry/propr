@@ -87,6 +87,13 @@ const sensitiveSource = `${'a'.repeat(996)} ghp_exampletoken tail
 Searchable ghp_bodytoken value.
 `;
 
+const jsonContinuationSource = `# Example
+
+${'a'.repeat(985)}
+
+{"password": "<set locally>", "retries": 3}
+`;
+
 const duplicateHeadingsSource = `# Operations
 
 ## Local
@@ -131,6 +138,7 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   await writeFile(join(root, 'docs', 'features', 'overview.mdx'), overviewSource);
   await writeFile(join(root, 'docs', 'operations', 'deployment.md'), deploymentSource);
   await writeFile(join(root, 'docs', 'operations', 'glossary.md'), headinglessSource);
+  await writeFile(join(root, 'docs', 'operations', 'json-continuation.md'), jsonContinuationSource);
   await writeFile(join(root, 'docs', 'operations', 'sensitive.md'), sensitiveSource);
   await writeFile(join(root, 'docs', 'operations', 'troubleshooting.md'), duplicateHeadingsSource);
   await writeFile(join(root, 'docs', 'operations', 'too-large.md'), Buffer.alloc(512 * 1024 + 1, 120));
@@ -280,6 +288,17 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   assert.doesNotMatch(reconstructedSensitive, /ghp_(?:example|header|body)token/);
   assert.equal(wholeSensitive.totalChars, wholeSensitive.content.length);
 
+  const wholeJsonContinuation = await protocolCall('get_doc', { path: 'operations/json-continuation', maxChars: 16000 });
+  const firstJsonPage = await protocolCall('get_doc', { path: 'operations/json-continuation', maxChars: 1000 });
+  assert.equal(firstJsonPage.nextOffset, 998);
+  const secondJsonPage = await protocolCall('get_doc', {
+    path: 'operations/json-continuation', offset: firstJsonPage.nextOffset, maxChars: 1000,
+  });
+  assert.equal(secondJsonPage.content, '{"password": "<set locally>", "retries": 3}\n');
+  assert.equal(firstJsonPage.content + secondJsonPage.content, wholeJsonContinuation.content);
+  assert.equal(secondJsonPage.offset, firstJsonPage.nextOffset);
+  assert.equal(secondJsonPage.totalChars, wholeJsonContinuation.content.length);
+
   const secretSearch = await protocolCall('search_docs', { query: 'headertoken' });
   assert.deepEqual(secretSearch.results, []);
   const credentialSearch = await protocolCall('search_docs', { query: 'credential' });
@@ -295,6 +314,10 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   const resourceBody = JSON.parse(String(resource.contents[0].text));
   assert.equal(resourceBody.data.path, 'features/pr-commands');
   assert.ok(resourceBody.data.content.length <= 8000);
+  const jsonResource = await client.readResource({ uri: 'propr://instances/docs-test-instance/docs/operations/json-continuation' });
+  const jsonResourceBody = JSON.parse(String(jsonResource.contents[0].text));
+  assert.equal(jsonResourceBody.data.content, wholeJsonContinuation.content);
+  assert.equal(jsonResourceBody.data.totalChars, wholeJsonContinuation.content.length);
 });
 
 test('normalization preserves fenced code while stripping document-level MDX wrappers', () => {
