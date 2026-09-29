@@ -207,6 +207,9 @@ export async function finishUltrafixLoop(input: {
         reason: decisionReason,
         score: latestScore,
         cycleCount: state.cycleCount,
+        outcome: goalReached ? 'goal_reached' : 'cycles_exhausted',
+        goal: state.goal,
+        maxCycles: state.maxCycles,
     };
 }
 

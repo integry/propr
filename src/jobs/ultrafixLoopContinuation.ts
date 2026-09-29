@@ -81,6 +81,9 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
+    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    goal?: number;
+    maxCycles?: number;
 }
 
 async function deferNextAction(
@@ -227,7 +230,7 @@ export async function continueUltrafixLoop(
         { owner, repo, pr: pullRequestNumber },
         workEpoch,
     )) {
-        return { continued: false, reason: 'ultrafix_superseded' };
+        return { continued: false, reason: 'ultrafix_superseded', outcome: 'stopped' };
     }
 
     // 1. Load current loop state
@@ -241,6 +244,7 @@ export async function continueUltrafixLoop(
         return {
             continued: false,
             reason: state && stateWorkEpoch !== workEpoch ? 'ultrafix_superseded' : 'no_active_loop',
+            outcome: 'stopped',
         };
     }
 
@@ -256,6 +260,11 @@ export async function continueUltrafixLoop(
                 { owner, repo, pr: pullRequestNumber },
                 workEpoch,
             ) ? 'state_lost_after_record' : 'ultrafix_superseded',
+            outcome: await isUltrafixAutomaticWorkCurrent(
+                redisClient,
+                { owner, repo, pr: pullRequestNumber },
+                workEpoch,
+            ) ? 'failed' : 'stopped',
         };
     }
 
@@ -279,7 +288,8 @@ export async function continueUltrafixLoop(
             { owner, repo, pr: pullRequestNumber },
             workEpoch,
         );
-        return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
+        return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount,
+            outcome: 'stopped', goal: updatedState.goal, maxCycles: updatedState.maxCycles };
     }
 
     // 4. Get the latest review score

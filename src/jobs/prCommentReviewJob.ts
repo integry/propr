@@ -198,9 +198,14 @@ async function handleUltrafixContinuation(
             currentReviewCommentIds: params.currentReviewCommentIds, currentReviewResultCount: params.currentReviewResultCount,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
-        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult, job.data.ultrafixMeta), correlatedLogger);
     } catch (contErr) {
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
+        const state = await loadUltrafixState(redisClient, repoOwner, repoName, pullRequestNumber).catch(() => null);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta({
+            continued: false, reason: (contErr as Error).message, outcome: 'failed', cycleCount: state?.cycleCount,
+            goal: state?.goal, maxCycles: state?.maxCycles,
+        }, job.data.ultrafixMeta), correlatedLogger);
     }
 }
 
@@ -208,7 +213,8 @@ async function resolveUltrafixHistoryMeta(
     job: Job<CommentJobData>, redisClient: Redis, issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number }
 ): Promise<Record<string, unknown> | undefined> {
     if (!job.data.ultrafixMeta) return undefined;
-    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
+    return buildUltrafixHistoryMeta(job.data.ultrafixMeta,
+        await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber), job.data.commandMode);
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {

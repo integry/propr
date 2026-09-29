@@ -293,7 +293,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         assert.equal(reviewRequest.state, 'posted');
         const reviewTaskId = `review-task-${modern}`;
         await pendingTask(reviewTaskId, reviewRequest.result.commentId, 'review');
-        assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'running');
         await db('task_history').insert({ task_id: reviewTaskId, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'running');
         const { buildReviewComment } = await import('../../../src/jobs/reviewCommentFormatter.js');
@@ -314,7 +314,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         assert.equal(fix.state, 'posted'); assert.ok(comments.at(-1)!.startsWith('/fix F1'));
         const fixTaskId = `fix-task-${modern}`;
         await pendingTask(fixTaskId, fix.result.commentId, 'fix');
-        assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'running');
         await db('task_history').insert({ task_id: fixTaskId, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'running');
         head = 'c'.repeat(40);
@@ -341,10 +341,10 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         redisValues.set('ultrafix:state:acme:repo:42', JSON.stringify({ ...loop, workEpoch: workEpoch + 1, active: true, completionStatus: null }));
         assert.equal((await call('get_operation', { operationId: ultrafix.operationId })).state, modern ? 'completed' : 'failed');
         const lostIntake = await call('review_pull_request', pr, true);
-        await db('mcp_operations').where({ id: lostIntake.operationId }).update({ created_at: Date.now() - 180000 });
+        await db('mcp_operations').where({ id: lostIntake.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
         assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'unknown');
         await pendingTask(`late-review-${modern}`, lostIntake.result.commentId, 'review');
-        assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'running');
         await db('task_history').insert({ task_id: `late-review-${modern}`, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'running');
         await db('task_history').insert({ task_id: `late-review-${modern}`, state: 'cancelled' });
@@ -357,7 +357,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           const execution = `review-${shape}-${modern}`;
           await persistCommentTask(execution, { ...baseJob, commandMode: 'review',
             ...(shape === 'direct' ? { commentId: comment.id, commentBody: comment.body, commentAuthor: comment.author } : { comments: [comment] }) });
-          assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'queued');
+          assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'running');
           await db('task_history').insert({ task_id: execution, state: 'processing' });
           assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'running');
           await db('task_history').insert({ task_id: execution, state: 'completed', metadata: JSON.stringify({ reviewResults: [{ success: false }] }) });
@@ -377,7 +377,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           await db('task_history').insert({ task_id: execution, state: 'completed' });
           assert.equal((await call('get_operation', { operationId: selected.operationId })).state, 'completed');
           assert.equal((await call('get_operation', { operationId: superseded.operationId })).state, 'posted');
-          await db('mcp_operations').where({ id: superseded.operationId }).update({ created_at: Date.now() - 180000 });
+          await db('mcp_operations').where({ id: superseded.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
           assert.equal((await call('get_operation', { operationId: superseded.operationId })).state, 'unknown');
         }
         const unexecuted = await call('review_pull_request', pr, true);
@@ -393,7 +393,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           await db('task_history').insert({ task_id: execution, state: 'completed' });
         }
         assert.equal((await call('get_operation', { operationId: unexecuted.operationId })).state, 'posted');
-        await db('mcp_operations').where({ id: unexecuted.operationId }).update({ created_at: Date.now() - 180000 });
+        await db('mcp_operations').where({ id: unexecuted.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
         assert.equal((await call('get_operation', { operationId: unexecuted.operationId })).state, 'unknown');
         // A loop without a matching durable epoch cannot borrow a later loop's result.
         const staleLoop = await call('run_ultrafix', pr, true);

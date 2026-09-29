@@ -265,20 +265,33 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
 
 }
 
-async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
+function ultrafixTerminalMetadata(job: Job<CommentJobData>, outcome: 'stopped' | 'failed'): Record<string, unknown> | undefined {
+    if (!job.data.ultrafixMeta) return undefined;
+    return {
+        ultrafixOutcome: outcome,
+        ultrafixCycle: null,
+        ultrafixScore: null,
+        ultrafixGoal: job.data.ultrafixMeta.goal,
+        ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles,
+    };
+}
+
+async function handleUserCancellation(job: Job<CommentJobData>, options: JobErrorOptions, errorMessage: string): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
-    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
+    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage },
+        historyMetadata: ultrafixTerminalMetadata(job, 'stopped') });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger, publicationStatus: options.publicationStatus });
     }
 }
 
-async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
+async function handleGenericError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
     const sanitizedMessage = sanitizeErrorMessage(error.message);
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage },
+        historyMetadata: ultrafixTerminalMetadata(job, 'failed') });
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -321,9 +334,9 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     if (isUsageLimit) {
         await handleUsageLimitError(error as UsageLimitError, job, options);
     } else if (isUserCancelled) {
-        await handleUserCancellation(options, error.message);
+        await handleUserCancellation(job, options, error.message);
     } else {
-        await handleGenericError(error, options);
+        await handleGenericError(error, job, options);
     }
 }
 

@@ -8,16 +8,32 @@ interface ContinuationMetaInput {
     nextAction?: string;
     score?: number | null;
     cycleCount?: number;
+    deferred?: boolean;
+    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    goal?: number;
+    maxCycles?: number;
 }
 
 export function buildUltrafixHistoryMeta(
-    ultrafixMeta: UltrafixCommandMeta, ufState: { cycleCount?: number; goal?: number | string; maxCycles?: number } | null,
+    ultrafixMeta: UltrafixCommandMeta,
+    ufState: { cycleCount?: number; reviewCount?: number; fixCount?: number; goal?: number | string; maxCycles?: number } | null,
+    action?: string,
 ): Record<string, unknown> {
-    return { ultrafixCycle: true, ultrafixGoal: ultrafixMeta.goal ?? ufState?.goal, ultrafixCycleCount: ufState?.cycleCount ?? 0, ultrafixMaxCycles: ultrafixMeta.maxCycles ?? ufState?.maxCycles };
+    const cycle = action === 'review' ? (ufState?.reviewCount ?? ufState?.cycleCount ?? 0) + 1
+        : action === 'fix' ? (ufState?.fixCount ?? ufState?.cycleCount ?? 0) + 1
+        : (ufState?.cycleCount ?? 0) + 1;
+    return { ultrafixCycle: cycle, ultrafixGoal: ultrafixMeta.goal ?? ufState?.goal,
+        ultrafixCycleCount: ufState?.cycleCount ?? 0, ultrafixMaxCycles: ultrafixMeta.maxCycles ?? ufState?.maxCycles };
 }
 
-export function buildContinuationMeta(r: ContinuationMetaInput): Record<string, unknown> {
-    return { ...(r.score != null && { ultrafixScore: r.score }), ...(r.cycleCount != null && { ultrafixCycleCount: r.cycleCount }), ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(!r.continued && { ultrafixStopReason: r.reason }) };
+export function buildContinuationMeta(r: ContinuationMetaInput, ultrafixMeta?: UltrafixCommandMeta): Record<string, unknown> {
+    return { ...(r.score != null && { ultrafixScore: r.score }),
+        ...(r.cycleCount != null && { ultrafixCycleCount: r.cycleCount }),
+        ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(r.deferred && { ultrafixDeferred: true }),
+        ...(!r.continued && { ultrafixStopReason: r.reason }), ...(r.outcome && { ultrafixOutcome: r.outcome }),
+        ...((r.goal ?? ultrafixMeta?.goal) != null && { ultrafixGoal: r.goal ?? ultrafixMeta?.goal }),
+        ...((r.maxCycles ?? ultrafixMeta?.maxCycles) != null && { ultrafixMaxCycles: r.maxCycles ?? ultrafixMeta?.maxCycles }),
+        ...(r.outcome && r.score == null && { ultrafixScore: null }) };
 }
 
 export async function patchUltrafixContinuationMeta(

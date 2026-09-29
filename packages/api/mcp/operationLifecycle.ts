@@ -97,6 +97,11 @@ export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt
 
   const commentId = positiveInteger(result.commentId, continuation.commentId, target.commentId);
   if (commentId) artifacts.commentId = commentId;
+  const reviews = Array.isArray(result.reviewResults) ? result.reviewResults.map(record).filter(Boolean) : [];
+  const reviewCommentId = positiveInteger(...reviews.flatMap(review => [review?.commentId]));
+  if (reviewCommentId) artifacts.reviewCommentId = reviewCommentId;
+  const headSha = nonEmptyString(result.currentHead, target.headSha, target.head_sha);
+  if (headSha && /^[0-9a-f]{40}$/i.test(headSha)) artifacts.headSha = headSha;
   return artifacts;
 }
 
@@ -118,8 +123,22 @@ function resultFailure(result: Record<string, unknown> | undefined): McpErrorEnv
 }
 
 /** Normalize durable backend failure evidence into the public error envelope. */
+// eslint-disable-next-line complexity -- failure precedence is intentionally centralized and ordered
 export function failureFromReceipt(receipt: Record<string, unknown>): McpErrorEnvelope | undefined {
+  const lifecycleFailure = record(receipt.lifecycleFailure);
+  if (lifecycleFailure && typeof lifecycleFailure.code === 'string' && typeof lifecycleFailure.message === 'string'
+    && typeof lifecycleFailure.retryable === 'boolean' && typeof lifecycleFailure.status === 'number') {
+    return lifecycleFailure as unknown as McpErrorEnvelope;
+  }
   const result = record(receipt.result);
+  const ultrafix = record(result?.ultrafixProgress) ?? record(receipt.lifecycleProgress);
+  if (ultrafix?.outcome === 'failed') {
+    const taskId = nonEmptyString(ultrafix.failingTaskId, record(receipt.targetState)?.taskId);
+    return {
+      code: 'ULTRAFIX_CYCLE_FAILED', message: 'An ultrafix cycle failed.', stage: 'workflow', retryable: false, status: 500,
+      ...(taskId ? { details: { taskId } } : {}),
+    };
+  }
   const backendFailure = resultFailure(result);
   if (backendFailure) return backendFailure;
 
@@ -189,18 +208,22 @@ export async function syncLifecycle(
   const receiptState = String(receipt.state ?? '');
   const result = record(receipt.result);
   const outcome = lifecycleOutcome(row, target, receiptState, targetState);
-  if (target && !outcome) await operations.recordProgress(row.id, target);
+  const lifecycleProgress = receipt.lifecycleProgress ?? target;
+  if (lifecycleProgress && !outcome) await operations.recordProgress(row.id, lifecycleProgress);
 
-  const startedAt = observedStartTimestamp(target, result, targetState);
+  const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool)
+    && typeof artifacts.taskId === 'string';
+  const startedAt = pickedUpCommand ? epochMilliseconds(target?.timestamp) ?? Date.now()
+    : observedStartTimestamp(target, result, targetState);
   if (startedAt !== null) await operations.markStarted(row.id, startedAt);
 
   if (outcome) {
     // Persist the terminal snapshot in the same guarded update as the outcome.
     // This closes the window where an older nonterminal poll could otherwise
     // replace terminal progress between two lifecycle writes.
-    await operations.finish(row.id, outcome, outcome === 'failed' ? failureFromReceipt(receipt) : undefined, target);
+    await operations.finish(row.id, outcome, outcome === 'failed' ? failureFromReceipt(receipt) : undefined, lifecycleProgress);
   } else if (receiptState === 'unknown') {
-    await operations.markUnknown(row.id);
+    await operations.markUnknown(row.id, failureFromReceipt(receipt));
   } else if (receiptState === 'queued' && target) {
     // A task or queue can appear after an earlier timeout. Resolve pre-start
     // uncertainty without erasing evidence that execution had already begun.

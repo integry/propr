@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpError } from './config.js';
 
 /** Stable locations a tool may expose without leaking implementation detail. */
-export type McpErrorStage = 'validation' | 'authorization' | 'precondition' | 'github' | 'transport' | 'database' | 'queue' | 'internal';
+export type McpErrorStage = 'validation' | 'authorization' | 'precondition' | 'github' | 'transport' | 'database' | 'queue' | 'workflow' | 'internal';
 
 /** The one public and durable representation of an MCP tool failure. */
 export interface McpErrorEnvelope {

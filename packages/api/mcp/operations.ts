@@ -5,6 +5,7 @@ import { classifyError, type McpErrorEnvelope } from './errorEnvelope.js';
 import { digest } from './store.js';
 import type { McpPrincipal } from './policy.js';
 import { artifactsFromReceipt, failureFromReceipt } from './operationLifecycle.js';
+import { summarizeLifecycle } from './commandProgress.js';
 
 const interruptionTimeoutMs = 120_000;
 
@@ -157,6 +158,7 @@ export class McpOperations {
   }
 
   /** Repair a process interruption after its terminal receipt write but before lifecycle synchronization. */
+  // eslint-disable-next-line complexity -- recovery atomically reconciles lifecycle, artifacts, failure, and progress
   async reconcileTerminalLifecycles(principal: McpPrincipal, id?: string): Promise<void> {
     const query = this.db('mcp_operations').where({ owner_id: principal.user.id, grant_id: principal.grant.id })
       .whereIn('state', ['completed', 'failed', 'cancelled']);
@@ -167,6 +169,8 @@ export class McpOperations {
       const cancellationSourceId = confirmedCancellationSource(row, receipt);
       await this.finishCancellationSource(row, cancellationSourceId);
       const targetState = receipt.targetState;
+      const result = record(receipt.result);
+      const terminalProgress = result?.ultrafixProgress ?? targetState;
       const artifacts = artifactsFromReceipt(row, receipt);
       const storedArtifacts = json(row.artifacts);
       const artifactRecord = storedArtifacts && typeof storedArtifacts === 'object' && !Array.isArray(storedArtifacts)
@@ -175,7 +179,7 @@ export class McpOperations {
         .filter(([key, value]) => canonical(artifactRecord[key]) !== canonical(value)));
       const failure = row.state === 'failed' ? failureFromReceipt(receipt) : undefined;
       const lifecycleMissing = ['accepted', 'running', 'unknown'].includes(row.lifecycle) || row.finished_at === null;
-      const progressNeedsRecovery = needsProgressRecovery(targetState, lifecycleMissing, row.progress);
+      const progressNeedsRecovery = needsProgressRecovery(terminalProgress, lifecycleMissing, row.progress);
       if (!lifecycleMissing && !Object.keys(missingArtifacts).length && !(failure && row.failure === null) && !progressNeedsRecovery) continue;
 
       const update: Record<string, unknown> = { updated_at: Date.now() };
@@ -194,7 +198,7 @@ export class McpOperations {
       if (progressNeedsRecovery) {
         // A terminal tracker receipt is newer than any nonterminal progress
         // recorded before lifecycle synchronization was interrupted.
-        update.progress = recoveredProgress(this.db, targetState, lifecycleMissing);
+        update.progress = recoveredProgress(this.db, terminalProgress, lifecycleMissing);
       }
 
       // Do not attach metadata derived from a receipt that changed after the
@@ -222,13 +226,15 @@ export class McpOperations {
     await this.db('mcp_operations').where({ id }).whereIn('lifecycle', ['accepted', 'running', 'unknown']).update({
       lifecycle: 'running',
       started_at: this.db.raw('COALESCE(started_at, ?)', [at]),
+      failure: null,
       updated_at: Date.now(),
     });
   }
 
-  async markUnknown(id: string): Promise<void> {
+  async markUnknown(id: string, failure?: McpErrorEnvelope): Promise<void> {
     await this.db('mcp_operations').where({ id }).whereIn('lifecycle', ['accepted', 'running', 'unknown']).update({
       lifecycle: 'unknown',
+      ...(failure ? { failure: JSON.stringify(failure) } : {}),
       updated_at: Date.now(),
     });
   }
@@ -303,7 +309,7 @@ export class McpOperations {
     const terminal = ['completed', 'failed', 'cancelled'].includes(row.lifecycle);
     const stale = !terminal && interrupted;
     const state = terminal ? row.lifecycle : stale ? 'unknown' : row.state;
-    return { operationId: row.id, tool: row.tool, state, result: json(row.result), lifecycle: {
+    const lifecycle = {
       state: interrupted && !terminal ? 'unknown' : row.lifecycle,
       acceptedAt: iso(row.accepted_at),
       startedAt: iso(row.started_at),
@@ -311,6 +317,10 @@ export class McpOperations {
       failure: json(row.failure),
       artifacts: json(row.artifacts) ?? {},
       progress: json(row.progress),
+    };
+    const commandReceipt = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool);
+    return { operationId: row.id, tool: row.tool, state, result: json(row.result), lifecycle: {
+      ...lifecycle, ...(commandReceipt ? { summary: summarizeLifecycle(row.tool, lifecycle) } : {}),
     },
       ...(['accepted', 'posted', 'queued', 'running'].includes(state) ? { retryAfterSeconds: 3 } : {}),
       ...(stale ? { message: 'Execution may have been interrupted. Inspect the target; this action will not be replayed automatically.' } : {}) };

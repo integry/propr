@@ -185,7 +185,9 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         // path and a hand-typed comment produce an identical fix run.
         const body = `/${command}${command === 'fix' ? ` ${formatReviewFeedbackSelection(selection)}` : ''}${command === 'ultrafix' ? ` goal=${args.goal} max=${args.maxCycles}` : ''}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${args.expectedHead} -->`;
         const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
-        return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, state: 'posted', ...(command === 'fix' ? { findingIds: selection.findingIds, suggestionIds: selection.suggestionIds } : {}) } };
+        return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, state: 'posted',
+          ...(command === 'fix' ? { findingIds: selection.findingIds, suggestionIds: selection.suggestionIds } : {}),
+          ...(command === 'ultrafix' ? { goal: args.goal, maxCycles: args.maxCycles } : {}) } };
       } });
   }
   tools.push({ name: 'comment_on_pull_request', description: 'Post an ordinary natural-language follow-up comment on an open PR at its exact head, which is how ProPR queues a scoped refinement. Slash commands are rejected; use the dedicated command tool instead.', scope: 'execute',
@@ -236,8 +238,28 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       const { owner, repo, pr } = await pull(principal, args);
       const wasActive = hasUltrafixLabel(pr.labels);
       if (wasActive) await principal.github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { owner, repo, issue_number: args.pullRequest, name: ULTRAFIX_LABEL });
+      const stoppingOperations: string[] = [];
+      if (wasActive) {
+        const rows = await deps.db('mcp_operations').where({
+          owner_id: principal.user.id, grant_id: principal.grant.id, repository: args.repository, tool: 'run_ultrafix',
+        }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+          .whereRaw("json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END, '$.pullRequest') = ?", [args.pullRequest])
+          .select('id', 'result', 'progress');
+        for (const row of rows) {
+          const result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result ?? {};
+          const previous = typeof row.progress === 'string' ? JSON.parse(row.progress) : row.progress ?? {};
+          const progress = {
+            kind: 'ultrafix', goal: Number(previous.goal ?? result.goal ?? 9), maxCycles: Number(previous.maxCycles ?? result.maxCycles ?? 3),
+            cycle: Number(previous.cycle ?? 0), lastScore: previous.lastScore ?? null, outcome: previous.outcome ?? null,
+            cycles: Array.isArray(previous.cycles) ? previous.cycles : [], ...previous, phase: 'stopping',
+          };
+          await deps.db('mcp_operations').where({ id: row.id }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+            .update({ progress: JSON.stringify(progress), updated_at: Date.now() });
+          stoppingOperations.push(row.id);
+        }
+      }
       return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, wasActive,
-        circuitBreaker: 'cleared', state: 'cleared',
+        circuitBreaker: 'cleared', state: 'cleared', stoppingOperations,
         message: wasActive
           ? 'The ultrafix label was removed, so the loop will not start another cycle. A cycle already running may still finish; inspect the pull request to confirm.'
           : 'No ultrafix label was present, so no loop continuation was stopped.' });
