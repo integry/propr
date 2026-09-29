@@ -125,6 +125,16 @@ function resolvedTaskId(result: Record<string, unknown>): string | undefined {
     .find((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
+async function projectOperationSubmission(deps: ToolDeps, submission: TaskSubmission, result: Record<string, unknown>) {
+  // Submission reads follow the latest retry, but a mutation receipt keeps the
+  // execution it already discovered (or the submission's first execution).
+  const boundTaskId = resolvedTaskId(result) ?? submission.task_id ?? undefined;
+  const current = await projectSubmission(deps, boundTaskId
+    ? { ...submission, task_id: boundTaskId, latest_task_id: boundTaskId }
+    : submission);
+  return { current, taskId: boundTaskId ?? current.progress.task?.id ?? current.taskId ?? undefined };
+}
+
 /** Submission acceptance precedes task association; polling must discover the exact task. */
 export async function trackTaskSubmission(deps: ToolDeps, row: Operation, principal: McpPrincipal, receipt: Record<string, unknown>): Promise<void> {
   if (!['create_task', 'retry_task_submission'].includes(row.tool) || !row.result) return;
@@ -152,8 +162,7 @@ export async function trackTaskSubmission(deps: ToolDeps, row: Operation, princi
     await deps.db('mcp_operations').where({ id: row.id }).update({ result: JSON.stringify(refreshed), updated_at: Date.now() });
     return;
   }
-  const current = await projectSubmission(deps, submission);
-  const taskId = current.progress.task?.id || current.taskId;
+  const { current, taskId } = await projectOperationSubmission(deps, submission, result);
   if (taskId) { current.taskId = taskId; current.continuation.taskId = taskId; }
   receipt.state = current.state;
   receipt.result = current;

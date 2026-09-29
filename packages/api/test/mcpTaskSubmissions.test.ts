@@ -305,26 +305,39 @@ test('submission reads redact task failures and active lists are owner-scoped wi
 });
 
 
-test('an unpolled launch receipt follows the latest execution after an issue retry starts', async () => {
-  const f = await fixture();
-  try {
-    const receipt = (await f.call('create_task', { repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: 'unpolled-launch' })).data as Receipt;
-    const submission = await f.db('task_submissions').first();
-    await f.db('tasks').insert([
-      { task_id: 'first-task', repository: 'owner/repo', task_type: 'issue' },
-      { task_id: 'later-task', repository: 'owner/repo', task_type: 'issue' },
-    ]);
-    await associateSubmissionTask(f.db, submission.id, 'first-task');
-    await f.db('task_history').insert({ task_id: 'first-task', state: 'completed' });
-    await associateSubmissionTask(f.db, submission.id, 'later-task');
-    await f.db('task_history').insert({ task_id: 'later-task', state: 'processing' });
-    const result = (await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt;
-    assert.equal(result.state, 'running');
-    assert.equal(result.result.continuation.taskId, 'later-task');
-    assert.equal(result.result.progress.task.id, 'later-task');
-    assert.equal(result.result.progress.stage, 'running');
-    assert.equal((await f.db('task_submissions').first()).latest_task_id, 'later-task');
-  } finally { await f.db.destroy(); }
+test('an unpolled successful launch receipt stays with its execution after a later retry starts or fails', async () => {
+  for (const retryState of ['processing', 'failed']) {
+    const f = await fixture();
+    try {
+      const receipt = (await f.call('create_task', {
+        repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: `unpolled-launch-${retryState}`,
+      })).data as Receipt;
+      const submission = await f.db('task_submissions').first();
+      await f.db('tasks').insert([
+        { task_id: 'first-task', repository: 'owner/repo', task_type: 'issue' },
+        { task_id: 'later-task', repository: 'owner/repo', task_type: 'issue' },
+      ]);
+      await associateSubmissionTask(f.db, submission.id, 'first-task');
+      await f.db('task_history').insert({ task_id: 'first-task', state: 'completed' });
+      await associateSubmissionTask(f.db, submission.id, 'later-task');
+      await f.db('task_history').insert({ task_id: 'later-task', state: retryState });
+
+      const result = (await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt;
+      assert.equal(result.state, 'completed');
+      assert.equal(result.lifecycle.state, 'completed');
+      assert.equal(result.result.taskId, 'first-task');
+      assert.equal(result.result.continuation.taskId, 'first-task');
+      assert.equal(result.result.progress.task.id, 'first-task');
+      assert.equal(result.result.progress.stage, 'completed');
+      assert.equal(result.lifecycle.artifacts.taskId, 'first-task');
+      const direct = (await f.call('get_task_submission', {
+        repository: 'owner/repo', submissionId: submission.id,
+      })).data as SubmissionData;
+      assert.equal(direct.progress.task?.id, 'later-task');
+      assert.equal(direct.progress.stage, retryState === 'failed' ? 'failed' : 'running');
+      assert.equal((await f.db('task_submissions').first()).latest_task_id, 'later-task');
+    } finally { await f.db.destroy(); }
+  }
 });
 
 test('terminal task events between submission and execution tracking reconcile the resolving and durable receipts', async () => {
@@ -390,12 +403,9 @@ test('a resolved launch receipt stays with its completed execution while submiss
     await f.db('task_history').insert({ task_id: 'completed-task', state: 'processing' });
     assert.equal((await poll()).state, 'running');
     await f.db('task_history').insert({ task_id: 'completed-task', state: 'completed' });
-    const completed = await poll();
-    assert.equal(completed.state, 'completed');
-    assert.equal(completed.result.progress.stage, 'completed');
 
-    // The PR can be linked after completion, while an issue retry independently
-    // advances the submission's latest-task pointer.
+    // The first execution finishes between polls while an issue retry
+    // independently advances the submission's latest-task pointer.
     await f.db('tasks').where({ task_id: 'completed-task' }).update({ pr_number: 45 });
     await f.db('notification_pull_request_state').insert({
       repository: 'owner/repo', pr_number: 45, merged_at: '2026-09-29T14:00:00.000Z',
