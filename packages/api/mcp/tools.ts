@@ -32,9 +32,13 @@ import { addArtifactTools } from './toolsArtifacts.js';
 import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
-import { summarizeGoal, summarizeTask } from './listSummaries.js';
+import { addWorkOverviewTools } from './toolsWorkOverview.js';
+import { summarizeGoal } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
-import { GOAL_DETAIL_COLUMNS, TERMINAL_TASK_STATES, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
+import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
+import { applyTaskVisibility, queryTaskSummaries } from './taskListing.js';
+
+export { applyTaskVisibility } from './taskListing.js';
 
 export const repositorySchema = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(255);
 export const idSchema = z.string().min(1).max(255);
@@ -76,17 +80,6 @@ export async function markMergedPullRequests(
     .whereIn('pr_number', numbers).whereNotNull('merged_at').select('pr_number');
   const merged = new Set(rows.map(row => Number(row.pr_number)));
   for (const item of items) if (merged.has(Number(item[fields.number]))) item[fields.state] = 'merged';
-}
-
-/**
- * Hide other users' private goal tasks. A goal's current task is visible only
- * to that goal's owner, and a goal-typed task with no owning goal is visible to
- * nobody. Shared by every tool that lists tasks so one predicate governs them.
- */
-export function applyTaskVisibility(db: Knex, query: Knex.QueryBuilder, userId: string): Knex.QueryBuilder {
-  query.whereNotIn('tasks.task_id', db('goals').select('current_task_id').whereNot('owner_id', userId).whereNotNull('current_task_id'));
-  query.andWhere(builder => builder.whereNot('tasks.task_type', 'goal').orWhereIn('tasks.task_id', db('goals').select('current_task_id').where({ owner_id: userId })));
-  return query;
 }
 
 /** Cross-repository list results carry their own repository, so merge state is resolved per repository. */
@@ -180,6 +173,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addManagementTools(tools, deps, { todos, config, runtime });
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
+  addWorkOverviewTools(tools, deps, listScope);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
@@ -221,38 +215,10 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];
   tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
-    // Correlated indexed lookups avoid materializing history for unrelated tasks.
-    const latestHistoryId = db('task_history').select('history_id')
-      .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
-    const taskStart = db('task_history').min('timestamp')
-      .where('task_id', db.ref('tasks.task_id')).whereIn('state', ['processing', 'claude_execution', 'post_processing']);
-    // Keep PR state and agent/model fields from the same latest relation row.
-    const latestPlanIssueId = db('plan_issues').select('id')
-      .where('task_id', db.ref('tasks.task_id')).orderBy('id', 'desc').limit(1);
-    const query = db('tasks');
-    scopeRepositories(query, 'tasks.repository', args.repository, await listScope(principal, args));
-    applyTaskVisibility(db, query, principal.user.id);
-    // The lifecycle filter reads the same newest history row the summary reports, before paging.
-    if (args.state && args.state !== 'all') {
-      const latestState = db('task_history').select('state')
-        .where('task_id', db.ref('tasks.task_id')).orderBy('history_id', 'desc').limit(1);
-      if (args.state === 'active') query.whereRaw(`coalesce((?), 'pending') not in (${TERMINAL_TASK_STATES.map(() => '?').join(', ')})`, [latestState, ...TERMINAL_TASK_STATES]);
-      else query.whereRaw('(?) = ?', [latestState, args.state]);
-    }
-    // Apply visibility and pagination before looking up history or plan relations.
-    const taskPage = query.select(...taskColumns, 'model_name', 'pr_number', 'initial_job_data')
-      .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc').offset(args.offset).limit(args.limit).as('tasks');
-    const rows = await db.from(taskPage)
-      .leftJoin('task_history as latest_history', 'latest_history.history_id', db.raw('(?)', [latestHistoryId]))
-      .leftJoin('plan_issues as task_plan_issue', 'task_plan_issue.id', db.raw('(?)', [latestPlanIssueId]))
-      .select('tasks.*', 'latest_history.state', 'latest_history.timestamp as updated_at', 'latest_history.reason as state_reason',
-        'latest_history.metadata as state_metadata', taskStart.as('started_at'),
-        'task_plan_issue.pr_number as plan_pr_number', 'task_plan_issue.status as plan_issue_status',
-        'task_plan_issue.agent_alias as plan_agent_alias', 'task_plan_issue.model_name as plan_model_name')
-      .orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc');
-    const tasks = rows.map(row => summarizeTask(row));
-    await markMergedListPullRequests(db, tasks);
-    return ok({ tasks, nextOffset: rows.length === args.limit ? args.offset + args.limit : null });
+    const repositories = args.repository ? [args.repository] : await listScope(principal, args) ?? [];
+    const taskSummaries = await queryTaskSummaries(db, { repositories, state: args.state, principalUserId: principal.user.id,
+      offset: args.offset, limit: args.limit });
+    return ok({ tasks: taskSummaries, nextOffset: taskSummaries.length === args.limit ? args.offset + args.limit : null });
   } });
   tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
     ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns),

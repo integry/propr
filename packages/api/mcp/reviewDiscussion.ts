@@ -6,6 +6,25 @@ import type { ToolDeps } from './tools.js';
 
 export interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
 
+export interface ReviewSummary {
+  score: number | null;
+  reviewedHead: string | null;
+  matchesCurrentHead: boolean | null;
+}
+
+/** Parse the non-prose fields from a ProPR AI review comment. */
+export function summarizeReviewComment(body: string | null | undefined, currentHead: string): ReviewSummary | null {
+  const text = body || '';
+  const marker = /<!-- propr:ai-review\b([^>]*)-->/.exec(text);
+  if (!marker) return null;
+  const reviewedHead = /\bhead="([a-f0-9]{40})"/.exec(marker[1] || '')?.[1] || null;
+  return {
+    score: parseStructuredReview(text).score,
+    reviewedHead,
+    matchesCurrentHead: reviewedHead === null ? null : reviewedHead === currentHead,
+  };
+}
+
 /**
  * GitHub's per-issue comments REST endpoint pages oldest-first only — it has no
  * ordering parameters — so reading from the newest end has to go through the
