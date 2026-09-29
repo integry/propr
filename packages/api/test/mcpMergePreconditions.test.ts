@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { parse } from 'graphql';
 import knex from 'knex';
 import { closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
@@ -194,6 +195,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
       throw new Error(`Unexpected GitHub request: ${route}`);
     },
     graphql: async (query: string, args: Args) => {
+      assert.doesNotThrow(() => parse(query), 'merge_pull_request must send valid GraphQL');
       mergeQuery = query;
       if (query.includes('node(id:$commitId)')) {
         paginationCalls.push({ query, ...args });

@@ -350,7 +350,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
     schema: z.object({ ...mutation, method: z.enum(['merge', 'squash', 'rebase']).default('squash') }).strict(), run: async ({ principal, args }) => {
       const { owner, repo, pr } = await pull(principal, args);
       const result = await principal.github.graphql<{ repository: { pullRequest: PullRequestStateSource } }>(
-        `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state isDraft merged mergedAt closedAt mergeCommit{oid} headRefOid baseRefName mergeStateStatus reviewDecision url commits(last:1){nodes{commit{id statusCheckRollup{state contexts(first:50){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage endCursor}}}}}}}}}}`, { owner, repo, number: args.pullRequest });
+        `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state isDraft merged mergedAt closedAt mergeCommit{oid} headRefOid baseRefName mergeStateStatus reviewDecision url commits(last:1){nodes{commit{id statusCheckRollup{state contexts(first:50){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage endCursor}}}}}}}}}`, { owner, repo, number: args.pullRequest });
       const state = result.repository.pullRequest;
       // Fail a stale expected head before another awaited read. Subsequent pages are
       // pinned to this commit id; GitHub's merge endpoint remains the final atomic guard.
