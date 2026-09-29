@@ -96,7 +96,7 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
     // instead of throwing, so the classification is captured here, before that
     // projection consumes it.
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
-      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error); throw error; })));
+      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
   const data = redact(result) as Record<string, unknown>;
   noteToolOutcome(tool, access, data);
   if (access.resultBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');

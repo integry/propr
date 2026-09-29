@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { McpError } from './config.js';
+import { classifyError } from './errorEnvelope.js';
 import { digest } from './store.js';
 import type { McpPrincipal } from './policy.js';
 
@@ -47,9 +48,9 @@ export class McpOperations {
     } catch (error) {
       // A transport failure can follow an external side effect. Never replay it
       // automatically or claim it was rolled back. The handle remains durable.
-      const code = error instanceof McpError && error.status < 500 ? error.code : 'OUTCOME_UNKNOWN';
-      await this.db('mcp_operations').where({ id }).update({ state: code === 'OUTCOME_UNKNOWN' ? 'unknown' : 'failed',
-        result: JSON.stringify({ error: { code, message: error instanceof McpError ? error.message : 'Outcome uncertain. Inspect the target before issuing a new action.' } }), updated_at: Date.now() });
+      const envelope = classifyError(error, { sideEffectsPossible: true });
+      await this.db('mcp_operations').where({ id }).update({ state: envelope.code === 'OUTCOME_UNKNOWN' ? 'unknown' : 'failed',
+        result: JSON.stringify({ error: envelope }), updated_at: Date.now() });
     }
     return this.project((await this.db<Operation>('mcp_operations').where({ id }).first())!);
   }

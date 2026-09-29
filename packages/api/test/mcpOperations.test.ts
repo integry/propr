@@ -31,6 +31,18 @@ test('mutation deduplication survives concurrent callers and reopening the SQLit
     await assert.rejects(restarted.get({ user: { id: '999' }, grant: { id: 'grant-1' } } as never, String(result.operationId)), /not found/);
     const uncertain = await restarted.run(principal, { tool: 'external_action', args: { idempotencyKey: 'uncertain-key-1' }, repository: 'acme/repo' }, async () => { throw new Error('Network disconnected after possible side effect'); });
     assert.equal(uncertain.state, 'unknown');
+    assert.deepEqual(uncertain.result, { error: {
+      code: 'OUTCOME_UNKNOWN', message: 'Outcome uncertain. Inspect the target before issuing a new action.', stage: 'internal', retryable: false, status: 500,
+      cause: { code: 'INTERNAL_ERROR', message: 'The request could not be completed.' },
+    } });
+    const githubRejected = await restarted.run(principal, { tool: 'publish_plan', args: { idempotencyKey: 'github-reject-1' }, repository: 'acme/repo' }, async () => {
+      throw Object.assign(new Error('request failed'), { name: 'HttpError', status: 422,
+        response: { status: 422, headers: {}, data: { message: 'Validation Failed', errors: [{ message: 'Reference does not exist' }] } } });
+    });
+    assert.deepEqual(githubRejected.result, { error: {
+      code: 'OUTCOME_UNKNOWN', message: 'Outcome uncertain. Inspect the target before issuing a new action.', stage: 'github', retryable: false, status: 422,
+      cause: { code: 'GITHUB_REJECTED', message: 'Validation Failed: Reference does not exist' },
+    } });
     const rejected = await restarted.run(principal, { tool: 'guarded_action', args: { idempotencyKey: 'rejected-key-1' }, repository: 'acme/repo' }, async () => { throw new McpError('STALE_HEAD', 'Head changed', 409); });
     assert.equal(rejected.state, 'failed');
     await db('task_drafts').insert({ draft_id: 'plan-1', name: 'Initial' });

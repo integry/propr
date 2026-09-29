@@ -1,0 +1,235 @@
+import { z } from 'zod';
+import type { McpError } from './config.js';
+
+/** Stable locations a tool may expose without leaking implementation detail. */
+export type McpErrorStage = 'validation' | 'authorization' | 'precondition' | 'github' | 'transport' | 'database' | 'queue' | 'internal';
+
+/** The one public and durable representation of an MCP tool failure. */
+export interface McpErrorEnvelope {
+  code: string;
+  message: string;
+  stage: McpErrorStage | null;
+  retryable: boolean;
+  status: number;
+  details?: Record<string, unknown>;
+  cause?: { code: string; message: string };
+}
+
+const SENSITIVE_DETAIL_KEY = /token|secret|password|authorization|cookie|private.?key|credential/i;
+const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g;
+const MCP_TOKEN = /\bpia_mcp_[A-Za-z0-9._~-]+\b/g;
+const BEARER_VALUE = /\bBearer\s+[^\s,;"']+/gi;
+const CREDENTIALED_GIT_URL = /(https:\/\/x-access-token:)[^@\s/]+(@[^\s]+)/gi;
+const SIGNED_QUERY_VALUE = /([?&](?:X-Amz-Signature|token|access_token|signature)=)[^&#\s]*/gi;
+
+/** Remove credentials that can occur in upstream messages and safe detail values. */
+export function redactSecrets(value: string): string {
+  return value
+    .replace(GITHUB_TOKEN, '[REDACTED]')
+    .replace(MCP_TOKEN, '[REDACTED]')
+    .replace(BEARER_VALUE, 'Bearer [REDACTED]')
+    .replace(CREDENTIALED_GIT_URL, '$1[REDACTED]$2')
+    .replace(SIGNED_QUERY_VALUE, '$1[REDACTED]');
+}
+
+function basename(value: string): string {
+  const withoutTrailingSeparator = value.replace(/[\\/]+$/, '');
+  return withoutTrailingSeparator.split(/[\\/]/).pop() || '[REDACTED_PATH]';
+}
+
+function stripAbsolutePaths(value: string): string {
+  const posix = value.replace(/(^|[\s("'=])\/(?:[^/\s"'<>]+\/)+([^/\s"'<>]+)/g, (_match, prefix: string, filename: string) => `${prefix}${filename}`);
+  return posix.replace(/(^|[\s("'=])(?:[A-Za-z]:[\\/]|\\\\)(?:[^\\/\s"'<>]+[\\/])+([^\\/\s"'<>]+)/g,
+    (_match, prefix: string, filename: string) => `${prefix}${filename}`);
+}
+
+function redactDetailValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') {
+    const redacted = redactSecrets(value);
+    // Detail fields often carry paths directly or inside diagnostic prose.
+    // Keep only filenames for POSIX, Windows-drive and UNC absolute paths.
+    if (redacted.startsWith('/') || /^[A-Za-z]:[\\/]/.test(redacted)) return basename(redacted);
+    return stripAbsolutePaths(redacted);
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[REDACTED]';
+    seen.add(value);
+    return value.map(item => redactDetailValue(item, seen));
+  }
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return '[REDACTED]';
+    seen.add(value);
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (SENSITIVE_DETAIL_KEY.test(key)) continue;
+      result[redactSecrets(key)] = redactDetailValue(item, seen);
+    }
+    return result;
+  }
+  if (typeof value === 'bigint') return String(value);
+  return value;
+}
+
+/** Recursively sanitize optional structured error detail. Sensitive keys are omitted. */
+export function redactDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return redactDetailValue(details, new WeakSet()) as Record<string, unknown>;
+}
+
+type ErrorLike = {
+  name?: unknown;
+  code?: unknown;
+  message?: unknown;
+  status?: unknown;
+  request?: unknown;
+  response?: unknown;
+  cause?: unknown;
+};
+
+function errorLike(value: unknown): ErrorLike | undefined {
+  return value !== null && typeof value === 'object' ? value as ErrorLike : undefined;
+}
+
+function isMcpError(value: unknown): value is McpError {
+  return value instanceof Error
+    && value.name === 'McpError'
+    && typeof (value as Partial<McpError>).code === 'string'
+    && typeof (value as Partial<McpError>).status === 'number'
+    && typeof (value as Partial<McpError>).toEnvelope === 'function';
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function finiteStatus(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function githubError(error: unknown): { value: ErrorLike; status: number; response?: Record<string, unknown> } | undefined {
+  const value = errorLike(error);
+  if (!value) return undefined;
+  const response = record(value.response);
+  const status = finiteStatus(value.status) ?? finiteStatus(response?.status);
+  if (!status) return undefined;
+  // RequestError uses name=HttpError and carries request/response metadata.
+  // Accept response-bearing test doubles too, without mistaking every domain
+  // error with an HTTP-like status for a GitHub failure.
+  if (value.name !== 'HttpError' && value.request === undefined && !response) return undefined;
+  return { value, status, response };
+}
+
+function githubHeaders(response: Record<string, unknown> | undefined): Record<string, unknown> {
+  const source = record(response?.headers);
+  if (!source) return {};
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key.toLowerCase(), value]));
+}
+
+function githubMessage(value: ErrorLike, response: Record<string, unknown> | undefined): string {
+  const data = record(response?.data);
+  const primary = typeof data?.message === 'string' ? data.message
+    : typeof value.message === 'string' ? value.message : 'GitHub rejected the request.';
+  const errors = Array.isArray(data?.errors) ? data.errors.flatMap(item => {
+    if (typeof item === 'string') return [item];
+    const message = record(item)?.message;
+    return typeof message === 'string' ? [message] : [];
+  }) : [];
+  const additions = errors.filter(message => message && message !== primary);
+  return redactSecrets([primary, ...additions].join(': '));
+}
+
+function classifyGithub(error: unknown): McpErrorEnvelope | undefined {
+  const github = githubError(error);
+  if (!github) return undefined;
+  const { value, status, response } = github;
+  const headers = githubHeaders(response);
+  const rateLimited = status === 429 || (status === 403 && (
+    String(headers['x-ratelimit-remaining'] ?? '') === '0'
+    || headers['retry-after'] !== undefined
+  ));
+  const common = { stage: 'github' as const, status, message: githubMessage(value, response) };
+  if (rateLimited) return { code: 'GITHUB_RATE_LIMITED', retryable: true, ...common };
+  if (status === 401) return { code: 'GITHUB_AUTH_FAILED', retryable: false, ...common };
+  if (status === 403) return { code: 'GITHUB_FORBIDDEN', retryable: false, ...common };
+  if (status === 404) return { code: 'GITHUB_NOT_FOUND', retryable: false, ...common };
+  if (status >= 500) return { code: 'GITHUB_UNAVAILABLE', retryable: true, ...common };
+  if (status === 409 || status === 422 || (status >= 400 && status < 500)) {
+    return { code: 'GITHUB_REJECTED', retryable: false, ...common };
+  }
+  return undefined;
+}
+
+function errorChain(error: unknown): ErrorLike[] {
+  const chain: ErrorLike[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && !seen.has(current) && chain.length < 5) {
+    seen.add(current);
+    const value = errorLike(current);
+    if (!value) break;
+    chain.push(value);
+    current = value.cause;
+  }
+  return chain;
+}
+
+function classifyKnown(error: unknown): McpErrorEnvelope {
+  if (isMcpError(error)) return error.toEnvelope();
+
+  if (error instanceof z.ZodError) {
+    return {
+      code: 'INVALID_INPUT',
+      message: 'Invalid or missing tool arguments.',
+      stage: 'validation',
+      retryable: false,
+      status: 400,
+      details: redactDetails({ issues: error.issues.map(issue => ({
+        path: issue.path.map(part => typeof part === 'symbol' ? part.description ?? 'symbol' : part),
+        message: issue.message,
+      })) }),
+    };
+  }
+
+  const github = classifyGithub(error);
+  if (github) return github;
+
+  const chain = errorChain(error);
+  if (chain.some(item => item.name === 'AbortError' || item.name === 'TimeoutError' || item.code === 'ETIMEDOUT')) {
+    return { code: 'UPSTREAM_TIMEOUT', message: 'The upstream request timed out.', stage: 'transport', retryable: true, status: 504 };
+  }
+  if (chain.some(item => ['ECONNRESET', 'ECONNREFUSED'].includes(String(item.code)))) {
+    return { code: 'UPSTREAM_UNREACHABLE', message: 'The upstream service could not be reached.', stage: 'transport', retryable: true, status: 503 };
+  }
+  if (chain.some(item => ['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String(item.code)))) {
+    return { code: 'DATABASE_BUSY', message: 'The database is temporarily busy.', stage: 'database', retryable: true, status: 503 };
+  }
+  return { code: 'INTERNAL_ERROR', message: 'The request could not be completed.', stage: 'internal', retryable: false, status: 500 };
+}
+
+/** Classify any thrown value, retaining mutation uncertainty when effects may have occurred. */
+export function classifyError(error: unknown, options: { sideEffectsPossible: boolean }): McpErrorEnvelope {
+  const classified = classifyKnown(error);
+  if (!options.sideEffectsPossible || isMcpError(error)) return classified;
+  return {
+    code: 'OUTCOME_UNKNOWN',
+    message: 'Outcome uncertain. Inspect the target before issuing a new action.',
+    stage: classified.stage,
+    retryable: false,
+    status: classified.status,
+    cause: { code: classified.code, message: redactSecrets(classified.message) },
+  };
+}
+
+/** Produce the protocol result understood by both text-only and structured clients. */
+export function toToolErrorResult(envelope: McpErrorEnvelope): {
+  isError: true;
+  content: [{ type: 'text'; text: string }];
+  structuredContent: { error: McpErrorEnvelope };
+} {
+  const safe: McpErrorEnvelope = {
+    ...envelope,
+    message: redactSecrets(envelope.message),
+    ...(envelope.details ? { details: redactDetails(envelope.details) } : {}),
+    ...(envelope.cause ? { cause: { code: envelope.cause.code, message: redactSecrets(envelope.cause.message) } } : {}),
+  };
+  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: safe }) }], structuredContent: { error: safe } };
+}

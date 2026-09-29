@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Knex } from 'knex';
-import { z } from 'zod';
-import { McpError } from './config.js';
+import { classifyError } from './errorEnvelope.js';
 import type { McpPrincipal } from './policy.js';
 
 /**
@@ -172,12 +171,9 @@ export function accessPrincipal(principal?: Pick<McpPrincipal, 'user' | 'grant'>
  * scope, forbidden repository, invalid arguments) are denials; anything the
  * instance itself could not complete is an error.
  */
-export function classifyMcpFailure(error: unknown): { status: number; outcome: McpAccessOutcome; errorCode: string } {
-  if (error instanceof McpError) {
-    return { status: error.status, outcome: error.status >= 500 ? 'error' : 'denied', errorCode: error.code };
-  }
-  if (error instanceof z.ZodError) return { status: 400, outcome: 'denied', errorCode: 'INVALID_INPUT' };
-  return { status: 500, outcome: 'error', errorCode: 'INTERNAL_ERROR' };
+export function classifyMcpFailure(error: unknown, options: { sideEffectsPossible?: boolean } = {}): { status: number; outcome: McpAccessOutcome; errorCode: string } {
+  const envelope = classifyError(error, { sideEffectsPossible: options.sideEffectsPossible ?? false });
+  return { status: envelope.status, outcome: envelope.status >= 500 ? 'error' : 'denied', errorCode: envelope.code };
 }
 
 /** JSON-RPC request identifiers are scalars; anything else is not correlatable. */

@@ -166,7 +166,7 @@ test('a failed mutation is recorded with its own outcome, on the first attempt a
   assert.deepEqual(recorded.map(row => [row.name, row.outcome, row.error_code, row.status]), [
     ['denied_fixture', 'denied', 'REPOSITORY_FORBIDDEN', 403],
     ['denied_fixture', 'denied', 'REPOSITORY_FORBIDDEN', 400],
-    ['broken_fixture', 'error', 'INTERNAL_ERROR', 500],
+    ['broken_fixture', 'error', 'OUTCOME_UNKNOWN', 500],
     ['queued_fixture', 'success', null, 200],
   ]);
   // Each row still carries the durable handle an operator follows.

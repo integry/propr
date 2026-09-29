@@ -17,6 +17,7 @@ import { createToolCatalog, executeTool, type McpTool, type ToolDeps } from './t
 import { accessPrincipal, mcpRequestId, recordMcpAccess, withMcpDispatch, withMcpRequestContext, withMcpSurface } from './accessLog.js';
 import { presentResultText } from './presentation.js';
 import { resolveMcpConfig, isMcpEnabledSync, getMcpScopeCeilingSync } from './configResolver.js';
+import { classifyError, toToolErrorResult } from './errorEnvelope.js';
 
 const prompts: Record<string, string> = {
   plan_change: 'Resolve the repository and inspect indexed context. Create a draft plan, generate or refine it, and show it to the user. Publishing and implementation are separate explicit actions.',
@@ -43,9 +44,7 @@ export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog:
         const result = await call(tool.name, args);
         return { content: [{ type: 'text', text: presentResultText(result) }], structuredContent: result };
       } catch (error) {
-        const code = error instanceof McpError ? error.code : error instanceof z.ZodError ? 'INVALID_INPUT' : 'INTERNAL_ERROR';
-        const message = error instanceof McpError ? error.message : error instanceof z.ZodError ? 'Invalid or missing tool arguments.' : 'The request could not be completed.';
-        return { isError: true, content: [{ type: 'text', text: `${code}: ${message}` }], structuredContent: { error: { code, message } } };
+        return toToolErrorResult(classifyError(error, { sideEffectsPossible: false }));
       }
     });
   }
