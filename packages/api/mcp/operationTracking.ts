@@ -144,6 +144,9 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
       const currentResult = current.result ? JSON.parse(current.result) as ExecutionResult & Record<string, unknown> : {};
       receipt.state = current.state;
       receipt.result = currentResult;
+      // The adopted terminal receipt proves the command was picked up. Do not
+      // let this poll's older timeout outrank the execution failure it adopted.
+      delete receipt.lifecycleFailure;
       if (currentResult.ultrafixProgress !== undefined) receipt.lifecycleProgress = currentResult.ultrafixProgress;
       else delete receipt.lifecycleProgress;
       if (currentResult.targetState) receipt.targetState = currentResult.targetState;

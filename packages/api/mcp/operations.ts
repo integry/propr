@@ -5,7 +5,7 @@ import { classifyError, type McpErrorEnvelope } from './errorEnvelope.js';
 import { digest } from './store.js';
 import type { McpPrincipal } from './policy.js';
 import { artifactsFromReceipt, failureFromReceipt } from './operationLifecycle.js';
-import { summarizeLifecycle } from './commandProgress.js';
+import { COMMAND_NOT_PICKED_UP_FAILURE, summarizeLifecycle } from './commandProgress.js';
 
 const interruptionTimeoutMs = 120_000;
 
@@ -58,6 +58,10 @@ function errorEnvelope(value: unknown): McpErrorEnvelope | undefined {
   return typeof envelope.code === 'string' && typeof envelope.message === 'string'
     && typeof envelope.retryable === 'boolean' && typeof envelope.status === 'number'
     ? envelope as McpErrorEnvelope : undefined;
+}
+
+function isPickupFailure(value: unknown): boolean {
+  return errorEnvelope(value)?.code === COMMAND_NOT_PICKED_UP_FAILURE.code;
 }
 
 function operationState(result: OperationResult): string {
@@ -178,9 +182,13 @@ export class McpOperations {
       const missingArtifacts = Object.fromEntries(Object.entries(artifacts)
         .filter(([key, value]) => canonical(artifactRecord[key]) !== canonical(value)));
       const failure = row.state === 'failed' ? failureFromReceipt(receipt) : undefined;
+      const pickupFailure = isPickupFailure(json(row.failure));
+      const failureNeedsRecovery = !!failure && (row.failure === null || pickupFailure);
+      const failureNeedsClearing = pickupFailure && !failure;
+      const failureNeedsUpdate = failureNeedsRecovery || failureNeedsClearing;
       const lifecycleMissing = ['accepted', 'running', 'unknown'].includes(row.lifecycle) || row.finished_at === null;
       const progressNeedsRecovery = needsProgressRecovery(terminalProgress, lifecycleMissing, row.progress);
-      if (!lifecycleMissing && !Object.keys(missingArtifacts).length && !(failure && row.failure === null) && !progressNeedsRecovery) continue;
+      if (!lifecycleMissing && !Object.keys(missingArtifacts).length && !failureNeedsUpdate && !progressNeedsRecovery) continue;
 
       const update: Record<string, unknown> = { updated_at: Date.now() };
       if (lifecycleMissing) {
@@ -192,8 +200,14 @@ export class McpOperations {
       if (Object.keys(missingArtifacts).length) {
         update.artifacts = this.db.raw("json_patch(COALESCE(artifacts, '{}'), ?)", [JSON.stringify(missingArtifacts)]);
       }
-      if (failure && row.failure === null) {
-        update.failure = this.db.raw('COALESCE(failure, ?)', [JSON.stringify(failure)]);
+      if (failureNeedsRecovery) {
+        // A pickup timeout is only nonterminal evidence. Once the durable
+        // receipt proves execution failed, its failure supersedes that timeout.
+        update.failure = JSON.stringify(failure);
+      } else if (failureNeedsClearing) {
+        // Terminal receipts without recoverable failure detail still prove the
+        // pickup timeout obsolete, but have no failure to store in its place.
+        update.failure = null;
       }
       if (progressNeedsRecovery) {
         // A terminal tracker receipt is newer than any nonterminal progress
@@ -209,6 +223,11 @@ export class McpOperations {
       });
       if (row.result === null) eligible.whereNull('result');
       else eligible.andWhere('result', row.result);
+      if (failureNeedsUpdate) {
+        // Do not replace a terminal failure written after this receipt was read.
+        if (row.failure === null) eligible.whereNull('failure');
+        else eligible.andWhere('failure', row.failure);
+      }
       await eligible.update(update);
     }
   }
@@ -268,14 +287,21 @@ export class McpOperations {
 
   async finish(id: string, outcome: LifecycleOutcome, failure?: McpErrorEnvelope, progress?: unknown): Promise<void> {
     const at = Date.now();
+    const pickupFailureSql = "json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') = ?";
     const eligible = this.db('mcp_operations').where({ id }).andWhere(builder => {
       builder.whereIn('lifecycle', ['accepted', 'running', 'unknown']);
-      if (outcome === 'failed' && failure) builder.orWhere(nested => nested.where({ lifecycle: 'failed' }).whereNull('failure'));
+      if (outcome === 'failed' && failure) builder.orWhere(nested => nested.where({ lifecycle: 'failed' })
+        .andWhere(current => current.whereNull('failure').orWhereRaw(pickupFailureSql, [COMMAND_NOT_PICKED_UP_FAILURE.code])));
+      else builder.orWhere(nested => nested.where({ lifecycle: outcome })
+        .whereRaw(pickupFailureSql, [COMMAND_NOT_PICKED_UP_FAILURE.code]));
     });
     const update: Record<string, unknown> = {
       lifecycle: outcome,
       finished_at: this.db.raw('COALESCE(finished_at, ?)', [at]),
-      failure: failure ? this.db.raw('COALESCE(failure, ?)', [JSON.stringify(failure)]) : null,
+      failure: failure ? this.db.raw(`CASE
+        WHEN failure IS NULL OR json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') = ? THEN ?
+        ELSE failure
+      END`, [COMMAND_NOT_PICKED_UP_FAILURE.code, JSON.stringify(failure)]) : null,
       updated_at: at,
     };
     if (progress !== undefined) update.progress = this.db.raw(`CASE

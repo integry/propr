@@ -312,3 +312,118 @@ test('an unpicked PR command becomes unknown after the pickup deadline with a re
   assert.equal((recovered.lifecycle as { failure: unknown }).failure, null);
   assert.equal(((recovered.lifecycle as { artifacts: Record<string, unknown> }).artifacts).taskId, 'late-review');
 });
+
+test('terminal recovery replaces an obsolete pickup failure with the execution failure', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'c'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'late-failed-review' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 601 } }));
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ created_at: Date.now() - PICKUP_DEADLINE_MS - 1 });
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+
+  const unpickedRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const unpickedReceipt = operations.project(unpickedRow);
+  await trackExecution(deps, unpickedRow, principal, unpickedReceipt);
+  await syncLifecycle(operations, unpickedRow, unpickedReceipt);
+
+  await db('tasks').insert({ task_id: 'late-failed-task', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', created_at: new Date(), initial_job_data: JSON.stringify({
+      commandCommentId: 601, commandCommentType: 'issue', commandMode: 'review',
+    }) });
+  await db('task_history').insert({ task_id: 'late-failed-task', state: 'failed', timestamp: new Date(),
+    reason: 'Worker execution failed.', metadata: '{}' });
+  const pickedUpRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  await trackExecution(deps, pickedUpRow, principal, operations.project(pickedUpRow));
+
+  const interrupted = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(interrupted.state, 'failed');
+  assert.equal(interrupted.lifecycle, 'unknown');
+  assert.deepEqual(JSON.parse(interrupted.failure!), COMMAND_NOT_PICKED_UP_FAILURE);
+
+  const recovered = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.equal((recovered.lifecycle as { state: string }).state, 'failed');
+  assert.deepEqual((recovered.lifecycle as { failure: unknown }).failure, {
+    code: 'EXECUTION_FAILED', message: 'Worker execution failed.', stage: 'internal', retryable: false, status: 500,
+  });
+
+  const synchronizedFailure = { code: 'SYNCHRONIZED_FAILURE', message: 'Synchronized execution failure.',
+    stage: 'workflow', retryable: false, status: 500 };
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ failure: JSON.stringify(COMMAND_NOT_PICKED_UP_FAILURE) });
+  await operations.finish(String(receipt.operationId), 'failed', synchronizedFailure);
+  assert.deepEqual(JSON.parse((await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!.failure!), synchronizedFailure);
+
+  const authoritative = { code: 'AUTHORITATIVE_FAILURE', message: 'Previously synchronized failure.',
+    stage: 'workflow', retryable: false, status: 500 };
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ failure: JSON.stringify(authoritative) });
+  await operations.finish(String(receipt.operationId), 'failed', synchronizedFailure);
+  await operations.reconcileTerminalLifecycles(principal, String(receipt.operationId));
+  assert.deepEqual(JSON.parse((await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!.failure!), authoritative);
+
+  const completedReceipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'late-completed-review' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 603 } }));
+  await db('mcp_operations').where({ id: completedReceipt.operationId }).update({
+    state: 'completed', lifecycle: 'unknown', finished_at: null, failure: JSON.stringify(COMMAND_NOT_PICKED_UP_FAILURE),
+    result: JSON.stringify({ executionResolved: true, targetState: { taskId: 'late-completed-task', state: 'completed' } }),
+  });
+  await operations.reconcileTerminalLifecycles(principal, String(completedReceipt.operationId));
+  const completed = (await db<Operation>('mcp_operations').where({ id: completedReceipt.operationId }).first())!;
+  assert.equal(completed.lifecycle, 'completed');
+  assert.equal(completed.failure, null);
+  await db('mcp_operations').where({ id: completedReceipt.operationId }).update({ failure: JSON.stringify(COMMAND_NOT_PICKED_UP_FAILURE) });
+  await operations.finish(String(completedReceipt.operationId), 'completed');
+  assert.equal((await db<Operation>('mcp_operations').where({ id: completedReceipt.operationId }).first())!.failure, null);
+});
+
+test('a stale pickup poll discards its timeout when adopting a terminal failed receipt', async t => {
+  const db = await fixture(t);
+  const operations = new McpOperations(db);
+  let releaseStale!: () => void;
+  let staleReachedRefresh!: () => void;
+  const release = new Promise<void>(resolve => { releaseStale = resolve; });
+  const reachedRefresh = new Promise<void>(resolve => { staleReachedRefresh = resolve; });
+  let githubRequests = 0;
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' }, github: { request: async () => {
+      githubRequests++;
+      if (githubRequests === 1) { staleReachedRefresh(); await release; }
+      return { data: { head: { sha: 'd'.repeat(40) } } };
+    } },
+  } as unknown as McpPrincipal;
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'stale-pickup-failure' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 602 } }));
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ created_at: Date.now() - PICKUP_DEADLINE_MS - 1 });
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+
+  const staleRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const staleReceipt = operations.project(staleRow);
+  const stalePoll = trackExecution(deps, staleRow, principal, staleReceipt);
+  await reachedRefresh;
+
+  await db('tasks').insert({ task_id: 'concurrent-failed-task', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', created_at: new Date(), initial_job_data: JSON.stringify({
+      commandCommentId: 602, commandCommentType: 'issue', commandMode: 'review',
+    }) });
+  await db('task_history').insert({ task_id: 'concurrent-failed-task', state: 'failed', timestamp: new Date(),
+    reason: 'Concurrent worker failed.', metadata: '{}' });
+  const terminalRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  await trackExecution(deps, terminalRow, principal, operations.project(terminalRow));
+
+  releaseStale();
+  await stalePoll;
+  assert.equal('lifecycleFailure' in staleReceipt, false);
+  await syncLifecycle(operations, staleRow, staleReceipt);
+
+  const final = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.deepEqual((final.lifecycle as { failure: unknown }).failure, {
+    code: 'EXECUTION_FAILED', message: 'Concurrent worker failed.', stage: 'internal', retryable: false, status: 500,
+  });
+});
