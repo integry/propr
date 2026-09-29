@@ -243,6 +243,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         const rows = await deps.db('mcp_operations').where({
           owner_id: principal.user.id, grant_id: principal.grant.id, repository: args.repository, tool: 'run_ultrafix',
         }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+          .whereNotIn('state', ['completed', 'failed', 'cancelled'])
           .whereRaw("json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END, '$.pullRequest') = ?", [args.pullRequest])
           .select('id', 'result', 'progress');
         for (const row of rows) {
@@ -253,9 +254,10 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
             cycle: Number(previous.cycle ?? 0), lastScore: previous.lastScore ?? null, outcome: previous.outcome ?? null,
             cycles: Array.isArray(previous.cycles) ? previous.cycles : [], ...previous, phase: 'stopping',
           };
-          await deps.db('mcp_operations').where({ id: row.id }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+          const recorded = await deps.db('mcp_operations').where({ id: row.id }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+            .whereNotIn('state', ['completed', 'failed', 'cancelled'])
             .update({ progress: JSON.stringify(progress), updated_at: Date.now() });
-          stoppingOperations.push(row.id);
+          if (recorded) stoppingOperations.push(row.id);
         }
       }
       return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, wasActive,

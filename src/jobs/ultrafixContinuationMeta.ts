@@ -32,8 +32,7 @@ export function buildContinuationMeta(r: ContinuationMetaInput, ultrafixMeta?: U
         ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(r.deferred && { ultrafixDeferred: true }),
         ...(!r.continued && { ultrafixStopReason: r.reason }), ...(r.outcome && { ultrafixOutcome: r.outcome }),
         ...((r.goal ?? ultrafixMeta?.goal) != null && { ultrafixGoal: r.goal ?? ultrafixMeta?.goal }),
-        ...((r.maxCycles ?? ultrafixMeta?.maxCycles) != null && { ultrafixMaxCycles: r.maxCycles ?? ultrafixMeta?.maxCycles }),
-        ...(r.outcome && r.score == null && { ultrafixScore: null }) };
+        ...((r.maxCycles ?? ultrafixMeta?.maxCycles) != null && { ultrafixMaxCycles: r.maxCycles ?? ultrafixMeta?.maxCycles }) };
 }
 
 export async function patchUltrafixContinuationMeta(

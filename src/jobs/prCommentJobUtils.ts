@@ -269,8 +269,6 @@ function ultrafixTerminalMetadata(job: Job<CommentJobData>, outcome: 'stopped' |
     if (!job.data.ultrafixMeta) return undefined;
     return {
         ultrafixOutcome: outcome,
-        ultrafixCycle: null,
-        ultrafixScore: null,
         ultrafixGoal: job.data.ultrafixMeta.goal,
         ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles,
     };

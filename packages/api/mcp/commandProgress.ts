@@ -49,18 +49,24 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 }
 
 function positiveInteger(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+  const number = numericMetadata(value);
+  return number !== undefined && Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 function nonNegativeInteger(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+  const number = numericMetadata(value);
+  return number !== undefined && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
 }
 
 function finiteScore(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 && number <= 10 ? number : undefined;
+  const number = numericMetadata(value);
+  return number !== undefined && Number.isFinite(number) && number >= 0 && number <= 10 ? number : undefined;
+}
+
+function numericMetadata(value: unknown): number | undefined {
+  if (typeof value === 'number') return value;
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  return Number(value);
 }
 
 function timestamp(value: unknown): number | undefined {
@@ -92,7 +98,7 @@ export async function detectPickup(db: Knex, input: {
     END`, [input.commentId, input.commentId, input.commentId]);
 
   if (input.tool === 'run_ultrafix') {
-    query.whereRaw(`json_extract(${data}, '$.ultrafixMeta.workEpoch') IS NOT NULL`);
+    query.whereRaw(`json_type(${data}, '$.ultrafixMeta.workEpoch') = 'integer'`);
   } else {
     const mode = input.tool === 'review_pull_request' ? 'review'
       : input.tool === 'fix_review_findings' ? 'fix' : 'default';
@@ -120,24 +126,37 @@ export async function ultrafixProgress(db: Knex, input: {
   maxCycles: number;
   workEpoch?: number;
 }): Promise<UltrafixProgress> {
-  const rows = await db('tasks').where({ repository: input.repository, issue_number: input.pullRequest })
-    .whereNot('task_type', 'goal').orderBy('created_at', 'asc').limit(200)
-    .select('task_id', 'initial_job_data', 'created_at');
-  const parsed = rows.map(row => ({ ...row, data: jsonRecord(row.initial_job_data) }));
-  let inferredEpoch = input.workEpoch;
+  const data = `CASE WHEN json_valid(initial_job_data) THEN initial_job_data ELSE '{}' END`;
+  let inferredEpoch = nonNegativeInteger(input.workEpoch);
   if (inferredEpoch === undefined) {
-    const first = parsed.find(row => {
+    const candidates = await db('tasks').where({ repository: input.repository, issue_number: input.pullRequest })
+      .whereNot('task_type', 'goal')
+      .whereRaw(`json_type(${data}, '$.ultrafixMeta.workEpoch') = 'integer'`)
+      .orderBy('created_at', 'asc').select('initial_job_data', 'created_at');
+    const first = candidates.find(row => {
+      const taskData = jsonRecord(row.initial_job_data);
       const created = timestamp(row.created_at);
-      return Object.keys(jsonRecord(row.data.ultrafixMeta)).length > 0
-        && (created === undefined || created >= input.sinceMs);
+      return (created === undefined || created >= input.sinceMs)
+        && nonNegativeInteger(jsonRecord(taskData.ultrafixMeta).workEpoch) !== undefined;
     });
-    inferredEpoch = nonNegativeInteger(jsonRecord(first?.data.ultrafixMeta).workEpoch);
+    inferredEpoch = nonNegativeInteger(jsonRecord(jsonRecord(first?.initial_job_data).ultrafixMeta).workEpoch);
   }
-  const tasks = parsed.filter(row => {
-    const meta = jsonRecord(row.data.ultrafixMeta);
-    if (inferredEpoch !== undefined) return Number(meta.workEpoch) === inferredEpoch;
+  const query = db('tasks').where({ repository: input.repository, issue_number: input.pullRequest })
+    .whereNot('task_type', 'goal');
+  if (inferredEpoch !== undefined) {
+    query.whereRaw(`json_type(${data}, '$.ultrafixMeta.workEpoch') = 'integer'`)
+      .whereRaw(`json_extract(${data}, '$.ultrafixMeta.workEpoch') = ?`, [inferredEpoch]);
+  } else {
+    query.whereRaw(`json_type(${data}, '$.ultrafixMeta') = 'object'`);
+  }
+  // Bound only after epoch selection, newest first, so current and terminal
+  // evidence survive even if an epoch itself exceeds the reconstruction cap.
+  const rows = await query.orderBy('created_at', 'desc').orderBy('task_id', 'desc').limit(200)
+    .select('task_id', 'initial_job_data', 'created_at');
+  const tasks = rows.reverse().map(row => ({ ...row, data: jsonRecord(row.initial_job_data) })).filter(row => {
+    if (inferredEpoch !== undefined) return true;
     const created = timestamp(row.created_at);
-    return Object.keys(meta).length > 0 && (created === undefined || created >= input.sinceMs);
+    return created === undefined || created >= input.sinceMs;
   });
   const ids = tasks.map(task => task.task_id);
   const histories = ids.length ? await db('task_history').whereIn('task_id', ids)
@@ -210,9 +229,9 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
   const state = String(lifecycle.state ?? 'accepted');
   const progress = jsonRecord(lifecycle.progress);
   if (tool === 'run_ultrafix' && progress.kind === 'ultrafix') {
-    const cycle = Number(progress.cycle ?? 0);
-    const maxCycles = Number(progress.maxCycles ?? 0);
-    const goal = Number(progress.goal ?? 0);
+    const cycle = nonNegativeInteger(progress.cycle) ?? 0;
+    const maxCycles = positiveInteger(progress.maxCycles) ?? 0;
+    const goal = finiteScore(progress.goal) ?? 0;
     const score = finiteScore(progress.lastScore);
     const scoreText = score === undefined ? 'no review score yet' : `last score ${score}/10`;
     if (progress.outcome === 'goal_reached') return `Ultrafix reached goal ${goal} after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;

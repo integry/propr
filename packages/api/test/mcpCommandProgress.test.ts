@@ -44,10 +44,14 @@ test('detectPickup binds each receipt to its selected comment and ultrafix epoch
   await db('tasks').insert([
     { task_id: 'epoch-1', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment', initial_job_data: job(101, 1, 'review'), created_at: '2026-09-29T01:00:00Z' },
     { task_id: 'epoch-2', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment', initial_job_data: job(102, 2, 'review'), created_at: '2026-09-29T02:00:00Z' },
+    { task_id: 'boolean-epoch', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: JSON.stringify({ commandCommentId: 103, commandMode: 'review', ultrafixMeta: { workEpoch: true } }),
+      created_at: '2026-09-29T03:00:00Z' },
   ]);
   assert.equal((await detectPickup(db, { repository: 'acme/repo', pullRequest: 42, commentId: 101, tool: 'run_ultrafix' }))?.task_id, 'epoch-1');
   assert.equal((await detectPickup(db, { repository: 'acme/repo', pullRequest: 42, commentId: 102, tool: 'run_ultrafix' }))?.task_id, 'epoch-2');
   assert.equal(await detectPickup(db, { repository: 'acme/repo', pullRequest: 42, commentId: 100, tool: 'run_ultrafix' }), undefined);
+  assert.equal(await detectPickup(db, { repository: 'acme/repo', pullRequest: 42, commentId: 103, tool: 'run_ultrafix' }), undefined);
 });
 
 test('ultrafixProgress reports cycle two in review without borrowing another epoch', async t => {
@@ -73,6 +77,61 @@ test('ultrafixProgress reports cycle two in review without borrowing another epo
     { cycle: 1, reviewTaskId: 'review-1', fixTaskId: 'fix-1', score: 5 },
     { cycle: 2, reviewTaskId: 'review-2', score: 7 },
   ]);
+});
+
+test('ultrafixProgress filters the epoch before bounding old pull request tasks', async t => {
+  const db = await fixture(t);
+  await db('tasks').insert(Array.from({ length: 201 }, (_, index) => ({
+    task_id: `old-${String(index).padStart(3, '0')}`, repository: 'acme/repo', issue_number: 42,
+    task_type: 'pr-comment', initial_job_data: job(0, 1, 'review'),
+    created_at: `2026-09-28T${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}:00Z`,
+  })));
+  await db('tasks').insert({ task_id: 'current-terminal', repository: 'acme/repo', issue_number: 42,
+    task_type: 'pr-comment', initial_job_data: job(101, 9, 'review'), created_at: '2026-09-29T01:00:00Z' });
+  await db('task_history').insert({ task_id: 'current-terminal', state: 'completed',
+    metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixScore: 10, ultrafixOutcome: 'goal_reached' }) });
+
+  const progress = await ultrafixProgress(db, {
+    repository: 'acme/repo', pullRequest: 42, sinceMs: 0, goal: 9, maxCycles: 3, workEpoch: 9,
+  });
+  assert.equal(progress.outcome, 'goal_reached');
+  assert.equal(progress.lastScore, 10);
+  assert.deepEqual(progress.cycles, [{ cycle: 1, reviewTaskId: 'current-terminal', score: 10 }]);
+});
+
+test('ultrafixProgress rejects null, boolean, and empty numeric metadata', async t => {
+  const db = await fixture(t);
+  await db('tasks').insert([
+    { task_id: 'legacy-review-1', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(101, 7, 'review'), created_at: '2026-09-29T01:00:00Z' },
+    { task_id: 'legacy-fix-1', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(0, 7, 'fix'), created_at: '2026-09-29T01:01:00Z' },
+    { task_id: 'legacy-review-2', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(0, 7, 'review'), created_at: '2026-09-29T01:02:00Z' },
+  ]);
+  await db('task_history').insert([
+    { task_id: 'legacy-review-1', state: 'completed', metadata: JSON.stringify({ ultrafixCycle: true, ultrafixScore: 8 }) },
+    { task_id: 'legacy-fix-1', state: 'completed', metadata: JSON.stringify({ ultrafixCycle: true, ultrafixScore: '' }) },
+    { task_id: 'legacy-review-2', state: 'processing', metadata: JSON.stringify({ ultrafixCycle: true, ultrafixScore: false }) },
+    { task_id: 'legacy-review-2', state: 'cancelled', metadata: JSON.stringify({
+      ultrafixCycle: null, ultrafixScore: null, ultrafixOutcome: 'stopped',
+    }) },
+  ]);
+
+  const progress = await ultrafixProgress(db, {
+    repository: 'acme/repo', pullRequest: 42, sinceMs: 0, goal: 9, maxCycles: 3, workEpoch: 7,
+  });
+  assert.equal(progress.cycle, 2);
+  assert.equal(progress.lastScore, 8);
+  assert.deepEqual(progress.cycles, [
+    { cycle: 1, reviewTaskId: 'legacy-review-1', fixTaskId: 'legacy-fix-1', score: 8 },
+    { cycle: 2, reviewTaskId: 'legacy-review-2' },
+  ]);
+  for (const lastScore of [null, false, '']) {
+    const summary = summarizeLifecycle('run_ultrafix', { progress: { ...progress, lastScore } });
+    assert.match(summary, /no review score yet/);
+    assert.doesNotMatch(summary, /0\/10/);
+  }
 });
 
 for (const [outcome, expectedState] of [
@@ -110,6 +169,111 @@ for (const [outcome, expectedState] of [
     }
   });
 }
+
+test('a stale ultrafix poll adopts terminal result progress before synchronizing lifecycle', async t => {
+  const db = await fixture(t);
+  const operations = new McpOperations(db);
+  let releaseStale!: () => void;
+  let staleReachedRefresh!: () => void;
+  const release = new Promise<void>(resolve => { releaseStale = resolve; });
+  const reachedRefresh = new Promise<void>(resolve => { staleReachedRefresh = resolve; });
+  let githubRequests = 0;
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' }, github: { request: async () => {
+      githubRequests++;
+      if (githubRequests === 1) { staleReachedRefresh(); await release; }
+      return { data: { head: { sha: 'a'.repeat(40) } } };
+    } },
+  } as unknown as McpPrincipal;
+  const receipt = await operations.run(principal, {
+    tool: 'run_ultrafix', repository: 'acme/repo', args: { idempotencyKey: 'ultrafix-terminal-race' },
+  }, async () => ({ status: 202, data: {
+    state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 101, goal: 9, maxCycles: 3,
+  } }));
+  await db('tasks').insert({ task_id: 'race-review', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', initial_job_data: job(101, 7, 'review'), created_at: new Date() });
+  await db('task_history').insert({ task_id: 'race-review', state: 'processing', timestamp: new Date(),
+    metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixScore: 7 }) });
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+
+  const staleRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const staleReceipt = operations.project(staleRow);
+  const stalePoll = trackExecution(deps, staleRow, principal, staleReceipt);
+  await reachedRefresh;
+
+  await db('task_history').insert({ task_id: 'race-review', state: 'completed', timestamp: new Date(),
+    metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixScore: null, ultrafixOutcome: 'goal_reached' }) });
+  const terminalRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const terminalReceipt = operations.project(terminalRow);
+  await trackExecution(deps, terminalRow, principal, terminalReceipt);
+  assert.equal((await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!.lifecycle, 'accepted');
+
+  releaseStale();
+  await stalePoll;
+  assert.equal((staleReceipt.lifecycleProgress as { outcome: string }).outcome, 'goal_reached');
+  await syncLifecycle(operations, staleRow, staleReceipt);
+
+  const durable = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(durable.lifecycle, 'completed');
+  assert.equal(JSON.parse(durable.progress!).outcome, 'goal_reached');
+  assert.equal(JSON.parse(durable.progress!).phase, 'done');
+  assert.equal(JSON.parse(durable.progress!).lastScore, 7);
+});
+
+test('a stale ultrafix poll cannot overwrite stopping intent, while terminal evidence can', async t => {
+  const db = await fixture(t);
+  const operations = new McpOperations(db);
+  let releaseStale!: () => void;
+  let staleReachedRefresh!: () => void;
+  const release = new Promise<void>(resolve => { releaseStale = resolve; });
+  const reachedRefresh = new Promise<void>(resolve => { staleReachedRefresh = resolve; });
+  let githubRequests = 0;
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' }, github: { request: async () => {
+      githubRequests++;
+      if (githubRequests === 1) { staleReachedRefresh(); await release; }
+      return { data: { head: { sha: 'b'.repeat(40) } } };
+    } },
+  } as unknown as McpPrincipal;
+  const receipt = await operations.run(principal, {
+    tool: 'run_ultrafix', repository: 'acme/repo', args: { idempotencyKey: 'ultrafix-stopping-race' },
+  }, async () => ({ status: 202, data: {
+    state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 101, goal: 9, maxCycles: 3,
+  } }));
+  await db('tasks').insert({ task_id: 'stopping-review', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', initial_job_data: job(101, 7, 'review'), created_at: new Date() });
+  await db('task_history').insert({ task_id: 'stopping-review', state: 'processing', timestamp: new Date(),
+    metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixScore: 6 }) });
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const staleRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const staleReceipt = operations.project(staleRow);
+  const stalePoll = trackExecution(deps, staleRow, principal, staleReceipt);
+  await reachedRefresh;
+
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ progress: JSON.stringify({
+    kind: 'ultrafix', goal: 9, maxCycles: 3, cycle: 0, lastScore: null,
+    phase: 'stopping', outcome: null, cycles: [],
+  }) });
+  releaseStale();
+  await stalePoll;
+  await syncLifecycle(operations, staleRow, staleReceipt);
+  const stopping = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(JSON.parse(stopping.progress!).phase, 'stopping');
+  assert.equal(JSON.parse(stopping.progress!).cycle, 1, 'fresh reconstruction data is retained with the stop phase');
+
+  await db('task_history').insert({ task_id: 'stopping-review', state: 'cancelled', timestamp: new Date(),
+    metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixOutcome: 'stopped' }) });
+  const terminalRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const terminalReceipt = operations.project(terminalRow);
+  await trackExecution(deps, terminalRow, principal, terminalReceipt);
+  await syncLifecycle(operations, terminalRow, terminalReceipt);
+  const terminal = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(terminal.lifecycle, 'cancelled');
+  assert.equal(JSON.parse(terminal.progress!).phase, 'done');
+  assert.equal(JSON.parse(terminal.progress!).outcome, 'stopped');
+});
 
 test('an unpicked PR command becomes unknown after the pickup deadline with a retryable queue failure', async t => {
   const db = await fixture(t);

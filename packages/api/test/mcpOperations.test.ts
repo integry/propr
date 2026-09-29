@@ -694,6 +694,9 @@ test('tracker task and review failures populate and can enrich the durable failu
     taskId: 'nested-goal-task',
     pullRequest: { repository: 'acme/repo', number: 64, url: 'https://github.com/acme/repo/pull/64' },
   });
+  assert.deepEqual(artifactsFromReceipt({ repository: 'acme/repo' }, {
+    result: { pullRequest: true, commentId: true, reviewResults: [{ commentId: false }] },
+  }), {});
 });
 
 test('goal failures and generated task pull requests remain durable after backend history is removed', async t => {

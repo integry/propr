@@ -255,10 +255,15 @@ export class McpOperations {
   }
 
   async recordProgress(id: string, progress: unknown): Promise<void> {
+    const serialized = JSON.stringify(progress);
     await this.db('mcp_operations').where({ id })
       .whereIn('lifecycle', ['accepted', 'running', 'unknown'])
       .whereNotIn('state', ['completed', 'failed', 'cancelled'])
-      .update({ progress: JSON.stringify(progress), updated_at: Date.now() });
+      .update({ progress: this.db.raw(`CASE
+        WHEN json_extract(CASE WHEN json_valid(progress) THEN progress ELSE '{}' END, '$.phase') = 'stopping'
+          THEN json_set(?, '$.phase', 'stopping')
+        ELSE ?
+      END`, [serialized, serialized]), updated_at: Date.now() });
   }
 
   async finish(id: string, outcome: LifecycleOutcome, failure?: McpErrorEnvelope, progress?: unknown): Promise<void> {

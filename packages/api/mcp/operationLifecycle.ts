@@ -11,6 +11,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function positiveInteger(...values: unknown[]): number | undefined {
   for (const value of values) {
+    if (typeof value !== 'number' && (typeof value !== 'string' || value.trim().length === 0)) continue;
     const number = Number(value);
     if (Number.isSafeInteger(number) && number > 0) return number;
   }
@@ -194,6 +195,16 @@ function observedStartTimestamp(
   return epochMilliseconds(currentTask?.timestamp) ?? epochMilliseconds(target?.timestamp);
 }
 
+function progressFromReceipt(
+  receipt: Record<string, unknown>,
+  result: Record<string, unknown> | undefined,
+  target: Record<string, unknown> | undefined,
+  outcome: LifecycleOutcome | undefined,
+): unknown {
+  if (outcome && result?.ultrafixProgress != null) return result.ultrafixProgress;
+  return receipt.lifecycleProgress ?? target;
+}
+
 /** Persist tracker observations without allowing stale concurrent polls to undo newer lifecycle facts. */
 export async function syncLifecycle(
   operations: McpOperations,
@@ -208,7 +219,7 @@ export async function syncLifecycle(
   const receiptState = String(receipt.state ?? '');
   const result = record(receipt.result);
   const outcome = lifecycleOutcome(row, target, receiptState, targetState);
-  const lifecycleProgress = receipt.lifecycleProgress ?? target;
+  const lifecycleProgress = progressFromReceipt(receipt, result, target, outcome);
   if (lifecycleProgress && !outcome) await operations.recordProgress(row.id, lifecycleProgress);
 
   const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool)

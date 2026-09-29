@@ -144,6 +144,8 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
       const currentResult = current.result ? JSON.parse(current.result) as ExecutionResult & Record<string, unknown> : {};
       receipt.state = current.state;
       receipt.result = currentResult;
+      if (currentResult.ultrafixProgress !== undefined) receipt.lifecycleProgress = currentResult.ultrafixProgress;
+      else delete receipt.lifecycleProgress;
       if (currentResult.targetState) receipt.targetState = currentResult.targetState;
       else delete receipt.targetState;
       delete receipt.message;
@@ -223,7 +225,7 @@ async function trackUltrafix(deps: ToolDeps, row: Operation, context: TrackingCo
   if (!result.pullRequest) { receipt.state = 'unknown'; return; }
   const jobData = typeof task.initial_job_data === 'string' ? JSON.parse(task.initial_job_data) : task.initial_job_data as { ultrafixMeta?: { workEpoch?: number; goal?: number; maxCycles?: number } } | null;
   const epoch = jobData?.ultrafixMeta?.workEpoch;
-  if (epoch === undefined || !row.repository) {
+  if (!Number.isSafeInteger(epoch) || Number(epoch) < 0 || !row.repository) {
     receipt.state = 'unknown';
     return;
   }
