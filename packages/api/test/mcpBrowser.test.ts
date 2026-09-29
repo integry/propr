@@ -24,6 +24,12 @@ import { configureApiProxyTrust } from '../requestRateLimits.js';
 
 after(async () => closeConnection());
 
+function resolveChromiumExecutablePath(): string {
+  const executablePath = process.env.CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : chromium.executablePath());
+  assert.ok(existsSync(executablePath), 'Install Chromium with npx playwright install --with-deps chromium or set CHROMIUM_PATH');
+  return executablePath;
+}
+
 test('authorize limits GET and POST before client lookup and respects explicit proxy trust', async t => {
   const environment = {
     MCP_ENABLED: 'true', MCP_PUBLIC_ORIGIN: 'https://instance.example', MCP_INSTANCE_ID: 'test-instance',
@@ -90,8 +96,7 @@ test('authorize limits GET and POST before client lookup and respects explicit p
 });
 
 test('real consent and connected-app routes work at desktop/mobile widths and enforce CSRF and revocation', async t => {
-  const executablePath = process.env.CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : chromium.executablePath());
-  assert.ok(existsSync(executablePath), 'Install Chromium with npx playwright install --with-deps chromium or set CHROMIUM_PATH');
+  const executablePath = resolveChromiumExecutablePath();
   configureDemoMode(false);
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary()); await up(db);
