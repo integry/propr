@@ -39,6 +39,32 @@ export interface PullRequestOverview {
 }
 
 type ListScope = (principal: McpPrincipal, args: Args) => Promise<string[] | null>;
+type GraphqlErrorLike = {
+  status?: unknown;
+  data?: unknown;
+  errors?: unknown;
+  response?: { status?: unknown; data?: unknown; errors?: unknown };
+};
+
+function graphqlErrors(error: unknown): unknown[] {
+  const candidate = error as GraphqlErrorLike | null;
+  const errors = candidate?.errors ?? candidate?.response?.errors;
+  return Array.isArray(errors) ? errors : [];
+}
+
+function unavailableGraphqlError(error: unknown): boolean {
+  const errors = graphqlErrors(error);
+  return errors.length > 0 && errors.every(item => {
+    const type = item && typeof item === 'object' ? (item as { type?: unknown }).type : undefined;
+    return type === 'NOT_FOUND' || type === 'FORBIDDEN';
+  });
+}
+
+function graphqlErrorData<T>(error: unknown): T | null {
+  const candidate = error as GraphqlErrorLike | null;
+  const data = candidate?.data ?? candidate?.response?.data;
+  return data !== null && typeof data === 'object' ? data as T : null;
+}
 
 function pullRequestSelection(includeChecks: boolean): string {
   return `number url state isDraft merged headRefOid mergeStateStatus
@@ -90,10 +116,19 @@ export async function enrichPullRequests(
   if (unique.length > MAX_PULL_REQUESTS_PER_REPOSITORY) throw new RangeError(`At most ${MAX_PULL_REQUESTS_PER_REPOSITORY} pull requests may be enriched per repository.`);
   const aliases = unique.map(number => `pr_${number}:pullRequest(number:${number}){${pullRequestSelection(includeChecks)}}`).join('\n');
   const [owner, repo] = repository.split('/');
-  const response = await principal.github.graphql<{ repository: Record<string, GraphPullRequest | null> | null }>(
-    `query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){${aliases}}}`,
-    { owner, repo },
-  );
+  type Response = { repository: Record<string, GraphPullRequest | null> | null };
+  let response: Response;
+  try {
+    response = await principal.github.graphql<Response>(
+      `query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){${aliases}}}`,
+      { owner, repo },
+    );
+  } catch (error) {
+    if (!unavailableGraphqlError(error)) throw error;
+    // Octokit rejects GraphQL responses containing errors, but exposes any
+    // successful sibling aliases on the error as partial response data.
+    response = graphqlErrorData<Response>(error) ?? { repository: null };
+  }
   const result = new Map<number, PullRequestOverview>();
   if (!response.repository) return result;
   for (const number of unique) {
@@ -113,9 +148,9 @@ function unavailablePullRequest(task: Record<string, unknown>): Record<string, u
 }
 
 function unavailableRepositoryError(error: unknown): boolean {
-  const candidate = error as { status?: unknown; response?: { status?: unknown } } | null;
+  const candidate = error as GraphqlErrorLike | null;
   const status = Number(candidate?.status ?? candidate?.response?.status);
-  return status === 403 || status === 404;
+  return status === 403 || status === 404 || unavailableGraphqlError(error);
 }
 
 export function addWorkOverviewTools(tools: McpTool[], deps: ToolDeps, listScope: ListScope): void {

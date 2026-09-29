@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { GraphqlResponseError } from '@octokit/graphql';
 import knex from 'knex';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
@@ -50,6 +51,18 @@ const review = (head: string, score: number) => [
   `Score: ${score}/10`,
 ].join('\n');
 
+function graphqlResponseError(data: Json, types: string[]): GraphqlResponseError<Json> {
+  const errors = types.map((type, index) => ({
+    type, message: `${type} fixture`, path: ['repository', `pr_${index}`], extensions: {},
+    locations: [{ line: 1, column: 1 }],
+  }));
+  return new GraphqlResponseError(
+    { method: 'POST', url: 'https://api.github.com/graphql' } as never,
+    {},
+    { data, errors } as never,
+  );
+}
+
 test('get_work_overview joins task work to bounded per-repository GraphQL enrichment', async () => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   try {
@@ -76,7 +89,9 @@ test('get_work_overview joins task work to bounded per-repository GraphQL enrich
     const github = { graphql: async (query: string, args: Json) => {
       const repository = `${args.owner}/${args.repo}`;
       graphqlCalls.push({ repository, query });
-      if (repository === 'acme/forbidden') throw Object.assign(new Error('Forbidden'), { status: 403 });
+      if (repository === 'acme/forbidden') {
+        throw graphqlResponseError({ repository: null }, ['FORBIDDEN']);
+      }
       const fixtures: Record<string, Record<number, Json>> = {
         'acme/one': { 42: { head: head42, score: 8, checks: 'SUCCESS', decision: 'APPROVED', labels: ['ultrafix'] } },
         'acme/two': { 7: { head: head7, score: 6, checks: 'PENDING', decision: 'REVIEW_REQUIRED', labels: [] } },
@@ -171,6 +186,33 @@ test('get_work_overview preserves uncertainty when bounded PR metadata excludes 
   assert.equal(complete.ultrafixActive, false);
   assert.match(query, /labels\(first:100\)\{pageInfo\{hasNextPage\}/);
   assert.match(query, /comments\(last:10\)\{pageInfo\{hasPreviousPage\}/);
+});
+
+test('get_work_overview preserves readable aliases from a NOT_FOUND GraphQL response', async () => {
+  const github = { graphql: async () => {
+    throw graphqlResponseError({ repository: {
+      pr_42: {
+        number: 42, url: 'https://github.com/acme/one/pull/42', state: 'OPEN', isDraft: false, merged: false,
+        headRefOid: head42, reviewDecision: 'APPROVED', mergeStateStatus: 'CLEAN',
+        labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+        commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+        comments: { pageInfo: { hasPreviousPage: false }, nodes: [] },
+      },
+      pr_7: null,
+    } }, ['NOT_FOUND']);
+  } };
+  const principal = { github } as unknown as McpPrincipal;
+
+  const pulls = await enrichPullRequests(principal, 'acme/one', [42, 7]);
+  assert.equal(pulls.get(42)?.head, head42);
+  assert.equal(pulls.has(7), false);
+});
+
+test('get_work_overview propagates unrelated GraphQL response errors', async () => {
+  const failure = graphqlResponseError({ repository: null }, ['INTERNAL']);
+  const principal = { github: { graphql: async () => { throw failure; } } } as unknown as McpPrincipal;
+
+  await assert.rejects(enrichPullRequests(principal, 'acme/one', [42]), failure);
 });
 
 test('get_work_overview paginates mixed timestamp formats by normalized activity', async () => {
