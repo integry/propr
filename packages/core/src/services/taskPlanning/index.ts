@@ -29,6 +29,17 @@ export { generateContextWithRetry } from './contextGeneration.js';
 
 // Refinement
 export { refinePlan } from './refinement.js';
+export {
+  normalizeRefinedPlan,
+  RefinementOutputError,
+  REFINEMENT_OUTPUT_INVALID,
+} from './refinementOutput.js';
+export type {
+  IncompleteRefinedTask,
+  NormalizedRefinedPlan,
+  RefinementOutputDetails,
+  RefinementOutputFailureReason,
+} from './refinementOutput.js';
 
 // Draft status
 export { checkAndUpdateDraftStatus } from './draftStatus.js';

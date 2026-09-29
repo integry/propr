@@ -80,7 +80,30 @@ describe('plan refinement returns complete plans only', () => {
 
     test('fails and leaves the plan alone when the full plan never arrives', async () => {
         llmResponses.push(editsAsPlan, editsAsPlan);
-        await assert.rejects(refinePlan(options), /returned edits instead of a complete plan \(entries 1, 2 lack[^]*left unchanged/);
+        await assert.rejects(refinePlan(options), /mixed complete tasks with edit operations/);
+    });
+
+    test('merges a valid edit list without asking the model to repeat the plan', async () => {
+        llmResponses.push(JSON.stringify({
+            action: 'modified',
+            summary: 'Added media retrieval',
+            plan: [
+                { action: 'retain', index: 0 },
+                { action: 'extend', index: 1, body: 'More submission detail' },
+                { action: 'add', ...issue('Media retrieval') },
+            ],
+        }));
+
+        const result = await refinePlan(options);
+
+        assert.equal(runLightweightLLMAnalysis.mock.callCount(), 1);
+        assert.equal(result.merged, true);
+        assert.equal(result.operations, 3);
+        assert.match(result.summary, /^Applied 3 edits to the existing plan\./);
+        assert.deepEqual(result.plan.map(task => task.title), [
+            'Operation lifecycle', 'Submission progress', 'Optional expectedHead', 'Media retrieval',
+        ]);
+        assert.equal(result.plan[1].body, 'Submission progress body\n\nMore submission detail');
     });
 
     test('a `changes` list is never taken for the plan', async () => {

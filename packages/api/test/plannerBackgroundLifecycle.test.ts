@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- planner background success, failure, abort, and CAS races share one database fixture */
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, mock, test } from 'node:test';
 import knex from 'knex';
@@ -298,6 +299,97 @@ describe('planner background abort reconciliation', () => {
     assert.equal(current.status, 'review');
     assert.equal(failure.status, 'failed');
     assert.equal(failure.error, 'abort lookup failed');
+  });
+
+  test('keeps the prior plan byte-identical when refinement output validation fails', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    const draftId = 'refinement-invalid-output';
+    const runId = 'refinement-run-invalid-output';
+    const originalPlan = '[ { "title": "Keep me", "body": "Complete body", "implementation": "Complete implementation" } ]';
+    await database('task_drafts').insert({
+      draft_id: draftId,
+      status: 'refining',
+      plan_json: originalPlan,
+      refinement_result: JSON.stringify({ status: 'in_progress', runId }),
+      generated_context: 'context',
+    });
+
+    await runBackgroundRefinement({
+      db: database,
+      draftId,
+      currentPlan: JSON.parse(originalPlan),
+      instruction: 'change it',
+      generationModel: 'test-model',
+      correlationId: runId,
+      accessToken: 'token',
+      runId,
+    }, {
+      checkAborted: async () => false,
+      getRepoContext: async () => ({ worktreePath: '/tmp/worktree', repository: 'owner/repo', authToken: 'token' }),
+      refine: async () => ({
+        action: 'modified',
+        summary: 'Returned a partial task',
+        model: 'test-model',
+        plan: [{ title: 'Unsafe replacement', body: 'No implementation' }],
+      }) as never,
+    });
+
+    const current = await database('task_drafts').where({ draft_id: draftId }).first();
+    const failure = JSON.parse(current.refinement_result);
+    assert.equal(current.status, 'review');
+    assert.equal(current.plan_json, originalPlan);
+    assert.equal(failure.status, 'failed');
+    assert.equal(failure.code, 'REFINEMENT_OUTPUT_INVALID');
+    assert.deepEqual(failure.details, {
+      reason: 'incomplete_tasks',
+      incomplete: [{ index: 0, missing: ['implementation'] }],
+    });
+  });
+
+  test('persists merged edit output with an explicit merge summary', async t => {
+    t.mock.method(console, 'log', () => undefined);
+    t.mock.method(console, 'error', () => undefined);
+    const draftId = 'refinement-merged-output';
+    const runId = 'refinement-run-merged-output';
+    const currentPlan = [
+      { title: 'First', body: 'First body', implementation: 'First implementation' },
+      { title: 'Second', body: 'Second body', implementation: 'Second implementation' },
+    ];
+    await database('task_drafts').insert({
+      draft_id: draftId,
+      status: 'refining',
+      plan_json: JSON.stringify(currentPlan),
+      refinement_result: JSON.stringify({ status: 'in_progress', runId }),
+    });
+
+    await runBackgroundRefinement({
+      db: database,
+      draftId,
+      currentPlan,
+      instruction: 'extend and add',
+      generationModel: 'test-model',
+      correlationId: runId,
+      accessToken: 'token',
+      runId,
+    }, {
+      checkAborted: async () => false,
+      getRepoContext: async () => ({ worktreePath: '/tmp/worktree', repository: 'owner/repo', authToken: 'token' }),
+      refine: async () => ({
+        action: 'modified', summary: 'Updated the requested work.', model: 'test-model',
+        plan: [
+          { action: 'extend', index: 1, body: 'More' },
+          { action: 'add', title: 'Third', body: 'Third body', implementation: 'Third implementation' },
+        ],
+      }) as never,
+    });
+
+    const current = await database('task_drafts').where({ draft_id: draftId }).first();
+    const plan = JSON.parse(current.plan_json);
+    const metadata = JSON.parse(current.refinement_result);
+    assert.deepEqual(plan.map((task: { title: string }) => task.title), ['First', 'Second', 'Third']);
+    assert.equal(plan[1].body, 'Second body\n\nMore');
+    assert.equal(metadata.merged, true);
+    assert.match(metadata.summary, /^Applied 2 edits to the existing plan\./);
   });
 
   test('commits generation completion only for the matching active run snapshot', async () => {

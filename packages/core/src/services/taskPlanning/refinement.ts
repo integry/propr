@@ -13,6 +13,11 @@ import { resolveConfiguredModel } from '../../config/configuredModel.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import { PlanningFailedError, getRawInputCharLimit, type MinimalLogger } from '../planning/index.js';
 import { incompletePlanItems } from './planValidation.js';
+import {
+  normalizeRefinedPlan,
+  RefinementOutputError,
+  type RefinementOutputDetails,
+} from './refinementOutput.js';
 
 export { incompletePlanItems };
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
@@ -172,8 +177,8 @@ function validateRefinementResponse(
   return refinementResponse;
 }
 
-function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string, response: string, incomplete: number[]): string {
-  return `Your previous response did not return the complete refined plan: plan entries ${incomplete.join(', ')} are not full issues with a non-empty title, body and implementation (they look like edit instructions or partial issues).
+function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string, response: string, details: RefinementOutputDetails): string {
+  return `Your previous response was not a safe complete refined plan (${details.reason}).
 
 Apply the requested changes to the current plan below and return ONLY this JSON object:
 {"action": "modified", "summary": "<what changed>", "plan": [ ... ]}
@@ -196,7 +201,7 @@ ${response}`;
  * answer is still incomplete the refinement fails and the plan is kept.
  */
 async function requestCompletePlan(
-  refinementResponse: RefinementResponse,
+  details: RefinementOutputDetails,
   context: {
     currentPlan: PlanItem[];
     instruction: string;
@@ -205,25 +210,22 @@ async function requestCompletePlan(
     correlatedLogger: MinimalLogger;
     llm: (prompt: string) => Promise<string>;
   },
-): Promise<RefinementResponse> {
+): Promise<RefinementResponse | undefined> {
   const { currentPlan, instruction, response, charLimit, correlatedLogger } = context;
-  let incomplete = incompletePlanItems(refinementResponse.plan);
-  correlatedLogger.warn({ incomplete, taskCount: refinementResponse.plan.length }, 'Refinement returned edits instead of a complete plan, asking for the full plan');
-  const repairPrompt = incompletePlanRepairPrompt(currentPlan, instruction, response, incomplete);
+  correlatedLogger.warn({ details }, 'Refinement returned an invalid plan, asking for the full plan');
+  const repairPrompt = incompletePlanRepairPrompt(currentPlan, instruction, response, details);
   if (charLimit === null || repairPrompt.length <= charLimit) {
     try {
       const repaired = validateRefinementResponse(parseRefinementResponse(await context.llm(repairPrompt), correlatedLogger), correlatedLogger);
-      // Repair responses can also answer or clarify without modifying the plan.
-      if (repaired.action !== 'modified') return { ...repaired, plan: currentPlan };
-      incomplete = incompletePlanItems(repaired.plan);
-      if (incomplete.length === 0) return repaired;
+      return repaired.action === 'modified' ? repaired : { ...repaired, plan: currentPlan };
     } catch (repairError) {
       correlatedLogger.warn({ error: repairError instanceof Error ? repairError.message : String(repairError) }, 'Complete-plan repair failed');
     }
   }
-  throw new PlanningFailedError(`Refinement returned edits instead of a complete plan (entries ${incomplete.join(', ')} lack a title, body or implementation); the plan was left unchanged. Try the refinement again.`);
+  return undefined;
 }
 
+// eslint-disable-next-line complexity -- parsing, one repair attempt, and final validation intentionally share one routed LLM session
 export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult & { estimation?: RefinePlanEstimation }> {
   const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext, draftId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -346,8 +348,11 @@ ${response}`;
   // Answers and clarifying questions never change the plan, whatever came back with them.
   if (refinementResponse.action !== 'modified') {
     refinementResponse.plan = currentPlan;
-  } else if (incompletePlanItems(refinementResponse.plan).length > 0) {
-    refinementResponse = await requestCompletePlan(refinementResponse, {
+  }
+
+  let normalized = normalizeRefinedPlan(currentPlan, refinementResponse.plan);
+  if (!normalized.ok) {
+    const repaired = await requestCompletePlan(normalized.details, {
       currentPlan, instruction, response, charLimit, correlatedLogger,
       llm: prompt => runLightweightLLMAnalysis({
         prompt,
@@ -361,6 +366,21 @@ ${response}`;
         routingSession: routingSession.fork(),
       }),
     });
+    if (repaired) {
+      refinementResponse = repaired;
+      normalized = normalizeRefinedPlan(currentPlan, refinementResponse.plan);
+    }
+  }
+  if (!normalized.ok) {
+    throw new RefinementOutputError(normalized.message, normalized.details);
+  }
+
+  refinementResponse.plan = normalized.plan;
+  if (normalized.merged) {
+    const mergeSummary = `Applied ${normalized.operations} edits to the existing plan.`;
+    refinementResponse.summary = refinementResponse.summary
+      ? `${mergeSummary} ${refinementResponse.summary}`
+      : mergeSummary;
   }
 
   correlatedLogger.info({
@@ -374,6 +394,8 @@ ${response}`;
     action: refinementResponse.action,
     summary: refinementResponse.summary,
     model: generationModel,
+    merged: normalized.merged,
+    operations: normalized.operations,
     estimation: {
       estimatedDurationMs: estimation.estimatedDurationMs,
       startedAt,

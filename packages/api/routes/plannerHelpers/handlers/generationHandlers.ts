@@ -4,7 +4,7 @@
 
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, normalizeRefinedPlan, RefinementOutputError } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
 import { getRefineRepoContext } from '../repoSetup.js';
 
@@ -96,15 +96,24 @@ export function createRefineHandler(deps: RefineDeps) {
             originalContext: originalContext || undefined, draftId
           });
 
+          const normalized = normalizeRefinedPlan(currentPlan, result.action === 'modified' ? result.plan : currentPlan);
+          if (!normalized.ok) throw new RefinementOutputError(normalized.message, normalized.details);
+          const merged = result.merged === true || normalized.merged;
+          const operations = result.operations ?? normalized.operations;
+          const mergeSummary = merged && !result.summary.includes('Applied ')
+            ? `Applied ${operations} edits to the existing plan. ${result.summary}`
+            : result.summary;
+
           // Store the refinement result including action and summary
           const refinementMeta = {
             action: result.action,
-            summary: result.summary,
+            summary: mergeSummary,
+            ...(merged ? { merged: true } : {}),
             timestamp: new Date().toISOString()
           };
 
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(result.plan),
+            plan_json: JSON.stringify(normalized.plan),
             plan_cause: 'refinement',
             refinement_result: JSON.stringify(refinementMeta),
             status: 'review',
@@ -114,7 +123,12 @@ export function createRefineHandler(deps: RefineDeps) {
         } catch (error) {
           console.error('[refine] Plan refinement failed', { draftId, error });
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            status: 'review', updated_at: deps.db.fn.now()
+            status: 'review',
+            ...(error instanceof RefinementOutputError ? { refinement_result: JSON.stringify({
+              status: 'failed', code: error.code, error: error.message, details: error.details,
+              timestamp: new Date().toISOString(),
+            }) } : {}),
+            updated_at: deps.db.fn.now()
           });
         }
       })();

@@ -257,6 +257,42 @@ test('terminal execution restoration preserves target state resolved by get_oper
   });
 });
 
+test('get_operation exposes structured invalid-refinement failures', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary(); table.string('user_id'); table.string('repository');
+    table.string('status'); table.boolean('paused'); table.text('refinement_result');
+  });
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'refine_plan', args: { idempotencyKey: 'invalid-refinement-output' }, repository: 'acme/repo',
+  }, async () => ({ status: 202, data: { planId: 'plan-invalid-refinement', runId: 'refinement-run-1' } }));
+  const details = { reason: 'unknown_target', operations: 1 };
+  await db('task_drafts').insert({
+    draft_id: 'plan-invalid-refinement', user_id: 'alice', repository: 'acme/repo', status: 'review', paused: false,
+    refinement_result: JSON.stringify({
+      runId: 'refinement-run-1', status: 'failed', code: 'REFINEMENT_OUTPUT_INVALID',
+      error: 'A refinement edit referred to an unknown task.', details,
+    }),
+  });
+  const deps = { db, policy: { repository: async () => {}, requirePermission: () => {}, config: {} } as never,
+    taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
+  const failed = (await get.run({ principal, args: get.schema.parse({ operationId: receipt.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  assert.equal(failed.state, 'failed');
+  assert.deepEqual(failed.result.error, {
+    code: 'REFINEMENT_OUTPUT_INVALID', stage: 'workflow', retryable: true, status: 500,
+    message: 'A refinement edit referred to an unknown task.', details,
+  });
+  assert.deepEqual(failed.targetState.error, failed.result.error);
+  assert.equal(failed.targetState.status, 'failed');
+  assert.deepEqual(failed.lifecycle.failure, failed.result.error);
+});
+
 test('replay recovers terminal lifecycle, artifacts and failure from durable receipts', async t => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   t.after(() => db.destroy());

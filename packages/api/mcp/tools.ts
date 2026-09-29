@@ -311,7 +311,12 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     const result = operationResult(row);
     const continuation = result.continuation && typeof result.continuation === 'object' && !Array.isArray(result.continuation)
       ? result.continuation as Record<string, unknown> : result;
-    if (continuation.planId) receipt.targetState = await db('task_drafts').where({ draft_id: continuation.planId, user_id: principal.user.id }).first('status', 'paused', 'mcp_revision');
+    if (continuation.planId) {
+      const columns = ['status', 'paused', 'mcp_revision'];
+      if (row.tool === 'refine_plan') columns.push('refinement_result');
+      receipt.targetState = await db('task_drafts')
+        .where({ draft_id: continuation.planId, user_id: principal.user.id }).first(...columns);
+    }
     if (continuation.goalId) {
       const goal = await db('goals').where({ goal_id: continuation.goalId, owner_id: principal.user.id })
         .first('desired_state', 'result_state', 'current_task_id', 'final_pr_number', 'failure_reason');
@@ -419,11 +424,39 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   return tools;
 }
 
+// eslint-disable-next-line complexity -- tool-specific terminal evidence is normalized at the receipt boundary
 function updateReceiptState(row: Operation, receipt: Record<string, unknown>): void {
   const target = receipt.targetState as Record<string, unknown> | undefined;
   if (row.state === 'accepted' && target) {
-    if (['generate_plan', 'refine_plan'].includes(row.tool) && target.status === 'review') receipt.state = 'completed';
-    if (['generate_plan', 'refine_plan'].includes(row.tool) && target.status === 'failed') receipt.state = 'failed';
+    if (row.tool === 'generate_plan' && target.status === 'review') receipt.state = 'completed';
+    if (row.tool === 'generate_plan' && target.status === 'failed') receipt.state = 'failed';
+    if (row.tool === 'refine_plan') {
+      let refinement: Record<string, unknown> = {};
+      try {
+        refinement = typeof target.refinement_result === 'string'
+          ? JSON.parse(target.refinement_result) as Record<string, unknown>
+          : target.refinement_result as Record<string, unknown> || {};
+      } catch { /* An unreadable in-progress value is not terminal evidence. */ }
+      delete target.refinement_result;
+      if (target.status === 'review' && refinement.status === 'failed') {
+        const invalidOutput = refinement.code === 'REFINEMENT_OUTPUT_INVALID';
+        const error = {
+          code: invalidOutput ? refinement.code : 'REFINEMENT_FAILED',
+          stage: 'workflow',
+          retryable: true,
+          status: 500,
+          message: invalidOutput && typeof refinement.error === 'string' ? refinement.error : 'Plan refinement failed.',
+          ...(invalidOutput && refinement.details && typeof refinement.details === 'object' ? { details: refinement.details } : {}),
+        };
+        receipt.state = 'failed';
+        receipt.targetState = { ...target, status: 'failed', error };
+        const result = receipt.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result)
+          ? receipt.result as Record<string, unknown> : {};
+        receipt.result = { ...result, error };
+      } else if (target.status === 'review' && (refinement.status === 'completed' || refinement.action)) {
+        receipt.state = 'completed';
+      }
+    }
     if (row.tool === 'create_goal' && target.result_state) receipt.state = target.result_state;
   }
 }

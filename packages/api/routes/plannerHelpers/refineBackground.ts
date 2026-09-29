@@ -6,7 +6,7 @@ import { recordPlannerStop } from './executionStop.js';
 
 import { Knex } from 'knex';
 import { Redis } from 'ioredis';
-import { buildPlannerAbortSignalKey, refinePlan, runWithPlannerAbortContext } from '@propr/core';
+import { buildPlannerAbortSignalKey, normalizeRefinedPlan, refinePlan, RefinementOutputError, runWithPlannerAbortContext } from '@propr/core';
 import type { Plan } from '@propr/core';
 import { getRefineRepoContext } from './repoSetup.js';
 
@@ -89,6 +89,7 @@ async function persistActiveRefinement(
  * Persists the refined plan, or a failure record the UI can surface, unless
  * the user aborted the refinement in the meantime.
  */
+// eslint-disable-next-line complexity -- abort fencing and success/failure CAS persistence intentionally remain one lifecycle
 export async function runBackgroundRefinement(
   options: BackgroundRefinementOptions,
   dependencies: BackgroundRefinementDependencies = {},
@@ -126,6 +127,13 @@ export async function runBackgroundRefinement(
       draftId,
       generationModel
     }));
+    const normalized = normalizeRefinedPlan(currentPlan, result.action === 'modified' ? result.plan : currentPlan);
+    if (!normalized.ok) throw new RefinementOutputError(normalized.message, normalized.details);
+    const merged = result.merged === true || normalized.merged;
+    const operations = result.operations ?? normalized.operations;
+    const summary = merged && !result.summary.includes('Applied ')
+      ? `Applied ${operations} edits to the existing plan. ${result.summary}`
+      : result.summary;
 
     // Check if aborted before saving result (race condition protection)
     if (await checkAborted()) {
@@ -138,8 +146,9 @@ export async function runBackgroundRefinement(
       runId,
       status: 'completed',
       action: result.action,
-      summary: result.summary,
+      summary,
       model: result.model,
+      ...(merged ? { merged: true } : {}),
       timestamp: new Date().toISOString(),
       // Include estimation data from the LLM call
       estimatedDuration: result.estimation?.estimatedDurationMs,
@@ -151,7 +160,7 @@ export async function runBackgroundRefinement(
     console.log('[refine] Storing refinement result', { draftId, refinementMeta });
 
     const persisted = await persistActiveRefinement(db, draftId, runId, {
-      plan_json: JSON.stringify(result.plan),
+      plan_json: JSON.stringify(normalized.plan),
       plan_cause: 'refinement',
       refinement_result: JSON.stringify(refinementMeta),
       status: 'review',
@@ -183,6 +192,7 @@ export async function runBackgroundRefinement(
     const failureMeta = {
       runId,
       status: 'failed',
+      ...(error instanceof RefinementOutputError ? { code: error.code, details: error.details } : {}),
       error: errorMessage,
       model: generationModel,
       timestamp: new Date().toISOString()
