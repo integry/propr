@@ -16,6 +16,7 @@ import { McpOAuthProvider } from '../mcp/oauth.js';
 after(closeConnection);
 
 interface SubmissionData {
+  state: string;
   taskId: string | null;
   issueUrl: string | null;
   submissionId: string;
@@ -26,6 +27,7 @@ interface SubmissionData {
     issue: { number: number; url: string } | null;
     task: { id: string; state: string | null; failureReason: string | null } | null;
     pullRequest: { number: number; url: string; state: string | null } | null;
+    next: string;
   };
 }
 interface Receipt {
@@ -59,7 +61,7 @@ async function fixture() {
     table.primary(['repository', 'pr_number']);
   });
   const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
-  const controls = { queueFailure: false, ambiguousCreation: false, writeAccess: true };
+  const controls = { queueFailure: false, ambiguousCreation: false, rejectedCreation: false, writeAccess: true };
   let enqueues = 0;
   const config = { origin: 'https://instance.example', resource: 'https://instance.example/api/mcp', instanceId: 'test', encryptionKey: randomBytes(32) };
   const policy = new McpPolicy(new McpOAuthProvider(new McpStore(db, config.encryptionKey), config), config);
@@ -79,6 +81,7 @@ async function fixture() {
         calls.push({ route, body });
         const issue = { number: 42, html_url: 'https://github.com/owner/repo/issues/42' };
         if (route === 'POST /repos/{owner}/{repo}/issues') {
+          if (controls.rejectedCreation) throw Object.assign(new Error('Invalid issue request'), { status: 422 });
           if (controls.ambiguousCreation) throw new Error('Connection lost after issue creation');
           return { data: issue };
         }
@@ -202,6 +205,38 @@ test('MCP retries failed dispatch and reconciles ambiguous creation without dupl
       assert.equal(recovered.result.error, null);
     } finally { await f.db.destroy(); }
   }
+});
+
+test('preparation failures report failed progress and only appear in failed submission lists', async () => {
+  const f = await fixture();
+  try {
+    f.controls.rejectedCreation = true;
+    await f.call('create_task', {
+      repository: 'owner/repo', instruction: 'Invalid issue', idempotencyKey: 'rejected-issue',
+    });
+    const stored = await f.db('task_submissions').first();
+    assert.equal(stored.state, 'prepared');
+    assert.ok(stored.error);
+    assert.equal(stored.task_id, null);
+
+    const failedRead = (await f.call('get_task_submission', {
+      repository: 'owner/repo', submissionId: stored.id,
+    })).data as SubmissionData;
+    assert.equal(failedRead.state, 'failed');
+    assert.equal(failedRead.progress.stage, 'failed');
+    assert.equal(failedRead.progress.task, null);
+    assert.equal(failedRead.progress.next, 'The task failed; inspect the failure reason before retrying.');
+
+    const active = (await f.call('list_task_submissions', { stage: 'active' })).data as {
+      submissions: SubmissionData[];
+    };
+    assert.deepEqual(active.submissions, []);
+    const failed = (await f.call('list_task_submissions', { stage: 'failed' })).data as {
+      submissions: SubmissionData[];
+    };
+    assert.deepEqual(failed.submissions.map(submission => submission.submissionId), [stored.id]);
+    assert.equal(failed.submissions[0].progress.stage, 'failed');
+  } finally { await f.db.destroy(); }
 });
 
 test('MCP validates direct task inputs and enforces execute scope, repository write access and submission ownership', async () => {

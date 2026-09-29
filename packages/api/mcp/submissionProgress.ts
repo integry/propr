@@ -21,8 +21,9 @@ export function progressStage(
   submissionState: TaskSubmission['state'],
   taskState: string | null,
   hasTask = taskState !== null,
+  hasPreparationError = false,
 ): SubmissionProgressStage {
-  if (submissionState === 'failed') return 'failed';
+  if (submissionState === 'failed' || (submissionState === 'prepared' && hasPreparationError)) return 'failed';
   if (hasTask) {
     if (QUEUED_STATES.has(taskState || '')) return 'queued';
     if (RUNNING_STATES.has(taskState || '')) return 'running';
@@ -86,7 +87,7 @@ export async function submissionProgress(db: Knex, row: TaskSubmission): Promise
   ) as Record<string, unknown> | undefined : undefined;
 
   const taskState = typeof task?.state === 'string' ? task.state : null;
-  const stage = progressStage(row.state, taskState, !!task);
+  const stage = progressStage(row.state, taskState, !!task, Boolean(row.error));
   const finalResult = jsonObject(task?.final_result);
   const postProcessing = jsonObject(finalResult.postProcessing);
   const resultPullRequest = jsonObject(postProcessing.pr);
