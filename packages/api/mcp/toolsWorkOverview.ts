@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpPrincipal } from './policy.js';
 import type { Args, McpTool, ToolDeps } from './tools.js';
 import { ok, repositorySchema } from './tools.js';
-import { hasUltrafixLabel } from './pullRequestInventory.js';
+import { labelNames, ultrafixState } from './pullRequestInventory.js';
 import { summarizeReviewComment, type ReviewSummary } from './reviewDiscussion.js';
 import { queryTaskSummaries } from './taskListing.js';
 
@@ -19,9 +19,9 @@ interface GraphPullRequest {
   headRefOid: string;
   reviewDecision?: string | null;
   mergeStateStatus: string;
-  labels: { nodes: Array<{ name: string }> } | null;
+  labels: { pageInfo: { hasNextPage: boolean } | null; nodes: Array<{ name: string }> } | null;
   commits?: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> } | null;
-  comments: { nodes: Array<{ body: string | null; createdAt: string }> } | null;
+  comments: { pageInfo: { hasPreviousPage: boolean } | null; nodes: Array<{ body: string | null; createdAt: string }> } | null;
 }
 
 export interface PullRequestOverview {
@@ -34,22 +34,27 @@ export interface PullRequestOverview {
   checks: { state: string | null };
   mergeable: string;
   latestReview: ReviewSummary | null;
-  ultrafixActive: boolean;
+  latestReviewSearchTruncated: boolean;
+  ultrafixActive: boolean | null;
 }
 
 type ListScope = (principal: McpPrincipal, args: Args) => Promise<string[] | null>;
 
 function pullRequestSelection(includeChecks: boolean): string {
   return `number url state isDraft merged headRefOid mergeStateStatus
-    labels(first:${LABEL_LIMIT}){nodes{name}}
+    labels(first:${LABEL_LIMIT}){pageInfo{hasNextPage} nodes{name}}
     ${includeChecks ? 'reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}' : ''}
-    comments(last:10){nodes{body createdAt}}`;
+    comments(last:10){pageInfo{hasPreviousPage} nodes{body createdAt}}`;
 }
 
 function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): PullRequestOverview {
   // GraphQL connections are oldest-first even when selected from the end.
   const reviewComment = [...(node.comments?.nodes ?? [])].reverse()
     .find(comment => /<!-- propr:ai-review\b/.test(comment.body || ''));
+  const reviewSearchTruncated = !reviewComment
+    && (node.comments === null || Boolean(node.comments?.pageInfo?.hasPreviousPage));
+  const labels = labelNames(node.labels?.nodes);
+  const labelsTruncated = node.labels === null || Boolean(node.labels?.pageInfo?.hasNextPage);
   return {
     number: node.number,
     url: node.url,
@@ -60,7 +65,8 @@ function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): P
     checks: { state: includeChecks ? node.commits?.nodes?.[0]?.commit.statusCheckRollup?.state ?? null : null },
     mergeable: node.mergeStateStatus,
     latestReview: reviewComment ? summarizeReviewComment(reviewComment.body, node.headRefOid) : null,
-    ultrafixActive: hasUltrafixLabel(node.labels?.nodes),
+    latestReviewSearchTruncated: reviewSearchTruncated,
+    ultrafixActive: ultrafixState(labels, labelsTruncated),
   };
 }
 
@@ -118,7 +124,7 @@ export function addWorkOverviewTools(tools: McpTool[], deps: ToolDeps, listScope
   }).strict();
   tools.push({
     name: 'get_work_overview',
-    description: 'List running or recently finished task summaries joined to pull request review, check, merge and latest ProPR AI review state. Omit repository to cover every repository in this grant.',
+    description: 'List running or recently finished task summaries joined to pull request review, check, merge and latest ProPR AI review state. latestReviewSearchTruncated indicates that a null latestReview may exist outside the bounded comment lookup; ultrafixActive is null when the bounded label lookup cannot establish absence. Omit repository to cover every repository in this grant.',
     scope: 'read',
     readOnly: true,
     schema,

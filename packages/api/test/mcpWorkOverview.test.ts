@@ -31,6 +31,7 @@ const { McpPolicy } = await import('../mcp/policy.js');
 const { McpStore } = await import('../mcp/store.js');
 const { McpOAuthProvider } = await import('../mcp/oauth.js');
 const { createToolCatalog, executeTool } = await import('../mcp/tools.js');
+const { enrichPullRequests } = await import('../mcp/toolsWorkOverview.js');
 
 function timestamp(millisecondsAgo: number): string {
   return new Date(Date.now() - millisecondsAgo).toISOString().replace('T', ' ').replace('Z', '');
@@ -117,6 +118,7 @@ test('get_work_overview joins task work to bounded per-repository GraphQL enrich
     assert.equal(one.reviewDecision, 'APPROVED');
     assert.deepEqual(one.checks, { state: 'SUCCESS' });
     assert.deepEqual(one.latestReview, { score: 8, reviewedHead: head42, matchesCurrentHead: true });
+    assert.equal(one.latestReviewSearchTruncated, false);
     assert.equal(one.ultrafixActive, true);
     assert.equal(active.items.find((item: Json) => item.task.task_id === 'active-no-pr').pullRequest, null);
     assert.deepEqual(active.items.find((item: Json) => item.task.task_id === 'forbidden-9').pullRequest,
@@ -128,6 +130,47 @@ test('get_work_overview joins task work to bounded per-repository GraphQL enrich
   } finally {
     await db.destroy();
   }
+});
+
+test('get_work_overview preserves uncertainty when bounded PR metadata excludes older values', async () => {
+  let query = '';
+  const github = { graphql: async (document: string) => {
+    query = document;
+    return { repository: {
+      pr_42: {
+        number: 42, url: 'https://github.com/acme/one/pull/42', state: 'OPEN', isDraft: false, merged: false,
+        headRefOid: head42, reviewDecision: 'REVIEW_REQUIRED', mergeStateStatus: 'CLEAN',
+        labels: { pageInfo: { hasNextPage: true }, nodes: Array.from({ length: 100 }, (_, index) => ({ name: `label-${index}` })) },
+        commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+        comments: { pageInfo: { hasPreviousPage: true }, nodes: Array.from({ length: 10 }, (_, index) => ({
+          body: `Ordinary discussion ${index}`, createdAt: timestamp(10_000 - index),
+        })) },
+      },
+      pr_7: {
+        number: 7, url: 'https://github.com/acme/one/pull/7', state: 'OPEN', isDraft: false, merged: false,
+        headRefOid: head7, reviewDecision: null, mergeStateStatus: 'CLEAN',
+        labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+        commits: { nodes: [] },
+        comments: { pageInfo: { hasPreviousPage: false }, nodes: [] },
+      },
+    } };
+  } };
+  const principal = { github } as unknown as McpPrincipal;
+
+  const pulls = await enrichPullRequests(principal, 'acme/one', [42, 7]);
+  const truncated = pulls.get(42);
+  assert.ok(truncated);
+  assert.equal(truncated.latestReview, null);
+  assert.equal(truncated.latestReviewSearchTruncated, true);
+  assert.equal(truncated.ultrafixActive, null);
+
+  const complete = pulls.get(7);
+  assert.ok(complete);
+  assert.equal(complete.latestReview, null);
+  assert.equal(complete.latestReviewSearchTruncated, false);
+  assert.equal(complete.ultrafixActive, false);
+  assert.match(query, /labels\(first:100\)\{pageInfo\{hasNextPage\}/);
+  assert.match(query, /comments\(last:10\)\{pageInfo\{hasPreviousPage\}/);
 });
 
 test('get_work_overview paginates mixed timestamp formats by normalized activity', async () => {
