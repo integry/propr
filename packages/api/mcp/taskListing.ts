@@ -118,7 +118,7 @@ export async function queryTaskSummaries(db: Knex, options: TaskSummaryQuery): P
   if ((options.order ?? 'created') === 'created') {
     rowsQuery.orderBy('tasks.created_at', 'desc').orderBy('tasks.task_id', 'desc');
   } else {
-    rowsQuery.orderByRaw('coalesce(latest_history.timestamp, tasks.created_at) desc')
+    rowsQuery.orderByRaw('julianday(coalesce(latest_history.timestamp, tasks.created_at)) desc')
       .orderBy('tasks.task_id', 'desc').offset(options.offset).limit(options.limit);
   }
   const rows = await rowsQuery;

@@ -129,3 +129,39 @@ test('get_work_overview joins task work to bounded per-repository GraphQL enrich
     await db.destroy();
   }
 });
+
+test('get_work_overview paginates mixed timestamp formats by normalized activity', async () => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+    const day = new Date().toISOString().slice(0, 10);
+    await db('tasks').insert([
+      { task_id: 'older-completed', repository: 'acme/one', task_type: 'issue', created_at: `${day} 08:00:00.000` },
+      { task_id: 'newer-active', repository: 'acme/one', task_type: 'issue', created_at: `${day} 08:00:00.000` },
+    ]);
+    await db('task_history').insert([
+      { task_id: 'older-completed', state: 'completed', timestamp: `${day}T09:00:00.000Z` },
+      { task_id: 'newer-active', state: 'processing', timestamp: `${day} 16:00:00.000` },
+    ]);
+
+    const github = { graphql: async () => { throw new Error('No pull requests should be enriched.'); } };
+    const config = { origin: 'https://instance.example', resource: 'https://instance.example/api/mcp', instanceId: 'overview-order-instance', encryptionKey: randomBytes(32) };
+    const policy = new McpPolicy(new McpOAuthProvider(new McpStore(db, config.encryptionKey), config), config);
+    policy.repository = async () => {};
+    const deps: ToolDeps = { db, policy, taskQueue: {} as never, runtimeBuildQueue: {} as never, redisClient: {} as never };
+    const overview = createToolCatalog(deps).find(tool => tool.name === 'get_work_overview') as McpTool;
+    const principal = { user: { id: ownerId, username: 'tester', login: 'tester' }, github,
+      authorization: { role: 'member', source: 'local', permissions: [] }, scopes: ['read'],
+      grant: { id: 'overview-order-grant', ownerId, clientId: 'client', clientName: 'Overview', instanceId: config.instanceId,
+        resource: config.resource, scopes: ['read'], repositories: ['acme/one'], createdAt: Date.now(), expiresAt: Date.now() + 60_000,
+        revoked: false, membershipSource: 'local' } } as unknown as McpPrincipal;
+
+    const result = (await executeTool(overview, {
+      repository: 'acme/one', state: 'all', sinceMinutes: 1440, limit: 1,
+    }, principal, deps)).data as Json;
+
+    assert.deepEqual(result.items.map((item: Json) => item.task.task_id), ['newer-active']);
+  } finally {
+    await db.destroy();
+  }
+});
