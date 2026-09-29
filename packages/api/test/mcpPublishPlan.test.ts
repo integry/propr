@@ -333,7 +333,7 @@ test('a resumed publication preserves every issue when the final draft update fa
   assert.deepEqual((await db('plan_issues').where({ draft_id: id }).orderBy('issue_number')).map(row => row.issue_number), [71, 72]);
 });
 
-test('a resume reclaims an interrupted active attempt and adopts its unrecorded issue', async t => {
+test('a resume reclaims a durably stopped active attempt and adopts its unrecorded issue', async t => {
   const id = '10000000-0000-4000-8000-000000000011';
   const db = await setup(t, id, tasks.slice(0, 2));
   const claimedAt = new Date(Date.now() - 3 * 60_000).toISOString();
@@ -342,7 +342,8 @@ test('a resume reclaims an interrupted active attempt and adopts its unrecorded 
       created: [{ index: 0, number: 91, url: 'https://github.com/acme/repo/issues/91' }], claimedAt },
   }) });
   await db('plan_issues').insert({ draft_id: id, repository, issue_number: 91 });
-  await recordAttempt(db, { id: 'interrupted-attempt', state: 'accepted', lifecycle: 'accepted', claimedAt });
+  await recordAttempt(db, { id: 'interrupted-attempt', state: 'unknown', lifecycle: 'unknown', claimedAt,
+    result: JSON.stringify({ error: { code: 'OUTCOME_UNKNOWN', message: 'response lost' } }) });
   const remote = [{ number: 92, html_url: 'https://github.com/acme/repo/issues/92', title: 'Second',
     body: '<!-- propr-mcp:interrupted-original:1 -->' }];
   let postCount = 0;
@@ -448,6 +449,54 @@ test('an active resume is exclusively owned while its GitHub POST is awaiting', 
   const result = (await firstResume).data as { issues: Array<{ number: number }> };
   assert.deepEqual(result.issues.map(issue => issue.number), [51, 52, 53]);
   assert.equal(postCount, 2, 'only the owner creates the two remaining issues');
+});
+
+test('a timeout cannot reclaim an active publication while its GitHub POST is awaiting', async t => {
+  const id = '10000000-0000-4000-8000-000000000013';
+  const db = await setup(t, id);
+  await db('task_drafts').where({ draft_id: id }).update({ status: 'executing', context_config: JSON.stringify({
+    publication: { state: 'partial', operationId: 'timeout-original',
+      created: [{ index: 0, number: 61, url: 'https://github.com/acme/repo/issues/61' }], failedIndex: 1,
+      failedAt: new Date().toISOString(), cause: { code: 'UPSTREAM_UNREACHABLE', message: 'lost' } },
+  }) });
+  await db('plan_issues').insert({ draft_id: id, repository, issue_number: 61 });
+  let releasePost!: () => void;
+  let postStarted!: () => void;
+  const started = new Promise<void>(resolve => { postStarted = resolve; });
+  const gate = new Promise<void>(resolve => { releasePost = resolve; });
+  let postCount = 0;
+  const request = (async (route: string, args: Record<string, unknown>) => {
+    if (route === 'GET /repos/{owner}/{repo}/issues') return { data: [] };
+    postCount += 1;
+    if (postCount === 1) { postStarted(); await gate; }
+    return { data: { number: 61 + postCount, html_url: `https://github.com/acme/repo/issues/${61 + postCount}`,
+      title: args.title } };
+  }) as McpPrincipal['github']['request'];
+  const { callPublish, callTrackedPublish } = tools(db, request);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+  const firstResume = callTrackedPublish(id, before.mcp_revision, 'timeout-resume-a', true);
+  await started;
+
+  const active = await db('task_drafts').where({ draft_id: id }).first();
+  const activePublication = JSON.parse(active.context_config).publication as { attemptId: string };
+  await db('mcp_operations').where({ id: activePublication.attemptId })
+    .update({ accepted_at: Date.now() - 3 * 60_000 });
+  await assert.rejects(callPublish(id, active.mcp_revision, 'timeout-resume-b', true), error => {
+    assert.ok(error instanceof McpError);
+    assert.equal(error.code, 'PRECONDITION_FAILED');
+    assert.match(error.message, /not recoverable/i);
+    return true;
+  });
+  assert.equal(postCount, 1, 'the timed-out receipt cannot authorize a competing POST');
+  assert.deepEqual(await db('mcp_operations').where({ id: activePublication.attemptId }).first('state', 'lifecycle', 'result'),
+    { state: 'unknown', lifecycle: 'unknown', result: null });
+
+  releasePost();
+  const result = await firstResume;
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(((result.result as { issues: Array<{ number: number }> }).issues).map(issue => issue.number), [61, 62, 63]);
+  assert.equal(postCount, 2, 'only the original owner creates the two remaining issues');
+  assert.equal((await db('task_drafts').where({ draft_id: id }).first()).status, 'executed');
 });
 
 test('an incomplete marker window preserves recovery state and refuses a POST', async t => {

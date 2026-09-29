@@ -158,10 +158,13 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       if (active) await new McpOperations(db).markInterruptedInvocations(principal, active.attemptId);
       // A live accepted/running receipt retains the claim. Terminal or durable
       // unknown evidence must postdate this exact claim before it can be fenced off.
+      // Timeout recovery writes unknown without a result and is not evidence that
+      // the invocation stopped; its callback may still have an in-flight POST.
       const stoppedActiveAttempt = active ? await db('mcp_operations').where({
         id: active.attemptId, owner_id: principal.user.id, tool: 'publish_plan', repository: args.repository,
-      }).where(builder => builder.whereIn('state', ['completed', 'failed', 'cancelled', 'unknown'])
-        .orWhereIn('lifecycle', ['completed', 'failed', 'cancelled']))
+      }).where(builder => builder.whereIn('state', ['completed', 'failed', 'cancelled'])
+        .orWhereIn('lifecycle', ['completed', 'failed', 'cancelled'])
+        .orWhere(unknown => unknown.where({ state: 'unknown' }).whereNotNull('result')))
         .where('updated_at', '>=', Date.parse(active.claimedAt)).first('id') : undefined;
       const priorPublication = partial ?? (stoppedActiveAttempt ? active : undefined);
       const previousStatus = String(draft.status || 'draft');
