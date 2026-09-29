@@ -119,10 +119,13 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
   tools.push({ name: 'update_plan', description: 'Update a draft using its exact revision. Read the plan again on a conflict.', scope: 'plan', target,
     schema: z.object({ ...mutationShape, ...planShape, expectedRevision: z.number().int().min(0), name: z.string().min(1).max(256).optional(), prompt: textSchema.optional(), plan: plan.optional() }).strict(),
     run: async ({ principal, args }) => {
+      const serializedPlan = args.plan === undefined ? undefined : JSON.stringify(args.plan);
       const changed = await db('task_drafts').where({ draft_id: args.planId, user_id: principal.user.id, mcp_revision: args.expectedRevision })
         .whereIn('status', ['draft', 'review', 'approved', 'failed']).update({
           ...(args.name !== undefined ? { name: args.name } : {}), ...(args.prompt !== undefined ? { initial_prompt: args.prompt } : {}),
-          ...(args.plan !== undefined ? { plan_json: JSON.stringify(args.plan), plan_cause: 'manual_edit' } : {}), updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
+          ...(serializedPlan !== undefined ? { plan_json: serializedPlan,
+            plan_cause: db.raw('CASE WHEN ?? = ? THEN ?? ELSE ? END', ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']) } : {}),
+          updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
         });
       if (!changed) throw new McpError('STALE_REVISION', 'Plan changed or an operation is active. Read it again before updating.', 409);
       return ok({ planId: args.planId, revision: args.expectedRevision + 1 });

@@ -232,8 +232,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const { plan_json, context_config, status, name, chat_history, initial_prompt } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
       if (plan_json !== undefined) {
-        updateData.plan_json = JSON.stringify(plan_json);
-        updateData.plan_cause = 'manual_edit';
+        const serializedPlan = JSON.stringify(plan_json);
+        updateData.plan_json = serializedPlan;
+        updateData.plan_cause = db!.raw(
+          'CASE WHEN ?? = ? THEN ?? ELSE ? END',
+          ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']
+        );
       }
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
