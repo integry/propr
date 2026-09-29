@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import express from 'express';
@@ -15,7 +15,7 @@ import { McpError } from '../mcp/config.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import { buildMcpServer } from '../mcp/server.js';
 import { createToolCatalog, type McpTool, type ToolDeps } from '../mcp/tools.js';
-import { normalizeDocContent } from '../mcp/docsIndex.js';
+import { getIndexedDoc, loadDocsIndex, normalizeDocContent } from '../mcp/docsIndex.js';
 
 after(() => closeConnection());
 
@@ -62,6 +62,39 @@ sidebar_position: 1
 An overview of the major ProPR workflows.
 `;
 
+const deploymentSource = `---
+title: Deployment
+---
+
+Keep the rollback procedure close at hand before making changes.
+
+## Installation
+
+Install the current release.
+`;
+
+const headinglessSource = `---
+title: Glossary
+---
+
+A frobnicator is a headingless concept that remains searchable.
+`;
+
+const duplicateHeadingsSource = `# Operations
+
+## Local
+
+### Troubleshooting
+
+Restart the local process.
+
+## Hosted
+
+### Troubleshooting
+
+Inspect the quasar relay before retrying the hosted operation.
+`;
+
 function tool(catalog: McpTool[], name: string): McpTool {
   const found = catalog.find(candidate => candidate.name === name);
   assert.ok(found, `${name} is registered`);
@@ -89,6 +122,9 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   await mkdir(join(root, 'docs', 'operations'), { recursive: true });
   await writeFile(join(root, 'docs', 'features', 'pr-commands.md'), commandsSource);
   await writeFile(join(root, 'docs', 'features', 'overview.mdx'), overviewSource);
+  await writeFile(join(root, 'docs', 'operations', 'deployment.md'), deploymentSource);
+  await writeFile(join(root, 'docs', 'operations', 'glossary.md'), headinglessSource);
+  await writeFile(join(root, 'docs', 'operations', 'troubleshooting.md'), duplicateHeadingsSource);
   await writeFile(join(root, 'docs', 'operations', 'too-large.md'), Buffer.alloc(512 * 1024 + 1, 120));
   await writeFile(join(root, 'mcp.md'), '# MCP Guide\n\nConnect an MCP client to ProPR.\n');
   await writeFile(join(root, 'docs-manifest.json'), JSON.stringify({
@@ -150,7 +186,31 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   const searched = await call(catalog, 'search_docs', { query: 'ultrafix goal', limit: 20 });
   assert.equal(searched.results[0].path, 'features/pr-commands');
   assert.equal(searched.results[0].heading, '/ultrafix');
+  assert.deepEqual(searched.results[0].section, { heading: '/ultrafix', offset: searched.results[0].section.offset });
   assert.ok(searched.results.every((result: { snippet: string }) => result.snippet.length <= 300));
+
+  const introduction = await call(catalog, 'search_docs', { query: 'rollback', limit: 20 });
+  assert.deepEqual(introduction.results[0], {
+    path: 'operations/deployment', title: 'Deployment', heading: 'Deployment', section: null,
+    snippet: 'Keep the rollback procedure close at hand before making changes.', score: 1,
+  });
+  const introductoryPage = await call(catalog, 'get_doc', { path: introduction.results[0].path });
+  assert.match(introductoryPage.content, /rollback procedure/);
+
+  const headingless = await call(catalog, 'search_docs', { query: 'frobnicator', limit: 20 });
+  assert.equal(headingless.results[0].path, 'operations/glossary');
+  assert.equal(headingless.results[0].section, null);
+  const headinglessPage = await call(catalog, 'get_doc', { path: headingless.results[0].path });
+  assert.match(headinglessPage.content, /headingless concept/);
+
+  const duplicateHeading = await call(catalog, 'search_docs', { query: 'quasar relay', limit: 20 });
+  assert.equal(duplicateHeading.results[0].heading, 'Troubleshooting');
+  assert.ok(duplicateHeading.results[0].section);
+  const duplicateSection = await call(catalog, 'get_doc', {
+    path: duplicateHeading.results[0].path, section: duplicateHeading.results[0].section,
+  });
+  assert.match(duplicateSection.content, /quasar relay/);
+  assert.doesNotMatch(duplicateSection.content, /local process/);
 
   await assert.rejects(
     tool(catalog, 'get_doc').run({ principal: {} as McpPrincipal, args: { path: '../../etc/passwd', offset: 0, maxChars: 8000 } }),
@@ -201,4 +261,34 @@ test('normalization preserves fenced code while stripping document-level MDX wra
   const normalized = normalizeDocContent(`---\ntitle: Example\n---\nimport Outside from 'outside';\n{/* remove */}\n\`\`\`tsx\nimport Inside from 'inside';\n\`\`\`\n`);
   assert.equal(normalized.title, 'Example');
   assert.equal(normalized.content, "\n```tsx\nimport Inside from 'inside';\n```\n");
+});
+
+test('docs cache refresh fingerprints every indexed path instead of only the greatest timestamp', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+  const root = await mkdtemp(join(tmpdir(), 'propr-mcp-docs-refresh-'));
+  const previousRoot = process.env.PROPR_DOCS_DIR;
+  process.env.PROPR_DOCS_DIR = root;
+  t.after(async () => {
+    if (previousRoot === undefined) delete process.env.PROPR_DOCS_DIR;
+    else process.env.PROPR_DOCS_DIR = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const changedFile = join(root, 'docs', 'changed.md');
+  const newestFile = join(root, 'docs', 'newest.md');
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await writeFile(changedFile, '# Changed\n\nOld indexed body.\n');
+  await writeFile(newestFile, '# Newest\n\nUnchanged body.\n');
+  await utimes(changedFile, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+  await utimes(newestFile, new Date('2040-01-01T00:00:00Z'), new Date('2040-01-01T00:00:00Z'));
+
+  const initial = await loadDocsIndex();
+  assert.match(getIndexedDoc(initial, 'changed').content, /Old indexed body/);
+
+  await writeFile(changedFile, '# Changed\n\nNew indexed body.\n');
+  await utimes(changedFile, new Date('2030-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'));
+  t.mock.timers.tick(60_001);
+
+  const refreshed = await loadDocsIndex();
+  assert.match(getIndexedDoc(refreshed, 'changed').content, /New indexed body/);
 });

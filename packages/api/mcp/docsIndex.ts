@@ -26,8 +26,11 @@ export interface DocsIndex {
   pages: IndexedDocPage[];
   byPath: ReadonlyMap<string, IndexedDocPage>;
 }
-export interface GetDocOptions { offset?: number; maxChars?: number; section?: string }
-export interface SearchResult { path: string; title: string; heading: string; snippet: string; score: number }
+export interface DocSectionLocator { heading: string; offset: number }
+export interface GetDocOptions { offset?: number; maxChars?: number; section?: string | DocSectionLocator }
+export interface SearchResult {
+  path: string; title: string; heading: string; section: DocSectionLocator | null; snippet: string; score: number;
+}
 
 /** Domain errors are translated to the public MCP envelope by toolsDocs.ts. */
 export class DocsIndexError extends Error {
@@ -37,10 +40,10 @@ export class DocsIndexError extends Error {
   }
 }
 
-interface Candidate { file: string; path: string }
-interface Inventory { candidates: Candidate[]; newestMtimeMs: number; manifestFile: string | null }
+interface Candidate { file: string; path: string; signature: string }
+interface Inventory { candidates: Candidate[]; fingerprint: string; manifestFile: string | null }
 interface Manifest { version?: string; sourceRevision?: string | null; order?: string[] }
-interface CacheEntry { root: string; newestMtimeMs: number; checkedAt: number; index: DocsIndex }
+interface CacheEntry { root: string; fingerprint: string; checkedAt: number; index: DocsIndex }
 
 let cached: CacheEntry | undefined;
 let building: { root: string; promise: Promise<CacheEntry> } | undefined;
@@ -69,8 +72,6 @@ export async function resolveDocsRoot(
 }
 
 async function walkDocs(directory: string, relative: string, inventory: Inventory): Promise<void> {
-  const directoryInfo = await lstat(directory);
-  inventory.newestMtimeMs = Math.max(inventory.newestMtimeMs, directoryInfo.mtimeMs);
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
@@ -83,9 +84,12 @@ async function walkDocs(directory: string, relative: string, inventory: Inventor
     }
     if (!entry.isFile() || !/\.mdx?$/i.test(entry.name)) continue;
     const info = await lstat(file);
-    inventory.newestMtimeMs = Math.max(inventory.newestMtimeMs, info.mtimeMs);
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_DOC_BYTES) continue;
-    inventory.candidates.push({ file, path: child.replace(/\.mdx?$/i, '') });
+    inventory.candidates.push({
+      file,
+      path: child.replace(/\.mdx?$/i, ''),
+      signature: `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`,
+    });
   }
 }
 
@@ -93,31 +97,38 @@ async function addOptionalFile(root: string, name: string, inventory: Inventory)
   const file = join(root, name);
   try {
     const info = await lstat(file);
-    inventory.newestMtimeMs = Math.max(inventory.newestMtimeMs, info.mtimeMs);
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_DOC_BYTES) return;
     const path = EXTRA_GUIDES.get(name);
-    if (path) inventory.candidates.push({ file, path });
+    if (path) inventory.candidates.push({
+      file, path, signature: `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`,
+    });
   } catch {
     // Optional operator guide.
   }
 }
 
 async function inventoryRoot(root: string): Promise<Inventory> {
-  const rootInfo = await lstat(root);
-  const inventory: Inventory = { candidates: [], newestMtimeMs: rootInfo.mtimeMs, manifestFile: null };
+  const inventory: Inventory = { candidates: [], fingerprint: '', manifestFile: null };
   const pagesRoot = join(root, 'docs');
   const pagesInfo = await directoryCandidate(pagesRoot);
   if (pagesInfo) await walkDocs(pagesRoot, '', inventory);
   for (const name of EXTRA_GUIDES.keys()) await addOptionalFile(root, name, inventory);
   const manifestFile = join(root, 'docs-manifest.json');
+  let manifestSignature = '';
   try {
     const info = await lstat(manifestFile);
-    inventory.newestMtimeMs = Math.max(inventory.newestMtimeMs, info.mtimeMs);
-    if (info.isFile() && !info.isSymbolicLink() && info.size <= MAX_DOC_BYTES) inventory.manifestFile = manifestFile;
+    if (info.isFile() && !info.isSymbolicLink() && info.size <= MAX_DOC_BYTES) {
+      inventory.manifestFile = manifestFile;
+      manifestSignature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+    }
   } catch {
     // The source checkout does not have a generated manifest.
   }
-  inventory.candidates.sort((left, right) => left.path.localeCompare(right.path));
+  inventory.candidates.sort((left, right) => left.path.localeCompare(right.path) || left.file.localeCompare(right.file));
+  inventory.fingerprint = [
+    ...inventory.candidates.map(candidate => `${candidate.path}\0${candidate.file}\0${candidate.signature}`),
+    `manifest\0${manifestSignature}`,
+  ].join('\n');
   return inventory;
 }
 
@@ -340,7 +351,7 @@ async function buildIndex(root: string, inventory: Inventory): Promise<DocsIndex
 async function buildCache(root: string, inventory?: Inventory): Promise<CacheEntry> {
   const discovered = inventory ?? await inventoryRoot(root);
   const index = await buildIndex(root, discovered);
-  return { root, newestMtimeMs: discovered.newestMtimeMs, checkedAt: Date.now(), index };
+  return { root, fingerprint: discovered.fingerprint, checkedAt: Date.now(), index };
 }
 
 /** Load the lazy singleton index, refreshing its inventory no more than once a minute. */
@@ -352,7 +363,7 @@ export async function loadDocsIndex(): Promise<DocsIndex> {
   const promise = (async () => {
     try {
       const inventory = await inventoryRoot(root);
-      if (cached?.root === root && cached.newestMtimeMs === inventory.newestMtimeMs) {
+      if (cached?.root === root && cached.fingerprint === inventory.fingerprint) {
         cached.checkedAt = Date.now();
         return cached;
       }
@@ -392,9 +403,10 @@ function paragraphChunk(content: string, offset: number, maxChars: number, end =
   return { content: content.slice(start, chunkEnd), nextOffset: chunkEnd };
 }
 
-function sectionRange(page: IndexedDocPage, requested: string): { start: number; end: number } {
-  const wanted = requested.trim().toLocaleLowerCase();
-  const index = page.outline.findIndex(item => item.heading.toLocaleLowerCase() === wanted);
+function sectionRange(page: IndexedDocPage, requested: string | DocSectionLocator): { start: number; end: number } {
+  const index = typeof requested === 'string'
+    ? page.outline.findIndex(item => item.heading.toLocaleLowerCase() === requested.trim().toLocaleLowerCase())
+    : page.outline.findIndex(item => item.offset === requested.offset && item.heading === requested.heading);
   if (index < 0) throw new DocsIndexError('SECTION_NOT_FOUND', `Heading not found in ${page.path}.`);
   const heading = page.outline[index];
   const next = page.outline.slice(index + 1).find(item => item.level <= heading.level);
@@ -437,23 +449,37 @@ function searchSnippet(body: string, terms: string[], fallback: string): string 
   return snippet;
 }
 
-interface SearchSegment { heading: string; headingOffset: number; body: string; titleSegment: boolean }
+interface SearchSegment {
+  heading: string; headingOffset: number; section: DocSectionLocator | null; body: string; titleSegment: boolean;
+}
 
 function searchSegments(page: IndexedDocPage): SearchSegment[] {
-  if (!page.outline.length) return [{ heading: page.title, headingOffset: 0, body: page.content, titleSegment: true }];
-  return page.outline.map((heading, index) => {
+  if (!page.outline.length) {
+    return [{ heading: page.title, headingOffset: 0, section: null, body: page.content, titleSegment: true }];
+  }
+  const introductoryBody = page.content.slice(0, page.outline[0].offset);
+  const hasIntroduction = Boolean(introductoryBody.trim());
+  const segments: SearchSegment[] = page.outline.map((heading, index) => {
     const lineEnd = page.content.indexOf('\n', heading.offset);
     const bodyStart = lineEnd < 0 ? page.content.length : lineEnd + 1;
     return {
       heading: heading.heading,
       headingOffset: heading.offset,
+      section: { heading: heading.heading, offset: heading.offset },
       body: page.content.slice(bodyStart, page.outline[index + 1]?.offset ?? page.content.length),
-      titleSegment: index === 0 || heading.heading.toLocaleLowerCase() === page.title.toLocaleLowerCase(),
+      titleSegment: !hasIntroduction
+        && (index === 0 || heading.heading.toLocaleLowerCase() === page.title.toLocaleLowerCase()),
     };
   });
+  if (hasIntroduction) {
+    segments.unshift({
+      heading: page.title, headingOffset: 0, section: null, body: introductoryBody, titleSegment: true,
+    });
+  }
+  return segments;
 }
 
-/** Search independently-scored page/heading groups so a result can be passed to get_doc.section. */
+/** Search independently-scored page/heading groups and return exact locators for real headings. */
 export function searchIndexedDocs(index: DocsIndex, query: string, limit: number): { results: SearchResult[] } {
   const terms = [...new Set(query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean))];
   const ranked: Array<SearchResult & { pageOrder: number; headingOffset: number }> = [];
@@ -468,13 +494,14 @@ export function searchIndexedDocs(index: DocsIndex, query: string, limit: number
         + (body.includes(term) ? 1 : 0), 0);
       if (!score) continue;
       ranked.push({
-        path: page.path, title: page.title, heading: segment.heading,
+        path: page.path, title: page.title, heading: segment.heading, section: segment.section,
         snippet: searchSnippet(segment.body, terms, segment.heading), score, pageOrder, headingOffset: segment.headingOffset,
       });
     }
   });
   ranked.sort((left, right) => right.score - left.score || left.pageOrder - right.pageOrder || left.headingOffset - right.headingOffset);
   return { results: ranked.slice(0, limit).map(result => ({
-    path: result.path, title: result.title, heading: result.heading, snippet: result.snippet, score: result.score,
+    path: result.path, title: result.title, heading: result.heading, section: result.section,
+    snippet: result.snippet, score: result.score,
   })) };
 }

@@ -42,14 +42,20 @@ export function addDocsTools(tools: McpTool[], deps: ToolDeps): void {
 
   tools.push({
     name: 'get_doc',
-    description: 'Read a bounded chunk of a bundled ProPR documentation page. Use path values from list_docs or search_docs; section is an exact heading match.',
+    description: 'Read a bounded chunk of a bundled ProPR documentation page. Use path values from list_docs or search_docs; section accepts an exact heading or a locator returned by search_docs.',
     scope: 'read',
     readOnly: true,
     schema: z.object({
       path: z.string().min(1).max(512),
       offset: z.number().int().min(0).max(10_000_000).default(0),
       maxChars: z.number().int().min(1000).max(16000).default(8000),
-      section: z.string().trim().min(1).max(500).optional(),
+      section: z.union([
+        z.string().trim().min(1).max(500),
+        z.object({
+          heading: z.string().min(1).max(500),
+          offset: z.number().int().min(0).max(10_000_000),
+        }).strict(),
+      ]).optional(),
     }).strict(),
     run: async ({ args }) => ok(await docsResult(async () => getIndexedDoc(await loadDocsIndex(), args.path, {
       offset: args.offset, maxChars: args.maxChars, section: args.section,
@@ -58,7 +64,7 @@ export function addDocsTools(tools: McpTool[], deps: ToolDeps): void {
 
   tools.push({
     name: 'search_docs',
-    description: 'Search bundled ProPR documentation by title, heading and body terms. Pass a result heading to get_doc.section for focused reading.',
+    description: 'Search bundled ProPR documentation by title, heading and body terms. Pass a non-null result section to get_doc.section for focused reading; when section is null, read the result path without a section.',
     scope: 'read',
     readOnly: true,
     schema: z.object({
