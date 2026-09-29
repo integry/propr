@@ -236,10 +236,15 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
     const goal = finiteScore(progress.goal) ?? 0;
     const score = finiteScore(progress.lastScore);
     const scoreText = score === undefined ? 'no review score yet' : `last score ${score}/10`;
+    // Lifecycle termination is authoritative even for receipts written before
+    // terminal ultrafix progress was normalized.
+    if (state === 'failed') return `Ultrafix failed during cycle ${cycle || 1}; ${scoreText}.`;
+    if (state === 'cancelled') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'goal_reached') return `Ultrafix reached goal ${goal} after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'cycles_exhausted') return `Ultrafix stopped after exhausting ${cycle || maxCycles} cycles; ${scoreText} did not reach goal ${goal}.`;
     if (progress.outcome === 'stopped') return `Ultrafix was stopped after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.outcome === 'failed') return `Ultrafix failed during cycle ${cycle || 1}; ${scoreText}.`;
+    if (state === 'completed') return `Ultrafix completed after ${cycle} cycle${cycle === 1 ? '' : 's'}; ${scoreText}.`;
     if (progress.phase === 'stopping') return `Ultrafix is stopping after cycle ${cycle}; the circuit-breaker label was removed.`;
     const phase = progress.phase === 'waiting_for_ci' ? 'waiting for CI'
       : progress.phase === 'paused' ? 'paused' : `${String(progress.phase)}ing`;

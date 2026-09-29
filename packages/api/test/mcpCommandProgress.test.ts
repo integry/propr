@@ -240,6 +240,75 @@ for (const [outcome, expectedState] of [
   });
 }
 
+test('legacy Redis failure persists terminal ultrafix progress across resolved polling', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'a'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'run_ultrafix', repository: 'acme/repo', args: { idempotencyKey: 'ultrafix-legacy-redis-failure' },
+  }, async () => ({ status: 202, data: {
+    state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 101, goal: 9, maxCycles: 3,
+  } }));
+  await db('tasks').insert({ task_id: 'legacy-redis-review', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', initial_job_data: job(101, 7, 'review'), created_at: new Date() });
+  await db('task_history').insert({ task_id: 'legacy-redis-review', state: 'completed', timestamp: new Date(),
+    metadata: JSON.stringify({ ultrafixCycle: 2, ultrafixScore: 6 }) });
+  let redisReads = 0;
+  const deps = { db, redisClient: { get: async () => {
+    redisReads++;
+    return JSON.stringify({ workEpoch: 7, active: false, cycleCount: 2, finalScore: 6,
+      completionStatus: 'failed', completionReason: 'Legacy loop failed.' });
+  } } as never, taskQueue: {} as never, runtimeBuildQueue: {} as never, policy: {} as never } as ToolDeps;
+
+  const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const projected = operations.project(row);
+  await trackExecution(deps, row, principal, projected);
+  await syncLifecycle(operations, row, projected);
+
+  const terminalRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const terminalResult = JSON.parse(terminalRow.result!);
+  assert.equal(terminalRow.state, 'failed');
+  assert.equal(terminalRow.lifecycle, 'failed');
+  assert.equal(terminalResult.executionResolved, true);
+  assert.equal(terminalResult.ultrafixProgress.outcome, 'failed');
+  assert.equal(terminalResult.ultrafixProgress.phase, 'done');
+  assert.equal(JSON.parse(terminalRow.progress!).outcome, 'failed');
+  const terminalLifecycle = operations.project(terminalRow).lifecycle as {
+    failure: { message: string }; summary: string;
+  };
+  assert.equal(terminalLifecycle.failure.message, 'Legacy loop failed.');
+  assert.match(terminalLifecycle.summary, /Ultrafix failed/);
+  assert.doesNotMatch(terminalLifecycle.summary, /is reviewing/);
+
+  const resolvedReceipt = operations.project(terminalRow);
+  await trackExecution(deps, terminalRow, principal, resolvedReceipt);
+  await syncLifecycle(operations, terminalRow, resolvedReceipt);
+  const resolved = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.equal(redisReads, 1, 'resolved polling uses the durable terminal receipt');
+  assert.equal(((resolved.lifecycle as { progress: { outcome: string } }).progress).outcome, 'failed');
+  assert.equal(((resolved.lifecycle as { progress: { phase: string } }).progress).phase, 'done');
+  assert.match(String((resolved.lifecycle as { summary: string }).summary), /Ultrafix failed/);
+});
+
+test('terminal ultrafix lifecycle never summarizes stale progress as active', () => {
+  const progress = {
+    kind: 'ultrafix', goal: 9, maxCycles: 3, cycle: 2, lastScore: 6,
+    phase: 'review', outcome: null, cycles: [],
+  };
+  const summaries = [
+    summarizeLifecycle('run_ultrafix', { state: 'failed', progress }),
+    summarizeLifecycle('run_ultrafix', { state: 'cancelled', progress }),
+    summarizeLifecycle('run_ultrafix', { state: 'completed', progress }),
+  ];
+  assert.match(summaries[0], /failed/);
+  assert.match(summaries[1], /stopped/);
+  assert.match(summaries[2], /completed/);
+  for (const summary of summaries) assert.doesNotMatch(summary, /is reviewing/);
+});
+
 test('a stale ultrafix poll adopts terminal result progress before synchronizing lifecycle', async t => {
   const db = await fixture(t);
   const operations = new McpOperations(db);

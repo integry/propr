@@ -266,6 +266,9 @@ async function trackUltrafix(deps: ToolDeps, row: Operation, context: TrackingCo
         progress.cycle = Number(loop.cycleCount ?? progress.cycle);
         progress.lastScore = loop.finalScore ?? progress.lastScore;
       } else if (loop?.completionStatus === 'failed') {
+        progress.outcome = 'failed'; progress.phase = 'done';
+        progress.cycle = Number(loop.cycleCount ?? progress.cycle);
+        progress.lastScore = loop.finalScore ?? progress.lastScore;
         legacyState = 'failed';
       }
       if (loop) result.loop = { workEpoch: epoch, active: loop.active, cycleCount: loop.cycleCount,

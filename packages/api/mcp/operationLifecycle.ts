@@ -134,6 +134,10 @@ export function failureFromReceipt(receipt: Record<string, unknown>): McpErrorEn
   const result = record(receipt.result);
   const ultrafix = record(result?.ultrafixProgress) ?? record(receipt.lifecycleProgress);
   if (ultrafix?.outcome === 'failed') {
+    const loop = record(result?.loop);
+    const legacyFailure = loop?.completionStatus === 'failed' && nonEmptyString(loop.completionReason)
+      ? resultFailure(result) : undefined;
+    if (legacyFailure) return legacyFailure;
     const taskId = nonEmptyString(ultrafix.failingTaskId, record(receipt.targetState)?.taskId);
     return {
       code: 'ULTRAFIX_CYCLE_FAILED', message: 'An ultrafix cycle failed.', stage: 'workflow', retryable: false, status: 500,
