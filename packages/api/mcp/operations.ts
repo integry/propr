@@ -4,12 +4,13 @@ import { McpError } from './config.js';
 import { classifyError, type McpErrorEnvelope } from './errorEnvelope.js';
 import { digest } from './store.js';
 import type { McpPrincipal } from './policy.js';
+import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
 import { artifactsFromReceipt, failureFromReceipt } from './operationLifecycle.js';
 import { COMMAND_NOT_PICKED_UP_FAILURE, summarizeLifecycle } from './commandProgress.js';
 
 const interruptionTimeoutMs = 120_000;
 
-export interface OperationResult { status: number; data: unknown }
+export interface OperationResult { status: number; data: unknown; content?: ContentBlock[] }
 export type LifecycleState = 'accepted' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 export type LifecycleOutcome = 'completed' | 'failed' | 'cancelled';
 export interface Operation {

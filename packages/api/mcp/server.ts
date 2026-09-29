@@ -42,7 +42,8 @@ export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog:
       annotations: { readOnlyHint: !!tool.readOnly, destructiveHint: !tool.readOnly, idempotentHint: true, openWorldHint: true } }, async args => {
       try {
         const result = await call(tool.name, args);
-        return { content: [{ type: 'text', text: presentResultText(result) }], structuredContent: result };
+        const { content, ...structuredContent } = result;
+        return { content: content ?? [{ type: 'text', text: presentResultText(result) }], structuredContent };
       } catch (error) {
         return toToolErrorResult(classifyError(error, { sideEffectsPossible: false }));
       }
@@ -70,6 +71,12 @@ export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog:
   server.registerResource('repository_context', new ResourceTemplate(`${prefix}/repositories/{owner}/{repo}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'repository_context', async () => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(await call('get_repository_context', { repository: `${vars.owner}/${vars.repo}` })) }] })));
   server.registerResource('pull_requests', new ResourceTemplate(`${prefix}/repositories/{owner}/{repo}/pulls`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'pull_requests', async () => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(await call('list_pull_requests', { repository: `${vars.owner}/${vars.repo}` })) }] })));
   server.registerResource('pull_request', new ResourceTemplate(`${prefix}/repositories/{owner}/{repo}/pulls/{number}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'pull_request', async () => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(await call('get_pull_request', { repository: `${vars.owner}/${vars.repo}`, pullRequest: Number(vars.number) })) }] })));
+  server.registerResource('visual_preview', new ResourceTemplate(`${prefix}/repositories/{owner}/{repo}/previews/{previewId}`, { list: undefined }), { mimeType: 'image/webp' }, async (uri, vars) => surface('resource', 'visual_preview', async () => {
+    const result = await call('get_visual_preview', { repository: `${vars.owner}/${vars.repo}`, previewId: vars.previewId });
+    const image = result.content?.find(block => block.type === 'image');
+    if (!image || image.type !== 'image') throw new McpError('PREVIEW_NOT_RENDERABLE', 'Preview image could not be rendered.', 422, { stage: 'validation' });
+    return { contents: [{ uri: uri.href, mimeType: image.mimeType, blob: image.data }] };
+  }));
   server.registerResource('notification', new ResourceTemplate(`${prefix}/notifications/{id}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'notification', async () => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(await call('get_notification', { notificationId: vars.id })) }] })));
   server.registerResource('artifact', new ResourceTemplate(`${prefix}/artifacts/{id}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'artifact', async () => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(await call('get_artifact', { artifactId: vars.id })) }] })));
   server.registerResource('attachment', new ResourceTemplate(`${prefix}/{kind}/{parentId}/attachments/{id}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', 'attachment', async () => {

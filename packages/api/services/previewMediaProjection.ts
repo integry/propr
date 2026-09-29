@@ -223,7 +223,7 @@ export function taskPreviewSource(row: Record<string, unknown>): PreviewSource {
     const repository = String(row.repository ?? '');
     const commentId = commentIdFromUrl(comment.url, repository);
     return { repository, prNumbers: [], isFollowUp: true, ...(commentBody ? { commentBody } : {}),
-      ...(commentBody && commentId ? { commentId } : {}) };
+      ...(commentId ? { commentId } : {}) };
   }
   return { repository: String(row.repository ?? ''), prNumbers: [
     row.pr_number || record(record(result.postProcessing).pr).number,

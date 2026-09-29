@@ -26,6 +26,7 @@ export interface PreviewAssociation {
 export type PreviewMediaErrorCode =
   | 'PREVIEW_NOT_FOUND'
   | 'PREVIEWS_DISABLED'
+  | 'PREVIEW_NOT_RENDERABLE'
   | 'PREVIEW_SOURCE_REJECTED'
   | 'PREVIEW_TOO_LARGE'
   | 'PREVIEW_INVALID_TYPE'
@@ -58,6 +59,8 @@ interface LoadPublishedPreviewOptions extends ListPublishedPreviewsOptions {
   token: string;
   fetch: typeof globalThis.fetch;
   maxBytes?: number;
+  /** MCP image rendering rejects published videos before downloading their body. */
+  imagesOnly?: boolean;
 }
 
 function decodedHtmlAttribute(value: string): string {
@@ -158,6 +161,7 @@ function publishedAsset(preview: PublishedVisualPreview): PublishedPreviewAsset 
 async function readPublishedPreviews({ association, octokit, reader }: ListPublishedPreviewsOptions): Promise<{
   previews: PublishedPreviewAsset[];
   bodyHtml: unknown;
+  htmlUrl?: string;
 }> {
   const repository = association.repository.trim().toLowerCase();
   if (!(await reader.enabledRepositories([repository])).has(repository)) {
@@ -177,6 +181,8 @@ async function readPublishedPreviews({ association, octokit, reader }: ListPubli
   return {
     previews: parsePublishedVisualPreviews(response.data.body).flatMap(preview => publishedAsset(preview) ?? []),
     bodyHtml: response.data.body_html,
+    ...(typeof (response.data as GitHubBody & { html_url?: unknown }).html_url === 'string'
+      ? { htmlUrl: (response.data as GitHubBody & { html_url: string }).html_url } : {}),
   };
 }
 
@@ -190,12 +196,25 @@ function servingLimit(contentType: string, maxBytes: number | undefined): number
   return Math.min(defaultLimit, Math.floor(maxBytes));
 }
 
+// eslint-disable-next-line complexity -- source validation, renderability and bounded redirect fetch remain one trust boundary
 export async function loadPublishedPreview({
-  association, assetId, token, octokit, fetch: fetcher, reader, maxBytes,
+  association, assetId, token, octokit, fetch: fetcher, reader, maxBytes, imagesOnly = false,
 }: LoadPublishedPreviewOptions): Promise<{ preview: PublishedVisualPreview; contentType: string; body: Buffer }> {
-  const { previews, bodyHtml } = await readPublishedPreviews({ association, octokit, reader });
+  const { previews, bodyHtml, htmlUrl } = await readPublishedPreviews({ association, octokit, reader });
   const published = previews.find(item => item.assetId === assetId);
   if (!published) throw new PreviewMediaError(404, 'PREVIEW_NOT_FOUND', 'Preview media not found');
+  if (imagesOnly && published.type === 'video') {
+    let pullUrl = `https://github.com/${association.repository}/pulls`;
+    if (association.kind === 'pull') pullUrl = `https://github.com/${association.repository}/pull/${association.number}`;
+    else if (htmlUrl) {
+      try {
+        const parsed = new URL(htmlUrl);
+        if (parsed.protocol === 'https:' && parsed.hostname === 'github.com'
+          && parsed.pathname.startsWith(`/${association.repository}/pull/`)) pullUrl = `${parsed.origin}${parsed.pathname}`;
+      } catch { /* Fall back to the repository pull-request list. */ }
+    }
+    throw new PreviewMediaError(422, 'PREVIEW_NOT_RENDERABLE', `Video previews are metadata-only in MCP. Open the pull request: ${pullUrl}`);
+  }
 
   const source = signedMediaUrl(bodyHtml, assetId) ?? new URL(published.url);
   const media = await fetchMedia(source, assetId, token, fetcher);

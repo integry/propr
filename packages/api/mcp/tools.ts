@@ -39,6 +39,7 @@ import { summarizeGoal } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 import { queryTaskSummaries } from './taskListing.js';
+import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 
 export { applyTaskVisibility } from './taskListing.js';
 
@@ -68,7 +69,7 @@ export interface McpTool {
   target?: { table: string; column: string; arg: string; owner?: string };
   run: (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'> }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export async function markMergedPullRequests(
@@ -178,6 +179,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addActivityTools(tools, deps);
   addWorkOverviewTools(tools, deps, listScope);
   addDocsTools(tools, deps);
+  addVisualPreviewTools(tools, deps);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });

@@ -7,7 +7,7 @@
 # What this validates:
 #   - Images boot (no missing files, Dockerfile commands work end-to-end)
 #   - TypeScript build output is runnable (no import path errors)
-#   - Native modules load (better-sqlite3 works on alpine musl)
+#   - Native modules load (better-sqlite3 and sharp work in the app image)
 #   - API server binds and responds to /health
 #   - Workers connect to Redis without crashing
 #
@@ -188,6 +188,8 @@ docker run --rm --entrypoint node "$APP_TAG" -e '
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const appPackage = JSON.parse(fs.readFileSync("/usr/src/app/package.json", "utf8"));
   const apiPackage = JSON.parse(fs.readFileSync("/usr/src/app/packages/api/package.json", "utf8"));
+  const sharp = require("sharp");
+  if (!sharp.versions?.vips) throw new Error("sharp did not load its native image-processing runtime");
   if (manifest.version !== appPackage.version || manifest.version !== apiPackage.version) {
     throw new Error(`docs manifest version ${manifest.version} does not match app ${appPackage.version} and API ${apiPackage.version}`);
   }

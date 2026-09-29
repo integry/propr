@@ -1,11 +1,12 @@
 import type { McpConfig } from './config.js';
 import type { Args, McpTool } from './tools.js';
+import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
 
 interface ResultTargets { planId?: string; goalId?: string; taskId?: string }
 interface ResultLinkTarget { resource: string; ui: string }
 interface ResultLinkLocations { frontend: string; origin: string }
 
-export interface PresentedResult { summary: string; links: Record<string, string>; data: unknown }
+export interface PresentedResult { summary: string; links: Record<string, string>; data: unknown; content?: ContentBlock[] }
 
 function entityResultLink(targets: ResultTargets & { submissionId?: string }, frontend: string, origin: string): ResultLinkTarget | undefined {
   const { submissionId, planId, goalId, taskId } = targets;
