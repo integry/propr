@@ -33,6 +33,12 @@ Most PR refinement starts with a normal comment and a clear requested outcome.
 
 {/* screenshot placeholder that must not be served */}
 
+{/*
+\`\`\`ts
+const retiredExample = 'commented-fence-sentinel';
+\`\`\`
+*/}
+
 ## Quick Reference
 
 Use the command that matches the intended operation.
@@ -203,7 +209,10 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
     }
   }
   assert.equal(reconstructed, expected);
-  assert.doesNotMatch(reconstructed, /^---|sidebar_position|screenshot placeholder|Screenshot from/m);
+  assert.doesNotMatch(reconstructed, /^---|sidebar_position|screenshot placeholder|commented-fence-sentinel|Screenshot from/m);
+
+  const commentedExample = await call(catalog, 'search_docs', { query: 'commented-fence-sentinel', limit: 20 });
+  assert.deepEqual(commentedExample.results, []);
 
   const searched = await call(catalog, 'search_docs', { query: 'ultrafix goal', limit: 20 });
   assert.equal(searched.results[0].path, 'features/pr-commands');
@@ -345,6 +354,11 @@ test('normalization preserves fenced code while stripping document-level MDX wra
   const normalized = normalizeDocContent(`---\ntitle: Example\n---\nimport Outside from 'outside';\n{/* remove */}\n\`\`\`tsx\nimport Inside from 'inside';\n\`\`\`\n`);
   assert.equal(normalized.title, 'Example');
   assert.equal(normalized.content, "\n```tsx\nimport Inside from 'inside';\n```\n");
+});
+
+test('normalization removes fenced examples wrapped in multiline MDX comments', () => {
+  const normalized = normalizeDocContent(`{/*\n\`\`\`ts\nconst hidden = 'commented-fence-sentinel';\n\`\`\`\n*/}\nVisible documentation.\n\n\`\`\`md\n{/* preserved inside the active fence */}\n\`\`\`\n`);
+  assert.equal(normalized.content, '\nVisible documentation.\n\n```md\n{/* preserved inside the active fence */}\n```\n');
 });
 
 test('docs cache refresh fingerprints every indexed path instead of only the greatest timestamp', async t => {

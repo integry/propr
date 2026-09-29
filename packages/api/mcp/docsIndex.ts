@@ -206,19 +206,25 @@ export function normalizeDocContent(source: string): { content: string; title?: 
   let insideComment = false;
   let content = '';
   for (const { text } of sourceLines(frontMatter.body)) {
-    const token = fenceToken(text);
     if (fence) {
       content += text;
+      const token = fenceToken(text);
       if (token?.[0] === fence[0] && token.length >= fence.length) fence = null;
       continue;
     }
-    if (token) {
-      fence = token;
+
+    // A fence which starts inside an open MDX comment is comment content, not
+    // Markdown. Only raw lines outside comments may enter fence mode directly.
+    const rawToken = insideComment ? null : fenceToken(text);
+    if (rawToken) {
+      fence = rawToken;
       content += text;
       continue;
     }
     const stripped = stripMdxComments(text, insideComment);
     insideComment = stripped.insideComment;
+    const exposedToken = fenceToken(stripped.text);
+    if (exposedToken) fence = exposedToken;
     if (/^\s*import\b.*\bfrom\s+['"][^'"]+['"]\s*;?\s*(?:\r\n|\r|\n)?$/.test(stripped.text)) continue;
     content += stripped.text;
   }
