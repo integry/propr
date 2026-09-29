@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- command progress and lifecycle race regressions share one database fixture */
 import assert from 'node:assert/strict';
 import { after, test, type TestContext } from 'node:test';
 import knex, { type Knex } from 'knex';
