@@ -2,32 +2,52 @@ import type { McpConfig } from './config.js';
 import type { Args, McpTool } from './tools.js';
 
 interface ResultTargets { planId?: string; goalId?: string; taskId?: string }
+interface ResultLinkTarget { resource: string; ui: string }
+interface ResultLinkLocations { frontend: string; origin: string }
 
 export interface PresentedResult { summary: string; links: Record<string, string>; data: unknown }
 
+function entityResultLink(targets: ResultTargets & { submissionId?: string }, frontend: string, origin: string): ResultLinkTarget | undefined {
+  const { submissionId, planId, goalId, taskId } = targets;
+  if (submissionId) {
+    return {
+      resource: `submissions/${encodeURIComponent(submissionId)}`,
+      ui: taskId ? `${frontend}/tasks/${encodeURIComponent(taskId)}` : origin,
+    };
+  }
+  if (planId) return { resource: `plans/${encodeURIComponent(planId)}`, ui: `${frontend}/studio/${encodeURIComponent(planId)}` };
+  if (goalId) return { resource: `goals/${encodeURIComponent(goalId)}`, ui: `${frontend}/goals/${encodeURIComponent(goalId)}` };
+  if (taskId) return { resource: `tasks/${encodeURIComponent(taskId)}`, ui: `${frontend}/tasks/${encodeURIComponent(taskId)}` };
+  return undefined;
+}
+
+function contextualResultLink(tool: McpTool, args: Args, result: Args, locations: ResultLinkLocations): ResultLinkTarget {
+  const { frontend, origin } = locations;
+  if (args.pullRequest) return { resource: `repositories/${args.repository}/pulls/${args.pullRequest}`, ui: `https://github.com/${args.repository}/pull/${args.pullRequest}` };
+  if (tool.name === 'list_pull_requests' && args.repository) return { resource: `repositories/${args.repository}/pulls`, ui: `https://github.com/${args.repository}/pulls` };
+  if (args.artifactId || result.artifactId) {
+    const id = args.artifactId || result.artifactId;
+    return { resource: `artifacts/${id}`, ui: `${origin}/mcp/artifacts/${id}` };
+  }
+  if (args.notificationId) return { resource: `notifications/${encodeURIComponent(args.notificationId)}`, ui: `${frontend}/inbox` };
+  if (tool.name.includes('notification') && !tool.name.includes('preferences')) return { resource: 'notifications', ui: `${frontend}/inbox` };
+  if (tool.name === 'list_repositories') return { resource: 'repositories', ui: origin };
+  if (tool.name === 'list_models') return { resource: 'models', ui: origin };
+  return { resource: 'connection', ui: origin };
+}
+
 function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpConfig, 'instanceId' | 'origin'>): Record<string, string> {
   const continuation = result.continuation || result;
-  const planId = args.planId || continuation.planId;
-  const goalId = args.goalId || continuation.goalId;
-  const taskId = continuation.taskId || args.taskId;
-  const submissionId = args.submissionId || continuation.submissionId || result.submissionId;
+  const targets = {
+    planId: args.planId || continuation.planId,
+    goalId: args.goalId || continuation.goalId,
+    taskId: continuation.taskId || args.taskId,
+    submissionId: args.submissionId || continuation.submissionId || result.submissionId,
+  };
   const { origin, instanceId } = config;
-  let resource = 'connection', ui = origin;
   const frontend = (process.env.FRONTEND_URL || origin).replace(/\/$/, '');
-  if (submissionId) {
-    resource = `submissions/${encodeURIComponent(submissionId)}`;
-    if (taskId) ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`;
-  }
-  else if (planId) { resource = `plans/${encodeURIComponent(planId)}`; ui = `${frontend}/studio/${encodeURIComponent(planId)}`; }
-  else if (goalId) { resource = `goals/${encodeURIComponent(goalId)}`; ui = `${frontend}/goals/${encodeURIComponent(goalId)}`; }
-  else if (taskId) { resource = `tasks/${encodeURIComponent(taskId)}`; ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`; }
-  else if (args.pullRequest) { resource = `repositories/${args.repository}/pulls/${args.pullRequest}`; ui = `https://github.com/${args.repository}/pull/${args.pullRequest}`; }
-  else if (tool.name === 'list_pull_requests' && args.repository) { resource = `repositories/${args.repository}/pulls`; ui = `https://github.com/${args.repository}/pulls`; }
-  else if (args.artifactId || result.artifactId) { const id = args.artifactId || result.artifactId; resource = `artifacts/${id}`; ui = `${origin}/mcp/artifacts/${id}`; }
-  else if (args.notificationId) { resource = `notifications/${encodeURIComponent(args.notificationId)}`; ui = `${frontend}/inbox`; }
-  else if (tool.name.includes('notification') && !tool.name.includes('preferences')) { resource = 'notifications'; ui = `${frontend}/inbox`; }
-  else if (tool.name === 'list_repositories') resource = 'repositories';
-  else if (tool.name === 'list_models') resource = 'models';
+  const { resource, ui } = entityResultLink(targets, frontend, origin)
+    || contextualResultLink(tool, args, result, { frontend, origin });
   return { instance: origin, ui, resource: `propr://instances/${instanceId}/${resource}` };
 }
 
