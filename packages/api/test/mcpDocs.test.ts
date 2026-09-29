@@ -80,6 +80,11 @@ title: Glossary
 A frobnicator is a headingless concept that remains searchable.
 `;
 
+const credentialTitle = `ghp_${'A'.repeat(36)}${' b'.repeat(40)} needle${' c'.repeat(200)}`;
+const credentialTitleSource = `---
+title: ${credentialTitle}
+---`;
+
 const sensitiveSource = `${'a'.repeat(996)} ghp_exampletoken tail
 
 ## Credential ghp_headertoken
@@ -138,6 +143,7 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   await writeFile(join(root, 'docs', 'features', 'overview.mdx'), overviewSource);
   await writeFile(join(root, 'docs', 'operations', 'deployment.md'), deploymentSource);
   await writeFile(join(root, 'docs', 'operations', 'glossary.md'), headinglessSource);
+  await writeFile(join(root, 'docs', 'operations', 'credential-title.md'), credentialTitleSource);
   await writeFile(join(root, 'docs', 'operations', 'json-continuation.md'), jsonContinuationSource);
   await writeFile(join(root, 'docs', 'operations', 'sensitive.md'), sensitiveSource);
   await writeFile(join(root, 'docs', 'operations', 'troubleshooting.md'), duplicateHeadingsSource);
@@ -218,6 +224,14 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   assert.equal(headingless.results[0].section, null);
   const headinglessPage = await call(catalog, 'get_doc', { path: headingless.results[0].path });
   assert.match(headinglessPage.content, /headingless concept/);
+
+  const titleMatch = await call(catalog, 'search_docs', { query: 'needle', limit: 20 });
+  const credentialTitleResult = titleMatch.results.find((result: { path: string }) => result.path === 'operations/credential-title');
+  assert.ok(credentialTitleResult);
+  assert.equal(credentialTitleResult.title, credentialTitle.replace(/ghp_A{36}/, '[redacted]'));
+  assert.equal(credentialTitleResult.heading, credentialTitleResult.title);
+  assert.match(credentialTitleResult.snippet, /needle/);
+  assert.doesNotMatch(credentialTitleResult.snippet, /A{10}/);
 
   const duplicateHeading = await call(catalog, 'search_docs', { query: 'quasar relay', limit: 20 });
   assert.equal(duplicateHeading.results[0].heading, 'Troubleshooting');
@@ -301,6 +315,13 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
 
   const secretSearch = await protocolCall('search_docs', { query: 'headertoken' });
   assert.deepEqual(secretSearch.results, []);
+  const credentialTitleSearch = await protocolCall('search_docs', { query: 'needle' });
+  const credentialTitleSnippet = credentialTitleSearch.results.find(
+    (result: { path: string }) => result.path === 'operations/credential-title',
+  )?.snippet;
+  assert.ok(credentialTitleSnippet);
+  assert.match(credentialTitleSnippet, /needle/);
+  assert.doesNotMatch(credentialTitleSnippet, /A{10}/);
   const credentialSearch = await protocolCall('search_docs', { query: 'credential' });
   const sensitiveHeading = credentialSearch.results.find((result: { path: string }) => result.path === 'operations/sensitive');
   assert.ok(sensitiveHeading);

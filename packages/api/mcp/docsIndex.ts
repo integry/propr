@@ -313,7 +313,9 @@ async function buildIndex(root: string, inventory: Inventory): Promise<DocsIndex
     // dispatch-level safeguard no longer recognizes either fragment.
     const content = redact(normalized.content) as string;
     const outline = docOutline(content);
-    const title = normalized.title ?? outline.find(item => item.level === 1)?.heading ?? fallbackTitle(candidate.path);
+    const title = redact(
+      normalized.title ?? outline.find(item => item.level === 1)?.heading ?? fallbackTitle(candidate.path),
+    ) as string;
     pages.push({
       path: candidate.path,
       title,
