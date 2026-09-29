@@ -251,7 +251,15 @@ export class McpOperations {
   }
 
   async markUnknown(id: string, failure?: McpErrorEnvelope): Promise<void> {
-    await this.db('mcp_operations').where({ id }).whereIn('lifecycle', ['accepted', 'running', 'unknown']).update({
+    const eligible = this.db('mcp_operations').where({ id }).whereIn('lifecycle', ['accepted', 'running', 'unknown']);
+    if (isPickupFailure(failure)) {
+      const validResult = "CASE WHEN json_valid(result) THEN result ELSE '{}' END";
+      const validArtifacts = "CASE WHEN json_valid(artifacts) THEN artifacts ELSE '{}' END";
+      eligible.whereNot('state', 'running').whereNull('started_at')
+        .whereRaw(`json_extract(${validResult}, '$.continuation.taskId') IS NULL`)
+        .whereRaw(`json_extract(${validArtifacts}, '$.taskId') IS NULL`);
+    }
+    await eligible.update({
       lifecycle: 'unknown',
       ...(failure ? { failure: JSON.stringify(failure) } : {}),
       updated_at: Date.now(),

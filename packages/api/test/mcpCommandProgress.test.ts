@@ -79,6 +79,39 @@ test('ultrafixProgress reports cycle two in review without borrowing another epo
   ]);
 });
 
+test('ultrafixProgress keeps a fix-first running review in the same cycle', async t => {
+  const db = await fixture(t);
+  await db('tasks').insert([
+    { task_id: 'fix-first-1', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(101, 7, 'fix'), created_at: '2026-09-29T01:00:00Z' },
+    { task_id: 'review-after-fix-1', repository: 'acme/repo', issue_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(0, 7, 'review'), created_at: '2026-09-29T01:01:00Z' },
+  ]);
+  await db('task_history').insert([
+    { task_id: 'fix-first-1', state: 'completed', metadata: JSON.stringify({ ultrafixCycle: 1 }) },
+    { task_id: 'review-after-fix-1', state: 'processing', metadata: '{}' },
+  ]);
+
+  const running = await ultrafixProgress(db, {
+    repository: 'acme/repo', pullRequest: 42, sinceMs: 0, goal: 9, maxCycles: 3, workEpoch: 7,
+  });
+  assert.equal(running.cycle, 1);
+  assert.equal(running.phase, 'review');
+  assert.deepEqual(running.cycles, [
+    { cycle: 1, fixTaskId: 'fix-first-1', reviewTaskId: 'review-after-fix-1' },
+  ]);
+
+  await db('task_history').where({ task_id: 'review-after-fix-1' })
+    .update({ state: 'completed', metadata: JSON.stringify({ ultrafixCycle: 1, ultrafixScore: 8 }) });
+  const completed = await ultrafixProgress(db, {
+    repository: 'acme/repo', pullRequest: 42, sinceMs: 0, goal: 9, maxCycles: 3, workEpoch: 7,
+  });
+  assert.equal(completed.cycle, 1);
+  assert.deepEqual(completed.cycles, [
+    { cycle: 1, fixTaskId: 'fix-first-1', reviewTaskId: 'review-after-fix-1', score: 8 },
+  ]);
+});
+
 test('ultrafixProgress filters the epoch before bounding old pull request tasks', async t => {
   const db = await fixture(t);
   await db('tasks').insert(Array.from({ length: 201 }, (_, index) => ({
@@ -426,4 +459,64 @@ test('a stale pickup poll discards its timeout when adopting a terminal failed r
   assert.deepEqual((final.lifecycle as { failure: unknown }).failure, {
     code: 'EXECUTION_FAILED', message: 'Concurrent worker failed.', stage: 'internal', retryable: false, status: 500,
   });
+});
+
+test('a stale pickup timeout adopts a concurrently running task and cannot overwrite its lifecycle', async t => {
+  const db = await fixture(t);
+  const operations = new McpOperations(db);
+  let releaseStale!: () => void;
+  let staleReachedRefresh!: () => void;
+  const release = new Promise<void>(resolve => { releaseStale = resolve; });
+  const reachedRefresh = new Promise<void>(resolve => { staleReachedRefresh = resolve; });
+  let githubRequests = 0;
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' }, github: { request: async () => {
+      githubRequests++;
+      if (githubRequests === 1) { staleReachedRefresh(); await release; }
+      return { data: { head: { sha: 'e'.repeat(40) } } };
+    } },
+  } as unknown as McpPrincipal;
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'stale-running-pickup' },
+  }, async () => ({ status: 202, data: {
+    state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 701,
+  } }));
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ created_at: Date.now() - PICKUP_DEADLINE_MS - 1 });
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+
+  const staleRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const staleReceipt = operations.project(staleRow);
+  const stalePoll = trackExecution(deps, staleRow, principal, staleReceipt);
+  await reachedRefresh;
+
+  await db('tasks').insert({ task_id: 'concurrent-running-task', repository: 'acme/repo', issue_number: 42, pr_number: 42,
+    task_type: 'pr-comment', created_at: new Date(), initial_job_data: JSON.stringify({
+      commandCommentId: 701, commandCommentType: 'issue', commandMode: 'review',
+    }) });
+  await db('task_history').insert({ task_id: 'concurrent-running-task', state: 'processing', timestamp: new Date(), metadata: '{}' });
+  const runningRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const runningReceipt = operations.project(runningRow);
+  await trackExecution(deps, runningRow, principal, runningReceipt);
+  await syncLifecycle(operations, runningRow, runningReceipt);
+
+  releaseStale();
+  await stalePoll;
+  assert.equal(staleReceipt.state, 'running');
+  assert.equal('lifecycleFailure' in staleReceipt, false);
+  assert.equal(((staleReceipt.result as { continuation: { taskId: string } }).continuation).taskId, 'concurrent-running-task');
+  await syncLifecycle(operations, staleRow, staleReceipt);
+
+  const durable = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(durable.state, 'running');
+  assert.equal(durable.lifecycle, 'running');
+  assert.notEqual(durable.started_at, null);
+  assert.equal(durable.failure, null);
+
+  await syncLifecycle(operations, staleRow, {
+    ...operations.project(staleRow), state: 'unknown', lifecycleFailure: COMMAND_NOT_PICKED_UP_FAILURE,
+  });
+  const afterStaleLifecycle = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(afterStaleLifecycle.lifecycle, 'running');
+  assert.equal(afterStaleLifecycle.failure, null);
 });

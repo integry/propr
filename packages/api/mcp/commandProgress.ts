@@ -185,16 +185,16 @@ export async function ultrafixProgress(db: Knex, input: {
   }
 
   const cycles = new Map<number, UltrafixCycleProgress>();
-  let sequentialCycle = 0;
+  const actionCycles = { review: 0, fix: 0 };
   for (const task of tasks) {
     const mode = taskMode(task.data);
     if (!mode) continue;
     const taskHistories = historiesByTask.get(task.task_id) ?? [];
     const metadata = taskHistories.map(history => jsonRecord(history.metadata));
     const recordedCycle = metadata.map(item => positiveInteger(item.ultrafixCycle)).find((value): value is number => value !== undefined);
-    if (recordedCycle) sequentialCycle = Math.max(sequentialCycle, recordedCycle);
-    else if (mode === 'review' || sequentialCycle === 0) sequentialCycle++;
-    const cycleNumber = recordedCycle ?? sequentialCycle;
+    if (recordedCycle) actionCycles[mode] = Math.max(actionCycles[mode], recordedCycle);
+    else actionCycles[mode]++;
+    const cycleNumber = recordedCycle ?? actionCycles[mode];
     const cycle = cycles.get(cycleNumber) ?? { cycle: cycleNumber };
     if (mode === 'review') cycle.reviewTaskId = task.task_id;
     else cycle.fixTaskId = task.task_id;

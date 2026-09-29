@@ -120,9 +120,11 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
     restoreResolvedTarget(receipt, result, task);
     return;
   }
+  let pickupTimedOut = false;
   if (task) await trackTask(deps, row, { task, result, receipt });
   else if (result.jobId) await trackQueuedJob(row, result.jobId, receipt);
   else if (commentTools.includes(row.tool) && Date.now() - Number(row.created_at) > PICKUP_DEADLINE_MS) {
+    pickupTimedOut = true;
     receipt.state = 'unknown';
     receipt.lifecycleFailure = COMMAND_NOT_PICKED_UP_FAILURE;
   } else if (!commentTools.includes(row.tool) && Date.now() - Number(row.created_at) > 120000) receipt.state = 'unknown';
@@ -133,19 +135,26 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   }
   receipt.result = result;
   if (receipt.state === 'unknown') receipt.message = 'Execution cannot yet be confirmed. Inspect the linked comment/job; polling can still resolve it. Do not blindly resubmit.';
-  const recorded = await db('mcp_operations').where({ id: row.id }).whereNotIn('state', terminalStates)
-    .update({ state: receipt.state, result: JSON.stringify(result), updated_at: Date.now() });
+  const eligible = db('mcp_operations').where({ id: row.id }).whereNotIn('state', terminalStates);
+  if (pickupTimedOut) {
+    const validResult = "CASE WHEN json_valid(result) THEN result ELSE '{}' END";
+    const validArtifacts = "CASE WHEN json_valid(artifacts) THEN artifacts ELSE '{}' END";
+    eligible.whereNot('state', 'running').whereNull('started_at')
+      .whereRaw(`json_extract(${validResult}, '$.continuation.taskId') IS NULL`)
+      .whereRaw(`json_extract(${validArtifacts}, '$.taskId') IS NULL`);
+  }
+  const recorded = await eligible.update({ state: receipt.state, result: JSON.stringify(result), updated_at: Date.now() });
   if (!recorded) {
-    // Another poll persisted terminal evidence while this observation was
-    // awaiting external context. Return that durable receipt and let lifecycle
-    // synchronization use its terminal target instead of this stale snapshot.
+    // Another poll persisted stronger evidence while this observation was
+    // awaiting external context. Adopt its receipt so both the response and
+    // lifecycle synchronization retain the confirmed continuation/outcome.
     const current = await db<Operation>('mcp_operations').where({ id: row.id }).first();
-    if (current && terminalStates.includes(current.state)) {
+    if (current) {
       const currentResult = current.result ? JSON.parse(current.result) as ExecutionResult & Record<string, unknown> : {};
       receipt.state = current.state;
       receipt.result = currentResult;
-      // The adopted terminal receipt proves the command was picked up. Do not
-      // let this poll's older timeout outrank the execution failure it adopted.
+      // Losing the guarded timeout write proves a task/start or terminal fact
+      // was recorded. Do not let this poll's older pickup failure outrank it.
       delete receipt.lifecycleFailure;
       if (currentResult.ultrafixProgress !== undefined) receipt.lifecycleProgress = currentResult.ultrafixProgress;
       else delete receipt.lifecycleProgress;
