@@ -34,6 +34,18 @@ function tools(db: Knex, request: McpPrincipal['github']['request'], authorize: 
   return { callPublish, callGet };
 }
 
+function rejectQueryOnce(db: Knex, predicate: (query: { sql?: string; bindings?: unknown[] }) => boolean): void {
+  const query = db.client.query.bind(db.client);
+  let rejected = false;
+  db.client.query = (connection: unknown, statement: { sql?: string; bindings?: unknown[] }) => {
+    if (!rejected && predicate(statement)) {
+      rejected = true;
+      return Promise.reject(Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }));
+    }
+    return query(connection, statement);
+  };
+}
+
 test('a first-issue GitHub rejection releases the claimed review plan and permits a later publication', async t => {
   const id = '10000000-0000-4000-8000-000000000001';
   const db = await setup(t, id, tasks.slice(0, 1));
@@ -158,6 +170,89 @@ test('a partial publication is visible and resume adopts the uncertain issue wit
   assert.equal(draft.status, 'executed');
   assert.equal(JSON.parse(draft.context_config || '{}').publication, undefined);
   assert.equal(((await callGet(id)).data as { publication: unknown }).publication, null);
+});
+
+test('a resumed publication preserves its prior issues when the post-claim row lookup fails', async t => {
+  const id = '10000000-0000-4000-8000-000000000007';
+  const db = await setup(t, id, tasks.slice(0, 1));
+  await db('task_drafts').where({ draft_id: id }).update({ status: 'executing', context_config: JSON.stringify({
+    publication: { state: 'partial', operationId: 'lookup-original',
+      created: [{ index: 0, number: 61, url: 'https://github.com/acme/repo/issues/61' }], failedIndex: 0,
+      failedAt: new Date().toISOString(), cause: { code: 'DATABASE_BUSY', message: 'busy' } },
+  }) });
+  await db('plan_issues').insert({ draft_id: id, repository, issue_number: 61 });
+  let contacts = 0;
+  const { callPublish } = tools(db, (async () => { contacts += 1; throw new Error('GitHub must not be called'); }) as McpPrincipal['github']['request']);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+  rejectQueryOnce(db, query => /^select .* from `plan_issues`/i.test(query.sql || ''));
+
+  await assert.rejects(callPublish(id, before.mcp_revision, 'lookup-resume', true), error => {
+    assert.ok(error instanceof McpError);
+    assert.equal(error.code, 'PUBLISH_PARTIAL');
+    assert.equal(error.stage, 'database');
+    assert.equal(error.details?.step, 'load_issues');
+    assert.equal((error.details?.cause as { code: string }).code, 'DATABASE_BUSY');
+    assert.deepEqual(error.details?.createdIssues, [
+      { index: 0, number: 61, url: 'https://github.com/acme/repo/issues/61' },
+    ]);
+    return true;
+  });
+  let draft = await db('task_drafts').where({ draft_id: id }).first();
+  const recovered = JSON.parse(draft.context_config).publication;
+  assert.equal(draft.status, 'executing');
+  assert.equal(recovered.state, 'partial');
+  assert.equal(recovered.operationId, 'lookup-original');
+  assert.deepEqual(recovered.created, [{ index: 0, number: 61, url: 'https://github.com/acme/repo/issues/61' }]);
+
+  await callPublish(id, draft.mcp_revision, 'lookup-retry', true);
+  draft = await db('task_drafts').where({ draft_id: id }).first();
+  assert.equal(draft.status, 'executed');
+  assert.equal(contacts, 0, 'the known issue is not posted again');
+});
+
+test('a resumed publication preserves every issue when the final draft update fails', async t => {
+  const id = '10000000-0000-4000-8000-000000000008';
+  const db = await setup(t, id, tasks.slice(0, 2));
+  await db('task_drafts').where({ draft_id: id }).update({ status: 'executing', context_config: JSON.stringify({
+    publication: { state: 'partial', operationId: 'completion-original',
+      created: [{ index: 0, number: 71, url: 'https://github.com/acme/repo/issues/71' }], failedIndex: 1,
+      failedAt: new Date().toISOString(), cause: { code: 'UPSTREAM_UNREACHABLE', message: 'lost' } },
+  }) });
+  await db('plan_issues').insert({ draft_id: id, repository, issue_number: 71 });
+  let postCount = 0;
+  let getCount = 0;
+  const request = (async (route: string, args: Record<string, unknown>) => {
+    if (route === 'GET /repos/{owner}/{repo}/issues') { getCount += 1; return { data: [] }; }
+    postCount += 1;
+    assert.match(String(args.body), /propr-mcp:completion-original:1/);
+    return { data: { number: 72, html_url: 'https://github.com/acme/repo/issues/72', title: args.title } };
+  }) as McpPrincipal['github']['request'];
+  const { callPublish } = tools(db, request);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+  rejectQueryOnce(db, query => /^update `task_drafts`/i.test(query.sql || '') && query.bindings?.includes('executed') === true);
+
+  await assert.rejects(callPublish(id, before.mcp_revision, 'completion-resume', true), error => {
+    assert.ok(error instanceof McpError);
+    assert.equal(error.code, 'PUBLISH_PARTIAL');
+    assert.equal(error.stage, 'database');
+    assert.equal(error.details?.step, 'complete');
+    assert.equal((error.details?.cause as { code: string }).code, 'DATABASE_BUSY');
+    assert.deepEqual((error.details?.createdIssues as Array<{ number: number }>).map(issue => issue.number), [71, 72]);
+    return true;
+  });
+  let draft = await db('task_drafts').where({ draft_id: id }).first();
+  const recovered = JSON.parse(draft.context_config).publication;
+  assert.equal(draft.status, 'executing');
+  assert.equal(recovered.state, 'partial');
+  assert.equal(recovered.operationId, 'completion-original');
+  assert.deepEqual(recovered.created.map((issue: { number: number }) => issue.number), [71, 72]);
+
+  await callPublish(id, draft.mcp_revision, 'completion-retry', true);
+  draft = await db('task_drafts').where({ draft_id: id }).first();
+  assert.equal(draft.status, 'executed');
+  assert.equal(postCount, 1, 'the issue recorded before the failed completion is not posted again');
+  assert.equal(getCount, 1, 'the completed retry does not search GitHub for already known issues');
+  assert.deepEqual((await db('plan_issues').where({ draft_id: id }).orderBy('issue_number')).map(row => row.issue_number), [71, 72]);
 });
 
 test('an active resume is exclusively owned while its GitHub POST is awaiting', async t => {

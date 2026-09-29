@@ -13,7 +13,7 @@ import { findMarkedIssue, parseContextConfig, partialPublication, publicationSum
 const target = { table: 'task_drafts', column: 'draft_id', arg: 'planId', owner: 'user_id' };
 const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json', 'attachments', 'context_config', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at'];
 
-type PublicationStep = 'authorize' | 'create_issue' | 'record_issue';
+type PublicationStep = 'authorize' | 'create_issue' | 'load_issues' | 'record_issue' | 'verify_claim' | 'complete';
 
 function requiredTaskFields(value: unknown): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return ['title', 'body', 'implementation'];
@@ -176,7 +176,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
 
       const ownsClaim = () => db('task_drafts').where({ draft_id: args.planId, status: 'executing',
         mcp_revision: claimedRevision, context_config: activeContextJson }).first('draft_id');
-      const requireClaim = async (): Promise<void> => {
+      const assertClaim = async (): Promise<void> => {
         if (!await ownsClaim()) throw new McpError('PUBLICATION_CLAIM_LOST',
           'The publication attempt no longer owns this plan. Inspect its current state before recovery.', 409,
           { stage: 'database', retryable: false });
@@ -194,7 +194,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
           const released = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
             mcp_revision: claimedRevision, context_config: activeContextJson })
             .update({ status: previousStatus, context_config: JSON.stringify(initialContext), updated_at: db.fn.now() });
-          if (!released) await requireClaim();
+          if (!released) await assertClaim();
           throw new McpError('PUBLISH_FAILED', `Plan publication failed while processing task ${failure.index + 1}.`, 409, {
             stage: failureStage(failure.step, classified.stage), retryable: classified.retryable, details,
           });
@@ -205,13 +205,26 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         const preserved = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
           mcp_revision: claimedRevision, context_config: activeContextJson })
           .update({ context_config: JSON.stringify(context), updated_at: db.fn.now() });
-        if (!preserved) await requireClaim();
+        if (!preserved) await assertClaim();
         throw new McpError('PUBLISH_PARTIAL', `Plan publication stopped after creating ${createdIssues.length} issue(s). Call publish_plan again with resume: true.`, 409, {
-          stage: 'github', retryable: false, details,
+          stage: ['load_issues', 'verify_claim', 'complete'].includes(failure.step) ? 'database' : 'github', retryable: false, details,
         });
       };
+      const requireClaim = async (failure: { index: number; title: string }): Promise<void> => {
+        try { await assertClaim(); }
+        catch (error) {
+          if (error instanceof McpError && error.code === 'PUBLICATION_CLAIM_LOST') throw error;
+          await fail(error, { ...failure, step: 'verify_claim' });
+        }
+      };
 
-      const recordedRows = await db('plan_issues').where({ draft_id: args.planId }).select('issue_number').orderBy('id');
+      const recordedRows: Array<{ issue_number: unknown }> = await (async () => {
+        try { return await db('plan_issues').where({ draft_id: args.planId }).select('issue_number').orderBy('id'); }
+        catch (error) {
+          const index = priorPublication?.failedIndex ?? 0;
+          return fail(error, { index, title: String(tasks[index]?.title || `Task ${index + 1}`), step: 'load_issues' });
+        }
+      })();
       const recorded = new Set<number>(recordedRows.map(row => Number(row.issue_number)));
       for (const [index, task] of tasks.entries()) {
         const number = Number(task.issue_number);
@@ -246,7 +259,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         // claim and marker recovery prevent a replay after an uncertain response.
         try { await policy.repository(principal, args.repository, true); }
         catch (error) { await fail(error, { index, title: String(task.title), step: 'authorize' }); }
-        await requireClaim();
+        await requireClaim({ index, title: String(task.title) });
         let issue: { number: number; url: string; title: string } | undefined;
         if (args.resume) {
           try {
@@ -260,7 +273,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
               { stage: 'github', retryable: false });
           }
           catch (error) { await fail(error, { index, title: String(task.title), step: 'create_issue' }); }
-          await requireClaim();
+          await requireClaim({ index, title: String(task.title) });
         }
         if (!issue) {
           try {
@@ -285,11 +298,18 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       delete finalContext.publication;
       const linkedTasks = tasks.map((task, index) => ({ ...task,
         issue_number: created.get(index)!.number, issue_url: created.get(index)!.url }));
-      const completed = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
-        mcp_revision: claimedRevision, context_config: activeContextJson }).update({
-        status: 'executed', context_config: JSON.stringify(finalContext), plan_json: JSON.stringify(linkedTasks), updated_at: db.fn.now(),
-      });
-      if (!completed) await requireClaim();
+      const completed = await (async () => {
+        try {
+          return await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
+            mcp_revision: claimedRevision, context_config: activeContextJson }).update({
+            status: 'executed', context_config: JSON.stringify(finalContext), plan_json: JSON.stringify(linkedTasks), updated_at: db.fn.now(),
+          });
+        } catch (error) {
+          const index = tasks.length - 1;
+          return fail(error, { index, title: String(tasks[index]?.title || `Task ${index + 1}`), step: 'complete' });
+        }
+      })();
+      if (!completed) await requireClaim({ index: tasks.length - 1, title: String(tasks.at(-1)?.title || `Task ${tasks.length}`) });
       return ok({ planId: args.planId, issues, resumed: Boolean(args.resume), adopted });
     } });
 
