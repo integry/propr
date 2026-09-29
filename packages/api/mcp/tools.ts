@@ -33,6 +33,7 @@ import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
+import { addDocsTools } from './toolsDocs.js';
 import { summarizeGoal } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
@@ -174,6 +175,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
   addWorkOverviewTools(tools, deps, listScope);
+  addDocsTools(tools, deps);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
