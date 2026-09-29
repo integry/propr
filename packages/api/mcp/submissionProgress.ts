@@ -70,6 +70,35 @@ function nextStep(stage: SubmissionProgressStage, hasPullRequest: boolean): stri
   }
 }
 
+/** Keep a submission projection consistent with the exact task event that resolved its operation. */
+// eslint-disable-next-line complexity -- terminal evidence normalizes every independently nullable progress field
+export function reconcileTerminalSubmissionProgress(
+  progress: SubmissionProgress | undefined,
+  targetState: Record<string, unknown> | undefined,
+  outcome: unknown,
+): SubmissionProgress | undefined {
+  if (!progress || !TERMINAL_STAGES.has(outcome as SubmissionProgressStage)) return progress;
+  const stage = outcome as SubmissionProgressStage;
+  const targetTaskId = typeof targetState?.taskId === 'string' ? targetState.taskId : undefined;
+  const taskId = targetTaskId || progress.task?.id;
+  if (!taskId) return { ...progress, stage, next: nextStep(stage, !!progress.pullRequest) };
+  const previousTask = progress.task?.id === taskId ? progress.task : null;
+  const taskState = typeof targetState?.state === 'string' ? targetState.state : stage;
+  return {
+    ...progress,
+    stage,
+    task: {
+      id: taskId,
+      state: taskState,
+      updatedAt: timestamp(targetState?.timestamp) ?? previousTask?.updatedAt ?? null,
+      startedAt: previousTask?.startedAt ?? null,
+      failureReason: stage === 'failed' && typeof targetState?.reason === 'string'
+        ? redactSecrets(targetState.reason) : null,
+    },
+    next: nextStep(stage, !!progress.pullRequest),
+  };
+}
+
 /** Build retry-aware submission progress entirely from local durable state. */
 export async function submissionProgress(db: Knex, row: TaskSubmission): Promise<SubmissionProgress> {
   const taskId = row.latest_task_id || row.task_id;

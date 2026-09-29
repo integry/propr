@@ -6,7 +6,7 @@ import { McpError } from './config.js';
 import type { Operation } from './operations.js';
 import type { McpPrincipal } from './policy.js';
 import { type McpTool, type ToolDeps, mutationShape, repositorySchema, idSchema, ok } from './tools.js';
-import { submissionProgress, type SubmissionProgress, type SubmissionProgressStage } from './submissionProgress.js';
+import { reconcileTerminalSubmissionProgress, submissionProgress, type SubmissionProgress, type SubmissionProgressStage } from './submissionProgress.js';
 
 interface SubmissionResult {
   id: string;
@@ -139,10 +139,13 @@ export async function trackTaskSubmission(deps: ToolDeps, row: Operation, princi
     const resolved = taskId
       ? await projectSubmission(deps, { ...submission, task_id: taskId, latest_task_id: taskId })
       : undefined;
-    const progress = result.progress && resolved
+    const projectedProgress = result.progress && resolved
       ? { ...result.progress, issue: resolved.progress.issue ?? result.progress.issue,
         pullRequest: resolved.progress.pullRequest ?? result.progress.pullRequest }
       : result.progress ?? resolved?.progress;
+    const targetState = result.targetState && typeof result.targetState === 'object' && !Array.isArray(result.targetState)
+      ? result.targetState as Record<string, unknown> : undefined;
+    const progress = reconcileTerminalSubmissionProgress(projectedProgress, targetState, row.state);
     const refreshed = { ...result, ...(progress ? { progress } : {}), executionResolved: true, targetState: result.targetState };
     receipt.result = refreshed;
     receipt.targetState = result.targetState;

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- submission tracking regressions share one stateful MCP fixture */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { randomBytes } from 'node:crypto';
@@ -12,6 +13,9 @@ import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
 import { McpError } from '../mcp/config.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
+import { McpOperations, type Operation } from '../mcp/operations.js';
+import { trackExecution } from '../mcp/operationTracking.js';
+import { trackTaskSubmission } from '../mcp/toolsTaskSubmissions.js';
 
 after(closeConnection);
 
@@ -321,6 +325,55 @@ test('an unpolled launch receipt follows the latest execution after an issue ret
     assert.equal(result.result.progress.stage, 'running');
     assert.equal((await f.db('task_submissions').first()).latest_task_id, 'later-task');
   } finally { await f.db.destroy(); }
+});
+
+test('terminal task events between submission and execution tracking reconcile the resolving and durable receipts', async () => {
+  for (const terminal of ['completed', 'failed'] as const) {
+    const f = await fixture();
+    try {
+      const created = (await f.call('create_task', {
+        repository: 'owner/repo', instruction: `Let the task ${terminal}`, idempotencyKey: `interleaved-${terminal}`,
+      })).data as Receipt;
+      const submission = await f.db('task_submissions').first();
+      const taskId = `interleaved-${terminal}-task`;
+      await f.db('tasks').insert({ task_id: taskId, repository: 'owner/repo', task_type: 'issue' });
+      await associateSubmissionTask(f.db, submission.id, taskId);
+      await f.db('task_history').insert({ task_id: taskId, state: 'processing' });
+
+      const operations = new McpOperations(f.db);
+      const row = (await f.db<Operation>('mcp_operations').where({ id: created.operationId }).first())!;
+      const resolving = operations.project(row) as unknown as Receipt;
+      await trackTaskSubmission(f.deps, row, f.principal, resolving as unknown as Record<string, unknown>);
+      assert.equal(resolving.result.progress.stage, 'running');
+      const staleProgress = resolving.result.progress;
+
+      await f.db('task_history').insert({ task_id: taskId, state: terminal,
+        reason: terminal === 'failed' ? 'Provider rejected github_pat_secret_value_1234567890' : null });
+      await trackExecution(f.deps, row, f.principal, resolving as unknown as Record<string, unknown>);
+
+      assert.equal(resolving.state, terminal);
+      assert.equal(resolving.result.progress.stage, terminal);
+      assert.equal(resolving.result.progress.task?.id, taskId);
+      assert.equal(resolving.result.progress.task?.state, terminal);
+      assert.equal(resolving.result.progress.task?.failureReason,
+        terminal === 'failed' ? 'Provider rejected [REDACTED]' : null);
+      assert.equal(resolving.result.progress.next, terminal === 'failed'
+        ? 'The task failed; inspect the failure reason before retrying.' : 'The task completed.');
+
+      // A later poll also repairs receipts persisted by the former interleaving bug.
+      const storedResult = JSON.parse((await f.db('mcp_operations').where({ id: created.operationId }).first()).result);
+      await f.db('mcp_operations').where({ id: created.operationId })
+        .update({ result: JSON.stringify({ ...storedResult, progress: staleProgress }) });
+      const durable = (await f.call('get_operation', { operationId: created.operationId })).data as Receipt;
+      assert.equal(durable.state, terminal);
+      assert.equal(durable.result.progress.stage, terminal);
+      assert.equal(durable.result.progress.task?.id, taskId);
+      assert.equal(durable.result.progress.task?.state, terminal);
+      assert.equal(durable.result.progress.task?.failureReason,
+        terminal === 'failed' ? 'Provider rejected [REDACTED]' : null);
+      assert.equal(durable.retryAfterSeconds, undefined);
+    } finally { await f.db.destroy(); }
+  }
 });
 
 test('a resolved launch receipt stays with its completed execution while submission reads follow a running retry', async () => {

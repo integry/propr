@@ -9,6 +9,7 @@ import {
   detectPickup,
   ultrafixProgress,
 } from './commandProgress.js';
+import { reconcileTerminalSubmissionProgress, type SubmissionProgress } from './submissionProgress.js';
 
 const commentTools = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'];
 const trackedTools = ['create_task', 'retry_task_submission', ...commentTools, 'send_task_followup', 'revert_pull_request_commit', 'index_repository'];
@@ -130,6 +131,16 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   } else if (!commentTools.includes(row.tool) && Date.now() - Number(row.created_at) > 120000) receipt.state = 'unknown';
   await refreshPullRequestContext(row, principal, result);
   if (terminalStates.includes(String(receipt.state))) {
+    if (['create_task', 'retry_task_submission'].includes(row.tool)) {
+      const targetState = receipt.targetState && typeof receipt.targetState === 'object' && !Array.isArray(receipt.targetState)
+        ? receipt.targetState as Record<string, unknown> : undefined;
+      result.progress = reconcileTerminalSubmissionProgress(result.progress, targetState, receipt.state);
+      const taskId = typeof targetState?.taskId === 'string' ? targetState.taskId : task?.task_id;
+      if (taskId) {
+        result.taskId = taskId;
+        result.continuation = { ...result.continuation, taskId };
+      }
+    }
     result.executionResolved = true;
     result.targetState = receipt.targetState as Record<string, unknown> | undefined;
   }
@@ -167,6 +178,7 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
 
 interface ExecutionResult {
   jobId?: string; commentId?: number; pullRequest?: number;
+  submissionId?: string; taskId?: string; progress?: SubmissionProgress;
   goal?: number; maxCycles?: number;
   continuation?: { taskId?: string; jobId?: string; sourceTaskId?: string };
   targetState?: Record<string, unknown>;
