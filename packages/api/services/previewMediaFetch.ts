@@ -211,6 +211,11 @@ export async function loadPublishedPreview({
     throw new PreviewMediaError(502, 'PREVIEW_INVALID_TYPE', 'Preview media returned an invalid content type');
   }
   const body = await boundedBody(media, servingLimit(contentType, maxBytes));
-  const { assetId: _assetId, ...preview } = published;
+  const preview: PublishedVisualPreview = {
+    type: published.type,
+    title: published.title,
+    ...(published.description === undefined ? {} : { description: published.description }),
+    url: published.url,
+  };
   return { preview, contentType, body };
 }
