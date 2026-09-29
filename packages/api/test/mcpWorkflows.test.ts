@@ -400,8 +400,8 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         await pendingTask(`stale-loop-${modern}`, staleLoop.result.commentId, 'review', workEpoch);
         assert.equal((await call('get_operation', { operationId: staleLoop.operationId })).state, 'unknown');
         assert.ok(comments.some(comment => comment.startsWith('/ultrafix goal=9 max=3')));
-        checks = 'FAILURE'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_NOT_PASSED'); assert.equal(merged, false);
-        checks = 'SUCCESS'; mergeState = 'BLOCKED'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_NOT_PASSED'); assert.equal(merged, false);
+        checks = 'FAILURE'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_FAILING'); assert.equal(merged, false);
+        checks = 'SUCCESS'; mergeState = 'BLOCKED'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'BRANCH_PROTECTION_BLOCKED'); assert.equal(merged, false);
         mergeState = 'CLEAN'; await call('update_pull_request_branch', pr, true); assert.equal(merged, false);
         assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'STALE_HEAD');
         assert.equal((await call('merge_pull_request', { ...pr, expectedHead: head }, true)).state, 'completed'); assert.equal(merged, true);

@@ -242,7 +242,7 @@ export async function verifyPullRequestWrites(
     const closed = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
     live.state = 'OPEN';
     assert.equal(closed.state, 'failed');
-    assert.equal(closed.result.error.code, 'PRECONDITION_FAILED');
+    assert.equal(closed.result.error.code, 'PULL_REQUEST_CLOSED');
     assert.equal(writes(), baseline, 'no label may be written after the precondition changed');
     assert.deepEqual(live.labels, before);
   });
