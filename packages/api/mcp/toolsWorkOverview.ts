@@ -47,12 +47,18 @@ function pullRequestSelection(includeChecks: boolean): string {
     comments(last:10){pageInfo{hasPreviousPage} nodes{body createdAt}}`;
 }
 
-function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): PullRequestOverview {
+function latestReview(node: GraphPullRequest): Pick<PullRequestOverview, 'latestReview' | 'latestReviewSearchTruncated'> {
   // GraphQL connections are oldest-first even when selected from the end.
   const reviewComment = [...(node.comments?.nodes ?? [])].reverse()
     .find(comment => /<!-- propr:ai-review\b/.test(comment.body || ''));
-  const reviewSearchTruncated = !reviewComment
-    && (node.comments === null || Boolean(node.comments?.pageInfo?.hasPreviousPage));
+  return {
+    latestReview: reviewComment ? summarizeReviewComment(reviewComment.body, node.headRefOid) : null,
+    latestReviewSearchTruncated: !reviewComment
+      && (node.comments === null || Boolean(node.comments?.pageInfo?.hasPreviousPage)),
+  };
+}
+
+function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): PullRequestOverview {
   const labels = labelNames(node.labels?.nodes);
   const labelsTruncated = node.labels === null || Boolean(node.labels?.pageInfo?.hasNextPage);
   return {
@@ -64,8 +70,7 @@ function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): P
     reviewDecision: includeChecks ? node.reviewDecision ?? null : null,
     checks: { state: includeChecks ? node.commits?.nodes?.[0]?.commit.statusCheckRollup?.state ?? null : null },
     mergeable: node.mergeStateStatus,
-    latestReview: reviewComment ? summarizeReviewComment(reviewComment.body, node.headRefOid) : null,
-    latestReviewSearchTruncated: reviewSearchTruncated,
+    ...latestReview(node),
     ultrafixActive: ultrafixState(labels, labelsTruncated),
   };
 }
