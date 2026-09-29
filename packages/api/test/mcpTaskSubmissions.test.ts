@@ -378,8 +378,7 @@ test('a resolved launch receipt stays with its completed execution while submiss
 });
 
 const automationKeys = ['autoMerge', 'runUltrafix', 'ultrafixGoal', 'ultrafixMaxCycles'] as const;
-const storedAutomation = (payload: Record<string, unknown>) => Object.fromEntries(
-  automationKeys.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
+const storedAutomation = (payload: Record<string, unknown>) => Object.fromEntries(automationKeys.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
 
 test('create_task requests ultrafix and auto-merge through the shared issue labels used by planned work', async () => {
   const routing = [['llm-agent-model'], ['base-release']];
@@ -422,8 +421,6 @@ test('create_task rejects out-of-range ultrafix bounds and requires review and m
       assert.equal(denied.state, 'failed');
       assert.match(JSON.stringify(denied.result), expected);
     }
-    assert.equal(f.calls.length, 0);
-    assert.equal((await f.db('task_submissions')).length, 0);
-    assert.equal(f.enqueues(), 0);
+    assert.deepEqual([f.calls.length, (await f.db('task_submissions')).length, f.enqueues()], [0, 0, 0]);
   } finally { await f.db.destroy(); }
 });
