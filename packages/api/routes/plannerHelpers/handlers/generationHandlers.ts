@@ -105,6 +105,7 @@ export function createRefineHandler(deps: RefineDeps) {
 
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
             plan_json: JSON.stringify(result.plan),
+            plan_cause: 'refinement',
             refinement_result: JSON.stringify(refinementMeta),
             status: 'review',
             updated_at: deps.db.fn.now()

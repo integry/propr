@@ -33,6 +33,7 @@ before(async () => {
     table.text('refinement_result');
     table.text('generated_context');
     table.text('plan_json');
+    table.text('plan_cause');
     table.timestamp('updated_at');
   });
 });
@@ -317,6 +318,7 @@ describe('planner background abort reconciliation', () => {
       updates: { status: 'review', plan_json: JSON.stringify([{ title: 'current plan' }]) },
     });
     assert.equal(activeCompletion, true);
+    assert.equal((await database('task_drafts').where({ draft_id: draftId }).first()).plan_cause, 'generation');
 
     const replacementTrace = JSON.stringify({ steps: [], runId: 'generation-run-2' });
     await database('task_drafts').where({ draft_id: draftId }).update({

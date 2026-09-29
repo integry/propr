@@ -7,7 +7,7 @@ import type { Knex } from 'knex';
 import type { FlatRequest as Request } from '../../../requestTypes.js';
 import type { OwnershipResult } from '../types.js';
 import { validateUUID } from '../../validation.js';
-import { getPlanRevision, listPlanRevisions, restorePlanRevision } from '../planRevisions.js';
+import { getCurrentPlanCause, getPlanRevision, listPlanRevisions, restorePlanRevision } from '../planRevisions.js';
 
 interface RevisionHandlerDeps {
   db: Knex;
@@ -32,7 +32,9 @@ export function createListPlanRevisionsHandler(deps: RevisionHandlerDeps) {
   return async function listPlanRevisionsHandler(req: Request, res: Response): Promise<void> {
     try {
       if (!await authorize(deps, req, res)) return;
-      res.json({ revisions: await listPlanRevisions(deps.db, req.params.id) });
+      const revisions = await listPlanRevisions(deps.db, req.params.id);
+      const currentCause = revisions[0]?.currentCause ?? await getCurrentPlanCause(deps.db, req.params.id);
+      res.json({ currentCause, revisions });
     } catch (error) {
       console.error('List plan revisions error:', error);
       res.status(500).json({ error: 'Failed to fetch plan history' });

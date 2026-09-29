@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
+import { down as removePlanRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
 import { getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { createToolCatalog, type ToolDeps } from '../mcp/tools.js';
 import { createListPlanRevisionsHandler, createRestorePlanRevisionHandler } from '../routes/plannerHelpers/handlers/revisionHandlers.js';
@@ -49,6 +50,58 @@ test('every status-changing plan write keeps the replaced plan with the revision
   await setDraft(db, { plan_json: plan('C1') });
   assert.deepEqual((await listPlanRevisions(db, draftId)).map(revision => revision.titles), [['B1'], ['A1', 'A2', 'A3', 'A4']],
     'clearing the plan records it once and a plan written into an empty draft records nothing');
+});
+
+test('records plan provenance, rename details and restore provenance in order', async t => {
+  const db = await setup(t);
+  await setDraft(db, { plan_cause: 'generation' });
+
+  await setDraft(db, { status: 'refining' });
+  await setDraft(db, { status: 'review', plan_json: plan('Refined'), plan_cause: 'refinement' });
+  await setDraft(db, { plan_json: plan('Edited'), plan_cause: 'manual_edit' });
+  await setDraft(db, { name: 'Renamed plan' });
+
+  const beforeRestore = await listPlanRevisions(db, draftId);
+  assert.deepEqual(beforeRestore.map(revision => revision.cause), ['rename', 'refinement', 'generation']);
+  assert.equal(beforeRestore[0].nameBefore, 'Untitled Plan');
+  assert.equal(beforeRestore[0].nameAfter, 'Renamed plan');
+  assert.equal(beforeRestore[0].currentCause, 'manual_edit');
+  assert.equal(beforeRestore.filter(revision => revision.cause === 'rename').length, 1,
+    'a name-only update creates exactly one rename row');
+
+  const original = beforeRestore.find(revision => revision.cause === 'generation')!;
+  assert.equal((await restorePlanRevision(db, draftId, original.revision_id)).restored, true);
+  const afterRestore = await listPlanRevisions(db, draftId);
+  assert.deepEqual(afterRestore.map(revision => revision.cause), ['manual_edit', 'rename', 'refinement', 'generation']);
+  assert.equal(afterRestore[0].currentCause, 'restore');
+  assert.equal((await getPlanRevision(db, draftId, afterRestore[0].revision_id))!.currentCause, 'restore');
+
+  await setDraft(db, { plan_json: plan('Edited after restore'), plan_cause: 'manual_edit' });
+  assert.equal((await listPlanRevisions(db, draftId))[0].cause, 'restore',
+    'replacing a restored plan snapshots it with restore provenance');
+});
+
+test('reports unknown for legacy rows and live plans without provenance', async t => {
+  const db = await setup(t);
+  await setDraft(db, { plan_json: plan('Legacy replacement') });
+  const [revision] = await listPlanRevisions(db, draftId);
+  assert.equal(revision.cause, 'unknown');
+  assert.equal(revision.currentCause, 'unknown');
+  assert.equal((await getPlanRevision(db, draftId, revision.revision_id))!.cause, 'unknown');
+});
+
+test('migration down removes cause metadata and restores the original plan trigger', async t => {
+  const db = await setup(t);
+  await removePlanRevisionCauses(db);
+
+  assert.equal(await db.schema.hasColumn('task_drafts', 'plan_cause'), false);
+  assert.equal(await db.schema.hasColumn('task_draft_plan_revisions', 'cause'), false);
+  const trigger = await db('sqlite_master').where({ type: 'trigger', name: 'task_drafts_plan_history' }).first('sql');
+  assert.ok(trigger?.sql.includes('INSERT INTO task_draft_plan_revisions (draft_id, plan_json, draft_revision, status_before, status_after, replaced_at)'));
+
+  await setDraft(db, { plan_json: plan('After rollback') });
+  const row = await db('task_draft_plan_revisions').where({ draft_id: draftId }).first();
+  assert.equal(row.plan_json, plan('A1', 'A2', 'A3', 'A4'));
 });
 
 test('autosaved edits are coalesced until the edit window passes, but never hide an operation result', async t => {
@@ -225,6 +278,7 @@ test('MCP tools list, read and restore plan revisions at an exact revision', asy
   };
 
   const listed = await run('list_plan_revisions', {});
+  assert.equal((listed.data as { currentCause: string }).currentCause, 'unknown');
   const [revision] = (listed.data as { revisions: Array<{ revision_id: number; titles: string[] }> }).revisions;
   assert.deepEqual(revision.titles, ['A1', 'A2', 'A3', 'A4']);
   const read = await run('get_plan_revision', { revisionId: revision.revision_id });
@@ -237,6 +291,33 @@ test('MCP tools list, read and restore plan revisions at an exact revision', asy
   assert.equal(restored.status, 200);
   assert.equal((restored.data as { revision: number }).revision, (await draft(db)).mcp_revision);
   assert.equal((await draft(db)).plan_json, plan('A1', 'A2', 'A3', 'A4'));
+});
+
+test('get_plan exposes compact revision history and the live plan cause', async t => {
+  const db = await setup(t);
+  await setDraft(db, { plan_cause: 'generation', status: 'refining' });
+  await setDraft(db, { plan_json: plan('Refined'), plan_cause: 'refinement', status: 'review' });
+
+  const deps: ToolDeps = { db, policy: {} as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
+  const tool = createToolCatalog(deps).find(candidate => candidate.name === 'get_plan')!;
+  const result = await tool.run({
+    principal: { user: { id: '123' } } as McpPrincipal,
+    args: tool.schema.parse({ repository: 'acme/repo', planId: draftId }),
+  } as never);
+  const history = (result.data as { revisionHistory: {
+    count: number; currentCause: string; latest: Array<Record<string, unknown>>; tools: string[];
+  } }).revisionHistory;
+
+  assert.equal(history.count, 1);
+  assert.equal(history.currentCause, 'refinement');
+  assert.deepEqual(history.latest, [{
+    revisionId: (await listPlanRevisions(db, draftId))[0].revision_id,
+    cause: 'generation',
+    replacedAt: (await listPlanRevisions(db, draftId))[0].replaced_at,
+    issueCount: 4,
+    titles: ['A1', 'A2', 'A3', 'A4'],
+  }]);
+  assert.deepEqual(history.tools, ['list_plan_revisions', 'get_plan_revision', 'restore_plan_revision']);
 });
 
 test('HTTP handlers check ownership and input and refuse restoring a busy plan', async t => {

@@ -1,12 +1,18 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import type { PlanTask } from './plannerTypes';
 
-/** An earlier version of a plan, kept when a generation, refinement, edit or restore replaced it. */
+export type PlanRevisionCause = 'generation' | 'refinement' | 'manual_edit' | 'restore' | 'rename' | 'unknown';
+
+/** An earlier plan version or rename event, with the cause that created it. */
 export interface PlanRevisionSummary {
   revision_id: number;
   draft_revision: number;
   status_before: string | null;
   status_after: string | null;
+  cause: PlanRevisionCause;
+  nameBefore: string | null;
+  nameAfter: string | null;
+  currentCause: PlanRevisionCause;
   replaced_at: string;
   issue_count: number;
   titles: string[];

@@ -13,6 +13,7 @@ vi.mock('../../api/proprApi', () => api);
 
 const refinementSnapshot = {
   revision_id: 7, draft_revision: 3, status_before: 'refining', status_after: 'review',
+  cause: 'generation' as const, nameBefore: null, nameAfter: null, currentCause: 'refinement' as const,
   replaced_at: '2026-09-28 10:00:00', issue_count: 2, titles: ['Add metrics', 'Trace tool calls'],
 };
 
@@ -187,6 +188,11 @@ describe('PlanHistoryDialog', () => {
     api.listPlanRevisions.mockResolvedValue([]);
     render(<PlanHistoryDialog isOpen draftId="draft-1" onClose={vi.fn()} onRestore={vi.fn()} />);
     expect(await screen.findByText(/no earlier versions yet/i)).toBeInTheDocument();
+  });
+
+  test('shows how each saved plan version was created', async () => {
+    render(<PlanHistoryDialog isOpen draftId="draft-1" onClose={vi.fn()} onRestore={vi.fn()} />);
+    expect(await screen.findByText('Generated')).toBeInTheDocument();
   });
 
   test('labels snapshots by the operation that replaced them', () => {

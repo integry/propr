@@ -11,6 +11,8 @@ export const PLAN_RESTORABLE_STATUSES = ['draft', 'review', 'approved', 'failed'
 /** Matches the cap enforced by the `task_drafts_plan_history` trigger. */
 const MAX_REVISIONS_PER_DRAFT = 50;
 
+export type PlanRevisionCause = 'generation' | 'refinement' | 'manual_edit' | 'restore' | 'rename' | 'unknown';
+
 interface PlanRevisionRow {
   revision_id: number;
   draft_id: string;
@@ -18,6 +20,9 @@ interface PlanRevisionRow {
   draft_revision: number;
   status_before: string | null;
   status_after: string | null;
+  cause: PlanRevisionCause | null;
+  name_before: string | null;
+  name_after: string | null;
   replaced_at: string;
 }
 
@@ -26,6 +31,10 @@ export interface PlanRevisionSummary {
   draft_revision: number;
   status_before: string | null;
   status_after: string | null;
+  cause: PlanRevisionCause;
+  nameBefore: string | null;
+  nameAfter: string | null;
+  currentCause: PlanRevisionCause;
   replaced_at: string;
   issue_count: number;
   titles: string[];
@@ -44,13 +53,28 @@ function parsePlan(planJson: string): unknown[] {
   }
 }
 
-function summarize(row: PlanRevisionRow): PlanRevisionSummary {
+function normalizeCause(cause: unknown): PlanRevisionCause {
+  return cause === 'generation' || cause === 'refinement' || cause === 'manual_edit'
+    || cause === 'restore' || cause === 'rename' ? cause : 'unknown';
+}
+
+export async function getCurrentPlanCause(db: Knex, draftId: string): Promise<PlanRevisionCause> {
+  const draft = await db('task_drafts').where({ draft_id: draftId }).first('plan_cause') as
+    { plan_cause: string | null } | undefined;
+  return normalizeCause(draft?.plan_cause);
+}
+
+function summarize(row: PlanRevisionRow, currentCause: PlanRevisionCause): PlanRevisionSummary {
   const plan = parsePlan(row.plan_json);
   return {
     revision_id: row.revision_id,
     draft_revision: row.draft_revision,
     status_before: row.status_before,
     status_after: row.status_after,
+    cause: normalizeCause(row.cause),
+    nameBefore: row.name_before,
+    nameAfter: row.name_after,
+    currentCause,
     replaced_at: row.replaced_at,
     issue_count: plan.length,
     titles: plan.map(item => (item && typeof item === 'object' && typeof (item as { title?: unknown }).title === 'string')
@@ -61,10 +85,11 @@ function summarize(row: PlanRevisionRow): PlanRevisionSummary {
 
 /** Newest first. */
 export async function listPlanRevisions(db: Knex, draftId: string): Promise<PlanRevisionSummary[]> {
-  const rows = await db('task_draft_plan_revisions')
-    .where({ draft_id: draftId })
-    .orderBy('revision_id', 'desc') as PlanRevisionRow[];
-  return rows.map(summarize);
+  const [rows, currentCause] = await Promise.all([
+    db('task_draft_plan_revisions').where({ draft_id: draftId }).orderBy('revision_id', 'desc') as Promise<PlanRevisionRow[]>,
+    getCurrentPlanCause(db, draftId),
+  ]);
+  return rows.map(row => summarize(row, currentCause));
 }
 
 export async function getPlanRevision(
@@ -72,11 +97,12 @@ export async function getPlanRevision(
   draftId: string,
   revisionId: number
 ): Promise<(PlanRevisionSummary & { plan: unknown[] }) | null> {
-  const row = await db('task_draft_plan_revisions')
-    .where({ draft_id: draftId, revision_id: revisionId })
-    .first() as PlanRevisionRow | undefined;
+  const [row, currentCause] = await Promise.all([
+    db('task_draft_plan_revisions').where({ draft_id: draftId, revision_id: revisionId }).first() as Promise<PlanRevisionRow | undefined>,
+    getCurrentPlanCause(db, draftId),
+  ]);
   if (!row) return null;
-  return { ...summarize(row), plan: parsePlan(row.plan_json) };
+  return { ...summarize(row, currentCause), plan: parsePlan(row.plan_json) };
 }
 
 /**
@@ -104,17 +130,20 @@ export async function restorePlanRevision(
       .where({ draft_id: draftId })
       .modify(query => { if (expectedRevision !== undefined) query.where('mcp_revision', expectedRevision); })
       .where(builder => { builder.whereIn('status', PLAN_RESTORABLE_STATUSES).orWhereNull('status'); });
-    const draft = await restorable().first('plan_json', 'status', 'mcp_revision') as
-      { plan_json: string | null; status: string | null; mcp_revision: number } | undefined;
+    const draft = await restorable().first('plan_json', 'plan_cause', 'status', 'mcp_revision') as
+      { plan_json: string | null; plan_cause: string | null; status: string | null; mcp_revision: number } | undefined;
     if (!draft) return { restored: false, reason: 'conflict' } as const;
 
     if (draft.plan_json !== null && draft.plan_json !== row.plan_json) {
       const latest = await tx('task_draft_plan_revisions').where({ draft_id: draftId })
-        .orderBy('revision_id', 'desc').first('plan_json') as Pick<PlanRevisionRow, 'plan_json'> | undefined;
-      if (latest?.plan_json !== draft.plan_json) {
+        .orderBy('revision_id', 'desc').first('plan_json', 'cause') as Pick<PlanRevisionRow, 'plan_json' | 'cause'> | undefined;
+      // A rename row describes the naming event, not the provenance of the
+      // outgoing plan. Preserve that plan's cause separately before restore.
+      if (latest?.plan_json !== draft.plan_json || normalizeCause(latest.cause) === 'rename') {
         await tx('task_draft_plan_revisions').insert({
           draft_id: draftId, plan_json: draft.plan_json, draft_revision: draft.mcp_revision,
-          status_before: draft.status, status_after: 'review', replaced_at: tx.fn.now(),
+          status_before: draft.status, status_after: 'review', cause: draft.plan_cause,
+          replaced_at: tx.fn.now(),
         });
       }
     }
@@ -128,7 +157,7 @@ export async function restorePlanRevision(
     if (boundary) {
       await tx('task_draft_plan_revisions').where({ revision_id: boundary.revision_id }).update({ is_restore: true });
     }
-    await restorable().update({ plan_json: row.plan_json, status: 'review', updated_at: tx.fn.now() });
+    await restorable().update({ plan_json: row.plan_json, plan_cause: 'restore', status: 'review', updated_at: tx.fn.now() });
 
     const kept = tx('task_draft_plan_revisions').where({ draft_id: draftId })
       .orderBy('revision_id', 'desc').limit(MAX_REVISIONS_PER_DRAFT).select('revision_id');

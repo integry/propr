@@ -152,6 +152,7 @@ export async function runBackgroundRefinement(
 
     const persisted = await persistActiveRefinement(db, draftId, runId, {
       plan_json: JSON.stringify(result.plan),
+      plan_cause: 'refinement',
       refinement_result: JSON.stringify(refinementMeta),
       status: 'review',
     });

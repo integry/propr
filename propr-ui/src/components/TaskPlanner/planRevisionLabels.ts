@@ -1,4 +1,16 @@
-import type { PlanRevisionSummary } from '../../api/proprApi';
+import type { PlanRevisionCause, PlanRevisionSummary } from '../../api/proprApi';
+
+const CAUSE_LABELS: Record<PlanRevisionCause, string> = {
+  generation: 'Generated',
+  refinement: 'Refined',
+  manual_edit: 'Manual edit',
+  restore: 'Restored',
+  rename: 'Renamed',
+  unknown: 'Legacy',
+};
+
+/** Labels how the saved version itself came to be. */
+export const describeRevisionCause = (cause: PlanRevisionCause): string => CAUSE_LABELS[cause];
 
 /** Names a history snapshot by the operation that replaced it. */
 export const describeRevision = (revision: Pick<PlanRevisionSummary, 'status_before' | 'status_after'>): string => {

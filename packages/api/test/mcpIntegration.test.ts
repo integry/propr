@@ -21,6 +21,8 @@ import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_
 import { up as taskSubmissions } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as submissionIdentity } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
 import { up as taskFinalResult } from '../../core/src/db/migrations/20260925000000_add_final_result_to_tasks.js';
+import { up as planRevisions } from '../../core/src/db/migrations/20260928000000_add_task_draft_plan_revisions.js';
+import { up as planRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { McpError } from '../mcp/config.js';
@@ -35,6 +37,7 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await pullRequestState(db);
   await mcpMigration(db); await taskSubmissions(db); await submissionIdentity(db); await taskFinalResult(db);
+  await planRevisions(db); await planRevisionCauses(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await db.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('owner_id'); table.string('repository'); table.string('current_task_id');

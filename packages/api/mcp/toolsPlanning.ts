@@ -6,13 +6,13 @@ import { McpError } from './config.js';
 import { callWorkflow } from './adapter.js';
 import { type McpTool, type ToolDeps, TERMINAL_PLAN_STATUSES, planScopeShape, planShape, mutationShape, pageShape, repositorySchema, textSchema, idSchema, ok, workflow, markMergedPullRequests } from './tools.js';
 import { planRelationLimit, summarizePlan } from './listSummaries.js';
-import { getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
+import { getCurrentPlanCause, getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { classifyError, type McpErrorStage } from './errorEnvelope.js';
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationSummary, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
 
 const target = { table: 'task_drafts', column: 'draft_id', arg: 'planId', owner: 'user_id' };
-const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json', 'attachments', 'context_config', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at'];
+const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json', 'plan_cause', 'attachments', 'context_config', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at'];
 
 type PublicationStep = 'authorize' | 'create_issue' | 'load_issues' | 'record_issue' | 'verify_claim' | 'complete';
 
@@ -85,9 +85,22 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       const draft = await db('task_drafts').where({ draft_id: args.planId }).first(columns);
       const attachments = JSON.parse(draft.attachments || '[]');
       const context = parseContextConfig(draft.context_config);
-      return ok({ ...draft, context_config: undefined, publication: publicationSummary(context.publication),
+      const revisions = await listPlanRevisions(db, args.planId);
+      return ok({ ...draft, context_config: undefined, plan_cause: undefined, publication: publicationSummary(context.publication),
         attachments: attachments.map(({ id, originalName, mimeType, size }: Record<string, unknown>) => ({ id, originalName, mimeType, size })),
         plan: draft.plan_json ? JSON.parse(draft.plan_json) : [], plan_json: undefined,
+        revisionHistory: {
+          count: revisions.length,
+          currentCause: draft.plan_cause || 'unknown',
+          latest: revisions.slice(0, 10).map(revision => ({
+            revisionId: revision.revision_id,
+            cause: revision.cause,
+            replacedAt: revision.replaced_at,
+            issueCount: revision.issue_count,
+            titles: revision.titles.slice(0, 5),
+          })),
+          tools: ['list_plan_revisions', 'get_plan_revision', 'restore_plan_revision'],
+        },
         issues: await db('plan_issues').where({ draft_id: args.planId }).limit(100) });
     } });
   tools.push({ name: 'create_plan', description: 'Create a draft plan only. This does not publish issues or start execution.', scope: 'plan',
@@ -97,7 +110,8 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       await db.transaction(async tx => {
         const todoIds = [...new Set<string>(args.todoIds || [])];
         if (todoIds.length && (await tx('repo_todos').where({ user_id: principal.user.id, repository: args.repository }).whereIn('todo_id', todoIds)).length !== todoIds.length) throw new McpError('NOT_FOUND', 'Selected TODOs must belong to you in this repository.', 404);
-        await tx('task_drafts').insert({ draft_id: id, user_id: principal.user.id, repository: args.repository, name: args.name, initial_prompt: args.prompt, plan_json: args.plan ? JSON.stringify(args.plan) : null, status: 'draft' });
+        await tx('task_drafts').insert({ draft_id: id, user_id: principal.user.id, repository: args.repository, name: args.name, initial_prompt: args.prompt,
+          plan_json: args.plan ? JSON.stringify(args.plan) : null, plan_cause: args.plan ? 'manual_edit' : null, status: 'draft' });
         if (todoIds.length) await tx('repo_todos').whereIn('todo_id', todoIds).update({ linked_draft_id: id, updated_at: tx.fn.now() });
       });
       return ok({ planId: id, revision: 0, status: 'draft' });
@@ -108,13 +122,17 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       const changed = await db('task_drafts').where({ draft_id: args.planId, user_id: principal.user.id, mcp_revision: args.expectedRevision })
         .whereIn('status', ['draft', 'review', 'approved', 'failed']).update({
           ...(args.name !== undefined ? { name: args.name } : {}), ...(args.prompt !== undefined ? { initial_prompt: args.prompt } : {}),
-          ...(args.plan !== undefined ? { plan_json: JSON.stringify(args.plan) } : {}), updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
+          ...(args.plan !== undefined ? { plan_json: JSON.stringify(args.plan), plan_cause: 'manual_edit' } : {}), updated_at: db.fn.now(), mcp_revision: args.expectedRevision + 1,
         });
       if (!changed) throw new McpError('STALE_REVISION', 'Plan changed or an operation is active. Read it again before updating.', 409);
       return ok({ planId: args.planId, revision: args.expectedRevision + 1 });
     } });
   tools.push({ name: 'list_plan_revisions', description: 'List earlier versions of your plan, newest first, with their task titles. Every generation, refinement, edit or restore keeps the plan it replaced.', scope: 'read', readOnly: true,
-    schema: z.object(planShape).strict(), target, run: async ({ args }) => ok({ planId: args.planId, revisions: await listPlanRevisions(db, args.planId) }) });
+    schema: z.object(planShape).strict(), target, run: async ({ args }) => {
+      const revisions = await listPlanRevisions(db, args.planId);
+      return ok({ planId: args.planId,
+        currentCause: revisions[0]?.currentCause ?? await getCurrentPlanCause(db, args.planId), revisions });
+    } });
   tools.push({ name: 'get_plan_revision', description: 'Read the full tasks of one earlier plan version from list_plan_revisions.', scope: 'read', readOnly: true,
     schema: z.object({ ...planShape, revisionId: z.number().int().positive() }).strict(), target, run: async ({ args }) => {
       const revision = await getPlanRevision(db, args.planId, args.revisionId);

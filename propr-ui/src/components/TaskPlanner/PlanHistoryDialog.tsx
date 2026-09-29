@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { History, Loader2, RotateCcw, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getPlanRevision, listPlanRevisions, type PlanRevision, type PlanRevisionSummary } from '../../api/proprApi';
-import { describeRevision } from './planRevisionLabels';
+import { describeRevision, describeRevisionCause } from './planRevisionLabels';
 
 interface PlanHistoryDialogProps {
   isOpen: boolean;
@@ -137,6 +137,7 @@ export const PlanHistoryDialog: React.FC<PlanHistoryDialogProps> = ({ isOpen, dr
                         <span>{describeRevision(revision)}</span>
                         {loadingId === revision.revision_id && <Loader2 size={12} className="animate-spin text-gray-500" />}
                       </div>
+                      <div className="mt-1 text-xs font-medium text-teal-700">{describeRevisionCause(revision.cause)}</div>
                       <div className="text-xs text-gray-500">
                         {parseTimestamp(revision.replaced_at).toLocaleString()} · {revision.issue_count} {revision.issue_count === 1 ? 'task' : 'tasks'}
                       </div>
