@@ -115,25 +115,41 @@ async function projectSubmission(deps: ToolDeps, row: TaskSubmission) {
     issueUrl: row.issue_url, taskId, error: row.error, progress });
 }
 
+function resolvedTaskId(result: Record<string, unknown>): string | undefined {
+  const object = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+  const target = object(result.targetState);
+  const continuation = object(result.continuation);
+  const task = object(object(result.progress)?.task);
+  return [target?.taskId, target?.task_id, continuation?.taskId, result.taskId, task?.id]
+    .find((value): value is string => typeof value === 'string' && value.length > 0);
+}
+
 /** Submission acceptance precedes task association; polling must discover the exact task. */
 export async function trackTaskSubmission(deps: ToolDeps, row: Operation, principal: McpPrincipal, receipt: Record<string, unknown>): Promise<void> {
   if (!['create_task', 'retry_task_submission'].includes(row.tool) || !row.result) return;
   const result = JSON.parse(row.result);
   if (!result.submissionId) return;
   const submission = await ownedSubmission(deps, principal, row.repository!, result.submissionId);
-  const current = await projectSubmission(deps, submission);
   if (result.executionResolved) {
-    // A terminal receipt remains authoritative if retained task history has
-    // since been pruned, while PR linkage and merged state can still arrive late.
-    const progress = !current.progress.task?.state && result.progress
-      ? { ...result.progress, issue: current.progress.issue, pullRequest: current.progress.pullRequest }
-      : current.progress;
-    const refreshed = { ...result, ...current, progress, executionResolved: true, targetState: result.targetState };
+    // A terminal receipt belongs to one execution even when the submission's
+    // latest task advances to a retry. Refresh only late issue/PR information
+    // projected from that resolved task, retaining its terminal progress.
+    const taskId = resolvedTaskId(result);
+    const resolved = taskId
+      ? await projectSubmission(deps, { ...submission, task_id: taskId, latest_task_id: taskId })
+      : undefined;
+    const progress = result.progress && resolved
+      ? { ...result.progress, issue: resolved.progress.issue ?? result.progress.issue,
+        pullRequest: resolved.progress.pullRequest ?? result.progress.pullRequest }
+      : result.progress ?? resolved?.progress;
+    const refreshed = { ...result, ...(progress ? { progress } : {}), executionResolved: true, targetState: result.targetState };
     receipt.result = refreshed;
     receipt.targetState = result.targetState;
     await deps.db('mcp_operations').where({ id: row.id }).update({ result: JSON.stringify(refreshed), updated_at: Date.now() });
     return;
   }
+  const current = await projectSubmission(deps, submission);
   const taskId = current.progress.task?.id || current.taskId;
   if (taskId) { current.taskId = taskId; current.continuation.taskId = taskId; }
   receipt.state = current.state;

@@ -288,6 +288,60 @@ test('an unpolled launch receipt follows the latest execution after an issue ret
   } finally { await f.db.destroy(); }
 });
 
+test('a resolved launch receipt stays with its completed execution while submission reads follow a running retry', async () => {
+  const f = await fixture();
+  try {
+    const receipt = (await f.call('create_task', {
+      repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: 'resolved-launch',
+    })).data as Receipt;
+    const submission = await f.db('task_submissions').first();
+    const poll = async () => (await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt;
+
+    await f.db('tasks').insert({ task_id: 'completed-task', repository: 'owner/repo', task_type: 'issue' });
+    await associateSubmissionTask(f.db, submission.id, 'completed-task');
+    await f.db('task_history').insert({ task_id: 'completed-task', state: 'processing' });
+    assert.equal((await poll()).state, 'running');
+    await f.db('task_history').insert({ task_id: 'completed-task', state: 'completed' });
+    const completed = await poll();
+    assert.equal(completed.state, 'completed');
+    assert.equal(completed.result.progress.stage, 'completed');
+
+    // The PR can be linked after completion, while an issue retry independently
+    // advances the submission's latest-task pointer.
+    await f.db('tasks').where({ task_id: 'completed-task' }).update({ pr_number: 45 });
+    await f.db('notification_pull_request_state').insert({
+      repository: 'owner/repo', pr_number: 45, merged_at: '2026-09-29T14:00:00.000Z',
+    });
+    await f.db('tasks').insert({ task_id: 'retry-task', repository: 'owner/repo', task_type: 'issue', pr_number: 99 });
+    await associateSubmissionTask(f.db, submission.id, 'retry-task');
+    await f.db('task_history').insert({ task_id: 'retry-task', state: 'processing' });
+
+    const submissionRead = (await f.call('get_task_submission', {
+      repository: 'owner/repo', submissionId: submission.id,
+    })).data as SubmissionData;
+    assert.equal(submissionRead.progress.stage, 'running');
+    assert.equal(submissionRead.progress.task?.id, 'retry-task');
+    assert.equal(submissionRead.progress.pullRequest?.number, 99);
+
+    for (const resolved of [await poll(), await poll()]) {
+      assert.equal(resolved.state, 'completed');
+      assert.equal(resolved.lifecycle.state, 'completed');
+      assert.equal(resolved.result.taskId, 'completed-task');
+      assert.equal(resolved.result.continuation.taskId, 'completed-task');
+      assert.equal(resolved.result.progress.stage, 'completed');
+      assert.equal(resolved.result.progress.task?.id, 'completed-task');
+      assert.deepEqual(resolved.result.progress.pullRequest, {
+        number: 45, url: 'https://github.com/owner/repo/pull/45', state: 'merged',
+      });
+      assert.equal(resolved.lifecycle.artifacts.taskId, 'completed-task');
+      assert.deepEqual(resolved.lifecycle.artifacts.pullRequest, {
+        repository: 'owner/repo', number: 45, url: 'https://github.com/owner/repo/pull/45',
+      });
+      assert.equal(resolved.retryAfterSeconds, undefined);
+    }
+  } finally { await f.db.destroy(); }
+});
+
 const automationKeys = ['autoMerge', 'runUltrafix', 'ultrafixGoal', 'ultrafixMaxCycles'] as const;
 const storedAutomation = (payload: Record<string, unknown>) => Object.fromEntries(
   automationKeys.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));

@@ -79,7 +79,9 @@ export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt
   const submissionId = nonEmptyString(result.submissionId);
   if (submissionId) artifacts.submissionId = submissionId;
 
-  const taskId = nonEmptyString(submissionTask.id) ?? taskIdFromReceipt(target, continuation, result, targetIssues);
+  // A terminal target identifies the execution whose outcome this receipt
+  // describes. Submission progress may already point at a newer retry.
+  const taskId = taskIdFromReceipt(target, continuation, result, targetIssues) ?? nonEmptyString(submissionTask.id);
   if (taskId) artifacts.taskId = taskId;
 
   const repository = nonEmptyString(result.repository, row.repository);

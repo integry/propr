@@ -695,6 +695,13 @@ test('tracker task and review failures populate and can enrich the durable failu
     pullRequest: { repository: 'acme/repo', number: 64, url: 'https://github.com/acme/repo/pull/64' },
   });
   assert.deepEqual(artifactsFromReceipt({ repository: 'acme/repo' }, {
+    targetState: { taskId: 'completed-task', state: 'completed' },
+    result: {
+      continuation: { taskId: 'retry-task' },
+      progress: { task: { id: 'retry-task', state: 'processing' } },
+    },
+  }), { taskId: 'completed-task' });
+  assert.deepEqual(artifactsFromReceipt({ repository: 'acme/repo' }, {
     result: { pullRequest: true, commentId: true, reviewResults: [{ commentId: false }] },
   }), {});
 });
