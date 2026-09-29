@@ -46,6 +46,24 @@ function pullRequestSelection(includeChecks: boolean): string {
     comments(last:10){nodes{body createdAt}}`;
 }
 
+function summarizePullRequest(node: GraphPullRequest, includeChecks: boolean): PullRequestOverview {
+  // GraphQL connections are oldest-first even when selected from the end.
+  const reviewComment = [...(node.comments?.nodes ?? [])].reverse()
+    .find(comment => /<!-- propr:ai-review\b/.test(comment.body || ''));
+  return {
+    number: node.number,
+    url: node.url,
+    state: node.merged ? 'merged' : String(node.state || '').toLowerCase(),
+    draft: Boolean(node.isDraft),
+    head: node.headRefOid,
+    reviewDecision: includeChecks ? node.reviewDecision ?? null : null,
+    checks: { state: includeChecks ? node.commits?.nodes?.[0]?.commit.statusCheckRollup?.state ?? null : null },
+    mergeable: node.mergeStateStatus,
+    latestReview: reviewComment ? summarizeReviewComment(reviewComment.body, node.headRefOid) : null,
+    ultrafixActive: hasUltrafixLabel(node.labels?.nodes),
+  };
+}
+
 /**
  * Fetch a bounded set of pull requests in one aliased GraphQL request. Callers
  * are responsible for enforcing the repository and per-repository budgets.
@@ -70,21 +88,7 @@ export async function enrichPullRequests(
   for (const number of unique) {
     const node = response.repository[`pr_${number}`];
     if (!node) continue;
-    // GraphQL connections are oldest-first even when selected from the end.
-    const reviewComment = [...(node.comments?.nodes ?? [])].reverse()
-      .find(comment => /<!-- propr:ai-review\b/.test(comment.body || ''));
-    result.set(number, {
-      number: node.number,
-      url: node.url,
-      state: node.merged ? 'merged' : String(node.state || '').toLowerCase(),
-      draft: Boolean(node.isDraft),
-      head: node.headRefOid,
-      reviewDecision: includeChecks ? node.reviewDecision ?? null : null,
-      checks: { state: includeChecks ? node.commits?.nodes?.[0]?.commit.statusCheckRollup?.state ?? null : null },
-      mergeable: node.mergeStateStatus,
-      latestReview: reviewComment ? summarizeReviewComment(reviewComment.body, node.headRefOid) : null,
-      ultrafixActive: hasUltrafixLabel(node.labels?.nodes),
-    });
+    result.set(number, summarizePullRequest(node, includeChecks));
   }
   return result;
 }

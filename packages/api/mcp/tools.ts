@@ -36,7 +36,7 @@ import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { summarizeGoal } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
-import { applyTaskVisibility, queryTaskSummaries } from './taskListing.js';
+import { queryTaskSummaries } from './taskListing.js';
 
 export { applyTaskVisibility } from './taskListing.js';
 
