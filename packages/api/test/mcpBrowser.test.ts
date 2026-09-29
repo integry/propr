@@ -89,9 +89,14 @@ test('authorize limits GET and POST before client lookup and respects explicit p
   }
 });
 
-test('real consent and connected-app routes work at desktop/mobile widths and enforce CSRF and revocation', async t => {
+function resolveChromiumExecutablePath(): string {
   const executablePath = process.env.CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : chromium.executablePath());
   assert.ok(existsSync(executablePath), 'Install Chromium with npx playwright install --with-deps chromium or set CHROMIUM_PATH');
+  return executablePath;
+}
+
+test('real consent and connected-app routes work at desktop/mobile widths and enforce CSRF and revocation', async t => {
+  const executablePath = resolveChromiumExecutablePath();
   configureDemoMode(false);
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary()); await up(db);
