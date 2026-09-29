@@ -80,6 +80,13 @@ title: Glossary
 A frobnicator is a headingless concept that remains searchable.
 `;
 
+const sensitiveSource = `${'a'.repeat(996)} ghp_exampletoken tail
+
+## Credential ghp_headertoken
+
+Searchable ghp_bodytoken value.
+`;
+
 const duplicateHeadingsSource = `# Operations
 
 ## Local
@@ -124,6 +131,7 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   await writeFile(join(root, 'docs', 'features', 'overview.mdx'), overviewSource);
   await writeFile(join(root, 'docs', 'operations', 'deployment.md'), deploymentSource);
   await writeFile(join(root, 'docs', 'operations', 'glossary.md'), headinglessSource);
+  await writeFile(join(root, 'docs', 'operations', 'sensitive.md'), sensitiveSource);
   await writeFile(join(root, 'docs', 'operations', 'troubleshooting.md'), duplicateHeadingsSource);
   await writeFile(join(root, 'docs', 'operations', 'too-large.md'), Buffer.alloc(512 * 1024 + 1, 120));
   await writeFile(join(root, 'mcp.md'), '# MCP Guide\n\nConnect an MCP client to ProPR.\n');
@@ -249,6 +257,38 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
   const client = new Client({ name: 'docs-test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url) as never);
   t.after(() => client.close());
+  const protocolCall = async (name: string, args: Record<string, unknown>): Promise<Record<string, any>> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const result = await client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true);
+    return (result.structuredContent as { data: Record<string, any> }).data; // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
+
+  const wholeSensitive = await protocolCall('get_doc', { path: 'operations/sensitive', maxChars: 16000 });
+  let sensitiveOffset = 0;
+  let reconstructedSensitive = '';
+  let sensitiveNextOffset: number | null = 0;
+  while (sensitiveNextOffset !== null) {
+    const page = await protocolCall('get_doc', { path: 'operations/sensitive', offset: sensitiveOffset, maxChars: 1000 });
+    reconstructedSensitive += page.content;
+    sensitiveNextOffset = page.nextOffset;
+    if (sensitiveNextOffset !== null) {
+      assert.ok(sensitiveNextOffset > sensitiveOffset);
+      sensitiveOffset = sensitiveNextOffset;
+    }
+  }
+  assert.equal(reconstructedSensitive, wholeSensitive.content);
+  assert.doesNotMatch(reconstructedSensitive, /ghp_(?:example|header|body)token/);
+  assert.equal(wholeSensitive.totalChars, wholeSensitive.content.length);
+
+  const secretSearch = await protocolCall('search_docs', { query: 'headertoken' });
+  assert.deepEqual(secretSearch.results, []);
+  const credentialSearch = await protocolCall('search_docs', { query: 'credential' });
+  const sensitiveHeading = credentialSearch.results.find((result: { path: string }) => result.path === 'operations/sensitive');
+  assert.ok(sensitiveHeading);
+  assert.deepEqual(sensitiveHeading.section, { heading: 'Credential [redacted]', offset: sensitiveHeading.section.offset });
+  const sensitiveSection = await protocolCall('get_doc', { path: 'operations/sensitive', section: sensitiveHeading.section });
+  assert.match(sensitiveSection.content, /^## Credential \[redacted\]/);
+
   const templates = await client.listResourceTemplates();
   assert.ok(templates.resourceTemplates.some(template => template.uriTemplate === 'propr://instances/docs-test-instance/docs/{+path}'));
   const resource = await client.readResource({ uri: 'propr://instances/docs-test-instance/docs/features/pr-commands' });

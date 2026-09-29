@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import packageInfo from '../package.json' with { type: 'json' };
+import { redact } from './adapter.js';
 
 const MAX_DOC_BYTES = 512 * 1024;
 const REFRESH_INTERVAL_MS = 60_000;
@@ -307,15 +308,19 @@ async function buildIndex(root: string, inventory: Inventory): Promise<DocsIndex
     const source = await readDiscoveredFile(candidate.file);
     if (source === null) continue;
     const normalized = normalizeDocContent(source);
-    const outline = docOutline(normalized.content);
+    // Redact the complete normalized page before deriving any positions or
+    // bounded views. Otherwise pagination can split a credential so the
+    // dispatch-level safeguard no longer recognizes either fragment.
+    const content = redact(normalized.content) as string;
+    const outline = docOutline(content);
     const title = normalized.title ?? outline.find(item => item.level === 1)?.heading ?? fallbackTitle(candidate.path);
     pages.push({
       path: candidate.path,
       title,
       section: candidate.path.split('/')[0],
-      summary: summaryText(normalized.content, outline),
-      words: wordCount(normalized.content),
-      content: normalized.content,
+      summary: summaryText(content, outline),
+      words: wordCount(content),
+      content,
       outline,
       sidebarPosition: normalized.sidebarPosition,
     });
