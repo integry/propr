@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- publication recovery and failure-stage regressions share one database fixture */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -5,6 +6,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { createToolCatalog, type ToolDeps } from '../mcp/tools.js';
 import { McpError } from '../mcp/config.js';
+import { McpOperations } from '../mcp/operations.js';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
 
 const repository = 'acme/repo';
@@ -22,7 +24,7 @@ async function setup(t: { after: (fn: () => Promise<void>) => void }, id: string
 }
 
 function tools(db: Knex, request: McpPrincipal['github']['request'], authorize: () => Promise<void> = async () => {}) {
-  const principal = { user: { id: userId }, github: { request } } as unknown as McpPrincipal;
+  const principal = { user: { id: userId }, grant: { id: 'grant-1' }, github: { request } } as unknown as McpPrincipal;
   const deps: ToolDeps = { db, policy: { repository: authorize } as unknown as McpPolicy,
     taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
   const catalog = createToolCatalog(deps);
@@ -30,8 +32,13 @@ function tools(db: Knex, request: McpPrincipal['github']['request'], authorize: 
   const get = catalog.find(tool => tool.name === 'get_plan')!;
   const callPublish = (id: string, expectedRevision: number, operationId: string, resume = false) => publish.run({ principal, operationId,
     args: publish.schema.parse({ repository, planId: id, expectedRevision, resume, idempotencyKey: `publish-${operationId}` }) } as never);
+  const callTrackedPublish = (id: string, expectedRevision: number, idempotencyKey: string, resume = false) => {
+    const args = publish.schema.parse({ repository, planId: id, expectedRevision, resume, idempotencyKey });
+    return new McpOperations(db).run(principal, { tool: publish.name, args, repository }, operationId =>
+      publish.run({ principal, operationId, args } as never));
+  };
   const callGet = (id: string) => get.run({ principal, args: get.schema.parse({ repository, planId: id }) } as never);
-  return { callPublish, callGet };
+  return { callPublish, callTrackedPublish, callGet };
 }
 
 function rejectQueryOnce(db: Knex, predicate: (query: { sql?: string; bindings?: unknown[] }) => boolean): void {
@@ -44,6 +51,29 @@ function rejectQueryOnce(db: Knex, predicate: (query: { sql?: string; bindings?:
     }
     return query(connection, statement);
   };
+}
+
+function rejectQueriesInOrder(db: Knex, predicates: Array<(query: { sql?: string; bindings?: unknown[] }) => boolean>): void {
+  const query = db.client.query.bind(db.client);
+  let next = 0;
+  db.client.query = (connection: unknown, statement: { sql?: string; bindings?: unknown[] }) => {
+    if (predicates[next]?.(statement)) {
+      next += 1;
+      return Promise.reject(Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }));
+    }
+    return query(connection, statement);
+  };
+}
+
+async function recordAttempt(db: Knex, values: {
+  id: string; state: string; lifecycle: string; claimedAt: string; result?: string | null;
+}): Promise<void> {
+  const claimedAt = Date.parse(values.claimedAt);
+  await db('mcp_operations').insert({ id: values.id, owner_id: userId, grant_id: 'grant-1',
+    idempotency_key: `attempt-${values.id}`, tool: 'publish_plan', repository, payload_hash: 'x'.repeat(64),
+    state: values.state, lifecycle: values.lifecycle, result: values.result ?? null, artifacts: '{}',
+    accepted_at: claimedAt - 1, created_at: claimedAt - 1, updated_at: claimedAt + 1,
+    finished_at: ['completed', 'failed', 'cancelled'].includes(values.lifecycle) ? claimedAt + 1 : null });
 }
 
 test('a first-issue GitHub rejection releases the claimed review plan and permits a later publication', async t => {
@@ -78,6 +108,54 @@ test('a first-issue GitHub rejection releases the claimed review plan and permit
   assert.equal((result.data as { resumed: boolean }).resumed, false);
   draft = await db('task_drafts').where({ draft_id: id }).first();
   assert.equal(draft.status, 'executed');
+});
+
+test('a partial publication reports a plan issue insert failure as database work', async t => {
+  const id = '10000000-0000-4000-8000-000000000009';
+  const db = await setup(t, id, tasks.slice(0, 1));
+  const request = (async (_route: string, args: Record<string, unknown>) => ({
+    data: { number: 81, html_url: 'https://github.com/acme/repo/issues/81', title: args.title },
+  })) as McpPrincipal['github']['request'];
+  const { callPublish } = tools(db, request);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+  rejectQueryOnce(db, query => /^insert into `plan_issues`/i.test(query.sql || ''));
+
+  await assert.rejects(callPublish(id, before.mcp_revision, 'record-stage'), error => {
+    assert.ok(error instanceof McpError);
+    assert.equal(error.code, 'PUBLISH_PARTIAL');
+    assert.equal(error.stage, 'database');
+    assert.equal(error.details?.step, 'record_issue');
+    assert.equal((error.details?.cause as { code: string }).code, 'DATABASE_BUSY');
+    return true;
+  });
+});
+
+test('a partial publication reports a later repository denial as authorization work', async t => {
+  const id = '10000000-0000-4000-8000-000000000010';
+  const db = await setup(t, id, tasks.slice(0, 2));
+  let authorizationCount = 0;
+  const authorize = async () => {
+    authorizationCount += 1;
+    if (authorizationCount === 2) throw new McpError('REPOSITORY_FORBIDDEN', 'Repository access was denied.', 403);
+  };
+  let postCount = 0;
+  const request = (async (_route: string, args: Record<string, unknown>) => {
+    postCount += 1;
+    return { data: { number: 81 + postCount, html_url: `https://github.com/acme/repo/issues/${81 + postCount}`,
+      title: args.title } };
+  }) as McpPrincipal['github']['request'];
+  const { callPublish } = tools(db, request, authorize);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+
+  await assert.rejects(callPublish(id, before.mcp_revision, 'authorization-stage'), error => {
+    assert.ok(error instanceof McpError);
+    assert.equal(error.code, 'PUBLISH_PARTIAL');
+    assert.equal(error.stage, 'authorization');
+    assert.equal(error.details?.step, 'authorize');
+    assert.equal((error.details?.createdIssues as unknown[]).length, 1);
+    return true;
+  });
+  assert.equal(postCount, 1);
 });
 
 test('an uncertain first issue remains recoverable under its original marker', async t => {
@@ -255,6 +333,80 @@ test('a resumed publication preserves every issue when the final draft update fa
   assert.deepEqual((await db('plan_issues').where({ draft_id: id }).orderBy('issue_number')).map(row => row.issue_number), [71, 72]);
 });
 
+test('a resume reclaims an interrupted active attempt and adopts its unrecorded issue', async t => {
+  const id = '10000000-0000-4000-8000-000000000011';
+  const db = await setup(t, id, tasks.slice(0, 2));
+  const claimedAt = new Date(Date.now() - 3 * 60_000).toISOString();
+  await db('task_drafts').where({ draft_id: id }).update({ status: 'executing', context_config: JSON.stringify({
+    publication: { state: 'active', operationId: 'interrupted-original', attemptId: 'interrupted-attempt',
+      created: [{ index: 0, number: 91, url: 'https://github.com/acme/repo/issues/91' }], claimedAt },
+  }) });
+  await db('plan_issues').insert({ draft_id: id, repository, issue_number: 91 });
+  await recordAttempt(db, { id: 'interrupted-attempt', state: 'accepted', lifecycle: 'accepted', claimedAt });
+  const remote = [{ number: 92, html_url: 'https://github.com/acme/repo/issues/92', title: 'Second',
+    body: '<!-- propr-mcp:interrupted-original:1 -->' }];
+  let postCount = 0;
+  const request = (async (route: string) => {
+    if (route === 'GET /repos/{owner}/{repo}/issues') return { data: remote };
+    postCount += 1;
+    throw new Error('the interrupted issue must be adopted');
+  }) as McpPrincipal['github']['request'];
+  const { callPublish } = tools(db, request);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+
+  const result = (await callPublish(id, before.mcp_revision, 'after-interruption', true)).data as
+    { adopted: number[]; issues: Array<{ number: number }> };
+  assert.deepEqual(result.adopted, [1]);
+  assert.deepEqual(result.issues.map(issue => issue.number), [91, 92]);
+  assert.equal(postCount, 0);
+  assert.deepEqual(await db('mcp_operations').where({ id: 'interrupted-attempt' }).first('state', 'lifecycle'),
+    { state: 'unknown', lifecycle: 'unknown' });
+  assert.equal((await db('task_drafts').where({ draft_id: id }).first()).status, 'executed');
+});
+
+test('a resume remains recoverable when recording partial state also fails', async t => {
+  const id = '10000000-0000-4000-8000-000000000012';
+  const db = await setup(t, id, tasks.slice(0, 2));
+  await db('task_drafts').where({ draft_id: id }).update({ status: 'executing', context_config: JSON.stringify({
+    publication: { state: 'partial', operationId: 'persistence-original',
+      created: [{ index: 0, number: 101, url: 'https://github.com/acme/repo/issues/101' }], failedIndex: 1,
+      failedAt: new Date().toISOString(), cause: { code: 'UPSTREAM_UNREACHABLE', message: 'lost' } },
+  }) });
+  await db('plan_issues').insert({ draft_id: id, repository, issue_number: 101 });
+  const remote: Array<{ number: number; html_url: string; title: string; body: string }> = [];
+  let postCount = 0;
+  const request = (async (route: string, args: Record<string, unknown>) => {
+    if (route === 'GET /repos/{owner}/{repo}/issues') return { data: remote };
+    postCount += 1;
+    const issue = { number: 102, html_url: 'https://github.com/acme/repo/issues/102',
+      title: String(args.title), body: String(args.body) };
+    remote.push(issue);
+    return { data: issue };
+  }) as McpPrincipal['github']['request'];
+  const { callPublish, callTrackedPublish } = tools(db, request);
+  const before = await db('task_drafts').where({ draft_id: id }).first();
+  rejectQueriesInOrder(db, [
+    query => /^insert into `plan_issues`/i.test(query.sql || '') && query.bindings?.includes(102) === true,
+    query => /^update `task_drafts`/i.test(query.sql || ''),
+  ]);
+
+  const interrupted = await callTrackedPublish(id, before.mcp_revision, 'persistence-failure', true);
+  assert.equal(interrupted.state, 'unknown');
+  let draft = await db('task_drafts').where({ draft_id: id }).first();
+  const active = JSON.parse(draft.context_config).publication;
+  assert.equal(active.state, 'active');
+  assert.equal(active.operationId, 'persistence-original');
+  assert.equal(active.attemptId, interrupted.operationId);
+
+  const recovered = (await callPublish(id, draft.mcp_revision, 'after-persistence-failure', true)).data as
+    { adopted: number[]; issues: Array<{ number: number }> };
+  assert.deepEqual(recovered.adopted, [1]);
+  assert.deepEqual(recovered.issues.map(issue => issue.number), [101, 102]);
+  assert.equal(postCount, 1, 'the issue created before both database failures is adopted');
+  draft = await db('task_drafts').where({ draft_id: id }).first();
+  assert.equal(draft.status, 'executed');
+});
+
 test('an active resume is exclusively owned while its GitHub POST is awaiting', async t => {
   const id = '10000000-0000-4000-8000-000000000005';
   const db = await setup(t, id);
@@ -278,6 +430,7 @@ test('an active resume is exclusively owned while its GitHub POST is awaiting', 
   }) as McpPrincipal['github']['request'];
   const { callPublish, callGet } = tools(db, request);
   const before = await db('task_drafts').where({ draft_id: id }).first();
+  await recordAttempt(db, { id: 'resume-a', state: 'accepted', lifecycle: 'accepted', claimedAt: new Date().toISOString() });
   const firstResume = callPublish(id, before.mcp_revision, 'resume-a', true);
   await started;
 
@@ -286,7 +439,7 @@ test('an active resume is exclusively owned while its GitHub POST is awaiting', 
   await assert.rejects(callPublish(id, active.mcp_revision, 'resume-b', true), error => {
     assert.ok(error instanceof McpError);
     assert.equal(error.code, 'PRECONDITION_FAILED');
-    assert.match(error.message, /not partially published/i);
+    assert.match(error.message, /not recoverable/i);
     return true;
   });
   assert.equal(postCount, 1, 'the competing resume cannot reach a POST');
@@ -358,7 +511,7 @@ test('invalid plans and non-partial resume requests fail before claiming or cont
   await assert.rejects(callPublish(id, valid.mcp_revision, 'not-partial', true), error => {
     assert.ok(error instanceof McpError);
     assert.equal(error.code, 'PRECONDITION_FAILED');
-    assert.match(error.message, /not partially published/i);
+    assert.match(error.message, /not recoverable/i);
     return true;
   });
   assert.equal((await db('task_drafts').where({ draft_id: id }).first()).status, 'review');

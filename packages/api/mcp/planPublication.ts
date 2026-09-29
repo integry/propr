@@ -61,7 +61,7 @@ export function activePublication(value: unknown): ActivePublication | undefined
   const publication = value as Partial<ActivePublication>;
   if (publication.state !== 'active' || typeof publication.operationId !== 'string'
     || typeof publication.attemptId !== 'string' || !Array.isArray(publication.created)
-    || typeof publication.claimedAt !== 'string') return undefined;
+    || typeof publication.claimedAt !== 'string' || !Number.isFinite(Date.parse(publication.claimedAt))) return undefined;
   const created = publication.created.filter((issue): issue is PublishedIssue => !!issue
     && Number.isInteger(issue.index) && issue.index >= 0 && Number.isInteger(issue.number) && issue.number > 0
     && typeof issue.url === 'string');
