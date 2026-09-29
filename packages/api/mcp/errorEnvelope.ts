@@ -208,7 +208,7 @@ function classifyKnown(error: unknown): McpErrorEnvelope {
 /** Classify any thrown value, retaining mutation uncertainty when effects may have occurred. */
 export function classifyError(error: unknown, options: { sideEffectsPossible: boolean }): McpErrorEnvelope {
   const classified = classifyKnown(error);
-  if (!options.sideEffectsPossible || isMcpError(error)) return classified;
+  if (!options.sideEffectsPossible || (isMcpError(error) && classified.status < 500)) return classified;
   return {
     code: 'OUTCOME_UNKNOWN',
     message: 'Outcome uncertain. Inspect the target before issuing a new action.',

@@ -173,7 +173,7 @@ export function accessPrincipal(principal?: Pick<McpPrincipal, 'user' | 'grant'>
  */
 export function classifyMcpFailure(error: unknown, options: { sideEffectsPossible?: boolean } = {}): { status: number; outcome: McpAccessOutcome; errorCode: string } {
   const envelope = classifyError(error, { sideEffectsPossible: options.sideEffectsPossible ?? false });
-  return { status: envelope.status, outcome: envelope.status >= 500 ? 'error' : 'denied', errorCode: envelope.code };
+  return { status: envelope.status, outcome: envelope.code === 'OUTCOME_UNKNOWN' || envelope.status >= 500 ? 'error' : 'denied', errorCode: envelope.code };
 }
 
 /** JSON-RPC request identifiers are scalars; anything else is not correlatable. */
