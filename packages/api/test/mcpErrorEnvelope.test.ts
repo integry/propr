@@ -27,22 +27,25 @@ test('validation, transport and database failures receive stable classifications
 });
 
 test('GitHub rejections retain safe detail and mutation uncertainty', () => {
+  const mcpToken = 'propr_mcp_abcdefghijklmnopqrstuvwxyz';
   const github = Object.assign(new Error('request failed'), {
     name: 'HttpError', status: 422,
-    response: { status: 422, headers: {}, data: { message: 'Validation Failed', errors: [{ message: 'Reference does not exist' }] } },
+    response: { status: 422, headers: {}, data: { message: `Validation Failed for ${mcpToken}`, errors: [{ message: 'Reference does not exist' }] } },
   });
   const read = classifyError(github, { sideEffectsPossible: false });
   assert.equal(read.code, 'GITHUB_REJECTED');
-  assert.equal(read.message, 'Validation Failed: Reference does not exist');
+  assert.equal(read.message, 'Validation Failed for [REDACTED]: Reference does not exist');
   const mutation = classifyError(github, { sideEffectsPossible: true });
   assert.equal(mutation.code, 'OUTCOME_UNKNOWN');
   assert.equal(mutation.retryable, false);
   assert.equal(mutation.stage, 'github');
-  assert.deepEqual(mutation.cause, { code: 'GITHUB_REJECTED', message: 'Validation Failed: Reference does not exist' });
+  assert.deepEqual(mutation.cause, { code: 'GITHUB_REJECTED', message: 'Validation Failed for [REDACTED]: Reference does not exist' });
   const result = toToolErrorResult(read);
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error.code, 'GITHUB_REJECTED');
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  assert.ok(!result.content[0].text.includes(mcpToken));
+  assert.ok(!JSON.stringify(result.structuredContent).includes(mcpToken));
 });
 
 test('all envelope strings and details redact credentials and local paths', () => {
@@ -53,11 +56,12 @@ test('all envelope strings and details redact credentials and local paths', () =
     'https://x-access-token:abc@github.com/acme/repo.git',
     'https://example.test/file?X-Amz-Signature=abc&token=def',
     'pia_mcp_abcdefghijklmnopqrstuvwxyz',
+    'propr_mcp_abcdefghijklmnopqrstuvwxyz',
   ].join(' ');
   const details = redactDetails({ message: `${input} failed at /home/user/private/source.ts`, accessToken: 'never-visible', nested: { password: 'never-visible' }, path: '/home/user/private/file.txt' });
   const envelope = new McpError('SAFE_ERROR', input, 400, { details }).toEnvelope();
   const serialized = JSON.stringify(toToolErrorResult(envelope));
-  for (const secret of ['ghp_', 'github_pat_', 'Bearer abc', 'x-access-token:abc', 'X-Amz-Signature=abc', 'token=def', 'pia_mcp_', 'accessToken', 'never-visible', '/home/user']) {
+  for (const secret of ['ghp_', 'github_pat_', 'Bearer abc', 'x-access-token:abc', 'X-Amz-Signature=abc', 'token=def', 'pia_mcp_', 'propr_mcp_', 'accessToken', 'never-visible', '/home/user']) {
     assert.ok(!serialized.includes(secret), secret);
   }
   assert.equal(envelope.details?.path, 'file.txt');

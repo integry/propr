@@ -17,7 +17,7 @@ export interface McpErrorEnvelope {
 
 const SENSITIVE_DETAIL_KEY = /token|secret|password|authorization|cookie|private.?key|credential/i;
 const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g;
-const MCP_TOKEN = /\bpia_mcp_[A-Za-z0-9._~-]+\b/g;
+const MCP_TOKEN = /\b(?:pia|propr)_mcp_[A-Za-z0-9._~-]+\b/g;
 const BEARER_VALUE = /\bBearer\s+[^\s,;"']+/gi;
 const CREDENTIALED_GIT_URL = /(https:\/\/x-access-token:)[^@\s/]+(@[^\s]+)/gi;
 const SIGNED_QUERY_VALUE = /([?&](?:X-Amz-Signature|token|access_token|signature)=)[^&#\s]*/gi;

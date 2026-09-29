@@ -152,9 +152,10 @@ test('a failed mutation is recorded with its own outcome, on the first attempt a
   const mutation = (name: string, run: McpTool['run']): McpTool => ({ name, description: 'fixture', scope: 'read', schema, run });
   const denied = mutation('denied_fixture', async () => { throw new McpError('REPOSITORY_FORBIDDEN', 'Denied', 403); });
   const broken = mutation('broken_fixture', async () => { throw new Error('fixture failure'); });
+  const mcpToken = 'propr_mcp_abcdefghijklmnopqrstuvwxyz';
   const githubRejected = mutation('github_rejected_fixture', async () => { throw Object.assign(new Error('request failed'), {
     name: 'HttpError', status: 422,
-    response: { status: 422, headers: {}, data: { message: 'Validation Failed', errors: [{ message: 'Reference does not exist' }] } },
+    response: { status: 422, headers: {}, data: { message: 'Validation Failed', errors: [{ message: `Rejected credential ${mcpToken}` }] } },
   }); });
   const queued = mutation('queued_fixture', async () => ({ status: 202, data: { state: 'queued' } }));
 
@@ -167,8 +168,13 @@ test('a failed mutation is recorded with its own outcome, on the first attempt a
   const githubArgs = { ...args, idempotencyKey: 'mutation-fixture-3' };
   const githubReceipt = await executeTool(githubRejected, githubArgs, principal(), deps);
   assert.equal((githubReceipt.data as { state: string }).state, 'unknown');
+  assert.ok(!JSON.stringify(githubReceipt).includes(mcpToken));
+  const operationId = (githubReceipt.data as { operationId: string }).operationId;
+  const persisted = await deps.db('mcp_operations').where({ id: operationId }).first('result');
+  assert.ok(!String(persisted?.result).includes(mcpToken));
+  assert.match(String(persisted?.result), /Rejected credential \[REDACTED\]/);
   const githubReplay = await executeTool(githubRejected, githubArgs, principal(), deps);
-  assert.equal((githubReplay.data as { operationId: string }).operationId, (githubReceipt.data as { operationId: string }).operationId);
+  assert.equal((githubReplay.data as { operationId: string }).operationId, operationId);
   await executeTool(queued, { ...args, idempotencyKey: 'mutation-fixture-4' }, principal(), deps);
 
   const recorded = await rows(deps.db);
