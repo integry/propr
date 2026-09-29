@@ -69,11 +69,17 @@ export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt
   const result = record(receipt.result) ?? {};
   const continuation = record(result.continuation) ?? {};
   const target = record(receipt.targetState) ?? {};
+  const submissionProgress = record(result.progress) ?? {};
+  const submissionTask = record(submissionProgress.task) ?? {};
+  const submissionPullRequest = record(submissionProgress.pullRequest) ?? {};
   const targetIssues: Record<string, unknown>[] = Array.isArray(target.issues)
     ? target.issues.map(record).filter((value): value is Record<string, unknown> => !!value) : [];
   const artifacts: Record<string, unknown> = {};
 
-  const taskId = taskIdFromReceipt(target, continuation, result, targetIssues);
+  const submissionId = nonEmptyString(result.submissionId);
+  if (submissionId) artifacts.submissionId = submissionId;
+
+  const taskId = nonEmptyString(submissionTask.id) ?? taskIdFromReceipt(target, continuation, result, targetIssues);
   if (taskId) artifacts.taskId = taskId;
 
   const repository = nonEmptyString(result.repository, row.repository);
@@ -81,6 +87,7 @@ export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt
     result.pullRequest, result.pr_number, result.prNumber,
     continuation.pullRequest, continuation.pr_number,
     target.pullRequest, target.pr_number, target.final_pr_number,
+    submissionPullRequest.number,
     ...targetIssues.flatMap(issue => [issue.pullRequest, issue.pr_number]),
   );
   if (repository && pullRequestNumber) artifacts.pullRequest = {

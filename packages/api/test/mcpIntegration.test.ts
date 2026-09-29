@@ -16,7 +16,11 @@ import { up as initial } from '../../core/src/db/migrations/20251216000000_initi
 import { up as planIssues } from '../../core/src/db/migrations/20260120000000_add_plan_issues.js';
 import { up as planIssueTasks } from '../../core/src/db/migrations/20260121000000_add_task_id_to_plan_issues.js';
 import { up as taskPullRequests } from '../../core/src/db/migrations/20260216000000_add_pr_number_to_tasks.js';
+import { up as pullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as taskSubmissions } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
+import { up as submissionIdentity } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
+import { up as taskFinalResult } from '../../core/src/db/migrations/20260925000000_add_final_result_to_tasks.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { McpError } from '../mcp/config.js';
@@ -29,7 +33,8 @@ after(async () => closeConnection());
 
 test('both official SDK protocol eras execute real draft/revision/publication/task transitions over the same HTTP endpoint', async () => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await mcpMigration(db);
+  await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await pullRequestState(db);
+  await mcpMigration(db); await taskSubmissions(db); await submissionIdentity(db); await taskFinalResult(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await db.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('owner_id'); table.string('repository'); table.string('current_task_id');
@@ -97,6 +102,16 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         const resource = await client.readResource({ uri: `propr://instances/test-instance/plans/${id}` }); assert.equal(resource.contents.length, 1);
         await db('tasks').insert({ task_id: `task-${modern}`, repository: 'acme/repo', task_type: 'issue', issue_number: 1 });
         await db('task_history').insert({ task_id: `task-${modern}`, state: 'processing' });
+        const submissionId = modern ? '00000000-0000-4000-8000-000000000001' : '00000000-0000-4000-8000-000000000002';
+        const submissionIssue = modern ? 1 : 2;
+        await db('task_submissions').insert({ id: submissionId, user_id: '123', submission_key: `submission-${modern}`,
+          payload_hash: `hash-${modern}`, repository: 'acme/repo', payload: '{}', state: 'queued', issue_number: submissionIssue,
+          issue_url: `https://github.com/acme/repo/issues/${submissionIssue}`, task_id: `task-${modern}`, latest_task_id: `task-${modern}`,
+          dispatch_complete: true });
+        const submissionResource = await client.readResource({ uri: `propr://instances/test-instance/submissions/${submissionId}` });
+        const submissionData = JSON.parse((submissionResource.contents[0] as { text: string }).text).data;
+        assert.equal(submissionData.progress.stage, 'running');
+        assert.equal(submissionData.progress.task.id, `task-${modern}`);
         let task = await call('get_task', { repository: 'acme/repo', taskId: `task-${modern}` }); assert.equal(task.data.latestEvent.state, 'processing');
         await db('task_history').insert({ task_id: `task-${modern}`, state: 'completed' });
         task = await call('get_task', { repository: 'acme/repo', taskId: `task-${modern}` }); assert.equal(task.data.latestEvent.state, 'completed');

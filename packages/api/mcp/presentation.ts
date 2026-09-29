@@ -10,10 +10,15 @@ function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpCo
   const planId = args.planId || continuation.planId;
   const goalId = args.goalId || continuation.goalId;
   const taskId = continuation.taskId || args.taskId;
+  const submissionId = args.submissionId || continuation.submissionId || result.submissionId;
   const { origin, instanceId } = config;
   let resource = 'connection', ui = origin;
   const frontend = (process.env.FRONTEND_URL || origin).replace(/\/$/, '');
-  if (planId) { resource = `plans/${encodeURIComponent(planId)}`; ui = `${frontend}/studio/${encodeURIComponent(planId)}`; }
+  if (submissionId) {
+    resource = `submissions/${encodeURIComponent(submissionId)}`;
+    if (taskId) ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`;
+  }
+  else if (planId) { resource = `plans/${encodeURIComponent(planId)}`; ui = `${frontend}/studio/${encodeURIComponent(planId)}`; }
   else if (goalId) { resource = `goals/${encodeURIComponent(goalId)}`; ui = `${frontend}/goals/${encodeURIComponent(goalId)}`; }
   else if (taskId) { resource = `tasks/${encodeURIComponent(taskId)}`; ui = `${frontend}/tasks/${encodeURIComponent(taskId)}`; }
   else if (args.pullRequest) { resource = `repositories/${args.repository}/pulls/${args.pullRequest}`; ui = `https://github.com/${args.repository}/pull/${args.pullRequest}`; }

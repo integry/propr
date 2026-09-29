@@ -21,6 +21,12 @@ interface SubmissionData {
   submissionId: string;
   error: string | null;
   continuation: { taskId?: string };
+  progress: {
+    stage: string;
+    issue: { number: number; url: string } | null;
+    task: { id: string; state: string | null; failureReason: string | null } | null;
+    pullRequest: { number: number; url: string; state: string | null } | null;
+  };
 }
 interface Receipt {
   operationId: string;
@@ -41,11 +47,16 @@ async function fixture() {
   await identityMigration(db);
   await db.schema.createTable('tasks', table => {
     table.string('task_id').primary(); table.string('repository'); table.string('task_type');
-    table.integer('pr_number'); table.string('initial_job_data'); table.timestamp('created_at').defaultTo(db.fn.now());
+    table.integer('pr_number'); table.string('initial_job_data'); table.text('final_result');
+    table.timestamp('created_at').defaultTo(db.fn.now());
   });
   await db.schema.createTable('task_history', table => {
     table.increments('history_id'); table.string('task_id'); table.string('state');
     table.string('reason'); table.string('metadata'); table.timestamp('timestamp').defaultTo(db.fn.now());
+  });
+  await db.schema.createTable('notification_pull_request_state', table => {
+    table.string('repository'); table.integer('pr_number'); table.string('merged_at');
+    table.primary(['repository', 'pr_number']);
   });
   const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
   const controls = { queueFailure: false, ambiguousCreation: false, writeAccess: true };
@@ -87,7 +98,7 @@ async function fixture() {
 test('MCP launches ordinary issue work once and follows delayed task association through completion', async () => {
   const f = await fixture();
   try {
-    for (const name of ['create_task', 'get_task_submission', 'retry_task_submission']) {
+    for (const name of ['create_task', 'get_task_submission', 'retry_task_submission', 'list_task_submissions']) {
       assert.ok(z.toJSONSchema(f.catalog.find(tool => tool.name === name)!.schema));
     }
     const args = { repository: 'Owner/Repo', instruction: '  Fix invoice dates.\nKeep the formatting.  ', idempotencyKey: 'create-invoice-task' };
@@ -98,6 +109,9 @@ test('MCP launches ordinary issue work once and follows delayed task association
     assert.ok(receipt.lifecycle.acceptedAt);
     assert.equal(receipt.result.taskId, null);
     assert.equal(receipt.result.issueUrl, 'https://github.com/owner/repo/issues/42');
+    assert.equal(receipt.result.progress.stage, 'queued');
+    assert.deepEqual(receipt.result.progress.issue, { number: 42, url: 'https://github.com/owner/repo/issues/42' });
+    assert.equal(receipt.lifecycle.artifacts.submissionId, receipt.result.submissionId);
     assert.deepEqual((await f.call('create_task', args)).data, first.data);
     assert.equal((await f.db('task_submissions')).length, 1);
     assert.equal(f.enqueues(), 1);
@@ -120,10 +134,18 @@ test('MCP launches ordinary issue work once and follows delayed task association
     const running = await poll();
     assert.equal(running.state, 'running');
     assert.equal(running.lifecycle.state, 'running');
+    assert.equal(running.result.progress.stage, 'running');
+    assert.equal(running.result.progress.task?.id, 'ordinary-task');
     assert.ok(running.lifecycle.startedAt);
+    assert.equal(running.lifecycle.artifacts.taskId, 'ordinary-task');
     const status = await f.call('get_task_submission', { repository: 'owner/repo', submissionId: stored.id });
     assert.equal((status.data as SubmissionData).taskId, 'ordinary-task');
+    assert.equal((status.data as SubmissionData).progress.stage, 'running');
     assert.equal(status.links.ui, 'https://instance.example/tasks/ordinary-task');
+    assert.equal(status.links.resource, `propr://instances/test/submissions/${stored.id}`);
+    await f.db('tasks').where({ task_id: 'ordinary-task' }).update({ pr_number: 45 });
+    await f.db('notification_pull_request_state').insert({ repository: 'owner/repo', pr_number: 45,
+      merged_at: '2026-09-29T14:00:00.000Z' });
     await f.db('task_history').insert({ task_id: 'ordinary-task', state: 'completed' });
     const [completed, concurrent] = await Promise.all([poll(), poll()]);
     assert.equal(completed.state, 'completed');
@@ -131,8 +153,23 @@ test('MCP launches ordinary issue work once and follows delayed task association
     assert.equal(concurrent.lifecycle.state, 'completed');
     assert.ok(completed.lifecycle.finishedAt);
     assert.equal(completed.lifecycle.artifacts.taskId, 'ordinary-task');
+    assert.deepEqual(completed.lifecycle.artifacts.pullRequest, {
+      repository: 'owner/repo', number: 45, url: 'https://github.com/owner/repo/pull/45',
+    });
+    assert.equal(completed.result.progress.stage, 'completed');
+    assert.deepEqual(completed.result.progress.pullRequest, {
+      number: 45, url: 'https://github.com/owner/repo/pull/45', state: 'merged',
+    });
     assert.equal(completed.result.continuation.taskId, 'ordinary-task');
     assert.equal(completed.retryAfterSeconds, undefined);
+    await f.db('tasks').where({ task_id: 'ordinary-task' }).update({ pr_number: null,
+      final_result: JSON.stringify({ postProcessing: { pr: { number: 46 } } }) });
+    const fallback = (await f.call('get_task_submission', {
+      repository: 'owner/repo', submissionId: stored.id,
+    })).data as SubmissionData;
+    assert.deepEqual(fallback.progress.pullRequest, {
+      number: 46, url: 'https://github.com/owner/repo/pull/46', state: null,
+    });
     await f.db('task_history').where({ task_id: 'ordinary-task' }).delete();
     const durable = await poll();
     assert.equal(durable.lifecycle.state, 'completed');
@@ -192,8 +229,44 @@ test('MCP validates direct task inputs and enforces execute scope, repository wr
   } finally { await f.db.destroy(); }
 });
 
+test('submission reads redact task failures and active lists are owner-scoped without GitHub reads', async () => {
+  const f = await fixture();
+  try {
+    await f.call('create_task', { repository: 'owner/repo', instruction: 'Keep this queued', idempotencyKey: 'active-submission' });
+    await f.call('create_task', { repository: 'owner/repo', instruction: 'Let this fail', idempotencyKey: 'failed-submission' });
+    const submissions = await f.db('task_submissions').orderBy('created_at').orderBy('id');
+    const failed = submissions.find(row => JSON.parse(row.payload).instruction === 'Let this fail')!;
+    await f.db('tasks').insert({ task_id: 'failed-task', repository: 'owner/repo', task_type: 'issue' });
+    await associateSubmissionTask(f.db, failed.id, 'failed-task');
+    await f.db('task_history').insert({ task_id: 'failed-task', state: 'failed',
+      reason: 'Provider rejected github_pat_secret_value_1234567890 and Bearer private-token' });
 
-test('an unpolled launch receipt stays with its original execution after an issue retry starts', async () => {
+    const githubCalls = f.calls.length;
+    const failedRead = (await f.call('get_task_submission', {
+      repository: 'owner/repo', submissionId: failed.id,
+    })).data as SubmissionData;
+    assert.equal(failedRead.progress.stage, 'failed');
+    assert.equal(failedRead.progress.task?.id, 'failed-task');
+    assert.equal(failedRead.progress.task?.failureReason,
+      'Provider rejected [REDACTED] and Bearer [REDACTED]');
+
+    const active = (await f.call('list_task_submissions', { stage: 'active' })).data as {
+      submissions: SubmissionData[]; nextOffset: number | null;
+    };
+    assert.equal(active.submissions.length, 1);
+    assert.equal(active.submissions[0].progress.stage, 'queued');
+    assert.equal(active.nextOffset, null);
+    const bob = { ...f.principal, user: { ...f.principal.user, id: 'bob' } } as McpPrincipal;
+    const hidden = (await f.call('list_task_submissions', { repository: 'owner/repo', stage: 'active' }, bob)).data as {
+      submissions: SubmissionData[];
+    };
+    assert.deepEqual(hidden.submissions, []);
+    assert.equal(f.calls.length, githubCalls);
+  } finally { await f.db.destroy(); }
+});
+
+
+test('an unpolled launch receipt follows the latest execution after an issue retry starts', async () => {
   const f = await fixture();
   try {
     const receipt = (await f.call('create_task', { repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: 'unpolled-launch' })).data as Receipt;
@@ -207,8 +280,10 @@ test('an unpolled launch receipt stays with its original execution after an issu
     await associateSubmissionTask(f.db, submission.id, 'later-task');
     await f.db('task_history').insert({ task_id: 'later-task', state: 'processing' });
     const result = (await f.call('get_operation', { operationId: receipt.operationId })).data as Receipt;
-    assert.equal(result.state, 'completed');
-    assert.equal(result.result.continuation.taskId, 'first-task');
+    assert.equal(result.state, 'running');
+    assert.equal(result.result.continuation.taskId, 'later-task');
+    assert.equal(result.result.progress.task.id, 'later-task');
+    assert.equal(result.result.progress.stage, 'running');
     assert.equal((await f.db('task_submissions').first()).latest_task_id, 'later-task');
   } finally { await f.db.destroy(); }
 });

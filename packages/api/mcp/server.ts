@@ -59,6 +59,7 @@ export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog:
   for (const [path, tool, table, column, argument] of [
     ['plans', 'get_plan', 'task_drafts', 'draft_id', 'planId'], ['goals', 'get_goal', 'goals', 'goal_id', 'goalId'],
     ['tasks', 'get_task', 'tasks', 'task_id', 'taskId'], ['changes', 'get_task_changes', 'tasks', 'task_id', 'taskId'],
+    ['submissions', 'get_task_submission', 'task_submissions', 'id', 'submissionId'],
   ]) {
     server.registerResource(path, new ResourceTemplate(`${prefix}/${path}/{id}`, { list: undefined }), { mimeType: 'application/json' }, async (uri, vars) => surface('resource', path, async () => {
       const row = await deps.db(table).where({ [column]: vars.id }).first('repository');
