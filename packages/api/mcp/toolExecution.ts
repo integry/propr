@@ -91,6 +91,13 @@ function redactToolResult(tool: McpTool, result: unknown): Record<string, unknow
   return data;
 }
 
+/** Preserve binary content while applying the result-redaction boundary to text overrides. */
+function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] | undefined {
+  return content?.map(block => block.type === 'text'
+    ? { ...block, text: redact(block.text) as string }
+    : block);
+}
+
 // eslint-disable-next-line complexity -- dispatch keeps authorization, durable mutation handling, content bounds and logging in one auditable path
 async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
@@ -129,12 +136,13 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
       operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
   const data = redactToolResult(tool, result);
+  const content = redactToolContent(readContent);
   const jsonBytes = Buffer.byteLength(JSON.stringify(data));
   // Binary content has its own tool-specific bound and is intentionally not
   // subject to the JSON page limit below.
-  noteToolOutcome(tool, access, data, readContent);
+  noteToolOutcome(tool, access, data, content);
   if (jsonBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
-  return { ...presentResult(tool, args, data, deps.policy.config), data, ...(readContent ? { content: readContent } : {}) };
+  return { ...presentResult(tool, args, data, deps.policy.config), data, ...(content ? { content } : {}) };
 }
 
 /**

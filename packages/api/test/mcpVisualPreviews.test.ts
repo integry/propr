@@ -25,13 +25,15 @@ after(closeConnection);
 const repository = 'acme/repo';
 const imageAsset = 'image-asset';
 const videoAsset = 'video-asset';
+const titleSecret = 'github_pat_titleSecret123';
+const descriptionSecret = 'ghp_descriptionSecret123';
 const attachment = (asset: string) => `https://github.com/user-attachments/assets/${asset}`;
 const published = `<!-- propr-visual-preview -->
-### Dashboard
+### Dashboard ${titleSecret}
 
 ![Dashboard](${attachment(imageAsset)})
 
-Rendered dashboard.
+Rendered ${descriptionSecret} dashboard.
 
 ### Walkthrough
 
@@ -82,7 +84,7 @@ test('visual preview tools list task-scoped media and return bounded image block
 
   const listed = await executeTool(tool('list_visual_previews'), { repository, pullRequest: 49 }, principal, deps);
   assert.deepEqual((listed.data as { previews: unknown[] }).previews, [
-    { previewId: 'pull:49:image-asset', type: 'image', title: 'Dashboard', description: 'Rendered dashboard.', fetchable: true },
+    { previewId: 'pull:49:image-asset', type: 'image', title: 'Dashboard [redacted]', description: 'Rendered [redacted] dashboard.', fetchable: true },
     { previewId: 'pull:49:video-asset', type: 'video', title: 'Walkthrough', description: '', fetchable: false },
   ]);
 
@@ -150,6 +152,14 @@ test('visual preview tools list task-scoped media and return bounded image block
       const details = JSON.parse((result.content[1] as { text: string }).text);
       assert.equal(details.originalBytes, source.byteLength);
       assert.equal(details.bytes, rendered.byteLength);
+      assert.equal(details.title, 'Dashboard [redacted]');
+      assert.equal(details.description, 'Rendered [redacted] dashboard.');
+      assert.ok(!JSON.stringify(details).includes(titleSecret));
+      assert.ok(!JSON.stringify(details).includes(descriptionSecret));
+      const structured = result.structuredContent as { data: Record<string, unknown> };
+      assert.deepEqual(details, structured.data);
+      assert.ok(!JSON.stringify(structured).includes(titleSecret));
+      assert.ok(!JSON.stringify(structured).includes(descriptionSecret));
       const resource = await client.readResource({ uri: 'propr://instances/test-instance/repositories/acme/repo/previews/pull:49:image-asset' });
       assert.equal(resource.contents[0].mimeType, 'image/webp');
       assert.ok('blob' in resource.contents[0]);
