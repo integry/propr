@@ -122,7 +122,13 @@ test('merge preconditions expose the first specific failure with the complete cu
     const currentState = error.details?.currentState as { head?: string; checks?: { state?: string } } | undefined;
     assert.ok(currentState);
     assert.equal(currentState.head, HEAD);
-    if (item.detail) assert.deepEqual(error.details?.[item.detail.key], item.detail.value);
+    if (item.detail) {
+      assert.deepEqual(error.details?.[item.detail.key], item.detail.value);
+      const envelope = error.toEnvelope();
+      const envelopeState = envelope.details?.currentState as { checks?: Record<string, unknown> } | undefined;
+      assert.deepEqual(envelopeState?.checks?.[item.detail.key], item.detail.value);
+      assert.deepEqual(envelope.details?.[item.detail.key], item.detail.value);
+    }
   });
 });
 
@@ -159,7 +165,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
         requestedPull = Number(args.pull_number);
         if (requestedPull === 43) return { data: rest({ number: 43, state: 'closed', closed_at: '2026-09-27T12:00:00Z' }) };
-        if (requestedPull === 44 || requestedPull === 45) return { data: rest({ number: requestedPull }) };
+        if ([44, 45, 46, 47].includes(requestedPull)) return { data: rest({ number: requestedPull }) };
         return { data: rest({ state: 'closed', merged: true, merged_at: mergedAt, merge_commit_sha: mergeCommitSha }) };
       }
       if (route === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge' && Number(args.pull_number) === 44) {
@@ -174,6 +180,12 @@ test('executeTool persists specific PR state failures and get_operation returns 
     },
     graphql: async (query: string) => {
       mergeQuery = query;
+      if (requestedPull === 46) return { repository: { pullRequest: graph({ commits: rollup('FAILURE', [
+        { name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' },
+      ]) }) } };
+      if (requestedPull === 47) return { repository: { pullRequest: graph({ commits: rollup('PENDING', [
+        { name: 'e2e', status: 'IN_PROGRESS', conclusion: null },
+      ]) }) } };
       if (requestedPull === 44 || requestedPull === 45) return { repository: { pullRequest: graph() } };
       return { repository: { pullRequest: graph({ state: 'MERGED', merged: true, mergedAt, mergeCommit: { oid: mergeCommitSha } }) } };
     },
@@ -220,6 +232,27 @@ test('executeTool persists specific PR state failures and get_operation returns 
   assert.equal(receipt.state, 'failed');
   assert.deepEqual(receipt.result.error, merge.result.error);
   assert.deepEqual(receipt.lifecycle.failure, merge.result.error);
+
+  for (const checkFailure of [
+    { pullRequest: 46, code: 'CHECKS_FAILING', key: 'failing', names: ['build'] },
+    { pullRequest: 47, code: 'CHECKS_PENDING', key: 'pending', names: ['e2e'] },
+  ]) {
+    const failedMerge = (await executeTool(tool('merge_pull_request'), {
+      repository: 'acme/repo', pullRequest: checkFailure.pullRequest, expectedHead: HEAD, method: 'squash',
+      idempotencyKey: `named-check-${checkFailure.pullRequest}`,
+    }, principal, deps)).data as Args;
+    assert.equal(failedMerge.state, 'failed');
+    assert.equal(failedMerge.result.error.code, checkFailure.code);
+    assert.deepEqual(failedMerge.result.error.details.currentState.checks[checkFailure.key], checkFailure.names);
+    assert.deepEqual(failedMerge.result.error.details[checkFailure.key], checkFailure.names);
+
+    const failedReceipt = (await executeTool(tool('get_operation'), {
+      operationId: failedMerge.operationId,
+    }, principal, deps)).data as Args;
+    assert.deepEqual(failedReceipt.result.error.details.currentState.checks[checkFailure.key], checkFailure.names);
+    assert.deepEqual(failedReceipt.result.error.details[checkFailure.key], checkFailure.names);
+    assert.deepEqual(failedReceipt.lifecycle.failure.details[checkFailure.key], checkFailure.names);
+  }
 
   const rejected405 = (await executeTool(tool('merge_pull_request'), {
     repository: 'acme/repo', pullRequest: 44, expectedHead: HEAD, method: 'squash', idempotencyKey: 'merge-rejected-405',

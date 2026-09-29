@@ -223,13 +223,13 @@ export function assertMergePreconditions(
     'CHECKS_FAILING',
     `Cannot merge ${name}: ${namedChecks('failing', snapshot)}. Fix them before merging.`,
     'checksPassing', snapshot,
-    { details: { failing: snapshot.checks.failing } },
+    { details: { failing: [...snapshot.checks.failing] } },
   );
   if (snapshot.checks.state && PENDING_STATES.has(snapshot.checks.state)) throw preconditionError(
     'CHECKS_PENDING',
     `Cannot merge ${name}: ${namedChecks('pending', snapshot)}. Try again when they finish.`,
     'checksComplete', snapshot,
-    { retryable: true, details: { pending: snapshot.checks.pending } },
+    { retryable: true, details: { pending: [...snapshot.checks.pending] } },
   );
   if (snapshot.mergeStateStatus === 'BEHIND') throw preconditionError(
     'BRANCH_BEHIND_BASE',
@@ -251,7 +251,7 @@ export function assertMergePreconditions(
   if (['UNSTABLE', 'HAS_HOOKS'].includes(snapshot.mergeStateStatus ?? '') && snapshot.checks.state !== 'SUCCESS') {
     throw preconditionError(
       'CHECKS_FAILING', `Cannot merge ${name}: ${namedChecks('failing', snapshot)}. Fix them before merging.`,
-      'checksPassing', snapshot, { details: { failing: snapshot.checks.failing } },
+      'checksPassing', snapshot, { details: { failing: [...snapshot.checks.failing] } },
     );
   }
   return snapshot;
