@@ -129,8 +129,9 @@ function fixtureReviewBody(head: string): string {
 export async function verifyPullRequestWrites(
   { t, call, mutate, principal, findPullRequest, restCalls, comments, redis }: WriteFixture,
 ): Promise<void> {
-  await t.test('comment_on_pull_request rejects slash commands and enforces the expected head', async () => {
+  await t.test('comment_on_pull_request resolves an omitted head and enforces a supplied head', async () => {
     const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const pullReads = () => restCalls.filter(item => item.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}').length;
     const command = await mutate('comment_on_pull_request', { ...pull, message: '/ultrafix goal=9' });
     assert.equal(command.state, 'failed');
     assert.equal(command.result.error.code, 'USE_EXPLICIT_TOOL');
@@ -138,16 +139,54 @@ export async function verifyPullRequestWrites(
     assert.equal(embedded.result.error.code, 'USE_EXPLICIT_TOOL');
     const stale = await mutate('comment_on_pull_request', { ...pull, expectedHead: 'f'.repeat(40), message: 'Cover transient errors too.' });
     assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.deepEqual(stale.result.error.details, { expectedHead: 'f'.repeat(40), currentHead: 'a'.repeat(40) });
+    const beforeCallerRead = pullReads();
     const posted = await mutate('comment_on_pull_request', { ...pull, message: 'Cover transient errors too.' });
+    assert.equal(pullReads() - beforeCallerRead, 1, 'a caller-pinned comment reads the pull request once');
     assert.equal(posted.state, 'posted');
     assert.equal(posted.result.expectedHead, 'a'.repeat(40));
+    assert.equal(posted.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(posted.result.headSource, 'caller');
     assert.equal(posted.result.pullRequest, 42);
     assert.ok(posted.result.url.includes('#issuecomment-'));
     const stored = comments.find(comment => comment.id === posted.result.commentId)!;
     assert.ok(stored.body.startsWith('Cover transient errors too.'));
+    assert.ok(stored.body.endsWith(`head:${'a'.repeat(40)} -->`));
     assert.ok(!/^\s*\//m.test(stored.body.split('<!--')[0]));
+
+    const beforeServerRead = pullReads();
+    const beforeServerPost = comments.length;
+    const resolved = await mutate('comment_on_pull_request', {
+      repository: pull.repository, pullRequest: pull.pullRequest, message: 'Use the current revision.',
+    });
+    assert.equal(pullReads() - beforeServerRead, 1, 'a server-resolved comment reads the pull request once');
+    assert.equal(comments.length - beforeServerPost, 1, 'a server-resolved comment posts once');
+    assert.equal(resolved.state, 'posted');
+    assert.equal(resolved.result.expectedHead, undefined);
+    assert.equal(resolved.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(resolved.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${'a'.repeat(40)} -->`));
     // The slash-command attempts must not have reached GitHub.
     assert.ok(!comments.some(comment => comment.body.startsWith('/')));
+  });
+
+  await t.test('review and ultrafix receipts report the resolved head source', async () => {
+    const base = { repository: 'acme/repo', pullRequest: 42 };
+    const review = await mutate('review_pull_request', base);
+    assert.equal(review.state, 'posted');
+    assert.equal(review.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(review.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${'a'.repeat(40)} -->`));
+
+    const ultrafix = await mutate('run_ultrafix', { ...base, expectedHead: 'a'.repeat(40) });
+    assert.equal(ultrafix.state, 'posted');
+    assert.equal(ultrafix.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(ultrafix.result.headSource, 'caller');
+    const stale = await mutate('run_ultrafix', { ...base, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.deepEqual(stale.result.error.details, { expectedHead: 'f'.repeat(40), currentHead: 'a'.repeat(40) });
   });
 
   await t.test('set_pull_request_model converges on exactly one managed model label', async () => {
@@ -342,6 +381,8 @@ export async function verifyPullRequestWrites(
     assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F20');
     assert.deepEqual(findingsOnly.result.findingIds, ['F20']);
     assert.deepEqual(findingsOnly.result.suggestionIds, []);
+    assert.equal(findingsOnly.result.resolvedHead, head);
+    assert.equal(findingsOnly.result.headSource, 'caller');
 
     // Both namespaces, mixed and lower case on input, canonical on the wire,
     // with the caller's instructions carried through unchanged below the command.
@@ -357,9 +398,14 @@ export async function verifyPullRequestWrites(
     assert.deepEqual(mixed.result.suggestionIds, ['S32', 'S34']);
 
     // Suggestions alone are a complete request.
-    const suggestionsOnly = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S30'] });
+    const suggestionsOnly = await mutate('fix_review_findings', {
+      repository: pull.repository, pullRequest: pull.pullRequest, reviewCommentId, suggestionIds: ['S30'],
+    });
     assert.equal(suggestionsOnly.state, 'posted', JSON.stringify(suggestionsOnly));
     assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix S30');
+    assert.equal(suggestionsOnly.result.resolvedHead, head);
+    assert.equal(suggestionsOnly.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${head} -->`));
 
     const before = posted();
     const empty = await mutate('fix_review_findings', { ...pull, reviewCommentId });
@@ -391,7 +437,9 @@ export async function verifyPullRequestWrites(
     // The head preconditions are unchanged.
     const staleHead = await mutate('fix_review_findings', { ...pull, expectedHead: 'f'.repeat(40), reviewCommentId, findingIds: ['F20'] });
     assert.equal(staleHead.result.error.code, 'STALE_HEAD');
-    const olderReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: staleCommentId, findingIds: ['F20'] });
+    const olderReview = await mutate('fix_review_findings', {
+      repository: pull.repository, pullRequest: pull.pullRequest, reviewCommentId: staleCommentId, findingIds: ['F20'],
+    });
     assert.equal(olderReview.result.error.code, 'STALE_FINDINGS');
     assert.ok(olderReview.result.error.message.includes('older head'), olderReview.result.error.message);
     const notAReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: plainCommentId, findingIds: ['F20'] });

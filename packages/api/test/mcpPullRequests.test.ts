@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- end-to-end pull-request catalog coverage shares one stateful GitHub fixture */
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -427,11 +428,22 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     await t.test('every new tool declares its scope, strict schema and write posture', async () => {
       assert.equal(tool('list_pull_requests').readOnly, true);
       assert.equal(tool('list_pull_requests').scope, 'read');
-      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'stop_ultrafix']) {
-        assert.equal(tool(name).scope, 'execute');
+      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'stop_ultrafix']) assert.equal(tool(name).scope, 'execute');
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request']) {
+        const appendOnly = tool(name);
+        assert.notEqual(appendOnly.readOnly, true);
+        assert.ok(appendOnly.schema.shape.idempotencyKey, `${name} must carry a mutation receipt key`);
+        assert.equal(appendOnly.schema.shape.expectedHead.isOptional(), true, `${name} must list expectedHead as optional`);
+        assert.ok(appendOnly.description.includes('expectedHead is optional; when omitted the current head at call time is used and returned as resolvedHead.'));
+      }
+      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'stop_ultrafix']) {
+        const guarded = tool(name);
+        assert.equal(guarded.schema.shape.expectedHead.isOptional(), false, `${name} must require expectedHead`);
+        assert.ok(guarded.description.includes('expectedHead is required'));
+        assert.equal(guarded.schema.safeParse({ repository: 'acme/repo', pullRequest: 42, idempotencyKey: 'missing-head-key' }).success, false);
+      }
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'stop_ultrafix']) {
         assert.notEqual(tool(name).readOnly, true);
-        assert.ok(tool(name).schema.shape.idempotencyKey, `${name} must carry a mutation receipt key`);
-        assert.ok(tool(name).schema.shape.expectedHead, `${name} must enforce a head precondition`);
         await assert.rejects(call(name, { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40), idempotencyKey: 'strict-extra-key', unexpected: true }));
       }
     });

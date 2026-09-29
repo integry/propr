@@ -35,12 +35,12 @@ remain separate gates.
 | Task/operation cancellation and receipts | `cancel_task`, `get_operation`, `cancel_operation` |
 | Delete inactive task history | `delete_task`; bulk cleanup uses explicit individual handles |
 | Pull request inventory across the grant | `list_pull_requests`; newest-first, with ProPR task/goal/plan correlation, `openedWithinMinutes`/`updatedWithinMinutes` recency filters, an optional newest comment and `propr.ultrafixActive`. Omit `repository` to cover the grant; `repositories/{owner}/{repo}/pulls` resource |
-| Ordinary PR follow-up comment | `comment_on_pull_request`; exact `expectedHead`, natural-language message only. A message that starts a slash command is rejected with `USE_EXPLICIT_TOOL` |
+| Ordinary PR follow-up comment | `comment_on_pull_request`; optional `expectedHead`, natural-language message only. An omitted head is resolved by the server and every receipt reports `resolvedHead`/`headSource`. A message that starts a slash command is rejected with `USE_EXPLICIT_TOOL` |
 | PR model routing by managed label | `set_pull_request_model`; converges the labels the repository already defines onto exactly one enabled agent model. No label is ever created |
-| Stopping an ultrafix loop | `stop_ultrafix`; removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
-| PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; exact comment and F#/S# selection (merge blockers required, named suggestions optional), reviewed head, partial coverage and consumed records |
-| Update branch (`/merge`) | `update_pull_request_branch` |
-| Guarded PR merge | `merge_pull_request` |
+| Stopping an ultrafix loop | `stop_ultrafix`; requires `expectedHead` because a moved head may contain a human fix the loop should still review. Removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
+| PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; the three append-only commands accept optional `expectedHead` and report `resolvedHead`/`headSource`, plus exact comment and F#/S# selection (merge blockers required, named suggestions optional), reviewed head, partial coverage and consumed records |
+| Update branch (`/merge`) | `update_pull_request_branch`; `expectedHead` is required to avoid updating code the caller has not seen |
+| Guarded PR merge | `merge_pull_request`; `expectedHead` is required to avoid merging code the caller has not seen |
 | Preview/revert a PR commit | `get_pull_request_revert_preview`, `revert_pull_request_commit`; exact commit, comment and head |
 | Indexed overview/tree/path/search/freshness | `get_repository_context` |
 | Indexing launch/cancellation | `index_repository`, `stop_repository_indexing`; explicit repository/branch |
@@ -446,8 +446,10 @@ What this surface deliberately does **not** claim:
   is never dropped.
 - **Pull request titles, labels and comment prose remain untrusted data.**
   `comment_on_pull_request` posts ordinary prose only and rejects a message that
-  starts a slash command with `USE_EXPLICIT_TOOL`, so scope and head
-  preconditions are always checked by the dedicated command tool.
+  starts a slash command with `USE_EXPLICIT_TOOL`, so scope and optional head
+  preconditions are checked by the dedicated command tool. Append-only PR
+  commands resolve an omitted head from their single PR read, return
+  `resolvedHead`/`headSource`, and put that resolved SHA in their marker.
 - **The access log deliberately stores no argument or payload content.** One row
   per tool call, resource read, prompt fetch and authentication failure records
   the surface, the name, the grant and client identity, the repository, scope,
