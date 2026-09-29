@@ -277,7 +277,7 @@ async function trackUltrafix(deps: ToolDeps, row: Operation, context: TrackingCo
     tasks: progress.cycles.flatMap(cycle => [cycle.reviewTaskId, cycle.fixTaskId].filter(Boolean)),
     completionStatus: result.loop?.completionStatus ?? progress.outcome };
   result.continuation = { ...result.continuation, sourceTaskId: task.task_id,
-    taskId: progress.cycles.at(-1)?.fixTaskId || progress.cycles.at(-1)?.reviewTaskId || task.task_id };
+    taskId: progress.latestTaskId ?? task.task_id };
   receipt.lifecycleProgress = progress;
   receipt.state = legacyState ?? (progress.outcome === 'goal_reached' || progress.outcome === 'cycles_exhausted' ? 'completed'
     : progress.outcome === 'stopped' ? 'cancelled' : progress.outcome === 'failed' ? 'failed' : 'running');

@@ -36,6 +36,7 @@ export interface UltrafixProgress {
   phase: UltrafixPhase;
   outcome: UltrafixOutcome | null;
   cycles: UltrafixCycleProgress[];
+  latestTaskId?: string;
   failingTaskId?: string;
 }
 
@@ -219,6 +220,7 @@ export async function ultrafixProgress(db: Knex, input: {
     kind: 'ultrafix', goal: input.goal, maxCycles: input.maxCycles,
     cycle: terminalCycle ?? boundedCycles.at(-1)?.cycle ?? 0,
     lastScore, phase, outcome, cycles: boundedCycles,
+    ...(latestTask ? { latestTaskId: latestTask.task_id } : {}),
     ...(failingTaskId ? { failingTaskId } : {}),
   };
 }

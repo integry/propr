@@ -98,6 +98,7 @@ test('ultrafixProgress keeps a fix-first running review in the same cycle', asyn
   });
   assert.equal(running.cycle, 1);
   assert.equal(running.phase, 'review');
+  assert.equal(running.latestTaskId, 'review-after-fix-1');
   assert.deepEqual(running.cycles, [
     { cycle: 1, fixTaskId: 'fix-first-1', reviewTaskId: 'review-after-fix-1' },
   ]);
@@ -108,9 +109,44 @@ test('ultrafixProgress keeps a fix-first running review in the same cycle', asyn
     repository: 'acme/repo', pullRequest: 42, sinceMs: 0, goal: 9, maxCycles: 3, workEpoch: 7,
   });
   assert.equal(completed.cycle, 1);
+  assert.equal(completed.latestTaskId, 'review-after-fix-1');
   assert.deepEqual(completed.cycles, [
     { cycle: 1, fixTaskId: 'fix-first-1', reviewTaskId: 'review-after-fix-1', score: 8 },
   ]);
+});
+
+test('ultrafix tracking keeps fix-first continuation and result navigation on the running review', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'a'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'run_ultrafix', repository: 'acme/repo', args: { idempotencyKey: 'ultrafix-fix-first-review' },
+  }, async () => ({ status: 202, data: {
+    state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 101, goal: 9, maxCycles: 3,
+  } }));
+  await db('tasks').insert([
+    { task_id: 'fix-first-1', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(101, 7, 'fix'), created_at: '2026-09-29T01:00:00Z' },
+    { task_id: 'review-after-fix-1', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      initial_job_data: job(0, 7, 'review'), created_at: '2026-09-29T01:01:00Z' },
+  ]);
+  await db('task_history').insert([
+    { task_id: 'fix-first-1', state: 'completed', metadata: JSON.stringify({ ultrafixCycle: 1 }) },
+    { task_id: 'review-after-fix-1', state: 'processing', metadata: '{}' },
+  ]);
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+
+  await trackExecution(deps, row, principal, operations.project(row));
+
+  const tracked = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.equal(tracked.state, 'running');
+  assert.equal(tracked.result.continuation.taskId, 'review-after-fix-1');
+  assert.equal(tracked.result.results.taskId, 'review-after-fix-1');
 });
 
 test('ultrafixProgress filters the epoch before bounding old pull request tasks', async t => {
