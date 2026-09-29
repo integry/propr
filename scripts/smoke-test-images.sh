@@ -180,6 +180,20 @@ for image in "$APP_TAG" "$UI_TAG" "$DOCS_TAG" "$AGENT_TAG" "$LAUNCHER_TAG"; do
   fi
 done
 
+docker run --rm --entrypoint node "$APP_TAG" -e '
+  const fs = require("node:fs");
+  const manifestPath = "/app/docs/docs-manifest.json";
+  if (!fs.existsSync(manifestPath)) throw new Error("app image is missing docs/docs-manifest.json");
+  if (!fs.existsSync("/app/docs/docs/features/pr-commands.md")) throw new Error("app image is missing bundled Markdown pages");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const appPackage = JSON.parse(fs.readFileSync("/usr/src/app/package.json", "utf8"));
+  const apiPackage = JSON.parse(fs.readFileSync("/usr/src/app/packages/api/package.json", "utf8"));
+  if (manifest.version !== appPackage.version || manifest.version !== apiPackage.version) {
+    throw new Error(`docs manifest version ${manifest.version} does not match app ${appPackage.version} and API ${apiPackage.version}`);
+  }
+' >/dev/null
+echo "✓ app contains version-matched MCP documentation"
+
 wait_for_http() {
   local label="$1" url="$2" body
   echo "▸ waiting for $label on $url"

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import packageInfo from '../package.json' with { type: 'json' };
 import { McpError } from './config.js';
 import {
   DocsIndexError, getIndexedDoc, listIndexedDocs, loadDocsIndex, searchIndexedDocs,
@@ -35,9 +36,18 @@ export function addDocsTools(tools: McpTool[], deps: ToolDeps): void {
       offset: z.number().int().min(0).max(100000).default(0),
       limit: z.number().int().min(1).max(100).default(20),
     }).strict(),
-    run: async ({ args }) => ok(await docsResult(async () => listIndexedDocs(await loadDocsIndex(), {
-      section: args.section, offset: args.offset, limit: args.limit,
-    }))),
+    run: async ({ args }) => ok(await docsResult(async () => {
+      const index = await loadDocsIndex();
+      const result = listIndexedDocs(index, {
+        section: args.section, offset: args.offset, limit: args.limit,
+      });
+      if (index.docsVersion === packageInfo.version) return result;
+      return {
+        ...result,
+        versionMismatch: { docs: index.docsVersion, api: packageInfo.version },
+        warning: 'Bundled documentation version does not match the running API version. PROPR_DOCS_DIR may contain stale docs.',
+      };
+    })),
   });
 
   tools.push({

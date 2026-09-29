@@ -10,6 +10,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /build
 
+ARG GIT_SHA
+
 RUN apk add --no-cache python3 make g++ git
 
 # Copy workspace manifests first so npm ci layer caches when source changes.
@@ -28,11 +30,17 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY config ./config
 COPY scripts ./scripts
+COPY docs/docs ./docs/docs
+COPY docs/sidebars.ts docs/mcp.md docs/mcp-coverage.md docs/mcp-operator-surface.md ./docs/
 COPY knexfile.ts ./
 COPY packages/shared ./packages/shared
 COPY packages/local-setup ./packages/local-setup
 COPY packages/core ./packages/core
 COPY packages/api ./packages/api
+
+# Record the exact release and source revision alongside the Markdown that is
+# shipped. sidebars.ts is parsed as text and is never executed by this step.
+RUN GIT_SHA="$GIT_SHA" node scripts/build-docs-manifest.mjs
 
 # Build workspace packages in dependency order, then root.
 RUN cd packages/shared && npm run build \
@@ -87,6 +95,12 @@ COPY --from=builder /build/packages/local-setup/dist ./packages/local-setup/dist
 COPY --from=builder /build/packages/core/package.json ./packages/core/
 COPY --from=builder /build/packages/core/dist ./packages/core/dist
 COPY --from=builder /build/packages/api/package.json ./packages/api/
+
+# MCP-readable documentation. Keep this deliberately limited to Markdown and
+# its manifest so the app image does not inherit the docs site's dependencies,
+# generated website or images.
+COPY --from=builder /build/docs/docs /app/docs/docs
+COPY --from=builder /build/docs/mcp.md /build/docs/mcp-coverage.md /build/docs/mcp-operator-surface.md /build/docs/docs-manifest.json /app/docs/
 
 # Unified agent image build context. The API builds custom CLI version bundles
 # through the mounted Docker socket, using /usr/src/app as the Docker context.

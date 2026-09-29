@@ -546,6 +546,9 @@ build_image() {
   fi
 
   case "$name" in
+    app)
+      build_args+=("--build-arg" "GIT_SHA=$GIT_SHA")
+      ;;
     agent)
       build_args+=(
         "--build-arg" "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION"

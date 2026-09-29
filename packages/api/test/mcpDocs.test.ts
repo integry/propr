@@ -15,7 +15,7 @@ import { McpError } from '../mcp/config.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import { buildMcpServer } from '../mcp/server.js';
 import { createToolCatalog, type McpTool, type ToolDeps } from '../mcp/tools.js';
-import { getIndexedDoc, loadDocsIndex, normalizeDocContent } from '../mcp/docsIndex.js';
+import { getDocsMetadata, getIndexedDoc, loadDocsIndex, normalizeDocContent } from '../mcp/docsIndex.js';
 
 after(() => closeConnection());
 
@@ -175,6 +175,10 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
 
   const listed = await call(catalog, 'list_docs', { section: 'features', limit: 100 });
   assert.equal(listed.docsVersion, '9.8.7-test');
+  assert.equal(listed.sourceRevision, 'abc123');
+  assert.deepEqual(listed.versionMismatch, { docs: '9.8.7-test', api: listed.versionMismatch.api });
+  assert.notEqual(listed.versionMismatch.api, listed.versionMismatch.docs);
+  assert.match(listed.warning, /does not match the running API version/);
   assert.deepEqual(listed.pages.map((page: { path: string }) => page.path), ['features/pr-commands', 'features/overview']);
   assert.deepEqual(listed.pages[0], {
     path: 'features/pr-commands', title: 'PR Comment Commands', section: 'features',
@@ -294,6 +298,11 @@ test('MCP docs tools discover, normalize, page, search and safely serve bundled 
     return (result.structuredContent as { data: Record<string, any> }).data; // eslint-disable-line @typescript-eslint/no-explicit-any
   };
 
+  const connection = await protocolCall('get_connection', {});
+  assert.deepEqual(connection.docs, {
+    available: true, version: '9.8.7-test', sourceRevision: 'abc123', pages: 9,
+  });
+
   const wholeSensitive = await protocolCall('get_doc', { path: 'operations/sensitive', maxChars: 16000 });
   let sensitiveOffset = 0;
   let reconstructedSensitive = '';
@@ -354,6 +363,14 @@ test('normalization preserves fenced code while stripping document-level MDX wra
   const normalized = normalizeDocContent(`---\ntitle: Example\n---\nimport Outside from 'outside';\n{/* remove */}\n\`\`\`tsx\nimport Inside from 'inside';\n\`\`\`\n`);
   assert.equal(normalized.title, 'Example');
   assert.equal(normalized.content, "\n```tsx\nimport Inside from 'inside';\n```\n");
+});
+
+test('docs metadata reports unavailable when no documentation root exists', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-no-mcp-docs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.deepEqual(await getDocsMetadata({}, root), {
+    available: false, version: null, sourceRevision: null, pages: 0,
+  });
 });
 
 test('normalization removes fenced examples wrapped in multiline MDX comments', () => {

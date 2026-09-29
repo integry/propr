@@ -368,8 +368,10 @@ async function buildCache(root: string, inventory?: Inventory): Promise<CacheEnt
 }
 
 /** Load the lazy singleton index, refreshing its inventory no more than once a minute. */
-export async function loadDocsIndex(): Promise<DocsIndex> {
-  const root = await resolveDocsRoot();
+export async function loadDocsIndex(
+  env: NodeJS.ProcessEnv = process.env, cwd = process.cwd(),
+): Promise<DocsIndex> {
+  const root = await resolveDocsRoot(env, cwd);
   if (!root) throw new DocsIndexError('DOCS_UNAVAILABLE', 'Documentation is unavailable. Run an image that bundles docs or set PROPR_DOCS_DIR to the documentation root.');
   if (cached?.root === root && Date.now() - cached.checkedAt < REFRESH_INTERVAL_MS) return cached.index;
   if (building?.root === root) return (await building.promise).index;
@@ -394,15 +396,36 @@ export async function loadDocsIndex(): Promise<DocsIndex> {
   }
 }
 
+export async function getDocsMetadata(
+  env: NodeJS.ProcessEnv = process.env, cwd = process.cwd(),
+): Promise<{ available: boolean; version: string | null; sourceRevision: string | null; pages: number }> {
+  try {
+    const index = await loadDocsIndex(env, cwd);
+    return {
+      available: true,
+      version: index.docsVersion,
+      sourceRevision: index.sourceRevision,
+      pages: index.pages.length,
+    };
+  } catch {
+    return { available: false, version: null, sourceRevision: null, pages: 0 };
+  }
+}
+
 export function listIndexedDocs(index: DocsIndex, options: { section?: string; offset: number; limit: number }): {
-  docsVersion: string; pages: DocPageSummary[]; nextOffset: number | null;
+  docsVersion: string; sourceRevision: string | null; pages: DocPageSummary[]; nextOffset: number | null;
 } {
   const matching = options.section
     ? index.pages.filter(page => page.section.toLocaleLowerCase() === options.section!.toLocaleLowerCase())
     : index.pages;
   const pages = matching.slice(options.offset, options.offset + options.limit)
     .map(({ path, title, section, summary, words }) => ({ path, title, section, summary, words }));
-  return { docsVersion: index.docsVersion, pages, nextOffset: options.offset + pages.length < matching.length ? options.offset + pages.length : null };
+  return {
+    docsVersion: index.docsVersion,
+    sourceRevision: index.sourceRevision,
+    pages,
+    nextOffset: options.offset + pages.length < matching.length ? options.offset + pages.length : null,
+  };
 }
 
 function paragraphChunk(content: string, offset: number, maxChars: number, end = content.length): { content: string; nextOffset: number | null } {

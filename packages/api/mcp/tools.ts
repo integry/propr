@@ -34,6 +34,7 @@ import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addDocsTools } from './toolsDocs.js';
+import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
 import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
@@ -128,10 +129,11 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const notifications = createNotificationRoutes({ webPushDispatcherConfigured: false });
   const config = createConfigRoutes({ redisClient });
   const runtime = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => deps.runtimeBuildQueue });
-  tools.push({ name: 'get_connection', description: 'Get identity, stable instance, scopes, effective tools, version and browser setup links.', scope: 'read', readOnly: true, schema: z.object({}).strict(), run: async ({ principal }) => ok({
+  tools.push({ name: 'get_connection', description: 'Get identity, stable instance, scopes, effective tools, version, bundled docs and browser setup links.', scope: 'read', readOnly: true, schema: z.object({}).strict(), run: async ({ principal }) => ok({
     identity: { id: principal.user.id, username: principal.user.username }, instanceId: policy.config.instanceId,
     scopes: principal.scopes, permissions: principal.authorization.permissions, repositories: principal.grant.repositories,
     version: packageInfo.version, connectContractVersion: 'propr-connect-mcp/1', resource: principal.grant.resource, protocolVersions: ['2026-07-28', '2025-11-25'],
+    docs: await getDocsMetadata(),
     capabilities: tools.filter(tool => principal.scopes.includes(tool.scope) && (!tool.permission || principal.authorization.permissions.includes(tool.permission))).map(tool => tool.name),
     connectedAppsUrl: principal.grant.membershipSource === 'connect' ? 'https://connect.propr.dev/connected-apps' : `${policy.config.origin}/mcp/apps`, setupUrl: `${process.env.FRONTEND_URL || policy.config.origin}/settings`,
     limitations: ['Deployment/release uses the existing operator CLI; no deployment backend is exposed by this instance.', 'Voice availability depends on the host.', 'Cancellation requests may take time to stop running work.'],
