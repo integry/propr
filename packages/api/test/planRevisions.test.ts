@@ -8,6 +8,7 @@ import { getPlanRevision, listPlanRevisions, restorePlanRevision } from '../rout
 import { createToolCatalog, type ToolDeps } from '../mcp/tools.js';
 import { createListPlanRevisionsHandler, createRestorePlanRevisionHandler } from '../routes/plannerHelpers/handlers/revisionHandlers.js';
 import { verifyDraftOwnership } from '../routes/plannerHelpers/auth.js';
+import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
 
 after(async () => closeConnection());
@@ -79,6 +80,105 @@ test('records plan provenance, rename details and restore provenance in order', 
   await setDraft(db, { plan_json: plan('Edited after restore'), plan_cause: 'manual_edit' });
   assert.equal((await listPlanRevisions(db, draftId))[0].cause, 'restore',
     'replacing a restored plan snapshots it with restore provenance');
+});
+
+for (const status of ['generating', 'refining']) {
+  test(`preserves a rename event when ${status} replaces the renamed plan`, async t => {
+    const db = await setup(t);
+    await setDraft(db, { plan_cause: 'generation' });
+    await setDraft(db, { name: 'Renamed plan' });
+    const renameBefore = await db('task_draft_plan_revisions').where({ draft_id: draftId, cause: 'rename' }).first();
+
+    await setDraft(db, { status });
+    await setDraft(db, {
+      status: 'review',
+      plan_json: plan(`${status} result`),
+      plan_cause: status === 'generating' ? 'generation' : 'refinement',
+      ...(status === 'generating' ? { name: 'Generated title' } : {}),
+    });
+
+    const rows = await db('task_draft_plan_revisions').where({ draft_id: draftId }).orderBy('revision_id', 'desc');
+    assert.equal(rows.length, status === 'generating' ? 3 : 2);
+    const renameAfter = rows.find(row => row.revision_id === renameBefore.revision_id);
+    assert.equal(renameAfter.cause, 'rename');
+    assert.equal(renameAfter.name_before, 'Untitled Plan');
+    assert.equal(renameAfter.name_after, 'Renamed plan');
+    if (status === 'generating') {
+      const generatedRename = rows.find(row => row.cause === 'rename' && row.revision_id !== renameBefore.revision_id);
+      assert.equal(generatedRename.name_before, 'Renamed plan');
+      assert.equal(generatedRename.name_after, 'Generated title');
+    }
+    const snapshot = rows.find(row => row.cause !== 'rename');
+    assert.equal(snapshot.cause, 'generation');
+    assert.equal(snapshot.plan_json, plan('A1', 'A2', 'A3', 'A4'));
+    assert.equal(snapshot.status_before, status);
+    assert.equal(snapshot.status_after, 'review');
+    assert.equal(snapshot.name_before, null);
+    assert.equal(snapshot.name_after, null);
+  });
+}
+
+test('a rename starts a new edit snapshot boundary without coalescing away the renamed plan', async t => {
+  const db = await setup(t);
+  await setDraft(db, { plan_json: plan('First edit'), plan_cause: 'manual_edit' });
+  await setDraft(db, { name: 'Renamed plan' });
+  await setDraft(db, { plan_json: plan('Second edit'), plan_cause: 'manual_edit' });
+
+  const revisions = await listPlanRevisions(db, draftId);
+  assert.deepEqual(revisions.map(revision => revision.cause), ['manual_edit', 'rename', 'unknown']);
+  assert.deepEqual(revisions.map(revision => revision.titles[0]), ['First edit', 'First edit', 'A1']);
+});
+
+test('MCP update records both the rename and outgoing snapshot when name and plan change together', async t => {
+  const db = await setup(t);
+  const current = await draft(db);
+  const deps: ToolDeps = { db, policy: {} as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
+  const tool = createToolCatalog(deps).find(candidate => candidate.name === 'update_plan')!;
+
+  const result = await tool.run({
+    principal: { user: { id: '123' } } as McpPrincipal,
+    args: tool.schema.parse({
+      repository: 'acme/repo', planId: draftId, expectedRevision: current.mcp_revision,
+      idempotencyKey: 'rename-edit-mcp', name: 'MCP renamed plan', plan: JSON.parse(plan('MCP edit')),
+    }),
+  } as never);
+
+  assert.equal(result.status, 200);
+  const revisions = await listPlanRevisions(db, draftId);
+  assert.equal(revisions.length, 2);
+  const rename = revisions.find(revision => revision.cause === 'rename')!;
+  assert.equal(rename.nameBefore, 'Untitled Plan');
+  assert.equal(rename.nameAfter, 'MCP renamed plan');
+  const snapshot = revisions.find(revision => revision.cause !== 'rename')!;
+  assert.deepEqual(snapshot.titles, ['A1', 'A2', 'A3', 'A4']);
+  assert.equal(snapshot.nameBefore, null);
+  assert.equal(snapshot.nameAfter, null);
+});
+
+test('HTTP update records both the rename and outgoing snapshot when name and plan change together', async t => {
+  const db = await setup(t);
+  const routes = createPlannerRoutes({ db });
+  const response = { statusCode: 200, body: undefined as unknown };
+  const res = {
+    status(code: number) { response.statusCode = code; return res; },
+    json(value: unknown) { response.body = value; return res; },
+  };
+
+  await routes.updateDraft({
+    params: { id: draftId }, user: { id: '123' },
+    body: { name: 'HTTP renamed plan', plan_json: JSON.parse(plan('HTTP edit')) },
+  } as never, res as never);
+
+  assert.equal(response.statusCode, 200);
+  const revisions = await listPlanRevisions(db, draftId);
+  assert.equal(revisions.length, 2);
+  const rename = revisions.find(revision => revision.cause === 'rename')!;
+  assert.equal(rename.nameBefore, 'Untitled Plan');
+  assert.equal(rename.nameAfter, 'HTTP renamed plan');
+  const snapshot = revisions.find(revision => revision.cause !== 'rename')!;
+  assert.deepEqual(snapshot.titles, ['A1', 'A2', 'A3', 'A4']);
+  assert.equal(snapshot.nameBefore, null);
+  assert.equal(snapshot.nameAfter, null);
 });
 
 test('reports unknown for legacy rows and live plans without provenance', async t => {
