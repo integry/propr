@@ -34,7 +34,9 @@ function graph(overrides: PullRequestStateSource = {}): PullRequestStateSource {
     state: 'OPEN', isDraft: false, merged: false, mergedAt: null, closedAt: null,
     mergeCommit: null, headRefOid: HEAD, baseRefName: 'main', mergeStateStatus: 'CLEAN',
     reviewDecision: 'APPROVED', url: 'https://github.com/acme/repo/pull/42',
-    commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS', contexts: { nodes: [] } } } }] },
+    commits: { nodes: [{ commit: { statusCheckRollup: {
+      state: 'SUCCESS', contexts: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    } } }] },
     ...overrides,
   };
 }
@@ -47,8 +49,17 @@ function errorFrom(run: () => unknown): McpError {
   assert.fail('Expected a pull request precondition error.');
 }
 
-function rollup(state: string, nodes: Array<Record<string, string | null>>): PullRequestStateSource['commits'] {
-  return { nodes: [{ commit: { statusCheckRollup: { state, contexts: { nodes } } } }] };
+function rollup(
+  state: string,
+  nodes: Array<Record<string, string | null>>,
+  page?: { commitId: string; hasNextPage: boolean; endCursor: string | null },
+): PullRequestStateSource['commits'] {
+  return { nodes: [{ commit: {
+    ...(page ? { id: page.commitId } : {}),
+    statusCheckRollup: { state, contexts: { nodes, pageInfo: {
+      hasNextPage: page?.hasNextPage ?? false, endCursor: page?.endCursor ?? null,
+    } } },
+  } }] };
 }
 
 test('pullRequestSnapshot reports actual lifecycle and named check state', () => {
@@ -160,6 +171,10 @@ test('executeTool persists specific PR state failures and get_operation returns 
   const mergeCommitSha = NEXT_HEAD;
   let requestedPull = 42;
   let mergeQuery = '';
+  const paginationCalls: Args[] = [];
+  const successfulChecks = Array.from({ length: 50 }, (_, index) => ({
+    name: `successful-${index + 1}`, status: 'COMPLETED', conclusion: 'SUCCESS',
+  }));
   const github = {
     request: async (route: string, args: Args) => {
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
@@ -178,14 +193,26 @@ test('executeTool persists specific PR state failures and get_operation returns 
       }
       throw new Error(`Unexpected GitHub request: ${route}`);
     },
-    graphql: async (query: string) => {
+    graphql: async (query: string, args: Args) => {
       mergeQuery = query;
+      if (query.includes('node(id:$commitId)')) {
+        paginationCalls.push({ query, ...args });
+        if (args.commitId === 'commit-46') return { node: { statusCheckRollup: { contexts: {
+          nodes: [{ name: 'deploy', status: 'COMPLETED', conclusion: 'FAILURE' }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        } } } };
+        if (args.commitId === 'commit-47') return { node: { statusCheckRollup: { contexts: {
+          nodes: [{ name: 'e2e', status: 'IN_PROGRESS', conclusion: null }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        } } } };
+        throw new Error(`Unexpected check-context commit: ${args.commitId}`);
+      }
       if (requestedPull === 46) return { repository: { pullRequest: graph({ commits: rollup('FAILURE', [
-        { name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' },
-      ]) }) } };
-      if (requestedPull === 47) return { repository: { pullRequest: graph({ commits: rollup('PENDING', [
-        { name: 'e2e', status: 'IN_PROGRESS', conclusion: null },
-      ]) }) } };
+        { name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }, ...successfulChecks.slice(1),
+      ], { commitId: 'commit-46', hasNextPage: true, endCursor: 'cursor-46' }) }) } };
+      if (requestedPull === 47) return { repository: { pullRequest: graph({ commits: rollup(
+        'PENDING', successfulChecks, { commitId: 'commit-47', hasNextPage: true, endCursor: 'cursor-47' },
+      ) }) } };
       if (requestedPull === 44 || requestedPull === 45) return { repository: { pullRequest: graph() } };
       return { repository: { pullRequest: graph({ state: 'MERGED', merged: true, mergedAt, mergeCommit: { oid: mergeCommitSha } }) } };
     },
@@ -225,6 +252,8 @@ test('executeTool persists specific PR state failures and get_operation returns 
   assert.equal(merge.result.error.details.currentState.mergedAt, mergedAt);
   assert.equal(merge.result.error.details.currentState.mergeCommitSha, mergeCommitSha);
   assert.match(mergeQuery, /contexts\(first:50\)/);
+  assert.match(mergeQuery, /pageInfo\{hasNextPage endCursor\}/);
+  assert.match(mergeQuery, /commit\{id statusCheckRollup/);
   assert.match(mergeQuery, /CheckRun\{name conclusion status\}/);
   assert.match(mergeQuery, /StatusContext\{context state\}/);
 
@@ -234,7 +263,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
   assert.deepEqual(receipt.lifecycle.failure, merge.result.error);
 
   for (const checkFailure of [
-    { pullRequest: 46, code: 'CHECKS_FAILING', key: 'failing', names: ['build'] },
+    { pullRequest: 46, code: 'CHECKS_FAILING', key: 'failing', names: ['build', 'deploy'] },
     { pullRequest: 47, code: 'CHECKS_PENDING', key: 'pending', names: ['e2e'] },
   ]) {
     const failedMerge = (await executeTool(tool('merge_pull_request'), {
@@ -243,6 +272,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
     }, principal, deps)).data as Args;
     assert.equal(failedMerge.state, 'failed');
     assert.equal(failedMerge.result.error.code, checkFailure.code);
+    assert.match(failedMerge.result.error.message, new RegExp(checkFailure.names.join('.*')));
     assert.deepEqual(failedMerge.result.error.details.currentState.checks[checkFailure.key], checkFailure.names);
     assert.deepEqual(failedMerge.result.error.details[checkFailure.key], checkFailure.names);
 
@@ -253,6 +283,10 @@ test('executeTool persists specific PR state failures and get_operation returns 
     assert.deepEqual(failedReceipt.result.error.details[checkFailure.key], checkFailure.names);
     assert.deepEqual(failedReceipt.lifecycle.failure.details[checkFailure.key], checkFailure.names);
   }
+  assert.deepEqual(paginationCalls.map(call => ({ commitId: call.commitId, after: call.after })), [
+    { commitId: 'commit-46', after: 'cursor-46' },
+    { commitId: 'commit-47', after: 'cursor-47' },
+  ]);
 
   const rejected405 = (await executeTool(tool('merge_pull_request'), {
     repository: 'acme/repo', pullRequest: 44, expectedHead: HEAD, method: 'squash', idempotencyKey: 'merge-rejected-405',

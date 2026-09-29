@@ -10,7 +10,10 @@ interface CheckContext {
 
 interface CheckRollup {
   state?: string | null;
-  contexts?: { nodes?: Array<CheckContext | null> | null } | null;
+  contexts?: {
+    nodes?: Array<CheckContext | null> | null;
+    pageInfo?: { hasNextPage?: boolean | null; endCursor?: string | null } | null;
+  } | null;
 }
 
 /** The REST and GraphQL fields needed to describe a pull request without another GitHub call. */
@@ -34,7 +37,7 @@ export interface PullRequestStateSource {
   mergeStateStatus?: string | null;
   reviewDecision?: string | null;
   checks?: PullRequestChecks | null;
-  commits?: number | { nodes?: Array<{ commit?: { statusCheckRollup?: CheckRollup | null } | null } | null> | null } | null;
+  commits?: number | { nodes?: Array<{ commit?: { id?: string | null; statusCheckRollup?: CheckRollup | null } | null } | null> | null } | null;
   html_url?: string | null;
   url?: string | null;
 }

@@ -44,6 +44,42 @@ function definitiveMergeRejection(error: unknown): string | null {
   return typeof message === 'string' ? message : 'GitHub rejected the merge.';
 }
 
+/** Follow the check connection on the commit selected by the merge-state read. */
+// eslint-disable-next-line complexity -- every malformed pagination shape must fail closed instead of publishing a partial diagnostic
+async function loadRemainingCheckContexts(
+  principal: Parameters<McpTool['run']>[0]['principal'], state: PullRequestStateSource,
+): Promise<void> {
+  const commits = typeof state.commits === 'object' && state.commits ? state.commits.nodes ?? [] : [];
+  const commit = commits[commits.length - 1]?.commit;
+  const connection = commit?.statusCheckRollup?.contexts;
+  if (!connection) return;
+  if (!connection.pageInfo) throw new Error('GitHub omitted pagination data while reading check contexts.');
+  if (!connection.pageInfo.hasNextPage) return;
+  if (!commit?.id) throw new Error('GitHub omitted the commit id needed to read all check contexts.');
+
+  const nodes = [...(connection.nodes ?? [])];
+  let pageInfo = connection.pageInfo;
+  while (pageInfo.hasNextPage) {
+    const after = pageInfo.endCursor;
+    if (!after) throw new Error('GitHub reported more check contexts without a continuation cursor.');
+    const page = await principal.github.graphql<{
+      node?: { statusCheckRollup?: { contexts?: typeof connection | null } | null } | null;
+    }>(
+      `query($commitId:ID!,$after:String!){node(id:$commitId){... on Commit{statusCheckRollup{contexts(first:50,after:$after){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage endCursor}}}}}}`,
+      { commitId: commit.id, after },
+    );
+    const next = page.node?.statusCheckRollup?.contexts;
+    if (!next?.pageInfo) throw new Error('GitHub omitted pagination data while reading check contexts.');
+    nodes.push(...(next.nodes ?? []));
+    if (next.pageInfo.hasNextPage && next.pageInfo.endCursor === after) {
+      throw new Error('GitHub did not advance the check-context continuation cursor.');
+    }
+    pageInfo = next.pageInfo;
+  }
+  connection.nodes = nodes;
+  connection.pageInfo = pageInfo;
+}
+
 interface ModelLabelLease {
   /** Prove the lease is still held and extend it; throws before a write when it was lost. */
   confirm(): Promise<void>;
@@ -314,8 +350,12 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
     schema: z.object({ ...mutation, method: z.enum(['merge', 'squash', 'rebase']).default('squash') }).strict(), run: async ({ principal, args }) => {
       const { owner, repo, pr } = await pull(principal, args);
       const result = await principal.github.graphql<{ repository: { pullRequest: PullRequestStateSource } }>(
-        `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state isDraft merged mergedAt closedAt mergeCommit{oid} headRefOid baseRefName mergeStateStatus reviewDecision url commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}}}}}}}}}}`, { owner, repo, number: args.pullRequest });
+        `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state isDraft merged mergedAt closedAt mergeCommit{oid} headRefOid baseRefName mergeStateStatus reviewDecision url commits(last:1){nodes{commit{id statusCheckRollup{state contexts(first:50){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage endCursor}}}}}}}}}}`, { owner, repo, number: args.pullRequest });
       const state = result.repository.pullRequest;
+      // Fail a stale expected head before another awaited read. Subsequent pages are
+      // pinned to this commit id; GitHub's merge endpoint remains the final atomic guard.
+      if (state.headRefOid !== args.expectedHead) assertMergePreconditions(pr, state, args.expectedHead);
+      await loadRemainingCheckContexts(principal, state);
       assertMergePreconditions(pr, state, args.expectedHead);
       // GitHub atomically checks expected head and repository rules at merge.
       // No admin bypass or auto-merge mutation is requested.
