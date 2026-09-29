@@ -8,7 +8,7 @@ import { type McpTool, type ToolDeps, TERMINAL_PLAN_STATUSES, planScopeShape, pl
 import { planRelationLimit, summarizePlan } from './listSummaries.js';
 import { getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { classifyError, type McpErrorStage } from './errorEnvelope.js';
-import { findMarkedIssue, parseContextConfig, partialPublication, publicationSummary, type PublishedIssue } from './planPublication.js';
+import { findMarkedIssue, parseContextConfig, partialPublication, publicationSummary, type ActivePublication, type PublishedIssue } from './planPublication.js';
 
 const target = { table: 'task_drafts', column: 'draft_id', arg: 'planId', owner: 'user_id' };
 const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json', 'attachments', 'context_config', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at'];
@@ -156,38 +156,56 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       if (args.resume && (draft.status !== 'executing' || !priorPublication)) {
         throw new McpError('PRECONDITION_FAILED', 'Plan is not partially published. Resume is only available for an executing plan whose publication state is partial.', 409);
       }
+      const originalOperationId = priorPublication?.operationId ?? String(operationId);
+      const activePublication: ActivePublication = { state: 'active', operationId: originalOperationId,
+        attemptId: String(operationId), created: priorPublication?.created ?? [], claimedAt: new Date().toISOString() };
+      const activeContext: Record<string, unknown> = { ...initialContext, publication: activePublication };
+      const activeContextJson = JSON.stringify(activeContext);
       const claim = db('task_drafts').where({ draft_id: args.planId, mcp_revision: args.expectedRevision });
       if (args.resume) claim.andWhere({ status: 'executing' });
       else claim.whereIn('status', ['draft', 'review', 'approved']);
-      const claimed = await claim.update({ status: 'executing', updated_at: db.fn.now() });
+      const claimedRevision = args.expectedRevision + 1;
+      const claimed = await claim.update({ status: 'executing', context_config: activeContextJson,
+        updated_at: db.fn.now(), mcp_revision: claimedRevision });
       if (!claimed) throw new McpError('PRECONDITION_FAILED', args.resume
         ? 'Plan is no longer available to resume. Read it again and confirm its publication is still partial.'
         : 'Plan is already published or busy.', 409);
-      const claimedDraft = await db('task_drafts').where({ draft_id: args.planId }).first('mcp_revision');
-      const claimedRevision = Number(claimedDraft.mcp_revision);
       const [owner, repo] = args.repository.split('/');
-      const originalOperationId = priorPublication?.operationId ?? String(operationId);
       const created = new Map<number, PublishedIssue>((priorPublication?.created ?? []).map(issue => [issue.index, issue]));
       const adopted: number[] = [];
 
-      const fail = async (error: unknown, failedIndex: number, failedTitle: string, step: PublicationStep): Promise<never> => {
+      const ownsClaim = () => db('task_drafts').where({ draft_id: args.planId, status: 'executing',
+        mcp_revision: claimedRevision, context_config: activeContextJson }).first('draft_id');
+      const requireClaim = async (): Promise<void> => {
+        if (!await ownsClaim()) throw new McpError('PUBLICATION_CLAIM_LOST',
+          'The publication attempt no longer owns this plan. Inspect its current state before recovery.', 409,
+          { stage: 'database', retryable: false });
+      };
+
+      const fail = async (error: unknown, failure: { index: number; title: string; step: PublicationStep;
+        sideEffectsPossible?: boolean }): Promise<never> => {
         const classified = classifyError(error, { sideEffectsPossible: false });
+        const outcomeUncertain = failure.sideEffectsPossible === true && classified.status >= 500;
         const cause = { code: classified.code, message: classified.message };
         const createdIssues = [...created.values()].sort((left, right) => left.index - right.index);
-        const details = { failedIndex, failedTitle, step, createdIssues, cause };
-        if (!createdIssues.length && !args.resume) {
-          await db('task_drafts').where({ draft_id: args.planId, status: 'executing', mcp_revision: claimedRevision })
-            .update({ status: previousStatus, updated_at: db.fn.now() });
-          throw new McpError('PUBLISH_FAILED', `Plan publication failed while processing task ${failedIndex + 1}.`, 409, {
-            stage: failureStage(step, classified.stage), retryable: classified.retryable, details,
+        const details = { failedIndex: failure.index, failedTitle: failure.title,
+          step: failure.step, createdIssues, cause };
+        if (!createdIssues.length && !args.resume && !outcomeUncertain) {
+          const released = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
+            mcp_revision: claimedRevision, context_config: activeContextJson })
+            .update({ status: previousStatus, context_config: JSON.stringify(initialContext), updated_at: db.fn.now() });
+          if (!released) await requireClaim();
+          throw new McpError('PUBLISH_FAILED', `Plan publication failed while processing task ${failure.index + 1}.`, 409, {
+            stage: failureStage(failure.step, classified.stage), retryable: classified.retryable, details,
           });
         }
-        const current = await db('task_drafts').where({ draft_id: args.planId }).first('context_config');
-        const context = parseContextConfig(current?.context_config);
+        const context: Record<string, unknown> = { ...activeContext };
         context.publication = { state: 'partial', operationId: originalOperationId, created: createdIssues,
-          failedIndex, failedAt: new Date().toISOString(), cause };
-        await db('task_drafts').where({ draft_id: args.planId, status: 'executing' })
+          failedIndex: failure.index, failedAt: new Date().toISOString(), cause };
+        const preserved = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
+          mcp_revision: claimedRevision, context_config: activeContextJson })
           .update({ context_config: JSON.stringify(context), updated_at: db.fn.now() });
+        if (!preserved) await requireClaim();
         throw new McpError('PUBLISH_PARTIAL', `Plan publication stopped after creating ${createdIssues.length} issue(s). Call publish_plan again with resume: true.`, 409, {
           stage: 'github', retryable: false, details,
         });
@@ -217,7 +235,8 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
           await db('plan_issues').insert({ draft_id: args.planId, repository: args.repository, issue_number: issue.number });
           recorded.add(issue.number);
         } catch (error) {
-          await fail(error, issue.index, String(tasks[issue.index]?.title || `Task ${issue.index + 1}`), 'record_issue');
+          await fail(error, { index: issue.index,
+            title: String(tasks[issue.index]?.title || `Task ${issue.index + 1}`), step: 'record_issue' });
         }
       }
 
@@ -226,18 +245,31 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         // Deliberately no automatic POST retry: the durable operation and draft
         // claim and marker recovery prevent a replay after an uncertain response.
         try { await policy.repository(principal, args.repository, true); }
-        catch (error) { await fail(error, index, String(task.title), 'authorize'); }
+        catch (error) { await fail(error, { index, title: String(task.title), step: 'authorize' }); }
+        await requireClaim();
         let issue: { number: number; url: string; title: string } | undefined;
         if (args.resume) {
-          try { issue = await findMarkedIssue(principal, args.repository, originalOperationId, index); }
-          catch (error) { await fail(error, index, String(task.title), 'create_issue'); }
+          try {
+            const floor = [...created.values()].reduce<number | undefined>((highest, candidate) =>
+              highest === undefined || candidate.number > highest ? candidate.number : highest, undefined);
+            const lookup = await findMarkedIssue(principal, args.repository,
+              { operationId: originalOperationId, index, afterIssueNumber: floor });
+            if (lookup.state === 'found') issue = lookup.issue;
+            else if (lookup.state === 'incomplete') throw new McpError('MARKER_LOOKUP_INCOMPLETE',
+              'Recovery could not search the complete publication window. No new issue was created.', 409,
+              { stage: 'github', retryable: false });
+          }
+          catch (error) { await fail(error, { index, title: String(task.title), step: 'create_issue' }); }
+          await requireClaim();
         }
         if (!issue) {
           try {
             const response = await principal.github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: String(task.title),
               body: `${task.body}\n\n## Implementation\n${task.implementation}${task.notes ? `\n\n## Notes\n${task.notes}` : ''}\n\n<!-- propr-mcp:${originalOperationId}:${index} -->`, labels: ['propr-planned'] });
             issue = { number: response.data.number, url: response.data.html_url, title: response.data.title };
-          } catch (error) { await fail(error, index, String(task.title), 'create_issue'); }
+          } catch (error) {
+            await fail(error, { index, title: String(task.title), step: 'create_issue', sideEffectsPossible: true });
+          }
         } else adopted.push(index);
         if (!issue) throw new McpError('INTERNAL_ERROR', 'Issue publication returned no result.', 500, { stage: 'internal' });
         const published = { index, number: issue.number, url: issue.url };
@@ -245,18 +277,19 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
         try {
           await db('plan_issues').insert({ draft_id: args.planId, repository: args.repository, issue_number: issue.number });
           recorded.add(issue.number);
-        } catch (error) { await fail(error, index, String(task.title), 'record_issue'); }
+        } catch (error) { await fail(error, { index, title: String(task.title), step: 'record_issue' }); }
       }
       const issues = tasks.map((task, index) => ({ ...created.get(index)!, title: String(task.title) }))
         .map(({ number, url, title }) => ({ number, url, title }));
-      const finalContextRow = await db('task_drafts').where({ draft_id: args.planId }).first('context_config');
-      const finalContext = parseContextConfig(finalContextRow?.context_config);
+      const finalContext: Record<string, unknown> = { ...activeContext };
       delete finalContext.publication;
       const linkedTasks = tasks.map((task, index) => ({ ...task,
         issue_number: created.get(index)!.number, issue_url: created.get(index)!.url }));
-      await db('task_drafts').where({ draft_id: args.planId, status: 'executing' }).update({
+      const completed = await db('task_drafts').where({ draft_id: args.planId, status: 'executing',
+        mcp_revision: claimedRevision, context_config: activeContextJson }).update({
         status: 'executed', context_config: JSON.stringify(finalContext), plan_json: JSON.stringify(linkedTasks), updated_at: db.fn.now(),
       });
+      if (!completed) await requireClaim();
       return ok({ planId: args.planId, issues, resumed: Boolean(args.resume), adopted });
     } });
 
