@@ -392,6 +392,47 @@ test('replay repairs an already-failed lifecycle that retained unavailable refin
   assert.deepEqual(JSON.parse(durable!.failure!), exactFailure);
 });
 
+test('get_operation settles a legacy refinement receipt without run identity when the draft returns to review', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary(); table.string('user_id'); table.string('repository');
+    table.string('status'); table.boolean('paused'); table.text('refinement_result');
+  });
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const args = { idempotencyKey: 'legacy-refinement-receipt' };
+  const receipt = await operations.run(principal, { tool: 'refine_plan', args, repository: 'acme/repo' },
+    async () => ({ status: 202, data: { continuation: { planId: 'legacy-refinement-plan' } } }));
+  await db('task_drafts').insert({
+    draft_id: 'legacy-refinement-plan', user_id: 'alice', repository: 'acme/repo', status: 'review', paused: false,
+    refinement_result: JSON.stringify({ status: 'completed', action: 'replace' }),
+  });
+  const deps = { db, policy: { repository: async () => {}, requirePermission: () => {}, config: {} } as never,
+    taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
+
+  const settled = (await get.run({
+    principal, args: get.schema.parse({ operationId: receipt.operationId }),
+  })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const unavailable = {
+    code: 'REFINEMENT_OUTCOME_UNAVAILABLE', stage: 'workflow', retryable: false, status: 500,
+    message: 'The historical refinement outcome is unavailable because this legacy receipt has no planner run identity.',
+  };
+  assert.equal(settled.state, 'unknown');
+  assert.deepEqual(settled.result, { continuation: { planId: 'legacy-refinement-plan' } });
+  assert.equal(settled.message, unavailable.message);
+  assert.equal(settled.retryAfterSeconds, undefined);
+  assert.equal(settled.lifecycle.state, 'unknown');
+  assert.deepEqual(settled.lifecycle.failure, unavailable);
+
+  const replay = await operations.replay(principal, 'refine_plan', args);
+  assert.equal(replay?.state, 'unknown');
+  assert.equal(replay?.retryAfterSeconds, undefined);
+  assert.deepEqual((replay?.lifecycle as { failure: unknown }).failure, unavailable);
+});
+
 test('get_operation settles a displaced refinement receipt as unknown without attaching a later failure', async t => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   t.after(() => db.destroy());

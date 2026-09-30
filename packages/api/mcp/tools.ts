@@ -461,7 +461,8 @@ function updateReceiptState(row: Operation, receipt: Record<string, unknown>): M
       delete target.refinement_result;
       const result = receipt.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result)
         ? receipt.result as Record<string, unknown> : {};
-      const matchesRun = typeof result.runId === 'string' && refinement.runId === result.runId;
+      const hasRunIdentity = typeof result.runId === 'string';
+      const matchesRun = hasRunIdentity && refinement.runId === result.runId;
       if (matchesRun && target.status === 'review' && refinement.status === 'failed') {
         const invalidOutput = refinement.code === 'REFINEMENT_OUTPUT_INVALID';
         const error = {
@@ -477,14 +478,18 @@ function updateReceiptState(row: Operation, receipt: Record<string, unknown>): M
         receipt.result = { ...result, error };
       } else if (matchesRun && target.status === 'review' && (refinement.status === 'completed' || refinement.action)) {
         receipt.state = 'completed';
-      } else if (!matchesRun && typeof result.runId === 'string' && typeof refinement.runId === 'string'
-        && !['completed', 'failed', 'cancelled'].includes(row.lifecycle)) {
+      } else if (!['completed', 'failed', 'cancelled'].includes(row.lifecycle)
+        && ((!hasRunIdentity && target.status === 'review')
+          || (!matchesRun && hasRunIdentity && typeof refinement.runId === 'string'))) {
+        const legacyReceipt = !hasRunIdentity;
         const failure: McpErrorEnvelope = {
           code: 'REFINEMENT_OUTCOME_UNAVAILABLE',
           stage: 'workflow',
           retryable: false,
           status: 500,
-          message: 'The historical refinement outcome is unavailable because a later refinement replaced its metadata.',
+          message: legacyReceipt
+            ? 'The historical refinement outcome is unavailable because this legacy receipt has no planner run identity.'
+            : 'The historical refinement outcome is unavailable because a later refinement replaced its metadata.',
         };
         receipt.state = 'unknown';
         receipt.message = failure.message;
