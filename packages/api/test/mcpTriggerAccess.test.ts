@@ -58,6 +58,7 @@ test('trigger access tools split bots, preserve revisions and reject unsafe or e
     assert.deepEqual(environmentRead.users.allowlist, ['environment-user']);
     assert.deepEqual(environmentRead.users.blocklist, ['blocked-user']);
     assert.deepEqual(environmentRead.bots.allowlist, ['dependabot[bot]']);
+    assert.match(environmentRead.bots.allowlistDescription, /Explicit \[bot\]-suffixed entries.*unsuffixed entries also authorize/s);
     assert.equal(environmentRead.users.source.allowlist, 'environment');
     assert.equal(environmentRead.users.editable.allowlist, false);
     await assert.rejects(
@@ -69,13 +70,34 @@ test('trigger access tools split bots, preserve revisions and reject unsafe or e
     delete process.env.GITHUB_USER_BLACKLIST;
     await core.saveSettings({ github_user_whitelist: ['alice'] });
     const initial = (await get.run({ principal, args: {} })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-    const added = (await update.run({ principal, args: update.schema.parse({ expectedRevision: initial.revision, addBots: ['renovate'], idempotencyKey: 'add-renovate-bot' }) })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-    assert.deepEqual(added.users.allowlist, ['alice']);
-    assert.deepEqual(added.bots.allowlist, ['renovate[bot]']);
-    assert.deepEqual((await core.loadSettings()).github_user_whitelist, ['alice', 'renovate[bot]']);
-    process.env.GITHUB_USER_WHITELIST = 'alice,renovate[bot]';
+    const added = (await update.run({ principal, args: update.schema.parse({ expectedRevision: initial.revision, addUsers: ['renovate'], idempotencyKey: 'add-renovate-user' }) })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.deepEqual(added.users.allowlist, ['alice', 'renovate']);
+    assert.deepEqual(added.bots.allowlist, []);
+    assert.match(added.notes.join(' '), /bots\.allowlist reports only explicit.*not an exhaustive list.*unsuffixed entry also authorizes.*\[bot\] login/s);
+    assert.deepEqual((await core.loadSettings()).github_user_whitelist, ['alice', 'renovate']);
+    process.env.GITHUB_USER_WHITELIST = 'alice,renovate';
     assert.equal(core.filterCommentByAuthor('renovate[bot]', 'Bot').shouldFilter, false);
     delete process.env.GITHUB_USER_WHITELIST;
+
+    const beforeExplicitBot = (await get.run({ principal, args: {} })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const explicitBot = (await update.run({ principal, args: update.schema.parse({ expectedRevision: beforeExplicitBot.revision, addBots: ['dependabot'], idempotencyKey: 'add-explicit-bot' }) })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.deepEqual(explicitBot.bots.allowlist, ['dependabot[bot]']);
+    assert.deepEqual((await core.loadSettings()).github_user_whitelist, ['alice', 'renovate', 'dependabot[bot]']);
+
+    await core.saveSettings({ github_user_whitelist: ['alice', 'Alice'] });
+    const beforeCaseDistinctAddition = (await get.run({ principal, args: {} })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const caseDistinctAddition = (await update.run({ principal, args: update.schema.parse({ expectedRevision: beforeCaseDistinctAddition.revision, addUsers: ['bob'], idempotencyKey: 'preserve-case-distinct-users' }) })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.deepEqual(caseDistinctAddition.users.allowlist, ['alice', 'Alice', 'bob']);
+    assert.deepEqual((await core.loadSettings()).github_user_whitelist, ['alice', 'Alice', 'bob']);
+    process.env.GITHUB_USER_WHITELIST = 'alice,Alice,bob';
+    assert.equal(core.filterCommentByAuthor('alice', 'User').shouldFilter, false);
+    assert.equal(core.filterCommentByAuthor('Alice', 'User').shouldFilter, false);
+    delete process.env.GITHUB_USER_WHITELIST;
+
+    const beforeExactRemoval = (await get.run({ principal, args: {} })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const exactRemoval = (await update.run({ principal, args: update.schema.parse({ expectedRevision: beforeExactRemoval.revision, removeUsers: ['alice'], idempotencyKey: 'remove-exact-case-user' }) })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.deepEqual(exactRemoval.users.allowlist, ['Alice', 'bob']);
+    assert.deepEqual((await core.loadSettings()).github_user_whitelist, ['Alice', 'bob']);
 
     const beforeConcurrentUiSave = (await get.run({ principal, args: {} })).data as any; // eslint-disable-line @typescript-eslint/no-explicit-any
     await core.saveSettings({ github_user_whitelist: ['ui-user'] });

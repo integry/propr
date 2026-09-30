@@ -45,7 +45,7 @@ async function loadTriggerAccessSnapshot(): Promise<TriggerAccessSnapshot> {
 }
 
 function isBot(login: string): boolean {
-  return login.toLowerCase().endsWith('[bot]');
+  return login.endsWith('[bot]');
 }
 
 function normalizeBot(login: string): string {
@@ -55,9 +55,8 @@ function normalizeBot(login: string): string {
 function uniqueLogins(values: string[]): string[] {
   const seen = new Set<string>();
   return values.filter(value => {
-    const key = value.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(value)) return false;
+    seen.add(value);
     return true;
   });
 }
@@ -78,13 +77,15 @@ function response(snapshot: TriggerAccessSnapshot): Record<string, unknown> {
     },
     bots: {
       allowlist: snapshot.allowlist.filter(isBot),
+      allowlistDescription: `Explicit [bot]-suffixed entries from ${BOT_ALLOWLIST_SETTING} only; unsuffixed entries also authorize the corresponding [bot] login.`,
       source: snapshot.source,
       editable,
       ...(snapshot.environmentAllowlistPresent ? { environmentVariable: GITHUB_USER_ALLOWLIST_ENV } : {}),
     },
     notes: [
-      `Bots are entries ending in [bot] in ${BOT_ALLOWLIST_SETTING}; the Settings UI displays the same combined list.`,
-      'An empty allowlist permits every non-bot GitHub user. Bots still require an explicit [bot]-suffixed entry.',
+      `bots.allowlist reports only explicit [bot]-suffixed entries from ${BOT_ALLOWLIST_SETTING}; it is not an exhaustive list of bots with trigger access.`,
+      'An unsuffixed entry also authorizes the corresponding [bot] login because trigger enforcement matches that login after removing its [bot] suffix.',
+      'An empty allowlist permits every non-bot GitHub user but filters bot accounts.',
       `${GITHUB_USER_BLOCKLIST_ENV} is environment-only and cannot be changed through MCP.`,
       ...(snapshot.source === 'both' ? [`Persisted ${BOT_ALLOWLIST_SETTING} takes precedence; ${GITHUB_USER_ALLOWLIST_ENV} is reported for provenance and remains read-only.`] : []),
     ],
@@ -94,8 +95,8 @@ function response(snapshot: TriggerAccessSnapshot): Record<string, unknown> {
 function applyOperations(current: string[], args: Record<string, unknown>): string[] {
   const removeUsers = (args.removeUsers as string[] | undefined) ?? [];
   const removeBots = ((args.removeBots as string[] | undefined) ?? []).map(normalizeBot);
-  const removals = new Set([...removeUsers, ...removeBots].map(value => value.toLowerCase()));
-  const retained = current.filter(value => !removals.has(value.toLowerCase()));
+  const removals = new Set([...removeUsers, ...removeBots]);
+  const retained = current.filter(value => !removals.has(value));
   const additions = [
     ...((args.addUsers as string[] | undefined) ?? []),
     ...((args.addBots as string[] | undefined) ?? []).map(normalizeBot),
@@ -106,7 +107,7 @@ function applyOperations(current: string[], args: Record<string, unknown>): stri
 export function addTriggerAccessTools(tools: McpTool[], config: ReturnType<typeof createConfigRoutes>): void {
   tools.push({
     name: 'get_trigger_access_configuration',
-    description: 'Read the effective GitHub trigger user allowlist, environment-only blocklist and explicitly exempt bots.',
+    description: 'Read the effective GitHub trigger allowlist, environment-only blocklist, and explicit [bot]-suffixed entries; unsuffixed entries can also authorize matching bots.',
     scope: 'manage',
     permission: 'instance.manage_settings',
     readOnly: true,
@@ -116,7 +117,7 @@ export function addTriggerAccessTools(tools: McpTool[], config: ReturnType<typeo
 
   tools.push({
     name: 'update_trigger_access_configuration',
-    description: 'Add or remove GitHub trigger users and exempt bots without replacing the complete allowlist.',
+    description: 'Add or remove exact GitHub trigger allowlist entries without replacing the complete list; unsuffixed entries also authorize corresponding [bot] logins.',
     scope: 'manage',
     permission: 'instance.manage_settings',
     schema: z.object({
