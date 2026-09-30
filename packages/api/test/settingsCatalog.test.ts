@@ -71,6 +71,16 @@ test('generated settings locations page is current', async () => {
   assert.equal(committed, renderSettingsLocations());
 });
 
+test('workflow catalog commands use the CLI additional-config keys', () => {
+  const commands = Object.fromEntries(SETTINGS_CATALOG
+    .filter(entry => entry.id.startsWith('workflow.'))
+    .map(entry => [entry.id, entry.cli]));
+  assert.equal(commands['workflow.pr_label'], 'propr setting update pr-label <label>');
+  assert.equal(commands['workflow.ai_primary_tag'], 'propr setting update ai-primary-tag <tag>');
+  assert.equal(commands['workflow.primary_processing_labels'], 'propr setting update primary-processing-labels <csv>');
+  assert.equal(commands['workflow.followup_keywords'], 'propr setting update followup-keywords <csv>');
+});
+
 test('find_setting ranks aliases and environment names and explains access', async () => {
   const bots = await findSetting('bot whitelist');
   assert.equal(bots.matches[0].id, 'trigger.bot_allowlist');
@@ -83,6 +93,28 @@ test('find_setting ranks aliases and environment names and explains access', asy
   assert.equal(timeout.matches[0].mcpStatus, 'environment_only');
   assert.equal(timeout.matches[0].restartRequired, true);
   assert.equal(timeout.matches[0].docs, 'operations/configuration-reference');
+  assert.equal(timeout.matches[0].howToChange, 'Change CODEX_TIMEOUT_MS in the deployment environment and restart ProPR.');
+  assert.doesNotMatch(timeout.matches[0].howToChange, /CLAUDE_TIMEOUT_MS|ANTIGRAVITY_TIMEOUT_MS|OPENCODE_TIMEOUT_MS|VIBE_TIMEOUT_MS/);
+
+  const timeoutGroup = await findSetting('agent task timeouts');
+  assert.equal(timeoutGroup.matches[0].id, 'agents.timeouts');
+  assert.equal(
+    timeoutGroup.matches[0].howToChange,
+    'Configure the applicable deployment environment variables separately: CLAUDE_TIMEOUT_MS, CODEX_TIMEOUT_MS, ANTIGRAVITY_TIMEOUT_MS, OPENCODE_TIMEOUT_MS, VIBE_TIMEOUT_MS; then restart ProPR.',
+  );
+  assert.doesNotMatch(timeoutGroup.matches[0].howToChange, / or /);
+
+  const redisPort = await findSetting('REDIS_PORT');
+  assert.equal(redisPort.matches[0].id, 'queue.redis');
+  assert.equal(redisPort.matches[0].howToChange, 'Change REDIS_PORT in the deployment environment and restart ProPR.');
+  assert.doesNotMatch(redisPort.matches[0].howToChange, /REDIS_HOST/);
+
+  const redisGroup = await findSetting('Redis queue connection');
+  assert.equal(redisGroup.matches[0].id, 'queue.redis');
+  assert.equal(
+    redisGroup.matches[0].howToChange,
+    'Configure the applicable deployment environment variables separately: REDIS_HOST, REDIS_PORT; then restart ProPR.',
+  );
 
   const preview = await findSetting('visual preview token');
   assert.equal(preview.matches[0].id, 'credentials.visual_preview_token');
@@ -98,4 +130,8 @@ test('find_setting ranks aliases and environment names and explains access', asy
   assert.equal(syntheticAgent.matches[0].id, 'agents.synthetic_configuration');
   assert.equal(syntheticAgent.matches[0].mcp.write, 'update_synthetic_agent');
   assert.match(syntheticAgent.matches[0].howToChange, /with update_synthetic_agent/);
+
+  const followupKeywords = await findSetting('follow-up keywords');
+  assert.equal(followupKeywords.matches[0].id, 'workflow.followup_keywords');
+  assert.match(followupKeywords.matches[0].howToChange, /`propr setting update followup-keywords <csv>`/);
 });

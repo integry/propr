@@ -25,14 +25,29 @@ function settingScore(entry: SettingEntry, query: string): number {
   return best || (terms.every(term => haystack.includes(term)) ? 50 : 0);
 }
 
-// eslint-disable-next-line complexity -- Each catalog status intentionally has a distinct one-sentence instruction.
-function howToChange(entry: SettingEntry, tools: McpTool[], permissions: readonly string[], scopes: readonly string[]): string {
+function environmentChangeInstruction(entry: SettingEntry, query: string): string {
+  const variables = entry.env ?? [];
+  const exactMatch = variables.find(variable => normalizeSettingQuery(variable) === normalizeSettingQuery(query));
+  const restart = entry.restartRequired ? ' and restart ProPR' : '';
+  if (exactMatch || variables.length <= 1) {
+    return `Change ${exactMatch ?? variables[0] ?? 'this value'} in the deployment environment${restart}`;
+  }
+  const restartGroup = entry.restartRequired ? '; then restart ProPR' : '';
+  return `Configure the applicable deployment environment variables separately: ${variables.join(', ')}${restartGroup}`;
+}
+
+function howToChange(
+  entry: SettingEntry,
+  query: string,
+  tools: McpTool[],
+  access: { permissions: readonly string[]; scopes: readonly string[] },
+): string {
   const referencedTools = [entry.mcp?.read, entry.mcp?.write]
     .flatMap(name => name ? tools.filter(tool => tool.name === name) : []);
   const missingPermissions = [...new Set(referencedTools
-    .map(tool => tool.permission).filter(permission => permission && !permissions.includes(permission)))];
+    .map(tool => tool.permission).filter(permission => permission && !access.permissions.includes(permission)))];
   const missingScopes = [...new Set(referencedTools
-    .map(tool => tool.scope).filter(scope => !scopes.includes(scope)))];
+    .map(tool => tool.scope).filter(scope => !access.scopes.includes(scope)))];
   const requirements = [
     missingPermissions.length && `requires ${missingPermissions.join(' and ')}`,
     missingScopes.length && `requires the ${missingScopes.join(' and ')} scope`,
@@ -43,10 +58,10 @@ function howToChange(entry: SettingEntry, tools: McpTool[], permissions: readonl
     return `Change it${location}; MCP editing is unavailable — ${(entry.reason ?? 'Browser setup is required.').replace(/\.$/, '')}.`;
   }
   if (entry.mcpStatus === 'environment_only') {
-    return `Change ${entry.env?.join(' or ') ?? 'this value'} in the deployment environment${entry.restartRequired ? ' and restart ProPR' : ''}${requirement}.`;
+    return `${environmentChangeInstruction(entry, query)}${requirement}.`;
   }
   if (entry.mcpStatus === 'read_only') {
-    return `Change ${entry.env?.join(' or ') ?? 'this value'} in the deployment environment${entry.restartRequired ? ' and restart ProPR' : ''}; MCP can only read it${entry.mcp?.read ? ` with ${entry.mcp.read}` : ''}${requirement}.`;
+    return `${environmentChangeInstruction(entry, query)}; MCP can only read it${entry.mcp?.read ? ` with ${entry.mcp.read}` : ''}${requirement}.`;
   }
   const locations = [entry.mcp?.write && `with ${entry.mcp.write}`, entry.ui && `in ${entry.ui}`, entry.cli && `with \`${entry.cli}\``].filter(Boolean);
   return `Change it ${locations.join(', or ')}${requirement}.`;
@@ -89,7 +104,10 @@ export function addDocsTools(tools: McpTool[], deps: ToolDeps): void {
         .slice(0, args.limit)
         .map(({ entry }) => ({
           ...entry,
-          howToChange: howToChange(entry, tools, principal.authorization.permissions, principal.scopes),
+          howToChange: howToChange(entry, args.query, tools, {
+            permissions: principal.authorization.permissions,
+            scopes: principal.scopes,
+          }),
         }));
       return ok({ query: args.query, matches });
     },
