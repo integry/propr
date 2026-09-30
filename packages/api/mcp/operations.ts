@@ -267,6 +267,19 @@ export class McpOperations {
     });
   }
 
+  /** Stop polling when mutable backend metadata has displaced this operation's only outcome evidence. */
+  async markOutcomeUnavailable(id: string, failure: McpErrorEnvelope): Promise<void> {
+    await this.db('mcp_operations').where({ id })
+      .whereIn('state', ['accepted', 'posted', 'queued', 'running', 'unknown'])
+      .whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+      .update({
+        state: 'unknown',
+        lifecycle: 'unknown',
+        failure: JSON.stringify(failure),
+        updated_at: Date.now(),
+      });
+  }
+
   async markAccepted(id: string): Promise<void> {
     await this.db('mcp_operations').where({ id, lifecycle: 'unknown' }).whereNull('started_at').update({
       lifecycle: 'accepted',

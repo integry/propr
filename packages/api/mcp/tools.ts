@@ -19,6 +19,7 @@ import { createNotificationRoutes } from '../routes/notificationRoutes.js';
 import { createConfigRoutes } from '../routes/configRoutes.js';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import { McpError, type McpScope } from './config.js';
+import type { McpErrorEnvelope } from './errorEnvelope.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations, type OperationResult, type Operation } from './operations.js';
 import { syncLifecycle } from './operationLifecycle.js';
@@ -328,7 +329,8 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
       }
     }
     if (continuation.taskId) receipt.targetState = await db('task_history').where({ task_id: continuation.taskId }).orderBy('history_id', 'desc').first('state', 'timestamp');
-    updateReceiptState(row, receipt);
+    const unavailableOutcome = updateReceiptState(row, receipt);
+    if (unavailableOutcome) await operations.markOutcomeUnavailable(row.id, unavailableOutcome);
     await trackTaskSubmission(deps, row, principal, receipt);
     await trackExecution(deps, row, principal, receipt);
     await trackCancellation(deps, row, principal, receipt);
@@ -337,8 +339,16 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
       receipt.targetState = { issues };
       if (issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
     }
-    await syncLifecycle(operations, row, receipt);
-    receipt.lifecycle = operations.project(await operations.get(principal, row.id)).lifecycle;
+    await syncReceiptLifecycle(operations, row, receipt, !!unavailableOutcome);
+    const durableReceipt = operations.project(await operations.get(principal, row.id));
+    receipt.lifecycle = durableReceipt.lifecycle;
+    if (unavailableOutcome) {
+      // A concurrent poll may have retained exact terminal evidence before the
+      // draft metadata was replaced. Return that winning durable observation.
+      receipt.state = durableReceipt.state;
+      receipt.result = durableReceipt.result;
+      if (durableReceipt.state !== 'unknown') delete receipt.message;
+    }
     if (['accepted', 'posted', 'queued', 'running'].includes(String(receipt.state))) receipt.retryAfterSeconds = 3;
     else delete receipt.retryAfterSeconds;
     return ok(receipt);
@@ -424,8 +434,19 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   return tools;
 }
 
+async function syncReceiptLifecycle(
+  operations: McpOperations,
+  row: Operation,
+  receipt: Record<string, unknown>,
+  outcomeUnavailable: boolean,
+): Promise<void> {
+  // A different run's draft snapshot is context, not progress evidence for
+  // this receipt. The guarded unavailable-outcome write is sufficient.
+  if (!outcomeUnavailable) await syncLifecycle(operations, row, receipt);
+}
+
 // eslint-disable-next-line complexity -- tool-specific terminal evidence is normalized at the receipt boundary
-function updateReceiptState(row: Operation, receipt: Record<string, unknown>): void {
+function updateReceiptState(row: Operation, receipt: Record<string, unknown>): McpErrorEnvelope | undefined {
   const target = receipt.targetState as Record<string, unknown> | undefined;
   if (row.state === 'accepted' && target) {
     if (row.tool === 'generate_plan' && target.status === 'review') receipt.state = 'completed';
@@ -456,10 +477,23 @@ function updateReceiptState(row: Operation, receipt: Record<string, unknown>): v
         receipt.result = { ...result, error };
       } else if (matchesRun && target.status === 'review' && (refinement.status === 'completed' || refinement.action)) {
         receipt.state = 'completed';
+      } else if (!matchesRun && typeof result.runId === 'string' && typeof refinement.runId === 'string'
+        && !['completed', 'failed', 'cancelled'].includes(row.lifecycle)) {
+        const failure: McpErrorEnvelope = {
+          code: 'REFINEMENT_OUTCOME_UNAVAILABLE',
+          stage: 'workflow',
+          retryable: false,
+          status: 500,
+          message: 'The historical refinement outcome is unavailable because a later refinement replaced its metadata.',
+        };
+        receipt.state = 'unknown';
+        receipt.message = failure.message;
+        return failure;
       }
     }
     if (row.tool === 'create_goal' && target.result_state) receipt.state = target.result_state;
   }
+  return undefined;
 }
 
 export function workflow(tools: McpTool[], definition: Omit<McpTool, 'run'>, handler: WorkflowHandler, input: (args: Args) => Parameters<typeof callWorkflow>[2]): void {

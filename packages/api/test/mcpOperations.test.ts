@@ -293,7 +293,7 @@ test('get_operation exposes structured invalid-refinement failures', async t => 
   assert.deepEqual(failed.lifecycle.failure, failed.result.error);
 });
 
-test('get_operation does not attach a later refinement failure to an earlier receipt', async t => {
+test('get_operation settles a displaced refinement receipt as unknown without attaching a later failure', async t => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   t.after(() => db.destroy());
   await db.schema.createTable('task_drafts', table => {
@@ -324,17 +324,63 @@ test('get_operation does not attach a later refinement failure to an earlier rec
   const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
 
   const firstPoll = (await get.run({ principal, args: get.schema.parse({ operationId: first.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-  assert.equal(firstPoll.state, 'accepted');
+  assert.equal(firstPoll.state, 'unknown');
   assert.deepEqual(firstPoll.result, { planId: 'plan-refined-twice', runId: 'refinement-run-a' });
   assert.equal(firstPoll.result.error, undefined);
   assert.equal(firstPoll.targetState.error, undefined);
-  assert.equal(firstPoll.lifecycle.state, 'accepted');
-  assert.equal(firstPoll.lifecycle.failure, null);
+  assert.equal(firstPoll.lifecycle.state, 'unknown');
+  assert.deepEqual(firstPoll.lifecycle.failure, {
+    code: 'REFINEMENT_OUTCOME_UNAVAILABLE', stage: 'workflow', retryable: false, status: 500,
+    message: 'The historical refinement outcome is unavailable because a later refinement replaced its metadata.',
+  });
+  assert.equal(firstPoll.lifecycle.progress, null);
+  assert.equal(firstPoll.message, firstPoll.lifecycle.failure.message);
+  assert.equal(firstPoll.retryAfterSeconds, undefined);
+
+  const firstReplay = await operations.replay(principal, 'refine_plan', { idempotencyKey: 'first-refinement-run' });
+  assert.equal(firstReplay?.state, 'unknown');
+  assert.equal(firstReplay?.retryAfterSeconds, undefined);
+  assert.deepEqual((firstReplay?.lifecycle as { failure: unknown }).failure, firstPoll.lifecycle.failure);
 
   const secondPoll = (await get.run({ principal, args: get.schema.parse({ operationId: second.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   assert.equal(secondPoll.state, 'failed');
   assert.equal(secondPoll.result.error.code, 'REFINEMENT_OUTPUT_INVALID');
   assert.equal(secondPoll.result.error.message, 'The later refinement returned an invalid edit.');
+});
+
+test('get_operation preserves terminal refinement evidence after a later run replaces draft metadata', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary(); table.string('user_id'); table.string('repository');
+    table.string('status'); table.boolean('paused'); table.text('refinement_result');
+  });
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'refine_plan', args: { idempotencyKey: 'retained-refinement' }, repository: 'acme/repo',
+  }, async () => ({ status: 202, data: { planId: 'plan-retained-refinement', runId: 'refinement-run-a' } }));
+  await db('task_drafts').insert({
+    draft_id: 'plan-retained-refinement', user_id: 'alice', repository: 'acme/repo', status: 'review', paused: false,
+    refinement_result: JSON.stringify({ runId: 'refinement-run-a', status: 'completed', action: 'replace' }),
+  });
+  const deps = { db, policy: { repository: async () => {}, requirePermission: () => {}, config: {} } as never,
+    taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
+
+  const completed = (await get.run({ principal, args: get.schema.parse({ operationId: receipt.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(completed.state, 'completed');
+  assert.equal(completed.lifecycle.state, 'completed');
+
+  await db('task_drafts').where({ draft_id: 'plan-retained-refinement' }).update({
+    refinement_result: JSON.stringify({ runId: 'refinement-run-b', status: 'failed', error: 'Later failure' }),
+  });
+  const retained = (await get.run({ principal, args: get.schema.parse({ operationId: receipt.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(retained.state, 'completed');
+  assert.equal(retained.lifecycle.state, 'completed');
+  assert.equal(retained.lifecycle.failure, null);
+  assert.equal(retained.retryAfterSeconds, undefined);
 });
 
 test('replay recovers terminal lifecycle, artifacts and failure from durable receipts', async t => {
