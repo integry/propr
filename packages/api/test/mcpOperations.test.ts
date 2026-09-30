@@ -293,6 +293,50 @@ test('get_operation exposes structured invalid-refinement failures', async t => 
   assert.deepEqual(failed.lifecycle.failure, failed.result.error);
 });
 
+test('get_operation does not attach a later refinement failure to an earlier receipt', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary(); table.string('user_id'); table.string('repository');
+    table.string('status'); table.boolean('paused'); table.text('refinement_result');
+  });
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const first = await operations.run(principal, {
+    tool: 'refine_plan', args: { idempotencyKey: 'first-refinement-run' }, repository: 'acme/repo',
+  }, async () => ({ status: 202, data: { planId: 'plan-refined-twice', runId: 'refinement-run-a' } }));
+  await db('task_drafts').insert({
+    draft_id: 'plan-refined-twice', user_id: 'alice', repository: 'acme/repo', status: 'review', paused: false,
+    refinement_result: JSON.stringify({ runId: 'refinement-run-a', status: 'completed', action: 'replace' }),
+  });
+  const second = await operations.run(principal, {
+    tool: 'refine_plan', args: { idempotencyKey: 'second-refinement-run' }, repository: 'acme/repo',
+  }, async () => ({ status: 202, data: { planId: 'plan-refined-twice', runId: 'refinement-run-b' } }));
+  await db('task_drafts').where({ draft_id: 'plan-refined-twice' }).update({
+    refinement_result: JSON.stringify({
+      runId: 'refinement-run-b', status: 'failed', code: 'REFINEMENT_OUTPUT_INVALID',
+      error: 'The later refinement returned an invalid edit.',
+    }),
+  });
+  const deps = { db, policy: { repository: async () => {}, requirePermission: () => {}, config: {} } as never,
+    taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
+
+  const firstPoll = (await get.run({ principal, args: get.schema.parse({ operationId: first.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(firstPoll.state, 'accepted');
+  assert.deepEqual(firstPoll.result, { planId: 'plan-refined-twice', runId: 'refinement-run-a' });
+  assert.equal(firstPoll.result.error, undefined);
+  assert.equal(firstPoll.targetState.error, undefined);
+  assert.equal(firstPoll.lifecycle.state, 'accepted');
+  assert.equal(firstPoll.lifecycle.failure, null);
+
+  const secondPoll = (await get.run({ principal, args: get.schema.parse({ operationId: second.operationId }) })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(secondPoll.state, 'failed');
+  assert.equal(secondPoll.result.error.code, 'REFINEMENT_OUTPUT_INVALID');
+  assert.equal(secondPoll.result.error.message, 'The later refinement returned an invalid edit.');
+});
+
 test('replay recovers terminal lifecycle, artifacts and failure from durable receipts', async t => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   t.after(() => db.destroy());

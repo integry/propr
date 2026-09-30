@@ -438,7 +438,10 @@ function updateReceiptState(row: Operation, receipt: Record<string, unknown>): v
           : target.refinement_result as Record<string, unknown> || {};
       } catch { /* An unreadable in-progress value is not terminal evidence. */ }
       delete target.refinement_result;
-      if (target.status === 'review' && refinement.status === 'failed') {
+      const result = receipt.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result)
+        ? receipt.result as Record<string, unknown> : {};
+      const matchesRun = typeof result.runId === 'string' && refinement.runId === result.runId;
+      if (matchesRun && target.status === 'review' && refinement.status === 'failed') {
         const invalidOutput = refinement.code === 'REFINEMENT_OUTPUT_INVALID';
         const error = {
           code: invalidOutput ? refinement.code : 'REFINEMENT_FAILED',
@@ -450,10 +453,8 @@ function updateReceiptState(row: Operation, receipt: Record<string, unknown>): v
         };
         receipt.state = 'failed';
         receipt.targetState = { ...target, status: 'failed', error };
-        const result = receipt.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result)
-          ? receipt.result as Record<string, unknown> : {};
         receipt.result = { ...result, error };
-      } else if (target.status === 'review' && (refinement.status === 'completed' || refinement.action)) {
+      } else if (matchesRun && target.status === 'review' && (refinement.status === 'completed' || refinement.action)) {
         receipt.state = 'completed';
       }
     }
