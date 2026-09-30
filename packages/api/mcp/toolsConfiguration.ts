@@ -7,6 +7,7 @@ import { configRevision } from '../routes/configRevision.js';
 import { callWorkflow } from './adapter.js';
 import { McpError } from './config.js';
 import { type McpTool, type ToolDeps, mutationShape, repositorySchema, idSchema, ok, workflow } from './tools.js';
+import { addTriggerAccessTools } from './toolsTriggerAccess.js';
 
 const configurationId = z.string().min(1).max(256);
 const agentPatch = {
@@ -21,6 +22,7 @@ const safeAgent = (agent: Awaited<ReturnType<typeof loadAgents>>[number]) => Obj
 );
 
 export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: ReturnType<typeof createConfigRoutes>): void {
+  addTriggerAccessTools(tools, config);
   tools.push({ name: 'get_agent_configuration', description: 'Read all direct and synthetic agent configurations and actual built-in model defaults. Credential paths/environment variables are excluded.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict(), run: async () => ok({ agents: (await loadAgents()).map(safeAgent), syntheticAgents: await loadSyntheticAgents(), types: AGENT_TYPES, defaults: Object.fromEntries(Object.entries(AGENT_DEFAULTS).map(([type, value]) => [type, { models: value.defaultModels, alias: value.defaultAlias, cliVersion: value.defaultCliVersion }])), reasoningLevels: REASONING_LEVELS }) });
   for (const action of ['create', 'update', 'remove'] as const) tools.push({ name: `${action}_agent_configuration`, description: `${action} a direct agent through the existing validated configuration workflow. Creation uses managed credential storage; provider login requires secure browser setup.`, scope: 'manage', permission: 'instance.manage_agents',
     schema: z.object({ ...mutationShape, agentId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/), ...(action === 'create' ? { type: z.enum(AGENT_TYPES), alias: z.string().regex(/^[a-z0-9-]{1,63}$/), supportedModels: z.array(idSchema).min(1).max(100), defaultModel: idSchema, enabled: z.literal(false).default(false) } : action === 'update' ? agentPatch : {}) }).strict(), run: async ({ principal, args }) => {

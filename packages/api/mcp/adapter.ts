@@ -6,6 +6,14 @@ import type { OperationResult } from './operations.js';
 
 export type WorkflowHandler = (req: Request<never>, res: Response) => unknown;
 
+function workflowErrorCode(status: number, data: unknown): string {
+  if (typeof data === 'object' && data !== null && 'code' in data && typeof data.code === 'string') return data.code;
+  if (status === 409) return 'PRECONDITION_FAILED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  return 'WORKFLOW_REJECTED';
+}
+
 export function redact(value: unknown, depth = 0): unknown {
   if (depth > 16) return '[depth limit]';
   if (typeof value === 'string' && (value.trim().startsWith('[') || value.trim().startsWith('{'))) {
@@ -50,7 +58,7 @@ export async function callWorkflow(handler: WorkflowHandler, principal: McpPrinc
   await handler(req, res as unknown as Response);
   if (status >= 400) {
     const message = typeof data === 'object' && data !== null && 'error' in data ? String(data.error) : 'Workflow rejected the request.';
-    throw new McpError(status === 409 ? 'PRECONDITION_FAILED' : status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'WORKFLOW_REJECTED', status >= 500 ? 'Workflow failed; inspect the operation and target before retrying.' : String(redact(message)), status);
+    throw new McpError(workflowErrorCode(status, data), status >= 500 ? 'Workflow failed; inspect the operation and target before retrying.' : String(redact(message)), status);
   }
   const safe = redact(input.projectResult ? input.projectResult(data ?? {}) : data ?? {});
   if (Buffer.byteLength(JSON.stringify(safe)) > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Result exceeds 256 KiB. Request a smaller page or a specific artifact.');

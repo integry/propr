@@ -41,9 +41,10 @@ Commands that take a model accept the model IDs configured in AI Agents. The `ll
 
 ProPR filters PR comments by author before processing anything (commands and natural follow-ups alike):
 
-- Bot accounts (usernames containing `[bot]` or with user type `Bot`) and ProPR's own bot account are ignored.
-- If `GITHUB_USER_WHITELIST` is set (comma-separated usernames), only those users can trigger processing.
+- Bot accounts (usernames containing `[bot]` or with user type `Bot`) and ProPR's own bot account are ignored by default. To exempt a bot, add its exact `name[bot]` login to the GitHub User Whitelist in Settings or use the MCP `update_trigger_access_configuration` tool's `addBots` operation.
+- If `GITHUB_USER_WHITELIST` is set (comma-separated usernames), only those users can trigger processing. Environment-managed entries are read-only through MCP.
 - Users listed in `GITHUB_USER_BLACKLIST` are ignored.
+- MCP administrators with `instance.manage_settings` can inspect all three lists with `get_trigger_access_configuration`. User and bot allowlist changes use `update_trigger_access_configuration`; the environment-only blocklist is reported but cannot be edited by the tool.
 - Comments containing a configured follow-up ignore keyword are skipped.
 
 Slash commands from an allowed author are processed directly. Natural follow-up comments are additionally gated: the PR must carry one of the configured processing labels (for example `AI` or `propr`), or the comment must contain a trigger keyword from `PR_FOLLOWUP_TRIGGER_KEYWORDS` (for example `!propr`).

@@ -1,5 +1,5 @@
 import { parseUsageTipsSettings } from '@propr/shared';
-import { assertConfigRevision } from './configRevision.js';
+import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
@@ -15,13 +15,7 @@ import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
 import { normalizeRepoConfig, preserveRepoSettings } from './configRepoValidation.js';
 import { loadReposWithAttachmentCapacity } from './configRoutesRepos.js';
-
-interface ConfigRoutesDeps {
-  redisClient: RedisClientType;
-  configStore?: Partial<typeof configManager>;
-  database?: Pick<Knex, 'transaction'>;
-  agentPreparationDeps?: Partial<AgentPreparationDeps>;
-}
+interface ConfigRoutesDeps { redisClient: RedisClientType; configStore?: Partial<typeof configManager>; database?: Pick<Knex, 'transaction'>; agentPreparationDeps?: Partial<AgentPreparationDeps>; }
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
   pickValue: (body: Record<string, unknown>) => unknown;
@@ -330,6 +324,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      if (bodyValidation.value.expectedRevision !== undefined && 'github_user_whitelist' in settingsValidation.value) assertConfigRevision(bodyValidation.value.expectedRevision, effectiveGithubUserWhitelist(await configStore.loadSettings() as Record<string, unknown>));
       await validateDefaultAgentSetting(settingsValidation.value, configStore);
       return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });
