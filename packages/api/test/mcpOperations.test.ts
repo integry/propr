@@ -293,6 +293,105 @@ test('get_operation exposes structured invalid-refinement failures', async t => 
   assert.deepEqual(failed.lifecycle.failure, failed.result.error);
 });
 
+test('an exact refinement failure supersedes uncertainty written by a concurrent poll', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => {
+    table.string('draft_id').primary(); table.string('user_id'); table.string('repository');
+    table.string('status'); table.boolean('paused'); table.text('refinement_result');
+  });
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'refine_plan', args: { idempotencyKey: 'concurrent-refinement-polls' }, repository: 'acme/repo',
+  }, async () => ({ status: 202, data: { planId: 'plan-concurrent-refinement', runId: 'refinement-run-a' } }));
+  const exactFailure = {
+    code: 'REFINEMENT_OUTPUT_INVALID', stage: 'workflow', retryable: true, status: 500,
+    message: 'A refinement edit referred to an unknown task.', details: { reason: 'unknown_target' },
+  };
+  await db('task_drafts').insert({
+    draft_id: 'plan-concurrent-refinement', user_id: 'alice', repository: 'acme/repo', status: 'review', paused: false,
+    refinement_result: JSON.stringify({
+      runId: 'refinement-run-a', status: 'failed', code: exactFailure.code,
+      error: exactFailure.message, details: exactFailure.details,
+    }),
+  });
+  const deps = { db, policy: { repository: async () => {}, requirePermission: () => {}, config: {} } as never,
+    taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } as ToolDeps;
+  const get = createToolCatalog(deps).find(tool => tool.name === 'get_operation')!;
+
+  let releaseExactFailure!: () => void;
+  let exactFailureReachedFinish!: () => void;
+  const release = new Promise<void>(resolve => { releaseExactFailure = resolve; });
+  const reachedFinish = new Promise<void>(resolve => { exactFailureReachedFinish = resolve; });
+  const originalFinish = McpOperations.prototype.finish;
+  let paused = false;
+  McpOperations.prototype.finish = async function(id, outcome, failure, progress) {
+    if (!paused && id === receipt.operationId && failure?.code === 'REFINEMENT_OUTPUT_INVALID') {
+      paused = true;
+      exactFailureReachedFinish();
+      await release;
+    }
+    return originalFinish.call(this, id, outcome, failure, progress);
+  };
+  t.after(() => { McpOperations.prototype.finish = originalFinish; });
+
+  const exactPoll = get.run({ principal, args: get.schema.parse({ operationId: receipt.operationId }) });
+  await reachedFinish;
+  await db('task_drafts').where({ draft_id: 'plan-concurrent-refinement' }).update({
+    refinement_result: JSON.stringify({ runId: 'refinement-run-b', status: 'completed', action: 'replace' }),
+  });
+  const uncertainPoll = (await get.run({
+    principal, args: get.schema.parse({ operationId: receipt.operationId }),
+  })).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(uncertainPoll.state, 'unknown');
+  assert.equal(uncertainPoll.lifecycle.failure.code, 'REFINEMENT_OUTCOME_UNAVAILABLE');
+
+  releaseExactFailure();
+  const failedPoll = (await exactPoll).data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  assert.equal(failedPoll.state, 'failed');
+  assert.deepEqual(failedPoll.lifecycle.failure, exactFailure);
+
+  const durable = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  assert.equal(durable.lifecycle, 'failed');
+  assert.deepEqual(JSON.parse(durable.failure!), exactFailure);
+  const replay = await operations.replay(principal, 'refine_plan', { idempotencyKey: 'concurrent-refinement-polls' });
+  assert.equal(replay?.state, 'failed');
+  assert.deepEqual((replay?.lifecycle as { failure: unknown }).failure, exactFailure);
+});
+
+test('replay repairs an already-failed lifecycle that retained unavailable refinement evidence', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.schema.createTable('task_drafts', table => table.string('draft_id').primary());
+  await up(db);
+  const principal = { user: { id: 'alice' }, grant: { id: 'grant-a' } } as McpPrincipal;
+  const operations = new McpOperations(db);
+  const args = { idempotencyKey: 'recover-refinement-failure' };
+  const receipt = await operations.run(principal, { tool: 'refine_plan', args, repository: 'acme/repo' },
+    async () => ({ status: 202, data: { planId: 'plan-recovery', runId: 'refinement-run-a' } }));
+  const exactFailure = {
+    code: 'REFINEMENT_OUTPUT_INVALID', stage: 'workflow', retryable: true, status: 500,
+    message: 'The refinement output was invalid.',
+  };
+  const unavailableFailure = {
+    code: 'REFINEMENT_OUTCOME_UNAVAILABLE', stage: 'workflow', retryable: false, status: 500,
+    message: 'The historical refinement outcome is unavailable because a later refinement replaced its metadata.',
+  };
+  await db('mcp_operations').where({ id: receipt.operationId }).update({
+    state: 'failed', lifecycle: 'failed', finished_at: Date.now(),
+    result: JSON.stringify({ planId: 'plan-recovery', runId: 'refinement-run-a', error: exactFailure }),
+    failure: JSON.stringify(unavailableFailure),
+  });
+
+  const replay = await operations.replay(principal, 'refine_plan', args);
+  assert.equal(replay?.state, 'failed');
+  assert.deepEqual((replay?.lifecycle as { failure: unknown }).failure, exactFailure);
+  const durable = await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first();
+  assert.deepEqual(JSON.parse(durable!.failure!), exactFailure);
+});
+
 test('get_operation settles a displaced refinement receipt as unknown without attaching a later failure', async t => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   t.after(() => db.destroy());

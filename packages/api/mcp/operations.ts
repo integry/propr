@@ -9,6 +9,7 @@ import { artifactsFromReceipt, failureFromReceipt } from './operationLifecycle.j
 import { COMMAND_NOT_PICKED_UP_FAILURE, summarizeLifecycle } from './commandProgress.js';
 
 const interruptionTimeoutMs = 120_000;
+const REFINEMENT_OUTCOME_UNAVAILABLE = 'REFINEMENT_OUTCOME_UNAVAILABLE';
 
 export interface OperationResult { status: number; data: unknown; content?: ContentBlock[] }
 export type LifecycleState = 'accepted' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
@@ -63,6 +64,10 @@ function errorEnvelope(value: unknown): McpErrorEnvelope | undefined {
 
 function isPickupFailure(value: unknown): boolean {
   return errorEnvelope(value)?.code === COMMAND_NOT_PICKED_UP_FAILURE.code;
+}
+
+function isRefinementOutcomeUnavailable(value: unknown): boolean {
+  return errorEnvelope(value)?.code === REFINEMENT_OUTCOME_UNAVAILABLE;
 }
 
 function operationState(result: OperationResult): string {
@@ -184,7 +189,8 @@ export class McpOperations {
         .filter(([key, value]) => canonical(artifactRecord[key]) !== canonical(value)));
       const failure = row.state === 'failed' ? failureFromReceipt(receipt) : undefined;
       const pickupFailure = isPickupFailure(json(row.failure));
-      const failureNeedsRecovery = !!failure && (row.failure === null || pickupFailure);
+      const unavailableRefinementOutcome = isRefinementOutcomeUnavailable(json(row.failure));
+      const failureNeedsRecovery = !!failure && (row.failure === null || pickupFailure || unavailableRefinementOutcome);
       const failureNeedsClearing = pickupFailure && !failure;
       const failureNeedsUpdate = failureNeedsRecovery || failureNeedsClearing;
       const lifecycleMissing = ['accepted', 'running', 'unknown'].includes(row.lifecycle) || row.finished_at === null;
@@ -310,10 +316,13 @@ export class McpOperations {
   async finish(id: string, outcome: LifecycleOutcome, failure?: McpErrorEnvelope, progress?: unknown): Promise<void> {
     const at = Date.now();
     const pickupFailureSql = "json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') = ?";
+    const unavailableRefinementOutcomeSql = "json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') = ?";
     const eligible = this.db('mcp_operations').where({ id }).andWhere(builder => {
       builder.whereIn('lifecycle', ['accepted', 'running', 'unknown']);
       if (outcome === 'failed' && failure) builder.orWhere(nested => nested.where({ lifecycle: 'failed' })
-        .andWhere(current => current.whereNull('failure').orWhereRaw(pickupFailureSql, [COMMAND_NOT_PICKED_UP_FAILURE.code])));
+        .andWhere(current => current.whereNull('failure')
+          .orWhereRaw(pickupFailureSql, [COMMAND_NOT_PICKED_UP_FAILURE.code])
+          .orWhereRaw(unavailableRefinementOutcomeSql, [REFINEMENT_OUTCOME_UNAVAILABLE])));
       else builder.orWhere(nested => nested.where({ lifecycle: outcome })
         .whereRaw(pickupFailureSql, [COMMAND_NOT_PICKED_UP_FAILURE.code]));
     });
@@ -321,9 +330,9 @@ export class McpOperations {
       lifecycle: outcome,
       finished_at: this.db.raw('COALESCE(finished_at, ?)', [at]),
       failure: failure ? this.db.raw(`CASE
-        WHEN failure IS NULL OR json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') = ? THEN ?
+        WHEN failure IS NULL OR json_extract(CASE WHEN json_valid(failure) THEN failure ELSE '{}' END, '$.code') IN (?, ?) THEN ?
         ELSE failure
-      END`, [COMMAND_NOT_PICKED_UP_FAILURE.code, JSON.stringify(failure)]) : null,
+      END`, [COMMAND_NOT_PICKED_UP_FAILURE.code, REFINEMENT_OUTCOME_UNAVAILABLE, JSON.stringify(failure)]) : null,
       updated_at: at,
     };
     if (progress !== undefined) update.progress = this.db.raw(`CASE
