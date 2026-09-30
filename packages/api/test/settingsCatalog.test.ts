@@ -50,7 +50,7 @@ test('settings catalog MCP references and configuration-tool coverage do not dri
     }
   }
 
-  const configurationTool = /^(get|update)_.*(settings|configuration|keywords|labels|label|tag|policy)$/;
+  const configurationTool = /^(get|update)_.*(settings|configuration|keywords|labels|label|tag|policy|agent)$/;
   for (const tool of catalog.filter(candidate => configurationTool.test(candidate.name))) {
     assert.ok(
       SETTINGS_CATALOG.some(entry => entry.mcp?.read === tool.name || entry.mcp?.write === tool.name),
@@ -89,4 +89,13 @@ test('find_setting ranks aliases and environment names and explains access', asy
   assert.equal(preview.matches[0].mcpStatus, 'browser_only');
   assert.match(preview.matches[0].howToChange, /credential entry/);
   assert.match(preview.matches[0].howToChange, /Settings → Integrations → Visual previews/);
+
+  const directAgent = await findSetting('direct agents');
+  assert.equal(directAgent.matches[0].id, 'agents.configuration');
+  assert.equal(directAgent.matches[0].mcp.write, 'update_agent_configuration');
+
+  const syntheticAgent = await findSetting('synthetic agents');
+  assert.equal(syntheticAgent.matches[0].id, 'agents.synthetic_configuration');
+  assert.equal(syntheticAgent.matches[0].mcp.write, 'update_synthetic_agent');
+  assert.match(syntheticAgent.matches[0].howToChange, /with update_synthetic_agent/);
 });
