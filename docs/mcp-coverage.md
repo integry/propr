@@ -68,55 +68,10 @@ remain separate gates.
 
 ## Settings reachability
 
-This audit follows `SystemSettings`, the settings route save extraction, repository
-validation, and every Settings UI section. “Yes” always names the concrete MCP
-tool. Environment-backed trigger lists are visible but cannot be mutated through
-MCP; an environment variable must be changed by the operator.
-
-| Setting | UI location | MCP read | MCP write | CLI | Env | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| `usage_tips_enabled` | Settings > Automation > Usage tips | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | added in this issue |
-| `usage_tips_dismissal_cooldown_days` | Settings > Automation > Usage tips | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | added in this issue |
-| `default_agent_alias` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `worker_concurrency` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | `WORKER_CONCURRENCY` | covered |
-| `github_user_whitelist` (users) | Settings > Automation > GitHub User Whitelist | yes — `get_trigger_access_configuration` | yes — `update_trigger_access_configuration` | yes | `GITHUB_USER_WHITELIST` | added in this issue |
-| `github_user_whitelist` (`[bot]` entries) | Settings > Automation > GitHub User Whitelist | yes — `get_trigger_access_configuration` | yes — `update_trigger_access_configuration` | yes | `GITHUB_USER_WHITELIST` | added in this issue |
-| `GITHUB_USER_BLACKLIST` | Not editable in UI | yes — `get_trigger_access_configuration` | no — environment-owned deny list | no | `GITHUB_USER_BLACKLIST` | added in this issue |
-| `analysis_model_fast` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | `ANALYSIS_MODEL_FAST` | covered |
-| `planner_context_model` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | `PLANNER_CONTEXT_MODEL` | covered |
-| `planner_generation_model` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | `PLANNER_GENERATION_MODEL` | covered |
-| `auto_followup_score_threshold` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `auto_resolve_merge_conflicts` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `dashboard_summary_enabled` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | added in this issue |
-| `model_reasoning_level` | Settings > Models > Model selection | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_model` | Settings > Models > PR review | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_prompt` | Settings > Models > PR review | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_context_enabled` | Settings > Models > PR review context | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_context_model` | Settings > Models > PR review context | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_max_context_tokens` | Settings > Models > PR review context (legacy cap) | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_review_context_budget_percent` | Settings > Models > PR review context | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `ultrafix_rating_goal` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `ultrafix_max_cycles` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `ultrafix_pause_seconds` | Settings > Automation > General configuration | yes — `get_execution_settings` | yes — `update_execution_settings` | yes | — | covered |
-| `pr_label` | Settings > Automation > PR label | yes — `get_pr_label` | yes — `update_pr_label` | yes | `PR_LABEL` | covered |
-| `ai_primary_tag` | Not exposed in Settings UI | yes — `get_ai_primary_tag` | yes — `update_ai_primary_tag` | yes | `AI_PRIMARY_TAG` | covered |
-| `primary_processing_labels` | Settings > Automation > Primary processing labels | yes — `get_primary_processing_labels` | yes — `update_primary_processing_labels` | yes | — | covered |
-| `followup_keywords` | Settings > Automation > Follow-up keywords | yes — `get_followup_keywords` | yes — `update_followup_keywords` | yes | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | covered |
-| `followup_ignore_keywords` | Settings > Automation > PR follow-up ignore keywords | yes — `get_followup_ignore_keywords` | yes — `update_followup_ignore_keywords` | no | — | covered |
-| Indexing policy | Settings > Models > Knowledge base | yes — `get_indexing_configuration` | yes — `update_indexing_configuration` | no | — | covered |
-| Agent Tank policy | Settings > Integrations > Agent Tank | yes — `get_provider_policy` | yes — `update_provider_policy` | no | — | covered |
-| Direct and synthetic agents | Settings > Models > Coding agents | yes — `get_agent_configuration` | yes — agent/synthetic create, update and remove tools | yes | — | covered |
-| Agent runtime packages | Settings > Integrations > Agent runtime packages | yes — `get_runtime_configuration` | yes — `update_runtime_configuration` | no | — | covered |
-| Repository identity, branch, alias and enabled state | Repositories > Configuration | yes — `get_repository_configuration` | yes — repository create/update/remove tools | yes | `REPOS_TO_MONITOR` | covered |
-| Repository failed-CI follow-up and cancellation policy | Repositories > Automation | yes — `get_repository_configuration` | yes — `update_repository_configuration` | no | — | covered |
-| Repository non-blocking checks | Repositories > Automation | yes — `get_repository_configuration` | yes — `update_repository_configuration` | no | — | covered |
-| Repository notifications | Repositories > Notifications | yes — `get_repository_configuration` | yes — `update_repository_configuration` | no | — | covered |
-| Repository visual preview policy | Repositories > Visual previews | yes — `get_repository_configuration` | yes — `update_repository_configuration` | no | — | covered |
-| Notification preferences and quiet hours | Settings > Notifications | yes — `get_notification_preferences` | yes — `update_notification_preferences`, `set_notification_category_preferences` | no | — | covered |
-| MCP enablement, origin, instance identity, encryption and scope ceiling | Settings > Integrations > MCP server | no | no | no | `MCP_*` | intentionally browser-only — changes the authentication boundary or server identity used by MCP itself |
-| Agent/provider credentials and credential paths | Settings > Models > Coding agents | no | no | yes | provider-specific | intentionally browser-only — secret entry and host paths are never exposed to MCP |
-| Managed preview storage credentials | Settings > Integrations > Managed preview storage | no | no | no | deployment-specific | intentionally browser-only — contains storage credentials and host trust configuration |
-| Voice and desktop notification preferences | Settings > Notifications | no | no | no | — | intentionally browser-only — device-local capabilities, not instance configuration |
+The generated [Where Each Setting Lives](./docs/operations/settings-locations.md)
+page is the single source of truth for UI, MCP, CLI, and environment locations.
+MCP clients can query the same structured catalog with `find_setting`, including
+settings that are intentionally browser-only or environment-only.
 
 ## Implementation checklist
 

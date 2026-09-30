@@ -139,6 +139,7 @@ const sidebars: SidebarsConfig = {
         'operations/desktop-pairing',
         'operations/pwa-web-push',
         'operations/configuration-reference',
+        'operations/settings-locations',
         'operations/metrics',
         'operations/agent-tank',
         'operations/maintenance',
