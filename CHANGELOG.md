@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Analytics timeframe**: one selector in the Analytics header scopes the
+  activity, task status, repository and model sections to the last 24 hours,
+  7 days, 30 days (default), 90 days, 12 months or all time. The choice is kept
+  in the URL as `?period=`. `GET /api/stats/tasks`, `/api/stats/repositories`
+  and `/api/stats/overview` accept the same optional `period` parameter and
+  behave as before without it.
+
 ## [0.9.0] - 2026-09-29
 
 Release preparation covering v0.8.15 through base commit `c2de30509`. This section

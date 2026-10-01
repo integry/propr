@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import type { AnalyticsTimeframe } from '@propr/shared';
 import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
@@ -6,9 +7,11 @@ import { SystemAlert } from './ui/SystemAlert';
 interface RepositoryBreakdownProps {
   limit?: number;
   repositoriesOverride?: RepositoryStats[];
+  /** Scope to a window; without one the endpoint keeps its historical scope. */
+  timeframe?: AnalyticsTimeframe;
 }
 
-const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, repositoriesOverride }) => {
+const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, repositoriesOverride, timeframe }) => {
   const [repositories, setRepositories] = useState<RepositoryStats[]>([]);
   const [loading, setLoading] = useState(!repositoriesOverride);
   const [error, setError] = useState<string | null>(null);
@@ -21,23 +24,30 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
       return;
     }
 
+    // A new timeframe drops the previous one's rows, and a response that lands
+    // after the timeframe changed is ignored.
+    let active = true;
+    setRepositories([]);
     const fetchStats = async () => {
       try {
         setLoading(true);
         setError(null);
-        const data = await getRepositoryStats();
-        setRepositories(data.repositories || []);
+        const data = await getRepositoryStats(timeframe);
+        if (active) setRepositories(data.repositories || []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load repository stats');
+        if (active) setError(err instanceof Error ? err.message : 'Failed to load repository stats');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchStats();
     const interval = setInterval(fetchStats, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [repositoriesOverride]);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [repositoriesOverride, timeframe]);
 
   if (loading) {
     return (

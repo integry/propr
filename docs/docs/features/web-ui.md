@@ -19,7 +19,7 @@ The landing page (`/`) shows a short activity summary above four areas:
 - **Completed** groups results by the work they belong to. Expand an entry to inspect its individual runs and review results; use the title filter to narrow the feed.
 - **Historical stats** shows completions, success rate and recorded spend for seven or thirty days. Unavailable measurements display “—”.
 
-The repository filter applies across the dashboard and stays in the URL. Activity summaries describe recent work; [usage tips](./usage-tips.md) link to relevant documentation. Live updates keep the last available data during a connection interruption. **Analytics** (`/analytics`) contains broader activity, repository and model reporting.
+The repository filter applies across the dashboard and stays in the URL. Activity summaries describe recent work; [usage tips](./usage-tips.md) link to relevant documentation. Live updates keep the last available data during a connection interruption. **Analytics** (`/analytics`) contains broader activity, repository and model reporting. A timeframe selector in its header (last 24 hours, 7 days, 30 days, 90 days, 12 months or all time; 30 days by default) scopes every section at once and stays in the URL as `?period=`. The dashboard's **Full analytics** link opens it with the period the dashboard is showing.
 
 ![Current dashboard with grouped work navigation, activity summary, attention items, running tasks and completed results](/img/screenshots/0.9.0/dashboard.png)
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import type { AnalyticsTimeframe } from '@propr/shared';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
 import { getModelDisplayName } from '../utils/modelDisplay';
 import { ProviderLogo } from './ui/ProviderLogo';
@@ -36,9 +37,11 @@ const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
 interface TopModelsProps {
   limit?: number;
   metricsOverride?: StatsOverviewResponse;
+  /** Scope to a window; without one the endpoint keeps its historical scope. */
+  timeframe?: AnalyticsTimeframe;
 }
 
-const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
+const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride, timeframe }) => {
   const [metrics, setMetrics] = useState<StatsOverviewResponse | null>(metricsOverride ?? null);
   const [loading, setLoading] = useState(!metricsOverride);
   const [error, setError] = useState<string | null>(null);
@@ -51,23 +54,30 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
       return;
     }
 
+    // A new timeframe drops the previous one's rows, and a response that lands
+    // after the timeframe changed is ignored.
+    let active = true;
+    setMetrics(null);
     const fetchMetrics = async () => {
       try {
         setLoading(true);
         setError(null);
-        const data = await getStatsOverview();
-        setMetrics(data);
+        const data = await getStatsOverview(timeframe);
+        if (active) setMetrics(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load model stats');
+        if (active) setError(err instanceof Error ? err.message : 'Failed to load model stats');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchMetrics();
     const interval = setInterval(fetchMetrics, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [metricsOverride]);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [metricsOverride, timeframe]);
 
   if (loading) {
     return (

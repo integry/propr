@@ -16,6 +16,8 @@ interface ActivitySparklineProps {
   data: Array<{ date: string; displayDate: string; count: number }>;
   isLoading?: boolean;
   deterministicSvg?: boolean;
+  /** The window the data covers, shown in the heading. */
+  periodLabel?: string;
 }
 
 /**
@@ -81,7 +83,7 @@ const DeterministicActivityGraph: React.FC<{ data: ActivitySparklineProps['data'
   );
 };
 
-const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false, deterministicSvg = false }) => {
+const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false, deterministicSvg = false, periodLabel = '30 Days' }) => {
   // Get first, middle and last dates for minimal axis display
   const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
   const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
@@ -134,7 +136,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
     <div>
       {/* Utility header style - small, uppercase, gray, bold */}
       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-        Activity (30 Days)
+        Activity ({periodLabel})
       </h4>
 
       {/* Sparkline container - no card styling, compact height */}
