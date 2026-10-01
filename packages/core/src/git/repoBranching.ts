@@ -15,10 +15,14 @@ interface InstallationAuth {
 /** Keep worker write credentials out of every filesystem visible to agents. */
 export function configureGitAuthentication(git: SimpleGit, authToken: string): void {
     const environment = { ...process.env };
-    // Worker git commands are non-interactive. Inherited pager overrides are
-    // unnecessary and simple-git rejects them in an explicit environment.
+    // Worker git commands are non-interactive. Inherited pager/editor overrides
+    // are unnecessary and simple-git rejects them in an explicit environment.
+    // In particular, npm scripts inject EDITOR even when the shell leaves it unset.
     delete environment.GIT_PAGER;
     delete environment.PAGER;
+    delete environment.EDITOR;
+    delete environment.GIT_EDITOR;
+    delete environment.GIT_SEQUENCE_EDITOR;
 
     git.env({
         ...environment,
