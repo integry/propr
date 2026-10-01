@@ -442,3 +442,112 @@ test('an Ink installation prompt deadline still falls back to discovery', async 
   assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
   assert.ok(h.requests.some(r => r.path === '/app/installations'));
 });
+
+for (const command of ['create', 'manifest']) {
+  for (const [flag, value, message] of [
+    ['--public-url', 'https://', /absolute HTTP\(S\) public URL/],
+    ['--public-url', 'ftp://example.com', /HTTP\(S\) URL without credentials/],
+    ['--webhook-url', 'https://user:secret@example.com', /HTTP\(S\) URL without credentials/],
+  ] as const) test(`${command} reports actionable ${flag} validation before side effects: ${value}`, async t => {
+    const root = sandbox(t);
+    const h = harness(root);
+    const errors: string[] = [];
+    const previousExitCode = process.exitCode;
+    t.after(() => { process.exitCode = previousExitCode; });
+    t.mock.method(console, 'error', (line: string) => errors.push(line));
+    await createGithubAppCommand(h).parseAsync([command, '--root', root, '--public-url', publicUrl, flag, value], { from: 'user' });
+    assert.equal(process.exitCode, 1);
+    assert.match(errors.join('\n'), message);
+    assert.ok(!errors.join('\n').includes('secret'));
+    assert.deepEqual(readdirSync(root), []);
+    assert.deepEqual(h.requests, []);
+    assert.deepEqual(h.lines, []);
+  });
+}
+
+test('SSH instructions specify the required loopback host and identical forwarding ports', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  await createGithubApp({ root, publicUrl, browser: false }, h);
+  const port = new URL(h.getManifest().redirect_url!).port;
+  const output = h.lines.join('\n');
+  assert.ok(output.includes(`same local and remote loopback port (${port})`));
+  assert.ok(output.includes(`open exactly http://127.0.0.1:${port}/register/`));
+  assert.match(output, /Use 127\.0\.0\.1, not localhost; do not change the port/);
+});
+
+for (const stage of ['installation', 'token'] as const) {
+  for (const failure of ['network', 'timeout', 'body', 401, 403, 404, 429, 503, 'foreign'] as const) {
+    if (stage === 'token' && failure === 'foreign') continue;
+    test(`verification ${stage} ${failure} is classified consistently by check and creation`, async t => {
+      const root = sandbox(t);
+      const h = harness(root);
+      const { checkGithubApp, githubAppCheckFailure } = await import('./githubAppApi.js');
+      const expected = [401, 403, 404, 'foreign'].includes(failure) ? 'fail' : 'warn';
+      const failingFetch: typeof fetch = async (...args) => {
+        const isToken = String(args[0]).endsWith('/access_tokens');
+        if (isToken !== (stage === 'token')) return h.fetcher(...args);
+        if (failure === 'network') throw new TypeError('fetch failed: secret-token');
+        if (failure === 'timeout') throw new DOMException('secret-token', 'TimeoutError');
+        if (failure === 'body') return new Response('invalid JSON secret-token');
+        if (failure === 'foreign') return Response.json({ ...installation, app_id: 999 });
+        return Response.json({ message: 'secret-token' }, { status: failure });
+      };
+      await assert.rejects(checkGithubApp(credentials.id, installation.id, pem, failingFetch), error => {
+        const result = githubAppCheckFailure(error);
+        assert.equal(result.status, expected);
+        assert.ok(!result.detail.includes('secret-token'));
+        return true;
+      });
+      // Fail only the post-save check, after the installation was verified for saving.
+      let verifications = 0;
+      const fetcher: typeof fetch = async (...args) => {
+        const path = new URL(String(args[0])).pathname;
+        if (path === '/app/installations/789') verifications++;
+        if (verifications >= 2) return failingFetch(...args);
+        return h.fetcher(...args);
+      };
+      const result = await createGithubApp({ root, publicUrl }, { ...h, fetcher });
+      assert.equal(result.checks[0].status, expected);
+      assert.match(result.checks[0].detail, /Credentials saved/);
+      assert.ok(!h.lines.join('\n').includes('secret-token'));
+      assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
+    });
+  }
+}
+
+test('ordinary checks skip GitHub App requests; explicit verification warns offline and fails authoritative rejection', async t => {
+  const root = sandbox(t);
+  writeFileSync(join(root, 'key.pem'), pem);
+  const env = {
+    GH_AUTH_MODE: 'app', GH_APP_ID: String(credentials.id), GH_INSTALLATION_ID: '789',
+    HOST_GH_PRIVATE_KEY: join(root, 'key.pem'), PROPR_DEMO_MODE: 'false',
+    GITHUB_EVENT_INTAKE_MODE: 'direct_webhook', GH_WEBHOOK_SECRET: 'test-secret',
+  };
+  writeFileSync(join(root, '.env'), Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n'));
+  const savedEnv = { ...process.env };
+  t.after(() => { process.env = savedEnv; });
+  for (const key of Object.keys(process.env)) {
+    if (/^(GH_|PROPR_GH_RELAY_|PROPR_ROUTING_)/.test(key)) delete process.env[key];
+  }
+  Object.assign(process.env, env);
+  const { runChecks } = await import('./checkCommands.js');
+  const requests: string[] = [];
+  let status = 0;
+  t.mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0]) => {
+    requests.push(String(input));
+    if (!status) throw new TypeError('fetch failed');
+    return Response.json({}, { status });
+  });
+  const options = { root, skipRemoteImageCheck: true, agents: ['not-selected'] };
+  const normal = await runChecks(options);
+  assert.equal(normal.results.find(r => r.name === 'GitHub App key')?.status, 'ok');
+  assert.equal(normal.results.find(r => r.name === 'GitHub App API'), undefined);
+  assert.deepEqual(requests, [], 'bare propr and propr check must not mint a token or contact GitHub');
+  for (status of [0, 401, 404]) {
+    const verified = await runChecks({ ...options, verify: true });
+    assert.equal(verified.results.find(r => r.name === 'GitHub App API')?.status, status ? 'fail' : 'warn');
+  }
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every(url => url === 'https://api.github.com/app/installations/789'));
+});

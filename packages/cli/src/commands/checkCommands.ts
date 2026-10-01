@@ -6,7 +6,7 @@
  * are present. It is also what bare `propr` runs.
  */
 
-import { checkGithubApp } from "./githubAppApi.js";
+import { checkGithubApp, githubAppCheckFailure } from "./githubAppApi.js";
 import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
@@ -416,16 +416,14 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
   const githubAuthChecks = checkGithubAuth(fileEnv, cfg);
   for (const r of githubAuthChecks) emit(r);
-  if (githubAuthChecks.some(r => r.name === "GitHub auth mode" && r.detail === "GitHub App (own/shared app)") &&
+  if (options.verify && githubAuthChecks.some(r => r.name === "GitHub auth mode" && r.detail === "GitHub App (own/shared app)") &&
       !githubAuthChecks.some(r => r.status === "fail") && cfg.hostGhPrivateKey) {
     try {
       const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
         process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
       for (const r of checks) emit({ ...r, group: "GitHub" });
-    } catch {
-      emit({ name: "GitHub App API", status: "fail", group: "GitHub",
-        detail: "Could not verify the App installation or mint an installation token.",
-        fix: "Check network access, App credentials, and that GH_INSTALLATION_ID belongs to this App." });
+    } catch (error) {
+      emit({ ...githubAppCheckFailure(error), group: "GitHub" });
     }
   }
 
@@ -1417,7 +1415,7 @@ export function createCheckCommand(
     .description("Verify the host is ready to run a local ProPR stack")
     .argument("[mode]", "what to check: system (default) | agents | all", "system")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
-    .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
+    .option("--verify", "Also verify GitHub App access and run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: configured stack agents)")
     .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")

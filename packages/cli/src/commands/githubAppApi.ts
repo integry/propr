@@ -21,6 +21,21 @@ export interface AppCheck {
   detail: string;
 }
 
+/** A remote failure does not necessarily prove the local credentials are invalid. */
+export class GithubAppApiError extends Error {
+  constructor(message: string, readonly status?: number) { super(message); }
+}
+
+export function githubAppCheckFailure(error: unknown): AppCheck {
+  const unavailable = error instanceof GithubAppApiError && (error.status === undefined || error.status === 429 || error.status >= 500);
+  return {
+    name: 'GitHub App API', status: unavailable ? 'warn' : 'fail',
+    detail: unavailable
+      ? 'GitHub verification is unavailable. Check network/proxy access or GitHub availability, then retry with propr check --verify.'
+      : 'Could not verify the App installation or mint an installation token. Check App credentials and installation access; retry with propr check --verify.',
+  };
+}
+
 export function appJwt(id: string | number, pem: string): string {
   const now = Math.floor(Date.now() / 1000);
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -45,15 +60,15 @@ export async function githubAppRequest<T>(path: string, jwt?: string, method = '
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-  } catch { throw new Error('GitHub API request failed. Check your network connection and retry.'); }
+  } catch { throw new GithubAppApiError('GitHub API request failed. Check your network connection and retry.'); }
   if (!response.ok) {
     if (path.startsWith('/app-manifests/')) {
-      throw new Error(`GitHub rejected the manifest code (HTTP ${response.status}). It may be expired or already used; restart github-app create within one hour.`);
+      throw new GithubAppApiError(`GitHub rejected the manifest code (HTTP ${response.status}). It may be expired or already used; restart github-app create within one hour.`, response.status);
     }
-    throw new Error(`GitHub App API request failed (HTTP ${response.status}). Check App permissions and installation access.`);
+    throw new GithubAppApiError(`GitHub App API request failed (HTTP ${response.status}). Check App permissions and installation access.`, response.status);
   }
   try { return await response.json() as T; }
-  catch { throw new Error('GitHub returned an invalid API response.'); }
+  catch { throw new GithubAppApiError('GitHub returned an invalid API response.'); }
 }
 
 export function installationChecks(installation: AppInstallation): AppCheck[] {

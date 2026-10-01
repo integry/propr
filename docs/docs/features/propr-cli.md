@@ -27,7 +27,7 @@ Bring up a complete ProPR stack from the terminal:
 ```bash
 propr setup              # guided one-time bootstrap: scaffold, verify, configure, start (re-runnable)
 propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
-propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
+propr check              # verify Docker, images, agents, and GitHub auth mode (--verify probes App access and smoke-tests agents)
 propr images pull        # pull missing or stale images without starting the stack
 propr start              # pull images and start the stack with a live dashboard
 propr status             # local stack status (--json for scripts)
@@ -57,7 +57,7 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
 
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
-- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
+- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
 

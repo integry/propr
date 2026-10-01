@@ -72,6 +72,32 @@ and launcher mount it read-only and set `GH_PRIVATE_KEY_PATH` themselves.
 See [Create your own App](./github-auth.md#create-your-own-app) for permissions,
 manual registration, SSH, and recovery instructions.
 
+For **I already have one**, copy your existing App's PEM to
+`/srv/propr/github-app.pem` and add its credentials to `/srv/propr/.env`:
+
+```dotenv
+GH_AUTH_MODE=app
+PROPR_DEMO_MODE=false
+GH_APP_ID=123456
+GH_INSTALLATION_ID=987654
+HOST_GH_PRIVATE_KEY=/srv/propr/github-app.pem
+GH_WEBHOOK_SECRET=your-app-webhook-secret
+GH_OAUTH_CLIENT_ID=your-app-client-id
+GH_OAUTH_CLIENT_SECRET=your-app-client-secret
+GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
+GITHUB_EVENT_INTAKE_MODE=direct_webhook
+```
+
+```bash
+chmod 600 /srv/propr/github-app.pem /srv/propr/.env
+```
+
+Replace the example IDs, secrets, and public URL. Configure the same webhook
+secret and callback URL in the App's settings, with the webhook at
+`https://propr.example.com/webhook`. See
+[Use an existing App](./github-auth.md#use-an-existing-app) for permissions and
+settings to remove when switching from relay mode.
+
 Set the remaining server wiring in `.env`:
 
 ```bash
@@ -177,7 +203,8 @@ propr check              # validates Docker, images, agent credentials, and GitH
 propr start --no-tui     # pull images and start the stack (non-interactive)
 ```
 
-`propr check --verify` additionally smoke-tests each agent image. Use
+`propr check --verify` additionally verifies GitHub App access (minting an
+installation token) and smoke-tests each agent image. Use
 `propr start` (without `--no-tui`) for the interactive dashboard.
 `propr status`, `propr stop`, and `propr remote-status` manage the running
 stack.

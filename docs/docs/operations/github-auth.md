@@ -25,8 +25,44 @@ propr start --root /srv/propr --restart
 
 The CLI and launcher mount the generated key using `HOST_GH_PRIVATE_KEY` and set
 `GH_PRIVATE_KEY_PATH` inside containers. Do not set the container path yourself.
-`propr check` verifies the key, installed permissions and event subscriptions, and
-tries minting an installation token.
+`propr check` checks local credential configuration. `propr check --verify` also
+contacts GitHub to verify installed permissions and event subscriptions and mint
+an installation token. Network failures produce a warning; invalid credentials
+or a foreign installation still fail verification.
+
+#### Use an existing App
+
+If you choose **I already have one** in setup, or configure the stack manually,
+copy your App's downloaded PEM to `/srv/propr/github-app.pem` and set these values
+in `/srv/propr/.env` (replace the examples with your App's credentials):
+
+```dotenv
+GH_AUTH_MODE=app
+PROPR_DEMO_MODE=false
+GH_APP_ID=123456
+GH_INSTALLATION_ID=987654
+HOST_GH_PRIVATE_KEY=/srv/propr/github-app.pem
+GH_WEBHOOK_SECRET=your-app-webhook-secret
+GH_OAUTH_CLIENT_ID=your-app-client-id
+GH_OAUTH_CLIENT_SECRET=your-app-client-secret
+GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
+GITHUB_EVENT_INTAKE_MODE=direct_webhook
+```
+
+Use the App ID and its installation ID, plus the client ID and client secret
+from the App's settings for GitHub login. Set the App's webhook URL to
+`https://propr.example.com/webhook`, use the same webhook secret on GitHub and in
+`.env`, and register the OAuth callback URL above. Match the
+[permissions and events](#permissions-and-events) below. Protect both files:
+
+```bash
+chmod 600 /srv/propr/github-app.pem /srv/propr/.env
+```
+
+Remove stale `PROPR_GH_RELAY_*`, `PROPR_ROUTING_*`, and `GH_PRIVATE_KEY_PATH`
+settings from `.env` and exported environment variables when switching from
+relay mode. Then run `propr check --root /srv/propr --verify` and
+`propr start --root /srv/propr --restart`.
 
 ### Relay mode (shared GitHub App)
 
@@ -99,7 +135,7 @@ names and file paths to stdout, with progress on stderr.
 
 ### Permissions and events
 
-The manifest and `propr check` share the following requirements with the webhook
+The manifest and `propr check --verify` share the following requirements with the webhook
 handler:
 
 | Repository permission | Access | Purpose |
@@ -117,7 +153,7 @@ Workflows permission is **not requested by default**. Add
 `--allow-workflow-changes` if agents should modify CI definitions. Without it,
 GitHub rejects pushes that create or modify `.github/workflows/*`. You can also
 add the permission later in App settings and approve the installation's new
-permissions. `propr check` warns when it is absent.
+permissions. `propr check --verify` warns when it is absent.
 
 | Subscribed event | Purpose |
 |---|---|
@@ -140,7 +176,8 @@ The CLI writes a temporary HTML registration form and prints its path. Copy that
 file to the machine with your browser (for example with `scp`) and open it. It
 POSTs the manifest to GitHub; visiting the GitHub registration URL alone does
 not submit a manifest. Alternatively, forward the printed loopback port through
-SSH and open the printed local URL.
+SSH using the same local and remote port, and open the exact printed URL with
+`127.0.0.1`. Substituting `localhost` or a different local port is rejected.
 
 After creating the App, paste the **complete redirect URL**, including `code`
 and `state`, into the terminal. The browser may show a connection error because
@@ -191,7 +228,7 @@ Recover `id` → `GH_APP_ID`, `webhook_secret` → `GH_WEBHOOK_SECRET`, `client_
 with a local editor. Save `pem` as a private key file at mode `0600` and set
 `HOST_GH_PRIVATE_KEY` to its absolute path. Set `GH_INSTALLATION_ID` from the
 installation's GitHub settings URL and use the remaining fields in the manual
-env template. Remove relay/routing keys, then run `propr check`. If a secret
+env template. Remove relay/routing keys, then run `propr check --verify`. If a secret
 override request was interrupted, verify the signing secret matches on GitHub.
 Delete the recovery file after successfully restoring the configuration.
 

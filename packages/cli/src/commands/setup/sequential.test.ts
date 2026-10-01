@@ -496,3 +496,30 @@ test('sequential paste prompts propagate cancellation into readline', async () =
     await assert.rejects(answer, { name: 'AbortError' });
   } finally { io.close(); input.destroy(); output.destroy(); }
 });
+
+test('own-App public URL re-prompts after Enter and invalid URL forms before creation', async () => {
+  const io = scriptedIo(['2', '1', '', 'ftp://example.com', 'https://user:secret@example.com', 'https://example.com?q=1', 'https://example.com#fragment', ' https://propr.example.com ', '']);
+  let calls = 0;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    calls++;
+    assert.equal(options.publicUrl, 'https://propr.example.com');
+    return { envPath: '/stack/.env', keyPath: '/stack/key.pem', backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] }, rootDir: '/stack' }), { keep: true });
+  assert.equal(calls, 1);
+  assert.equal(io.lines.filter(line => line.includes('Public ProPR URL')).length, 6);
+  assert.match(io.lines.join('\n'), /absolute HTTP\(S\) public URL/);
+  assert.match(io.lines.join('\n'), /without credentials, query parameters, or a fragment/);
+});
+
+test('cancelling a repeated public URL prompt stops setup before creation', async () => {
+  const io = scriptedIo(['2', '1', '']);
+  const ask = io.ask;
+  let questions = 0;
+  io.ask = async (...args) => {
+    if (++questions === 4) throw new DOMException('cancelled', 'AbortError');
+    return ask(...args);
+  };
+  const hooks = buildSequentialPrompts(io, undefined, async () => { assert.fail('must not create'); });
+  await assert.rejects(hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] } }), { name: 'AbortError' });
+});

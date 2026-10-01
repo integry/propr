@@ -12,7 +12,7 @@ import { resolveSetupRoot } from '@propr/local-setup';
 import { buildGithubAppManifest, githubAppPublicUrl, type GithubAppManifestOptions } from '@propr/shared';
 import { createConfigManager } from '../config/index.js';
 import { upsertEnvVars } from '../utils/envFile.js';
-import { appJwt, githubAppRequest, checkGithubApp, type AppCredentials, type AppInstallation, type AppCheck } from './githubAppApi.js';
+import { appJwt, githubAppRequest, checkGithubApp, githubAppCheckFailure, type AppCredentials, type AppInstallation, type AppCheck } from './githubAppApi.js';
 
 export interface GithubAppOptions extends GithubAppManifestOptions {
   root?: string;
@@ -35,6 +35,12 @@ export interface GithubAppDependencies {
   signal?: AbortSignal;
 }
 export class GithubAppFlowError extends Error {}
+
+function validatedGithubAppManifest(options: GithubAppManifestOptions) {
+  try { return buildGithubAppManifest(options); }
+  catch (error) { throw new GithubAppFlowError((error as Error).message); }
+}
+
 function checkCancellation(signal?: AbortSignal): void {
   if (signal?.aborted) throw new GithubAppFlowError('GitHub App setup cancelled.');
 }
@@ -176,7 +182,7 @@ export function writeGithubAppConfig(root: string, credentials: AppCredentials, 
     GH_APP_ID: String(credentials.id), GH_INSTALLATION_ID: installationId, HOST_GH_PRIVATE_KEY: keyPath,
     GH_WEBHOOK_SECRET: credentials.webhook_secret, GITHUB_EVENT_INTAKE_MODE: 'direct_webhook',
     GH_OAUTH_CLIENT_ID: credentials.client_id, GH_OAUTH_CLIENT_SECRET: credentials.client_secret,
-    GH_OAUTH_CALLBACK_URL: buildGithubAppManifest(options).callback_urls[0], GH_AUTH_MODE: 'app', PROPR_DEMO_MODE: 'false',
+    GH_OAUTH_CALLBACK_URL: validatedGithubAppManifest(options).callback_urls[0], GH_AUTH_MODE: 'app', PROPR_DEMO_MODE: 'false',
   };
   const stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}`;
   const temporary = join(root, `.env.github-app-${stamp}`);
@@ -201,7 +207,7 @@ export function writeGithubAppConfig(root: string, credentials: AppCredentials, 
 
 export async function createGithubApp(options: GithubAppOptions, dependencies: GithubAppDependencies = {}) {
   checkCancellation(dependencies.signal);
-  const manifestOptions = buildGithubAppManifest(options); // Validate before opening GitHub or touching files.
+  const manifestOptions = validatedGithubAppManifest(options); // Validate before opening GitHub or touching files.
   const target = registrationUrl(options.org);
   if (options.webhookSecret !== undefined && (!options.webhookSecret || /[\r\n]|^\s|\s$|\s#/.test(options.webhookSecret) || parse(`GH_WEBHOOK_SECRET=${options.webhookSecret}`).GH_WEBHOOK_SECRET !== options.webhookSecret)) {
     throw new GithubAppFlowError('The webhook secret must be a non-empty, single-line env-compatible value.');
@@ -244,7 +250,7 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
     if (paste) {
       registrationPath = join(root, `github-app-register-${randomBytes(4).toString('hex')}.html`);
       writeFileSync(registrationPath, page, { mode: 0o600, flag: 'wx' });
-      io.log(`Registration page: ${pathToFileURL(registrationPath).href}\nFor SSH, copy this HTML file to your browser's machine and open it there. It submits the manifest to ${target}.\nAlternatively, forward the loopback port and open ${localUrl}.`);
+      io.log(`Registration page: ${pathToFileURL(registrationPath).href}\nFor SSH, copy this HTML file to your browser's machine and open it there. It submits the manifest to ${target}.\nAlternatively, forward the same local and remote loopback port (${new URL(listener.base).port}) and open exactly ${localUrl}. Use 127.0.0.1, not localhost; do not change the port.`);
     }
     const timeout = dependencies.callbackTimeoutMs ?? 55 * 60_000;
     const code = paste
@@ -304,7 +310,10 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
     io.log(`Installed (installation ${installationId}).\nWrote private key ${result.keyPath} (0600).\nUpdated ${result.envPath}: ${result.fields.join(', ')}`);
     let checks: AppCheck[];
     try { checks = await checkGithubApp(credentials.id, installationId, credentials.pem, fetcher, dependencies.signal); }
-    catch { checks = [{ name: 'GitHub App', status: 'fail', detail: 'Credentials saved, but GitHub validation failed. Run propr check to retry.' }]; }
+    catch (error) {
+      const failure = githubAppCheckFailure(error);
+      checks = [{ ...failure, detail: `Credentials saved. ${failure.detail}` }];
+    }
     checkCancellation(dependencies.signal);
     for (const check of checks) if (check.status !== 'ok') io.log(`${check.status}: ${check.detail}`);
     io.log('Next: propr start --restart');
@@ -357,7 +366,7 @@ export function createGithubAppCommand(dependencies: GithubAppDependencies = {})
 }
 
 export async function writeGithubAppManifest(options: GithubAppOptions) {
-  const manifest = buildGithubAppManifest(options);
+  const manifest = validatedGithubAppManifest(options);
   registrationUrl(options.org);
   const root = resolve(options.root ?? resolveSetupRoot(await createConfigManager()));
   const manifestPath = join(root, 'github-app-manifest.json');

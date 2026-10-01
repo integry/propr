@@ -23,7 +23,7 @@ import { createGithubApp, openGithubAppBrowser } from "../commands/githubAppComm
 
 import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, githubAppPublicUrl, type GithubAuthMode } from "@propr/shared";
 import type { AuthorizedInstallation } from "../api/relay.js";
 import type {
   SetupPrompts,
@@ -309,7 +309,12 @@ export function buildSetupPrompts(bridge: SetupBridge, createApp = createGithubA
           detail: "A timestamped .env backup will be created before saving the new App credentials.",
           defaultValue: false,
         })) return { keep: true };
-        const publicUrl = await bridge.input({ title: "Public ProPR URL", defaultValue: "https://" });
+        let publicUrl: string;
+        for (;;) {
+          publicUrl = (await bridge.input({ title: "Public ProPR URL", defaultValue: "https://" })).trim();
+          try { githubAppPublicUrl(publicUrl); break; }
+          catch (error) { bridge.emitLog((error as Error).message); }
+        }
         const org = await bridge.input({ title: "App owner organization (blank for your account)", defaultValue: "" });
         await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { signal: bridge.abortController.signal, io: {
           log: message => bridge.emitLog(message),

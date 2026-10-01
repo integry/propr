@@ -343,3 +343,42 @@ test('Ink paste prompt honors its signal and retires the aborted prompt', async 
   bridge.resolve(prompts[1].id, 'answer');
   assert.equal(await next, 'answer');
 });
+
+test('Ink own-App public URL re-prompts on the default and invalid URL forms', async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', 'https://', 'ftp://example.com', 'https://user:secret@example.com', 'https://example.com?q=1', 'https://example.com#fragment', ' https://propr.example.com ', ''];
+  const logs: string[] = [];
+  let urlPrompts = 0;
+  bridge.subscribe(event => {
+    if (event.type === 'log') logs.push(event.line);
+    if (event.type === 'prompt') {
+      if (event.prompt.title === 'Public ProPR URL') urlPrompts++;
+      assert.ok(answers.length > 0);
+      bridge.resolve(event.prompt.id, answers.shift());
+    }
+  });
+  let calls = 0;
+  const hooks = buildSetupPrompts(bridge, async options => {
+    calls++;
+    assert.equal(options.publicUrl, 'https://propr.example.com');
+    return { envPath: '/stack/.env', keyPath: '/stack/key.pem', backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] }, rootDir: '/stack' }), { keep: true });
+  assert.equal(calls, 1);
+  assert.equal(urlPrompts, 6);
+  assert.match(logs.join('\n'), /absolute HTTP\(S\) public URL/);
+  assert.match(logs.join('\n'), /without credentials, query parameters, or a fragment/);
+});
+
+test('Ink cancellation during a repeated public URL prompt stops before creation', async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', 'https://'];
+  bridge.subscribe(event => {
+    if (event.type === 'prompt') {
+      if (answers.length) bridge.resolve(event.prompt.id, answers.shift());
+      else bridge.cancel();
+    }
+  });
+  const hooks = buildSetupPrompts(bridge, async () => { assert.fail('must not create'); });
+  await assert.rejects(hooks.configureGithubAuth!({ current: { mode: 'none', warnings: [] } }), SetupCancelledError);
+});

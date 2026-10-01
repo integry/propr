@@ -23,7 +23,7 @@ import { createGithubApp, openGithubAppBrowser } from "../githubAppCommands.js";
  */
 
 import { createInterface } from "node:readline/promises";
-import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, githubAppPublicUrl, type GithubAuthMode } from "@propr/shared";
 import type { AuthorizedInstallation } from "../../api/relay.js";
 import {
   INTAKE_DOCS_URL,
@@ -359,7 +359,12 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
           detail: "A timestamped .env backup will be created before saving the new App credentials.",
           defaultValue: false,
         })) return { keep: true };
-        const publicUrl = await promptInput(io, paint, { title: "Public ProPR URL", defaultValue: "https://" });
+        let publicUrl: string;
+        for (;;) {
+          publicUrl = (await promptInput(io, paint, { title: "Public ProPR URL", defaultValue: "https://" })).trim();
+          try { githubAppPublicUrl(publicUrl); break; }
+          catch (error) { io.print((error as Error).message); }
+        }
         const org = await promptInput(io, paint, { title: "App owner organization (blank for your account)", defaultValue: "" });
         await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { io: {
           log: message => io.print(message),
