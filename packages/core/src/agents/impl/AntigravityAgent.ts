@@ -26,6 +26,7 @@ import {
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { antigravityModelIdsMatch, toAntigravityCliModelId } from './antigravityModelIds.js';
 import { resolveAntigravityProtocolError } from './utils/antigravityProtocol.js';
+import { executeAntigravityNativeGoal } from './antigravityNativeGoal.js';
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
@@ -102,9 +103,10 @@ export class AntigravityAgent implements Agent {
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         options = await prepareAgentGitAccess(options);
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber, executionMode = 'task', resumeSessionId, resumeConversationId, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
+        if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
         const transcriptPath = this.createTransientTranscriptPath(taskId);
 
         logger.info({
@@ -113,12 +115,10 @@ export class AntigravityAgent implements Agent {
         }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
 
         try {
-            const prompt = executionMode === 'goal' ? customPrompt : this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
-            await setWorktreeOwnership(worktreePath, issueRef.number, {
-                protectGitMetadata: executionMode === 'goal' && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
-            });
+            const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
+            await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath, executionMode, resumeConversationId: resumeConversationId || resumeSessionId });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -136,6 +136,39 @@ export class AntigravityAgent implements Agent {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {
             this.cleanupTransientTranscript(transcriptPath);
+        }
+    }
+
+    /**
+     * Runs one attempt of a native `/goal` conversation. Antigravity owns the
+     * goal loop; ProPR observes its stream and reaches control boundaries by
+     * interrupting and resuming the exact conversation.
+     */
+    private async executeNativeGoal(options: AgentTaskOptions, model: string | undefined): Promise<AgentExecutionResult> {
+        const { worktreePath, issueRef, githubToken, environment, taskId } = options;
+        const startTime = Date.now();
+        try {
+            await setWorktreeOwnership(worktreePath, issueRef.number, {
+                protectGitMetadata: environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+            });
+            const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const response = await executeAntigravityNativeGoal(options, {
+                buildDockerArgs: ({ conversationId, launch }) => this.buildDockerArgs({
+                    worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: model, issueNumber: issueRef.number, environment, taskId,
+                    executionMode: 'goal', resumeConversationId: conversationId, nativeGoalLaunch: launch,
+                }),
+                model: model ? normalizeAntigravityModelId(model) : 'unknown',
+                timeoutMs: this.timeoutMs,
+            });
+            if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            logger.info({ taskId, conversationId: response.conversationId, success: response.success, error: response.error, agentAlias: this.config.alias }, 'Antigravity native goal attempt finished');
+            return response;
+        } catch (error) {
+            logger.error({ taskId, error: (error as Error).message, agentAlias: this.config.alias }, 'Antigravity native goal attempt failed');
+            return {
+                success: false, error: (error as Error).message, executionTimeMs: Date.now() - startTime,
+                logs: (error as Error).message, modifiedFiles: [], commitMessage: null, modelUsed: model || 'unknown',
+            };
         }
     }
 
@@ -415,8 +448,8 @@ export class AntigravityAgent implements Agent {
         return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; printTimeoutMs?: number }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, printTimeoutMs = this.timeoutMs } = params;
+    private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, nativeGoalLaunch = false, printTimeoutMs = this.timeoutMs } = params;
         const configPath = this.getHostConfigPath();
         const runtimeName = this.getRuntimeName();
         const dockerArgs = buildAntigravityDockerArgs({
@@ -432,6 +465,14 @@ export class AntigravityAgent implements Agent {
         // Antigravity otherwise applies its own five-minute print-mode deadline,
         // which can abort large plan prompts long before ProPR's execution timeout.
         dockerArgs.push('--print-timeout', `${Math.max(1, Math.ceil(printTimeoutMs / 1000))}s`);
+        // Goal conversation identity and live narration must arrive on stdout
+        // while the invocation runs. Persistent goal conversations do not export
+        // the disposable task transcript, so plain text cannot support resume.
+        if (executionMode === 'goal') dockerArgs.push('--output-format', 'stream-json');
+        // Only the launch expands `/goal`. Resumed goal invocations carry
+        // operator input and ProPR feedback, which slash commands or installed
+        // skills must not consume instead of the conversation.
+        if (executionMode === 'goal' && !nativeGoalLaunch) dockerArgs.push('--disable-slash-commands');
         if (modelName) {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
             // to the Antigravity CLI's native model name. Passing the prefixed id

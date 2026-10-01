@@ -300,7 +300,9 @@ export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boole
 
 export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
     const streamedResponses = new Map<string, string>(); for (const event of events) { if (isAntigravityStreamEvent(event) && event.event === 'step_update' && normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE') { const update = event.step_update; if (update.text_delta !== undefined) streamedResponses.set(update.conversation_id, (streamedResponses.get(update.conversation_id) ?? '') + update.text_delta); } }
-    const terminalSupersedesStream = (conversationId: string): boolean => events.some(event => isAntigravityStreamEvent(event) && event.event === 'result' && event.result.conversation_id === conversationId && (event.result.status.toUpperCase() === 'ERROR' || (event.result.response !== undefined && event.result.response !== streamedResponses.get(conversationId))));
+    // An interrupted invocation (a goal control boundary) ends with an empty
+    // ERROR result; the narration it already streamed still stands.
+    const terminalSupersedesStream = (conversationId: string): boolean => events.some(event => isAntigravityStreamEvent(event) && event.event === 'result' && event.result.conversation_id === conversationId && (event.result.status.toUpperCase() === 'ERROR' ? Boolean(event.result.response) : event.result.response !== undefined && event.result.response !== streamedResponses.get(conversationId)));
     return events.filter(event => {
         if (!isAntigravityStreamEvent(event)) return isAntigravityAnalysisEvent(event);
         if (event.event === 'step_update') return isAntigravityAnalysisEvent(event) && !terminalSupersedesStream(event.step_update.conversation_id);

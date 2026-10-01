@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
-import knex from 'knex';
 import type { RedisClientType } from 'redis';
 import { closeConnection, parseVibeConversationLog } from '@propr/core';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
@@ -9,76 +8,33 @@ import { getAgentActivity } from '../mcp/agentActivity.js';
 import { parseAgentStreamOutput } from '../services/agentStreamProjection.js';
 import { projectTaskLiveDetails } from '../routes/liveDetailsRoutes.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
-
-const directGoalId = '11111111-1111-4111-8111-111111111111';
-const orchestratedGoalId = '22222222-2222-4222-8222-222222222222';
-const repository = 'acme/repo';
+import { createActivityDatabase, directGoalId, orchestratedGoalId, repository } from './fixtures/mcpAgentActivity.js';
 
 after(async () => closeConnection());
 
-async function createActivityDatabase() {
-  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  await db.schema.createTable('tasks', table => {
-    table.string('task_id').primary();
-    table.string('repository').notNullable();
-    table.string('task_type').notNullable();
-    table.timestamp('created_at');
-  });
-  await db.schema.createTable('goals', table => {
-    table.string('goal_id').primary();
-    table.string('owner_id').notNullable();
-    table.string('repository').notNullable();
-    table.string('current_task_id').notNullable();
-    table.string('launch_strategy').notNullable();
-    table.string('session_id');
-    table.timestamp('started_at');
-    table.timestamp('updated_at');
-    table.timestamp('created_at');
-  });
-  await db.schema.createTable('task_history', table => {
-    table.increments('history_id').primary();
-    table.string('task_id').notNullable();
-    table.string('state').notNullable();
-    table.timestamp('timestamp');
-    table.text('metadata');
-  });
-  await db.schema.createTable('llm_executions', table => {
-    table.string('execution_id').primary();
-    table.string('task_id');
-    table.string('session_id');
-    table.timestamp('start_time');
-    table.integer('input_tokens');
-    table.integer('output_tokens');
-    table.integer('cache_creation_input_tokens');
-    table.integer('cache_read_input_tokens');
-  });
-  await db.schema.createTable('llm_execution_details', table => {
-    table.increments('detail_id').primary();
-    table.string('execution_id');
-    table.integer('sequence_number');
-    table.string('event_type');
-    table.timestamp('event_timestamp');
-    table.text('content');
-    table.boolean('is_error');
-    table.string('tool_name');
-    table.text('tool_input');
-    table.text('metadata');
-  });
-  const createdAt = '2026-09-13T10:00:00.000Z';
-  await db('tasks').insert([
-    { task_id: 'goal-task-direct', repository, task_type: 'goal', created_at: createdAt },
-    { task_id: 'goal-task-orchestrated', repository, task_type: 'goal', created_at: createdAt },
-  ]);
-  await db('goals').insert([
-    { goal_id: directGoalId, owner_id: 'owner-1', repository, current_task_id: 'goal-task-direct', launch_strategy: 'direct', started_at: createdAt, updated_at: createdAt, created_at: createdAt },
-    { goal_id: orchestratedGoalId, owner_id: 'owner-1', repository, current_task_id: 'goal-task-orchestrated', launch_strategy: 'orchestrate', started_at: createdAt, updated_at: createdAt, created_at: createdAt },
-  ]);
-  await db('task_history').insert([
-    { task_id: 'goal-task-direct', state: 'codex_execution', timestamp: createdAt },
-    { task_id: 'goal-task-orchestrated', state: 'claude_execution', timestamp: createdAt },
-  ]);
-  return db;
-}
+test('get_agent_activity exposes Antigravity goal narration before a terminal result', async () => {
+  const db = await createActivityDatabase();
+  const output = [
+    { event: 'init', conversation_id: 'agy-goal', init: { model: 'gemini-3.8-flash-high' } },
+    { event: 'step_update', step_update: { conversation_id: 'agy-goal', step_index: 1,
+      state: 'DONE', step_type: 'agent_response', text_delta: 'Implementing the requested goal correction.' } },
+  ].map(event => JSON.stringify(event)).join('\n');
+  const redisClient = withLiveOutputReads({
+    get: async (key: string) => key === 'agent:output:goal-task-direct' ? output : null,
+  }) as unknown as RedisClientType;
+  try {
+    const tool = createToolCatalog({ db, redisClient, policy: {} as McpPolicy,
+      taskQueue: {} as never, runtimeBuildQueue: {} as never }).find(candidate => candidate.name === 'get_agent_activity');
+    assert.ok(tool);
+    const result = (await tool.run({
+      principal: { user: { id: 'owner-1' } } as McpPrincipal,
+      args: tool.schema.parse({ repository, goalId: directGoalId }),
+    })).data as { activity: Array<{ message: string }> };
+    assert.deepEqual(result.activity.map(item => item.message), ['Implementing the requested goal correction.']);
+  } finally {
+    await db.destroy();
+  }
+});
 
 test('activity database fallback excludes unclassified legacy Vibe text', async () => {
   const db = await createActivityDatabase();

@@ -2,6 +2,32 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { discoverRepositoryArtifacts, validateGoalArtifacts } from '../packages/core/src/goals/goalArtifacts.ts';
 
+test('direct Antigravity goals discover the worker-owned draft without a provider PR URL', async () => {
+  const result = await validateGoalArtifacts({
+    context: { repository: 'acme/widget', branchName: 'goal/antigravity', baseBranch: 'develop' },
+    existing: [],
+    output: 'Implemented and tested the requested change. ProPR owns the final checkpoint.',
+    octokit: {
+      async request(route: string, params: Record<string, unknown>) {
+        assert.equal(route, 'GET /repos/{owner}/{repo}/pulls');
+        assert.equal(params.head, 'acme:goal/antigravity');
+        assert.equal(params.base, 'develop');
+        assert.equal(params.state, 'open');
+        return { data: [{
+          number: 42, html_url: 'https://github.com/acme/widget/pull/42',
+          state: 'open', draft: true, merged_at: null,
+          head: { ref: 'goal/antigravity' }, base: { ref: 'develop' },
+        }] };
+      },
+    } as never,
+  });
+  assert.deepEqual(result.finalPr, {
+    type: 'pull_request', number: 42, url: 'https://github.com/acme/widget/pull/42',
+    state: 'open', draft: true,
+  });
+  assert.deepEqual(result.artifacts, [result.finalPr]);
+});
+
 test('goal artifacts are repository-scoped and final PR identity is branch/base/draft fenced', async () => {
   const output = [
     'Issue https://github.com/acme/widget/issues/8',

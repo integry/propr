@@ -15,6 +15,7 @@ import {
 import {
   GoalCapabilityProbe,
   antigravityConversationIdentity,
+  antigravityGoalCommandProbeSucceeded,
   antigravityHelpSupportsWholeSession,
   claudeHelpSupportsWholeSession,
   claudeHelpSupportsNativeGoal,
@@ -213,15 +214,25 @@ describe('native goal provider contract', () => {
 
   test('Antigravity retains state and resumes the exact conversation', () => {
     const agent = new AntigravityAgent(baseConfig('antigravity')) as unknown as {
-      buildDockerArgs(params: typeof common & { executionMode?: 'task' | 'goal'; resumeConversationId?: string }): string[];
+      buildDockerArgs(params: typeof common & { executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean }): string[];
     };
     const normal = agent.buildDockerArgs(common);
-    const initial = agent.buildDockerArgs({ ...common, executionMode: 'goal' });
+    const initial = agent.buildDockerArgs({ ...common, executionMode: 'goal', nativeGoalLaunch: true });
     const resumed = agent.buildDockerArgs({ ...common, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
     assert.ok(normal.includes('PROPR_EPHEMERAL_STATE=1'));
     assert.ok(normal.some(argument => argument.endsWith(':/home/node/.gemini-source:rw')));
     assert.equal(initial.includes('PROPR_EPHEMERAL_STATE=1'), false);
     assert.ok(initial.some(argument => argument.endsWith(':/home/node/.gemini:rw')));
+    // Only the launch expands the native `/goal` command; resumed invocations
+    // carry operator input that slash commands must not consume.
+    assert.equal(normal.includes('--disable-slash-commands'), false);
+    assert.equal(initial.includes('--disable-slash-commands'), false);
+    assert.ok(resumed.includes('--disable-slash-commands'));
+    assert.equal(normal.includes('--output-format'), false);
+    for (const args of [initial, resumed]) {
+      assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 2),
+        ['--output-format', 'stream-json']);
+    }
     assert.deepEqual(resumed.slice(resumed.indexOf('--conversation'), resumed.indexOf('--conversation') + 2), ['--conversation', 'agy-conversation']);
   });
 
@@ -251,6 +262,15 @@ describe('native goal provider contract', () => {
       JSON.stringify({ event: 'init', conversation_id: 'conversation-1', init: { model: 'gemini' } }),
       JSON.stringify({ event: 'result', result: { conversation_id: 'different-conversation', status: 'SUCCESS' } }),
     ].join('\n')), undefined);
+  });
+
+  test('the pinned Antigravity CLI help exposes every goal flag', () => {
+    const help = readFileSync('packages/core/test/fixtures/antigravity-help-1.2.4.txt', 'utf8');
+    assert.equal(antigravityHelpSupportsWholeSession(help), true);
+    assert.equal(antigravityHelpSupportsWholeSession(help.replace(/^\s*--conversation .*$/m, '')), false);
+    assert.equal(antigravityGoalCommandProbeSucceeded('1\n'), true);
+    assert.equal(antigravityGoalCommandProbeSucceeded('0\n'), false);
+    assert.equal(antigravityGoalCommandProbeSucceeded(''), false);
   });
 
   test('recognizes the pinned Codex experimental schema only when every goal method is present', () => {
@@ -310,7 +330,11 @@ describe('native goal provider contract', () => {
         '===PROPR-CLAUDE-GOAL-PROBE===',
         JSON.stringify({ type: 'result', is_error: false, result: 'No goal set. Usage: `/goal <condition>`' }),
       ].join('\n'),
-      antigravity: '--print\n--conversation <id>\n--output-format <format>\n--disable-slash-commands',
+      antigravity: [
+        '--print\n--conversation <id>\n--output-format <format>\n--disable-slash-commands',
+        '===PROPR-ANTIGRAVITY-GOAL-PROBE===',
+        '1',
+      ].join('\n'),
     };
     for (const type of ['codex', 'claude', 'antigravity'] as const) {
       const calls: Array<{ args: string[]; stdinData?: string }> = [];
@@ -337,8 +361,13 @@ describe('native goal provider contract', () => {
         assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
         assert.equal(capability.controls.liveInput, true);
       } else {
-        assert.doesNotMatch(calls[0].args.join(' '), /\/goal/);
-        assert.ok(calls[0].args.includes('--help'));
+        // The native `/goal` command is detected in the binary: no model call.
+        assert.match(calls[0].args.join(' '), /agy --help; .*grep -c -a -F 'Run until the specified goal is completely finished\.'/);
+        assert.doesNotMatch(calls[0].args.join(' '), /agy -p|--print/);
+      }
+      if (type !== 'codex') {
+        assert.deepEqual(capability.lifecycle, { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' });
+        assert.equal(capability.controls.liveInput, true);
       }
     }
   });
