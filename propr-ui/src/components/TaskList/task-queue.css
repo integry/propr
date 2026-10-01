@@ -3,9 +3,12 @@
 
    The schema is locked: every width that shows the table shows all seven
    columns, so nothing is added or dropped as the window or a pane resizes.
-   The measures are fixed and compact so the title column takes the rest of
-   the row; narrow lists (the desktop app's panes) tighten the measures that
-   truncate cleanly instead of removing columns. */
+   Every metadata column has a fixed width (REPO 10rem, STATUS 8rem, AGENT
+   9rem) and the title column takes only what is left (`minmax(0, 1fr)`), so
+   a long or unbroken title wraps inside its own cell and never starves the
+   columns beside it. Lists of a laptop's width (~1280px windows) and narrow
+   lists (the desktop app's panes) step those widths down rather than remove
+   columns, so a title still has room for two lines. */
 .task-queue {
   container-type: inline-size;
   width: 100%;
@@ -14,21 +17,68 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 7rem 6.75rem 6.5rem 4.25rem 4.5rem 3rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 9rem 4.25rem 4.5rem 3rem;
   column-gap: .75rem;
   align-items: center;
 }
 
+@container (max-width: 1100px) {
+  .task-queue-grid {
+    grid-template-columns: minmax(0, 1fr) 9rem 7.5rem 8rem 4.25rem 4.5rem 3rem;
+  }
+}
+
 @container (max-width: 1000px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 5.5rem 6.75rem 5rem 4.25rem 4.5rem 3rem;
+    grid-template-columns: minmax(0, 1fr) 7rem 6.75rem 6.5rem 4.25rem 4.5rem 3rem;
     column-gap: .5rem;
   }
 }
 
-/* Earlier runs are one full-width cell, not seven: a compact timeline of
-   when · what it did · summary, with the score kept under the SCORE column. */
-.task-run { grid-template-columns: 5rem minmax(0, 1fr) 3rem; column-gap: .75rem; }
+/* Earlier runs are one timeline block spanning TASK / PR through STATUS:
+   when · what it did · summary [score]. They never reach the SCORE column,
+   so no run is read across an empty gap to a pill at the far edge. */
+.task-runs-cell { grid-column: 1 / span 3; }
+.task-run { grid-template-columns: 5rem minmax(0, 1fr); column-gap: .75rem; }
+
+/* The tree rail. It drops from the toggle's caret (a fixed .75rem box at the
+   start of the rollup line, so its centre is .375rem in) into the runs, and
+   each run branches off it with a short tick; the rail ends at the last run.
+   --rail-stem bridges the gap from just under the caret to the list: the
+   row's bottom padding (.5rem) plus the part of the 1.25rem rollup line below
+   the caret. The mobile card leaves the same .5rem above the list. */
+.task-earlier-runs {
+  --rail: #cbd5e1;
+  --rail-stem: 1rem;
+  position: relative;
+  margin-left: calc(.375rem - 1px);
+}
+.task-earlier-runs::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(-1 * var(--rail-stem));
+  height: var(--rail-stem);
+  border-left: 2px solid var(--rail);
+}
+.task-earlier-runs > li { position: relative; padding-left: .75rem; }
+.task-earlier-runs > li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid var(--rail);
+}
+.task-earlier-runs > li:last-child::before { bottom: auto; height: calc(50% + 1px); }
+.task-earlier-runs > li::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(50% - 1px);
+  width: .5rem;
+  border-top: 2px solid var(--rail);
+}
 
 .task-title { border-radius: .125rem; line-height: 1.25rem; }
 .task-title:hover { color: #0f766e; text-decoration: underline; }

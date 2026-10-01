@@ -1,5 +1,5 @@
 import React from 'react';
-import { Images } from 'lucide-react';
+import { ChevronDown, CornerDownRight, Images } from 'lucide-react';
 import type { Task } from './types';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
 import { ScoreBadge } from './ScoreBadge';
@@ -8,7 +8,7 @@ import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
-import { pluralize, TASK_QUEUE_COLUMNS, type TaskRowView, type TaskRunView } from './rowModel';
+import { pluralize, TASK_RUNS_COLUMN_SPAN, type TaskRowView, type TaskRunView } from './rowModel';
 
 // Prefer catalog labels (including version punctuation), with a readable fallback
 // for custom models. The logo already identifies the provider.
@@ -80,7 +80,12 @@ export const TaskScore: React.FC<{ task: Task }> = ({ task }) => (
     : <ScoreBadge score={task.critiqueScore} bracketed dimmed={shouldDimTask(task)} />
 );
 
-/** Long titles wrap to a second line instead of being cut off mid-word. */
+/**
+ * Long titles wrap to a second line instead of being cut off mid-word. An
+ * unbroken run of characters (a file path, a URL) breaks wherever it has to,
+ * so it wraps inside the title column rather than pressing on the columns
+ * beside it.
+ */
 const TaskTitleButton: React.FC<{ title: string; taskId: string; onRowClick: (id: string) => void }> = ({ title, taskId, onRowClick }) => (
   <button
     type="button"
@@ -92,7 +97,7 @@ const TaskTitleButton: React.FC<{ title: string; taskId: string; onRowClick: (id
       onRowClick(taskId);
     }}
   >
-    <span className="line-clamp-2 break-words">{title}</span>
+    <span className="line-clamp-2 [overflow-wrap:anywhere]">{title}</span>
   </button>
 );
 
@@ -121,9 +126,12 @@ export const RollupLine: React.FC<{
           aria-expanded={expanded}
           aria-controls={runsId}
           onClick={event => onToggle(row.key, event)}
-          className="task-rollup-toggle flex-none whitespace-nowrap rounded-sm hover:text-slate-900"
+          className="task-rollup-toggle inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm hover:text-slate-900"
         >
-          <span aria-hidden="true">{expanded ? '▾' : '↳'} </span>
+          {/* A fixed box, so the run timeline's rail can start exactly under the caret. */}
+          <span aria-hidden="true" className="task-rollup-caret flex h-3 w-3 flex-none items-center justify-center">
+            {expanded ? <ChevronDown className="h-3 w-3" strokeWidth={2.5} /> : <CornerDownRight className="h-3 w-3" />}
+          </span>
           {expanded ? 'Hide ' : ''}{count} earlier {count === 1 ? 'run' : 'runs'}
         </button>
       )}
@@ -136,16 +144,18 @@ export const RollupLine: React.FC<{
 };
 
 /**
- * The rolled-up runs of one row as a compact timeline spanning the whole row:
- * `when · what it did · summary · score`. Runs share the parent's repository and
- * agent, so they do not borrow its cells and leave them empty.
+ * The rolled-up runs of one row as a self-contained timeline hanging off the
+ * toggle's caret: `when · what it did · summary [score]`. The score sits right
+ * after the summary it grades, so a run reads as one cluster instead of being
+ * matched to a pill at the far edge of a wide table. Runs share the parent's
+ * repository and agent, so they borrow none of its cells.
  */
 export const EarlierRunsList: React.FC<{
   id: string;
   runs: TaskRunView[];
   onRowClick: (taskId: string) => void;
 }> = ({ id, runs, onRowClick }) => (
-  <ul id={id} aria-label="Earlier runs" className="task-earlier-runs space-y-0.5 border-l-2 border-slate-200 pl-3">
+  <ul id={id} aria-label="Earlier runs" className="task-earlier-runs">
     {runs.map(run => {
       const status = getDisplayStatus(run.task);
       const created = new Date(run.task.createdAt).toLocaleString();
@@ -162,11 +172,14 @@ export const EarlierRunsList: React.FC<{
             <span className="flex min-w-0 items-center gap-2">
               {/* The slot stays when a run names no action, so every summary starts at the same edge. */}
               <span className="w-20 flex-none">{run.type && <WorkTypeBadge type={run.type} compact />}</span>
-              <span className={`min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'italic text-slate-400'}`} title={run.delta}>{run.delta}</span>
+              <span className={`task-run-summary min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'text-slate-500'}`} title={run.delta}>{run.delta}</span>
+              {/* The score follows the summary it grades, held to the line's height so scored and unscored runs match. */}
+              {typeof run.task.critiqueScore === 'number' && (
+                <span className="flex h-5 flex-none items-center"><ScoreBadge score={run.task.critiqueScore} bracketed dimmed={shouldDimTask(run.task)} /></span>
+              )}
               {!QUIET_RUN_STATUSES.has(status) && <span className="flex-none">{getStatusPill(status)}</span>}
               <PreviewCountBadge count={run.previewCount} />
             </span>
-            <span className="flex justify-end"><TaskScore task={run.task} /></span>
           </button>
         </li>
       );
@@ -212,8 +225,8 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="flex justify-end"><TaskScore task={task} /></div>
       </div>
       {expanded && row.earlierRuns.length > 0 && (
-        <div role="row" className="px-4 pb-2 sm:px-6">
-          <div role="cell" aria-colspan={TASK_QUEUE_COLUMNS.length}>
+        <div role="row" className="task-queue-grid px-4 pb-2 sm:px-6">
+          <div role="cell" aria-colspan={TASK_RUNS_COLUMN_SPAN} className="task-runs-cell min-w-0">
             <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} />
           </div>
         </div>

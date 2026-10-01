@@ -21,6 +21,9 @@ import type { Task, TaskGroup } from './types';
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
 export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
 
+/** Expanded runs span TASK / PR through STATUS, keeping each run beside its score instead of stretched to the SCORE rail. */
+export const TASK_RUNS_COLUMN_SPAN = 3;
+
 export interface TaskRunView {
   task: Task;
   /**
@@ -28,9 +31,13 @@ export interface TaskRunView {
    * Never `Follow-up`: every earlier run is a follow-up, so the label told nothing.
    */
   type: string | null;
-  /** What this run changed. Never a repeat of the row title, never `Update`. */
+  /**
+   * What this run changed. Never a repeat of the row title, never `Update`.
+   * A run that recorded no summary states its outcome instead: whether it
+   * pushed a commit, why it failed, or that it has not finished.
+   */
   delta: string;
-  /** False when the run recorded no summary and `delta` is only a placeholder. */
+  /** False when the run recorded no summary and `delta` is its outcome. */
   summarized: boolean;
   previewCount: number;
 }
@@ -123,13 +130,37 @@ function entityTitle(tasks: Task[]): string {
 }
 
 /** What a run changed and the action that names it, or null when it recorded nothing more specific. */
-function runDelta(task: Task, rowTitle: string): { type: string | null; workflow: string | null; delta: string | null } {
+function runDelta(task: Task, rowTitle: string): { type: string | null; delta: string | null } {
   const { type: workflow, title } = sanitizeTaskTitle(task.title);
   const subtitle = cleanSubtitle(task.subtitle);
   const delta = subtitle && subtitle !== rowTitle ? subtitle
     : isMeaningful(title) && title !== rowTitle ? title
       : null;
-  return { type: runAction(workflow, delta), workflow, delta };
+  return { type: runAction(workflow, delta), delta };
+}
+
+/** One line of a failure reason; stack traces and log dumps stay on the task page. */
+const firstLine = (text: string | null | undefined): string | null => text?.trim().split('\n')[0].trim() || null;
+
+/**
+ * What an unsummarized run did, from the facts the run recorded. The status
+ * pill beside it already names a failure or cancellation, so the text says
+ * what came of it rather than repeating the state.
+ */
+export function runOutcome(task: Task): string {
+  switch (task.status) {
+    case 'completed':
+    case 'merged':
+      return task.commitHash
+        ? `Pushed commit ${task.commitHash.slice(0, 7)}`
+        : 'No code changes: finished without a commit';
+    case 'failed':
+      return firstLine(task.failedReason) ?? 'Stopped before reporting a result';
+    case 'cancelled':
+      return task.commitHash ? `Stopped after commit ${task.commitHash.slice(0, 7)}` : 'Stopped before committing changes';
+    default:
+      return 'No result yet';
+  }
 }
 
 export function buildTaskRow(group: TaskGroup): TaskRowView {
@@ -145,11 +176,11 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     detail: newest.delta,
     previewCount: previewCount(task),
     earlierRuns: earlier.map(run => {
-      const { type, workflow, delta } = runDelta(run, title);
+      const { type, delta } = runDelta(run, title);
       return {
         task: run,
         type,
-        delta: delta ?? (type ? 'No summary recorded' : `${workflow ?? 'Task'} run`),
+        delta: delta ?? runOutcome(run),
         summarized: delta !== null,
         previewCount: previewCount(run),
       };

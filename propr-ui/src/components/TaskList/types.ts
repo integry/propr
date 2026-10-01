@@ -19,6 +19,8 @@ export interface Task {
   llmProvider?: string | null;
   planIssueStatus?: string | null;
   critiqueScore?: number | null;
+  failedReason?: string | null;
+  commitHash?: string | null;
 }
 
 export interface TaskListProps {

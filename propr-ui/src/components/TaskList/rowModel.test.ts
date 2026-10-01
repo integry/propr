@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskRow, sanitizeTaskTitle } from './rowModel';
+import { buildTaskRow, runOutcome, sanitizeTaskTitle } from './rowModel';
 import type { Task, TaskGroup } from './types';
 
 const base: Task = { id: 'task-1', status: 'completed', createdAt: '2026-09-15T10:00:00Z' };
@@ -32,7 +32,7 @@ describe('buildTaskRow', () => {
   it('rolls every earlier run into one row named after the entity', () => {
     const row = buildTaskRow(group([
       { title: 'Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: 'Ultrafix cycle 3 (linting)' },
-      { title: 'Followup: Update 3', subtitle: 'Update' },
+      { title: 'Followup: Update 3', subtitle: 'Update', commitHash: '9f3c21e81a4d' },
       { title: 'Fix PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: 'Restrict withdrawal labels' },
       { title: 'Review PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: null, critiqueScore: 9 },
     ]));
@@ -40,9 +40,9 @@ describe('buildTaskRow', () => {
     expect(row.type).toBe('Ultrafix');
     expect(row.detail).toBe('Ultrafix cycle 3 (linting)');
     expect(row.earlierRuns.map(run => [run.type, run.delta, run.summarized])).toEqual([
-      [null, 'Follow-up run', false],
+      [null, 'Pushed commit 9f3c21e', false],
       ['Fix', 'Restrict withdrawal labels', true],
-      ['Review', 'No summary recorded', false],
+      ['Review', 'No code changes: finished without a commit', false],
     ]);
   });
 
@@ -67,7 +67,19 @@ describe('buildTaskRow', () => {
     ]));
     expect(row.title).toBe('Add retries');
     expect(row.detail).toBe('Tighten the null check');
-    expect(row.earlierRuns[0]).toMatchObject({ type: 'Implement', delta: 'No summary recorded', summarized: false });
+    expect(row.earlierRuns[0]).toMatchObject({ type: 'Implement', delta: 'No code changes: finished without a commit', summarized: false });
+  });
+
+  it('states what an unsummarized run came to instead of generic filler', () => {
+    const run = (task: Partial<Task>) => runOutcome({ ...base, ...task });
+    expect(run({ status: 'completed', commitHash: 'abcdef1234' })).toBe('Pushed commit abcdef1');
+    expect(run({ status: 'completed' })).toBe('No code changes: finished without a commit');
+    expect(run({ status: 'failed', failedReason: 'Agent timed out after 30m\n  at worker.ts:12' })).toBe('Agent timed out after 30m');
+    expect(run({ status: 'failed' })).toBe('Stopped before reporting a result');
+    expect(run({ status: 'cancelled' })).toBe('Stopped before committing changes');
+    expect(run({ status: 'processing' })).toBe('No result yet');
+    const row = buildTaskRow(group([{ title: 'Fix PR #1: A' }, { title: 'Follow-up PR #1: A' }, { title: 'Followup: Update 2' }]));
+    expect(row.earlierRuns.map(earlier => earlier.delta)).not.toContain('Follow-up run');
   });
 
   it('counts only trusted previews', () => {

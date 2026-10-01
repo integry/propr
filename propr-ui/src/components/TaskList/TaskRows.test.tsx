@@ -41,13 +41,13 @@ describe('task ledger rows', () => {
       .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score']);
   });
 
-  it('keeps all seven columns when earlier runs are expanded, and spans runs across the row', () => {
+  it('keeps all seven columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
     expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
     const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
-    expect(runsCell).toHaveAttribute('aria-colspan', '7');
+    expect(runsCell).toHaveAttribute('aria-colspan', '3');
     expect(runsCell.parentElement!.children).toHaveLength(1);
   });
 
@@ -96,6 +96,8 @@ describe('task ledger rows', () => {
     fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
     const score = within(table).getByTitle('Code Quality Score: 8/10');
     expect(score.textContent).toBe('[8]');
+    // The run's score follows its summary directly rather than sitting in a far-off column.
+    expect(score.parentElement!.previousElementSibling).toHaveTextContent('Change number 1');
   });
 
   it('keeps selection from opening a row and permits intentional keyboard activation', () => {

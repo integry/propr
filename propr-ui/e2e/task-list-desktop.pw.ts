@@ -6,7 +6,7 @@ const now = Date.parse('2026-10-01T12:00:00Z');
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
 const preview = (name: string, type: 'image' | 'video' = 'image') => ({ type, title: name, url: `https://github.com/user-attachments/assets/${name}` });
 
-interface FixtureRun { title: string; subtitle?: string | null; status?: string; minutes: number; took?: number; score?: number | null; previewMedia?: ReturnType<typeof preview>[]; planIssueStatus?: string }
+interface FixtureRun { title: string; subtitle?: string | null; status?: string; minutes: number; took?: number; score?: number | null; previewMedia?: ReturnType<typeof preview>[]; planIssueStatus?: string; commitHash?: string | null; failedReason?: string | null }
 
 // Runs of four pull requests, written the way the backend titles them: workflow verb, repeated
 // PR number and model tag in front of what the work is about, plus legacy "Update" follow-ups.
@@ -18,6 +18,7 @@ const pullRequest = (prNumber: number, issueNumber: number, runs: FixtureRun[]) 
   completedAt: run.status === 'processing' ? null : new Date(Date.parse(ago(run.minutes)) + (run.took ?? 5) * 60_000).toISOString(),
   llmProvider: 'codex', model: 'gpt-6-astra', critiqueScore: run.score ?? null,
   previewMedia: run.previewMedia, planIssueStatus: run.planIssueStatus ?? null,
+  commitHash: run.commitHash ?? null, failedReason: run.failedReason ?? null,
 }));
 const tag = (issue: number) => `[${issue} by GPT-6 Astra]`;
 const tasks = [
@@ -34,6 +35,8 @@ const tasks = [
       title: `Follow-up PR #2661: ${tag(2658)} Give implementation runs and direct goals a read-only GitHub token`,
       subtitle: ['Fix seedCommit test failure by updating repoBranching', 'Resolve AntigravityAgent git access conflicts', 'Update repoBranching.ts for read-only tokens', null, 'Tighten token scope checks', null][index],
       minutes: 60 + index * 30, score: index < 3 ? 8 : null,
+      // Two runs recorded no summary: one pushed a commit, the other changed nothing.
+      commitHash: index === 5 ? null : `9f3c2${index}e81a4d`,
     })),
   ]),
   ...pullRequest(2663, 2660, [
@@ -128,6 +131,18 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       expect(layout.pageFits).toBe(true);
       for (const height of layout.heights) expect(height).toBeLessThanOrEqual(84);
       expect(await table.getByRole('button', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
+      // A long unbroken path in a title wraps inside its own cell: the metadata cells of that row
+      // keep exactly their column widths (REPO 10rem, STATUS 8rem, AGENT 9rem on a wide list).
+      const columnWidths = await table.evaluate(element => {
+        const widths = (cells: Element[]) => cells.slice(1, 4).map(cell => Math.round(cell.getBoundingClientRect().width));
+        const longRow = [...element.querySelectorAll('[data-testid="task-row"]')].find(row => row.textContent!.includes('a-very-long-unbroken'))!;
+        return {
+          header: widths([...element.querySelectorAll('[role="columnheader"]')]),
+          longRow: widths([...longRow.querySelector('[role="row"]')!.children]),
+        };
+      });
+      expect(columnWidths.longRow).toEqual(columnWidths.header);
+      if (width === 1920) expect(columnWidths.header).toEqual([160, 128, 144]);
       // Titles wrap rather than being cut mid-word, and on a wide screen they fit on one line.
       const longTitle = table.getByRole('button', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
       const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
@@ -147,15 +162,43 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(runs.getByRole('listitem')).toHaveCount(6);
       await expect(runs).toContainText('Resolve AntigravityAgent git access conflicts');
       expect(new URL(page.url()).pathname).toBe('/tasks');
-      // Runs are one row-wide timeline cell, each labelled by what it did rather than "Follow-up".
-      await expect(runs.locator('xpath=ancestor::*[@role="cell"][1]')).toHaveAttribute('aria-colspan', '7');
+      // Runs are one timeline block over TASK / PR through STATUS, each labelled by what it did
+      // rather than "Follow-up", and a run with no summary states its outcome instead of filler.
+      await expect(runs.locator('xpath=ancestor::*[@role="cell"][1]')).toHaveAttribute('aria-colspan', '3');
       await expect(runs.getByTestId('work-type-badge').first()).toHaveText('Fix');
       await expect(runs.getByTestId('work-type-badge').filter({ hasText: /follow-up/i })).toHaveCount(0);
-      const scoreEdges = await table.evaluate(element => {
-        const header = [...element.querySelectorAll('[role="columnheader"]')].at(-1)!.getBoundingClientRect().right;
-        return [...element.querySelectorAll('.task-run > :last-child')].map(cell => Math.abs(cell.getBoundingClientRect().right - header));
+      await expect(runs).not.toContainText(/follow-up run/i);
+      await expect(runs).toContainText('Pushed commit 9f3c23e');
+      await expect(runs).toContainText('No code changes: finished without a commit');
+      const timeline = await table.evaluate(element => {
+        const headers = [...element.querySelectorAll('[role="columnheader"]')].map(header => header.getBoundingClientRect());
+        const list = element.querySelector('[aria-label="Earlier runs"]')!;
+        const caret = element.querySelector(`[aria-controls="${list.id}"] .task-rollup-caret`)!.getBoundingClientRect();
+        const rail = getComputedStyle(list, '::before');
+        const listBox = list.getBoundingClientRect();
+        return {
+          blockRight: list.closest('[role="cell"]')!.getBoundingClientRect().right,
+          statusRight: headers[2].right,
+          // Each score sits right after the summary it grades, not out on the SCORE rail.
+          scoreGaps: [...list.querySelectorAll('.task-run')].flatMap(run => {
+            const score = run.querySelector('[title^="Code Quality Score"]');
+            const summary = run.querySelector('.task-run-summary');
+            return score && summary ? [score.getBoundingClientRect().left - summary.getBoundingClientRect().right] : [];
+          }),
+          railCentre: listBox.left + parseFloat(rail.borderLeftWidth) / 2,
+          caretCentre: caret.left + caret.width / 2,
+          railTop: listBox.top + parseFloat(rail.top),
+          caretTop: caret.top,
+          caretBottom: caret.bottom,
+        };
       });
-      for (const offset of scoreEdges) expect(offset).toBeLessThanOrEqual(1);
+      expect(timeline.blockRight).toBeLessThanOrEqual(timeline.statusRight + 1);
+      expect(timeline.scoreGaps).toHaveLength(3);
+      for (const gap of timeline.scoreGaps) expect(gap).toBeLessThanOrEqual(12);
+      // The rail is threaded from the caret: it starts inside the caret's box, on its centre line.
+      expect(Math.abs(timeline.railCentre - timeline.caretCentre)).toBeLessThanOrEqual(1);
+      expect(timeline.railTop).toBeGreaterThanOrEqual(timeline.caretTop);
+      expect(timeline.railTop).toBeLessThanOrEqual(timeline.caretBottom);
       if (platform === undefined && width === 1920) await capture(page, 'tasks-ledger-rollup-expanded');
       if (platform === undefined && width === 1280) await capture(page, 'tasks-ledger-rollup-expanded-1280');
 
