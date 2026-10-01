@@ -6,7 +6,7 @@ import { formatTaskTerminalReason } from '@propr/shared';
 
 import { Job } from 'bullmq';
 import {
-  preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
+  preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, loadPrimaryProcessingLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
@@ -114,7 +114,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     const reason = withdrawnIntentReason(target, currentIssueData.data, [context.AI_PRIMARY_TAG]);
     if (reason) {
       await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
-      await updateWithdrawnIssueLabels(target, [context.AI_PRIMARY_TAG]);
+      await updateWithdrawnIssueLabels(target, reason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG], reason);
       return { status: 'cancelled', reason };
     }
     const latest = await stateManager.getTaskState(taskId);
@@ -166,7 +166,11 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   } catch (error) {
     const latest = await stateManager.getTaskState(taskId);
     if (latest?.state === TaskStates.CANCELLED) {
-      await updateWithdrawnIssueLabels({ ...issueRef, kind: 'issue' }, [context.AI_PRIMARY_TAG]);
+      await updateWithdrawnIssueLabels(
+        { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
+        latest.terminalReason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG],
+        latest.terminalReason,
+      );
       return { status: 'cancelled', reason: latest.terminalReason };
     }
     if (error instanceof UsageLimitError) {

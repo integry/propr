@@ -403,7 +403,7 @@ async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventT
         if (payload.action === 'closed' || triggerRemoved) {
             const [repoOwner, repoName] = payload.repository.full_name.split('/');
             await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
-                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
+                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis(), payload.issue);
         }
     }
     if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
@@ -431,7 +431,11 @@ export async function processWebhookEvent(
         }
     }
 
-    await handleIntentWithdrawal(payload, eventType);
+    try {
+        await handleIntentWithdrawal(payload, eventType);
+    } catch (error) {
+        correlatedLogger.warn({ error }, 'Intent withdrawal failed; continuing webhook handlers, polling will retry cancellation');
+    }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 

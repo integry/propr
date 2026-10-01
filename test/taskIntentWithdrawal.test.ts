@@ -9,6 +9,7 @@ const requests: Array<{ endpoint: string; params: any }> = [];
 const containers: string[] = [];
 let tracker: any = { state: 'open', labels: [{ name: 'AI' }] };
 let trackerError: Error | undefined;
+let onRequest: ((endpoint: string) => void) | undefined;
 const redis = {
     get: async (key: string) => key.startsWith('worker:state:')
         ? (states.has(key.slice(13)) ? JSON.stringify(states.get(key.slice(13))) : null)
@@ -51,17 +52,44 @@ await mock.module('../packages/core/src/utils/workerStateManager.js', { namedExp
 await mock.module('../packages/core/src/queue/taskQueue.js', { namedExports: { getIssueQueue: async () => queue } });
 await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => ({ request: async (endpoint: string, params: any) => {
     requests.push({ endpoint, params });
+    onRequest?.(endpoint);
     if (trackerError) throw trackerError;
     return { data: tracker };
 } }) } });
 await mock.module('../packages/core/src/config/configManager.js', { namedExports: { loadPrimaryProcessingLabels: async () => ['AI', 'build'] } });
 await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => ({ select: () => ({ where: () => ({ first: async () => undefined }) }) }) } });
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); return { success: true }; } } });
-await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
+await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
 const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, taskIntentTarget, intentJobTaskId } = await import('../packages/core/src/services/taskIntent.js');
+await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
+    handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {},
+} });
+await mock.module('../packages/core/src/webhook/checkRunHandler.js', { namedExports: {
+    handleCheckRunEvent: async () => {}, handleStatusEvent: async () => {}, reevaluatePRAutoMerge: async () => {},
+} });
+await mock.module('../packages/core/src/webhook/epicPRHandler.js', { namedExports: {
+    handleEpicPRCreationOnMerge: async () => {}, handleEpicPRLabelCleanup: async () => {},
+} });
+await mock.module('../packages/core/src/webhook/closedPullRequestCi.js', { namedExports: {
+    getClosedPullRequestCiRedis: () => redis, recordClosedPullRequestForCiCancellation: async () => {},
+} });
+await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', { namedExports: {
+    handlePullRequestConflictDetection: async () => {}, handlePushConflictDetection: async () => {},
+} });
+const { initializeWebhookHandler, processWebhookEvent } = await import('../packages/core/src/webhook/webhookHandler.js');
+await initializeWebhookHandler({
+    issueProcessor: async () => {}, commentProcessor: async () => {},
+    commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: redis as never,
+});
+async function removeTrigger(label: string, labels: string[]) {
+    await processWebhookEvent({
+        repository: { full_name: 'acme/widgets' }, action: 'unlabeled', label: { name: label },
+        issue: { number: 42, state: 'open', labels: labels.map(name => ({ name })) },
+    }, 'issues', 'trigger-removal');
+}
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, triggeringLabel: 'AI' };
 
-beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; });
+beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -227,3 +255,109 @@ for (const phase of ['delayed', 'active', 'running']) {
         assert.equal(await preventWithdrawnJob(fresh), 'cancelled_pr_closed');
     });
 }
+
+
+test('unlabel webhook preserves running and queued AI work when only build is removed', async () => {
+    addRunning('implementation');
+    addJob('matrix-waiting', target);
+    addJob('matrix-active', target, 'active');
+    await removeTrigger('build', ['AI']);
+    assert.equal(states.get('implementation').state, 'claude_execution');
+    assert.equal(states.size, 1);
+    assert.equal(jobs.length, 2);
+    assert.equal(redisValues.size, 0);
+    assert.deepEqual(containers, []);
+    assert.deepEqual(requests, []);
+});
+
+for (const path of ['webhook', 'polling', 'admission'] as const) {
+    test(`${path} cancels only build work and preserves AI status and discovery eligibility`, async () => {
+        const build = { ...target, triggeringLabel: 'build' };
+        addRunning('ai-running');
+        addRunning('build-running', build);
+        addJob('ai-matrix', target, 'delayed');
+        const withdrawn = addJob('build-matrix', build, 'prioritized');
+        tracker = { state: 'open', labels: ['AI', 'AI-processing', 'AI-waiting', 'AI-done', 'build-processing'] };
+        if (path === 'webhook') await removeTrigger('build', tracker.labels);
+        else if (path === 'polling') await reconcileTaskIntents(redis as never, ['acme/widgets']);
+        else assert.equal(await preventWithdrawnJob(withdrawn), 'cancelled_label_removed');
+        assert.equal(states.get('ai-running').state, 'claude_execution');
+        assert.ok(jobs.some(job => job.id === 'ai-matrix'));
+        assert.equal(states.has('ai-matrix'), false);
+        assert.equal(states.get('build-matrix').terminalReason, 'cancelled_label_removed');
+        if (path !== 'admission') assert.equal(states.get('build-running').terminalReason, 'cancelled_label_removed');
+        assert.ok(requests.some(r => r.params.name === 'build-processing'));
+        assert.ok(requests.every(r => !r.params.name?.startsWith('AI-')));
+        assert.ok(requests.every(r => !r.params.labels?.some((label: string) => label.endsWith('-cancelled'))));
+    });
+}
+
+test('legacy work without a recorded trigger survives until the last configured trigger is removed', async () => {
+    const legacy = { ...target, triggeringLabel: undefined };
+    addRunning('legacy-running', legacy as any);
+    addJob('legacy-queued', legacy);
+    await removeTrigger('build', ['AI']);
+    assert.equal(states.get('legacy-running').state, 'claude_execution');
+    assert.equal(jobs.length, 1);
+    tracker = { state: 'open', labels: [] };
+    await removeTrigger('AI', []);
+    assert.equal(states.get('legacy-running').terminalReason, 'cancelled_label_removed');
+    assert.equal(states.get('legacy-queued').terminalReason, 'cancelled_label_removed');
+    assert.ok(requests.some(r => r.params.labels?.includes('AI-cancelled')));
+});
+
+test('polling legacy work does not cancel a sibling with its own surviving trigger', async () => {
+    addRunning('legacy', { ...target, triggeringLabel: undefined } as any);
+    addRunning('custom', { ...target, triggeringLabel: 'custom' });
+    tracker = { state: 'open', labels: ['custom'] };
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.equal(states.get('legacy').terminalReason, 'cancelled_label_removed');
+    assert.equal(states.get('custom').state, 'claude_execution');
+});
+
+test('closure still cancels work from both triggers', async () => {
+    addRunning('ai');
+    addRunning('build', { ...target, triggeringLabel: 'build' });
+    await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+    assert.equal(states.get('ai').terminalReason, 'cancelled_issue_closed');
+    assert.equal(states.get('build').terminalReason, 'cancelled_issue_closed');
+});
+
+test('label cleanup refreshes intent after an awaited stop', async () => {
+    addRunning('build', { ...target, triggeringLabel: 'build' });
+    tracker = { state: 'open', labels: [] };
+    const cancel = manager.markTaskCancelled;
+    const stub = mock.method(manager, 'markTaskCancelled', async (...args: Parameters<typeof cancel>) => {
+        const result = await cancel(...args);
+        tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+        return result;
+    });
+    try {
+        await cancelWithdrawnIntent({ ...target, triggeringLabel: 'build' }, 'cancelled_label_removed', redis as never);
+    } finally {
+        stub.mock.restore();
+    }
+    assert.ok(requests.some(r => r.endpoint.startsWith('GET ')));
+    assert.ok(requests.every(r => r.params.name !== 'AI-processing' && !r.params.labels));
+});
+
+
+test('a trigger restored during label cleanup prevents a discovery-blocking cancellation label', async () => {
+    addRunning('build', { ...target, triggeringLabel: 'build' });
+    tracker = { state: 'open', labels: [] };
+    onRequest = endpoint => {
+        if (endpoint.startsWith('DELETE ')) tracker = { state: 'open', labels: ['AI'] };
+    };
+    await cancelWithdrawnIntent({ ...target, triggeringLabel: 'build' }, 'cancelled_label_removed', redis as never);
+    assert.ok(requests.some(r => r.params.name === 'build-processing'));
+    assert.ok(requests.every(r => !r.params.labels));
+});
+
+test('unlabel webhook respects a task trigger still present in the payload', async () => {
+    addRunning('implementation');
+    addJob('matrix', target);
+    await removeTrigger('AI', ['AI', 'build']);
+    assert.equal(states.get('implementation').state, 'claude_execution');
+    assert.equal(jobs.length, 1);
+    assert.equal(requests.length, 0);
+});

@@ -9,13 +9,15 @@ const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
 let liveIssue = { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] };
 const cancellations: Array<Record<string, unknown>> = [];
-let outcome: 'completed' | 'failed' | 'cancelled' = 'completed';
+let outcome: 'completed' | 'failed' | 'cancelled' | 'withdrawn' = 'completed';
+let withdrawnDuringExecution = false;
+const labelCleanups: unknown[][] = [];
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
   markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { cancellations.push(metadata); },
   createTaskStateIfAbsent: async () => undefined,
-  getTaskState: async () => null,
+  getTaskState: async () => withdrawnDuringExecution ? { state: 'cancelled', terminalReason: 'cancelled_label_removed' } : null,
   updateTaskState: async () => undefined,
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
@@ -23,7 +25,8 @@ const stateManager = {
 await mock.module('@propr/core', { namedExports: {
   ...core,
   preventWithdrawnJob: async () => null,
-  updateWithdrawnIssueLabels: async () => undefined,
+  updateWithdrawnIssueLabels: async (...args: unknown[]) => { labelCleanups.push(args); },
+  loadPrimaryProcessingLabels: async () => ['AI', 'build'],
   associateSubmissionTask: async (_database: unknown, _id: string, taskId: string) => { taskLinks.push(taskId); },
   findIssueSubmission: async () => submitted ? { id: 'submission' } : undefined,
   logger: { ...log, withCorrelation: () => log },
@@ -52,6 +55,10 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   checkLabelConditions: () => ({ skip: false }),
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {
+    if (outcome === 'withdrawn') {
+      withdrawnDuringExecution = true;
+      throw new Error('Execution aborted after trigger removal');
+    }
     if (outcome === 'cancelled') throw new Error('Execution aborted by user');
     return { worktreeInfo: { worktreePath: '/tmp/worktree' },
       claudeResult: { success: outcome === 'completed', error: outcome === 'failed' ? 'Agent failed' : null },
@@ -100,3 +107,26 @@ test('issue withdrawal detected after admission persists readable history and re
     assert.deepEqual(cancellations, [{ reason: explanation, terminalReason: code }]);
   }
 });
+
+
+for (const phase of ['after admission', 'during execution']) {
+  test(`withdrawal ${phase} gives label cleanup the task trigger, all configured triggers and terminal reason`, async () => {
+    liveIssue = { ...liveIssue, state: 'open', labels: [{ name: phase === 'after admission' ? 'build' : 'AI' }] };
+    outcome = 'withdrawn';
+    labelCleanups.length = 0;
+    try {
+      const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+        repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model', repoPayload: { defaultBranch: 'main' },
+      }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+      assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_label_removed' });
+      assert.equal(labelCleanups.length, 1);
+      const [target, triggers, reason] = labelCleanups[0] as [Record<string, unknown>, string[], string];
+      assert.equal(target.triggeringLabel, 'AI');
+      assert.deepEqual(triggers, ['AI', 'build']);
+      assert.equal(reason, 'cancelled_label_removed');
+    } finally {
+      withdrawnDuringExecution = false;
+      outcome = 'completed';
+    }
+  });
+}

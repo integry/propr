@@ -4,6 +4,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getStateManager } from '../utils/workerStateManager.js';
+import type { TaskTerminalReason } from '../utils/workerStateManager.types.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { safeAddLabel, safeRemoveLabel } from '../utils/github/labelOperations.js';
@@ -32,7 +33,9 @@ export function taskIntentTarget(data: Record<string, unknown>, type?: string): 
     return { repoOwner, repoName, number, kind, ...(typeof data.triggeringLabel === 'string' ? { triggeringLabel: data.triggeringLabel } : {}) };
 }
 
-export function withdrawnIntentReason(target: IntentTarget, current: { state?: string; merged?: boolean; labels?: Array<string | { name?: string }> }, triggers: string[]): IntentCancellationReason | null {
+export interface CurrentTaskIntent { state?: string; merged?: boolean; labels?: Array<string | { name?: string }> }
+
+export function withdrawnIntentReason(target: IntentTarget, current: CurrentTaskIntent, triggers: string[]): IntentCancellationReason | null {
     if (current.state === 'closed') return target.kind === 'pr' ? (current.merged ? null : 'cancelled_pr_closed') : 'cancelled_issue_closed';
     if (target.kind === 'pr') return null;
     const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -49,16 +52,38 @@ function redisAdapter(redis: Redis): StopTaskRedisClient {
     };
 }
 
-export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[]): Promise<void> {
+export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason): Promise<void> {
     if (target.kind !== 'issue') return;
     const octokit = await getAuthenticatedOctokit();
+    let labelsToClear = [...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])];
+    let markCancelled = true;
+    if (reason === 'cancelled_label_removed') {
+        // Stops may await Redis, the queue and containers. Refresh label authority
+        // before cleanup so another trigger's live work keeps its status labels.
+        const { data: current } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
+        });
+        if (withdrawnIntentReason(target, current, triggers) !== reason) return;
+        labelsToClear = target.triggeringLabel ? [target.triggeringLabel] : triggers;
+        // Discovery excludes every *-cancelled label, even for another trigger.
+        markCancelled = !(current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+    }
     const options = { octokit, owner: target.repoOwner, repo: target.repoName, issueNumber: target.number, logger: logger.withCorrelation('intent-withdrawal') };
-    for (const trigger of new Set([...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])])) {
+    for (const trigger of new Set(labelsToClear)) {
         await safeRemoveLabel(options, `${trigger}-processing`);
         await safeRemoveLabel(options, `${trigger}-waiting`);
         await safeRemoveLabel(options, `${trigger}-done`);
     }
-    await safeAddLabel(options, `${target.triggeringLabel ?? triggers[0] ?? 'AI'}-cancelled`);
+    if (markCancelled && reason === 'cancelled_label_removed') {
+        // The cleanup above awaits multiple GitHub calls. Recheck immediately
+        // before publishing a marker that would exclude every trigger's work.
+        const { data: current } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
+        });
+        markCancelled = withdrawnIntentReason(target, current, triggers) === reason
+            && !(current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+    }
+    if (markCancelled) await safeAddLabel(options, `${target.triggeringLabel ?? triggers[0] ?? 'AI'}-cancelled`);
 }
 
 export function intentJobTaskId(job: { id?: string; data: Record<string, unknown> }): string {
@@ -75,23 +100,34 @@ export function intentJobTaskId(job: { id?: string; data: Record<string, unknown
 }
 
 /** Cancel only work on this resource; an issue's already-opened PR is independent. */
-export async function cancelWithdrawnIntent(target: IntentTarget, reason: IntentCancellationReason, redis: Redis): Promise<void> {
+export async function cancelWithdrawnIntent(target: IntentTarget, reason: IntentCancellationReason, redis: Redis, current?: CurrentTaskIntent): Promise<void> {
     const manager = getStateManager();
     const queue = await getIssueQueue();
     const matches = (candidate: IntentTarget | null) => candidate && candidate.kind === target.kind && candidate.number === target.number
         && candidate.repoOwner.toLowerCase() === target.repoOwner.toLowerCase() && candidate.repoName.toLowerCase() === target.repoName.toLowerCase();
+    const triggers = current && reason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [];
+    const shouldStop = (candidate: IntentTarget | null) => {
+        if (!matches(candidate) || !candidate) return false;
+        if (reason !== 'cancelled_label_removed') return true;
+        // Polling checks one trigger at a time. Webhooks also carry the labels
+        // needed to decide legacy work whose trigger was not recorded.
+        if (candidate.triggeringLabel !== target.triggeringLabel) {
+            if (candidate.triggeringLabel || !current) return false;
+        }
+        return !current || withdrawnIntentReason(candidate, current, triggers) === reason;
+    };
     const stops = new Map<string, string>();
     let cursor = '0';
     do {
         const page = await manager.scanNonTerminalTasks(cursor);
         for (const task of page.tasks) {
-            if (matches(taskIntentTarget(task.issueRef, task.issueRef.type))) stops.set(task.taskId, task.taskId);
+            if (shouldStop(taskIntentTarget(task.issueRef, task.issueRef.type))) stops.set(task.taskId, task.taskId);
         }
         cursor = page.nextCursor;
     } while (cursor !== '0');
     for (const job of await queue.getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
         if (!['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) continue;
-        if (!matches(taskIntentTarget(job.data as unknown as Record<string, unknown>))) continue;
+        if (!shouldStop(taskIntentTarget(job.data as unknown as Record<string, unknown>))) continue;
         const row = await db('tasks').select('task_id').where({ job_id: String(job.id) }).first();
         const taskId = row?.task_id && stops.has(row.task_id) ? row.task_id : intentJobTaskId(job as unknown as { id?: string; data: Record<string, unknown> });
         stops.delete(taskId);
@@ -102,7 +138,7 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
         cancellationReason: reason, ensureCancelled: true,
     })));
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
-    if (stops.size) await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels());
+    if (stops.size) await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
     const failures = results.filter(result => result.status === 'rejected' || !result.value.cancellationRecorded && !result.value.notRunning);
     if (failures.length) throw new Error(`Could not record ${failures.length} intent cancellation(s)`);
 }
@@ -160,6 +196,6 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
     }, typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
     await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
-    await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels());
+    await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
     return reason;
 }
