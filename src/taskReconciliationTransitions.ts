@@ -24,6 +24,20 @@ export function failedTaskTransition(
     };
 }
 
+function cancelledJobTransition(
+    status: string,
+    reason: string | undefined,
+    metadata: Record<string, unknown>,
+): PersistedTaskTerminalTransition {
+    return {
+        state: TaskStates.CANCELLED,
+        reason: status === 'cancelled'
+            ? formatTaskTerminalReason(reason ?? '')
+            : `Task job ${status}${reason ? `: ${reason}` : ''}`,
+        metadata: { ...metadata, ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}) },
+    };
+}
+
 export function completedJobTransition(value: unknown): PersistedTaskTerminalTransition {
     const result = value !== null && typeof value === 'object'
         ? value as JobResult
@@ -35,14 +49,8 @@ export function completedJobTransition(value: unknown): PersistedTaskTerminalTra
         jobResultStatus: status ?? null,
         jobResultReason: reason ?? null,
     };
-    if (['cancelled', 'requeued', 'rescheduled'].includes(status ?? '')) {
-        return {
-            state: TaskStates.CANCELLED,
-            reason: status === 'cancelled'
-                ? formatTaskTerminalReason(reason ?? '')
-                : `Task job ${status}${reason ? `: ${reason}` : ''}`,
-            metadata: { ...metadata, ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}) },
-        };
+    if (status && ['cancelled', 'requeued', 'rescheduled'].includes(status)) {
+        return cancelledJobTransition(status, reason, metadata);
     }
     if (status === 'failed') {
         return failedTaskTransition(

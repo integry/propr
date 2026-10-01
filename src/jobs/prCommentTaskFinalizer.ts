@@ -102,15 +102,20 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 },
             };
         case 'cancelled':
+            return {
+                state: TaskStates.CANCELLED,
+                metadata: {
+                    reason: formatTaskTerminalReason(reason ?? ''),
+                    historyMetadata: { ...historyMetadata, cancellationReason: reason },
+                },
+            };
         case 'requeued':
         case 'rescheduled':
             return {
                 state: TaskStates.CANCELLED,
                 metadata: {
-                    reason: status === 'cancelled'
-                        ? formatTaskTerminalReason(reason ?? '')
-                        : sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
-                    historyMetadata: { ...historyMetadata, ...(status === 'cancelled' ? { cancellationReason: reason } : {}) },
+                    reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
+                    historyMetadata,
                 },
             };
         case 'failed':
