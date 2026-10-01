@@ -13,20 +13,12 @@ import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRH
 import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
-    IssuesEvent,
-    IssuesLabeledEvent,
-    IssueCommentEvent,
-    IssueCommentCreatedEvent,
-    IssueCommentDeletedEvent,
-    IssueCommentEditedEvent,
-    PullRequestReviewCommentEvent,
-    PullRequestReviewCommentCreatedEvent,
-    PullRequestReviewCommentDeletedEvent,
-    PullRequestReviewCommentEditedEvent,
-    PullRequestEvent,
-    PullRequestUnlabeledEvent,
-    CheckRunEvent,
-    PushEvent
+    IssuesEvent, IssuesLabeledEvent,
+    IssueCommentEvent, IssueCommentCreatedEvent, IssueCommentDeletedEvent, IssueCommentEditedEvent,
+    PullRequestReviewCommentEvent, PullRequestReviewCommentCreatedEvent,
+    PullRequestReviewCommentDeletedEvent, PullRequestReviewCommentEditedEvent,
+    PullRequestEvent, PullRequestUnlabeledEvent,
+    CheckRunEvent, PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';

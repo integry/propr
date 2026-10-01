@@ -80,6 +80,23 @@ async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnTy
   return { octokit };
 }
 
+async function checkIssueCancellation(
+  context: Awaited<ReturnType<typeof initializeJobContext>>,
+  currentIssueData: CurrentIssueData,
+): Promise<JobResult | null> {
+  const { issueRef, stateManager, taskId, AI_PRIMARY_TAG } = context;
+  const target = { ...issueRef, kind: 'issue' as const, triggeringLabel: AI_PRIMARY_TAG };
+  const reason = withdrawnIntentReason(target, currentIssueData.data, [AI_PRIMARY_TAG]);
+  if (reason) {
+    await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
+    await updateWithdrawnIssueLabels(target, reason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [AI_PRIMARY_TAG], reason);
+    return { status: 'cancelled', reason };
+  }
+  const latest = await stateManager.getTaskState(taskId);
+  if (latest?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: latest.terminalReason };
+  return null;
+}
+
 export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
 
@@ -110,15 +127,8 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         mediaType: { format: 'full' }
       }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
 
-    const target = { ...issueRef, kind: 'issue' as const, triggeringLabel: context.AI_PRIMARY_TAG };
-    const reason = withdrawnIntentReason(target, currentIssueData.data, [context.AI_PRIMARY_TAG]);
-    if (reason) {
-      await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
-      await updateWithdrawnIssueLabels(target, reason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG], reason);
-      return { status: 'cancelled', reason };
-    }
-    const latest = await stateManager.getTaskState(taskId);
-    if (latest?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: latest.terminalReason };
+    const cancellation = await checkIssueCancellation(context, currentIssueData);
+    if (cancellation) return cancellation;
     const currentLabels = currentIssueData.data.labels.map(label => label.name);
     const labelCheck = checkLabelConditions(currentLabels, context);
     if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
