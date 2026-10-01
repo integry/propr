@@ -74,6 +74,34 @@ describe('ExecutionEventLog', () => {
 });
 
 describe('ThinkingLog', () => {
+  it('renders a structured goal handoff as a highlighted checkpoint instead of raw JSON', () => {
+    const declaration = JSON.stringify({
+      checkpointReady: true,
+      message: 'feat(goals): publish stable work',
+      include: ['src/goals.ts', 'test/goals.test.ts'],
+      exclude: ['src/follow-up.ts'],
+      summary: 'The coherent implementation slice and its tests are ready.',
+    });
+
+    render(<ThinkingLog events={[{
+      id: 'checkpoint-1',
+      type: 'thought',
+      content: `Stable work is ready.\n\
+\`\`\`json\n${declaration}\n\`\`\``,
+      relativeTime: '12m 4s',
+    }]} />);
+
+    expect(screen.getByTestId('goal-checkpoint-event')).toHaveClass('bg-emerald-50/40');
+    expect(screen.getByText('CHECKPOINT')).toBeInTheDocument();
+    expect(screen.getByText('Checkpoint ready')).toBeInTheDocument();
+    expect(screen.getByText('feat(goals): publish stable work')).toBeInTheDocument();
+    expect(screen.getByText('The coherent implementation slice and its tests are ready.')).toBeInTheDocument();
+    expect(screen.getByText('2 included · 1 excluded')).toBeInTheDocument();
+    expect(screen.getByText('12m 4s')).toBeInTheDocument();
+    expect(screen.queryByText(declaration)).not.toBeInTheDocument();
+    expect(screen.queryByText('ACTION')).not.toBeInTheDocument();
+  });
+
   it('discloses output discarded by retention in the readable view', () => {
     const events: LiveEvent[] = [{ id: 'thought-1', type: 'thought', content: 'Still working' }];
     const { rerender } = render(<ThinkingLog events={events} historyTruncated />);

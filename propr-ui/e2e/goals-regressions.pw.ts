@@ -38,6 +38,14 @@ const catalog = {
   ],
 };
 
+const checkpointDeclaration = JSON.stringify({
+  checkpointReady: true,
+  message: 'feat(goals): publish stable dashboard slice',
+  include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
+  exclude: ['src/follow-up.ts'],
+  summary: 'The responsive dashboard and its focused coverage are ready.',
+});
+
 async function stubGoalApis(page: Page): Promise<void> {
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
@@ -75,6 +83,33 @@ async function stubGoalApis(page: Page): Promise<void> {
         artifactStats: { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 },
         liveSummary: { ...goal.liveSummary, currentTask: null, todos: [] },
       }] } });
+      return;
+    }
+    if (pathname === '/api/goals/goal-1') {
+      await route.fulfill({ json: { goal: {
+        ...goal,
+        launchStrategy: 'direct',
+        checkpoint: {
+          intervalMinutes: 15, count: 1, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
+          latest: {
+            kind: 'agent', state: 'completed', message: 'feat(goals): publish stable dashboard slice',
+            summary: 'The responsive dashboard and its focused coverage are ready.',
+            include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
+            exclude: ['src/follow-up.ts'], commitSha: 'abc1234', error: null,
+          },
+        },
+      } } });
+      return;
+    }
+    if (pathname === '/api/task/goal-task-1/live-details') {
+      await route.fulfill({ json: {
+        events: [
+          { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
+          { id: 'checkpoint-1', type: 'thought', content: checkpointDeclaration, timestamp: '2026-09-10T00:01:30.000Z' },
+          { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
+        ],
+        todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
+      } });
       return;
     }
     if (pathname === '/api/tasks') {
@@ -180,6 +215,22 @@ test('dismisses the repository picker before the dirty goal creator on Escape', 
   await expect(creator).toBeVisible();
   await expect(creator.getByLabel('Prompt')).toHaveValue('Preserve this browser-tested draft');
   expect(discardPrompts).toBe(0);
+});
+
+test('highlights checkpoint declarations in the readable goal log', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/goals/goal-1');
+
+  const checkpoint = page.getByTestId('goal-checkpoint-event');
+  await expect(checkpoint).toBeVisible();
+  await expect(checkpoint.getByText('CHECKPOINT', { exact: true })).toBeVisible();
+  await expect(checkpoint.getByText('feat(goals): publish stable dashboard slice')).toBeVisible();
+  await expect(checkpoint.getByText('3 included · 1 excluded')).toBeVisible();
+  await expect(page.getByText(checkpointDeclaration)).toHaveCount(0);
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    await checkpoint.screenshot({ path: '../.propr/previews/goal-checkpoint-log.png', animations: 'disabled' });
+  }
 });
 
 for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height: 960 }, mobile: { width: 390, height: 844 } })) {
