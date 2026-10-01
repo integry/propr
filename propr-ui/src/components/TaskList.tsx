@@ -206,10 +206,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     try {
       setError(current => current?.scope === queryScope ? null : current);
       const offset = currentPage * tasksPerPage;
-      // Fetch more tasks if we are doing grouping, as grouping reduces visible items
-      // But for now respecting the limit passed to component to avoid breaking pagination logic entirely
-      // Ideally pagination should be group-aware or fetch more to fill the page
-      const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter, debouncedSearch);
+      // A page is exactly the tasks the footer counts. Runs of the same PR are
+      // rolled up into one row client-side, so reading ahead would only repeat
+      // tasks that belong to the next page.
+      const data = await getTasks(filter, tasksPerPage, offset, repoFilter, debouncedSearch);
       if (requestId !== tasksRequestId.current) return;
       setTasks(data.tasks || []);
       setTotalTasks(data.total || 0);
@@ -348,11 +348,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
             <p className="text-gray-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
-          <div className="flex flex-col h-full bg-white">
-            <div className="flex-1 overflow-auto">
-              <TaskTableContent {...tableContentProps} />
-            </div>
-          </div>
+          <TaskTableContent {...tableContentProps} />
         )}
       </div>
 

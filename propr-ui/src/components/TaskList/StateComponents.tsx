@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import type { TaskGroup } from './types';
-import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskRows';
+import { TaskQueueRow } from './TaskRows';
 import { MobileTaskCard } from './MobileTaskCard';
+import { buildTaskRow } from './rowModel';
 import { SystemAlert } from '../ui/SystemAlert';
-import { useDesktop } from '../../desktop/DesktopContext';
-import './desktop-task-table.css';
+import './task-queue.css';
 
 /** Renders a simple loading message for dashboard integration */
 export const DashboardLoadingState: React.FC = () => (
@@ -48,93 +48,58 @@ interface TaskTableContentProps {
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
 }
 
-/** Renders the desktop table and mobile card views for tasks */
+const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
+
+/** Renders the task ledger: a flat table on desktop, one card per group on mobile. */
 export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   groupedTasks,
   expandedGroups,
   onRowClick,
   onToggleGroup,
 }) => {
-  const desktop = useDesktop();
-  const desktopLayout = desktop?.platform === 'macos' || desktop?.platform === 'linux';
+  const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
   return (
     <>
       {/* Mobile Card View */}
-      <div className="md:hidden">
-        {groupedTasks.map((group) => (
+      <div className="task-queue md:hidden">
+        {rows.map(({ group, row }) => (
           <MobileTaskCard
             key={group.key}
-            group={group}
-            expandedGroups={expandedGroups}
+            row={row}
+            prNumber={group.prNumber}
+            expanded={expandedGroups.has(group.key)}
             onRowClick={onRowClick}
             onToggleGroup={onToggleGroup}
           />
         ))}
       </div>
 
-      {/* Desktop Table View */}
-      <div className={desktopLayout ? 'desktop-task-list hidden md:block' : 'hidden md:block'}>
-        <table className="w-full">
-          {desktopLayout && (
-            <colgroup>
-              <col className="task-repository" />
-              <col />
-              <col className="task-status" />
-              <col className="task-metadata" />
-            </colgroup>
-          )}
-          <thead className="sr-only">
-            <tr>
-              <th className="task-repository">Repository</th>
-              <th>Issue/Task</th>
-              <th>Status</th>
-              <th>Metadata</th>
-              {!desktopLayout && <th>Actions</th>}
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {groupedTasks.map((group, index) => {
-              const parentTask = group.tasks[0];
-              const allChildren = group.tasks.slice(1);
-              const isExpanded = expandedGroups.has(group.key);
-              const shouldCollapse = allChildren.length > 3;
-
-              let visibleChildren = allChildren;
-              let hiddenCount = 0;
-
-              if (shouldCollapse && !isExpanded) {
-                visibleChildren = allChildren.slice(0, 3);
-                hiddenCount = allChildren.length - 3;
-              }
-
-              const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
-              const isDuplicateRepo = prevGroup
-                ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
-                : false;
-
-              return (
-                <React.Fragment key={group.key}>
-                  <ParentTaskRow desktopLayout={desktopLayout} group={group} task={parentTask} onRowClick={onRowClick} isDuplicateRepo={isDuplicateRepo} />
-
-                  {visibleChildren.map((child, childIndex) => (
-                    <ChildTaskRow
-                      desktopLayout={desktopLayout}
-                      key={child.id}
-                      task={child}
-                      onRowClick={onRowClick}
-                      isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
-                    />
-                  ))}
-
-                  {hiddenCount > 0 && (
-                    <CollapseToggleRow desktopLayout={desktopLayout} groupKey={group.key} hiddenCount={hiddenCount} onToggle={onToggleGroup} />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Desktop Ledger */}
+      <div role="table" aria-label="Tasks" className="task-queue hidden md:block">
+        <div role="rowgroup" className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
+          <div role="row" className="task-queue-grid px-4 py-2 sm:px-6">
+            <span role="columnheader" className={columnHeader}>Task / PR</span>
+            <span role="columnheader" className={`task-col-repo ${columnHeader}`}>Repo</span>
+            <span role="columnheader" className={`task-col-status ${columnHeader}`}>Status</span>
+            <span role="columnheader" className={`task-col-agent ${columnHeader}`}>Agent</span>
+            <span role="columnheader" className={`task-col-duration text-right ${columnHeader}`}>Duration</span>
+            <span role="columnheader" className={`task-col-updated text-right ${columnHeader}`}>Updated</span>
+            <span role="columnheader" className={`task-col-score text-right ${columnHeader}`}>Score</span>
+          </div>
+        </div>
+        <div role="rowgroup">
+          {rows.map(({ group, row }) => (
+            <TaskQueueRow
+              key={group.key}
+              row={row}
+              prNumber={group.prNumber}
+              expanded={expandedGroups.has(group.key)}
+              onRowClick={onRowClick}
+              onToggle={onToggleGroup}
+            />
+          ))}
+        </div>
       </div>
     </>
   );
