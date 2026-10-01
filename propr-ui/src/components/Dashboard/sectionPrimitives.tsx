@@ -23,6 +23,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { RepositoryIcon } from '../RepositoryIcon';
+import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { isExternalHref } from './sectionState';
 
@@ -244,12 +245,9 @@ export const SectionError: React.FC<{ message: string; onRetry: () => void }> = 
   </div>
 );
 
-export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
-  <div className="animate-pulse space-y-2 px-3 py-3" data-testid="section-skeleton">
-    {Array.from({ length: rows }, (_, index) => (
-      <div key={index} className="h-10 rounded-sm bg-slate-100" />
-    ))}
-  </div>
+/** A section's first read, drawn under its real heading so the column never jumps. */
+export const SectionSkeleton: React.FC<{ rows?: number; label?: string }> = ({ rows = 3, label = 'Loading…' }) => (
+  <ListSkeleton rows={rows} layout="row" label={label} className="px-3 py-3" data-testid="section-skeleton" />
 );
 
 /**

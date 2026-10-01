@@ -77,6 +77,16 @@ Use geometric shapes to indicate quality tiers (Lighthouse metaphor):
 *   **Progress:** Display a step-based progress list (e.g., "1/3 Analyzing...") in the center of the workspace.
 *   **Animation:** Use a subtle pulse on active numbers and a rotating loader icon for running states.
 
+### E. Loading States (Lists)
+*   **One treatment:** Every list section (dashboard panes, Goals, Plans, plan issues, Tasks, Inbox, Repositories, LLM Log, MCP Log) draws its **first** read with `ListSkeleton` from `propr-ui/src/components/ui/Skeleton.tsx`. No spinners, no "Loading…" sentences, no blank areas.
+*   **Shape:** Placeholders are shaped like the content about to land — `layout="row"` for feeds, `layout="table"` for tables (rows below `lg`, columns from `lg` up), `layout="card"` for a console, `layout="block"` for blocks.
+*   **Look:** `bg-slate-100`, `rounded-sm` placeholders on the white canvas, one `animate-pulse` on the container (stopped by `motion-reduce:animate-none`), and no per-row rules. Widgets that draw their own placeholder geometry use `SkeletonBlock` for each placeholder so tint, radius and pulse match.
+*   **Placement:** The skeleton renders under the section's real heading so the page geometry does not jump when data arrives.
+*   **Accessibility:** Each skeleton is one `role="status"` with `aria-busy="true"` and an `sr-only` label ("Loading goals…"); the placeholders are `aria-hidden`.
+*   **Refreshes are silent:** Once a section has a successful read for its current scope, background reads never show an indicator — no "Refreshing…" line. The last known rows stay on screen and are replaced when the next read lands.
+*   **Errors are not loading:** A failed first read shows the error UI, never the skeleton or the empty state.
+*   **Spinners mean work in progress:** Keep spinners for actions ("Starting…" buttons), status badges of running work and planner generation progress.
+
 ---
 
 ## 6. CSS Utility Standards (Tailwind Examples)

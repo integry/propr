@@ -108,7 +108,7 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
         </div>
       </SectionHeading>
 
-      {loading && <SectionSkeleton rows={2} />}
+      {loading && <SectionSkeleton rows={2} label="Loading historical stats…" />}
       {!loading && error && !data && <SectionError message="Unable to load historical stats" onRetry={reload} />}
       {data && (
         <div className="px-3 py-3">
