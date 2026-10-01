@@ -12,7 +12,12 @@ export async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
     return getConfigWithClient(key, defaultValue, db);
 }
 
-export async function getConfigWithClient<T>(key: string, defaultValue: T, client: ConfigDbClient): Promise<T> {
+/** Launch security policy must not fall back after a failed read or parse. */
+export async function getConfigStrict<T>(key: string, defaultValue: T): Promise<T> {
+    return getConfigWithClient(key, defaultValue, db, true);
+}
+
+export async function getConfigWithClient<T>(key: string, defaultValue: T, client: ConfigDbClient, strict = false): Promise<T> {
     try {
         const result = await client('system_configs').where({ key }).first();
         if (result && result.value !== undefined && result.value !== null) {
@@ -22,7 +27,7 @@ export async function getConfigWithClient<T>(key: string, defaultValue: T, clien
             } catch (error) {
                 const err = error as Error;
                 logger.error({ error: err.message, key }, 'Failed to parse config from DB');
-                if ((key === 'summarization_runtime_state' || key === 'repos_to_monitor')) throw error;
+                if (strict || key === 'summarization_runtime_state') throw error;
                 return defaultValue;
             }
         }
@@ -30,7 +35,7 @@ export async function getConfigWithClient<T>(key: string, defaultValue: T, clien
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, key }, 'Failed to load config from DB');
-        if ((key === 'summarization_runtime_state' || key === 'repos_to_monitor')) throw error;
+        if (strict || key === 'summarization_runtime_state') throw error;
         return defaultValue;
     }
 }

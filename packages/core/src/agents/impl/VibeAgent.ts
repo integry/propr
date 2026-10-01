@@ -62,8 +62,7 @@ export class VibeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        options = await prepareAgentGitAccess(options);
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -85,14 +84,15 @@ export class VibeAgent implements Agent {
             const prompt = buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
             const mistralApiKey = await this.getMistralApiKey();
-            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
             runtimeHomePath = prepareRuntimeHome(taskId);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
             const dockerArgs = this.buildDockerArgs({
                 worktreePath,
                 githubToken,
-                gitMountArgs: options.gitMountArgs,
+                gitMountArgs,
                 modelName: effectiveModel,
                 mistralApiKey,
                 issueNumber: issueRef.number,

@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getAuthenticatedOctokit, type PaginatedOctokitInstance } from '../auth/githubAuth.js';
-import { loadMonitoredReposRaw } from '../config/configManager.js';
+import { loadMonitoredReposStrict } from '../config/configManager.js';
 import { assertGitHubRepositoryIdentity } from '../git/repositoryPaths.js';
 import type { AgentTaskOptions, AnalyzeOptions } from './types.js';
 
@@ -47,10 +48,10 @@ async function scrubLegacyCloneCredentials(clonePath: string): Promise<void> {
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     const clean = config.replace(/https:\/\/[^\s/@]+:[^\s/@]+@github\.com\//g, 'https://github.com/');
     if (clean !== config) {
-        // Respect git's lock protocol; a conflicting worker operation prevents
-        // launch rather than losing concurrent config edits or exposing its token.
+        // Wait briefly for concurrent git writers, but never remove their lock.
+        // Read again under our own lock so their completed edits are preserved.
         const lockPath = `${configPath}.lock`;
-        const lock = await fs.open(lockPath, 'wx', 0o600);
+        const lock = await acquireConfigLock(lockPath);
         let published = false;
         try {
             const current = await fs.readFile(configPath, 'utf8');
@@ -62,6 +63,16 @@ async function scrubLegacyCloneCredentials(clonePath: string): Promise<void> {
         } finally {
             await lock.close();
             if (!published) await fs.rm(lockPath, { force: true });
+        }
+    }
+}
+
+async function acquireConfigLock(lockPath: string): Promise<fs.FileHandle> {
+    for (let attempt = 0; ; attempt++) {
+        try { return await fs.open(lockPath, 'wx', 0o600); }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 10) throw error;
+            await delay(50);
         }
     }
 }
@@ -88,7 +99,7 @@ export async function mintAgentGitHubToken(octokit: PaginatedOctokitInstance, wr
         OPTIONAL_AGENT_READ_PERMISSIONS.filter(key => ['read', 'write'].includes(granted?.[key] ?? '')).map(key => [key, 'read'])
     ) };
     const mint = () => octokit.auth({
-        type: 'installation',
+        type: 'installation', refresh: true,
         ...(!writable ? { permissions: requested } : {}),
         ...(repositoryIds ? { repositoryIds } : {}),
     }) as Promise<{ token: string; permissions?: Record<string, string> }>;
@@ -137,7 +148,7 @@ async function taskGitMetadataMount(worktreePath: string, clones: string[], writ
 export async function prepareAgentGitAccess(options: AgentTaskOptions, readOnlyWorkspace = false): Promise<AgentTaskOptions> {
     const writable = agentOwnsGit(options);
     const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
-    const entries = (await loadMonitoredReposRaw()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
+    const entries = (await loadMonitoredReposStrict()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
     // Conflicting branch entries must never silently broaden the policy.
     const policies = entries.map(entry => resolveContextRepositories(repository, entry.contextRepositories)).filter(value => value !== undefined);
     const repositories = policies.length ? policies.reduce((a, b) => a.filter(name => b.includes(name))) : undefined;

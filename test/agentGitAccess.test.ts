@@ -29,7 +29,7 @@ let rejectOptional = false;
 let missingRepository: string | undefined;
 let permissions: Record<string, string> | undefined;
 await mock.module('../packages/core/src/config/configManager.js', {
-    namedExports: { loadMonitoredReposRaw: async () => repositories },
+    namedExports: { loadMonitoredReposStrict: async () => repositories },
 });
 await mock.module('../packages/core/src/auth/githubAuth.js', {
     namedExports: { getAuthenticatedOctokit: async () => ({
@@ -128,7 +128,7 @@ test('implementation and direct goals replace the worker token with installation
     for (const extra of [{}, { executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'direct' } }]) {
         const result = await prepareAgentGitAccess({ ...options, ...extra });
         assert.equal(result.githubToken, 'agent-scoped-token');
-        assert.deepEqual(requests.at(-1), { type: 'installation', permissions: AGENT_READ_PERMISSIONS });
+        assert.deepEqual(requests.at(-1), { type: 'installation', refresh: true, permissions: AGENT_READ_PERMISSIONS });
         assert.ok(result.gitMountArgs!.includes('/tmp/git-processor:/tmp/git-processor:ro'));
         assert.ok(result.gitMountArgs!.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
     }
@@ -136,7 +136,7 @@ test('implementation and direct goals replace the worker token with installation
 
 test('only explicit orchestrated goals retain full permissions and writable git', async () => {
     const result = await prepareAgentGitAccess({ ...options, executionMode: 'goal', environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } });
-    assert.deepEqual(requests[0], { type: 'installation' });
+    assert.deepEqual(requests[0], { type: 'installation', refresh: true });
     assert.ok(result.gitMountArgs!.includes('/tmp/git-processor:/tmp/git-processor:rw'));
     const unknownStrategy = await prepareAgentGitAccess({ ...options, executionMode: 'goal' });
     assert.ok(unknownStrategy.gitMountArgs!.includes('/tmp/git-processor:/tmp/git-processor:ro'));
@@ -242,8 +242,8 @@ test('a grant removed after discovery retries required scope without widening re
     const result = await prepareAgentGitAccess(options);
     assert.equal(result.githubToken, 'agent-scoped-token');
     assert.deepEqual(requests.slice(1), [
-        { type: 'installation', permissions: { ...AGENT_READ_PERMISSIONS, checks: 'read' }, repositoryIds: [1] },
-        { type: 'installation', permissions: AGENT_READ_PERMISSIONS, repositoryIds: [1] },
+        { type: 'installation', refresh: true, permissions: { ...AGENT_READ_PERMISSIONS, checks: 'read' }, repositoryIds: [1] },
+        { type: 'installation', refresh: true, permissions: AGENT_READ_PERMISSIONS, repositoryIds: [1] },
     ]);
 });
 
@@ -276,4 +276,33 @@ test('relay minting discovers grants and preserves scope through an optional-per
         { permissions: { ...AGENT_READ_PERMISSIONS, actions: 'read' }, repository_ids: [1, 2] },
         { permissions: AGENT_READ_PERMISSIONS, repository_ids: [1, 2] },
     ]);
+});
+
+
+test('cleanup waits for a competing writer and preserves its published config', async t => {
+    const configPath = await writeRetainedConfig();
+    await fs.writeFile(`${configPath}.lock`, 'held by git');
+    const open = agentFs.open;
+    let attempts = 0;
+    t.mock.method(agentFs, 'open', async (file: string, flags: string, mode: number) => {
+        if (file.endsWith('/config.lock')) {
+            attempts++;
+            if (attempts === 3) {
+                await fs.writeFile(`${configPath}.lock`, 'url = https://x-access-token:new-secret@github.com/owner/repo.git\n# writer update\n');
+                await fs.rename(`${configPath}.lock`, configPath);
+            }
+        }
+        return open(file, flags, mode);
+    });
+    await prepareAgentGitAccess(options);
+    assert.equal(attempts, 3);
+    assert.equal(await fs.readFile(configPath, 'utf8'), 'url = https://github.com/owner/repo.git\n# writer update\n');
+    await assert.rejects(fs.access(`${configPath}.lock`), { code: 'ENOENT' });
+});
+
+test('cleanup propagates non-contention errors without retrying or deleting another lock', async t => {
+    await writeRetainedConfig();
+    const open = t.mock.method(agentFs, 'open', async () => { throw Object.assign(new Error('Denied'), { code: 'EACCES' }); });
+    await assert.rejects(prepareAgentGitAccess(options), { code: 'EACCES' });
+    assert.equal(open.mock.callCount(), 1);
 });

@@ -53,8 +53,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        options = await prepareAgentGitAccess(options);
-        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -75,7 +74,8 @@ export class OpenCodeAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',

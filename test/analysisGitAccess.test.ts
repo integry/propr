@@ -3,7 +3,7 @@ import { after, mock, test } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { AnalyzeOptions, AgentConfig } from '../packages/core/src/agents/types.js';
+import type { AnalyzeOptions, AgentConfig, AgentTaskOptions } from '../packages/core/src/agents/types.js';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-analysis-access-'));
 const previousAnalysisRoot = process.env.OPENCODE_ANALYSIS_ROOT;
@@ -13,17 +13,19 @@ const previousKey = process.env.MISTRAL_API_KEY;
 process.env.GITHUB_TOKEN = 'worker-write-token';
 process.env.MISTRAL_API_KEY = 'test-mistral-key';
 const access = { githubToken: 'scoped-read-token', gitMountArgs: ['-v', `${root}/allowed:${root}/allowed:ro`] };
+let prepareTask: (options: AgentTaskOptions) => Promise<AgentTaskOptions> = async () => { throw new Error('Unexpected task launch'); };
 let prepare: (options: AnalyzeOptions | undefined, workspace: string) => Promise<typeof access>;
 await mock.module('../packages/core/src/agents/agentGitAccess.js', {
     namedExports: {
         prepareAnalysisGitAccess: (options: AnalyzeOptions | undefined, workspace: string) => prepare(options, workspace),
-        prepareAgentGitAccess: () => { throw new Error('Unexpected task launch'); },
+        prepareAgentGitAccess: (options: AgentTaskOptions) => prepareTask(options),
         agentOwnsGit: () => false,
         buildAgentGitCredentialArgs: () => [],
         buildAgentGitMountArgs: () => { throw new Error('Analysis must use prepared mounts'); },
     },
 });
 let launches: Array<{ args: string[]; envFile: string }> = [];
+await mock.module('../packages/core/src/claude/worktreeOwnership.js', { namedExports: { setWorktreeOwnership: async () => {} } });
 const dockerExecutor = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     namedExports: { ...dockerExecutor,
@@ -85,4 +87,31 @@ for (const [type, Adapter] of [['claude', ClaudeAgent], ['codex', CodexAgent], [
         assert.equal(failed.success, false);
         assert.equal(launches.length, 1, 'Failed preparation must not launch or fall back');
     });
+
+    test(`${type} task launches each receive new prepared access and reject failed refreshes`, async () => {
+        launches = [];
+        const configPath = path.join(root, type);
+        await fs.mkdir(configPath, { recursive: true });
+        const config: AgentConfig = { id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath, supportedModels: ['test-model'], defaultModel: 'test-model' };
+        const agent = new Adapter(config);
+        const task: AgentTaskOptions = { worktreePath: root, prompt: 'Implement', githubToken: 'worker-write-token', issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 } };
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            prepareTask = async received => {
+                assert.equal(received, task);
+                return { ...received, githubToken: `fresh-task-${attempt}`, gitMountArgs: access.gitMountArgs };
+            };
+            await agent.executeTask(task);
+            assert.equal(launches.length, attempt);
+            const { args, envFile } = launches[attempt - 1];
+            assert.ok(args.includes(access.gitMountArgs[1]));
+            assert.ok((args.join('\n') + envFile).includes(`GH_TOKEN=fresh-task-${attempt}`));
+            assert.doesNotMatch(args.join('\n') + envFile, /worker-write-token/);
+        }
+        prepareTask = async () => { throw new Error('Scope unavailable'); };
+        const failed = await agent.executeTask(task);
+        assert.equal(failed.success, false);
+        assert.match(failed.error!, /Scope unavailable/);
+        assert.equal(launches.length, 2);
+    });
+
 }

@@ -1,5 +1,6 @@
 import { normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
 import { randomUUID } from 'crypto';
+import { assertGitHubRepositoryIdentity } from '../../core/src/git/repositoryPaths.js';
 import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@propr/core';
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
 
@@ -370,10 +371,19 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
   return success(undefined);
 }
 
+function isValidContextRepositoryName(value: string): boolean {
+  const parts = value.split('/');
+  if (parts.length !== 2) return false;
+  try {
+    assertGitHubRepositoryIdentity(parts[0], parts[1]);
+    return true;
+  } catch { return false; }
+}
+
 function normalizeContextRepositories(context: RepoToMonitor['contextRepositories']): ValidationResult<RepoToMonitor['contextRepositories']> {
   if (context !== undefined && context !== 'all' && context !== 'none'
       && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
-        typeof entry !== 'string' || !isValidRepoName(entry) || entry.split('/').some(part => part === '.' || part === '..')))) {
+        typeof entry !== 'string' || !isValidContextRepositoryName(entry)))) {
     return failure('Context repositories must be all, none, or up to 499 owner/repository names');
   }
   return success(Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context);

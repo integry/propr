@@ -102,8 +102,7 @@ export class AntigravityAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        options = await prepareAgentGitAccess(options);
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
@@ -118,7 +117,8 @@ export class AntigravityAgent implements Agent {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -145,7 +145,7 @@ export class AntigravityAgent implements Agent {
      * interrupting and resuming the exact conversation.
      */
     private async executeNativeGoal(options: AgentTaskOptions, model: string | undefined): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, githubToken, environment, taskId } = options;
+        const { worktreePath, issueRef, environment, taskId } = options;
         const startTime = Date.now();
         try {
             await setWorktreeOwnership(worktreePath, issueRef.number, {
@@ -153,10 +153,13 @@ export class AntigravityAgent implements Agent {
             });
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const response = await executeAntigravityNativeGoal(options, {
-                buildDockerArgs: ({ conversationId, launch }) => this.buildDockerArgs({
-                    worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: model, issueNumber: issueRef.number, environment, taskId,
-                    executionMode: 'goal', resumeConversationId: conversationId, nativeGoalLaunch: launch,
-                }),
+                buildDockerArgs: async ({ conversationId, launch }) => {
+                    const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+                    return this.buildDockerArgs({
+                        worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number, environment, taskId,
+                        executionMode: 'goal', resumeConversationId: conversationId, nativeGoalLaunch: launch,
+                    });
+                },
                 model: model ? normalizeAntigravityModelId(model) : 'unknown',
                 timeoutMs: this.timeoutMs,
             });

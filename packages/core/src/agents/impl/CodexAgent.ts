@@ -44,11 +44,10 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        options = await prepareAgentGitAccess(options);
         if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
+            onSessionId, onContainerId, environment, taskId, prNumber, reasoningLevel,
             executionMode = 'task', resumeSessionId, metadata } = options;
 
         const startTime = Date.now();
@@ -67,8 +66,9 @@ export class CodexAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const dockerArgs = this.buildDockerArgs({
-                worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel,
+                worktreePath, githubToken, gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });

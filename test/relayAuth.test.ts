@@ -165,3 +165,22 @@ test('an old relay that ignores scoped mint fields cannot leak its full token to
     assert.equal((await auth()).token, 'full-installation-token');
   } finally { await relay.close(); }
 });
+
+test('forced container mints bypass cached and concurrent tokens without changing worker cache', async () => {
+  const relay = await startRelay((info, res) => {
+    const body = JSON.parse(info.lastBody!);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ token: `fresh-${info.count}`, expires_at: new Date(Date.now() + 3_600_000).toISOString(), permissions: body.permissions, repositories: body.repository_ids?.map((id: number) => ({ id })) }));
+  });
+  try {
+    const auth = createRelayAuth({ relayUrl: relay.url, relayToken: 'relay-secret' });
+    const scope = { permissions: { contents: 'read' }, repositoryIds: [4] };
+    const worker = await auth();
+    const cached = await auth(scope);
+    const fresh = await Promise.all([auth({ ...scope, refresh: true }), auth({ ...scope, refresh: true })]);
+    assert.equal(new Set([cached.token, ...fresh.map(value => value.token)]).size, 3);
+    assert.equal((await auth()).token, worker.token);
+    assert.equal((await auth(scope)).token, cached.token);
+    assert.equal(relay.info.count, 4);
+  } finally { await relay.close(); }
+});

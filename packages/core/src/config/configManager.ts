@@ -11,7 +11,7 @@ import { createManagedPreviewStorageClient } from '../services/previewStorage/ru
 import { loadGitHubAttachmentCapacity } from '../services/visualPreviewCapacityService.js';
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
-import { getConfig, saveConfig } from './configStore.js';
+import { getConfig, getConfigStrict, saveConfig } from './configStore.js';
 import type { Knex } from 'knex';
 export {
     clearRemovedRepositoryIndexData,
@@ -166,6 +166,11 @@ export async function loadMonitoredRepos(): Promise<string[]> {
     const repos = rawRepos.filter(r => r.enabled).map(r => r.name);
     logger.info({ repos_to_monitor: repos, total_configured: rawRepos.length }, 'Successfully loaded enabled monitored repositories');
     return repos;
+}
+
+/** Agent launches must fail closed when repository access policy cannot be read. */
+export async function loadMonitoredReposStrict(): Promise<RepoToMonitor[]> {
+    return getConfigStrict<RepoToMonitor[]>('repos_to_monitor', []);
 }
 
 /**

@@ -434,3 +434,41 @@ test('GET settings resolves auto capacity separately for repositories with diffe
     10 * 1024 * 1024,
   ]);
 });
+
+test('corrupt repository config stays readable for repair and intake while agent launches fail closed', async () => {
+  const { runMigrations } = await import('@propr/core');
+  const { loadMonitoredRepos, loadMonitoredReposRaw, loadMonitoredReposStrict } = await import('../../core/src/config/configManager.js');
+  const { resolveMonitoredRepositories } = await import('../../core/src/daemon/configLoader.js');
+  const { prepareAgentGitAccess } = await import('../../core/src/agents/agentGitAccess.js');
+  await runMigrations();
+  await db('system_configs').insert({ key: 'repos_to_monitor', value: '{broken' }).onConflict('key').merge({ value: '{broken' });
+  try {
+    assert.deepEqual(await loadMonitoredRepos(), []);
+    assert.deepEqual(await loadMonitoredReposRaw(), []);
+    assert.deepEqual(await resolveMonitoredRepositories({ CONFIG_REPO: 'owner/config' }), []);
+    await assert.rejects(loadMonitoredReposStrict(), SyntaxError);
+    await assert.rejects(prepareAgentGitAccess({
+      worktreePath: '/unused', prompt: '', githubToken: 'must-not-be-used',
+      issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 },
+    }), SyntaxError);
+    const routes = createConfigRoutes({ redisClient: {} as never, configStore: {
+      loadMonitoredReposRaw,
+      loadGitHubAttachmentCapacity: async () => resolveGitHubAttachmentCapacity(),
+    } });
+    const response = createResponse();
+    await routes.getRepos({} as never, response as never);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { repos_to_monitor: [] });
+    await db('system_configs').where({ key: 'repos_to_monitor' }).update({ value: JSON.stringify([{ name: 'owner/task', enabled: true }]) });
+    assert.deepEqual(await loadMonitoredRepos(), ['owner/task']);
+    assert.equal((await loadMonitoredReposStrict())[0].name, 'owner/task');
+  } finally { await db('system_configs').where({ key: 'repos_to_monitor' }).delete(); }
+});
+
+test('repository read failures retain tolerant defaults but strict launch policy rejects', async t => {
+  const { loadMonitoredRepos, loadMonitoredReposRaw, loadMonitoredReposStrict } = await import('../../core/src/config/configManager.js');
+  t.mock.method(db.client, 'acquireConnection', async () => { throw new Error('DB unavailable'); });
+  assert.deepEqual(await loadMonitoredRepos(), []);
+  assert.deepEqual(await loadMonitoredReposRaw(), []);
+  await assert.rejects(loadMonitoredReposStrict(), /DB unavailable/);
+});

@@ -35,6 +35,7 @@ export interface RelayInstallationAuthentication {
 }
 
 export interface RelayAuthOptions {
+  refresh?: boolean;
   type?: string;
   permissions?: Record<string, string>;
   repositoryIds?: number[];
@@ -145,6 +146,10 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
   }
 
   async function getToken(options: RelayAuthOptions = {}): Promise<RelayInstallationAuthentication> {
+    // Explicit container launches need a newly minted token even when another
+    // request for the same scope is cached or in flight. Keep that mint isolated
+    // so a slower old request cannot overwrite newer shared cache state.
+    if (options.refresh) return fetchToken(options, { expiresAt: 0 });
     const cache = cacheFor(options);
     if (cache.auth && Date.now() < cache.expiresAt - REFRESH_MARGIN_MS) return cache.auth;
     if (cache.pending) return cache.pending;

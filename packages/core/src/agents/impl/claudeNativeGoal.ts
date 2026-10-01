@@ -672,7 +672,7 @@ async function detectContainer(
 }
 
 export interface ClaudeNativeGoalLaunch {
-    dockerArgs: string[];
+    buildDockerArgs(): Promise<string[]>;
     sessionId: string;
     transcriptPath: string;
     model: string;
@@ -693,9 +693,11 @@ export async function executeClaudeNativeGoal(
         ? options.nativeGoalObjective
         : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
     const ownership = getExecutionOwnershipContext();
-    const args = resolveExecutionArgs('docker', launch.dockerArgs, options.taskId, ownership?.attemptGeneration);
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
+    const dockerArgs = await launch.buildDockerArgs();
+    if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
+    const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
