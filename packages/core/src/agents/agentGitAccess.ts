@@ -1,0 +1,149 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { getAuthenticatedOctokit, type PaginatedOctokitInstance } from '../auth/githubAuth.js';
+import { loadMonitoredReposRaw } from '../config/configManager.js';
+import { assertGitHubRepositoryIdentity } from '../git/repositoryPaths.js';
+import type { AgentTaskOptions } from './types.js';
+
+export const AGENT_READ_PERMISSIONS = {
+    contents: 'read', issues: 'read', pull_requests: 'read', metadata: 'read',
+    checks: 'read', actions: 'read', statuses: 'read',
+} as const;
+
+export function resolveContextRepositories(repository: string, setting: unknown): string[] | undefined {
+    if (setting === undefined || setting === 'all') return undefined;
+    if (setting !== 'none' && !Array.isArray(setting)) throw new Error('Context repositories must be all, none, or a list of owner/repository names');
+    const repositories = [repository, ...(setting === 'none' ? [] : setting)];
+    for (const name of repositories) {
+        if (typeof name !== 'string' || name.split('/').length !== 2) throw new Error('Invalid context repository');
+        const [owner, repo] = name.split('/');
+        assertGitHubRepositoryIdentity(owner, repo);
+    }
+    return [...new Set(repositories.map(name => name.toLowerCase()))].sort();
+}
+
+export function agentOwnsGit(options: Pick<AgentTaskOptions, 'executionMode' | 'environment'>): boolean {
+    return options.executionMode === 'goal' && options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'orchestrate';
+}
+
+export function buildAgentGitCredentialArgs(): string[] {
+    return ['-e', 'GIT_OPTIONAL_LOCKS=0', '-e', 'GIT_CONFIG_COUNT=2', '-e', 'GIT_CONFIG_KEY_0=credential.helper',
+        '-e', 'GIT_CONFIG_VALUE_0=', '-e', 'GIT_CONFIG_KEY_1=credential.https://github.com.helper',
+        '-e', 'GIT_CONFIG_VALUE_1=!gh auth git-credential'];
+}
+
+export function buildAgentGitMountArgs(worktreePath: string, writable = false, readOnlyWorkspace = false): string[] {
+    return [
+        ...(!writable && !readOnlyWorkspace ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`] : []),
+        '-v', `/tmp/git-processor:/tmp/git-processor:${writable ? 'rw' : 'ro'}`,
+    ];
+}
+
+/** Remove credentials left in clone configs by older workers before exposing them. */
+async function scrubLegacyCloneCredentials(clonePath: string): Promise<void> {
+    const configPath = path.join(clonePath, '.git', 'config');
+    let config: string;
+    try { config = await fs.readFile(configPath, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    const clean = config.replace(/https:\/\/[^\s/@]+:[^\s/@]+@github\.com\//g, 'https://github.com/');
+    if (clean !== config) {
+        // Respect git's lock protocol; a conflicting worker operation prevents
+        // launch rather than losing concurrent config edits or exposing its token.
+        const lockPath = `${configPath}.lock`;
+        const lock = await fs.open(lockPath, 'wx', 0o600);
+        let published = false;
+        try {
+            const current = await fs.readFile(configPath, 'utf8');
+            await lock.writeFile(current.replace(/https:\/\/[^\s/@]+:[^\s/@]+@github\.com\//g, 'https://github.com/'));
+            await lock.chmod(0o644);
+            await lock.close();
+            await fs.rename(lockPath, configPath);
+            published = true;
+        } finally {
+            await lock.close();
+            if (!published) await fs.rm(lockPath, { force: true });
+        }
+    }
+}
+
+async function visibleClonePaths(repositories?: string[]): Promise<string[]> {
+    const root = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
+    let owners;
+    try { owners = await fs.readdir(root, { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+    const paths: string[] = [];
+    for (const owner of owners.filter(entry => entry.isDirectory())) {
+        for (const repo of await fs.readdir(path.join(root, owner.name), { withFileTypes: true })) {
+            if (repo.isDirectory() && (!repositories || repositories.includes(`${owner.name}/${repo.name}`.toLowerCase()))) paths.push(path.join(root, owner.name, repo.name));
+        }
+    }
+    return paths;
+}
+
+/** The same scoped mint path is used by all adapters and the live boundary test. */
+export async function mintAgentGitHubToken(octokit: PaginatedOctokitInstance, writable = false, repositoryIds?: number[]): Promise<string> {
+    const auth = await octokit.auth({
+        type: 'installation',
+        ...(!writable ? { permissions: AGENT_READ_PERMISSIONS } : {}),
+        ...(repositoryIds ? { repositoryIds } : {}),
+    }) as { token: string; permissions?: Record<string, string> };
+    if (!writable && (!auth.permissions || Object.keys(AGENT_READ_PERMISSIONS).some(key => auth.permissions![key] !== 'read') || Object.entries(auth.permissions).some(([key, value]) =>
+        !(key in AGENT_READ_PERMISSIONS) || value !== 'read'))) {
+        throw new Error('GitHub auth did not return a read-only agent token; refusing to launch');
+    }
+    return auth.token;
+}
+
+/** Fork PR worktrees can link to a clone different from their issue repository. */
+async function taskGitMetadataMount(worktreePath: string, clones: string[], writable: boolean): Promise<string[]> {
+    let pointer: string;
+    try { pointer = await fs.readFile(path.join(worktreePath, '.git'), 'utf8'); }
+    catch (error) {
+        if (['ENOENT', 'EISDIR'].includes((error as NodeJS.ErrnoException).code || '')) return [];
+        throw error;
+    }
+    const match = /^gitdir: (.+)\s*$/.exec(pointer.trim());
+    if (!match) throw new Error('Invalid task worktree git metadata pointer');
+    const gitdir = path.resolve(worktreePath, match[1]);
+    const common = path.dirname(path.dirname(gitdir));
+    const root = path.resolve(process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones');
+    if (!common.startsWith(`${root}/`) || path.basename(common) !== '.git'
+        || path.basename(path.dirname(gitdir)) !== 'worktrees') {
+        throw new Error('Task git metadata is outside the managed clone directory');
+    }
+    if (clones.some(clone => common === path.join(clone, '.git'))) return [];
+    // Only the task's git data, not an unlisted repository's working copy.
+    await scrubLegacyCloneCredentials(path.dirname(common));
+    return ['-v', `${common}:${common}:${writable ? 'rw' : 'ro'}`];
+}
+
+/** Called at the adapter boundary, including follow-ups, fixes and native goal resumes. */
+export async function prepareAgentGitAccess(options: AgentTaskOptions): Promise<AgentTaskOptions> {
+    const writable = agentOwnsGit(options);
+    const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
+    const entries = (await loadMonitoredReposRaw()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
+    // Conflicting branch entries must never silently broaden the policy.
+    const policies = entries.map(entry => resolveContextRepositories(repository, entry.contextRepositories)).filter(value => value !== undefined);
+    const repositories = policies.length ? policies.reduce((a, b) => a.filter(name => b.includes(name))) : undefined;
+    const octokit = await getAuthenticatedOctokit();
+    const repositoryIds = repositories ? await Promise.all(repositories.map(async name => {
+        const [owner, repo] = name.split('/');
+        return (await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.id;
+    })) : undefined;
+    const token = await mintAgentGitHubToken(octokit, writable, repositoryIds);
+    const clones = await visibleClonePaths(repositories);
+    for (const clone of clones) await scrubLegacyCloneCredentials(clone);
+    const taskMetadata = repositories ? await taskGitMetadataMount(options.worktreePath, clones, writable) : [];
+    const gitMountArgs = repositories ? [
+        ...taskMetadata,
+        ...(!writable ? ['-v', `${path.join(options.worktreePath, '.git')}:/home/node/workspace/.git:ro`] : []),
+        ...(await Promise.all(clones.map(async clone => {
+            try { await fs.access(clone); return ['-v', `${clone}:${clone}:${writable ? 'rw' : 'ro'}`]; }
+            catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+        }))).flat(),
+    ] : [
+        ...buildAgentGitMountArgs(options.worktreePath, writable),
+        ...clones.filter(clone => !clone.startsWith('/tmp/git-processor/')).flatMap(clone => ['-v', `${clone}:${clone}:${writable ? 'rw' : 'ro'}`]),
+    ];
+    return { ...options, githubToken: token, gitMountArgs };
+}

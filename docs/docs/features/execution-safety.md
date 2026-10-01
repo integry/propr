@@ -23,7 +23,7 @@ This makes concurrent work possible across issues, PR comments, and models witho
 Worker execution is split into three phases. The agent only participates in the middle one:
 
 1. **Pre-agent setup (ProPR)**: pull the job from the queue, update the base branch, create the isolated git worktree, create the task branch, and prepare the prompt and context.
-2. **Agent implementation (agent)**: run the selected agent inside its container against the worktree. The agent edits files; its instructions tell it not to commit, push, create branches, or open pull requests, because ProPR does that next.
+2. **Agent implementation (agent)**: run the selected agent inside its container against the worktree. The agent edits files. Read-only git metadata and a read-only GitHub token reserve commits, pushes, and GitHub mutations for ProPR.
 3. **Post-agent finalization (ProPR)**: inspect changed files, commit, push to GitHub, create or update the pull request with issue linking, and update labels and task state.
 
 Because the git and GitHub steps are deterministic code rather than agent decisions, branch mistakes are rare and failures are easier to attribute: a failure in phase 1 or 3 is a git/GitHub problem, a failure in phase 2 is an agent problem.
@@ -52,10 +52,50 @@ Each agent run starts a dedicated container from the unified `propr/agent` image
 
 - The task worktree mounted as its working directory
 - The agent's credential directory (for example `~/.claude`, `~/.codex`, `~/.gemini`) mounted read-write into the container's home so the CLI can refresh auth state (Vibe's config is mounted read-only)
-- For most agents, the shared git directory (`/tmp/git-processor`, which holds every repository's clone and worktrees) so git works inside the linked worktree
-- On implementation runs, a GitHub installation token as `GH_TOKEN`, so the agent can read issue and PR context with `gh`; the token carries the GitHub App installation's permissions, so the no-push rule is a workflow instruction rather than a permission boundary
+- For all five agents, read-only git metadata and shared clones (`/tmp/git-processor`). The task worktree is writable, but its `.git` entry is mounted read-only. Other repositories' working copies cannot be changed.
+- Implementation, follow-up, review-fix, and direct-goal runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, `metadata`, `checks`, `actions`, and `statuses` reads. `gh issue view`, `gh pr view`, `gh pr checks`, and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
 - Memory, CPU, and process limits (defaults `6g`, up to 4 CPUs, and 512 PIDs; override with `AGENT_CONTAINER_MEMORY_LIMIT`, `AGENT_CONTAINER_CPU_LIMIT`, `AGENT_CONTAINER_PIDS_LIMIT`) and the `no-new-privileges` security option
 - A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
+
+GitHub's permission names are not a blanket ban on every mutation: its
+[Create a commit comment endpoint](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment)
+accepts `contents: read`. Commit comments are therefore an exception to this
+boundary. Preventing every API mutation would require a host-side read broker
+instead of giving agents a GitHub token.
+
+ProPR's worker retains its full installation credential. Git authenticates through
+worker process environment variables, not token-bearing remote URLs in shared
+clone configuration. Existing token-bearing clone URLs are removed before agents
+can see them. User-configured GitHub credential environment variables cannot
+override the agent token.
+
+Orchestrated goals are the explicit exception: they retain write-capable tokens
+and git mounts so they can create issues and epic PRs. Their permissions are not
+narrowed further in this release.
+
+### Context repositories
+
+By default, agent tokens retain read access to every repository covered by the
+installation; no repository filter is sent when minting them. Administrators can
+set `contextRepositories` on a repository entry through the repository settings
+API (`POST /api/config/repos`, within `repos_to_monitor`):
+
+- `"all"` (or omitted): all installation repositories and local clones.
+- `"none"`: only the task repository.
+- `["owner/shared-library", "owner/sibling-service"]`: the task repository plus
+  the listed repositories. Only those local clones and the task's linked git metadata are mounted. GitHub access to
+  private repositories outside the list is refused; public data remains public.
+
+Restrictions also apply to orchestrated goals' repository reach. Multiple branch
+entries for the same repository use the intersection of their explicit lists.
+Older clients that omit the field preserve the stored restriction.
+
+The token relay must support `permissions` and `repository_ids` on its
+`/installation-token` request and return GitHub's minted `permissions` and
+`repositories` metadata. Unsupported or broader responses stop agent launch;
+there is no fallback to the worker token. Own-App deployments mint scoped tokens
+directly using GitHub's installation access-token endpoint. The App installation
+must grant the requested read permissions.
 
 The image-based install starts service and agent containers from published images. Source builds can use local images during development.
 

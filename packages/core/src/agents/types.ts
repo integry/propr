@@ -76,8 +76,10 @@ export interface AgentTaskOptions {
     onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
     onContainerId?: (containerId: string, containerName: string) => void;
 
-    // GitHub token for container
+    /** Worker credential; adapters replace this with a scoped token before launch. */
     githubToken: string;
+    /** Worker-prepared mounts; never supplied by the agent. */
+    gitMountArgs?: string[];
 
     // Branch information
     branchName?: string;

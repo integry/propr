@@ -79,6 +79,7 @@ export async function executeCodexAppServerGoal(
     const dockerArgs = buildCodexAppServerDockerArgs(config, {
         worktreePath: options.worktreePath,
         githubToken: options.githubToken,
+        gitMountArgs: options.gitMountArgs,
         issueNumber: options.issueRef.number,
         environment: options.environment,
         taskId: options.taskId,

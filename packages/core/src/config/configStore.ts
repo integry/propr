@@ -22,7 +22,7 @@ export async function getConfigWithClient<T>(key: string, defaultValue: T, clien
             } catch (error) {
                 const err = error as Error;
                 logger.error({ error: err.message, key }, 'Failed to parse config from DB');
-                if (key === 'summarization_runtime_state') throw error;
+                if ((key === 'summarization_runtime_state' || key === 'repos_to_monitor')) throw error;
                 return defaultValue;
             }
         }
@@ -30,7 +30,7 @@ export async function getConfigWithClient<T>(key: string, defaultValue: T, clien
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, key }, 'Failed to load config from DB');
-        if (key === 'summarization_runtime_state') throw error;
+        if ((key === 'summarization_runtime_state' || key === 'repos_to_monitor')) throw error;
         return defaultValue;
     }
 }

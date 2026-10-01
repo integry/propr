@@ -28,6 +28,8 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    /** Agent context reads: installation-wide (default), task only, or an explicit list. */
+    contextRepositories?: 'all' | 'none' | string[];
     autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
     cancelCiDuringFollowup?: boolean; // Defaults to false; cancels obsolete PR validation while a follow-up implements
     // Exactly which validation workflows that option may cancel: workflow file

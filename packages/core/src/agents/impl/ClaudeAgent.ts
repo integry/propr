@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess } from '../agentGitAccess.js';
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
@@ -106,6 +107,7 @@ export class ClaudeAgent implements Agent {
 
     /** Executes a task that modifies files in the worktree. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        options = await prepareAgentGitAccess(options);
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
@@ -136,7 +138,7 @@ export class ClaudeAgent implements Agent {
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
-                worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
+                worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel
             });
@@ -220,7 +222,7 @@ export class ClaudeAgent implements Agent {
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath, githubToken, modelName: model, issueNumber: issueRef.number,
+                worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: model, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
                 ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),

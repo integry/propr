@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
@@ -43,6 +44,7 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        options = await prepareAgentGitAccess(options);
         if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
@@ -66,7 +68,7 @@ export class CodexAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = this.buildDockerArgs({
-                worktreePath, githubToken, modelName: effectiveModel,
+                worktreePath, githubToken, gitMountArgs: options.gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });

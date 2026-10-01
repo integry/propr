@@ -393,6 +393,12 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!cancelCiWorkflows.ok) return cancelCiWorkflows;
   const nonBlockingChecks = normalizeNonBlockingChecks(candidate.nonBlockingChecks, name);
   if (!nonBlockingChecks.ok) return nonBlockingChecks;
+  const context = candidate.contextRepositories;
+  if (context !== undefined && context !== 'all' && context !== 'none'
+      && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
+        typeof entry !== 'string' || !isValidRepoName(entry) || entry.split('/').some(part => part === '.' || part === '..')))) {
+    return failure('Context repositories must be all, none, or up to 499 owner/repository names');
+  }
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
 
@@ -400,6 +406,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
+    contextRepositories: Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context,
     autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     cancelCiDuringFollowup: candidate.cancelCiDuringFollowup ?? false,
     cancelCiDuringFollowupWorkflows: cancelCiWorkflows.value,
@@ -422,7 +429,12 @@ export function preserveRepoSettings(
   normalizedRepos: RepoToMonitor[],
   incomingRepos: unknown[]
 ): RepoToMonitor[] {
-  let repos = preserveRepoAutoFollowup(previousRepos, normalizedRepos, incomingRepos);
+  const withContext = normalizedRepos.map((repo, index) => {
+    if ((incomingRepos[index] as Partial<RepoToMonitor>).contextRepositories !== undefined) return repo;
+    const previous = previousRepos.find(candidate => candidate.id === repo.id);
+    return { ...repo, contextRepositories: previous?.contextRepositories };
+  });
+  let repos = preserveRepoAutoFollowup(previousRepos, withContext, incomingRepos);
   repos = preserveRepoCancelCiDuringFollowup(previousRepos, repos, incomingRepos);
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);

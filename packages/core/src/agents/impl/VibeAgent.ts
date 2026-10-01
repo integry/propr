@@ -1,4 +1,6 @@
+import { prepareAgentGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -33,6 +35,7 @@ function buildFailedExecutionResult(error: Error & { stderr?: string }, executio
 interface VibeDockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     modelName?: string;
     mistralApiKey?: string;
     issueNumber: number;
@@ -59,6 +62,7 @@ export class VibeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        options = await prepareAgentGitAccess(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -88,6 +92,7 @@ export class VibeAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath,
                 githubToken,
+                gitMountArgs: options.gitMountArgs,
                 modelName: effectiveModel,
                 mistralApiKey,
                 issueNumber: issueRef.number,
@@ -336,7 +341,7 @@ export class VibeAgent implements Agent {
 
     private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string; repositoryInspection?: boolean }): string[] {
         const { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection = false } = params;
-        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars, repositoryInspection);
+        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars, true);
         for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
         envVars.push('-e', 'PROPR_AGENT_TYPE=vibe');
@@ -409,8 +414,9 @@ export class VibeAgent implements Agent {
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
             '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMountMode}`,
+            ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, mode === 'analysis')),
             ...configMountArgs, ...promptMountArgs, ...runtimeHomeMountArgs, ...mistralEnvFileArgs,
-            ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
+            ...envVars, ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
         logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');

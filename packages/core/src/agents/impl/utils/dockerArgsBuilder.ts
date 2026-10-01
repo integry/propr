@@ -1,3 +1,4 @@
+import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 /**
  * Docker arguments builder for Claude agent execution.
  *
@@ -51,6 +52,7 @@ export interface DockerArgsParams {
     worktreePath: string;
     /** GitHub token for API access */
     githubToken: string;
+    gitMountArgs?: string[];
     /** Optional model name to use */
     modelName?: string;
     /** Issue number (for logging) */
@@ -115,12 +117,13 @@ function buildBaseDockerArgs(options: {
     configPath: string;
     containerName: string;
     githubToken: string;
+    gitMountArgs?: string[];
     envVars: string[];
     claudeJsonMount: string[];
     inspectionArgs: string[];
     reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
     readOnlyWorkspace: boolean;
-    workerOwnedGoalGit: boolean;
+    workerOwnedGit: boolean;
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
     sessionId?: string;
@@ -128,7 +131,7 @@ function buildBaseDockerArgs(options: {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeJsonMount, inspectionArgs, reasoningLevel, readOnlyWorkspace,
-        workerOwnedGoalGit, executionMode, resumeSessionId, sessionId,
+        workerOwnedGit, executionMode, resumeSessionId, sessionId,
     } = options;
     const goal = executionMode === 'goal';
     return [
@@ -139,18 +142,14 @@ function buildBaseDockerArgs(options: {
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(workerOwnedGoalGit
-            ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
-            : []),
-        ...(readOnlyWorkspace ? [] : [
-            '-v', `/tmp/git-processor:/tmp/git-processor:${workerOwnedGoalGit ? 'ro' : 'rw'}`,
-        ]),
+        ...(readOnlyWorkspace ? [] : options.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit)),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${configPath}:/home/node/.claude:rw`,
         ...claudeJsonMount,
-        ...(readOnlyWorkspace || workerOwnedGoalGit ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
+        ...(readOnlyWorkspace ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
+        ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace',
         config.dockerImage,
         // Goal sessions keep stdin open as a stream-json control channel, so
@@ -202,11 +201,10 @@ export function buildDockerArgs(
     const workspaceMountTarget = repositoryInspection
         ? REPOSITORY_SCOUT_CONTAINER_ROOT
         : '/home/node/workspace';
-    const workerOwnedGoalGit = executionMode === 'goal'
-        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+    const workerOwnedGit = !agentOwnsGit(params);
     const envVars = buildEnvironmentVariableArgs(
         [config.envVars, environment],
-        readOnlyWorkspace || workerOwnedGoalGit,
+        true,
     );
     const dockerArgs = buildBaseDockerArgs({
         config,
@@ -216,12 +214,13 @@ export function buildDockerArgs(
         configPath,
         containerName: buildClaudeContainerName(config, issueNumber, taskId, executionMode === 'goal' ? 'goal' : executionType),
         githubToken,
+        gitMountArgs: params.gitMountArgs,
         envVars,
         claudeJsonMount: optionalClaudeJsonMount(),
         inspectionArgs,
         reasoningLevel,
         readOnlyWorkspace,
-        workerOwnedGoalGit,
+        workerOwnedGit,
         executionMode,
         resumeSessionId,
         sessionId,
