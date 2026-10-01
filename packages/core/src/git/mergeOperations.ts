@@ -70,7 +70,7 @@ export async function mergeBaseIntoBranch(
     try {
         // Fetch the latest base branch
         logger.info({ worktreePath, baseBranch, baseRepoUrl: options.baseRepoUrl }, 'Fetching latest base branch for merge');
-        await configureGitRemoteAuthentication(git, options.authToken);
+        await configureGitRemoteAuthentication(git, options.authToken, baseRemote);
         await git.raw(['fetch', baseRemote, `+refs/heads/${baseBranch}:${baseRef}`, '--prune']);
         const baseCommit = (await git.raw([
             'rev-parse',

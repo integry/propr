@@ -29,6 +29,15 @@ HOST_GH_PRIVATE_KEY=/home/you/propr/app-private-key.pem
 `propr check` verifies all three are set (not placeholders) and that the key file
 is readable.
 
+Agent task and repository-associated analysis tokens require **Contents**, **Issues**,
+**Pull requests**, and **Metadata** read access (`contents`, `issues`, `pull_requests`,
+`metadata`). These are minimum installation grants; the worker still needs its
+existing write permissions to publish changes. ProPR requests **Checks**, **Actions**,
+and **Commit statuses** read access (`checks`, `actions`, `statuses`) only when the
+installation grants them. Missing optional grants do not prevent agent launches;
+those agents cannot read the corresponding CI context. After changing App permissions,
+approve the updated permissions on the installation too.
+
 ### Relay mode (shared GitHub App)
 
 When you use a **shared** GitHub App provided by the vendor, you don't hold its

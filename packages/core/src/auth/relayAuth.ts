@@ -111,7 +111,7 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
       );
     }
     if (!response.ok) {
-      throw new Error(`GitHub token relay returned HTTP ${response.status} for ${endpoint}.`);
+      throw Object.assign(new Error(`GitHub token relay returned HTTP ${response.status} for ${endpoint}.`), { status: response.status });
     }
 
     let data: RelayTokenResponse;

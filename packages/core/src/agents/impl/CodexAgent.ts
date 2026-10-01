@@ -1,4 +1,4 @@
-import { prepareAgentGitAccess } from '../agentGitAccess.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
@@ -238,7 +238,7 @@ export class CodexAgent implements Agent {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
-                githubToken: process.env.GITHUB_TOKEN || '',
+                ...await prepareAnalysisGitAccess(options, analysisWorkspace),
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel,
                 readOnlyWorkspace: !!readOnlyWorkspacePath,

@@ -1,4 +1,4 @@
-import { prepareAgentGitAccess } from '../agentGitAccess.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
@@ -203,14 +203,15 @@ export class VibeAgent implements Agent {
             promptFilePath = writeVibePromptFile(analysisPrompt);
             const mistralApiKey = await this.getMistralApiKey();
             const repositoryInspection = !!readOnlyWorkspacePath && allowReadOnlyCommands;
+            const gitAccess = await prepareAnalysisGitAccess(options, analysisWorkspace);
             envFilePath = writeVibeSecretEnvFile({
                 mistralApiKey,
-                githubToken: repositoryInspection ? undefined : process.env.GITHUB_TOKEN,
+                githubToken: gitAccess.githubToken,
             });
             runtimeHomePath = prepareRuntimeHome(taskId);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
-                githubToken: process.env.GITHUB_TOKEN || '',
+                ...gitAccess,
                 modelName: effectiveModel,
                 mistralApiKey,
                 issueNumber: 0,

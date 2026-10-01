@@ -1,4 +1,4 @@
-import { prepareAgentGitAccess } from '../agentGitAccess.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
@@ -271,7 +271,7 @@ export class ClaudeAgent implements Agent {
                 useConfiguredReasoningLevel
             );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '',
+                worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path),
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: analysisWorkspace.tools, taskId, executionType,
                 readOnlyWorkspace: analysisWorkspace.readOnly,

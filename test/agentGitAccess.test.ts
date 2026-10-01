@@ -24,6 +24,9 @@ const oldRoot = process.env.GIT_CLONES_BASE_PATH;
 process.env.GIT_CLONES_BASE_PATH = root;
 let repositories: Array<{ name: string; contextRepositories?: unknown }> = [];
 let requests: Array<Record<string, unknown>> = [];
+let granted: Record<string, string> | undefined;
+let rejectOptional = false;
+let missingRepository: string | undefined;
 let permissions: Record<string, string> | undefined;
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: { loadMonitoredReposRaw: async () => repositories },
@@ -32,18 +35,22 @@ await mock.module('../packages/core/src/auth/githubAuth.js', {
     namedExports: { getAuthenticatedOctokit: async () => ({
         auth: async (options: Record<string, unknown>) => {
             requests.push(options);
-            return { token: 'agent-scoped-token', permissions: permissions ?? options.permissions };
+            if (rejectOptional && (options.permissions as Record<string, string>)?.checks) throw Object.assign(new Error('Permission not granted'), { status: 422 });
+            return { token: 'agent-scoped-token', permissions: options.permissions ? permissions ?? options.permissions : granted };
         },
-        request: async (_route: string, params: { repo: string }) => ({ data: { id: params.repo === 'task' ? 1 : 2 } }),
+        request: async (_route: string, params: { repo: string }) => {
+            if (params.repo === missingRepository) throw Object.assign(new Error('Not Found'), { status: 404 });
+            return { data: { id: params.repo === 'task' ? 1 : 2 } };
+        },
     }) },
 });
-const { prepareAgentGitAccess, resolveContextRepositories, AGENT_READ_PERMISSIONS } = await import('../packages/core/src/agents/agentGitAccess.js');
+const { prepareAgentGitAccess, prepareAnalysisGitAccess, resolveContextRepositories, AGENT_READ_PERMISSIONS } = await import('../packages/core/src/agents/agentGitAccess.js');
 const options = {
     prompt: 'Implement task', worktreePath: '/tmp/worktree', githubToken: 'worker-write-token',
     issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 },
 };
 beforeEach(async () => {
-    repositories = []; requests = []; permissions = undefined;
+    repositories = []; requests = []; permissions = undefined; granted = undefined; rejectOptional = false; missingRepository = undefined;
     for (const directory of [root, legacyRoot]) {
         await fs.rm(directory, { recursive: true, force: true });
         await fs.mkdir(directory);
@@ -142,7 +149,7 @@ test('listed context uses repository IDs and exposes only allowed clones, preser
     }
     repositories = [{ name: 'owner/task', contextRepositories: ['owner/library'] }];
     const result = await prepareAgentGitAccess(options);
-    assert.deepEqual(requests[0].repositoryIds, [2, 1]);
+    assert.deepEqual(requests.at(-1)!.repositoryIds, [2, 1]);
     assert.ok(result.gitMountArgs!.includes(`${root}/owner/Library:${root}/owner/Library:ro`));
     assert.ok(result.gitMountArgs!.includes(`${root}/owner/task:${root}/owner/task:ro`));
     assert.equal(result.gitMountArgs!.some(arg => arg.includes('secret') || arg.includes('/tmp/git-processor:')), false);
@@ -152,7 +159,7 @@ test('listed context uses repository IDs and exposes only allowed clones, preser
 test('none keeps task repository and branch policies intersect instead of broadening access', async () => {
     repositories = [{ name: 'owner/task', contextRepositories: ['owner/library'] }, { name: 'owner/task', contextRepositories: 'none' }];
     await prepareAgentGitAccess(options);
-    assert.deepEqual(requests[0].repositoryIds, [1]);
+    assert.deepEqual(requests.at(-1)!.repositoryIds, [1]);
     assert.deepEqual(resolveContextRepositories('owner/task', 'none'), ['owner/task']);
     assert.throws(() => resolveContextRepositories('owner/task', ['../secret']), /Invalid/);
     assert.throws(() => resolveContextRepositories('owner/task', 'typo'), /Context repositories/);
@@ -179,4 +186,94 @@ test('restricted fork worktrees retain task git metadata without exposing the un
     assert.doesNotMatch(await fs.readFile(path.join(common, 'config'), 'utf8'), /worker-secret/);
     await fs.writeFile(path.join(workspace, '.git'), 'gitdir: /host-secret/.git/worktrees/task\n');
     await assert.rejects(prepareAgentGitAccess({ ...options, worktreePath: workspace }), /outside the managed clone/);
+});
+
+
+test('optional read permissions are requested only when granted, including write grants', async () => {
+    for (const optional of [{}, { checks: 'read' }, { actions: 'write', statuses: 'read' }, { checks: 'none' }]) {
+        granted = { ...AGENT_READ_PERMISSIONS, ...optional };
+        const result = await prepareAgentGitAccess(options);
+        assert.equal(result.githubToken, 'agent-scoped-token');
+        const expected = Object.fromEntries(Object.entries(optional).filter(([, value]) => value === 'read' || value === 'write').map(([key]) => [key, 'read']));
+        assert.deepEqual(requests.at(-1)!.permissions, { ...AGENT_READ_PERMISSIONS, ...expected });
+    }
+});
+
+test('context aliases resolving to the same repository mint with unique IDs', async () => {
+    repositories = [{ name: 'owner/task', contextRepositories: ['owner/library', 'owner/old-library'] }];
+    await prepareAgentGitAccess(options);
+    assert.deepEqual(requests.at(-1)!.repositoryIds, [2, 1]);
+});
+
+test('unresolvable context reports the failing name and remedy without minting or broadening', async () => {
+    repositories = [{ name: 'owner/task', contextRepositories: ['owner/deleted'] }];
+    missingRepository = 'deleted';
+    await assert.rejects(prepareAgentGitAccess(options), /contextRepositories entry "owner\/deleted".*owner\/task.*Correct or remove.*installation/);
+    assert.equal(requests.length, 0);
+});
+
+test('analysis uses the repository policy and read-only token without mounting an absent workspace .git', async () => {
+    for (const contextRepositories of ['none', ['owner/library'], 'all']) {
+        repositories = [{ name: 'owner/task', contextRepositories }];
+        for (const name of ['task', 'library', 'secret']) await fs.mkdir(path.join(root, 'owner', name), { recursive: true });
+        const result = await prepareAnalysisGitAccess({ repository: 'owner/task' }, options.worktreePath);
+        assert.equal(result.githubToken, 'agent-scoped-token');
+        assert.deepEqual(requests.at(-1)!.permissions, AGENT_READ_PERMISSIONS);
+        assert.equal(result.gitMountArgs.some(arg => arg.includes('workspace/.git') || arg.endsWith(':rw')), false);
+        if (contextRepositories !== 'all') {
+            assert.equal(result.gitMountArgs.some(arg => arg.includes('secret') || arg.includes('/tmp/git-processor:')), false);
+            assert.deepEqual(requests.at(-1)!.repositoryIds, contextRepositories === 'none' ? [1] : [2, 1]);
+        } else assert.ok(result.gitMountArgs.includes('/tmp/git-processor:/tmp/git-processor:ro'));
+    }
+});
+
+test('context-free analysis and repository inspection never mint or expose clones', async () => {
+    for (const analysis of [undefined, {}, { repository: 'owner/task', readOnlyWorkspacePath: '/tmp/scout', allowReadOnlyCommands: true }]) {
+        assert.deepEqual(await prepareAnalysisGitAccess(analysis, '/tmp/analysis'), { githubToken: '', gitMountArgs: [] });
+    }
+    assert.equal(requests.length, 0);
+});
+
+
+test('a grant removed after discovery retries required scope without widening repository access', async () => {
+    granted = { ...AGENT_READ_PERMISSIONS, checks: 'write' };
+    rejectOptional = true;
+    repositories = [{ name: 'owner/task', contextRepositories: 'none' }];
+    const result = await prepareAgentGitAccess(options);
+    assert.equal(result.githubToken, 'agent-scoped-token');
+    assert.deepEqual(requests.slice(1), [
+        { type: 'installation', permissions: { ...AGENT_READ_PERMISSIONS, checks: 'read' }, repositoryIds: [1] },
+        { type: 'installation', permissions: AGENT_READ_PERMISSIONS, repositoryIds: [1] },
+    ]);
+});
+
+test('scoped mint failure identifies installation and context configuration instead of broadening', async () => {
+    repositories = [{ name: 'owner/task', contextRepositories: ['owner/not-installed'] }];
+    permissions = { contents: 'write' };
+    await assert.rejects(prepareAgentGitAccess(options), /Cannot mint agent token.*owner\/not-installed.*included in the App installation/);
+    assert.equal(requests.length, 2);
+});
+
+test('relay minting discovers grants and preserves scope through an optional-permission rejection', async t => {
+    const { createRelayAuth } = await import('../packages/core/src/auth/relayAuth.js');
+    const { mintAgentGitHubToken } = await import('../packages/core/src/agents/agentGitAccess.js');
+    const bodies: Array<{ permissions?: Record<string, string>; repository_ids?: number[] }> = [];
+    t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        bodies.push(body);
+        if (body.permissions?.actions) return new Response('', { status: 422 });
+        return Response.json({
+            token: body.permissions ? 'relay-read-token' : 'relay-worker-token',
+            permissions: body.permissions ?? { ...AGENT_READ_PERMISSIONS, contents: 'write', actions: 'write' },
+            repositories: body.repository_ids?.map((id: number) => ({ id })),
+        });
+    });
+    const auth = createRelayAuth({ relayUrl: 'https://relay.example.test', relayToken: 'relay-secret' });
+    const token = await mintAgentGitHubToken({ auth } as unknown as import('../packages/core/src/auth/githubAuth.js').PaginatedOctokitInstance, false, [1, 2]);
+    assert.equal(token, 'relay-read-token');
+    assert.deepEqual(bodies, [
+        {},
+        { permissions: { ...AGENT_READ_PERMISSIONS, actions: 'read' }, repository_ids: [1, 2] },
+        { permissions: AGENT_READ_PERMISSIONS, repository_ids: [1, 2] },
+    ]);
 });

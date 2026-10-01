@@ -34,10 +34,13 @@ export function configureGitAuthentication(git: SimpleGit, authToken: string): v
     });
 }
 
-export async function configureGitRemoteAuthentication(git: SimpleGit, token?: string): Promise<void> {
+export async function configureGitRemoteAuthentication(git: SimpleGit, token?: string, remoteName = 'origin'): Promise<void> {
     if (token) { configureGitAuthentication(git, token); return; }
-    const remote = await git.getConfig('remote.origin.url');
-    if (remote.value?.startsWith('https://github.com/')) {
+    const remoteUrl = remoteName.startsWith('https://')
+        ? remoteName : (await git.getConfig(`remote.${remoteName}.url`)).value;
+    // A legacy URL can be scrubbed after getConfig returns. Authenticate it too
+    // so this command never depends on credentials remaining in shared config.
+    if (remoteUrl && /^https:\/\/(?:[^/]+@)?github\.com\//.test(remoteUrl)) {
         configureGitAuthentication(git, await getGitHubInstallationToken());
     }
 }
@@ -181,7 +184,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
-        else await configureGitRemoteAuthentication(git, token);
+        else await configureGitRemoteAuthentication(git, token, remote);
 
         try {
             const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);

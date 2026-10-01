@@ -55,7 +55,7 @@ await mock.module('../packages/core/src/config/configManager.js', {
 // Token minting and mount policy have their own tests; keep this fixture
 // focused on attribution through the execution and failure paths.
 await mock.module('../packages/core/src/agents/agentGitAccess.js', {
-  namedExports: { prepareAgentGitAccess: async (options: AgentTaskOptions) => options },
+  namedExports: { prepareAgentGitAccess: async (options: AgentTaskOptions) => options, prepareAnalysisGitAccess: async () => ({ githubToken: '', gitMountArgs: [] }) },
 });
 const { parseOpenCodeJsonl } = await import('../packages/core/src/agents/impl/openCodeParsing.js');
 await mock.module('../packages/core/src/agents/impl/openCodeUtils.js', {

@@ -53,7 +53,7 @@ Each agent run starts a dedicated container from the unified `propr/agent` image
 - The task worktree mounted as its working directory
 - The agent's credential directory (for example `~/.claude`, `~/.codex`, `~/.gemini`) mounted read-write into the container's home so the CLI can refresh auth state (Vibe's config is mounted read-only)
 - For all five agents, read-only git metadata and shared clones (`/tmp/git-processor`). The task worktree is writable, but its `.git` entry is mounted read-only. Other repositories' working copies cannot be changed.
-- Implementation, follow-up, review-fix, and direct-goal runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, `metadata`, `checks`, `actions`, and `statuses` reads. `gh issue view`, `gh pr view`, `gh pr checks`, and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
+- Implementation, follow-up, review-fix, direct-goal, and repository-associated analysis runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, and `metadata` reads, plus `checks`, `actions`, and `statuses` reads when the installation grants those optional permissions. `gh issue view`, `gh pr view`, `gh pr checks` (with the optional CI permissions), and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
 - Memory, CPU, and process limits (defaults `6g`, up to 4 CPUs, and 512 PIDs; override with `AGENT_CONTAINER_MEMORY_LIMIT`, `AGENT_CONTAINER_CPU_LIMIT`, `AGENT_CONTAINER_PIDS_LIMIT`) and the `no-new-privileges` security option
 - A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
 
@@ -86,6 +86,12 @@ API (`POST /api/config/repos`, within `repos_to_monitor`):
   the listed repositories. Only those local clones and the task's linked git metadata are mounted. GitHub access to
   private repositories outside the list is refused; public data remains public.
 
+Analysis runs use the same repository policy for tokens and mounted clones. Analyses
+without a repository context receive no GitHub token or shared clone mounts.
+Repository inspection remains credential-free. Unresolvable configured repositories
+stop launch with an error naming the entry and settings to correct; aliases resolving
+to the same repository use one token repository ID.
+
 Restrictions also apply to orchestrated goals' repository reach. Multiple branch
 entries for the same repository use the intersection of their explicit lists.
 Older clients that omit the field preserve the stored restriction.
@@ -95,7 +101,7 @@ The token relay must support `permissions` and `repository_ids` on its
 `repositories` metadata. Unsupported or broader responses stop agent launch;
 there is no fallback to the worker token. Own-App deployments mint scoped tokens
 directly using GitHub's installation access-token endpoint. The App installation
-must grant the requested read permissions.
+must grant the required read permissions; see [own-App prerequisites](../operations/github-auth.md#app-mode-own-github-app).
 
 The image-based install starts service and agent containers from published images. Source builds can use local images during development.
 

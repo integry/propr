@@ -1,4 +1,4 @@
-import { prepareAgentGitAccess } from '../agentGitAccess.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { isManagedAgentConfigPath } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions, type TokenUsage } from '../types.js';
@@ -378,7 +378,7 @@ export class AntigravityAgent implements Agent {
         const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),

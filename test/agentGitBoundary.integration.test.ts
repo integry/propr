@@ -55,9 +55,11 @@ const denied = (method, endpoint, payload) => {
 ok(['repo', 'view', process.env.RELATED, '--json', 'name']);
 ok(['issue', 'view', process.env.ISSUE, '--repo', process.env.TASK, '--json', 'title']);
 ok(['pr', 'view', process.env.PR, '--repo', process.env.TASK, '--json', 'title']);
+if (process.env.HAS_CI_READS === '1') {
 const checks = run(['pr', 'checks', process.env.PR, '--repo', process.env.TASK, '--json', 'name,state']);
 assert.ok([0, 1, 8].includes(checks.status) && !/HTTP 40[13]/.test(checks.stderr), checks.stderr);
 assert.ok(Array.isArray(JSON.parse(checks.stdout)), 'gh pr checks must return check data');
+}
 const git = args => spawnSync('git', args, { encoding: 'utf8' });
 assert.equal(git(['clone', '--depth=1', 'https://github.com/' + process.env.RELATED + '.git', '/tmp/context-clone']).status, 0);
 assert.equal(git(['-C', '/tmp/context-clone', 'fetch', 'origin']).status, 0);
@@ -83,16 +85,44 @@ if (process.env.SCOPED === '1') {
         }));
         const [owner, repo] = excluded.split('/');
         assert.equal((await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.private, true);
+        const grants = (await octokit.auth({ type: 'installation' }) as { permissions?: Record<string, string> }).permissions;
+        const hasCiReads = ['checks', 'actions', 'statuses'].every(key => ['read', 'write'].includes(grants?.[key] ?? ''));
         for (const scoped of [false, true]) {
             const token = await mintAgentGitHubToken(octokit, false, scoped ? ids : undefined);
             await exec('docker', ['run', '--rm', '--entrypoint', 'node',
                 '-v', `${workspace}:/home/node/workspace:rw`, ...buildAgentGitMountArgs(workspace),
-                ...buildAgentGitCredentialArgs(), ...['GH_TOKEN', 'TASK', 'RELATED', 'EXCLUDED', 'ISSUE', 'PR', 'SIBLING', 'SCOPED'].flatMap(name => ['-e', name]),
+                ...buildAgentGitCredentialArgs(), ...['GH_TOKEN', 'TASK', 'RELATED', 'EXCLUDED', 'ISSUE', 'PR', 'SIBLING', 'SCOPED', 'HAS_CI_READS'].flatMap(name => ['-e', name]),
                 image, '-e', script], {
                 env: { ...process.env, GH_TOKEN: token, TASK: task, RELATED: related, EXCLUDED: excluded,
-                    ISSUE: issue, PR: pr, SIBLING: `${root}/sibling`, SCOPED: scoped ? '1' : '0' },
+                    ISSUE: issue, PR: pr, SIBLING: `${root}/sibling`, SCOPED: scoped ? '1' : '0', HAS_CI_READS: hasCiReads ? '1' : '0' },
                 timeout: 80_000,
             });
         }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+
+test('worker credentials support private clone, fetch and dry-run push with credential-free remotes', { skip: !enabled, timeout: 90_000 }, async () => {
+    const { getAuthenticatedOctokit, getGitHubInstallationToken } = await import('../packages/core/src/auth/githubAuth.js');
+    const { createHooklessGit } = await import('../packages/core/src/git/hooklessGit.js');
+    const { configureGitAuthentication, configureGitRemoteAuthentication } = await import('../packages/core/src/git/repoBranching.js');
+    const repository = process.env.PROPR_GITHUB_BOUNDARY_EXCLUDED!;
+    assert.ok(repository, 'PROPR_GITHUB_BOUNDARY_EXCLUDED must identify a private installation repository');
+    const [owner, repo] = repository.split('/');
+    const octokit = await getAuthenticatedOctokit();
+    assert.equal((await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.private, true);
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await fs.mkdtemp(join(tmpdir(), 'propr-worker-git-smoke-'));
+    try {
+        const clonePath = join(root, 'clone');
+        const cloneGit = createHooklessGit();
+        configureGitAuthentication(cloneGit, await getGitHubInstallationToken());
+        await cloneGit.clone(`https://github.com/${repository}.git`, clonePath, ['--depth=1']);
+        const git = createHooklessGit(clonePath);
+        await configureGitRemoteAuthentication(git);
+        await git.fetch(['origin']);
+        await git.raw(['push', '--dry-run', 'origin', 'HEAD:refs/heads/propr-worker-auth-smoke']);
+        assert.doesNotMatch(await fs.readFile(join(clonePath, '.git', 'config'), 'utf8'), /x-access-token|AUTHORIZATION|ghs_/i);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

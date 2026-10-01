@@ -3,12 +3,12 @@ import path from 'node:path';
 import { getAuthenticatedOctokit, type PaginatedOctokitInstance } from '../auth/githubAuth.js';
 import { loadMonitoredReposRaw } from '../config/configManager.js';
 import { assertGitHubRepositoryIdentity } from '../git/repositoryPaths.js';
-import type { AgentTaskOptions } from './types.js';
+import type { AgentTaskOptions, AnalyzeOptions } from './types.js';
 
 export const AGENT_READ_PERMISSIONS = {
     contents: 'read', issues: 'read', pull_requests: 'read', metadata: 'read',
-    checks: 'read', actions: 'read', statuses: 'read',
 } as const;
+const OPTIONAL_AGENT_READ_PERMISSIONS = ['checks', 'actions', 'statuses'] as const;
 
 export function resolveContextRepositories(repository: string, setting: unknown): string[] | undefined {
     if (setting === undefined || setting === 'all') return undefined;
@@ -81,13 +81,30 @@ async function visibleClonePaths(root: string, repositories?: string[]): Promise
 
 /** The same scoped mint path is used by all adapters and the live boundary test. */
 export async function mintAgentGitHubToken(octokit: PaginatedOctokitInstance, writable = false, repositoryIds?: number[]): Promise<string> {
-    const auth = await octokit.auth({
+    // The unscoped worker token reports the installation's actual grants in both
+    // own-App and relay mode. It is never passed to a read-only container.
+    const granted = !writable ? (await octokit.auth({ type: 'installation' }) as { permissions?: Record<string, string> }).permissions : undefined;
+    let requested = { ...AGENT_READ_PERMISSIONS, ...Object.fromEntries(
+        OPTIONAL_AGENT_READ_PERMISSIONS.filter(key => ['read', 'write'].includes(granted?.[key] ?? '')).map(key => [key, 'read'])
+    ) };
+    const mint = () => octokit.auth({
         type: 'installation',
-        ...(!writable ? { permissions: AGENT_READ_PERMISSIONS } : {}),
+        ...(!writable ? { permissions: requested } : {}),
         ...(repositoryIds ? { repositoryIds } : {}),
-    }) as { token: string; permissions?: Record<string, string> };
+    }) as Promise<{ token: string; permissions?: Record<string, string> }>;
+    let auth;
+    try {
+        auth = await mint();
+    } catch (error) {
+        // Grants may change after discovery (or while the worker token is cached).
+        // Retry without optional reads only; never relax repository or required scope.
+        if (writable || (error as { status?: number }).status !== 422
+            || Object.keys(requested).length === Object.keys(AGENT_READ_PERMISSIONS).length) throw error;
+        requested = { ...AGENT_READ_PERMISSIONS };
+        auth = await mint();
+    }
     if (!writable && (!auth.permissions || Object.keys(AGENT_READ_PERMISSIONS).some(key => auth.permissions![key] !== 'read') || Object.entries(auth.permissions).some(([key, value]) =>
-        !(key in AGENT_READ_PERMISSIONS) || value !== 'read'))) {
+        !(key in requested) || value !== 'read'))) {
         throw new Error('GitHub auth did not return a read-only agent token; refusing to launch');
     }
     return auth.token;
@@ -117,7 +134,7 @@ async function taskGitMetadataMount(worktreePath: string, clones: string[], writ
 }
 
 /** Called at the adapter boundary, including follow-ups, fixes and native goal resumes. */
-export async function prepareAgentGitAccess(options: AgentTaskOptions): Promise<AgentTaskOptions> {
+export async function prepareAgentGitAccess(options: AgentTaskOptions, readOnlyWorkspace = false): Promise<AgentTaskOptions> {
     const writable = agentOwnsGit(options);
     const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
     const entries = (await loadMonitoredReposRaw()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
@@ -125,11 +142,21 @@ export async function prepareAgentGitAccess(options: AgentTaskOptions): Promise<
     const policies = entries.map(entry => resolveContextRepositories(repository, entry.contextRepositories)).filter(value => value !== undefined);
     const repositories = policies.length ? policies.reduce((a, b) => a.filter(name => b.includes(name))) : undefined;
     const octokit = await getAuthenticatedOctokit();
-    const repositoryIds = repositories ? await Promise.all(repositories.map(async name => {
+    const repositoryIds = repositories ? [...new Set(await Promise.all(repositories.map(async name => {
         const [owner, repo] = name.split('/');
-        return (await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.id;
-    })) : undefined;
-    const token = await mintAgentGitHubToken(octokit, writable, repositoryIds);
+        try {
+            return (await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.id;
+        } catch (cause) {
+            throw new Error(`Cannot resolve contextRepositories entry "${name}" for ${repository}. Correct or remove the entry in repository settings, and ensure the App installation can access it.`, { cause });
+        }
+    })))] : undefined;
+    let token: string;
+    try {
+        token = await mintAgentGitHubToken(octokit, writable, repositoryIds);
+    } catch (cause) {
+        if (!repositories) throw cause;
+        throw new Error(`Cannot mint agent token for ${repository} with contextRepositories: ${repositories.join(', ')}. Ensure every repository is included in the App installation and required read permissions are granted, or correct repository settings.`, { cause });
+    }
     const root = path.resolve(process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones');
     // The blanket mount also exposes clones retained at the default location
     // after GIT_CLONES_BASE_PATH changes. Scrub every exposed root before launch.
@@ -139,14 +166,27 @@ export async function prepareAgentGitAccess(options: AgentTaskOptions): Promise<
     const taskMetadata = repositories ? await taskGitMetadataMount(options.worktreePath, clones, writable) : [];
     const gitMountArgs = repositories ? [
         ...taskMetadata,
-        ...(!writable ? ['-v', `${path.join(options.worktreePath, '.git')}:/home/node/workspace/.git:ro`] : []),
+        ...(!writable && !readOnlyWorkspace ? ['-v', `${path.join(options.worktreePath, '.git')}:/home/node/workspace/.git:ro`] : []),
         ...(await Promise.all(clones.map(async clone => {
             try { await fs.access(clone); return ['-v', `${clone}:${clone}:${writable ? 'rw' : 'ro'}`]; }
             catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
         }))).flat(),
     ] : [
-        ...buildAgentGitMountArgs(options.worktreePath, writable),
+        ...buildAgentGitMountArgs(options.worktreePath, writable, readOnlyWorkspace),
         ...clones.filter(clone => !clone.startsWith('/tmp/git-processor/')).flatMap(clone => ['-v', `${clone}:${clone}:${writable ? 'rw' : 'ro'}`]),
     ];
     return { ...options, githubToken: token, gitMountArgs };
+}
+
+/** Repository inspection stays credential-free; context-free analysis has no repository access. */
+export async function prepareAnalysisGitAccess(options: AnalyzeOptions | undefined, worktreePath: string): Promise<{ githubToken: string; gitMountArgs: string[] }> {
+    if (!options?.repository || (options.readOnlyWorkspacePath && options.allowReadOnlyCommands)) {
+        return { githubToken: '', gitMountArgs: [] };
+    }
+    resolveContextRepositories(options.repository, 'none'); // Validate before interpreting the identity.
+    const [repoOwner, repoName] = options.repository.split('/');
+    const prepared = await prepareAgentGitAccess({
+        worktreePath, prompt: '', githubToken: '', issueRef: { repoOwner, repoName, number: options.taskNumber ?? 0 },
+    }, true);
+    return { githubToken: prepared.githubToken, gitMountArgs: prepared.gitMountArgs! };
 }
