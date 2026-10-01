@@ -19,20 +19,14 @@ import {
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
 
-export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
-  logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
-
-  if (!job.data.isChildJob) {
-    logger.info({ jobId: job.id }, 'Running as matrix dispatcher');
-    return await handleDispatch(job);
-  }
-
-  const context = await initializeJobContext(job);
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnType<typeof initializeJobContext>>): Promise<
+  { cancelled: JobResult } | { octokit: Awaited<ReturnType<typeof getAuthenticatedClient>> }
+> {
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = context;
 
   await addModelSpecificDelay(modelName);
   const withdrawnReason = await preventWithdrawnJob(job);
-  if (withdrawnReason) return { status: 'cancelled', reason: withdrawnReason };
+  if (withdrawnReason) return { cancelled: { status: 'cancelled', reason: withdrawnReason } };
 
   try {
     const initialState = await stateManager.createTaskStateIfAbsent(
@@ -41,7 +35,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
       correlationId,
       jobId === undefined ? null : String(jobId),
     );
-    if (initialState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: initialState.terminalReason };
+    if (initialState?.state === TaskStates.CANCELLED) return { cancelled: { status: 'cancelled', reason: initialState.terminalReason } };
     if (initialState?.state === TaskStates.FAILED) {
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true, reason: 'Retrying failed issue task' });
     }
@@ -81,6 +75,24 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
       correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to swap labels on rate limit retry');
     }
   }
+
+  return { octokit };
+}
+
+export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
+  logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
+
+  if (!job.data.isChildJob) {
+    logger.info({ jobId: job.id }, 'Running as matrix dispatcher');
+    return await handleDispatch(job);
+  }
+
+  const context = await initializeJobContext(job);
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+
+  const prepared = await prepareIssueJob(job, context);
+  if ('cancelled' in prepared) return prepared.cancelled;
+  const { octokit } = prepared;
 
   let localRepoPath: string | undefined;
   let worktreeInfo: WorktreeInfo | undefined;

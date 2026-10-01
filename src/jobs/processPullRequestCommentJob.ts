@@ -110,18 +110,6 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta };
 }
 
-async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
-    const { lockKey, lockToken, correlatedLogger } = lockParams;
-
-    if (await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
-        return true;
-    }
-
-    correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
-    return false;
-}
-
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, primaryProcessingLabels, correlatedLogger, llm: initialLlm } = context;
     const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -161,6 +149,16 @@ function getWebUiUrl(): string {
     return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
 }
 
+async function handleSkippedPRValidation(params: ExecuteProcessingParams, reason: string | undefined): Promise<JobResult> {
+    const { context: { pullRequestNumber, correlatedLogger }, taskId, stateManager } = params;
+    if (reason === 'pull_request_closed') {
+        await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
+        return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
+    }
+    correlatedLogger.info({ pullRequestNumber, reason }, 'Skipping PR comment processing');
+    return { status: 'skipped', reason, pullRequestNumber };
+}
+
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
@@ -168,14 +166,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
-    if (validation.skip) {
-        if (validation.reason === 'pull_request_closed') {
-            await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
-            return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
-        }
-        correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
-    }
+    if (validation.skip) return handleSkippedPRValidation(params, validation.reason);
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
@@ -192,10 +183,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
-        repoOwner,
-        repoName,
-        pullRequestNumber,
-        correlatedLogger,
+        repoOwner, repoName, pullRequestNumber, correlatedLogger,
     });
     let commentHistory = '';
     if (!job.data.ultrafixMeta) {
@@ -203,13 +191,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         commentHistory += await loadOriginalContributionDiscussion(state.octokit, context);
     }
 
-    const {
-        isFixMode,
-        fixSelection,
-        resolution,
-        selectedReviewComments,
-        reviewCommentsSection,
-    } = await prepareFixReviewFeedback({
+    const { isFixMode, fixSelection, resolution, selectedReviewComments, reviewCommentsSection } = await prepareFixReviewFeedback({
         job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
     });
 
@@ -236,10 +218,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     }
 
     await markSelectedUltrafixFindings(
-        job,
-        redisClient,
-        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
-        selectedReviewComments,
+        job, redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber }, selectedReviewComments,
     );
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -359,6 +338,31 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
 
+async function acquireCurrentPRLock(
+    { lockKey, lockToken, correlatedLogger }: LockParams,
+    resolveLockKey: () => Promise<string>,
+): Promise<string | null> {
+    for (;;) {
+        if (!await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
+            correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
+            return null;
+        }
+        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
+        let resolvedLockKey: string;
+        try {
+            resolvedLockKey = await resolveLockKey();
+        } catch (error) {
+            await releasePRProcessingLock(redisClient, lockKey, lockToken);
+            throw error;
+        }
+        if (resolvedLockKey === lockKey) return lockKey;
+        // Adoption may have become visible while acquiring the lease. Do no work
+        // under the continuation's own lease; acquire and revalidate the source.
+        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        lockKey = resolvedLockKey;
+    }
+}
+
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const withdrawnReason = await preventWithdrawnJob(job);
     if (withdrawnReason) return { status: 'cancelled', reason: withdrawnReason };
@@ -377,30 +381,13 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         const continuation = await findPRContinuation(context, octokit);
         return `lock:pr:${repoOwner}:${repoName}:${continuation?.source_pr ?? pullRequestNumber}`;
     };
-    let lockKey = await resolveLockKey();
+    const initialLockKey = await resolveLockKey();
     const lockToken = await ensurePRProcessingLockToken(job.data, correlationId, () => job.updateData(job.data));
 
-    for (;;) {
-        const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger });
-        if (!lockAcquired) {
-            return handlePRCommentLockContention({
-                job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments,
-                correlatedLogger,
-            });
-        }
-        let resolvedLockKey: string;
-        try {
-            resolvedLockKey = await resolveLockKey();
-        } catch (error) {
-            await releasePRProcessingLock(redisClient, lockKey, lockToken);
-            throw error;
-        }
-        if (resolvedLockKey === lockKey) break;
-        // Adoption may have become visible while acquiring the lease. Do no work
-        // under the continuation's own lease; acquire and revalidate the source.
-        await releasePRProcessingLock(redisClient, lockKey, lockToken);
-        lockKey = resolvedLockKey;
-    }
+    const lockKey = await acquireCurrentPRLock({ lockKey: initialLockKey, lockToken, correlatedLogger }, resolveLockKey);
+    if (!lockKey) return handlePRCommentLockContention({
+        job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments, correlatedLogger,
+    });
 
     const recovery = await evaluatePRCommentPreExecutionRecovery({
         job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments,

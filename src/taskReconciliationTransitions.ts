@@ -34,7 +34,7 @@ export function completedJobTransition(value: unknown): PersistedTaskTerminalTra
         jobResultStatus: status ?? null,
         jobResultReason: reason ?? null,
     };
-    if (status === 'cancelled' || status === 'requeued' || status === 'rescheduled') {
+    if (['cancelled', 'requeued', 'rescheduled'].includes(status ?? '')) {
         return {
             state: TaskStates.CANCELLED,
             reason: `Task job ${status}${reason ? `: ${reason}` : ''}`,

@@ -218,6 +218,19 @@ async function resolveUltrafixHistoryMeta(
         await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber), job.data.commandMode);
 }
 
+async function handleSkippedPRValidation(
+    params: ExecuteReviewParams,
+    reason: string | undefined,
+): Promise<JobResult> {
+    const { context: { pullRequestNumber, correlatedLogger }, taskId, stateManager } = params;
+    if (reason === 'pull_request_closed') {
+        await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
+        return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
+    }
+    correlatedLogger.info({ pullRequestNumber, reason }, 'Skipping review processing');
+    return { status: 'skipped', reason, pullRequestNumber };
+}
+
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
     let { llm } = params;
@@ -225,14 +238,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
-    if (validation.skip) {
-        if (validation.reason === 'pull_request_closed') {
-            await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
-            return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
-        }
-        correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping review processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
-    }
+    if (validation.skip) return handleSkippedPRValidation(params, validation.reason);
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;

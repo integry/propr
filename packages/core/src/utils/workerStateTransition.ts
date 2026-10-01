@@ -59,6 +59,15 @@ export function buildTaskStateMutation(
     return state;
 }
 
+function resolveTerminalReason(newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
+    const cancellationReason = metadata.historyMetadata?.cancellationReason;
+    const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
+    return metadata.terminalReason
+        ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
+        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined)
+        ?? (newState === 'failed' && /timed?[_ ]?out|timeout/i.test(`${metadata.error?.category ?? ''} ${metadata.error?.message ?? ''}`) ? 'timed_out' : undefined);
+}
+
 export function buildTaskStateTransition(
     current: TaskStateData,
     newState: TaskState,
@@ -68,12 +77,7 @@ export function buildTaskStateTransition(
     const reason = metadata.reason ?? `State changed from ${previousState}`;
     const state = buildTaskStateMutation(current, (next, timestamp) => {
         next.state = newState;
-        const cancellationReason = metadata.historyMetadata?.cancellationReason;
-        const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
-        next.terminalReason = metadata.terminalReason
-            ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
-            ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined)
-            ?? (newState === 'failed' && /timed?[_ ]?out|timeout/i.test(`${metadata.error?.category ?? ''} ${metadata.error?.message ?? ''}`) ? 'timed_out' : undefined);
+        next.terminalReason = resolveTerminalReason(newState, metadata);
         next.attempts = metadata.isRetry ? next.attempts + 1 : next.attempts;
 
         if (metadata.error) {

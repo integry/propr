@@ -260,6 +260,79 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
   return true;
 }
 
+async function stopTaskWithoutRunningWorker(
+  taskIdOrJobId: string,
+  taskId: string,
+  state: TaskState | null,
+  options: StopTaskExecutionOptions,
+): Promise<StopTaskExecutionResult> {
+  const { redisClient } = options;
+  const stopMessage = options.reason ?? 'Stop requested by user. Terminating execution...';
+  const currentState = state?.history[state.history.length - 1]?.state;
+  const markCancelled = (metadata: Record<string, unknown>): Promise<boolean> => markTaskCancelledSafely(taskId, metadata, options);
+  // No live container — the task may still have queued or delayed jobs that
+  // have not started yet. Remove those before they begin executing.
+  const { removed: removedQueuedJobs, jobData } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
+  if (removedQueuedJobs > 0) {
+    // The job never started, so no task state exists yet. Create one so the
+    // cancellation and its reason are recorded instead of silently lost.
+    // When no state exists and none could be created, marking the task
+    // cancelled has nothing to attach the reason to — skip it and report
+    // cancellationRecorded: false instead of pretending an audit trail exists.
+    const stateAvailable = state
+      ? true
+      : (await ensureTaskStateForQueuedJob(taskId, jobData, options)) === 'created';
+    const cancellationRecorded = stateAvailable && await markCancelled({ removedQueuedJobs });
+    return {
+      success: true,
+      taskId,
+      containerStopped: false,
+      removedQueuedJobs,
+      cancellationRecorded,
+      message: cancellationRecorded
+        ? `Removed ${removedQueuedJobs} queued job(s) before execution started.`
+        : `Removed ${removedQueuedJobs} queued job(s) before execution started, but the cancellation could not be recorded in task state.`
+    };
+  }
+  if (!state) {
+    // A queue worker may have picked the job up without having written
+    // worker:state yet. Set the abort signal so the worker terminates as soon
+    // as it checks for it; the worker records the cancellation when it aborts.
+    const activeJob = await findActiveQueueJob(taskIdOrJobId, taskId, options);
+    if (activeJob.active) {
+      await setAbortSignal(taskId, options);
+      await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: stopMessage, level: 'warning' }));
+      console.log(`[stop-execution] Abort signal set for active queue job of task ${taskId} (no worker state yet)`);
+      let cancellationRecorded = false;
+      if (options.ensureCancelled) {
+        // Durably record the cancellation instead of relying solely on the
+        // worker to observe the abort signal. The worker may overwrite this
+        // state when it starts (createTaskState), but the abort signal —
+        // which carries the machine-readable reason — stays in place so the
+        // worker still terminates and re-records the cancellation itself;
+        // if the worker dies before writing state, this record remains as
+        // the durable audit trail. When no state could be created there is
+        // nothing to record the cancellation on — the abort signal is the
+        // only cancellation mechanism, so cancellationRecorded stays false.
+        const ensured = await ensureTaskStateForQueuedJob(taskId, activeJob.jobData, options);
+        cancellationRecorded = ensured === 'created'
+          && await markCancelled({ abortSignalled: true, activeQueueJob: true });
+      }
+      return {
+        success: true,
+        taskId,
+        containerStopped: false,
+        removedQueuedJobs: 0,
+        abortSignalled: true,
+        cancellationRecorded,
+        message: 'Stop request sent to worker. The execution will be terminated shortly.'
+      };
+    }
+    return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notFound: true, message: 'The task may have already completed or does not exist.' };
+  }
+  return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, currentState, message: 'The task has already completed or is not in an active state.' };
+}
+
 /**
  * Stops a task's execution: signals the worker to abort, terminates the Docker
  * container when one is running, and removes queued/delayed jobs that have not
@@ -279,69 +352,7 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
   const currentState = state?.history[state.history.length - 1]?.state;
   const isRunning = !!currentState && (ACTIVE_TASK_STATES.includes(currentState) || (options.ensureCancelled === true && currentState === 'pending'));
 
-  if (!isRunning) {
-    // No live container — the task may still have queued or delayed jobs that
-    // have not started yet. Remove those before they begin executing.
-    const { removed: removedQueuedJobs, jobData } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
-    if (removedQueuedJobs > 0) {
-      // The job never started, so no task state exists yet. Create one so the
-      // cancellation and its reason are recorded instead of silently lost.
-      // When no state exists and none could be created, marking the task
-      // cancelled has nothing to attach the reason to — skip it and report
-      // cancellationRecorded: false instead of pretending an audit trail exists.
-      const stateAvailable = state
-        ? true
-        : (await ensureTaskStateForQueuedJob(taskId, jobData, options)) === 'created';
-      const cancellationRecorded = stateAvailable && await markCancelled({ removedQueuedJobs });
-      return {
-        success: true,
-        taskId,
-        containerStopped: false,
-        removedQueuedJobs,
-        cancellationRecorded,
-        message: cancellationRecorded
-          ? `Removed ${removedQueuedJobs} queued job(s) before execution started.`
-          : `Removed ${removedQueuedJobs} queued job(s) before execution started, but the cancellation could not be recorded in task state.`
-      };
-    }
-    if (!state) {
-      // A queue worker may have picked the job up without having written
-      // worker:state yet. Set the abort signal so the worker terminates as soon
-      // as it checks for it; the worker records the cancellation when it aborts.
-      const activeJob = await findActiveQueueJob(taskIdOrJobId, taskId, options);
-      if (activeJob.active) {
-        await setAbortSignal(taskId, options);
-        await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: stopMessage, level: 'warning' }));
-        console.log(`[stop-execution] Abort signal set for active queue job of task ${taskId} (no worker state yet)`);
-        let cancellationRecorded = false;
-        if (options.ensureCancelled) {
-          // Durably record the cancellation instead of relying solely on the
-          // worker to observe the abort signal. The worker may overwrite this
-          // state when it starts (createTaskState), but the abort signal —
-          // which carries the machine-readable reason — stays in place so the
-          // worker still terminates and re-records the cancellation itself;
-          // if the worker dies before writing state, this record remains as
-          // the durable audit trail. When no state could be created there is
-          // nothing to record the cancellation on — the abort signal is the
-          // only cancellation mechanism, so cancellationRecorded stays false.
-          const ensured = await ensureTaskStateForQueuedJob(taskId, activeJob.jobData, options);
-          cancellationRecorded = ensured === 'created'
-            && await markCancelled({ abortSignalled: true, activeQueueJob: true });
-        }
-        return {
-          success: true,
-          taskId,
-          containerStopped: false,
-          removedQueuedJobs: 0,
-          abortSignalled: true,
-          cancellationRecorded,
-          message: 'Stop request sent to worker. The execution will be terminated shortly.'
-        };
-      }
-      return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notFound: true, message: 'The task may have already completed or does not exist.' };
-    }
-    return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, currentState, message: 'The task has already completed or is not in an active state.' };
-  }
+  if (!isRunning) return stopTaskWithoutRunningWorker(taskIdOrJobId, taskId, state, options);
 
   // Set abort signal for the worker to pick up
   await setAbortSignal(taskId, options);

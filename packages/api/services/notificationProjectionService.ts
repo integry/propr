@@ -18,6 +18,12 @@ import {
   type TaskUpdatePayload,
 } from '@propr/shared';
 
+function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
+  const terminalReason = payload.metadata?.terminalReason;
+  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? terminalReason : undefined]
+    .filter(Boolean).join(' · ') || undefined;
+}
+
 const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
@@ -1061,8 +1067,7 @@ export class NotificationProjectionService {
       prNumber,
       description: taskDescription(initial),
       subjectTitle: subjectTitle(initial),
-      recap: [notificationRecap(historyMetadata), typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined]
-        .filter(Boolean).join(' · ') || undefined,
+      recap: taskNotificationRecap(historyMetadata, payload),
       commandMode,
       isReview,
       followupEligible: supportsTaskFollowup(task, issueNumber),

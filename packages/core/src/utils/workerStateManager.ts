@@ -5,9 +5,7 @@ import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
-    type NonTerminalTaskScanResult,
-    type TaskStateUpdateResult,
-    type WorkerStateManagerOptions
+    type NonTerminalTaskScanResult, type TaskStateUpdateResult, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import {

@@ -2,10 +2,7 @@ import { cancelWithdrawnIntent } from '../services/taskIntent.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import {
-    handlePlanIssueStatusUpdate,
-    handlePlanPRUpdate,
-    handlePlanPRCommentTracking,
-    type CommentEventType
+    handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType
 } from './planIssueTracking.js';
 import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
@@ -36,8 +33,7 @@ import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDispos
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
-  'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push', 'status',
+  'issues', 'issue_comment', 'pull_request_review_comment', 'pull_request', 'check_run', 'push', 'status',
 ] as const;
 
 /** Derived union type — always in sync with the runtime array. */
@@ -400,6 +396,22 @@ async function processStandardWebhookEvent(
     return { status: 'ignored', reason: 'unsupported_event' };
 }
 
+async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventType): Promise<void> {
+    if (eventType === 'issues' && isIssuesEvent(payload) && !payload.issue.pull_request) {
+        const removedLabel = payload.action === 'unlabeled' ? payload.label?.name : undefined;
+        const triggerRemoved = removedLabel !== undefined && (await loadPrimaryProcessingLabels()).includes(removedLabel);
+        if (payload.action === 'closed' || triggerRemoved) {
+            const [repoOwner, repoName] = payload.repository.full_name.split('/');
+            await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
+                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
+        }
+    }
+    if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
+        const [repoOwner, repoName] = payload.repository.full_name.split('/');
+        await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.pull_request.number, kind: 'pr' }, 'cancelled_pr_closed', webhookRedisClient ?? getUltrafixStateRedis());
+    }
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -419,19 +431,7 @@ export async function processWebhookEvent(
         }
     }
 
-    if (eventType === 'issues' && isIssuesEvent(payload) && !payload.issue.pull_request) {
-        const removedLabel = payload.action === 'unlabeled' ? payload.label?.name : undefined;
-        const triggerRemoved = removedLabel !== undefined && (await loadPrimaryProcessingLabels()).includes(removedLabel);
-        if (payload.action === 'closed' || triggerRemoved) {
-            const [repoOwner, repoName] = payload.repository.full_name.split('/');
-            await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
-                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
-        }
-    }
-    if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
-        const [repoOwner, repoName] = payload.repository.full_name.split('/');
-        await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.pull_request.number, kind: 'pr' }, 'cancelled_pr_closed', webhookRedisClient ?? getUltrafixStateRedis());
-    }
+    await handleIntentWithdrawal(payload, eventType);
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 

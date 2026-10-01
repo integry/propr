@@ -370,10 +370,17 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
         return { commitHash: commitResult?.commitHash, partial };
     } finally {
-        try {
-            await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
-        } catch (cleanupError) {
-            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
-        }
+        await cleanupPostExecutionPreviews(preparedVisualPreview, correlatedLogger);
+    }
+}
+
+async function cleanupPostExecutionPreviews(
+    preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined,
+    correlatedLogger: PostExecutionParams['context']['correlatedLogger'],
+): Promise<void> {
+    try {
+        await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
+    } catch (cleanupError) {
+        correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
     }
 }
