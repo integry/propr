@@ -1,0 +1,88 @@
+import assert from 'node:assert/strict';
+import { beforeEach, mock, test } from 'node:test';
+import { buildIssueTaskId } from '@propr/shared';
+
+const jobs = new Map<string, any>();
+let state: any;
+let onAdd: (() => void) | undefined;
+let onUpdate: (() => void) | undefined;
+let onReload: ((job: any) => any) | undefined;
+const log = { info() {}, warn() {}, error() {} };
+const queue = {
+    add: async (name: string, data: any, opts: any) => {
+        const job = jobs.get(opts.jobId) ?? { id: opts.jobId, name, data, getState: async () => 'delayed', remove: async () => { jobs.delete(opts.jobId); } };
+        jobs.set(job.id, job);
+        onAdd?.();
+        return job;
+    },
+    getJob: async (id: string) => onReload ? onReload(jobs.get(id)) : jobs.get(id),
+};
+const labels: unknown[][] = [];
+await mock.module('@propr/core', { namedExports: {
+    issueQueue: queue, safeRemoveLabel: async () => {}, safeAddLabel: async () => {},
+    formatRetryTime: () => 'later', hoursUntil: () => 1, recordLLMMetrics: async () => {},
+    updateWithdrawnIssueLabels: async (...args: unknown[]) => { labels.push(args); },
+    TaskStates: { CANCELLED: 'cancelled', COMPLETED: 'completed', FAILED: 'failed' },
+} });
+const { handleUsageLimitError, handleGenericError } = await import('../src/jobs/errorHandlers.js');
+const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+const data = { repoOwner: 'acme', repoName: 'widgets', number: 42, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request', isChildJob: true, triggeringLabel: 'AI' };
+const source = { id: 'source', name: 'processGitHubIssue', data };
+const taskIdFor = (data: any) => buildIssueTaskId({ ...data, issueNumber: data.number });
+const manager = {
+    getTaskState: async () => state,
+    updateTaskState: async () => { onUpdate?.(); },
+    markTaskCancelled: async () => { state = { state: 'cancelled', terminalReason: 'cancelled_by_user' }; },
+};
+const options = () => ({ octokit: null, correlatedLogger: log, stateManager: manager, taskId: taskIdFor(source.data) }) as any;
+beforeEach(() => { jobs.clear(); labels.length = 0; state = { state: 'processing' }; onAdd = undefined; onUpdate = undefined; onReload = undefined; });
+
+test('reconciled source cancellation cannot become the issue retry task state', async () => {
+    await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+    const retry = [...jobs.values()][0];
+    const transition = completedJobTransition({ status: 'requeued', reason: 'rate_limit' });
+    assert.equal(transition.state, 'cancelled');
+    assert.equal(transition.metadata.terminalReason, undefined);
+    state = { state: transition.state };
+    assert.notEqual(taskIdFor(retry.data), taskIdFor(source.data));
+    assert.notEqual(retry.data.correlationId, source.data.correlationId);
+    assert.equal(retry.data.isRetryFromRateLimit, true);
+    assert.equal(retry.data.triggeringLabel, 'AI');
+    // Another usage limit gets another identity, while replaying one source deduplicates.
+    state = { state: 'processing' };
+    await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+    assert.equal(jobs.size, 1);
+    await handleUsageLimitError(new Error('usage limit'), retry, retry.data, { ...options(), taskId: taskIdFor(retry.data) });
+    assert.equal(jobs.size, 2);
+    assert.equal(new Set([...jobs.values()].map(job => taskIdFor(job.data))).size, 2);
+});
+
+for (const boundary of ['before scheduling', 'queue add', 'state update']) {
+    test(`user cancellation at ${boundary} leaves no delayed retry`, async () => {
+        const cancel = () => { state = { state: 'cancelled', terminalReason: 'cancelled_by_user' }; };
+        if (boundary === 'before scheduling') cancel();
+        if (boundary === 'queue add') onAdd = cancel;
+        if (boundary === 'state update') onUpdate = cancel;
+        await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+        assert.equal(jobs.size, 0);
+        assert.equal(state.terminalReason, 'cancelled_by_user');
+    });
+}
+
+for (const defect of ['missing', 'wrong payload', 'completed']) {
+    test(`does not report a durable retry for ${defect} persisted queue data`, async () => {
+        onReload = job => defect === 'missing' ? undefined : defect === 'wrong payload'
+            ? { ...job, data: source.data } : { ...job, getState: async () => 'completed' };
+        await assert.rejects(handleUsageLimitError(new Error('usage limit'), source as any, data, options()), /Unable to persist issue usage-limit retry/);
+    });
+}
+
+test('legacy user-abort handler delegates processing cleanup with the stopped task identity', async () => {
+    await handleGenericError(new Error('Execution aborted by user'), source as any, data, {
+        ...options(), octokit: { request: async () => ({}) }, claudeResult: null, AI_PROCESSING_TAG: 'AI-processing',
+    });
+    assert.equal(labels.length, 1);
+    assert.equal((labels[0][0] as any).triggeringLabel, 'AI');
+    assert.equal(labels[0][2], 'cancelled_by_user');
+    assert.equal(labels[0][3], taskIdFor(data));
+});

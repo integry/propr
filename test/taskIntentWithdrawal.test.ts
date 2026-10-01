@@ -45,7 +45,15 @@ const queue = {
     add: async (name: string, data: any, options: { jobId: string }) => jobs.find(j => j.id === options.jobId)
         ?? addJob(options.jobId, data, 'delayed', name),
 };
-await mock.module('@propr/core', { namedExports: { issueQueue: queue } });
+const reconciliationWarn = mock.fn();
+await mock.module('@propr/core', { namedExports: {
+    issueQueue: queue,
+    reconcileTaskIntents: (...args: Parameters<typeof reconcileTaskIntents>) => reconcileTaskIntents(...args),
+    logger: { warn: reconciliationWarn },
+    safeRemoveLabel: async () => {}, safeAddLabel: async () => {},
+    formatRetryTime: () => 'later', hoursUntil: () => 1, recordLLMMetrics: async () => {},
+    updateWithdrawnIssueLabels: (...args: Parameters<typeof updateWithdrawnIssueLabels>) => updateWithdrawnIssueLabels(...args),
+} });
 const { schedulePRCommentUsageLimitRetry } = await import('../src/jobs/prCommentUsageLimitRecovery.js');
 const clearedLoops: number[] = [];
 await mock.module('../packages/core/src/utils/workerStateManager.js', { namedExports: { getStateManager: () => manager } });
@@ -87,7 +95,7 @@ async function removeTrigger(label: string, labels: string[]) {
         issue: { number: 42, state: 'open', labels: labels.map(name => ({ name })) },
     }, 'issues', 'trigger-removal');
 }
-const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, triggeringLabel: 'AI' };
+const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
 beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
@@ -203,7 +211,7 @@ for (const [reason, explanation, kind] of [
 ] as const) {
     for (const phase of ['running', 'active-without-state', 'queued', 'admission'] as const) {
         test(`${reason} persists readable history and conversation text for ${phase}`, async () => {
-            const ref = { ...target, kind, ...(kind === 'pr' ? { pullRequestNumber: target.number } : {}) };
+            const ref = { ...target, kind, type: kind === 'pr' ? 'pr-comment' : 'issue', ...(kind === 'pr' ? { pullRequestNumber: target.number } : {}) };
             const name = kind === 'pr' ? 'processPullRequestComment' : 'processGitHubIssue';
             if (phase === 'running') addRunning('task', ref);
             else addJob('task', ref, phase === 'queued' ? 'waiting' : 'active', name);
@@ -368,4 +376,121 @@ test('unlabel webhook respects a task trigger still present in the payload', asy
     assert.equal(states.get('implementation').state, 'claude_execution');
     assert.equal(jobs.length, 1);
     assert.equal(requests.length, 0);
+});
+
+for (const labels of [['AI-done'], ['build-done']]) {
+    test(`closure preserves successful sibling status (${labels[0]})`, async () => {
+        addRunning('remaining');
+        tracker = { state: 'closed', labels: [...labels, 'AI-processing', 'build-waiting'] };
+        await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+        assert.equal(states.get('remaining').terminalReason, 'cancelled_issue_closed');
+        assert.ok(requests.some(r => r.params.name === 'AI-processing'));
+        assert.ok(requests.every(r => !r.params.name?.endsWith('-done') && !r.params.labels));
+    });
+}
+
+test('closure checks for completion after awaited label cleanup', async () => {
+    tracker = { state: 'closed', labels: [] };
+    onRequest = endpoint => {
+        if (endpoint.startsWith('DELETE ')) tracker = { state: 'closed', labels: ['AI-done'] };
+    };
+    await updateWithdrawnIssueLabels(target, ['AI'], 'cancelled_issue_closed');
+    assert.ok(requests.every(r => !r.params.labels && r.params.name !== 'AI-done'));
+});
+
+for (const phase of ['none', 'running', 'waiting', 'delayed', 'active', 'prioritized', 'other-trigger', 'other-repo', 'terminal'] as const) {
+    test(`user stop processing cleanup respects ${phase} siblings`, async () => {
+        addRunning('stopped', target, 'cancelled');
+        states.get('stopped').terminalReason = 'cancelled_by_user';
+        addJob('stopped', target, 'active');
+        if (phase === 'running') addRunning('sibling');
+        else if (phase === 'other-trigger') addRunning('sibling', { ...target, triggeringLabel: 'build' });
+        else if (phase === 'other-repo') addRunning('sibling', { ...target, repoName: 'elsewhere' });
+        else if (phase === 'terminal') {
+            addRunning('sibling', target, 'completed');
+            addJob('sibling', target, 'active');
+        } else if (phase !== 'none') addJob('sibling', target, phase);
+        await updateWithdrawnIssueLabels(target, ['AI', 'build'], 'cancelled_by_user', 'stopped');
+        const shouldClean = ['none', 'other-trigger', 'other-repo', 'terminal'].includes(phase);
+        assert.deepEqual(requests.map(r => r.params.name), shouldClean ? ['AI-processing'] : []);
+    });
+}
+
+test('user stop sees a sibling started during the queue lookup', async () => {
+    const getJobs = mock.method(queue, 'getJobs', async () => {
+        addRunning('new-sibling');
+        return [];
+    });
+    try {
+        await updateWithdrawnIssueLabels(target, ['AI'], 'cancelled_by_user', 'stopped');
+        assert.deepEqual(requests, []);
+    } finally { getJobs.mock.restore(); }
+});
+
+test('admission cleans up an already user-cancelled issue attempt', async () => {
+    addRunning('stopped', target, 'cancelled');
+    states.get('stopped').terminalReason = 'cancelled_by_user';
+    assert.equal(await preventWithdrawnJob(addJob('stopped', target)), 'cancelled_by_user');
+    assert.deepEqual(requests.map(r => r.params.name), ['AI-processing']);
+});
+
+test('untyped and system task refs are ineligible even with a resource number', async () => {
+    for (const ref of [{ ...target, type: undefined }, { ...target, type: 'system' }, { ...target, type: undefined, pullRequestNumber: 42 }]) {
+        assert.equal(taskIntentTarget(ref), null);
+        addRunning(JSON.stringify(ref), ref);
+    }
+    tracker = { state: 'closed', labels: [] };
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+    assert.ok([...states.values()].every(state => state.state === 'claude_execution'));
+    assert.deepEqual(requests, []);
+});
+
+test('known queue jobs without type metadata still reconcile issues and PRs', async () => {
+    const issue = addJob('issue', { ...target, type: undefined });
+    const pr = addJob('pr', { ...target, type: undefined, pullRequestNumber: 43 }, 'waiting', 'processPullRequestComment');
+    tracker = { state: 'closed', merged: false, labels: [] };
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.equal(states.get(issue.id).terminalReason, 'cancelled_issue_closed');
+    assert.equal(states.get(pr.id).terminalReason, 'cancelled_pr_closed');
+});
+
+const { reconcileTaskIntentsSafely } = await import('../src/daemon/taskIntentReconciliation.js');
+for (const boundary of ['scanNonTerminalTasks', 'getJobs'] as const) {
+    test(`daemon reconciliation isolates ${boundary} failures and retries on the next cycle`, async () => {
+        reconciliationWarn.mock.resetCalls();
+        const stub = boundary === 'getJobs'
+            ? mock.method(queue, boundary, async () => { throw new Error('Queue unavailable'); })
+            : mock.method(manager, boundary, async () => { throw new Error('Scan unavailable'); });
+        try {
+            await reconcileTaskIntentsSafely(redis as never, ['acme/widgets']);
+            assert.equal(reconciliationWarn.mock.callCount(), 1);
+            assert.match(reconciliationWarn.mock.calls[0].arguments[1] as string, /continuing discovery/);
+        } finally { stub.mock.restore(); }
+        addRunning('next-cycle');
+        tracker = { state: 'closed', labels: [] };
+        await reconcileTaskIntentsSafely(redis as never, ['acme/widgets']);
+        assert.equal(states.get('next-cycle').terminalReason, 'cancelled_issue_closed');
+        assert.equal(reconciliationWarn.mock.callCount(), 1);
+    });
+}
+
+const { handleUsageLimitError } = await import('../src/jobs/errorHandlers.js');
+test('issue usage-limit retry passes admission after its source is reconciled as cancelled', async () => {
+    const data = { ...target, isChildJob: true, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request' };
+    const source = addJob('source', data, 'active');
+    const taskId = intentJobTaskId(source);
+    addRunning(taskId, data);
+    await handleUsageLimitError(new Error('Usage limit'), source as never, data, {
+        taskId, octokit: null, correlatedLogger: { warn() {}, info() {} },
+        stateManager: { ...manager, updateTaskState: async () => {} },
+    } as never);
+    const retry = jobs.find(job => job.status === 'delayed')!;
+    states.get(taskId).state = 'cancelled'; // completedJobTransition for the requeued source
+    assert.notEqual(intentJobTaskId(retry), taskId);
+    assert.equal(await preventWithdrawnJob(retry), null);
+    await manager.createTaskStateIfAbsent(intentJobTaskId(retry), retry.data);
+    assert.equal(states.get(intentJobTaskId(retry)).state, 'pending');
+    tracker = { state: 'closed', labels: [] };
+    assert.equal(await preventWithdrawnJob(retry), 'cancelled_issue_closed');
 });

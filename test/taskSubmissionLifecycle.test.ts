@@ -11,13 +11,14 @@ let liveIssue = { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', 
 const cancellations: Array<Record<string, unknown>> = [];
 let outcome: 'completed' | 'failed' | 'cancelled' | 'withdrawn' = 'completed';
 let withdrawnDuringExecution = false;
+let initialState: { state: string; terminalReason?: string } | undefined;
 let executionCancellationReason: string | undefined = 'cancelled_label_removed';
 const labelCleanups: unknown[][] = [];
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
   markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { cancellations.push(metadata); },
-  createTaskStateIfAbsent: async () => undefined,
+  createTaskStateIfAbsent: async () => initialState,
   getTaskState: async () => withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : null,
   updateTaskState: async () => undefined,
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
@@ -128,7 +129,7 @@ for (const [cancellationReason, phase] of [
       assert.equal(labelCleanups.length, 1);
       const [target, triggers, reason] = labelCleanups[0] as [Record<string, unknown>, string[], string];
       assert.equal(target.triggeringLabel, 'AI');
-      assert.deepEqual(triggers, cancellationReason === 'cancelled_label_removed' ? ['AI', 'build'] : ['AI']);
+      assert.deepEqual(triggers, ['AI', 'build']);
       assert.equal(reason, cancellationReason);
     } finally {
       withdrawnDuringExecution = false;
@@ -151,7 +152,11 @@ for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', '
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model-b', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason });
-      assert.deepEqual(labelCleanups, []);
+      if (reason === 'cancelled_by_user') {
+        assert.equal(labelCleanups.length, 1);
+        assert.equal(labelCleanups[0][2], reason);
+        assert.equal(labelCleanups[0][3], 'ordinary-task', 'cleanup must exclude only the stopped attempt');
+      } else assert.deepEqual(labelCleanups, []);
       assert.deepEqual(terminal, [], 'the recorded cancellation remains authoritative');
     } finally {
       withdrawnDuringExecution = false;
@@ -160,3 +165,17 @@ for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', '
     }
   });
 }
+
+
+test('user cancellation during state creation still cleans up its processing label', async () => {
+  initialState = { state: 'cancelled', terminalReason: 'cancelled_by_user' };
+  labelCleanups.length = 0;
+  try {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
+    } } as unknown as Job<IssueJobData>);
+    assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_by_user' });
+    assert.equal(labelCleanups.length, 1);
+    assert.equal(labelCleanups[0][3], 'ordinary-task');
+  } finally { initialState = undefined; }
+});

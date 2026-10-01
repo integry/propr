@@ -20,7 +20,7 @@ export interface IntentTarget {
     triggeringLabel?: string;
 }
 
-export function taskIntentTarget(data: Record<string, unknown>, type?: string): IntentTarget | null {
+export function taskIntentTarget(data: Record<string, unknown>, type = typeof data.type === 'string' ? data.type : undefined): IntentTarget | null {
     const repository = typeof data.repository === 'string' ? data.repository.split('/') : [];
     const repoOwner = typeof data.repoOwner === 'string' ? data.repoOwner : repository[0];
     const repoName = typeof data.repoName === 'string' ? data.repoName : repository[1];
@@ -28,9 +28,42 @@ export function taskIntentTarget(data: Record<string, unknown>, type?: string): 
     const kind = pr !== undefined || type === 'pr-comment' || type === 'review' || type === 'merge_conflict' ? 'pr' : 'issue';
     const number = pr ?? data.number ?? data.issueNumber;
     // Goals, imports and system maintenance are not issue implementations.
-    if (data.goalId || data.taskDescription || (type && !['issue', 'pr-comment', 'review', 'merge_conflict'].includes(type))) return null;
+    if (data.goalId || data.taskDescription || !type || !['issue', 'pr-comment', 'review', 'merge_conflict'].includes(type)) return null;
     if (!repoOwner || !repoName || typeof number !== 'number' || number <= 0) return null;
     return { repoOwner, repoName, number, kind, ...(typeof data.triggeringLabel === 'string' ? { triggeringLabel: data.triggeringLabel } : {}) };
+}
+
+// Queue names are authoritative even when legacy job payloads have no type.
+function jobIntentTarget(job: { name: string; data: unknown }): IntentTarget | null {
+    const type = { processGitHubIssue: 'issue', processPullRequestComment: 'pr-comment', processMergeConflict: 'merge_conflict' }[job.name];
+    return type ? taskIntentTarget(job.data as Record<string, unknown>, type) : null;
+}
+
+function sameResource(a: IntentTarget, b: IntentTarget): boolean {
+    return a.kind === b.kind && a.number === b.number
+        && a.repoOwner.toLowerCase() === b.repoOwner.toLowerCase()
+        && a.repoName.toLowerCase() === b.repoName.toLowerCase();
+}
+
+async function hasProcessingSibling(target: IntentTarget, taskId: string): Promise<boolean> {
+    const manager = getStateManager();
+    const matches = (candidate: IntentTarget | null) => candidate && sameResource(target, candidate)
+        && (!candidate.triggeringLabel || candidate.triggeringLabel === target.triggeringLabel);
+    for (const job of await (await getIssueQueue()).getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
+        if (!matches(jobIntentTarget(job))) continue;
+        const id = intentJobTaskId(job as unknown as { id?: string; data: Record<string, unknown> });
+        if (id === taskId) continue;
+        const state = await manager.getTaskState(id);
+        if (!state || !['completed', 'failed', 'cancelled'].includes(state.state)) return true;
+    }
+    // Scan after the awaited queue reads so newly started siblings are included.
+    let cursor = '0';
+    do {
+        const page = await manager.scanNonTerminalTasks(cursor);
+        if (page.tasks.some(task => task.taskId !== taskId && matches(taskIntentTarget(task.issueRef)))) return true;
+        cursor = page.nextCursor;
+    } while (cursor !== '0');
+    return false;
 }
 
 export interface CurrentTaskIntent { state?: string; merged?: boolean; labels?: Array<string | { name?: string }> }
@@ -52,8 +85,16 @@ function redisAdapter(redis: Redis): StopTaskRedisClient {
     };
 }
 
-export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason): Promise<void> {
+export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason, taskId?: string): Promise<void> {
     if (target.kind !== 'issue') return;
+    // User stops own only the processing label, and only after sibling work ends.
+    if (reason === 'cancelled_by_user') {
+        if (!taskId || !target.triggeringLabel) return;
+        const octokit = await getAuthenticatedOctokit();
+        if (await hasProcessingSibling(target, taskId)) return;
+        await safeRemoveLabel({ octokit, owner: target.repoOwner, repo: target.repoName, issueNumber: target.number, logger: logger.withCorrelation('user-stop') }, `${target.triggeringLabel}-processing`);
+        return;
+    }
     // Stopping one attempt does not withdraw the issue's intent or its siblings' status.
     if (reason !== 'cancelled_issue_closed' && reason !== 'cancelled_label_removed') return;
     const octokit = await getAuthenticatedOctokit();
@@ -74,7 +115,7 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     for (const trigger of new Set(labelsToClear)) {
         await safeRemoveLabel(options, `${trigger}-processing`);
         await safeRemoveLabel(options, `${trigger}-waiting`);
-        await safeRemoveLabel(options, `${trigger}-done`);
+        if (reason !== 'cancelled_issue_closed') await safeRemoveLabel(options, `${trigger}-done`);
     }
     if (markCancelled && reason === 'cancelled_label_removed') {
         // The cleanup above awaits multiple GitHub calls. Recheck immediately
@@ -84,6 +125,15 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
         });
         markCancelled = withdrawnIntentReason(target, current, triggers) === reason
             && !(current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+    }
+    if (markCancelled && reason === 'cancelled_issue_closed') {
+        // A completed matrix sibling may have closed the issue through its PR.
+        // Read after cleanup's awaited calls; never overwrite its completion label.
+        const { data: current } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
+        });
+        markCancelled = !([...new Set(labelsToClear)].some(trigger =>
+            (current.labels ?? []).some(label => (typeof label === 'string' ? label : label.name) === `${trigger}-done`)));
     }
     if (markCancelled) await safeAddLabel(options, `${target.triggeringLabel ?? triggers[0] ?? 'AI'}-cancelled`);
 }
@@ -95,7 +145,7 @@ export function intentJobTaskId(job: { id?: string; data: Record<string, unknown
     }
     // Dispatcher IDs are reused after removal; their cancellation belongs to
     // this request, just like the child task IDs above. They have no worker task.
-    if (!data.isChildJob && taskIntentTarget(data)?.kind === 'issue' && typeof data.correlationId === 'string') {
+    if (!data.isChildJob && taskIntentTarget(data, 'issue')?.kind === 'issue' && typeof data.correlationId === 'string') {
         return `${job.id}-intent-${data.correlationId}`;
     }
     return String(job.id);
@@ -129,7 +179,7 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
     } while (cursor !== '0');
     for (const job of await queue.getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
         if (!['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) continue;
-        if (!shouldStop(taskIntentTarget(job.data as unknown as Record<string, unknown>))) continue;
+        if (!shouldStop(jobIntentTarget(job))) continue;
         const row = await db('tasks').select('task_id').where({ job_id: String(job.id) }).first();
         const taskId = row?.task_id && stops.has(row.task_id) ? row.task_id : intentJobTaskId(job as unknown as { id?: string; data: Record<string, unknown> });
         stops.delete(taskId);
@@ -168,7 +218,7 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[])
         cursor = page.nextCursor;
     } while (cursor !== '0');
     for (const job of await (await getIssueQueue()).getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
-        if (['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) add(taskIntentTarget(job.data as unknown as Record<string, unknown>));
+        if (['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) add(jobIntentTarget(job));
     }
     for (const target of targets.values()) {
         try {
@@ -184,12 +234,15 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[])
 export async function preventWithdrawnJob(job: { id?: string; name: string; data: unknown }): Promise<string | null> {
     if (!['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) return null;
     const data = job.data as Record<string, unknown>;
-    const target = taskIntentTarget(data);
+    const target = jobIntentTarget(job);
     if (!target) return null;
     const taskId = intentJobTaskId({ id: job.id, data });
     const manager = getStateManager();
     const existing = await manager.getTaskState(taskId);
-    if (existing?.state === 'cancelled') return existing.terminalReason ?? 'cancelled_by_user';
+    if (existing?.state === 'cancelled') {
+        if (existing.terminalReason === 'cancelled_by_user') await updateWithdrawnIssueLabels(target, [], existing.terminalReason, taskId);
+        return existing.terminalReason ?? 'cancelled_by_user';
+    }
     const reason = await checkCurrentTaskIntent(target);
     if (!reason) return null;
     await manager.createTaskStateIfAbsent(taskId, {

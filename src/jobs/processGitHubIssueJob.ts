@@ -32,7 +32,7 @@ async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnTy
   try {
     const initialState = await stateManager.createTaskStateIfAbsent(
       taskId,
-      { ...issueRef, number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
+      { ...issueRef, type: 'issue', number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
       correlationId,
       jobId === undefined ? null : String(jobId),
     );
@@ -89,12 +89,29 @@ async function checkIssueCancellation(
   const reason = withdrawnIntentReason(target, currentIssueData.data, [AI_PRIMARY_TAG]);
   if (reason) {
     await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
-    await updateWithdrawnIssueLabels(target, reason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [AI_PRIMARY_TAG], reason);
+    await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
     return { status: 'cancelled', reason };
   }
   const latest = await stateManager.getTaskState(taskId);
   if (latest?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: latest.terminalReason };
   return null;
+}
+
+async function cleanupUserStoppedIssue(
+  context: Awaited<ReturnType<typeof initializeJobContext>>,
+  reason?: unknown,
+): Promise<void> {
+  const { stateManager, taskId, issueRef, AI_PRIMARY_TAG, correlatedLogger } = context;
+  try {
+    const terminalReason = reason ?? (await stateManager.getTaskState(taskId))?.terminalReason;
+    if (terminalReason !== 'cancelled_by_user') return;
+    await updateWithdrawnIssueLabels(
+      { ...issueRef, kind: 'issue', triggeringLabel: AI_PRIMARY_TAG },
+      [AI_PRIMARY_TAG], terminalReason, taskId,
+    );
+  } catch (error) {
+    correlatedLogger.warn({ taskId, error }, 'Failed to clean up user-stopped issue processing label');
+  }
 }
 
 export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
@@ -109,7 +126,10 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
 
   const prepared = await prepareIssueJob(job, context);
-  if ('cancelled' in prepared) return prepared.cancelled;
+  if ('cancelled' in prepared) {
+    await cleanupUserStoppedIssue(context, prepared.cancelled.reason);
+    return prepared.cancelled;
+  }
   const { octokit } = prepared;
 
   let localRepoPath: string | undefined;
@@ -179,7 +199,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
       if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
         await updateWithdrawnIssueLabels(
           { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
-          latest.terminalReason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG],
+          await loadPrimaryProcessingLabels(),
           latest.terminalReason,
         );
       }
@@ -201,6 +221,8 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
       }
       throw error;
     }
+  } finally {
+    await cleanupUserStoppedIssue(context);
   }
 }
 
