@@ -60,7 +60,7 @@ await mock.module('../packages/core/src/config/configManager.js', { namedExports
 await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => ({ select: () => ({ where: () => ({ first: async () => undefined }) }) }) } });
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); return { success: true }; } } });
 await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
-const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, taskIntentTarget, intentJobTaskId } = await import('../packages/core/src/services/taskIntent.js');
+const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId } = await import('../packages/core/src/services/taskIntent.js');
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
     handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {},
 } });
@@ -97,6 +97,14 @@ function addJob(id: string, data: any, status = 'waiting', name = 'processGitHub
 }
 function addRunning(id: string, ref = target, state = 'claude_execution') {
     states.set(id, { taskId: id, issueRef: ref, state, history: [{ state, metadata: { containerId: `container-${id}` } }] });
+}
+
+for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', 'pr_merged', undefined] as const) {
+    test(`label cleanup ignores non-issue-withdrawal reason ${reason ?? '(missing)'}`, async () => {
+        tracker = { state: 'open', labels: ['AI', 'AI-done', 'AI-processing', 'AI-waiting'] };
+        await updateWithdrawnIssueLabels(target, ['AI', 'build'], reason);
+        assert.deepEqual(requests, [], 'stopping one attempt must not alter sibling status or discovery labels');
+    });
 }
 
 test('issue closure cancels active and all queued matrix jobs without touching its PR or other repositories', async () => {

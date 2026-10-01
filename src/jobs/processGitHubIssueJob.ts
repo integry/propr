@@ -176,11 +176,13 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   } catch (error) {
     const latest = await stateManager.getTaskState(taskId);
     if (latest?.state === TaskStates.CANCELLED) {
-      await updateWithdrawnIssueLabels(
-        { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
-        latest.terminalReason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG],
-        latest.terminalReason,
-      );
+      if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
+        await updateWithdrawnIssueLabels(
+          { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
+          latest.terminalReason === 'cancelled_label_removed' ? await loadPrimaryProcessingLabels() : [context.AI_PRIMARY_TAG],
+          latest.terminalReason,
+        );
+      }
       return { status: 'cancelled', reason: latest.terminalReason };
     }
     if (error instanceof UsageLimitError) {

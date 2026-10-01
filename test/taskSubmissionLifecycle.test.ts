@@ -11,13 +11,14 @@ let liveIssue = { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', 
 const cancellations: Array<Record<string, unknown>> = [];
 let outcome: 'completed' | 'failed' | 'cancelled' | 'withdrawn' = 'completed';
 let withdrawnDuringExecution = false;
+let executionCancellationReason: string | undefined = 'cancelled_label_removed';
 const labelCleanups: unknown[][] = [];
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
   markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { cancellations.push(metadata); },
   createTaskStateIfAbsent: async () => undefined,
-  getTaskState: async () => withdrawnDuringExecution ? { state: 'cancelled', terminalReason: 'cancelled_label_removed' } : null,
+  getTaskState: async () => withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : null,
   updateTaskState: async () => undefined,
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
@@ -57,7 +58,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   executeWorktreeOperations: async () => {
     if (outcome === 'withdrawn') {
       withdrawnDuringExecution = true;
-      throw new Error('Execution aborted after trigger removal');
+      throw new Error(executionCancellationReason === 'cancelled_by_user' ? 'Execution aborted by user' : 'Execution aborted after cancellation');
     }
     if (outcome === 'cancelled') throw new Error('Execution aborted by user');
     return { worktreeInfo: { worktreePath: '/tmp/worktree' },
@@ -109,23 +110,52 @@ test('issue withdrawal detected after admission persists readable history and re
 });
 
 
-for (const phase of ['after admission', 'during execution']) {
-  test(`withdrawal ${phase} gives label cleanup the task trigger, all configured triggers and terminal reason`, async () => {
+for (const [cancellationReason, phase] of [
+  ['cancelled_label_removed', 'after admission'],
+  ['cancelled_label_removed', 'during execution'],
+  ['cancelled_issue_closed', 'during execution'],
+]) {
+  test(`${cancellationReason} ${phase} gives label cleanup the task trigger, relevant triggers and terminal reason`, async () => {
     liveIssue = { ...liveIssue, state: 'open', labels: [{ name: phase === 'after admission' ? 'build' : 'AI' }] };
     outcome = 'withdrawn';
+    executionCancellationReason = cancellationReason;
     labelCleanups.length = 0;
     try {
       const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
-      assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_label_removed' });
+      assert.deepEqual(result, { status: 'cancelled', reason: cancellationReason });
       assert.equal(labelCleanups.length, 1);
       const [target, triggers, reason] = labelCleanups[0] as [Record<string, unknown>, string[], string];
       assert.equal(target.triggeringLabel, 'AI');
-      assert.deepEqual(triggers, ['AI', 'build']);
-      assert.equal(reason, 'cancelled_label_removed');
+      assert.deepEqual(triggers, cancellationReason === 'cancelled_label_removed' ? ['AI', 'build'] : ['AI']);
+      assert.equal(reason, cancellationReason);
     } finally {
       withdrawnDuringExecution = false;
+      executionCancellationReason = 'cancelled_label_removed';
+      outcome = 'completed';
+    }
+  });
+}
+
+for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', 'pr_merged', undefined]) {
+  test(`matrix child cancellation (${reason ?? 'missing reason'}) does not request issue-wide label cleanup`, async () => {
+    // A completed sibling has a PR; another sibling is still processing.
+    liveIssue = { ...liveIssue, state: 'open', labels: ['AI', 'AI-done', 'AI-processing', 'AI-waiting'].map(name => ({ name })) };
+    outcome = 'withdrawn';
+    executionCancellationReason = reason;
+    labelCleanups.length = 0;
+    terminal.length = 0;
+    try {
+      const result = await processGitHubIssueJob({ id: 'matrix-child-b', name: 'processGitHubIssue', data: {
+        repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model-b', repoPayload: { defaultBranch: 'main' },
+      }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+      assert.deepEqual(result, { status: 'cancelled', reason });
+      assert.deepEqual(labelCleanups, []);
+      assert.deepEqual(terminal, [], 'the recorded cancellation remains authoritative');
+    } finally {
+      withdrawnDuringExecution = false;
+      executionCancellationReason = 'cancelled_label_removed';
       outcome = 'completed';
     }
   });

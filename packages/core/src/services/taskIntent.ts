@@ -54,6 +54,8 @@ function redisAdapter(redis: Redis): StopTaskRedisClient {
 
 export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason): Promise<void> {
     if (target.kind !== 'issue') return;
+    // Stopping one attempt does not withdraw the issue's intent or its siblings' status.
+    if (reason !== 'cancelled_issue_closed' && reason !== 'cancelled_label_removed') return;
     const octokit = await getAuthenticatedOctokit();
     let labelsToClear = [...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])];
     let markCancelled = true;
