@@ -28,6 +28,7 @@ import VisualPreviewGallery from '../components/VisualPreviewGallery';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { RepositoryChip } from '../components/ui/RepositoryChip';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useLiveResource } from '../hooks/useLiveResource';
 import { formatAgentLabel } from '../utils/agentStatus';
@@ -754,9 +755,8 @@ function GoalList() {
     <section aria-labelledby="goals-title" className="min-h-0 flex-1 overflow-auto pb-6">
       {error && <p role="alert" className="mx-4 my-3 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">{error}</p>}
       {hasSuccessfulRead && <span className="sr-only">{visibleGoals.length} of {goals.length}</span>}
-      {refreshing && hasSuccessfulRead && <p role="status" className="px-4 py-3 text-xs text-slate-500 sm:px-6">Refreshing…</p>}
       {!hasSuccessfulRead && (initialLoading || refreshing)
-        ? <div role="status" className="flex items-center justify-center gap-2 border-y border-slate-200 py-10 text-sm text-slate-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading goals…</div>
+        ? <ListSkeleton layout="table" columns={6} rows={6} label="Loading goals…" className="px-4 py-3 sm:px-6" data-testid="goals-skeleton" />
         : error && goals.length === 0
           ? null
           : goals.length === 0
@@ -886,7 +886,12 @@ function GoalDetails({ goalId }: { goalId: string }) {
     () => tokenTotal(live.tokenUsage || null) || goal?.liveSummary.nativeGoal?.tokensUsed || 0,
     [goal?.liveSummary.nativeGoal?.tokensUsed, live.tokenUsage],
   );
-  if (!goal) return <div className="p-6 text-slate-600">{error || goalResource.error || 'Loading goal…'}</div>;
+  if (!goal) {
+    const loadError = error || goalResource.error;
+    return loadError
+      ? <div className="p-6 text-slate-600">{loadError}</div>
+      : <ListSkeleton layout="card" rows={3} label="Loading goal…" className="min-h-full bg-white p-4 sm:p-6" data-testid="goal-skeleton" />;
+  }
   const terminal = Boolean(goal.resultState);
   const cancelling = !terminal && goal.desiredState === 'cancelled';
   const mutable = !terminal && !cancelling;

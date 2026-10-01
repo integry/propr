@@ -79,7 +79,7 @@ test('whole-session direct goals publish an agent declaration and continue after
     active_turn_id: null, pause_confirmed_at: null, resume_requested: false,
     started_at: new Date().toISOString(), paused_at: null, control_generation: 0, control_ack_generation: 0,
   };
-  const wholeSessionGoal = { ...goal, agent_type: 'antigravity' };
+  const wholeSessionGoal = { ...goal, agent_type: 'opencode' };
   const published: Array<{ kind: string; message?: string; include?: string[]; exclude?: string[] }> = [];
   let continuedAfterCheckpoint = false;
   const dependencies = {
@@ -128,7 +128,7 @@ test('whole-session direct goals record a malformed declaration and continue for
   const goal = {
     goal_id: data.goalId, owner_id: 'owner-1', repository: 'acme/repo', objective: 'Ship it',
     launch_strategy: 'direct', initial_prompt: '/goal Ship it', base_branch: 'main', branch_name: 'goal/ship-it',
-    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity',
+    worktree_path: '/tmp/worktree', agent_id: 'agent-1', agent_alias: 'opencode', agent_type: 'opencode',
     requested_model: 'claude-opus', desired_state: 'running', result_state: null,
     current_task_id: data.taskId, session_id: 'session-1', conversation_id: null,
     run_generation: data.generation, run_claim: data.claimId, claimed_at: new Date().toISOString(),
@@ -309,7 +309,7 @@ test('fresh whole-session providers receive the durable context with the first p
   };
   const goal = {
     goal_id: data.goalId, initial_prompt: initialPrompt, session_id: null, conversation_id: null,
-    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'antigravity',
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'opencode',
   };
   const prepared = {
     goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },

@@ -72,7 +72,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         const common = {
             owner_login: 'alice', repository: 'acme/repo', title: 'Ship Reliable Goal Delivery', objective: 'Ship it',
             launch_strategy: 'direct', initial_prompt: '/goal Ship it\n\nSaved policy',
-            agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity', requested_model: 'gpt-5.6',
+            agent_id: 'agent-1', agent_alias: 'opencode', agent_type: 'opencode', requested_model: 'gpt-5.6',
             desired_state: 'paused', run_generation: 2, run_claim: 'claim-2', session_id: 'thread-1',
             branch_name: 'goal/ship-it', worktree_path: '/worktrees/goal-1',
             pause_confirmed_at: new Date().toISOString(),

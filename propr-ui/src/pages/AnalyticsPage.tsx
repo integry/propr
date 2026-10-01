@@ -13,6 +13,7 @@ import ActivitySparkline from '../components/ActivitySparkline';
 import RepositoryBreakdown from '../components/RepositoryBreakdown';
 import TopModels from '../components/TopModels';
 import { getTaskStats, type TaskStatsResponse } from '../api/taskStatsApi';
+import { PageLoadingStatus } from '../components/ui/Skeleton';
 
 const formatDate = (dateStr: string): string =>
   new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -47,6 +48,8 @@ const AnalyticsPage: React.FC = () => {
         <h1 className="text-lg font-bold text-gray-800 sm:text-2xl">Analytics</h1>
         <p className="mt-1 text-sm text-slate-500">Aggregate activity across every repository.</p>
       </div>
+      {/* The widgets load side by side, so the page announces their wait once. */}
+      <PageLoadingStatus label="Loading analytics…">
       <div className="grid grid-cols-1 gap-4 px-4 pb-6 sm:px-6 lg:grid-cols-2">
         <AnalyticsPanel>
           <ActivitySparkline data={sparklineData} isLoading={loading && !taskStats} />
@@ -61,6 +64,7 @@ const AnalyticsPage: React.FC = () => {
           <TopModels limit={10} />
         </AnalyticsPanel>
       </div>
+      </PageLoadingStatus>
     </div>
   );
 };

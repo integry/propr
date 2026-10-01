@@ -7,11 +7,12 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
+import { isLiveTask } from './liveDetailsTaskState.js';
 import {
   isConversationResultEmpty, parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult, type ConversationResult
 } from './liveDetailsCodexParser.js';
-import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
+import { isAntigravityStreamAwaitingNarration, parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, hasCodexAppServerNotification, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
@@ -49,7 +50,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
           send(res, activeRedisResult);
           return;
         }
-        const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+        const persistedGoalResult = await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
         if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', taskId, persistedGoalResult)); return; }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
         send(res, { events: [], todos: [], currentTask: null });
@@ -79,7 +80,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
             send(res, withStableResultEventIds(taskId, 'stored', sessionId, rawStoredOutput.rawFallback));
             return;
           }
-          const persistedGoalResult = await parsePersistedGoalOutput(db, taskId);
+          const persistedGoalResult = await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
           if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', sessionId, persistedGoalResult)); return; }
           send(res, { events: [], todos: [], currentTask: null });
           return;
@@ -224,6 +225,8 @@ export interface ParsedStoredOutput {
   parsed: ConversationResult | null;
   rawFallback: ConversationResult | null;
   format: StoredOutputFormat;
+  /** An Antigravity stream whose latest invocation has not narrated or finished yet. */
+  awaitingNarration?: boolean;
 }
 function getClaudeProjectDirName(workspacePath: string): string {
   const normalizedPath = path.resolve(workspacePath).replace(/\\/g, '/');
@@ -269,22 +272,6 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-const FINISHED_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
-
-/** Unknown lifecycle state retains live selection; known finished tasks are uncapped. */
-async function isLiveTask(redisClient: RedisClientType, db: Knex, taskId: string): Promise<boolean> {
-  try {
-    const raw = await redisClient.get(`worker:state:${taskId}`);
-    const state = raw ? JSON.parse(raw) as { history?: HistoryEntryWithSessionMetadata[] } : null;
-    const latest = state?.history?.at(-1)?.state;
-    if (latest) return !FINISHED_TASK_STATES.has(latest.toLowerCase());
-  } catch { /* Fall back to persisted lifecycle state. */ }
-  try {
-    const latest = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'desc').first('state');
-    if (latest?.state) return !FINISHED_TASK_STATES.has(String(latest.state).toLowerCase());
-  } catch { /* Some callers only have output storage available. */ }
-  return true;
-}
 
 async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string, options: AgentStreamParseOptions = {}): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal']; omittedEventCount?: number; historyTruncated?: boolean } & Pick<LiveOutputProjectionResult, 'liveOutputPosition'>) | null> {
   const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
@@ -306,7 +293,7 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
   // Output that is not a record stream (a stored result document) is projected whole.
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
-  const result = projectStoredOutputResult(parseStoredOutputContent(output));
+  const result = projectStoredOutputResult(parseStoredOutputContent(output), await isLiveTask(redisClient, db, taskId));
   return result
     ? withStableResultEventIds(taskId, 'redis', executionStartTimestamp ?? taskId, result)
     : null;
@@ -330,13 +317,13 @@ export async function projectTaskLiveDetails(
   try {
     const details = sessionId ? await parseExecutionDetailsFromDb(db, taskId, sessionId) : null;
     if (details) return details;
-    return await parsePersistedGoalOutput(db, taskId);
+    return await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
   } catch (error) {
     if (rethrowReadErrors) throw error;
     return null;
   }
 }
-async function parsePersistedGoalOutput(db: Knex, taskId: string): Promise<ConversationResult | null> {
+async function parsePersistedGoalOutput(db: Knex, taskId: string, isLive: () => Promise<boolean>): Promise<ConversationResult | null> {
   const history = await db('task_history').where({ task_id: taskId }).orderBy('timestamp', 'asc').select('metadata');
   const records = history.flatMap(entry => {
     try {
@@ -347,10 +334,12 @@ async function parsePersistedGoalOutput(db: Knex, taskId: string): Promise<Conve
   });
   if (records.length === 0) return null;
   const stored = parseStoredOutputContent(records.join('\n'));
-  return projectStoredOutputResult(stored);
+  return projectStoredOutputResult(stored, Boolean(stored.awaitingNarration) && await isLive());
 }
-function projectStoredOutputResult(stored: ParsedStoredOutput): ConversationResult | null {
+/** A live stream still awaiting its first narration shows nothing rather than raw protocol JSON. */
+function projectStoredOutputResult(stored: ParsedStoredOutput, live = false): ConversationResult | null {
   if (stored.parsed) return stored.parsed;
+  if (live && stored.awaitingNarration) return null;
   return stored.rawFallback ? {
     ...stored.rawFallback,
     events: stored.rawFallback.events.map(event => ({ ...event, rawFallback: true })),
@@ -360,6 +349,9 @@ export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };
   const format = detectStoredOutputFormat(output);
   const rawFallback = buildRawOutputConversationResult(output);
+  if (format === 'antigravity' && isAntigravityStreamAwaitingNarration(output)) {
+    return { ...parseStoredOutputWithFormat(output, format, rawFallback), awaitingNarration: true };
+  }
   if (format !== 'unknown') return parseStoredOutputWithFormat(output, format, rawFallback);
   for (const fallbackFormat of STORED_OUTPUT_FALLBACK_ORDER) {
     const parsed = parseStoredOutputForFormat(output, fallbackFormat);

@@ -236,7 +236,7 @@ export const NeedsAttentionPanel: React.FC<DashboardSectionProps> = ({
         )}
       </SectionHeading>
 
-      {loading && <SectionSkeleton rows={2} />}
+      {loading && <SectionSkeleton rows={2} label="Loading items that need attention…" />}
       {!loading && unavailable && (
         <SectionError message="Unable to load what needs attention" onRetry={reload} />
       )}

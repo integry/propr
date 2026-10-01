@@ -156,10 +156,23 @@ export function claudeGoalCommandProbeSucceeded(output: string): boolean {
     return false;
 }
 
-/** Antigravity goal mode needs noninteractive output and exact-conversation resume. */
+/** Antigravity goal mode needs noninteractive stream output and exact-conversation resume. */
 export function antigravityHelpSupportsWholeSession(output: string): boolean {
     return ['--print', '--conversation', '--output-format', '--disable-slash-commands']
         .every(option => cliHelpHasOption(output, option));
+}
+
+const ANTIGRAVITY_GOAL_PROBE_SEPARATOR = '===PROPR-ANTIGRAVITY-GOAL-PROBE===';
+/** The description Antigravity registers for its native `/goal` slash command. */
+export const ANTIGRAVITY_GOAL_COMMAND_DESCRIPTION = 'Run until the specified goal is completely finished.';
+
+/**
+ * Print mode answers slash commands only after authenticating, so an offline
+ * probe cannot run `/goal`. The CLI binary registers the command with a fixed
+ * description; its presence proves the native goal command is built in.
+ */
+export function antigravityGoalCommandProbeSucceeded(output: string): boolean {
+    return /^[1-9]\d*\s*$/m.test(output.trim());
 }
 
 export function claudeSessionIdentity(output: string): string | undefined {
@@ -185,10 +198,6 @@ function unsupportedCapability(agent: Agent, reason: string): GoalCapability {
         controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false },
         reason,
     };
-}
-
-function introspectionOutput(result: ExecutionResult): string {
-    return `${result.stdout}\n${result.stderr}`;
 }
 
 async function probeCodex(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
@@ -227,13 +236,22 @@ async function probeClaude(agent: Agent, executor: DockerExecutor): Promise<Goal
 }
 
 async function probeAntigravity(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    const probeCommand = [
+        'agy --help',
+        `echo '${ANTIGRAVITY_GOAL_PROBE_SEPARATOR}'`,
+        `grep -c -a -F '${ANTIGRAVITY_GOAL_COMMAND_DESCRIPTION}' "$(readlink -f "$(command -v agy)")" || true`,
+    ].join('; ');
     const result = await executor('docker', [
-        'run', '--rm', '--network', 'none', '--entrypoint', 'agy',
-        agent.config.dockerImage, '--help',
+        'run', '--rm', '--network', 'none', '--entrypoint', '/bin/sh',
+        agent.config.dockerImage, '-c', probeCommand,
     ], { timeout: 30_000 });
-    return result.exitCode === 0 && antigravityHelpSupportsWholeSession(introspectionOutput(result))
+    const [help, goalProbe = ''] = result.stdout.split(ANTIGRAVITY_GOAL_PROBE_SEPARATOR);
+    if (!antigravityHelpSupportsWholeSession(`${help}\n${result.stderr}`)) {
+        return unsupportedCapability(agent, 'Pinned Antigravity runtime does not expose noninteractive --conversation resume and slash-command support');
+    }
+    return antigravityGoalCommandProbeSucceeded(goalProbe)
         ? supportedCapability(agent)
-        : unsupportedCapability(agent, 'Pinned Antigravity runtime does not expose noninteractive --conversation resume and slash-command support');
+        : unsupportedCapability(agent, 'Pinned Antigravity runtime does not provide the native /goal command');
 }
 
 /** Capability-probe the configured runtime without authentication or provider inference. */
