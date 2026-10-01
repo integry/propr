@@ -370,6 +370,15 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
   return success(undefined);
 }
 
+function normalizeContextRepositories(context: RepoToMonitor['contextRepositories']): ValidationResult<RepoToMonitor['contextRepositories']> {
+  if (context !== undefined && context !== 'all' && context !== 'none'
+      && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
+        typeof entry !== 'string' || !isValidRepoName(entry) || entry.split('/').some(part => part === '.' || part === '..')))) {
+    return failure('Context repositories must be all, none, or up to 499 owner/repository names');
+  }
+  return success(Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context);
+}
+
 export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
   const candidateResult = parseRepoObject(repo);
   if (!candidateResult.ok) return candidateResult;
@@ -393,12 +402,8 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!cancelCiWorkflows.ok) return cancelCiWorkflows;
   const nonBlockingChecks = normalizeNonBlockingChecks(candidate.nonBlockingChecks, name);
   if (!nonBlockingChecks.ok) return nonBlockingChecks;
-  const context = candidate.contextRepositories;
-  if (context !== undefined && context !== 'all' && context !== 'none'
-      && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
-        typeof entry !== 'string' || !isValidRepoName(entry) || entry.split('/').some(part => part === '.' || part === '..')))) {
-    return failure('Context repositories must be all, none, or up to 499 owner/repository names');
-  }
+  const context = normalizeContextRepositories(candidate.contextRepositories);
+  if (!context.ok) return context;
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
 
@@ -406,7 +411,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
-    contextRepositories: Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context,
+    contextRepositories: context.value,
     autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     cancelCiDuringFollowup: candidate.cancelCiDuringFollowup ?? false,
     cancelCiDuringFollowupWorkflows: cancelCiWorkflows.value,

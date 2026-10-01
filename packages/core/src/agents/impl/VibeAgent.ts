@@ -317,7 +317,7 @@ export class VibeAgent implements Agent {
         return undefined;
     }
 
-    private getCliArgs(): string[] {
+    private getCliArgs(repositoryInspection: boolean): string[] {
         const processArgs = process.env.VIBE_CLI_ARGS;
         const configuredArgs = processArgs ?? this.config.envVars?.VIBE_CLI_ARGS;
         const source = processArgs !== undefined ? 'process.env.VIBE_CLI_ARGS' : 'config.envVars.VIBE_CLI_ARGS';
@@ -334,6 +334,11 @@ export class VibeAgent implements Agent {
                     throw new Error(`${source} does not include --output json. Structured output is required. Add --output json or set VIBE_ALLOW_UNSTRUCTURED=1 to override.`);
                 }
                 logger.warn({ source, args }, 'VIBE_CLI_ARGS override does not include --output json; structured output parsing may degrade');
+            }
+        }
+        if (repositoryInspection) {
+            for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) {
+                args.push('--enabled-tools', tool);
             }
         }
         return args;
@@ -402,12 +407,7 @@ export class VibeAgent implements Agent {
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const cliArgs = this.getCliArgs();
-        if (repositoryInspection) {
-            for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) {
-                cliArgs.push('--enabled-tools', tool);
-            }
-        }
+        const cliArgs = this.getCliArgs(repositoryInspection);
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
         const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
