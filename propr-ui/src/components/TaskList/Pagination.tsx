@@ -1,6 +1,8 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
+const formatCount = (value: number): string => value.toLocaleString('en-US');
+
 interface PaginationProps {
   hideFilters?: boolean;
   totalTasks: number;
@@ -27,7 +29,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
       <span className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing </span>{currentPage * tasksPerPage + 1}-{Math.min((currentPage + 1) * tasksPerPage, totalTasks)}<span className="hidden sm:inline"> of {totalTasks} tasks</span>
+        <span className="hidden sm:inline">Showing </span>{formatCount(currentPage * tasksPerPage + 1)}–{formatCount(Math.min((currentPage + 1) * tasksPerPage, totalTasks))}<span className="hidden sm:inline"> of {formatCount(totalTasks)} tasks</span>
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button
@@ -39,7 +41,7 @@ export const Pagination: React.FC<PaginationProps> = ({
           <span className="hidden sm:inline">Previous</span>
         </button>
         <span className="text-xs sm:text-sm text-gray-600 px-1">
-          {displayPage}/{totalPages}
+          {formatCount(displayPage)}/{formatCount(totalPages)}
         </span>
         <button
           onClick={() => setCurrentPage(prev => (prev + 1) * tasksPerPage < totalTasks ? prev + 1 : prev)}

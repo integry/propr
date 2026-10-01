@@ -151,9 +151,9 @@ for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const api = await fixture(page);
     await page.goto('/tasks');
-    await expect(page.getByRole('img', { name: 'Task queue', exact: true })).toBeVisible();
-    await expect(page.locator('img[alt="Additional screen"]:visible')).toHaveCount(0);
-    await expect(page.locator('[aria-label="Published visual previews"]:visible img')).toHaveCount(3);
+    // The task ledger announces evidence as a count: thumbnails in dense rows load as empty boxes.
+    await expect(page.locator('[data-testid="preview-count"]:visible')).toHaveText('4 previews');
+    await expect(page.locator('[aria-label="Published visual previews"]:visible')).toHaveCount(0);
     await capture(page, `preview-task-rows-${width}`);
     await page.goto('/goals');
     await expect(page.getByRole('img', { name: 'Task queue', exact: true })).toBeVisible();

@@ -248,7 +248,7 @@ export const HappeningNowSection: React.FC<DashboardSectionProps> = ({ repositor
   );
 
   const body = () => {
-    if (loading) return <SectionSkeleton rows={3} />;
+    if (loading) return <SectionSkeleton rows={3} label="Loading running work…" />;
     // "We could not find out" is not the same as "nothing is running", so the
     // failed read keeps its own wording and its own retry.
     if (error && orderedRunning.length === 0) {

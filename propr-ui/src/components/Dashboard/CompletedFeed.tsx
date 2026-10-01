@@ -308,7 +308,7 @@ export const CompletedFeed: React.FC<DashboardSectionProps> = ({ repository, ref
   const visible = showAll || !canCollapse ? items : items.slice(0, VISIBLE_ITEMS);
 
   const body = () => {
-    if (loading) return <SectionSkeleton rows={4} />;
+    if (loading) return <SectionSkeleton rows={4} label="Loading completed work…" />;
     if (error && items.length === 0) {
       return <SectionError message="Unable to load completed work" onRetry={reload} />;
     }

@@ -130,11 +130,70 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.listGoals).mockReturnValue(request.promise);
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
 
-    expect(screen.getByText('Loading goals…')).toBeInTheDocument();
+    // Slate placeholders shaped like the queue, announced once, and no spinner.
+    const skeleton = screen.getByTestId('goals-skeleton');
+    expect(skeleton).toHaveAttribute('role', 'status');
+    expect(skeleton).toHaveAttribute('aria-busy', 'true');
+    expect(skeleton).toHaveAttribute('data-skeleton-layout', 'table');
+    expect(screen.getAllByText('Loading goals…')).toHaveLength(1);
+    expect(skeleton.querySelector('.animate-spin')).toBeNull();
     expect(screen.queryByText('No goals yet')).not.toBeInTheDocument();
 
     await act(async () => { request.resolve({ goals: [] }); });
     expect(await screen.findByText('No goals yet')).toBeInTheDocument();
+    expect(screen.queryByTestId('goals-skeleton')).not.toBeInTheDocument();
+  });
+
+  it('keeps the queue rows on screen without a refresh indicator while a pushed update reads', async () => {
+    let goalHandler: ((payload: { goalId: string; repository: string | null }) => void) | undefined;
+    socket.onGoalUpdate.mockImplementation(handler => {
+      goalHandler = handler as unknown as (payload: { goalId: string; repository: string | null }) => void;
+      return vi.fn();
+    });
+    socket.isConnected = true;
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [goal] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    await screen.findByRole('heading', { name: goal.title });
+
+    const refresh = deferred<Awaited<ReturnType<typeof goalsApi.listGoals>>>();
+    vi.mocked(goalsApi.listGoals).mockReturnValue(refresh.promise);
+    await act(async () => {
+      goalHandler?.({ goalId: goal.id, repository: goal.repository });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(goalsApi.listGoals).toHaveBeenCalledTimes(2));
+
+    // The last known rows stay put; nothing narrates the background read.
+    expect(screen.getByRole('heading', { name: goal.title })).toBeInTheDocument();
+    expect(screen.queryByText(/Refreshing/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('goals-skeleton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    await act(async () => { refresh.resolve({ goals: [{ ...goal, desiredState: 'paused' }] }); });
+    expect(await screen.findByText('Paused')).toBeInTheDocument();
+  });
+
+  it('draws the goal console as a skeleton until its first read lands', async () => {
+    const request = deferred<Awaited<ReturnType<typeof goalsApi.getGoal>>>();
+    vi.mocked(goalsApi.getGoal).mockReturnValue(request.promise);
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+
+    const skeleton = screen.getByTestId('goal-skeleton');
+    expect(skeleton).toHaveAttribute('role', 'status');
+    expect(skeleton).toHaveAttribute('data-skeleton-layout', 'card');
+    expect(screen.getAllByText('Loading goal…')).toHaveLength(1);
+
+    await act(async () => { request.resolve({ goal }); });
+    expect(await screen.findByRole('heading', { name: goal.title })).toBeInTheDocument();
+    expect(screen.queryByTestId('goal-skeleton')).not.toBeInTheDocument();
+  });
+
+  it('shows a failed goal read as text rather than a skeleton', async () => {
+    vi.mocked(goalsApi.getGoal).mockRejectedValue(new Error('Goal unavailable'));
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+
+    expect(await screen.findByText('Goal unavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('goal-skeleton')).not.toBeInTheDocument();
   });
 
   it('keeps a failed initial goal read as an error instead of an empty queue', async () => {

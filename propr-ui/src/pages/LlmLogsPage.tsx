@@ -43,10 +43,6 @@ function resolveLlmLogsScopeState(
   return { kind: 'ready', logs, refreshError: currentError };
 }
 
-function isRefreshPending(loading: boolean, refreshing: boolean): boolean {
-  return loading || refreshing;
-}
-
 const LlmLogsPage: React.FC = () => {
   useDocumentTitle('LLM Log');
   const currentUser = useCurrentUser();
@@ -63,7 +59,6 @@ const LlmLogsPage: React.FC = () => {
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
   const [pagination, setPagination] = useState<LlmLogsPagination | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [error, setError] = useState<{ scope: string; message: string } | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
@@ -99,11 +94,7 @@ const LlmLogsPage: React.FC = () => {
 
   const loadLogs = useCallback(async (page: number, showLoading = true) => {
     const requestId = ++requestIdRef.current;
-    if (showLoading) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
+    if (showLoading) setLoading(true);
     setError(current => current?.scope === queryScope ? null : current);
     try {
       const params: Record<string, unknown> = {
@@ -144,7 +135,6 @@ const LlmLogsPage: React.FC = () => {
     } finally {
       if (requestId === requestIdRef.current) {
         setLoading(false);
-        setRefreshing(false);
       }
     }
   }, [modelFilter, queryScope, statusFilter, typeFilter, workTypeFilter]);
@@ -262,7 +252,6 @@ const LlmLogsPage: React.FC = () => {
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-auto">
         {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh logs: {currentError}</div>}
-        {isRefreshPending(loading, refreshing) && <div role="status" className="px-4 pt-3 text-xs text-slate-500 sm:px-6">Refreshing logs…</div>}
         {/* Agent Tank Suggestion Banner */}
         {canManageAgents && showAgentTankSuggestion && (
           <div className="mx-4 sm:mx-6 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">

@@ -3,6 +3,8 @@ import { RepositoryIcon } from '../RepositoryIcon';
 
 interface RepositoryChipProps {
   repository: string;
+  /** Text to show in place of the full slug (e.g. the name without its owner); the tooltip keeps the slug. */
+  label?: string;
   /** Repository-relative path to a custom icon; the chip shows no icon at all when absent. */
   iconPath?: string | null;
   revision?: string | null;
@@ -23,6 +25,7 @@ interface RepositoryChipProps {
  */
 export const RepositoryChip: React.FC<RepositoryChipProps> = ({
   repository,
+  label,
   iconPath,
   revision,
   className = '',
@@ -40,6 +43,6 @@ export const RepositoryChip: React.FC<RepositoryChipProps> = ({
       className="h-3.5 w-3.5 self-center"
       fallback="none"
     />
-    <span className="truncate font-mono">{repository}</span>
+    <span className="truncate font-mono">{label ?? repository}</span>
   </span>
 );

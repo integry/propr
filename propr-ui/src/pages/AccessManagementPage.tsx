@@ -15,6 +15,7 @@ import type {
   InstanceRoleAuditEntry
 } from '../api/proprTypes';
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
+import { ListSkeleton } from '../components/ui/Skeleton';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
   members: [],
@@ -221,9 +222,8 @@ const AccessManagementPage: React.FC = () => {
         <div className="border-b border-gray-200 px-5 py-4">
           <h2 className="font-medium text-gray-900">Explicit assignments</h2>
         </div>
-        {memberState === 'refreshing' && <div role="status" className="border-b border-gray-100 px-5 py-2 text-xs text-gray-500">Refreshing assignments…</div>}
         {memberState === 'loading' ? (
-          <div className="p-8 text-center text-sm text-gray-500">Loading access assignments…</div>
+          <ListSkeleton rows={3} layout="row" label="Loading access assignments…" className="px-5 py-4" />
         ) : memberState === 'error' ? null
         : memberState === 'empty' ? (
           <div className="p-8 text-center text-sm text-gray-500">No durable assignments yet.</div>
@@ -278,9 +278,8 @@ const AccessManagementPage: React.FC = () => {
           <h2 className="font-medium text-gray-900">Recent role changes</h2>
         </div>
         {auditError && <div role="alert" className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">{auditError}</div>}
-        {auditState === 'refreshing' && <div role="status" className="border-b border-gray-100 px-5 py-2 text-xs text-gray-500">Refreshing role changes…</div>}
         {auditState === 'loading' ? (
-          <div className="p-6 text-sm text-gray-500">Loading role changes…</div>
+          <ListSkeleton rows={3} layout="row" label="Loading role changes…" className="px-5 py-4" />
         ) : auditState === 'error' ? null
         : auditState === 'empty' ? (
           <div className="p-6 text-sm text-gray-500">No role changes recorded yet.</div>
