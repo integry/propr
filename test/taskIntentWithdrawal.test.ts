@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
 
 const states = new Map<string, any>();
+const conversations = new Map<string, any[]>();
 const redisValues = new Map<string, string>();
 const jobs: any[] = [];
 const requests: Array<{ endpoint: string; params: any }> = [];
@@ -13,7 +14,12 @@ const redis = {
         ? (states.has(key.slice(13)) ? JSON.stringify(states.get(key.slice(13))) : null)
         : redisValues.get(key) ?? null,
     set: async (key: string, value: string) => { redisValues.set(key, value); return 'OK'; },
-    rpush: async () => 1,
+    rpush: async (key: string, value: string) => {
+        const messages = conversations.get(key) ?? [];
+        messages.push(JSON.parse(value));
+        conversations.set(key, messages);
+        return messages.length;
+    },
     del: async (key: string) => { redisValues.delete(key); return 1; },
 };
 const manager = {
@@ -48,7 +54,7 @@ await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExpo
 const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, taskIntentTarget, intentJobTaskId } = await import('../packages/core/src/services/taskIntent.js');
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, triggeringLabel: 'AI' };
 
-beforeEach(() => { states.clear(); redisValues.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; });
+beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -146,3 +152,33 @@ test('worker admission returns cancellation without invoking an implementation o
     assert.deepEqual(await processor(addJob('closed-pr', { ...target, pullRequestNumber: 87 }, 'active', 'processPullRequestComment') as never), { status: 'cancelled', reason: 'cancelled_pr_closed' });
     assert.equal(process.mock.callCount(), 0);
 });
+
+for (const [reason, explanation, kind] of [
+    ['cancelled_issue_closed', 'Cancelled because the issue was closed.', 'issue'],
+    ['cancelled_label_removed', 'Cancelled because the processing trigger label was removed.', 'issue'],
+    ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.', 'pr'],
+] as const) {
+    for (const phase of ['running', 'active-without-state', 'queued', 'admission'] as const) {
+        test(`${reason} persists readable history and conversation text for ${phase}`, async () => {
+            const ref = { ...target, kind, ...(kind === 'pr' ? { pullRequestNumber: target.number } : {}) };
+            const name = kind === 'pr' ? 'processPullRequestComment' : 'processGitHubIssue';
+            if (phase === 'running') addRunning('task', ref);
+            else addJob('task', ref, phase === 'queued' ? 'waiting' : 'active', name);
+            if (phase === 'admission') {
+                tracker = reason === 'cancelled_label_removed' ? { state: 'open', labels: [] } : { state: 'closed', merged: false };
+                assert.equal(await preventWithdrawnJob(jobs[0]), reason);
+            } else {
+                await cancelWithdrawnIntent(ref, reason, redis as never);
+            }
+            const state = states.get('task');
+            assert.equal(state.terminalReason, reason);
+            assert.equal(state.history.at(-1).metadata.reason, explanation);
+            const messages = conversations.get('conversation:task') ?? [];
+            if (phase === 'running' || phase === 'active-without-state') {
+                assert.equal(messages.find(message => message.level === 'warning')?.content, explanation);
+                assert.equal(JSON.parse(redisValues.get('worker:abort:task')!).reason, reason);
+            }
+            assert.ok(messages.every(message => !message.content.includes(reason)));
+        });
+    }
+}

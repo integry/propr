@@ -797,7 +797,7 @@ for (const [reason, explanation] of [
   ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.'],
   ['cancelled_by_user', 'Cancelled by a user.'],
   ['timed_out', 'The task exceeded its time limit.'],
-  ['unknown_internal_code', 'The task ended.'],
+  ['pr_merged', 'The pull request was merged.'],
 ]) {
   test(`Inbox explains ${reason} in human-readable text`, async () => {
     await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
@@ -810,5 +810,25 @@ for (const [reason, explanation] of [
     assert.equal(notifications[0].body, explanation);
     assert.equal(notifications[0].severity, reason === 'timed_out' ? 'error' : 'info');
     if (reason !== 'timed_out') assert.ok(!notifications[0].actions.includes('retry' as never));
+  });
+}
+
+for (const terminalReason of [undefined, '', 'unknown_internal_code', 'cancelled_collision_attempt_recovery', 'timed_out']) {
+  test(`Inbox ignores bookkeeping cancellation with terminal reason ${terminalReason}`, async () => {
+    await database('tasks').insert({ task_id: 'rescheduled', repository: 'integry/propr', pr_number: 42, task_type: 'pr-comment' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'processing', timestamp: iso(),
+    });
+    for (const offset of [1000, 2000]) {
+      await projection.projectTaskUpdate({
+        eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'cancelled', timestamp: iso(offset),
+        metadata: terminalReason === undefined ? {} : { terminalReason },
+      });
+    }
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 0);
+    // Filtering the notification must still resolve activity tracking.
+    const activity = await database('notification_source_activity').where({ activity_type: 'task', activity_key: 'rescheduled' }).first();
+    assert.equal(activity.status, 'cancelled');
   });
 }

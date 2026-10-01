@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -152,7 +153,7 @@ function getWebUiUrl(): string {
 async function handleSkippedPRValidation(params: ExecuteProcessingParams, reason: string | undefined): Promise<JobResult> {
     const { context: { pullRequestNumber, correlatedLogger }, taskId, stateManager } = params;
     if (reason === 'pull_request_closed') {
-        await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
+        await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason('cancelled_pr_closed'), terminalReason: 'cancelled_pr_closed' });
         return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
     }
     correlatedLogger.info({ pullRequestNumber, reason }, 'Skipping PR comment processing');

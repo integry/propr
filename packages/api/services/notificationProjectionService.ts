@@ -28,6 +28,9 @@ function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload
 const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
+const CANCELLATION_REASONS = new Set([
+  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
+]);
 const TERMINAL_ACTIVITY_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 // Repository settings change rarely while lifecycle projections are frequent;
 // a short TTL removes almost all reads yet applies an operator's change quickly.
@@ -620,7 +623,9 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
-    if (payload.state === 'failed' || payload.state === 'cancelled') {
+    const terminalReason = payload.metadata?.terminalReason;
+    if (payload.state === 'failed'
+      || (payload.state === 'cancelled' && typeof terminalReason === 'string' && CANCELLATION_REASONS.has(terminalReason))) {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
       });

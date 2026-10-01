@@ -7,10 +7,13 @@ process.env.PROPR_DEMO_MODE = 'true';
 const core = await import('@propr/core');
 const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
+let liveIssue = { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] };
+const cancellations: Array<Record<string, unknown>> = [];
 let outcome: 'completed' | 'failed' | 'cancelled' = 'completed';
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
+  markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { cancellations.push(metadata); },
   createTaskStateIfAbsent: async () => undefined,
   getTaskState: async () => null,
   updateTaskState: async () => undefined,
@@ -20,6 +23,7 @@ const stateManager = {
 await mock.module('@propr/core', { namedExports: {
   ...core,
   preventWithdrawnJob: async () => null,
+  updateWithdrawnIssueLabels: async () => undefined,
   associateSubmissionTask: async (_database: unknown, _id: string, taskId: string) => { taskLinks.push(taskId); },
   findIssueSubmission: async () => submitted ? { id: 'submission' } : undefined,
   logger: { ...log, withCorrelation: () => log },
@@ -44,7 +48,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
     jobId: job.id, issueRef: job.data, correlationId: 'correlation', correlatedLogger: log,
     stateManager, modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', AI_PRIMARY_TAG: 'AI',
   }),
-  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: async () => ({ data: { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] } }) }),
+  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: async () => ({ data: liveIssue }) }),
   checkLabelConditions: () => ({ skip: false }),
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {
@@ -80,4 +84,19 @@ test('UI issue tasks use the same worker completion, cancellation, failure and P
     }
   }
   assert.deepEqual(taskLinks, ['ordinary-task', 'ordinary-task', 'ordinary-task']);
+});
+
+test('issue withdrawal detected after admission persists readable history and retains its result code', async () => {
+  for (const [state, labels, code, explanation] of [
+    ['closed', [{ name: 'AI' }], 'cancelled_issue_closed', 'Cancelled because the issue was closed.'],
+    ['open', [], 'cancelled_label_removed', 'Cancelled because the processing trigger label was removed.'],
+  ] as const) {
+    liveIssue = { ...liveIssue, state, labels: [...labels] };
+    cancellations.length = 0;
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
+    } } as unknown as Job<IssueJobData>);
+    assert.deepEqual(result, { status: 'cancelled', reason: code });
+    assert.deepEqual(cancellations, [{ reason: explanation, terminalReason: code }]);
+  }
 });

@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import { TaskStates, type JobResult, type TaskStateData } from '@propr/core';
 import { sanitizeErrorMessage } from './jobs/errorSanitizer.js';
 import type { PersistedTaskTerminalTransition } from './persistedTaskStateStore.js';
@@ -37,7 +38,9 @@ export function completedJobTransition(value: unknown): PersistedTaskTerminalTra
     if (['cancelled', 'requeued', 'rescheduled'].includes(status ?? '')) {
         return {
             state: TaskStates.CANCELLED,
-            reason: `Task job ${status}${reason ? `: ${reason}` : ''}`,
+            reason: status === 'cancelled'
+                ? formatTaskTerminalReason(reason ?? '')
+                : `Task job ${status}${reason ? `: ${reason}` : ''}`,
             metadata: { ...metadata, ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}) },
         };
     }

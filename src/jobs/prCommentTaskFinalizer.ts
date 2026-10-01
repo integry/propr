@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import {
     TaskStates,
     taskStateExpectation,
@@ -106,7 +107,9 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
             return {
                 state: TaskStates.CANCELLED,
                 metadata: {
-                    reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
+                    reason: status === 'cancelled'
+                        ? formatTaskTerminalReason(reason ?? '')
+                        : sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
                     historyMetadata: { ...historyMetadata, ...(status === 'cancelled' ? { cancellationReason: reason } : {}) },
                 },
             };

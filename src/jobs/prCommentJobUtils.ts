@@ -379,13 +379,15 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         correlatedLogger.debug('Released PR processing lock');
     }
 
-    const terminalState = await options.stateManager.getTaskState(options.taskId);
-    if (terminalState?.state === TaskStates.CANCELLED) return;
-
     try {
         const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
         const remainingPendingComments = await redisClient.llen(pendingCommentsKey);
         if (remainingPendingComments > 0) {
+            // A user stop ends this attempt, not independent comments waiting behind it.
+            // Read after the pending-list lookup so a closure during that await is observed.
+            const terminalState = await options.stateManager.getTaskState(options.taskId);
+            if (terminalState?.terminalReason === 'cancelled_pr_closed') return;
+
             correlatedLogger.info({ pullRequestNumber, pendingCount: remainingPendingComments }, 'Found pending comments that arrived during processing, queuing follow-up job');
 
             const followUpJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${Date.now()}`;

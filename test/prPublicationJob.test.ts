@@ -13,8 +13,9 @@ let onPrepare: (() => void) | undefined;
 let onTaskStateRead: ((taskId: string) => void) | undefined;
 const log = { info() {}, warn() {}, error() {}, debug() {} };
 const taskStates = new Map<string, string>();
+const cancellations: Array<Record<string, unknown>> = [];
 const stateManager = {
-    markTaskCancelled: async (taskId: string) => { taskStates.set(taskId, 'cancelled'); },
+    markTaskCancelled: async (taskId: string, _by: string, metadata: Record<string, unknown>) => { taskStates.set(taskId, 'cancelled'); cancellations.push(metadata); },
     updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean }) => {
         taskStates.set(taskId, state);
         events.push(`state:${taskId}:${state}${metadata?.isRetry ? ':retry' : ''}`);
@@ -126,6 +127,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 });
 beforeEach(() => {
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
+    cancellations.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
@@ -135,6 +137,9 @@ for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_r
         pullRequestState = pullRequest;
         const result = await processPullRequestCommentJob(job('fix') as never);
         assert.deepEqual({ status: result.status, reason: result.reason }, { status: pullRequest.merged ? 'skipped' : 'cancelled', reason });
+        if (!pullRequest.merged) assert.deepEqual(cancellations, [{
+            reason: 'Cancelled because the pull request was closed without merging.', terminalReason: 'cancelled_pr_closed',
+        }]);
         // No starting comment, no worktree for the deleted head branch, no agent.
         assert.ok(!events.includes('comment:42'));
         assert.ok(!events.includes('prepare'));

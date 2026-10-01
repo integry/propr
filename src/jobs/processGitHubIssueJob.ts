@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 /**
  * GitHub issue job processor - facade module that imports from issueJob/ subdirectory.
  * This maintains backwards compatibility with existing imports.
@@ -112,7 +113,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     const target = { ...issueRef, kind: 'issue' as const, triggeringLabel: context.AI_PRIMARY_TAG };
     const reason = withdrawnIntentReason(target, currentIssueData.data, [context.AI_PRIMARY_TAG]);
     if (reason) {
-      await stateManager.markTaskCancelled(taskId, 'system', { reason, terminalReason: reason });
+      await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
       await updateWithdrawnIssueLabels(target, [context.AI_PRIMARY_TAG]);
       return { status: 'cancelled', reason };
     }

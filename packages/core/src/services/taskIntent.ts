@@ -1,5 +1,5 @@
 import type { Redis } from 'ioredis';
-import { buildIssueTaskId } from '@propr/shared';
+import { buildIssueTaskId, formatTaskTerminalReason } from '@propr/shared';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
@@ -93,7 +93,7 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
         stops.set(String(job.id), taskId);
     }
     const results = await Promise.allSettled([...stops].map(([id, taskId]) => stopTaskExecution(id, {
-        redisClient: redisAdapter(redis), taskId, requestedBy: 'system', reason,
+        redisClient: redisAdapter(redis), taskId, requestedBy: 'system', reason: formatTaskTerminalReason(reason),
         cancellationReason: reason, ensureCancelled: true,
     })));
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
@@ -153,7 +153,7 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
         ...data, number: target.number, repoOwner: target.repoOwner, repoName: target.repoName,
         type: target.kind === 'pr' ? 'pr-comment' : 'issue',
     }, typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
-    await manager.markTaskCancelled(taskId, 'system', { reason, terminalReason: reason });
+    await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
     await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels());
     return reason;

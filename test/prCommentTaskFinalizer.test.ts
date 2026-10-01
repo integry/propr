@@ -255,3 +255,28 @@ test('finalization explicitly reports incomplete durable publication', async () 
     assert.equal(result.stateChanged, true);
     assert.equal(result.publication?.historyPersisted, false);
 });
+
+test('both completion finalizers keep cancellation codes out of history reasons', async () => {
+    const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+    for (const [reason, explanation] of [
+        ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],
+        ['cancelled_label_removed', 'Cancelled because the processing trigger label was removed.'],
+        ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.'],
+        ['cancelled_by_user', 'Cancelled by a user.'],
+    ]) {
+        const store = createStore(makeTask());
+        await finalizeCompletedPRCommentTask('task-123', { status: 'cancelled', reason }, store);
+        const entry = store.current().history.at(-1)!;
+        assert.equal(entry.reason, explanation);
+        assert.equal(entry.metadata?.cancellationReason, reason);
+        const recovered = completedJobTransition({ status: 'cancelled', reason });
+        assert.equal(recovered.reason, explanation);
+        assert.equal(recovered.metadata.terminalReason, reason);
+    }
+    for (const status of ['requeued', 'rescheduled']) {
+        const store = createStore(makeTask());
+        await finalizeCompletedPRCommentTask('task-123', { status, reason: 'lock_contention' }, store);
+        assert.equal(store.current().history.at(-1)?.metadata?.cancellationReason, undefined);
+        assert.equal(completedJobTransition({ status, reason: 'lock_contention' }).metadata.terminalReason, undefined);
+    }
+});
