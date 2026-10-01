@@ -152,10 +152,15 @@ export async function handleUsageLimitError(
 
     const requeueJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry`;
 
-    await issueQueue.add(job.name, requeuedJobData, {
+    if ((await stateManager.getTaskState(taskId))?.state === 'cancelled') return;
+    const retryJob = await issueQueue.add(job.name, requeuedJobData, {
         jobId: requeueJobId,
         delay: Math.max(0, delay)
     });
+    if ((await stateManager.getTaskState(taskId))?.state === 'cancelled') {
+        await retryJob.remove();
+        return;
+    }
 
     try {
         await stateManager.updateTaskState(taskId, 'processing', {

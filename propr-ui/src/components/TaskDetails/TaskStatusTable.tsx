@@ -150,6 +150,11 @@ const TimelineContent: React.FC<{
               </a>
             )}
           </div>
+          {item.metadata?.terminalReason && (
+            <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
+              {item.metadata.terminalReason}
+            </div>
+          )}
           {routing && (
             <div className="mt-0.5 break-words text-[10px] text-slate-500">
               Virtual {routing.virtualAgentAlias} · {routing.virtualModel}

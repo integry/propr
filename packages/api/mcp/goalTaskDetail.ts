@@ -307,13 +307,15 @@ export async function taskDetail(
   const row = await taskSummaryQuery(deps.db, target.taskId) as JsonObject | undefined;
   const summary = row ? summarizeTask(row) : null;
   const events = await deps.db('task_history').where({ task_id: target.taskId })
-    .orderBy('history_id', 'desc').limit(EVENT_LIMIT).select('state', 'reason', 'timestamp');
+    .orderBy('history_id', 'desc').limit(EVENT_LIMIT).select('state', 'reason', 'timestamp', 'metadata');
   const pullRequests = summary?.pr_number
     ? [{ number: summary.pr_number, state: summary.pr_state ?? null }]
     : [];
   if (pullRequests.length) await markMerged(target.repository, pullRequests, { number: 'number', state: 'state' });
   return {
+    terminalReason: taskEventTerminalReason(events[0]),
     latestEvents: events.map((event: JsonObject) => ({
+      ...(taskEventTerminalReason(event) ? { terminalReason: taskEventTerminalReason(event) } : {}),
       state: event.state, reason: compactText(event.reason, REASON_LIMIT), timestamp: event.timestamp ?? null,
     })),
     currentActivity: await currentActivity(deps, { repository: target.repository, taskId: target.taskId }, ownerId),
@@ -326,4 +328,12 @@ export async function taskDetail(
     changesSummary: await changesSummary(deps, target.taskId),
     pullRequest: pullRequests[0] ?? null,
   };
+}
+
+function taskEventTerminalReason(event: JsonObject | undefined): string | null {
+  if (!event) return null;
+  try {
+    const metadata = typeof event.metadata === 'string' ? JSON.parse(event.metadata) : event.metadata;
+    return typeof metadata?.terminalReason === 'string' ? metadata.terminalReason : null;
+  } catch { return null; }
 }

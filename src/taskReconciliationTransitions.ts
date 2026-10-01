@@ -18,6 +18,7 @@ export function failedTaskTransition(
         metadata: {
             finalizedBy,
             error: { message: sanitizeErrorMessage(message), category: 'worker' },
+            ...(/timed?[_ ]?out|timeout/i.test(message) ? { terminalReason: 'timed_out' } : {}),
         },
     };
 }
@@ -37,7 +38,7 @@ export function completedJobTransition(value: unknown): PersistedTaskTerminalTra
         return {
             state: TaskStates.CANCELLED,
             reason: `Task job ${status}${reason ? `: ${reason}` : ''}`,
-            metadata,
+            metadata: { ...metadata, ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}) },
         };
     }
     if (status === 'failed') {

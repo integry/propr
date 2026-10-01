@@ -343,7 +343,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     const modelName = await resolveModelForTask(correlatedLogger);
 
     try {
-        await stateManager.createTaskState(taskId, {
+        await stateManager.createTaskStateIfAbsent(taskId, {
             number: pullRequestNumber, repoOwner, repoName, modelName,
             type: 'merge_conflict', pullRequestNumber,
         } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId, String(job.id ?? taskId));

@@ -107,7 +107,7 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 state: TaskStates.CANCELLED,
                 metadata: {
                     reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
-                    historyMetadata,
+                    historyMetadata: { ...historyMetadata, ...(status === 'cancelled' ? { cancellationReason: reason } : {}) },
                 },
             };
         case 'failed':

@@ -92,3 +92,13 @@ test('close disconnects after a bounded wait for an unresponsive Redis poll', as
     assert.equal(disconnect.mock.calls.length, 1);
     assert.equal(redis.quit.mock.calls.length, 0);
 });
+
+test('durable cancellation stops every reviewer after a sibling consumed the abort marker', async () => {
+    const { checkAbortSignal } = await import('../src/claude/docker/dockerAbortController.js');
+    const redis = {
+        get: async (key: string) => key === 'worker:state:review-task' ? JSON.stringify({ state: 'cancelled', terminalReason: 'cancelled_pr_closed' }) : null,
+        del: async () => 1, quit: async () => {}, disconnect: () => {},
+    };
+    assert.equal(await checkAbortSignal('review-task', 'planner:abort:review-task', () => redis), true);
+    assert.equal(await checkAbortSignal('another-task', 'planner:abort:another-task', () => redis), false);
+});

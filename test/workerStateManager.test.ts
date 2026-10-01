@@ -3048,3 +3048,27 @@ test('a retry writer that loses to cancellation cannot resurrect the task', asyn
     assert.equal(mockRedisInstance.eval.mock.calls.length, 2);
     await stateManager.close();
 });
+
+test('terminal reasons persist in Redis, history, and task update events', async () => {
+    const { buildTaskStateTransition, publishTaskStateTransition } = await import('../packages/core/src/utils/workerStateTransition.js');
+    const initial: TaskStateData = {
+        taskId: 'reason-task', issueRef: { number: 42, repoOwner: 'acme', repoName: 'widgets' },
+        correlationId: 'reason-test', state: TaskStates.PROCESSING, createdAt: '2026-09-30T00:00:00Z',
+        updatedAt: '2026-09-30T00:00:00Z', attempts: 1, history: [],
+    };
+    for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user'] as const) {
+        const metadata = { historyMetadata: { cancellationReason: reason } };
+        const transition = buildTaskStateTransition(initial, TaskStates.CANCELLED, metadata);
+        assert.equal(transition.state.terminalReason, reason);
+        assert.equal(transition.state.history.at(-1)?.metadata?.terminalReason, reason);
+        await publishTaskStateTransition(initial.taskId, transition, metadata);
+        const persisted = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(JSON.parse(persisted.metadata).terminalReason, reason);
+        const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(event.metadata.terminalReason, reason);
+    }
+    const timeout = buildTaskStateTransition(initial, TaskStates.FAILED, { error: { message: 'Agent timed out after the overall timeout' } });
+    assert.equal(timeout.state.terminalReason, 'timed_out');
+    const retry = buildTaskStateTransition(timeout.state, TaskStates.PROCESSING, { isRetry: true });
+    assert.equal(retry.state.terminalReason, undefined);
+});

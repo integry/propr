@@ -14,6 +14,7 @@ let onTaskStateRead: ((taskId: string) => void) | undefined;
 const log = { info() {}, warn() {}, error() {}, debug() {} };
 const taskStates = new Map<string, string>();
 const stateManager = {
+    markTaskCancelled: async (taskId: string) => { taskStates.set(taskId, 'cancelled'); },
     updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean }) => {
         taskStates.set(taskId, state);
         events.push(`state:${taskId}:${state}${metadata?.isRetry ? ':retry' : ''}`);
@@ -38,6 +39,7 @@ const octokit = {
 const noOp = async () => {};
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
 await mock.module('@propr/core', { namedExports: {
+    preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
     hashTaskAttemptToken: () => 'hash', logger: { ...log, withCorrelation: () => log },
     retryConfigs: { githubApi: {} }, withRetry: async (fn: () => unknown) => fn(),
@@ -128,11 +130,11 @@ beforeEach(() => {
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
 
-for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'pull_request_closed']] as const) {
-    test(`a follow-up on a ${reason.replace('pull_request_', '')} pull request is skipped before any work`, async () => {
+for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'cancelled_pr_closed']] as const) {
+    test(`a follow-up ends with ${reason} before any work`, async () => {
         pullRequestState = pullRequest;
         const result = await processPullRequestCommentJob(job('fix') as never);
-        assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'skipped', reason });
+        assert.deepEqual({ status: result.status, reason: result.reason }, { status: pullRequest.merged ? 'skipped' : 'cancelled', reason });
         // No starting comment, no worktree for the deleted head branch, no agent.
         assert.ok(!events.includes('comment:42'));
         assert.ok(!events.includes('prepare'));

@@ -199,6 +199,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     for (const label of primaryProcessingLabels) {
         allExcludeLabels.push(`${label}-processing`);
         allExcludeLabels.push(`${label}-done`);
+        allExcludeLabels.push(`${label}-cancelled`);
     }
 
     if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
@@ -365,6 +366,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
     for (const label of primaryProcessingLabels) {
         allExcludeLabels.push(`${label}-processing`);
         allExcludeLabels.push(`${label}-done`);
+        allExcludeLabels.push(`${label}-cancelled`);
     }
 
     const fetchWithRetry = (): Promise<GitHubSearchResponse> => withRetry(

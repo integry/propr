@@ -613,7 +613,7 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
-    if (payload.state === 'failed') {
+    if (payload.state === 'failed' || payload.state === 'cancelled') {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
       });
@@ -898,25 +898,26 @@ export class NotificationProjectionService {
 
   private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {
     const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    const terminalReason = typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined;
     return this.createPullRequestAwareEvent({
       deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
       kind: 'task',
-      severity: 'error',
+      severity: payload.state === 'cancelled' ? 'info' : 'error',
       target: {
         type: 'task', repository: context.repository, taskId: payload.taskId,
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
       title: context.subjectTitle ?? (context.prNumber !== undefined
-        ? `Task failed for PR #${context.prNumber}`
+        ? `Task ${payload.state} for PR #${context.prNumber}`
         : context.issueNumber !== undefined
-          ? `Task failed for issue #${context.issueNumber}`
-          : 'Task failed'),
-      body: context.description
+          ? `Task ${payload.state} for issue #${context.issueNumber}`
+          : `Task ${payload.state}`),
+      body: terminalReason ?? (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
-        : `Work for ${context.repository} did not complete.`,
+        : `Work for ${context.repository} did not complete.`),
       actions: taskActions({
-        followup: context.followupEligible,
+        followup: payload.state !== 'cancelled' && context.followupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
@@ -1060,7 +1061,8 @@ export class NotificationProjectionService {
       prNumber,
       description: taskDescription(initial),
       subjectTitle: subjectTitle(initial),
-      recap: notificationRecap(historyMetadata),
+      recap: [notificationRecap(historyMetadata), typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined]
+        .filter(Boolean).join(' · ') || undefined,
       commandMode,
       isReview,
       followupEligible: supportsTaskFollowup(task, issueNumber),

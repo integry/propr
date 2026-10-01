@@ -26,7 +26,7 @@ after(async () => { await core.closeConnection?.(); });
 test('the PR lock is held until the worktree holding the PR branch is removed', async () => {
     const log = { debug: noOp, info: noOp, warn: noOp, error: noOp };
     await cleanupJob({
-        stateManager: {} as never, lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+        stateManager: { getTaskState: async () => null } as never, lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
         localRepoPath: '/repo', worktreeInfo: { worktreePath: '/worktrees/pr-42', branchName: 'feature' } as never,
         repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
         correlatedLogger: log as never, redisClient: { llen: async () => 0 } as never,

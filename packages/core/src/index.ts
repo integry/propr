@@ -20,7 +20,7 @@ export {
   publishNotificationUpdateThroughRedis,
   EventPublisher
 } from './utils/eventPublisher.js';
-export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, TaskStateExpectation, TaskStatePublicationResult, TaskStateUpdateResult, UpdateMetadata, TaskResult, ResumableTaskInfo, NonTerminalTaskScanResult, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
+export type { TaskTerminalReason, TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, TaskStateExpectation, TaskStatePublicationResult, TaskStateUpdateResult, UpdateMetadata, TaskResult, ResumableTaskInfo, NonTerminalTaskScanResult, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
@@ -503,3 +503,6 @@ export { LIVE_OUTPUT_MAX_BYTES, LIVE_OUTPUT_TTL_SECONDS, liveOutputKey, liveOutp
 export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingChecks.js';
 
 export * from './services/usageTips/index.js';
+
+export * from './services/taskCancellation.js';
+export * from './services/taskIntent.js';

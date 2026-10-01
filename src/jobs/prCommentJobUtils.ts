@@ -244,6 +244,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
     const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
 
+    if ((await options.stateManager.getTaskState(options.taskId))?.state === TaskStates.CANCELLED) return;
     const retryComments = options.retryComments ?? job.data.comments ?? [];
     const durableRetryJobId = await schedulePRCommentUsageLimitRetry(
         job,
@@ -252,6 +253,10 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
         Math.max(0, delay),
     );
 
+    if ((await options.stateManager.getTaskState(options.taskId))?.state === TaskStates.CANCELLED) {
+        await (await issueQueue.getJob(durableRetryJobId))?.remove();
+        return;
+    }
     if (octokit) {
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -373,6 +378,9 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }
+
+    const terminalState = await options.stateManager.getTaskState(options.taskId);
+    if (terminalState?.state === TaskStates.CANCELLED) return;
 
     try {
         const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);

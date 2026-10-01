@@ -98,11 +98,18 @@ async function readAbortSignal(
     taskId: string,
     plannerAbortKey: string,
 ): Promise<boolean> {
-    const [workerAbort, plannerAbort] = await Promise.all([
+    const [workerAbort, plannerAbort, taskState] = await Promise.all([
         redis.get(`worker:abort:${taskId}`),
-        redis.get(plannerAbortKey)
+        redis.get(plannerAbortKey),
+        redis.get(`worker:state:${taskId}`)
     ]);
-    return workerAbort !== null || plannerAbort !== null;
+    if (workerAbort !== null || plannerAbort !== null) return true;
+    // Cancellation is durable and shared by every concurrent reviewer. One
+    // execution consuming the abort marker must not let its siblings continue.
+    if (taskState) {
+        try { return JSON.parse(taskState).state === 'cancelled'; } catch { /* legacy/corrupt state */ }
+    }
+    return false;
 }
 
 export async function checkAbortSignal(

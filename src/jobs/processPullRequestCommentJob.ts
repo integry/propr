@@ -1,7 +1,7 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
-    getAuthenticatedOctokit, hashTaskAttemptToken, logger, retryConfigs, runWithExecutionAbortSignal, withRetry,
+    preventWithdrawnJob, getAuthenticatedOctokit, hashTaskAttemptToken, logger, retryConfigs, runWithExecutionAbortSignal, withRetry,
     getStateManager, TaskStates, ensureGitRepository, createLogFiles, UsageLimitError, recordLLMMetrics,
     loadPrimaryProcessingLabels, loadRepositoryVisualPreviewSettings,
     type CommentJobData, type UnprocessedComment, type JobResult,
@@ -169,6 +169,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
     if (validation.skip) {
+        if (validation.reason === 'pull_request_closed') {
+            await stateManager.markTaskCancelled(taskId, 'system', { reason: 'cancelled_pr_closed', terminalReason: 'cancelled_pr_closed' });
+            return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
+        }
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
         return { status: 'skipped', reason: validation.reason, pullRequestNumber };
     }
@@ -356,6 +360,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
+    const withdrawnReason = await preventWithdrawnJob(job);
+    if (withdrawnReason) return { status: 'cancelled', reason: withdrawnReason };
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
@@ -420,6 +426,8 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
+        const reason = await preventWithdrawnJob(job);
+        if (reason) return { status: 'cancelled', reason };
         // Re-read under the shared lease: implementation may have adopted while queued.
         state.octokit = octokit;
         const recovered = await runWithExecutionAbortSignal(executionController.signal,
@@ -450,6 +458,8 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
         // Don't re-throw for user cancellations (not an error, just cancelled)
+        const cancelledState = await stateManager.getTaskState(taskId);
+        if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
             return { status: 'cancelled', reason: 'user_cancelled' };

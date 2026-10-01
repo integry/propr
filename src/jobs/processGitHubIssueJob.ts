@@ -5,7 +5,7 @@
 
 import { Job } from 'bullmq';
 import {
-  db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
+  preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
@@ -31,14 +31,20 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
 
   await addModelSpecificDelay(modelName);
+  const withdrawnReason = await preventWithdrawnJob(job);
+  if (withdrawnReason) return { status: 'cancelled', reason: withdrawnReason };
 
   try {
-    await stateManager.createTaskState(
+    const initialState = await stateManager.createTaskStateIfAbsent(
       taskId,
-      { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
+      { ...issueRef, number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
       correlationId,
       jobId === undefined ? null : String(jobId),
     );
+    if (initialState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: initialState.terminalReason };
+    if (initialState?.state === TaskStates.FAILED) {
+      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true, reason: 'Retrying failed issue task' });
+    }
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
   }
@@ -85,12 +91,21 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   try {
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
 
-    const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
+    const currentIssueData: CurrentIssueData =
       await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
         owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
         mediaType: { format: 'full' }
       }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
 
+    const target = { ...issueRef, kind: 'issue' as const, triggeringLabel: context.AI_PRIMARY_TAG };
+    const reason = withdrawnIntentReason(target, currentIssueData.data, [context.AI_PRIMARY_TAG]);
+    if (reason) {
+      await stateManager.markTaskCancelled(taskId, 'system', { reason, terminalReason: reason });
+      await updateWithdrawnIssueLabels(target, [context.AI_PRIMARY_TAG]);
+      return { status: 'cancelled', reason };
+    }
+    const latest = await stateManager.getTaskState(taskId);
+    if (latest?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: latest.terminalReason };
     const currentLabels = currentIssueData.data.labels.map(label => label.name);
     const labelCheck = checkLabelConditions(currentLabels, context);
     if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
@@ -136,11 +151,18 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
   } catch (error) {
+    const latest = await stateManager.getTaskState(taskId);
+    if (latest?.state === TaskStates.CANCELLED) {
+      await updateWithdrawnIssueLabels({ ...issueRef, kind: 'issue' }, [context.AI_PRIMARY_TAG]);
+      return { status: 'cancelled', reason: latest.terminalReason };
+    }
     if (error instanceof UsageLimitError) {
       await handleUsageLimitError(error, job, issueRef, {
         octokit, correlatedLogger, stateManager, taskId,
         AI_PROCESSING_TAG, AI_WAITING_TAG
       });
+      const afterRetry = await stateManager.getTaskState(taskId);
+      if (afterRetry?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: afterRetry.terminalReason };
       return { status: 'requeued', reason: 'rate_limit' };
     } else {
       await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });

@@ -790,3 +790,16 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     assert.deepEqual(warnings, ['[NotificationProjection] Failed to project draft publication']);
   });
 });
+
+test('Inbox exposes cancellation reasons without offering retry actions', async () => {
+  await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
+  await projection.projectTaskUpdate({
+    eventType: TASK_UPDATE, taskId: 'withdrawn', state: 'cancelled', timestamp: iso(),
+    metadata: { terminalReason: 'cancelled_issue_closed' },
+  });
+  const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].body, 'cancelled_issue_closed');
+  assert.equal(notifications[0].severity, 'info');
+  assert.ok(!notifications[0].actions.includes('retry' as never));
+});

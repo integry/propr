@@ -11,13 +11,15 @@ let outcome: 'completed' | 'failed' | 'cancelled' = 'completed';
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
-  createTaskState: async () => undefined,
+  createTaskStateIfAbsent: async () => undefined,
+  getTaskState: async () => null,
   updateTaskState: async () => undefined,
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
 };
 await mock.module('@propr/core', { namedExports: {
   ...core,
+  preventWithdrawnJob: async () => null,
   associateSubmissionTask: async (_database: unknown, _id: string, taskId: string) => { taskLinks.push(taskId); },
   findIssueSubmission: async () => submitted ? { id: 'submission' } : undefined,
   logger: { ...log, withCorrelation: () => log },
@@ -40,9 +42,9 @@ await mock.module('../src/jobs/issueJobPostProcessing.js', { namedExports: { per
 await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   initializeJobContext: async (job: Job<IssueJobData>) => ({
     jobId: job.id, issueRef: job.data, correlationId: 'correlation', correlatedLogger: log,
-    stateManager, modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done',
+    stateManager, modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', AI_PRIMARY_TAG: 'AI',
   }),
-  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }) }),
+  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: async () => ({ data: { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] } }) }),
   checkLabelConditions: () => ({ skip: false }),
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {

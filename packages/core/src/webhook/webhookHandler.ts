@@ -1,3 +1,5 @@
+import { cancelWithdrawnIntent } from '../services/taskIntent.js';
+import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import {
     handlePlanIssueStatusUpdate,
@@ -162,7 +164,7 @@ async function handleIssuesEvent(
         throw new Error('Issue processor not initialized');
     }
 
-    if (isIssuesLabeledEvent(payload)) {
+    if (isIssuesLabeledEvent(payload) && payload.issue.state !== 'closed') {
         const [owner, repo] = payload.repository.full_name.split('/');
 
         const issue: DetectedIssue = {
@@ -415,6 +417,20 @@ export async function processWebhookEvent(
             correlatedLogger.debug({ repository, event: eventType }, 'Ignoring event for an unmonitored repository');
             return { status: 'ignored', reason: 'repository_not_monitored' };
         }
+    }
+
+    if (eventType === 'issues' && isIssuesEvent(payload) && !payload.issue.pull_request) {
+        const removedLabel = payload.action === 'unlabeled' ? payload.label?.name : undefined;
+        const triggerRemoved = removedLabel !== undefined && (await loadPrimaryProcessingLabels()).includes(removedLabel);
+        if (payload.action === 'closed' || triggerRemoved) {
+            const [repoOwner, repoName] = payload.repository.full_name.split('/');
+            await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
+                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
+        }
+    }
+    if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
+        const [repoOwner, repoName] = payload.repository.full_name.split('/');
+        await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.pull_request.number, kind: 'pr' }, 'cancelled_pr_closed', webhookRedisClient ?? getUltrafixStateRedis());
     }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);

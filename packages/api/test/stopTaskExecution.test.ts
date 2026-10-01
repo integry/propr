@@ -135,7 +135,7 @@ test('stopTaskExecution removes queued jobs that never started and records the c
   assert.equal(result.cancellationRecorded, true);
   assert.deepEqual(queue.removed, ['issue-acme-widgets-42-99'], 'only the matching job is removed');
   assert.deepEqual(createdStates, [
-    { taskId: 'acme-widgets-42', issueRef: { number: PR_NUMBER, repoOwner: 'acme', repoName: 'widgets' } },
+    { taskId: 'acme-widgets-42', issueRef: { number: PR_NUMBER, repoOwner: 'acme', repoName: 'widgets', type: 'pr-comment', pullRequestNumber: PR_NUMBER } },
   ], 'a task state is created so the cancellation reason can be recorded');
   assert.deepEqual(cancelCalls, ['acme-widgets-42'], 'the removed queued job is marked cancelled');
 });
@@ -230,7 +230,7 @@ test('stopTaskExecution with ensureCancelled durably marks an active queue job w
   assert.equal(result.abortSignalled, true);
   assert.equal(result.cancellationRecorded, true, 'merge-triggered stop must durably record the cancellation');
   assert.deepEqual(createdStates, [
-    { taskId: 'pr-comments-batch-acme-widgets-42-123', issueRef: { number: PR_NUMBER, repoOwner: 'acme', repoName: 'widgets' } },
+    { taskId: 'pr-comments-batch-acme-widgets-42-123', issueRef: { number: PR_NUMBER, repoOwner: 'acme', repoName: 'widgets', type: 'pr-comment', pullRequestNumber: PR_NUMBER } },
   ], 'a task state is created from the active job data so the cancellation can be recorded');
   assert.equal(cancelCalls.length, 1);
   assert.equal(cancelCalls[0].metadata.historyMetadata?.cancellationReason, 'pr_merged');

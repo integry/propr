@@ -352,6 +352,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
+            ...(terminationReason === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {

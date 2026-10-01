@@ -108,4 +108,40 @@ Workers update task state throughout the run so you can see:
 - Where a failure occurred
 - Which commit or PR resulted from the task
 
+### Cancellation and terminal reasons
+
+Closing an issue or removing a configured processing trigger (for example `AI`)
+cancels its queued implementation jobs and stops running implementations through
+the same path as `propr task stop` and the Web UI. Removing a model label such as
+`llm-codex-astra` does not cancel work. An already-opened PR stays open and retains
+its independent follow-up work.
+
+Webhook intake handles withdrawal immediately. In polling mode, each poll checks
+queued and running resources directly, including issues that disappeared from the
+open/labeled discovery query. Before dispatch or execution, workers fetch current
+GitHub state again; saved queue snapshots cannot authorize work on a closed issue
+or an issue missing its processing trigger. GitHub read failures prevent startup
+and are retried rather than treated as cancellation.
+
+Cancelled issue work loses its `<trigger>-processing` and `<trigger>-waiting`
+labels (and any stale `<trigger>-done` label) and gains `<trigger>-cancelled`. To request new work, restore the issue's
+open state and trigger label and remove the cancelled state label. Cancelled
+attempts are terminal and never automatically retried, including delayed
+rate-limit retries. A new request creates a new attempt.
+
+Task state and persisted history carry `terminalReason`, also shown in the task
+timeline, Inbox, and MCP `get_task`:
+
+| Reason | Meaning |
+| --- | --- |
+| `timed_out` | Execution reached the overall timeout (partial work may have been saved). |
+| `cancelled_issue_closed` | The source issue was closed. |
+| `cancelled_label_removed` | A processing trigger was removed. |
+| `cancelled_pr_closed` | The target PR was closed without merging. |
+| `cancelled_by_user` | An operator stopped the task. |
+
+Cancellation reasons remain stable if the worker later reports its container's
+exit. Timeout failures remain distinct from cancellations and use the existing
+failure retry policy. No inactivity timeout is introduced.
+
 See [Observability And Control](../features/observability.md) for the product-facing view and [Worker Runtime Reference](./worker-runtime.md) for operational details.

@@ -178,6 +178,7 @@ export class WorkerStateManager {
             const isExplicitFailedRetry = current.state === TaskStates.FAILED
                 && newState === TaskStates.PROCESSING
                 && metadata.isRetry === true;
+            if (current.state === TaskStates.CANCELLED) return current;
             if (TERMINAL_TASK_STATES.has(current.state)
                 && current.state !== newState
                 && !isExplicitFailedRetry) {
@@ -426,6 +427,7 @@ export class WorkerStateManager {
         const cancelMetadata: UpdateMetadata = {
             ...metadata,
             reason: metadata.reason ?? `Task cancelled by ${cancelledBy}`,
+            ...(cancelledBy !== 'system' && !metadata.terminalReason && !metadata.historyMetadata?.cancellationReason ? { terminalReason: 'cancelled_by_user' } : {}),
             historyMetadata: {
                 ...(metadata.historyMetadata ?? {}),
                 cancelledBy,
@@ -444,6 +446,7 @@ export class WorkerStateManager {
     async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
             prResult: result, reason: 'Task completed successfully',
+            ...(result.terminalReason === 'timed_out' ? { terminalReason: 'timed_out' } : {}),
             historyMetadata: {
                 pr: (result.prUrl && result.prNumber) ? { number: result.prNumber, url: result.prUrl } : null,
                 commitResult: result.commitResult ?? null
