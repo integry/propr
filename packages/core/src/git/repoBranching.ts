@@ -14,8 +14,14 @@ interface InstallationAuth {
 
 /** Keep worker write credentials out of every filesystem visible to agents. */
 export function configureGitAuthentication(git: SimpleGit, authToken: string): void {
+    const environment = { ...process.env };
+    // Worker git commands are non-interactive. Inherited pager overrides are
+    // unnecessary and simple-git rejects them in an explicit environment.
+    delete environment.GIT_PAGER;
+    delete environment.PAGER;
+
     git.env({
-        ...process.env,
+        ...environment,
         GIT_CONFIG_COUNT: '2',
         GIT_CONFIG_KEY_0: 'credential.helper',
         GIT_CONFIG_VALUE_0: '',
