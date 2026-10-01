@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { tooltipStyle } from './chartConstants';
+import { SkeletonBlock } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface ActivitySparklineProps {
@@ -134,22 +135,23 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
       <div className="h-[120px]">
         {isLoading ? (
           /* Loading skeleton placeholder for the graph */
-          <div className="h-full w-full flex flex-col justify-end pb-4 animate-pulse">
+          <div className="h-full w-full flex flex-col justify-end pb-4 animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
+            <span className="sr-only">Loading activity…</span>
             {/* Simulated bar chart skeleton */}
             <div className="flex items-end justify-between gap-1 h-[80px] px-6">
               {[...Array(15)].map((_, i) => (
-                <div
+                <SkeletonBlock
                   key={i}
-                  className="flex-1 bg-gray-200 rounded-t"
+                  className="flex-1"
                   style={{ height: `${20 + Math.random() * 60}%` }}
                 />
               ))}
             </div>
             {/* X-axis placeholder */}
             <div className="flex justify-between px-6 mt-2">
-              <div className="h-2 w-12 bg-gray-200 rounded" />
-              <div className="h-2 w-12 bg-gray-200 rounded" />
-              <div className="h-2 w-12 bg-gray-200 rounded" />
+              <SkeletonBlock className="h-2 w-12" />
+              <SkeletonBlock className="h-2 w-12" />
+              <SkeletonBlock className="h-2 w-12" />
             </div>
           </div>
         ) : data.length > 0 && deterministicSvg ? (

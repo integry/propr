@@ -127,7 +127,8 @@ test('desktop task list does not present an empty state while its scoped read is
   });
 
   await page.goto('/tasks');
-  await expect(page.getByText('Loading tasks...')).toBeVisible();
+  await expect(page.getByTestId('tasks-skeleton')).toBeVisible();
+  await expect(page.getByText('Loading tasks…')).toHaveCount(1);
   await expect(page.getByText(/No tasks found/)).toHaveCount(0);
 
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
@@ -138,5 +139,5 @@ test('desktop task list does not present an empty state while its scoped read is
 
   releaseTasks();
   await expect(page.getByText(/No tasks found/)).toBeVisible();
-  await expect(page.getByText('Loading tasks...')).toHaveCount(0);
+  await expect(page.getByTestId('tasks-skeleton')).toHaveCount(0);
 });

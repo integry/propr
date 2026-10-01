@@ -4,6 +4,7 @@ import { VolumeChart, ProcessingTimeChart, StatusSegmentedBar } from './TaskStat
 import { buildStatusBreakdown } from './taskStatusBreakdown';
 import { useSocket } from '../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
+import { SkeletonBlock } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 const formatDate = (dateStr: string): string => {
@@ -82,16 +83,17 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderDistributionSkeleton = () => (
     <div>
       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
-      <div className="animate-pulse">
-        <div className="h-2 w-full rounded-sm bg-gray-200" />
+      <div className="animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
+        <span className="sr-only">Loading task status…</span>
+        <SkeletonBlock className="h-2 w-full" />
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
-                <div className="h-2 w-2 rounded-sm bg-gray-200" />
-                <div className="h-3 w-16 rounded bg-gray-200" />
+                <SkeletonBlock className="h-2 w-2" />
+                <SkeletonBlock className="h-3 w-16" />
               </div>
-              <div className="h-3 w-8 rounded bg-gray-200" />
+              <SkeletonBlock className="h-3 w-8" />
             </div>
           ))}
         </div>

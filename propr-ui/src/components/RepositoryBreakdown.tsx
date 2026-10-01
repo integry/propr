@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
+import { SkeletonBlock } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface RepositoryBreakdownProps {
@@ -42,7 +43,8 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <div className="overflow-hidden animate-pulse">
+        <div className="overflow-hidden animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
+          <span className="sr-only">Loading top repositories…</span>
           <table className="w-full table-fixed">
             <thead>
               <tr className="border-b border-slate-200">
@@ -55,13 +57,13 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
               {[...Array(5)].map((_, i) => (
                 <tr key={i} className="border-b border-slate-100">
                   <td className="py-2 px-2">
-                    <div className="h-4 w-24 bg-gray-200 rounded" />
+                    <SkeletonBlock className="h-4 w-24" />
                   </td>
                   <td className="py-2 px-2 text-right">
-                    <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
+                    <SkeletonBlock className="ml-auto h-4 w-8" />
                   </td>
                   <td className="py-2 px-2">
-                    <div className="h-3 w-8 bg-gray-200 rounded ml-auto" />
+                    <SkeletonBlock className="ml-auto h-3 w-8" />
                   </td>
                 </tr>
               ))}
