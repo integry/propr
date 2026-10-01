@@ -503,3 +503,7 @@ export { LIVE_OUTPUT_MAX_BYTES, LIVE_OUTPUT_TTL_SECONDS, liveOutputKey, liveOutp
 export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingChecks.js';
 
 export * from './services/usageTips/index.js';
+
+export * from './workflow/repositoryWorkflow.js';
+export { executeWithRepositoryWorkflow } from './workflow/workflowExecution.js';
+export { withRepositoryWorkflowSlot } from './workflow/workflowConcurrency.js';

@@ -1,3 +1,5 @@
+import { runRepositoryWorkflow } from './repositoryWorkflow.js';
+import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
@@ -276,6 +278,7 @@ export interface AgentExecutionParams {
     githubToken: string;
     redisClient: Redis;
     reasoningLevel?: ReasoningLevel;
+    repositoryWorkflow?: ResolvedRepositoryWorkflow;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
@@ -311,7 +314,9 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         reasoningLevel,
     }, 'Executing PR comment task with agent');
 
-    const agentResult = await agent.executeTask({
+    const agentResult = await runRepositoryWorkflow({
+        workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
+    }, () => agent.executeTask({
         worktreePath,
         issueRef: { number: pullRequestNumber, repoOwner, repoName },
         prompt,
@@ -323,7 +328,7 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         taskId,
         prNumber: pullRequestNumber,
         reasoningLevel,
-    });
+    }));
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }

@@ -237,7 +237,7 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             stateManager: stateManager as never,
             correlatedLogger: logger as never,
             githubToken: 'token',
-            redisClient: { set: async () => undefined } as never,
+            redisClient: { set: async () => undefined, eval: async () => 1 } as never,
             reasoningLevel: 'ultracode',
         });
 

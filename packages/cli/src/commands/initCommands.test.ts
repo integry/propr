@@ -19,7 +19,7 @@ import type { InitStackResult } from "./initStack.js";
 
 const entryPoint = fileURLToPath(new URL("../index.ts", import.meta.url));
 const tsxLoader = createRequire(import.meta.url).resolve("tsx");
-const repoScaffoldFiles = ["setup.sh", "package.json", ".gitignore", "README.md"];
+const repoScaffoldFiles = ["workflow.yml", "setup.sh", "package.json", ".gitignore", "README.md"];
 const commonOptionPlacements = [
   {
     name: "before the subcommand",
@@ -69,7 +69,7 @@ for (const placement of commonOptionPlacements) {
       const first = JSON.parse(runCli(args, repo, home)) as InitCommandResult;
       assert.deepEqual(first, {
         directory: join(repo, ".propr"),
-        created: ["setup.sh", "package.json", ".gitignore", "README.md"],
+        created: ["workflow.yml", "setup.sh", "package.json", ".gitignore", "README.md"],
         skipped: [],
         overwritten: [],
       });
@@ -78,7 +78,7 @@ for (const placement of commonOptionPlacements) {
       assert.deepEqual(rerun, {
         directory: join(repo, ".propr"),
         created: [],
-        skipped: ["setup.sh", "package.json", ".gitignore", "README.md"],
+        skipped: ["workflow.yml", "setup.sh", "package.json", ".gitignore", "README.md"],
         overwritten: [],
       });
     } finally {
@@ -148,7 +148,7 @@ for (const json of [false, true]) {
               overwritten: repoScaffoldFiles,
             });
           } else {
-            assert.match(stdout, /Overwritten: setup\.sh, package\.json, \.gitignore, README\.md/);
+            assert.match(stdout, /Overwritten: workflow\.yml, setup\.sh, package\.json, \.gitignore, README\.md/);
           }
 
           for (const file of repoScaffoldFiles) {

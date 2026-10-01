@@ -58,3 +58,9 @@ ProPR's planning and review draw on repository knowledge. A clear `README`, a `C
 - Conventions documented in `README`/`CONTRIBUTING`
 
 For how ProPR reviews PRs and what "good" looks like, see [PR Comment Commands](../features/pr-commands.md) and [Execution Safety](../features/execution-safety.md).
+
+## Version workflow policy
+
+Commit an optional [`.propr/workflow.yml`](../features/repository-workflow.md) to keep lifecycle hooks, prompt instructions, validation commands, preview guidance and repository concurrency limits under review with the code. Run `propr init` to scaffold a commented example. Existing `.propr/setup.sh` repositories continue working unchanged.
+
+ProPR loads policy and instructions from one revision of the task's base branch for each implementation or follow-up. The task timeline records that revision. Use an instruction file such as `.propr/instructions.md` for longer guidance, and repeatable `validation` commands for checks whose results should appear in completion comments. Hooks run only inside the agent container; repository policy cannot raise instance limits or change container permissions.

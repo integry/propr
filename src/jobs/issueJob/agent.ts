@@ -4,12 +4,13 @@
 
 import {
   TaskStates, AgentRegistry, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
-  resolveAgentTerminationReason, loadRepositoryVisualPreviewSettings
+  resolveAgentTerminationReason, loadRepositoryVisualPreviewSettings, refineWorkflowPreviews, repositoryWorkflowPrompt
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import type { ExecutionParams, JobContext } from './types.js';
 import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
+import { prepareRepositoryWorkflow, runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { redisClient } from './config.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
@@ -35,6 +36,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
   const terminationReason = resolveAgentTerminationReason(result);
   return {
     success: result.success,
+    repositoryValidation: result.repositoryValidation,
     model: result.modelUsed,
     ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
     executionTime: result.executionTimeMs,
@@ -82,6 +84,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     repoOwner: issueRef.repoOwner,
     repoName: issueRef.repoName
   };
+  const repositoryWorkflow = await prepareRepositoryWorkflow({
+    octokit: executionParams.octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
+    baseBranch: issueRef.baseBranch, taskId, stateManager,
+  });
   const visualPreviewSettingsPromise = loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`);
 
   // Localize remote images in issue body and comments
@@ -111,8 +117,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       user: currentIssueData.data.user
     },
     baseBranch: issueRef.baseBranch || null,
-    visualPreviewSettings: await visualPreviewSettingsPromise
+    visualPreviewSettings: refineWorkflowPreviews(await visualPreviewSettingsPromise, repositoryWorkflow)
   });
+
+  const workflowPrompt = repositoryWorkflowPrompt(repositoryWorkflow);
 
   // Start periodic file changes updates during agent execution
   const FILE_CHANGES_INTERVAL_MS = 2000;
@@ -127,10 +135,13 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   // Execute task via agent abstraction
   let agentResult;
   try {
-    agentResult = await agent.executeTask({
+    agentResult = await runRepositoryWorkflow({
+      workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
+      redisClient, taskId, stateManager, correlatedLogger,
+    }, () => agent.executeTask({
       worktreePath: worktreeInfo.worktreePath,
       issueRef: agentIssueRef,
-      prompt,
+      prompt: [prompt, workflowPrompt].filter(Boolean).join('\n\n'),
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,
@@ -138,7 +149,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
-    });
+    }));
   } finally {
     clearInterval(fileChangesInterval);
   }

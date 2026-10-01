@@ -74,6 +74,8 @@ const README = `# ProPR Repository Setup
 
 This directory configures repository-local setup for ProPR agent executions.
 
+Edit \`.propr/workflow.yml\` to version lifecycle hooks, instructions, validation, previews and task limits.
+
 Before each implementation execution, ProPR runs:
 
 \`\`\`bash
@@ -86,7 +88,29 @@ Use ProPR runtime packages for Debian system packages that should be built into 
 Runtime caches and installed packages should stay out of commits.
 `;
 
+const WORKFLOW_YML = `# yaml-language-server: $schema=https://docs.propr.dev/schemas/repository-workflow.schema.json
+# Policy is read from the task's base branch at the start of each run.
+# Instance Settings remain the defaults and hard limits.
+# .propr/setup.sh remains the implicit after_create hook when present.
+hooks:
+  # after_create: bash .propr/setup.sh
+  # before_run: npm run build --if-present
+  # after_run: ./scripts/collect-artifacts.sh
+  # before_remove: ./scripts/cleanup.sh
+  timeout_ms: 600000
+# instructions: .propr/instructions.md
+# validation:
+#   - npm test
+#   - npm run lint
+# previews:
+#   types: [image]
+#   instructions: "Capture the settings page at 1280px"
+# limits:
+#   max_parallel_tasks: 3
+`;
+
 const SCAFFOLD_FILES: ScaffoldFile[] = [
+  { relativePath: "workflow.yml", content: WORKFLOW_YML },
   { relativePath: "setup.sh", content: SETUP_SH, mode: 0o755 },
   { relativePath: "package.json", content: PACKAGE_JSON },
   { relativePath: ".gitignore", content: GITIGNORE },
