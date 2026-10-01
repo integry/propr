@@ -280,3 +280,18 @@ test('both completion finalizers keep cancellation codes out of history reasons'
         assert.equal(completedJobTransition({ status, reason: 'lock_contention' }).metadata.terminalReason, undefined);
     }
 });
+
+test('reconciliation preserves transport failures without inventing an overall timeout', async () => {
+    const { failedTaskTransition, completedJobTransition, redisTerminalTransition } = await import('../src/taskReconciliationTransitions.js');
+    for (const message of ['connect ETIMEDOUT 140.82.0.1:443', 'Redis command timeout', 'git push timed out']) {
+        for (const transition of [failedTaskTransition(message, 'bullmq_failed_reconciliation'), completedJobTransition({ status: 'failed', reason: message })]) {
+            assert.equal(transition.state, TaskStates.FAILED);
+            assert.equal(transition.metadata.terminalReason, undefined);
+            assert.equal((transition.metadata.error as { message: string }).message, message);
+        }
+    }
+    const timeout = makeTask(TaskStates.FAILED);
+    timeout.terminalReason = 'timed_out';
+    timeout.history.at(-1)!.metadata = { terminalReason: 'timed_out' };
+    assert.equal(redisTerminalTransition(timeout).metadata.terminalReason, 'timed_out');
+});

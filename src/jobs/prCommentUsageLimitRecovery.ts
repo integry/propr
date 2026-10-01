@@ -45,15 +45,22 @@ export async function schedulePRCommentUsageLimitRetry(
     baseJobId: string,
     delay: number,
 ): Promise<string> {
+    // Queue IDs also identify terminal worker state. Deduplicate within the
+    // source attempt without inheriting cancellation from an earlier request or
+    // a removed retry in the same request (which shares its correlation ID).
+    const attempt = createHash('sha256')
+        .update(JSON.stringify({ correlationId: job.data.correlationId, sourceJobId: job.id }))
+        .digest('hex').slice(0, 16);
+    const attemptJobId = `${baseJobId}-${attempt}`;
     const retryJobData = { ...job.data };
     delete retryJobData.prProcessingLockToken;
     delete retryJobData.prLockWaitAttempts;
     const retryData: CommentJobData = { ...retryJobData, comments };
     const initialRetry = await issueQueue.add(job.name, retryData, {
-        jobId: baseJobId,
+        jobId: attemptJobId,
         delay,
     }) as Job<CommentJobData>;
-    const initialRetryJobId = String(initialRetry.id ?? baseJobId);
+    const initialRetryJobId = String(initialRetry.id ?? attemptJobId);
     const persistedInitialRetry = await issueQueue.getJob(initialRetryJobId) as Job<CommentJobData> | undefined;
     if (await isDurableRetryOwner(persistedInitialRetry, job, comments)) {
         return initialRetryJobId;
@@ -61,7 +68,7 @@ export async function schedulePRCommentUsageLimitRetry(
 
     // A duplicate add may not persist the attempted payload. Give this claim a
     // distinct, stable owner rather than silently dropping data.
-    const fallbackJobId = buildRetryFallbackJobId(baseJobId, job, comments);
+    const fallbackJobId = buildRetryFallbackJobId(attemptJobId, job, comments);
     const fallbackRetry = await issueQueue.add(job.name, retryData, {
         jobId: fallbackJobId,
         delay,

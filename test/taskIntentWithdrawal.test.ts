@@ -38,7 +38,14 @@ const manager = {
         return state;
     },
 };
-const queue = { getJobs: async (statuses: string[]) => jobs.filter(j => statuses.includes(j.status)) };
+const queue = {
+    getJobs: async (statuses: string[]) => jobs.filter(j => statuses.includes(j.status)),
+    getJob: async (id: string) => jobs.find(j => j.id === id),
+    add: async (name: string, data: any, options: { jobId: string }) => jobs.find(j => j.id === options.jobId)
+        ?? addJob(options.jobId, data, 'delayed', name),
+};
+await mock.module('@propr/core', { namedExports: { issueQueue: queue } });
+const { schedulePRCommentUsageLimitRetry } = await import('../src/jobs/prCommentUsageLimitRecovery.js');
 const clearedLoops: number[] = [];
 await mock.module('../packages/core/src/utils/workerStateManager.js', { namedExports: { getStateManager: () => manager } });
 await mock.module('../packages/core/src/queue/taskQueue.js', { namedExports: { getIssueQueue: async () => queue } });
@@ -56,7 +63,7 @@ const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issu
 
 beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
-    const job = { id, data, status, name, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
+    const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
     return job;
 }
@@ -181,4 +188,42 @@ for (const [reason, explanation, kind] of [
             assert.ok(messages.every(message => !message.content.includes(reason)));
         });
     }
+}
+
+test('cancelling a dispatcher does not block a new request under its reused queue ID', async () => {
+    const old = addJob('issue-acme-widgets-42', { ...target, correlationId: 'old-request' }, 'delayed');
+    await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+    const oldTaskId = intentJobTaskId(old);
+    assert.equal(states.get(oldTaskId).state, 'cancelled');
+    assert.equal(await preventWithdrawnJob(old), 'cancelled_issue_closed');
+    const fresh = addJob(old.id, { ...target, correlationId: 'new-request' });
+    assert.equal(await preventWithdrawnJob(fresh), null);
+    assert.ok(requests.some(r => r.endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}'));
+    tracker = { state: 'open', labels: [] };
+    assert.equal(await preventWithdrawnJob(fresh), 'cancelled_label_removed');
+    assert.equal(states.get(oldTaskId).terminalReason, 'cancelled_issue_closed');
+});
+
+for (const phase of ['delayed', 'active', 'running']) {
+    test(`a new PR usage-limit retry survives cancellation of an earlier ${phase} request`, async () => {
+        const pr = { ...target, kind: 'pr' as const };
+        const data = { repoOwner: 'acme', repoName: 'widgets', pullRequestNumber: 42, correlationId: 'old-request', comments: [{ id: 1, body: 'First request', author: 'alice', type: 'issue' }] };
+        const source = { id: 'source', name: 'processPullRequestComment', data };
+        const oldId = await schedulePRCommentUsageLimitRetry(source as never, data.comments as never, 'ratelimit-retry', 1000);
+        const old = jobs.find(job => job.id === oldId);
+        if (phase !== 'delayed') old.status = 'active';
+        if (phase === 'running') addRunning(oldId, { ...pr, pullRequestNumber: 42, type: 'pr-comment' } as any);
+        await cancelWithdrawnIntent(pr, 'cancelled_pr_closed', redis as never);
+        assert.equal(states.get(oldId).terminalReason, 'cancelled_pr_closed');
+        assert.equal(await preventWithdrawnJob(old), 'cancelled_pr_closed');
+        const freshData = { ...data, correlationId: 'new-request', comments: [{ ...data.comments[0], id: 2, body: 'New request' }] };
+        const newId = await schedulePRCommentUsageLimitRetry({ ...source, data: freshData } as never, freshData.comments as never, 'ratelimit-retry', 1000);
+        assert.notEqual(newId, oldId);
+        const fresh = jobs.find(job => job.id === newId);
+        assert.equal(await preventWithdrawnJob(fresh), null);
+        assert.deepEqual(fresh.data.comments, freshData.comments);
+        assert.ok(requests.some(r => r.endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}'));
+        tracker = { state: 'closed', merged: false };
+        assert.equal(await preventWithdrawnJob(fresh), 'cancelled_pr_closed');
+    });
 }

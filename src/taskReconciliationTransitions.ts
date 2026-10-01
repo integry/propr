@@ -19,7 +19,6 @@ export function failedTaskTransition(
         metadata: {
             finalizedBy,
             error: { message: sanitizeErrorMessage(message), category: 'worker' },
-            ...(/timed?[_ ]?out|timeout/i.test(message) ? { terminalReason: 'timed_out' } : {}),
         },
     };
 }

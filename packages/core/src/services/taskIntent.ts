@@ -66,6 +66,11 @@ export function intentJobTaskId(job: { id?: string; data: Record<string, unknown
     if (data.isChildJob && typeof data.agentAlias === 'string' && typeof data.modelName === 'string' && typeof data.correlationId === 'string') {
         return buildIssueTaskId({ repoOwner: String(data.repoOwner), repoName: String(data.repoName), issueNumber: Number(data.number), agentAlias: data.agentAlias, modelName: data.modelName, correlationId: data.correlationId });
     }
+    // Dispatcher IDs are reused after removal; their cancellation belongs to
+    // this request, just like the child task IDs above. They have no worker task.
+    if (!data.isChildJob && taskIntentTarget(data)?.kind === 'issue' && typeof data.correlationId === 'string') {
+        return `${job.id}-intent-${data.correlationId}`;
+    }
     return String(job.id);
 }
 

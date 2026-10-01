@@ -3067,8 +3067,36 @@ test('terminal reasons persist in Redis, history, and task update events', async
         const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
         assert.equal(event.metadata.terminalReason, reason);
     }
-    const timeout = buildTaskStateTransition(initial, TaskStates.FAILED, { error: { message: 'Agent timed out after the overall timeout' } });
+    const timeoutMetadata = { terminalReason: 'timed_out' as const, error: { message: 'Agent timed out after the overall timeout' } };
+    const timeout = buildTaskStateTransition(initial, TaskStates.FAILED, timeoutMetadata);
     assert.equal(timeout.state.terminalReason, 'timed_out');
+    assert.equal(timeout.state.history.at(-1)?.metadata?.terminalReason, 'timed_out');
+    await publishTaskStateTransition(initial.taskId, timeout, timeoutMetadata);
+    const persistedTimeout = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+    assert.equal(JSON.parse(persistedTimeout.metadata).terminalReason, 'timed_out');
+    const timeoutEvent = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+    assert.equal(timeoutEvent.metadata.terminalReason, 'timed_out');
     const retry = buildTaskStateTransition(timeout.state, TaskStates.PROCESSING, { isRetry: true });
     assert.equal(retry.state.terminalReason, undefined);
+});
+
+test('transport timeout errors do not claim the agent exceeded its overall time limit', async () => {
+    const { buildTaskStateTransition, publishTaskStateTransition } = await import('../packages/core/src/utils/workerStateTransition.js');
+    const initial: TaskStateData = {
+        taskId: 'network-failure', issueRef: { number: 42, repoOwner: 'acme', repoName: 'widgets' },
+        correlationId: 'network-test', state: TaskStates.PROCESSING, createdAt: '2026-09-30T00:00:00Z',
+        updatedAt: '2026-09-30T00:00:00Z', attempts: 1, history: [],
+    };
+    for (const message of ['connect ETIMEDOUT 140.82.0.1:443', 'Redis command timeout', 'git push timed out']) {
+        const metadata = { error: { message, category: 'timeout' } };
+        const transition = buildTaskStateTransition(initial, TaskStates.FAILED, metadata);
+        assert.equal(transition.state.terminalReason, undefined);
+        assert.equal(transition.state.lastError?.message, message);
+        assert.equal(transition.state.history.at(-1)?.metadata?.terminalReason, undefined);
+        await publishTaskStateTransition(initial.taskId, transition, metadata);
+        const persisted = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(JSON.parse(persisted.metadata).terminalReason, undefined);
+        const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(event.metadata.terminalReason, undefined);
+    }
 });

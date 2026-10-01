@@ -64,8 +64,7 @@ function resolveTerminalReason(newState: TaskState, metadata: UpdateMetadata): T
     const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
     return metadata.terminalReason
         ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
-        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined)
-        ?? (newState === 'failed' && /timed?[_ ]?out|timeout/i.test(`${metadata.error?.category ?? ''} ${metadata.error?.message ?? ''}`) ? 'timed_out' : undefined);
+        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined);
 }
 
 export function buildTaskStateTransition(
