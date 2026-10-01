@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import type { IssueJobData } from '@propr/core';
 
 process.env.PROPR_DEMO_MODE = 'true';
 const core = await import('@propr/core');
 const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
+let capacityFull = false;
+let workflowError: Error | undefined;
+let taskState = 'pending';
+const events: string[] = [];
 let outcome: 'completed' | 'failed' | 'cancelled' = 'completed';
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
-  createTaskState: async () => undefined,
+  createTaskStateIfAbsent: async () => { events.push('create-if-absent'); },
+  createTaskState: async () => { taskState = 'pending'; events.push('create'); },
+  getTaskState: async () => ({ state: taskState }),
   updateTaskState: async () => undefined,
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
@@ -23,7 +29,7 @@ await mock.module('@propr/core', { namedExports: {
   logger: { ...log, withCorrelation: () => log },
   addModelSpecificDelay: async () => undefined,
   updatePlanIssueTaskId: async () => undefined,
-  ensureRepoCloned: async () => '/tmp/repository',
+  ensureRepoCloned: async () => { events.push('clone'); return '/tmp/repository'; },
   ensureGitRepository: async () => undefined,
 } });
 const { markTaskTerminalState } = await import('../src/jobs/issueJob/completion.js');
@@ -40,7 +46,7 @@ await mock.module('../src/jobs/issueJobPostProcessing.js', { namedExports: { per
 await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   initializeJobContext: async (job: Job<IssueJobData>) => ({
     jobId: job.id, issueRef: job.data, correlationId: 'correlation', correlatedLogger: log,
-    stateManager, modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done',
+    stateManager, agentAlias: 'issue-agent', modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done',
   }),
   getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }) }),
   checkLabelConditions: () => ({ skip: false }),
@@ -54,6 +60,15 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   },
   markTaskComplete: markTaskTerminalState,
 } });
+const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
+await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: {
+  ...workflowJobs,
+  prepareRepositoryWorkflow: async () => { if (workflowError) throw workflowError; return undefined; },
+} });
+await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
+  redisClient: { eval: async () => capacityFull ? 0 : 1 },
+  DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
+} });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
 after(core.closeConnection);
 
@@ -66,7 +81,7 @@ test('UI issue tasks use the same worker completion, cancellation, failure and P
       const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, userId: 'alice', isChildJob: true, agentAlias: 'issue-agent', modelName: 'model',
         issuePayload: { title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' },
-      }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+      }, updateData: async () => undefined, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       const contract = { result, terminal: structuredClone(terminal) };
       if (!submitted) externalResults.push(contract);
       else assert.deepEqual(contract, externalResults[['completed', 'failed', 'cancelled'].indexOf(state)]);
@@ -78,4 +93,53 @@ test('UI issue tasks use the same worker completion, cancellation, failure and P
     }
   }
   assert.deepEqual(taskLinks, ['ordinary-task', 'ordinary-task', 'ordinary-task']);
+});
+
+
+test('issue capacity refusal delays before cloning, preserves task identity, and checks cancellation on re-entry', async () => {
+  capacityFull = true; submitted = false; events.length = 0; terminal.length = 0;
+  const job = {
+    id: 'capacity-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true } as IssueJobData,
+    updateData: async (data: IssueJobData) => { job.data = data; events.push(data.repositoryWorkflowDeferred ? 'persist-deferral' : 'persist-identity'); },
+    moveToDelayed: async (_deadline: number, token?: string) => { assert.equal(token, 'lock-token'); events.push('delay'); },
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.deepEqual(events, ['persist-identity', 'create', 'persist-deferral', 'delay']);
+    assert.equal(job.data.correlationId, 'correlation');
+    assert.equal(terminal.length, 0, 'capacity refusal is not a task failure');
+    taskState = 'cancelled'; events.length = 0;
+    await assert.rejects(processGitHubIssueJob(job as never), /Task ended/);
+    assert.deepEqual(events, ['create-if-absent']);
+    assert.equal(terminal.length, 0, 're-entry does not overwrite cancellation');
+  } finally { capacityFull = false; taskState = 'pending'; }
+});
+
+test('workflow preparation failures retain normal issue error reporting', async () => {
+  workflowError = new Error('Invalid .propr/workflow.yml: expanded wrapper exceeds limit');
+  terminal.length = 0;
+  try {
+    await assert.rejects(processGitHubIssueJob({
+      id: 'invalid-workflow', name: 'processGitHubIssue',
+      data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation' },
+    } as never), /expanded wrapper/);
+    assert.equal(terminal[0].result.status, 'failed');
+  } finally { workflowError = undefined; }
+});
+
+
+test('ordinary failed issue retries retain their existing task initialization behavior', async () => {
+  taskState = 'failed'; outcome = 'completed'; events.length = 0;
+  try {
+    const result = await processGitHubIssueJob({
+      id: 'retry-job', name: 'processGitHubIssue',
+      data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation',
+        issuePayload: { title: 'Fix dates', body: '', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' } },
+      updateProgress: async () => undefined,
+    } as never);
+    assert.equal(result.status, 'processed');
+    assert.ok(events.includes('create'));
+    assert.ok(events.includes('clone'));
+  } finally { taskState = 'pending'; }
 });

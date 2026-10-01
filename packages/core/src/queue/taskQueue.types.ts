@@ -6,6 +6,8 @@ import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandPa
 import type { ReasoningLevel } from '@propr/shared';
 
 export interface IssueJobData {
+    /** Same task waiting for repository capacity, rather than a failed execution retry. */
+    repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
     repoOwner: string;

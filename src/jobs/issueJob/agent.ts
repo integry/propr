@@ -10,7 +10,7 @@ import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@pr
 import type { ExecutionParams, JobContext } from './types.js';
 import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
-import { prepareRepositoryWorkflow, runRepositoryWorkflow } from '../repositoryWorkflow.js';
+import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { redisClient } from './config.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
@@ -84,10 +84,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     repoOwner: issueRef.repoOwner,
     repoName: issueRef.repoName
   };
-  const repositoryWorkflow = await prepareRepositoryWorkflow({
-    octokit: executionParams.octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
-    baseBranch: issueRef.baseBranch, taskId, stateManager,
-  });
+  const repositoryWorkflow = context.repositoryWorkflow;
   const visualPreviewSettingsPromise = loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`);
 
   // Localize remote images in issue body and comments

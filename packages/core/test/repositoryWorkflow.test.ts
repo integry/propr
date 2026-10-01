@@ -7,7 +7,7 @@ import { execa } from 'execa';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
-import { buildWorkflowWrapper, executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../src/workflow/workflowExecution.js';
+import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../src/workflow/workflowExecution.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
 
 const policy = (source = '{}'): ResolvedRepositoryWorkflow => ({
@@ -80,7 +80,7 @@ test('published editor schema agrees with runtime on supported fields and reject
     }
 });
 
-async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string) {
+async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker') {
     const directory = await mkdtemp(path.join(tmpdir(), 'workflow-test-'));
     const entrypoint = path.join(directory, 'agent.sh');
     const trace = path.join(directory, 'trace');
@@ -90,7 +90,7 @@ async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo ag
         await writeFile(path.join(directory, '.propr/setup.sh'), setup);
     }
     try {
-        const result = await execa('/bin/bash', ['-c', buildWorkflowWrapper(workflow, 'marker'), entrypoint], {
+        const result = await execa('/bin/bash', ['-c', buildWorkflowWrapper(workflow, marker), entrypoint], {
             env: { PROPR_WORKSPACE: directory, PROPR_CACHE_DIR: directory, TRACE: trace },
             input: 'the prompt', reject: false, timeout: 5000,
         });
@@ -188,4 +188,34 @@ test('a fatal hook cannot become a publishable partial agent timeout', async () 
     assert.equal(result.success, false);
     assert.equal(result.terminationReason, undefined);
     assert.match(result.error!, /before_run failed with exit code 124/);
+});
+
+
+test('preparation rejects quoting expansion in every hook and validation before agent execution', async () => {
+    const command = ': #' + "'".repeat(30_000);
+    for (const config of [
+        ...['after_create', 'before_run', 'after_run', 'before_remove'].map(name => ({ hooks: { [name]: command } })),
+        { validation: [command] },
+        { hooks: { before_run: ': #' + "'".repeat(15_000) }, validation: [': #' + "'".repeat(15_000)] },
+    ]) {
+        const content = JSON.stringify(config);
+        assert.ok(Buffer.byteLength(content) < 128 * 1024);
+        await assert.rejects(loadRepositoryWorkflow({
+            resolveRevision: async () => 'revision',
+            readFile: async () => ({ content, sha: 'blob' }),
+        }, 'main', { maxParallelTasks: 5 }), /expanded hooks and validation wrapper exceeds 120 KiB; move long commands into repository scripts/);
+    }
+});
+
+test('expanded wrapper limit counts UTF-8 bytes and overhead, and the largest accepted wrapper executes', async () => {
+    const workflow = policy(JSON.stringify({ hooks: { before_run: ': #' } }));
+    const overhead = Buffer.byteLength(buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE));
+    const remaining = WORKFLOW_WRAPPER_MAX_BYTES - overhead;
+    workflow.config.hooks!.before_run += 'é'.repeat(Math.floor(remaining / 2)) + 'a'.repeat(remaining % 2);
+    assert.equal(Buffer.byteLength(buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE)), WORKFLOW_WRAPPER_MAX_BYTES);
+    const result = await runWrapper(workflow, undefined, undefined, WORKFLOW_MARKER_TEMPLATE);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'the prompt');
+    workflow.config.hooks!.before_run += 'a';
+    assert.throws(() => buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE), /exceeds 120 KiB/);
 });

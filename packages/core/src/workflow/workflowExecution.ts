@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOwnership.js';
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 
@@ -10,6 +11,7 @@ export async function executeWithRepositoryWorkflow(
     workflow: ResolvedRepositoryWorkflow | undefined,
     execute: () => Promise<AgentExecutionResult>,
 ): Promise<AgentExecutionResult> {
+    getExecutionOwnershipContext()?.signal.throwIfAborted();
     if (!workflow) return execute();
     const marker = `PROPR_WORKFLOW_${randomUUID()}`;
     const result = await repositoryWorkflowExecution.run({ workflow, marker }, execute);
@@ -33,6 +35,10 @@ export async function executeWithRepositoryWorkflow(
     return result;
 }
 
+// Below Linux's 128 KiB per-argument ceiling (including its terminating NUL).
+export const WORKFLOW_WRAPPER_MAX_BYTES = 120 * 1024;
+export const WORKFLOW_MARKER_TEMPLATE = `PROPR_WORKFLOW_${'0'.repeat(36)}`;
+
 const quote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
 
 /** This script is passed as a Docker argv element. It must never execute on the worker. */
@@ -47,7 +53,7 @@ export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marke
     setup_exit=$?
     if [ "$setup_exit" -ne 0 ] && [ "\${PROPR_REPO_SETUP_STRICT:-0}" = "1" ]; then exit "$setup_exit"; fi
 fi`;
-    return `
+    const script = `
 entrypoint="$0"
 export PROPR_WORKSPACE="\${PROPR_WORKSPACE:-/home/node/workspace}"
 export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/git-processor/propr-cache/\${PROPR_AGENT_TYPE:-agent}}"
@@ -90,4 +96,8 @@ agent_exit=$?
 ${(workflow.config.validation ?? []).map((command, index) => `run_command ${quote(command)}\necho "${marker}:validation:${index}:$?" >&2`).join('\n')}
 exit "$agent_exit"
 `.trim();
+    if (Buffer.byteLength(script, 'utf8') > WORKFLOW_WRAPPER_MAX_BYTES) {
+        throw new Error('Invalid .propr/workflow.yml: expanded hooks and validation wrapper exceeds 120 KiB; move long commands into repository scripts and invoke those scripts from the workflow');
+    }
+    return script;
 }

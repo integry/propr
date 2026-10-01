@@ -1,4 +1,4 @@
-import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
+import { prepareRepositoryWorkflow, withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -176,186 +176,195 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const repositoryWorkflow = await prepareRepositoryWorkflow({
         octokit: state.octokit, repoOwner, repoName, baseBranch: prData!.data.base.ref, taskId, stateManager,
     });
-    const publication = state.publication ??= new PullRequestPublication(state.octokit, context, prData!.data);
-    const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
-    state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
+    const octokit = state.octokit;
+    return withRepositoryWorkflowAdmission({
+        workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
+    }, async (): Promise<JobResult> => {
+        const publication = state.publication ??= new PullRequestPublication(octokit, context, prData!.data);
+        const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
+        state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
-    const taskUrl = `${getWebUiUrl()}/tasks/${encodeURIComponent(taskId)}`;
+        const taskUrl = `${getWebUiUrl()}/tasks/${encodeURIComponent(taskId)}`;
 
-    const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = allComments
-        .filter(comment => !comment.body || !isReviewComment(comment.body))
-        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
-        repoOwner,
-        repoName,
-        pullRequestNumber,
-        correlatedLogger,
-    });
-    let commentHistory = '';
-    if (!job.data.ultrafixMeta) {
-        commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
-        commentHistory += await loadOriginalContributionDiscussion(state.octokit, context);
-    }
-
-    const {
-        isFixMode,
-        fixSelection,
-        resolution,
-        selectedReviewComments,
-        reviewCommentsSection,
-    } = await prepareFixReviewFeedback({
-        job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
-    });
-
-    if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
-        correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
-            'Skipping fix processing because no review findings or suggestions were selected');
-        await handleNoAuthorizedFindings({
-            job,
-            taskId,
-            taskUrl,
-            stateManager,
-            octokit: state.octokit,
-            unprocessedComments: state.unprocessedComments,
-            redisClient,
+        const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
+        const commentsByTime = allComments
+            .filter(comment => !comment.body || !isReviewComment(comment.body))
+            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
+        job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
             repoOwner,
             repoName,
             pullRequestNumber,
             correlatedLogger,
-            correlationId,
-            // Naming the identifiers is what makes the posted explanation actionable.
-            unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
         });
-        return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
-    }
-
-    await markSelectedUltrafixFindings(
-        job,
-        redisClient,
-        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
-        selectedReviewComments,
-    );
-
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: [buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl), publication.status].filter(Boolean).join('\n\n'),
-    });
-
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
-        reason: 'Checking PR publication destination',
-        historyMetadata: { commandMode: job.data.commandMode || 'default' }
-    });
-    await ensureGitRepository(correlatedLogger);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const prepared = state.worktreeInfo ? { localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo } : await publication.prepare(`pr-${pullRequestNumber}-followup-${timestamp}`);
-    state.localRepoPath = prepared.localRepoPath;
-    state.worktreeInfo = prepared.worktreeInfo;
-    const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
-    correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, gitTarget: publication.target, destination: publication.status }, 'Prepared PR publication destination');
-
-    // Implementation is authorized and the publication destination is resolved, so
-    // the validation of the head this task is about to replace is now obsolete.
-    // Opt-in per repository; a failure there never stops the implementation.
-    await suspendObsoleteValidationForImplementation({ ref: context, continuation: publication.continuation, taskId, correlationId }, { octokit: state.octokit, log: correlatedLogger });
-
-    const requestBody = isFixMode ? (fixSelection.instructions || 'Apply only the selected review records below.') : combinedCommentBody;
-    const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
-    let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
-    if (job.data.ultrafixMeta) {
-        originalTaskSpec = await retainOriginalScope(redisClient, {
-            owner: repoOwner,
-            repo: repoName,
-            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
-            scope: originalTaskSpec,
-        });
-    }
-    const localizedOriginalTaskSpec = originalTaskSpec
-        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, {
-            bodyHtml: originalTaskSpec === linkedIssueResult.context ? linkedIssueResult.bodyHtml : undefined,
-            issueOrPrId: pullRequestNumber,
-        })
-        : originalTaskSpec;
-
-    const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
-    const instructionText = workflow === 'followup'
-        ? localizedCombinedCommentBody
-        : job.data.commandInstructions;
-    const titleContext = buildPrTaskTitleContext({
-        workflow,
-        pullRequestNumber,
-        prTitle: prData!.data.title,
-        instructionText,
-        recentComments: allComments,
-        prDescription: prData!.data.body,
-        reviewFeedback: reviewCommentsSection,
-        excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
-    });
-    const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
-    const summaryTitle = await generateSummaryTitle({
-        combinedCommentBody: localizedCombinedCommentBody,
-        titleContext: titleContext.context,
-        fallbackSubtitle,
-        worktreeInfo: state.worktreeInfo,
-        githubToken,
-        pullRequestNumber,
-        prTitle: prData!.data.title,
-        workflowLabel: getPrTaskWorkflowLabel(workflow),
-        repoOwner,
-        repoName,
-        correlationId,
-        taskId,
-        correlatedLogger,
-    });
-    job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
-    job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
-    await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
-        titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
-    });
-
-    const visualPreviewSettings = refineWorkflowPreviews(await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`), repositoryWorkflow);
-    const prompt = [publication.status, buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings }), repositoryWorkflowPrompt(repositoryWorkflow)].filter(Boolean).join('\n\n');
-
-    const { claudeResult, agentType } = await resolveAndExecuteAgent({
-        llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
-        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
-        reasoningLevel: job.data.reasoningLevel, repositoryWorkflow,
-    });
-    state.claudeResult = claudeResult;
-
-    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
-
-    await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
-    await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
-    await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: `${agentType} agent execution completed`,
-        claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },
-        historyMetadata: {
-            sessionId: state.claudeResult.sessionId,
-            conversationId: state.claudeResult.conversationId,
-            model: state.claudeResult.model,
-            tokenUsage: state.claudeResult.tokenUsage
+        let commentHistory = '';
+        if (!job.data.ultrafixMeta) {
+            commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
+            commentHistory += await loadOriginalContributionDiscussion(octokit, context);
         }
+
+        const {
+            isFixMode,
+            fixSelection,
+            resolution,
+            selectedReviewComments,
+            reviewCommentsSection,
+        } = await prepareFixReviewFeedback({
+            job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
+        });
+
+        if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
+            correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
+                'Skipping fix processing because no review findings or suggestions were selected');
+            await handleNoAuthorizedFindings({
+                job,
+                taskId,
+                taskUrl,
+                stateManager,
+                octokit,
+                unprocessedComments: state.unprocessedComments,
+                redisClient,
+                repoOwner,
+                repoName,
+                pullRequestNumber,
+                correlatedLogger,
+                correlationId,
+                // Naming the identifiers is what makes the posted explanation actionable.
+                unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
+            });
+            return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
+        }
+
+        await markSelectedUltrafixFindings(
+            job,
+            redisClient,
+            { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+            selectedReviewComments,
+        );
+
+        state.startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
+            body: [buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl), publication.status].filter(Boolean).join('\n\n'),
+        });
+
+        await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+            reason: 'Checking PR publication destination',
+            historyMetadata: { commandMode: job.data.commandMode || 'default' }
+        });
+        await ensureGitRepository(correlatedLogger);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        const prepared = state.worktreeInfo ? { localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo } : await publication.prepare(`pr-${pullRequestNumber}-followup-${timestamp}`);
+        state.localRepoPath = prepared.localRepoPath;
+        state.worktreeInfo = prepared.worktreeInfo;
+        const githubToken = await octokit.auth({ type: 'installation' }) as GitHubToken;
+        correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, gitTarget: publication.target, destination: publication.status }, 'Prepared PR publication destination');
+
+        // Implementation is authorized and the publication destination is resolved, so
+        // the validation of the head this task is about to replace is now obsolete.
+        // Opt-in per repository; a failure there never stops the implementation.
+        await suspendObsoleteValidationForImplementation({ ref: context, continuation: publication.continuation, taskId, correlationId }, { octokit, log: correlatedLogger });
+
+        const requestBody = isFixMode ? (fixSelection.instructions || 'Apply only the selected review records below.') : combinedCommentBody;
+        const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
+        let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
+        if (job.data.ultrafixMeta) {
+            originalTaskSpec = await retainOriginalScope(redisClient, {
+                owner: repoOwner,
+                repo: repoName,
+                pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+                scope: originalTaskSpec,
+            });
+        }
+        const localizedOriginalTaskSpec = originalTaskSpec
+            ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, {
+                bodyHtml: originalTaskSpec === linkedIssueResult.context ? linkedIssueResult.bodyHtml : undefined,
+                issueOrPrId: pullRequestNumber,
+            })
+            : originalTaskSpec;
+
+        const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
+        const instructionText = workflow === 'followup'
+            ? localizedCombinedCommentBody
+            : job.data.commandInstructions;
+        const titleContext = buildPrTaskTitleContext({
+            workflow,
+            pullRequestNumber,
+            prTitle: prData!.data.title,
+            instructionText,
+            recentComments: allComments,
+            prDescription: prData!.data.body,
+            reviewFeedback: reviewCommentsSection,
+            excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
+        });
+        const fallbackSubtitle = buildDeterministicPrTaskSubtitle(workflow);
+        const summaryTitle = await generateSummaryTitle({
+            combinedCommentBody: localizedCombinedCommentBody,
+            titleContext: titleContext.context,
+            fallbackSubtitle,
+            worktreeInfo: state.worktreeInfo,
+            githubToken,
+            pullRequestNumber,
+            prTitle: prData!.data.title,
+            workflowLabel: getPrTaskWorkflowLabel(workflow),
+            repoOwner,
+            repoName,
+            correlationId,
+            taskId,
+            correlatedLogger,
+        });
+        job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
+        job.data.subtitle = summaryTitle;
+        await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+        await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
+            titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
+        });
+
+        const visualPreviewSettings = refineWorkflowPreviews(await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`), repositoryWorkflow);
+        const prompt = [publication.status, buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings }), repositoryWorkflowPrompt(repositoryWorkflow)].filter(Boolean).join('\n\n');
+
+        const { claudeResult, agentType } = await resolveAndExecuteAgent({
+            llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
+            pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
+            reasoningLevel: job.data.reasoningLevel, repositoryWorkflow,
+        });
+        state.claudeResult = claudeResult;
+
+        checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
+
+        await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
+        await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
+        await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
+            reason: `${agentType} agent execution completed`,
+            claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },
+            historyMetadata: {
+                sessionId: state.claudeResult.sessionId,
+                conversationId: state.claudeResult.conversationId,
+                model: state.claudeResult.model,
+                tokenUsage: state.claudeResult.tokenUsage
+            }
+        });
+
+        const postResult = await handlePostExecution(
+            { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken },
+            taskUrl,
+        );
+
+        const stopped = await stopOriginalPRReviewCycle({
+            ref: context, continuation: publication.continuation, commandMode: job.data.commandMode,
+            ultrafix: Boolean(job.data.ultrafixMeta), redis: redisClient, octokit,
+        });
+        if (!stopped) await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+        await publication.finishCompletion();
+
+        return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
     });
-
-    const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken },
-        taskUrl,
-    );
-
-    const stopped = await stopOriginalPRReviewCycle({
-        ref: context, continuation: publication.continuation, commandMode: job.data.commandMode,
-        ultrafix: Boolean(job.data.ultrafixMeta), redis: redisClient, octokit: state.octokit,
-    });
-    if (!stopped) await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
-    await publication.finishCompletion();
-
-    return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
 
-export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
+export function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
+    return deferRepositoryWorkflowJob(job, () => processAdmittedPRCommentJob(job));
+}
+
+async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
@@ -417,6 +426,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         job, taskId, stateManager, preexistingState, modelName, correlatedLogger,
     });
 
+    let capacityRefused = false;
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
@@ -448,6 +458,18 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         }
         return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
     } catch (error) {
+        if (error instanceof RepositoryWorkflowCapacityError) {
+            capacityRefused = true;
+            // This same delayed job retains the claimed comments and command context.
+            // Wait for durable storage before releasing its PR lock or queue ownership.
+            try {
+                await job.updateData({ ...job.data, comments: context.commentsToProcess });
+            } catch (persistError) {
+                await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
+                throw persistError;
+            }
+            throw error;
+        }
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
@@ -458,6 +480,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await cleanupJob({ stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient, skipPendingCommentFollowup: capacityRefused });
     }
 }

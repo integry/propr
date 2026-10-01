@@ -10,6 +10,7 @@ import type { GitHubToken } from '../githubTypes.js';
 export type { GitHubToken };
 
 export interface JobContext {
+  repositoryWorkflow?: import('@propr/core').ResolvedRepositoryWorkflow;
   jobId: string | undefined;
   jobName: string;
   issueRef: IssueJobData;

@@ -58,8 +58,10 @@ When `after_create` is omitted, `.propr/setup.sh` remains implicit if present an
 
 Repository policy can refine instance configuration but cannot grant permissions:
 
-- `limits.max_parallel_tasks` caps concurrent issue implementations and follow-ups **across all branches and workers for this repository**. It is clamped to the instance `worker_concurrency` setting (or `WORKER_CONCURRENCY`, default 5). Waiting attempts check cancellation before entering. Runs without a workflow participate in the count; when branches have different active caps, the smallest cap governs admission. Lowering a cap does not interrupt already-running work.
+- `limits.max_parallel_tasks` caps concurrent issue implementations and follow-ups **across all branches and workers for this repository**. It is clamped to the instance `worker_concurrency` setting (or `WORKER_CONCURRENCY`, default 5). Attempts refused admission are delayed in the queue, freeing shared worker slots for other repositories. They check cancellation again on re-entry. Runs without a workflow participate in the count; when branches have different active caps, the smallest cap governs admission. Lowering a cap does not interrupt already-running work.
 - `previews.types` selects a subset of the types enabled in repository Settings. It cannot enable previews when Settings disable them. An empty subset disables capture for the run. Repository preview instructions are appended to Settings instructions; upload and storage limits remain unchanged.
 - Credentials, container networking, mounts, provider choice and other instance settings cannot be declared in this file. Unsupported keys fail validation.
+
+The generated container wrapper (all hooks and validation commands after shell quoting, including wrapper overhead) must fit within 120 KiB of UTF-8 text. This is checked when preparing the workflow, before agent execution. If it exceeds the limit, move long commands into repository scripts and invoke those scripts from the workflow. The 128 KiB source-file limit still applies independently.
 
 This reference covers issue implementations and PR follow-ups. Planning, reviews, imports and long-running Goals retain their existing policies. Effective configuration is recorded per task; the Settings UI and MCP do not yet provide a merged per-branch editor.

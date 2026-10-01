@@ -228,7 +228,12 @@ const octokit = {
 };
 const modules: Record<string, Record<string, unknown>> = {
     // Publication fixtures have no repository workflow policy.
-    repositoryWorkflow: { prepareRepositoryWorkflow: noOp },
+    repositoryWorkflow: {
+        prepareRepositoryWorkflow: noOp,
+        withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+        deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
+        RepositoryWorkflowCapacityError: class extends Error {},
+    },
     // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
     prCommentJobHelpers: {

@@ -37,6 +37,11 @@ redis.call('EXPIRE', KEYS[2], 180)
 return 1
 `;
 
+/** Admission refusal is retryable scheduling, never an in-processor wait. */
+export class RepositoryWorkflowCapacityError extends Error {
+    constructor() { super('Repository workflow capacity is currently full'); }
+}
+
 export async function withRepositoryWorkflowSlot<T>(options: {
     redis: Redis;
     repository: string;
@@ -51,17 +56,18 @@ export async function withRepositoryWorkflowSlot<T>(options: {
     const controller = new AbortController();
     const signal = parent ? AbortSignal.any([parent.signal, controller.signal]) : controller.signal;
     let confirmedDeadline: number;
-    while (true) {
+    signal.throwIfAborted();
+    await options.checkCancelled();
+    signal.throwIfAborted();
+    const requestedAt = performance.now();
+    const acquired = await options.redis.eval(ACQUIRE_WORKFLOW_SLOT, 2, key, limitsKey, token, options.limit ?? 0);
+    if (acquired !== 1) {
         signal.throwIfAborted();
         await options.checkCancelled();
         signal.throwIfAborted();
-        const requestedAt = performance.now();
-        if (await options.redis.eval(ACQUIRE_WORKFLOW_SLOT, 2, key, limitsKey, token, options.limit ?? 0) === 1) {
-            confirmedDeadline = requestedAt + CONFIRMED_LEASE_MS;
-            break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        throw new RepositoryWorkflowCapacityError();
     }
+    confirmedDeadline = requestedAt + CONFIRMED_LEASE_MS;
     const loseOwnership = () => controller.abort(new Error('Repository workflow capacity lease lost'));
     const checkOwnership = () => {
         if (performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();

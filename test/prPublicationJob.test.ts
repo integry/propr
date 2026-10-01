@@ -3,6 +3,9 @@ import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/co
 import { beforeEach, mock, test } from 'node:test';
 
 let events: string[] = [];
+let refuseCapacity = false;
+let persistError: Error | undefined;
+class RepositoryWorkflowCapacityError extends Error {}
 let continuation: { source_pr: number; continuation_pr: number; branch_name: string; publication_bundle?: string; publication_completion?: string } | undefined;
 let preparationError: Error | undefined;
 let onLockAcquired: (() => void) | undefined;
@@ -51,7 +54,12 @@ await mock.module('@propr/core', { namedExports: {
 } });
 const modules: Record<string, Record<string, unknown>> = {
     // Publication fixtures have no repository workflow policy.
-    repositoryWorkflow: { prepareRepositoryWorkflow: noOp },
+    repositoryWorkflow: {
+        prepareRepositoryWorkflow: noOp,
+        withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => { if (refuseCapacity) throw new RepositoryWorkflowCapacityError(); return execute(); },
+        deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
+        RepositoryWorkflowCapacityError,
+    },
     prCommentJobHelpers: {
         validateAndFilterComments: async (comments: unknown) => comments,
         filterUnprocessedComments: (comments: unknown) => comments,
@@ -70,10 +78,10 @@ const modules: Record<string, Record<string, unknown>> = {
             handledTaskIds.push(context.taskId);
             await stateManager.updateTaskState(context.taskId, 'failed');
         },
-        cleanupJob: noOp, toClaudeResult: noOp, buildStartingWorkCommentBody: () => 'Starting work',
+        cleanupJob: async (options: { skipPendingCommentFollowup?: boolean; worktreeInfo?: unknown }) => { events.push(options.skipPendingCommentFollowup ? 'cleanup-capacity' : 'cleanup'); if (options.worktreeInfo) events.push('cleanup-worktree'); events.push('release:lock:pr:upstream:project:42'); }, toClaudeResult: noOp, buildStartingWorkCommentBody: () => 'Starting work',
     },
     prPendingComments: {
-        restorePendingComments: noOp,
+        restorePendingComments: async () => { events.push('restore'); },
         pickUpPendingCommentsWithClaim: async (comments: unknown) => ({ commentsToProcess: comments, pickedUpComments: [] }),
         applyPendingCommentCommandContext: noOp,
     },
@@ -90,7 +98,7 @@ const modules: Record<string, Record<string, unknown>> = {
     prProcessingLock: {
         acquirePRProcessingLock: async (_redis: unknown, key: string) => { events.push(key); if (key === blockedLock) return false; onLockAcquired?.(); return true; },
         ensurePRProcessingLockToken: async () => 'token', releasePRProcessingLock: async (_redis: unknown, key: string) => { events.push(`release:${key}`); },
-        startPRProcessingLockHeartbeat: () => noOp,
+        startPRProcessingLockHeartbeat: () => async () => { events.push('stop-heartbeat'); },
     },
     prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: noOp, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }) },
     prPublication: { PullRequestPublication: class {
@@ -123,10 +131,11 @@ for (const [name, namedExports] of Object.entries(modules)) {
 }
 const { processPullRequestCommentJob } = await import('../src/jobs/processPullRequestCommentJob.js');
 const job = (commandMode = 'default', pullRequestNumber = 42) => ({
-    id: 'task-1', updateData: noOp,
+    id: 'task-1', updateData: async (data: { comments: unknown[] }) => { events.push('persist-comments'); if (persistError) throw persistError; assert.ok(data.comments.length); },
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
+    refuseCapacity = false; persistError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
@@ -263,4 +272,34 @@ test('failed mapping revalidation releases the acquired lock without processing'
     onLockAcquired = () => { resolutionError = new Error('Mapping lookup failed'); };
     await assert.rejects(processPullRequestCommentJob(job('review', 100) as never), /Mapping lookup failed/);
     assert.deepEqual(events, ['lock:pr:upstream:project:100', 'release:lock:pr:upstream:project:100']);
+});
+
+
+for (const persistenceFails of [false, true]) {
+    test(`PR capacity refusal preserves claims before releasing its lock (persist failure: ${persistenceFails})`, async () => {
+        refuseCapacity = true;
+        if (persistenceFails) persistError = new Error('Queue data update failed');
+        await assert.rejects(processPullRequestCommentJob(job() as never), persistenceFails ? /Queue data update failed/ : RepositoryWorkflowCapacityError);
+        assert.ok(!events.includes('comment:42'));
+        assert.ok(!events.includes('prepare'));
+        assert.ok(!events.includes('agent'));
+        assert.ok(events.includes('cleanup-capacity'), 'cleanup must not enqueue duplicate pending-comment jobs');
+        assert.deepEqual(handledTaskIds, [], 'capacity is not an execution failure');
+        assert.ok(events.indexOf('persist-comments') < events.indexOf('stop-heartbeat'));
+        assert.equal(events.includes('restore'), persistenceFails);
+        if (persistenceFails) assert.ok(events.indexOf('restore') < events.indexOf('stop-heartbeat'));
+        assert.ok(events.indexOf('stop-heartbeat') < events.indexOf('release:lock:pr:upstream:project:42'));
+    });
+}
+
+
+test('capacity deferral cleans a worktree retained by publication recovery before releasing the PR lock', async () => {
+    refuseCapacity = true;
+    continuation = { source_pr: 42, continuation_pr: 100, branch_name: 'continuation', publication_bundle: 'legacy-bundle' };
+    await assert.rejects(processPullRequestCommentJob(job('default', 100) as never), RepositoryWorkflowCapacityError);
+    assert.ok(events.includes('prepare'), 'recovery prepared a worktree before admission');
+    assert.ok(events.includes('cleanup-worktree'));
+    assert.ok(events.indexOf('persist-comments') < events.indexOf('cleanup-worktree'));
+    assert.ok(events.indexOf('cleanup-worktree') < events.indexOf('release:lock:pr:upstream:project:42'));
+    assert.ok(!events.includes('agent'));
 });

@@ -506,4 +506,4 @@ export * from './services/usageTips/index.js';
 
 export * from './workflow/repositoryWorkflow.js';
 export { executeWithRepositoryWorkflow } from './workflow/workflowExecution.js';
-export { withRepositoryWorkflowSlot } from './workflow/workflowConcurrency.js';
+export { withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError } from './workflow/workflowConcurrency.js';

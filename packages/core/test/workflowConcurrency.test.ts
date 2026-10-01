@@ -6,7 +6,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
 
 import { getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
 
@@ -243,4 +243,21 @@ test('preserves parent cancellation and the attempt generation used for containe
     parent.abort(new Error('PR lock lost'));
     await rejected;
     assert.equal(h.releases, 1);
+});
+
+
+test('refused admission settles without polling or releasing another execution reservation', async t => {
+    const h = leaseHarness(t);
+    const done = deferred<void>();
+    const active = withRepositoryWorkflowSlot(h.options, () => done.promise);
+    await setImmediate();
+    let refused = false;
+    const waiter = withRepositoryWorkflowSlot(h.options, async () => assert.fail('capacity is full'));
+    const rejection = assert.rejects(waiter, RepositoryWorkflowCapacityError).then(() => { refused = true; });
+    await setImmediate();
+    assert.equal(refused, true, 'a processor must return without waiting for a timer or the running task');
+    assert.equal(h.releases, 0, 'a refused attempt has no authority to release the active lease');
+    assert.equal(h.slots.size, 1);
+    done.resolve();
+    await Promise.all([active, rejection]);
 });

@@ -1,6 +1,7 @@
+import { DelayedError, type Job } from 'bullmq';
 import {
     loadRepositoryWorkflow, loadSettings, WORKFLOW_MAX_BYTES,
-    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, TaskStates,
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, TaskStates,
 } from '@propr/core';
 import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateManager, AgentExecutionResult } from '@propr/core';
 import type { Redis } from 'ioredis';
@@ -49,16 +50,43 @@ export async function prepareRepositoryWorkflow(options: {
     return workflow;
 }
 
+async function checkWorkflowTaskActive(options: { taskId: string; stateManager: WorkerStateManager }): Promise<void> {
+    const state = await options.stateManager.getTaskState(options.taskId);
+    if (state && ([TaskStates.CANCELLED, TaskStates.FAILED, TaskStates.COMPLETED] as string[]).includes(state.state)) {
+        throw new Error('Task ended while waiting for repository workflow capacity');
+    }
+}
+
+export async function withRepositoryWorkflowAdmission<T>(options: {
+    workflow?: ResolvedRepositoryWorkflow; repoOwner: string; repoName: string;
+    redisClient: Redis; taskId: string; stateManager: WorkerStateManager; correlatedLogger: Logger;
+}, execute: () => Promise<T>): Promise<T> {
+    return withRepositoryWorkflowSlot({
+        redis: options.redisClient, repository: `${options.repoOwner}/${options.repoName}`, limit: options.workflow?.maxParallelTasks,
+        checkCancelled: () => checkWorkflowTaskActive(options),
+        onLeaseError: error => options.correlatedLogger.error({ error }, 'Repository workflow capacity lease failed'),
+    }, execute);
+}
+
+export { RepositoryWorkflowCapacityError };
+
+/** Delay only after the processor has unwound its locks and durable claims. */
+export async function deferRepositoryWorkflowJob<T>(job: Pick<Job, 'moveToDelayed' | 'token'>, execute: () => Promise<T>): Promise<T> {
+    try {
+        return await execute();
+    } catch (error) {
+        if (!(error instanceof RepositoryWorkflowCapacityError)) throw error;
+        await job.moveToDelayed(Date.now() + 10_000, job.token);
+        throw new DelayedError();
+    }
+}
+
 export async function runRepositoryWorkflow(options: {
     workflow?: ResolvedRepositoryWorkflow; repoOwner: string; repoName: string;
     redisClient: Redis; taskId: string; stateManager: WorkerStateManager; correlatedLogger: Logger;
 }, execute: () => Promise<AgentExecutionResult>): Promise<AgentExecutionResult> {
-    return withRepositoryWorkflowSlot({
-        redis: options.redisClient, repository: `${options.repoOwner}/${options.repoName}`, limit: options.workflow?.maxParallelTasks,
-        checkCancelled: async () => {
-            const state = await options.stateManager.getTaskState(options.taskId);
-            if (state && ([TaskStates.CANCELLED, TaskStates.FAILED, TaskStates.COMPLETED] as string[]).includes(state.state)) throw new Error('Task ended while waiting for repository workflow capacity');
-        },
-        onLeaseError: error => options.correlatedLogger.error({ error }, 'Repository workflow capacity lease failed'),
-    }, () => executeWithRepositoryWorkflow(options.workflow, execute));
+    // Preparation awaits GitHub and worktree operations after admission. Keep the
+    // final cancellation check immediately before starting the implementation agent.
+    await checkWorkflowTaskActive(options);
+    return executeWithRepositoryWorkflow(options.workflow, execute);
 }

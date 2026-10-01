@@ -1,4 +1,5 @@
 import { parseDocument } from 'yaml';
+import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
 
 export const WORKFLOW_PATH = '.propr/workflow.yml';
@@ -100,11 +101,14 @@ export async function loadRepositoryWorkflow(source: WorkflowSource, baseBranch:
     if (instructions && Buffer.byteLength(instructions.content) > WORKFLOW_MAX_BYTES) invalid('instructions file exceeds 128 KiB');
     positiveInteger(defaults.maxParallelTasks, 'instance worker_concurrency');
     positiveInteger(defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS, 'instance hook timeout');
-    return {
+    const workflow = {
         revision, baseBranch, fileRevision: file.sha, config, instructionText: instructions?.content,
         timeoutMs: Math.min(config.hooks?.timeout_ms ?? WORKFLOW_TIMEOUT_MS, defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS),
         maxParallelTasks: Math.min(config.limits?.max_parallel_tasks ?? defaults.maxParallelTasks, defaults.maxParallelTasks),
     };
+    // Validate the actual quoted argv, including all hooks, validation and wrapper overhead.
+    buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE);
+    return workflow;
 }
 
 export function refineWorkflowPreviews(settings: VisualPreviewSettings, workflow?: ResolvedRepositoryWorkflow): VisualPreviewSettings {
