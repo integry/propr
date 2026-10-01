@@ -95,7 +95,8 @@ test('POST repository config persists an enabled option without enabling other r
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
-      defaultBranch: undefined
+      defaultBranch: undefined,
+      contextRepositories: undefined
     },
     {
       id: 'repo-2',
@@ -106,7 +107,8 @@ test('POST repository config persists an enabled option without enabling other r
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
-      defaultBranch: undefined
+      defaultBranch: undefined,
+      contextRepositories: undefined
     }
   ]);
 });
