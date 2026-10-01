@@ -679,12 +679,7 @@ export interface ClaudeNativeGoalLaunch {
     timeoutMs: number;
 }
 
-/** Run one attempt of a Claude native `/goal` session with live ProPR controls. */
-export async function executeClaudeNativeGoal(
-    options: AgentTaskOptions,
-    launch: ClaudeNativeGoalLaunch,
-): Promise<AgentExecutionResult> {
-    const start = Date.now();
+function resolveClaudeGoalExecution(options: AgentTaskOptions): { control: GoalExecutionControl; command: string } {
     const control = options.goalControl;
     if (!control || !options.nativeGoalObjective) {
         throw new Error('Claude native goal execution requires durable goal controls and an objective');
@@ -692,6 +687,16 @@ export async function executeClaudeNativeGoal(
     const command = options.nativeGoalObjective.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
         ? options.nativeGoalObjective
         : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
+    return { control, command };
+}
+
+/** Run one attempt of a Claude native `/goal` session with live ProPR controls. */
+export async function executeClaudeNativeGoal(
+    options: AgentTaskOptions,
+    launch: ClaudeNativeGoalLaunch,
+): Promise<AgentExecutionResult> {
+    const start = Date.now();
+    const { control, command } = resolveClaudeGoalExecution(options);
     const ownership = getExecutionOwnershipContext();
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
