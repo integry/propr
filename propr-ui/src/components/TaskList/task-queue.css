@@ -1,0 +1,110 @@
+/* The task ledger: one grid row per task group, with real column headers.
+   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
+
+   The schema is locked: every width that shows the table shows all seven
+   columns, so nothing is added or dropped as the window or a pane resizes.
+   REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
+   REPO shows the repository name without its owner (the repo filter already
+   scopes the list), so a 20-character name fits whole; AGENT's 190px holds a
+   long model identifier beside its provider logo. The title column takes only what is left
+   (`minmax(0, 1fr)`), so a long or unbroken title wraps inside its own cell
+   and never takes width from the columns beside it. Only STATUS and the
+   gutters tighten on a laptop-width list (~1280px windows).
+
+   A list too narrow to hold those fixed columns and a readable title (a
+   phone, or a narrow pane in the desktop app) shows the stacked cards
+   instead of squeezing the metadata. */
+.task-ledger {
+  container: task-ledger / inline-size;
+  width: 100%;
+  min-width: 0;
+}
+.task-ledger-table { display: none; }
+
+@container task-ledger (min-width: 60rem) {
+  .task-ledger-cards { display: none; }
+  .task-ledger-table { display: block; }
+}
+
+.task-queue {
+  width: 100%;
+  min-width: 0;
+}
+
+.task-queue-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 3rem;
+  column-gap: .75rem;
+  align-items: center;
+}
+
+@container task-ledger (max-width: 1100px) {
+  .task-queue-grid {
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 3rem;
+    column-gap: .5rem;
+  }
+}
+
+/* Earlier runs are one timeline block spanning TASK / PR through STATUS:
+   when · what it did · summary [score]. They never reach the SCORE column,
+   so no run is read across an empty gap to a pill at the far edge. */
+.task-runs-cell { grid-column: 1 / span 3; }
+.task-run { grid-template-columns: 5rem minmax(0, 1fr); column-gap: .75rem; }
+
+/* The tree rail. It drops from the toggle's caret (a fixed .75rem box at the
+   start of the rollup line, so its centre is .375rem in) into the runs, and
+   each run branches off it with a short tick; the rail ends at the last run.
+   --rail-stem bridges the gap from just under the caret to the list: the
+   row's bottom padding (.5rem) plus the part of the 1.25rem rollup line below
+   the caret. The mobile card leaves the same .5rem above the list. */
+.task-earlier-runs {
+  --rail: #cbd5e1;
+  --rail-stem: 1rem;
+  position: relative;
+  margin-left: calc(.375rem - 1px);
+}
+.task-earlier-runs::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(-1 * var(--rail-stem));
+  height: var(--rail-stem);
+  border-left: 2px solid var(--rail);
+}
+.task-earlier-runs > li { position: relative; padding-left: .75rem; }
+.task-earlier-runs > li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid var(--rail);
+}
+.task-earlier-runs > li:last-child::before { bottom: auto; height: calc(50% + 1px); }
+.task-earlier-runs > li::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(50% - 1px);
+  width: .5rem;
+  border-top: 2px solid var(--rail);
+}
+
+.task-title { border-radius: .125rem; line-height: 1.25rem; }
+.task-title:hover { color: #0f766e; text-decoration: underline; }
+.task-title:focus { outline: none; }
+.task-title:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+
+/* A mouse click leaves no box behind; keyboard focus is shown as an underline,
+   which marks the control without drawing a frame inside a muted table. */
+.task-rollup-toggle:focus { outline: none; }
+.task-rollup-toggle:focus-visible {
+  color: #0f172a;
+  text-decoration: underline;
+  text-decoration-color: #0d9488;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* Only keyboard focus tints the row, so a clicked row does not stay lit. */
+.task-queue [role="row"]:has(:focus-visible) { background: #f0fdfa; }

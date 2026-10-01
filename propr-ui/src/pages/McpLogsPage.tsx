@@ -308,7 +308,6 @@ const McpLogsPage: React.FC = () => {
             Couldn’t refresh the MCP access log: {state.refreshError}
           </div>
         )}
-        {refreshing && <div role="status" className="px-4 pt-3 text-xs text-slate-500 sm:px-6">Refreshing MCP access log…</div>}
         {state.entries.length === 0
           ? <McpLogsEmptyState filtered={hasActiveMcpLogFilters(filters)} onClearFilters={clearFilters} />
           : <McpLogTable entries={state.entries} />}
