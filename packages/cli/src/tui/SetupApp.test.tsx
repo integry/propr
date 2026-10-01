@@ -294,3 +294,20 @@ test("buildSetupPrompts parses a comma-separated whitelist", async () => {
   bridge.resolve(prompts[0].id, " alice, bob ,, carol ");
   assert.deepEqual(await result, ["alice", "bob", "carol"]);
 });
+
+test("Ink own-App creation invokes the flow for the selected stack", async () => {
+  const bridge = new SetupBridge();
+  const answers = ["app", "create", "https://propr.example.com", "integry"];
+  bridge.subscribe(event => {
+    if (event.type === "prompt") bridge.resolve(event.prompt.id, answers.shift());
+  });
+  let root: string | undefined;
+  const hooks = buildSetupPrompts(bridge, async (options, dependencies) => {
+    root = options.root;
+    assert.equal(options.org, "integry");
+    assert.equal(dependencies?.signal, bridge.abortController.signal);
+    return { envPath: "/stack/.env", keyPath: "/stack/key.pem", backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" }), { keep: true });
+  assert.equal(root, "/selected-stack");
+});

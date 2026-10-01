@@ -6,6 +6,7 @@
  * are present. It is also what bare `propr` runs.
  */
 
+import { checkGithubApp } from "./githubAppApi.js";
 import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
@@ -413,7 +414,20 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
+  const githubAuthChecks = checkGithubAuth(fileEnv, cfg);
+  for (const r of githubAuthChecks) emit(r);
+  if (githubAuthChecks.some(r => r.name === "GitHub auth mode" && r.detail === "GitHub App (own/shared app)") &&
+      !githubAuthChecks.some(r => r.status === "fail") && cfg.hostGhPrivateKey) {
+    try {
+      const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
+        process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
+      for (const r of checks) emit({ ...r, group: "GitHub" });
+    } catch {
+      emit({ name: "GitHub App API", status: "fail", group: "GitHub",
+        detail: "Could not verify the App installation or mint an installation token.",
+        fix: "Check network access, App credentials, and that GH_INSTALLATION_ID belongs to this App." });
+    }
+  }
 
   // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
   // needs the right credentials before the daemon/API can serve it).
@@ -546,7 +560,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
     relayUrl,
     relayToken,
     appId: val("GH_APP_ID"),
-    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+    privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
     installationId: val("GH_INSTALLATION_ID"),
   });
   for (const warning of warnings) {
@@ -679,7 +693,7 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
       relayUrl,
       relayToken: val(RELAY_TOKEN_KEY),
       appId: val("GH_APP_ID"),
-      privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+      privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
       installationId: val("GH_INSTALLATION_ID"),
     }));
   } catch (error) {

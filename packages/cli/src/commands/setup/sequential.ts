@@ -1,3 +1,4 @@
+import { createGithubApp, openGithubAppBrowser } from "../githubAppCommands.js";
 /**
  * Sequential (readline) fallback wizard for `propr setup`.
  *
@@ -274,7 +275,7 @@ async function promptMultiSelect(
  * so both renderers honour the same safe defaults: a blank input or a "keep"
  * choice leaves existing configuration untouched.
  */
-export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePaint(false)): SetupPrompts {
+export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePaint(false), createApp = createGithubApp): SetupPrompts {
   return {
     async resolveStackRoot({ currentRoot, init }): Promise<RootDecision> {
       const entered = await promptInput(io, paint, {
@@ -312,7 +313,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       });
     },
 
-    async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+    async configureGithubAuth({ current, rootDir }): Promise<GithubAuthDecision> {
       // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
@@ -345,6 +346,21 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
+      }
+      const method = await promptSelect(io, paint, {
+        title: "Configure your own GitHub App",
+        options: [{ label: "Create it for me", value: "create" }, { label: "I already have one", value: "manual" }],
+        defaultIndex: 0,
+      });
+      if (method === "create") {
+        const publicUrl = await promptInput(io, paint, { title: "Public ProPR URL", defaultValue: "https://" });
+        const org = await promptInput(io, paint, { title: "App owner organization (blank for your account)", defaultValue: "" });
+        await createApp({ root: rootDir, publicUrl, org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { io: {
+          log: message => io.print(message),
+          ask: (message) => io.ask(message, { mask: true }),
+          open: openGithubAppBrowser,
+        } });
+        return { keep: true };
       }
       const appId = await promptInput(io, paint, { title: "GitHub App ID", defaultValue: "" });
       // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY

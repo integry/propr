@@ -28,18 +28,13 @@ sudo chown -R "$USER" /srv/propr
 cd /srv/propr
 ```
 
-**Own GitHub App mode only:** once you have copied the App private key into this
-directory, restrict its permissions. Relay mode (`GH_AUTH_MODE=relay`) has no key
-file, so skip this command:
-
-```bash
-chmod 600 your-app-private-key.pem
-```
+For own-App installs, `propr github-app create` saves the private key here with
+mode `0600`. Relay mode (`GH_AUTH_MODE=relay`) has no key file.
 
 | Path | Contents |
 |---|---|
 | `.env` | Server configuration (secrets, URLs, paths) |
-| `your-app-private-key.pem` | GitHub App private key — **only in own GitHub App mode**; relay mode (`GH_AUTH_MODE=relay`) stores no key file here |
+| `github-app-<id>-<suffix>.pem` | GitHub App private key — **only in own GitHub App mode**; relay mode (`GH_AUTH_MODE=relay`) stores no key file here |
 | `data/` | SQLite database (`propr.sqlite` plus `-wal`/`-shm` files) |
 | `logs/` | Log directory mounted into the service containers at `/usr/src/app/logs` |
 | `repos/` | Mounted into the worker at `/usr/src/app/repos`. Cached clones and per-task worktrees live under `/tmp/git-processor` on the host by default (`GIT_CLONES_BASE_PATH`, `GIT_WORKTREES_BASE_PATH`) |
@@ -63,23 +58,26 @@ Images are published to Docker Hub under the `propr/` namespace. Docker Hub is t
 
 ## Environment
 
-Use `.env` for server-specific wiring. Point `HOST_GH_PRIVATE_KEY` at the GitHub
-App private key (`.pem`) using an absolute **host** path. Both the CLI (`propr start`)
-and the launcher bind-mount that file read-only into the app containers at the same
-path and set `GH_PRIVATE_KEY_PATH` for them, so you don't set `GH_PRIVATE_KEY_PATH`
-yourself or mount the key into the launcher.
+Use `.env` for server-specific wiring. For an own-App install, create and install
+the App with:
 
 ```bash
-GH_APP_ID=your-github-app-id
-GH_INSTALLATION_ID=your-installation-id
-HOST_GH_PRIVATE_KEY=/srv/propr/your-app-private-key.pem
+propr github-app create --root /srv/propr --public-url https://propr.example.com
+# Add --no-browser over SSH; add --org your-org for organization ownership.
+```
 
+The command writes the App credentials, GitHub login settings and direct-webhook
+configuration. It saves `HOST_GH_PRIVATE_KEY` as an absolute host path; the CLI
+and launcher mount it read-only and set `GH_PRIVATE_KEY_PATH` themselves.
+See [Create your own App](./github-auth.md#create-your-own-app) for permissions,
+manual registration, SSH, and recovery instructions.
+
+Set the remaining server wiring in `.env`:
+
+```bash
 FRONTEND_URL=https://propr.example.com
-GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
-GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
-GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
+API_PUBLIC_URL=https://propr.example.com
 SESSION_SECRET=generate-a-strong-secret-here
-
 DB_FILENAME=./data/propr.sqlite
 ```
 
@@ -117,14 +115,15 @@ in [ProPR Connect](./propr-connect.md).
 
 **Polling** (`GITHUB_EVENT_INTAKE_MODE=polling`) suits installs that prefer to pull rather than maintain a streaming connection; it needs no inbound endpoint but adds latency and consumes the API budget continuously. The interval is `POLLING_INTERVAL_MS` (default `60000`).
 
-**Direct webhook** (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`) is for running your own GitHub App with GitHub delivering events to a public endpoint:
+**Direct webhook** (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`) delivers GitHub events
+to your own public endpoint. Run `propr github-app create --public-url
+https://propr.example.com` to configure it, then `propr start --restart`. The
+command sets the webhook URL and the matching `GH_WEBHOOK_SECRET`; the API
+refuses to start in this mode without a secret.
 
-```bash
-GITHUB_EVENT_INTAKE_MODE=direct_webhook
-GH_WEBHOOK_SECRET=your-webhook-secret
-```
-
-The API container serves the endpoint at `POST /webhook` (port 4000). Point your GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. Direct webhook therefore requires your own GitHub App, a public URL, and `GH_WEBHOOK_SECRET`. The API refuses to start in `direct_webhook` mode without `GH_WEBHOOK_SECRET` (it is unused in the other modes — in particular, the default `routing_websocket` does not require it). Webhook delivery has no periodic backstop, so a missed or undelivered event relies on GitHub's redelivery.
+The API serves `POST /webhook` on port 4000. Expose it through your reverse proxy
+without an interactive SSO gate. Webhook delivery has no periodic backstop, so a
+missed or undelivered event relies on GitHub's redelivery.
 
 > **Migration from `ENABLE_GITHUB_WEBHOOKS`:** the legacy boolean `ENABLE_GITHUB_WEBHOOKS` is **deprecated** and no longer selects an intake mode. If it is still present in your environment, the backend logs a deprecation warning at startup and otherwise ignores it. Remove it and set `GITHUB_EVENT_INTAKE_MODE` explicitly (`routing_websocket`, `polling`, or `direct_webhook`); when unset, intake resolves to `routing_websocket`. Note that event intake is independent of GitHub auth mode (`GH_AUTH_MODE`) — see [GitHub Authentication](./github-auth.md).
 

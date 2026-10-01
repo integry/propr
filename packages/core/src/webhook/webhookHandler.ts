@@ -32,11 +32,8 @@ import type {
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
-/** Runtime-accessible list of supported webhook event types — single source of truth. */
-export const SUPPORTED_WEBHOOK_EVENTS = [
-  'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push', 'status',
-] as const;
+import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
+export { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
 
 /** Derived union type — always in sync with the runtime array. */
 export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];

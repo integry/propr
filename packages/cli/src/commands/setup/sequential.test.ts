@@ -89,7 +89,7 @@ test("select: numeric choice maps to the option value, blank to the default", as
 
   // Options are keep(1), Token relay(2), Custom GitHub App(3); option 3 selects
   // the custom-app branch and collects its three inputs.
-  const app = await buildSequentialPrompts(scriptedIo(["3", "123", "/key.pem", "456"])).configureGithubAuth!({ current });
+  const app = await buildSequentialPrompts(scriptedIo(["3", "2", "123", "/key.pem", "456"])).configureGithubAuth!({ current });
   assert.equal(app.mode, "app");
   assert.equal(app.vars?.GH_AUTH_MODE, "app");
   assert.equal(app.vars?.GH_APP_ID, "123");
@@ -126,7 +126,7 @@ test("select: ProPR Connect accepts the hosted relay default on a blank URL", as
 test("select: an out-of-range number re-prompts until valid", async () => {
   // current.mode "none" → options Token relay(1), Custom GitHub App(2). Two
   // invalid choices, then option 2 (the custom App), then its three inputs.
-  const io = scriptedIo(["9", "0", "2", "123", "/key.pem", "456"]);
+  const io = scriptedIo(["9", "0", "2", "2", "123", "/key.pem", "456"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
   assert.equal(decision.mode, "app", "option 2 is the custom GitHub App branch");
   assert.equal(decision.vars?.GH_APP_ID, "123");
@@ -413,7 +413,7 @@ test("no-TUI setup recovers from zero installations before opening its legacy pi
 test("no-TUI custom-App setup logs in before polling protected status", async () => {
   // Root + re-scaffold + agents; choose custom App and enter its three values;
   // accept GitHub user login; then accept/skip the remaining defaults.
-  const io = scriptedIo(["", "n", "", "3", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
+  const io = scriptedIo(["", "n", "", "3", "2", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
   let tokenPresent = false;
   let loginCalled = false;
   let healthCalled = false;
@@ -462,4 +462,16 @@ test("runSequentialSetup reports an unfinished run when a required step fails", 
   assert.equal(result.completed, false);
   assert.equal(statusOf(result.state, "check"), "failed");
   assert.match(io.lines.join("\n"), /did not finish/);
+});
+
+test("custom App creation uses the selected root and keeps the configuration it saved", async () => {
+  const io = scriptedIo(["2", "1", "https://propr.example.com", "integry"]);
+  let received: unknown;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    received = options;
+    return { envPath: "/stack/.env", keyPath: "/stack/key.pem", backupPath: undefined, fields: [], checks: [] };
+  });
+  const decision = await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" });
+  assert.deepEqual(received, { root: "/selected-stack", publicUrl: "https://propr.example.com", org: "integry", browser: !process.env.SSH_CONNECTION });
+  assert.deepEqual(decision, { keep: true });
 });

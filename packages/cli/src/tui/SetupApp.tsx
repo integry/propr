@@ -1,3 +1,4 @@
+import { createGithubApp, openGithubAppBrowser } from "../commands/githubAppCommands.js";
 /**
  * Interactive Ink view for `propr setup`.
  *
@@ -97,6 +98,7 @@ export class SetupBridge {
   private resolvers = new Map<number, (value: unknown) => void>();
   private rejecters = new Map<number, (error: unknown) => void>();
   private cancelled = false;
+  readonly abortController = new AbortController();
 
   private push(event: SetupUiEvent): void {
     this.history.push(event);
@@ -200,6 +202,7 @@ export class SetupBridge {
   /** Reject any in-flight prompt; further prompts reject immediately. */
   cancel(): void {
     this.cancelled = true;
+    this.abortController.abort();
     const pending = [...this.rejecters.entries()];
     this.resolvers.clear();
     this.rejecters.clear();
@@ -212,7 +215,7 @@ export class SetupBridge {
  * keeps the engine's safe-default contract: a blank input or a "keep" choice
  * leaves existing configuration untouched.
  */
-export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
+export function buildSetupPrompts(bridge: SetupBridge, createApp = createGithubApp): SetupPrompts {
   return {
     async resolveStackRoot({ currentRoot, init }): Promise<RootDecision> {
       const entered = await bridge.input({
@@ -250,7 +253,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       });
     },
 
-    async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+    async configureGithubAuth({ current, rootDir }): Promise<GithubAuthDecision> {
       // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
@@ -283,6 +286,21 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
+      }
+      const method = await bridge.select({
+        title: "Configure your own GitHub App",
+        options: [{ label: "Create it for me", value: "create" }, { label: "I already have one", value: "manual" }],
+        defaultIndex: 0,
+      });
+      if (method === "create") {
+        const publicUrl = await bridge.input({ title: "Public ProPR URL", defaultValue: "https://" });
+        const org = await bridge.input({ title: "App owner organization (blank for your account)", defaultValue: "" });
+        await createApp({ root: rootDir, publicUrl, org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { signal: bridge.abortController.signal, io: {
+          log: message => bridge.emitLog(message),
+          ask: (message) => bridge.input({ title: message, mask: true }),
+          open: openGithubAppBrowser,
+        } });
+        return { keep: true };
       }
       const appId = await bridge.input({ title: "GitHub App ID", defaultValue: "" });
       // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY
