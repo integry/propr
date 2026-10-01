@@ -5,13 +5,13 @@ import { isNotificationPreviewEligible, type Notification } from '@propr/shared'
 import {
   ChevronDown,
   Inbox,
-  Loader2,
   RefreshCw,
   WifiOff,
   X,
 } from 'lucide-react';
 import NotificationActions from '../components/Inbox/NotificationActions';
 import { ReferenceChip } from '../components/TaskList/ReferenceChips';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import {
   formatRelativeTime,
   notificationDisplayTitle,
@@ -354,22 +354,31 @@ export const InboxBanners: React.FC<{
   );
 };
 
+/** What a state says when the read gave no message of its own. Loading is a skeleton and says nothing here. */
+const INBOX_STATE_FALLBACK: Record<'empty' | 'error' | 'offline', string> = {
+  empty: 'New operational updates will appear here.',
+  error: 'Your notifications could not be read. Try again in a moment.',
+  offline: 'Reconnect to see your latest notifications.',
+};
+
 export const InboxState: React.FC<{
   kind: 'loading' | 'empty' | 'error' | 'offline';
   message?: string;
   onRefresh: () => void;
 }> = ({ kind, message, onRefresh }) => {
-  const loading = kind === 'loading';
+  if (kind === 'loading') {
+    return <ListSkeleton rows={6} layout="row" label="Loading Inbox…" className="px-4 py-3 sm:px-6" data-testid="inbox-skeleton" />;
+  }
   return (
     <div className="flex min-h-[55vh] flex-col items-center justify-center bg-white px-5 py-10 text-center">
-      {loading ? <Loader2 className="h-8 w-8 animate-spin text-teal-600" /> : <Inbox className="h-9 w-9 text-slate-300" />}
+      <Inbox className="h-9 w-9 text-slate-300" />
       <h2 className="mt-4 text-base font-semibold text-slate-800">
-        {kind === 'empty' ? 'You’re all caught up' : kind === 'offline' ? 'Inbox unavailable offline' : kind === 'error' ? 'Couldn’t load your Inbox' : 'Loading Inbox'}
+        {kind === 'empty' ? 'You’re all caught up' : kind === 'offline' ? 'Inbox unavailable offline' : 'Couldn’t load your Inbox'}
       </h2>
       <p className="mt-1 max-w-sm text-sm leading-5 text-slate-500">
-        {message ?? (kind === 'empty' ? 'New operational updates will appear here.' : 'Fetching your latest notifications…')}
+        {message || INBOX_STATE_FALLBACK[kind]}
       </p>
-      {!loading && kind !== 'empty' && (
+      {kind !== 'empty' && (
         <button type="button" onClick={onRefresh} className="mt-5 inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700">
           <RefreshCw className="h-4 w-4" /> Try again
         </button>

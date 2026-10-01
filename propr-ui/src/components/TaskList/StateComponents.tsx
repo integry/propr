@@ -1,25 +1,25 @@
 import React, { useMemo } from 'react';
-import { LoaderCircle } from 'lucide-react';
 import type { TaskGroup } from './types';
 import { TaskQueueRow } from './TaskRows';
 import { MobileTaskCard } from './MobileTaskCard';
 import { buildTaskRow, TASK_QUEUE_COLUMNS } from './rowModel';
+import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import './task-queue.css';
 
-/** Renders a simple loading message for dashboard integration */
+/** Renders the first read of the task list as feed rows for dashboard integration */
 export const DashboardLoadingState: React.FC = () => (
-  <div role="status" className="flex items-center gap-2 p-4 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading tasks...</div>
+  <ListSkeleton rows={4} layout="row" label="Loading tasks…" className="p-4" data-testid="tasks-skeleton" />
 );
 
-/** Renders a full-page loading state with header for the main Tasks page */
+/** Renders the full-page first read as table columns under the real Tasks header */
 export const FullPageLoadingState: React.FC = () => (
   <div className="flex flex-col h-full">
     <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
       <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
     </div>
     <div className="flex-1 overflow-auto px-6 py-6">
-      <div role="status" className="flex items-center gap-2 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading tasks...</div>
+      <ListSkeleton rows={8} layout="table" columns={4} label="Loading tasks…" data-testid="tasks-skeleton" />
     </div>
   </div>
 );

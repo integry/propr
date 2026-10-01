@@ -1,5 +1,6 @@
 import React from 'react';
-import { LoaderCircle, ShieldAlert, Plug, TriangleAlert } from 'lucide-react';
+import { ShieldAlert, Plug, TriangleAlert } from 'lucide-react';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import type { McpAccessLogEntry, McpAccessLogStats } from '../api/adminMcpLogsApi';
 import {
   UNAVAILABLE,
@@ -113,15 +114,13 @@ export const McpLogsBlockingState: React.FC<{
   onRetry?: () => void;
   onClearFilters?: () => void;
 }> = ({ kind, message, onRetry, onClearFilters }) => (
-  <div className="flex h-full flex-col">
+  <div className="flex h-full flex-col bg-white">
     <div className="flex-shrink-0 border-b border-gray-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
       <h1 className="text-lg font-bold text-gray-800 sm:text-2xl">MCP Log</h1>
     </div>
     <div className="flex-1 overflow-auto px-4 py-6 sm:px-6">
       {kind === 'loading' && (
-        <div role="status" className="flex items-center gap-2 text-gray-500">
-          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading MCP access log…
-        </div>
+        <ListSkeleton rows={10} layout="table" columns={10} label="Loading MCP access log…" data-testid="mcp-logs-skeleton" />
       )}
       {kind === 'denied' && (
         <div role="alert" className="max-w-xl border-l-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
