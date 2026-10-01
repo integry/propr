@@ -192,10 +192,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
         job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
-            repoOwner,
-            repoName,
-            pullRequestNumber,
-            correlatedLogger,
+            repoOwner, repoName, pullRequestNumber, correlatedLogger,
         });
         let commentHistory = '';
         if (!job.data.ultrafixMeta) {
@@ -203,13 +200,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             commentHistory += await loadOriginalContributionDiscussion(octokit, context);
         }
 
-        const {
-            isFixMode,
-            fixSelection,
-            resolution,
-            selectedReviewComments,
-            reviewCommentsSection,
-        } = await prepareFixReviewFeedback({
+        const { isFixMode, fixSelection, resolution, selectedReviewComments, reviewCommentsSection } = await prepareFixReviewFeedback({
             job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
         });
 
@@ -217,18 +208,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
                 'Skipping fix processing because no review findings or suggestions were selected');
             await handleNoAuthorizedFindings({
-                job,
-                taskId,
-                taskUrl,
-                stateManager,
-                octokit,
+                job, taskId, taskUrl, stateManager, octokit,
                 unprocessedComments: state.unprocessedComments,
-                redisClient,
-                repoOwner,
-                repoName,
-                pullRequestNumber,
-                correlatedLogger,
-                correlationId,
+                redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
                 // Naming the identifiers is what makes the posted explanation actionable.
                 unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
             });
@@ -236,8 +218,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         }
 
         await markSelectedUltrafixFindings(
-            job,
-            redisClient,
+            job, redisClient,
             { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
             selectedReviewComments,
         );
@@ -306,11 +287,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             pullRequestNumber,
             prTitle: prData!.data.title,
             workflowLabel: getPrTaskWorkflowLabel(workflow),
-            repoOwner,
-            repoName,
-            correlationId,
-            taskId,
-            correlatedLogger,
+            repoOwner, repoName, correlationId, taskId, correlatedLogger,
         });
         job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
         job.data.subtitle = summaryTitle;
@@ -362,6 +339,17 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
 export function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     return deferRepositoryWorkflowJob(job, () => processAdmittedPRCommentJob(job));
+}
+
+async function persistCapacityDeferredComments(job: Job<CommentJobData>, context: PRJobContext & { pickedUpComments: UnprocessedComment[] }): Promise<void> {
+    // This same delayed job retains the claimed comments and command context.
+    // Wait for durable storage before releasing its PR lock or queue ownership.
+    try {
+        await job.updateData({ ...job.data, comments: context.commentsToProcess });
+    } catch (persistError) {
+        await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
+        throw persistError;
+    }
 }
 
 async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
@@ -460,14 +448,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     } catch (error) {
         if (error instanceof RepositoryWorkflowCapacityError) {
             capacityRefused = true;
-            // This same delayed job retains the claimed comments and command context.
-            // Wait for durable storage before releasing its PR lock or queue ownership.
-            try {
-                await job.updateData({ ...job.data, comments: context.commentsToProcess });
-            } catch (persistError) {
-                await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
-                throw persistError;
-            }
+            await persistCapacityDeferredComments(job, context);
             throw error;
         }
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
