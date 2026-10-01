@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
+import { isBookkeepingCancellation } from '../packages/core/src/utils/workerStateManager.types.js';
 import { buildIssueTaskId } from '@propr/shared';
 
 const jobs = new Map<string, any>();
@@ -19,6 +20,7 @@ const queue = {
 };
 const labels: unknown[][] = [];
 await mock.module('@propr/core', { namedExports: {
+    isBookkeepingCancellation,
     issueQueue: queue, safeRemoveLabel: async () => {}, safeAddLabel: async () => {},
     formatRetryTime: () => 'later', hoursUntil: () => 1, recordLLMMetrics: async () => {},
     updateWithdrawnIssueLabels: async (...args: unknown[]) => { labels.push(args); },
@@ -37,24 +39,24 @@ const manager = {
 const options = () => ({ octokit: null, correlatedLogger: log, stateManager: manager, taskId: taskIdFor(source.data) }) as any;
 beforeEach(() => { jobs.clear(); labels.length = 0; state = { state: 'processing' }; onAdd = undefined; onUpdate = undefined; onReload = undefined; });
 
-test('reconciled source cancellation cannot become the issue retry task state', async () => {
+test('usage-limit retries preserve task identity and goal correlation across queue handoffs', async () => {
     await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
     const retry = [...jobs.values()][0];
     const transition = completedJobTransition({ status: 'requeued', reason: 'rate_limit' });
     assert.equal(transition.state, 'cancelled');
     assert.equal(transition.metadata.terminalReason, undefined);
     state = { state: transition.state };
-    assert.notEqual(taskIdFor(retry.data), taskIdFor(source.data));
-    assert.notEqual(retry.data.correlationId, source.data.correlationId);
+    assert.equal(taskIdFor(retry.data), taskIdFor(source.data));
+    assert.equal(retry.data.correlationId, source.data.correlationId);
     assert.equal(retry.data.isRetryFromRateLimit, true);
     assert.equal(retry.data.triggeringLabel, 'AI');
-    // Another usage limit gets another identity, while replaying one source deduplicates.
+    // Another usage limit gets another queue job, while replaying one source deduplicates.
     state = { state: 'processing' };
     await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
     assert.equal(jobs.size, 1);
     await handleUsageLimitError(new Error('usage limit'), retry, retry.data, { ...options(), taskId: taskIdFor(retry.data) });
     assert.equal(jobs.size, 2);
-    assert.equal(new Set([...jobs.values()].map(job => taskIdFor(job.data))).size, 2);
+    assert.equal(new Set([...jobs.values()].map(job => taskIdFor(job.data))).size, 1);
 });
 
 for (const boundary of ['before scheduling', 'queue add', 'state update']) {
@@ -86,3 +88,15 @@ test('legacy user-abort handler delegates processing cleanup with the stopped ta
     assert.equal(labels[0][2], 'cancelled_by_user');
     assert.equal(labels[0][3], taskIdFor(data));
 });
+
+for (const boundary of ['before scheduling', 'queue add', 'state update']) {
+    test(`bookkeeping cancellation at ${boundary} does not discard the same-task retry`, async () => {
+        const handoff = () => { state = { state: 'cancelled', history: [{ reason: 'Task job requeued: rate_limit', metadata: { jobResultStatus: 'requeued' } }] }; };
+        if (boundary === 'before scheduling') handoff();
+        if (boundary === 'queue add') onAdd = handoff;
+        if (boundary === 'state update') onUpdate = handoff;
+        await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+        assert.equal(jobs.size, 1);
+        assert.equal([...jobs.values()][0].data.correlationId, data.correlationId);
+    });
+}

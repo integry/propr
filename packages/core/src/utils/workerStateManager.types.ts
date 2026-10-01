@@ -136,3 +136,11 @@ export interface WorkerStateManagerOptions {
     keyPrefix?: string;
     stateExpiry?: number;
 }
+
+/** Queue handoffs are bookkeeping, not a withdrawal of the user's request. */
+export function isBookkeepingCancellation(task: Pick<TaskStateData, 'state' | 'terminalReason' | 'history'>): boolean {
+    if (task.state !== TaskStates.CANCELLED || task.terminalReason) return false;
+    const entry = task.history?.at(-1);
+    return ['requeued', 'rescheduled'].includes(String(entry?.metadata?.jobResultStatus))
+        || /^Task job (requeued|rescheduled)(:|$)/.test(entry?.reason ?? '');
+}

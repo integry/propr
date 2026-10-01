@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
+    isBookkeepingCancellation,
     safeRemoveLabel,
     safeAddLabel,
     formatRetryTime,
@@ -100,11 +101,16 @@ function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number):
 
 async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData>> {
     const retry = await issueQueue.getJob(jobId);
-    if (!retry || !('correlationId' in retry.data) || retry.data.correlationId !== correlationId
+    if (!retry || !('isRetryFromRateLimit' in retry.data) || !retry.data.isRetryFromRateLimit || !('correlationId' in retry.data) || retry.data.correlationId !== correlationId
         || ['completed', 'failed', 'unknown'].includes(await retry.getState())) {
         throw new Error(`Unable to persist issue usage-limit retry ${jobId}`);
     }
     return retry as Job<IssueJobData>;
+}
+
+async function issueRetryWasStopped(stateManager: WorkerStateManager, taskId: string): Promise<boolean> {
+    const state = await stateManager.getTaskState(taskId);
+    return state?.state === 'cancelled' && !isBookkeepingCancellation(state);
 }
 
 export async function handleUsageLimitError(
@@ -156,24 +162,23 @@ export async function handleUsageLimitError(
         }
     }
 
-    // Reconciliation terminalizes the source job. A retry must not reuse its
-    // child task ID (which is derived from correlationId), or its queue ID.
+    // Keep the task/correlation identity (including goal parent links). Only
+    // the queue job identity changes, so each delayed handoff can be verified.
     const attempt = createHash('sha256').update(JSON.stringify({ taskId, sourceJobId: job.id })).digest('hex').slice(0, 16);
     const requeuedJobData: IssueJobData = {
         ...job.data,
-        correlationId: `issue-retry-${attempt}`,
         isRetryFromRateLimit: true
     };
 
     const requeueJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry-${attempt}`;
 
-    if ((await stateManager.getTaskState(taskId))?.state === 'cancelled') return;
+    if (await issueRetryWasStopped(stateManager, taskId)) return;
     const retryJob = await issueQueue.add(job.name, requeuedJobData, {
         jobId: requeueJobId,
         delay: Math.max(0, delay)
     });
     const persistedRetry = await requireIssueRetry(String(retryJob.id ?? requeueJobId), requeuedJobData.correlationId!);
-    if ((await stateManager.getTaskState(taskId))?.state === 'cancelled') {
+    if (await issueRetryWasStopped(stateManager, taskId)) {
         await persistedRetry.remove();
         return;
     }
@@ -191,7 +196,7 @@ export async function handleUsageLimitError(
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state for rate limit wait');
     }
-    if ((await stateManager.getTaskState(taskId))?.state === 'cancelled') await persistedRetry.remove();
+    if (await issueRetryWasStopped(stateManager, taskId)) await persistedRetry.remove();
 }
 
 function parseGitHubHtmlError(html: string): string {
@@ -248,11 +253,11 @@ function categorizeError(errorMessage: string | undefined): string {
     return 'unknown_error';
 }
 
-async function postCancellationNotice(
+export async function postCancellationNotice(
     issueRef: IssueJobData,
     options: GenericErrorOptions,
 ): Promise<void> {
-    const { octokit, AI_PROCESSING_TAG, correlatedLogger, taskId } = options;
+    const { octokit, correlatedLogger } = options;
     try {
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner,
@@ -260,10 +265,6 @@ async function postCancellationNotice(
             issue_number: issueRef.number,
             body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can re-add the AI label to restart processing.`
         });
-        await updateWithdrawnIssueLabels(
-            { ...issueRef, kind: 'issue', triggeringLabel: AI_PROCESSING_TAG.replace(/-processing$/, '') },
-            [], 'cancelled_by_user', taskId,
-        );
     } catch (commentError) {
         correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');
     }
@@ -311,6 +312,14 @@ export async function handleGenericError(
         await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
     } else if (octokit && isUserCancelled) {
         await postCancellationNotice(issueRef, options);
+        try {
+            await updateWithdrawnIssueLabels(
+                { ...issueRef, kind: 'issue', triggeringLabel: AI_PROCESSING_TAG.replace(/-processing$/, '') },
+                [], 'cancelled_by_user', taskId,
+            );
+        } catch (cleanupError) {
+            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to clean up user-stopped issue');
+        }
     }
 
     try {

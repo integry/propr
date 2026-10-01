@@ -5,11 +5,12 @@ import { formatTaskTerminalReason } from '@propr/shared';
  */
 
 import { Job } from 'bullmq';
+import { postCancellationNotice } from './errorHandlers.js';
 import {
-  preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, loadPrimaryProcessingLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
+  isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, loadPrimaryProcessingLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
-import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
+import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -20,30 +21,37 @@ import {
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
 
+function isStoppedTask(task: TaskStateData | null): task is TaskStateData & { state: 'cancelled' } {
+  return !!task && task.state === TaskStates.CANCELLED && !isBookkeepingCancellation(task);
+}
+
 async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnType<typeof initializeJobContext>>): Promise<
   { cancelled: JobResult } | { octokit: Awaited<ReturnType<typeof getAuthenticatedClient>> }
 > {
   const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = context;
 
   await addModelSpecificDelay(modelName);
-  const withdrawnReason = await preventWithdrawnJob(job);
-  if (withdrawnReason) return { cancelled: { status: 'cancelled', reason: withdrawnReason } };
 
   try {
     const initialState = await stateManager.createTaskStateIfAbsent(
       taskId,
-      { ...issueRef, type: 'issue', number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef,
+      taskIntentIssueRef({ ...issueRef, modelName }, { ...issueRef, kind: 'issue' }),
       correlationId,
       jobId === undefined ? null : String(jobId),
     );
-    if (initialState?.state === TaskStates.CANCELLED) return { cancelled: { status: 'cancelled', reason: initialState.terminalReason } };
-    if (initialState?.state === TaskStates.FAILED) {
-      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true, reason: 'Retrying failed issue task' });
+    if (isStoppedTask(initialState)) return { cancelled: { status: 'cancelled', reason: initialState.terminalReason } };
+    if (initialState && (initialState.state === TaskStates.FAILED || isBookkeepingCancellation(initialState))) {
+      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true, reason: 'Resuming issue task' });
     }
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
   }
 
+  if (job.data.isRetryFromRateLimit && jobId !== undefined) {
+    // The original queue job has completed with a handoff result. Reconciliation
+    // must now observe the retry job while preserving the task's parent link.
+    await db('tasks').where({ task_id: taskId }).update({ job_id: String(jobId) });
+  }
   const submission = await findIssueSubmission(issueRef);
   if (submission) await associateSubmissionTask(db, submission.id, taskId);
 
@@ -88,12 +96,14 @@ async function checkIssueCancellation(
   const target = { ...issueRef, kind: 'issue' as const, triggeringLabel: AI_PRIMARY_TAG };
   const reason = withdrawnIntentReason(target, currentIssueData.data, [AI_PRIMARY_TAG]);
   if (reason) {
-    await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
+    if (reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await stateManager.getTaskState(taskId))) return null;
+    const cancelled = await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
+    if (cancelled && cancelled.state !== TaskStates.CANCELLED) return null;
     await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
     return { status: 'cancelled', reason };
   }
   const latest = await stateManager.getTaskState(taskId);
-  if (latest?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: latest.terminalReason };
+  if (isStoppedTask(latest)) return { status: 'cancelled', reason: latest.terminalReason };
   return null;
 }
 
@@ -195,7 +205,10 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
   } catch (error) {
     const latest = await stateManager.getTaskState(taskId);
-    if (latest?.state === TaskStates.CANCELLED) {
+    if (isStoppedTask(latest)) {
+      if (latest.terminalReason === 'cancelled_by_user') {
+        await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+      }
       if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
         await updateWithdrawnIssueLabels(
           { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
@@ -211,7 +224,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         AI_PROCESSING_TAG, AI_WAITING_TAG
       });
       const afterRetry = await stateManager.getTaskState(taskId);
-      if (afterRetry?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: afterRetry.terminalReason };
+      if (isStoppedTask(afterRetry)) return { status: 'cancelled', reason: afterRetry.terminalReason };
       return { status: 'requeued', reason: 'rate_limit' };
     } else {
       await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });

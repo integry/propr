@@ -12,6 +12,7 @@ interface TaskStateHistory {
 }
 
 interface TaskState {
+  prResult?: unknown;
   history: TaskStateHistory[];
 }
 
@@ -238,13 +239,14 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
     const mark = options.markCancelled
       ?? ((id: string, by: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) =>
         getStateManager().markTaskCancelled(id, by, metadata));
-    await mark(taskId, options.requestedBy ?? 'user', {
+    const recorded = await mark(taskId, options.requestedBy ?? 'user', {
       ...(options.reason ? { reason: options.reason } : {}),
       historyMetadata: {
         cancellationReason: options.cancellationReason ?? 'cancelled_by_user',
         ...historyMetadata
       }
     });
+    if (recorded && typeof recorded === 'object' && 'state' in recorded && recorded.state !== 'cancelled') return false;
     console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
   } catch (stateError) {
     console.warn(`[stop-execution] Failed to mark task as cancelled: ${(stateError as Error).message}`);
@@ -333,6 +335,24 @@ async function stopTaskWithoutRunningWorker(
   return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, currentState, message: 'The task has already completed or is not in an active state.' };
 }
 
+function isTaskRunning(state: string | undefined, ensureCancelled = false): boolean {
+  return !!state && (ACTIVE_TASK_STATES.includes(state) || ensureCancelled && state === 'pending');
+}
+
+async function prepareIssueClosureCancellation(
+  taskId: string, state: TaskState | null, isRunning: boolean, options: StopTaskExecutionOptions,
+): Promise<boolean | StopTaskExecutionResult> {
+  if (options.cancellationReason !== 'cancelled_issue_closed') return false;
+  if (state?.prResult) {
+    return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, message: 'Task already produced a pull request.' };
+  }
+  if (!isRunning || !options.ensureCancelled) return false;
+  // Claim closure cancellation before signalling: the atomic state guard may
+  // find a PR result published since the task scan or initial read.
+  if (await markTaskCancelledSafely(taskId, { abortSignalled: true }, options)) return true;
+  return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, cancellationRecorded: false, message: 'Issue closure cancellation was not recorded.' };
+}
+
 /**
  * Stops a task's execution: signals the worker to abort, terminates the Docker
  * container when one is running, and removes queued/delayed jobs that have not
@@ -350,8 +370,10 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
   const stateData = await redisClient.get(`worker:state:${taskId}`);
   const state = parseTaskState(taskId, stateData);
   const currentState = state?.history[state.history.length - 1]?.state;
-  const isRunning = !!currentState && (ACTIVE_TASK_STATES.includes(currentState) || (options.ensureCancelled === true && currentState === 'pending'));
+  const isRunning = isTaskRunning(currentState, options.ensureCancelled);
 
+  const closureRecorded = await prepareIssueClosureCancellation(taskId, state, isRunning, options);
+  if (typeof closureRecorded !== 'boolean') return closureRecorded;
   if (!isRunning) return stopTaskWithoutRunningWorker(taskIdOrJobId, taskId, state, options);
 
   // Set abort signal for the worker to pick up
@@ -361,7 +383,7 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
 
   // Publish cancellation before killing the container: an exit handler must not
   // race ahead and record a retryable failure instead.
-  const recordedBeforeStop = options.ensureCancelled ? await markCancelled({ abortSignalled: true }) : false;
+  const recordedBeforeStop = closureRecorded || (options.ensureCancelled ? await markCancelled({ abortSignalled: true }) : false);
   const containerId = await stopRunningTaskContainer(taskId, state!, options);
   const containerStopped = containerId !== null;
 

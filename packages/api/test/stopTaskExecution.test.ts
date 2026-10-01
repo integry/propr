@@ -385,3 +385,23 @@ test('stopTaskExecution reports notRunning for already-finished tasks', async ()
   assert.equal(result.notRunning, true);
   assert.equal(result.currentState, 'completed');
 });
+
+for (const boundary of ['initial read', 'atomic cancellation']) {
+  test(`issue closure leaves the container and retries alone when a PR result exists at ${boundary}`, async () => {
+    const initial = JSON.parse(runningTaskState('own-pr-container'));
+    if (boundary === 'initial read') initial.prResult = { prNumber: 87 };
+    const redis = makeFakeRedis({ 'worker:state:own-pr': JSON.stringify(initial) });
+    const queue = makeFakeQueue([{ id: 'own-pr' }]);
+    const stopped: string[] = [];
+    const result = await stopTaskExecution('own-pr', {
+      redisClient: redis, ensureCancelled: true, cancellationReason: 'cancelled_issue_closed',
+      getQueue: async () => queue,
+      markCancelled: async () => ({ state: 'post_processing', prResult: { prNumber: 87 } }),
+      stopContainer: async id => { stopped.push(id); return { success: true }; },
+    });
+    assert.equal(result.cancellationRecorded ?? false, false);
+    assert.equal(redis.store.has('worker:abort:own-pr'), false);
+    assert.deepEqual(stopped, []);
+    assert.deepEqual(queue.removed, []);
+  });
+}

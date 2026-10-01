@@ -1,9 +1,7 @@
-import { cancelWithdrawnIntent } from '../services/taskIntent.js';
+import { cancelWithdrawnIntent, restoreIssueTrigger } from '../services/taskIntent.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
-import {
-    handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType
-} from './planIssueTracking.js';
+import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
 import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
@@ -155,6 +153,12 @@ async function handleIssuesEvent(
     if (isIssuesLabeledEvent(payload) && payload.issue.state !== 'closed') {
         const [owner, repo] = payload.repository.full_name.split('/');
 
+        let labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
+        if (!payload.issue.pull_request && payload.label?.name && (await loadPrimaryProcessingLabels()).includes(payload.label.name)) {
+            const restored = await restoreIssueTrigger({ repoOwner: owner, repoName: repo, number: payload.issue.number, kind: 'issue', triggeringLabel: payload.label.name });
+            if (!restored) return { status: 'ignored', reason: 'intent_not_current' };
+            labels = restored;
+        }
         const issue: DetectedIssue = {
             id: payload.issue.id,
             number: payload.issue.number,
@@ -162,7 +166,7 @@ async function handleIssuesEvent(
             url: payload.issue.html_url,
             repoOwner: owner,
             repoName: repo,
-            labels: payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [],
+            labels,
             createdAt: payload.issue.created_at,
             updatedAt: payload.issue.updated_at,
             // Fail closed: use only the webhook sender (the label applier).
@@ -395,7 +399,7 @@ async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventT
         if (payload.action === 'closed' || triggerRemoved) {
             const [repoOwner, repoName] = payload.repository.full_name.split('/');
             await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.issue.number, kind: 'issue', triggeringLabel: removedLabel },
-                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis(), payload.issue);
+                payload.action === 'closed' ? 'cancelled_issue_closed' : 'cancelled_label_removed', webhookRedisClient ?? getUltrafixStateRedis());
         }
     }
     if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {

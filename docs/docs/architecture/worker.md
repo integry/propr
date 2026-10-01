@@ -125,9 +125,13 @@ and are retried rather than treated as cancellation.
 
 Cancelled issue work loses its `<trigger>-processing` and `<trigger>-waiting`
 labels (and any stale `<trigger>-done` label) and gains `<trigger>-cancelled`. To request new work, restore the issue's
-open state and trigger label and remove the cancelled state label. Cancelled
-attempts are terminal and never automatically retried, including delayed
-rate-limit retries. A new request creates a new attempt.
+open state and reapply the trigger label. Reapplying a trigger clears its stale
+processing and cancelled labels, including after failed withdrawal cleanup.
+Withdrawal and user cancellations are terminal and never automatically retried.
+Usage-limit retries retain the original task and correlation ID; queue handoffs
+recorded as requeued or rescheduled do not prevent resuming that task.
+Issue closure does not cancel a task that already has a PR result or whose own
+PR closed the issue.
 
 Task state and persisted history carry `terminalReason`, also shown in the task
 timeline, Inbox, and MCP `get_task`:

@@ -6,6 +6,7 @@ const handlers: string[] = [];
 beforeEach(() => { cancellationError = undefined; handlers.length = 0; });
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
+    restoreIssueTrigger: async () => [],
     cancelWithdrawnIntent: async (target: any, reason: string) => { cancellations.push({ target, reason }); if (cancellationError) throw cancellationError; },
 } });
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {

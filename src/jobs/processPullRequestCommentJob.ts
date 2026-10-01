@@ -365,8 +365,6 @@ async function acquireCurrentPRLock(
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
-    const withdrawnReason = await preventWithdrawnJob(job);
-    if (withdrawnReason) return { status: 'cancelled', reason: withdrawnReason };
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);

@@ -11,7 +11,7 @@ export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, s
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
-export { WorkerStateManager, getStateManager, closeStateManager, TaskStates } from './utils/workerStateManager.js';
+export { WorkerStateManager, getStateManager, closeStateManager, TaskStates, isBookkeepingCancellation } from './utils/workerStateManager.js';
 export { taskStateExpectation } from './utils/workerStateTransition.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
 export {

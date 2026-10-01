@@ -3100,3 +3100,54 @@ test('transport timeout errors do not claim the agent exceeded its overall time 
         assert.equal(event.metadata.terminalReason, undefined);
     }
 });
+
+for (const status of ['requeued', 'rescheduled']) {
+    test(`${status} bookkeeping cancellation can resume the original task without losing its correlation`, async () => {
+        const handoff: TaskStateData = {
+            taskId: 'goal-child', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+            correlationId: 'parent-goal', state: TaskStates.CANCELLED,
+            createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1,
+            history: [{ state: TaskStates.CANCELLED, timestamp: '2026-10-01T00:01:00Z',
+                reason: `Task job ${status}: rate_limit`, metadata: { jobResultStatus: status } }],
+        };
+        mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(handoff));
+        mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+        const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+        try {
+            const resumed = await manager.updateTaskState(handoff.taskId, TaskStates.PROCESSING, { isRetry: true });
+            assert.equal(resumed.state, TaskStates.PROCESSING);
+            assert.equal(resumed.taskId, handoff.taskId);
+            assert.equal(resumed.correlationId, 'parent-goal');
+            assert.equal(resumed.attempts, 2);
+            for (const terminalReason of ['cancelled_by_user', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed'] as const) {
+                mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...handoff, terminalReason }));
+                const stopped = await manager.updateTaskState(handoff.taskId, TaskStates.PROCESSING, { isRetry: true });
+                assert.equal(stopped.state, TaskStates.CANCELLED);
+                assert.equal(stopped.terminalReason, terminalReason);
+            }
+        } finally { await manager.close(); }
+    });
+}
+
+test('closure cancellation losing a CAS race to a published PR result preserves successful post-processing', async () => {
+    const current: TaskStateData = {
+        taskId: 'publishing-pr', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        correlationId: 'original-request', state: TaskStates.POST_PROCESSING,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1, history: [],
+    };
+    let stored = JSON.stringify(current);
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => {
+        stored = JSON.stringify({ ...current, version: 3, prResult: { prNumber: 87 } });
+        return 0;
+    });
+    const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    try {
+        const result = await manager.markTaskCancelled(current.taskId, 'system', { terminalReason: 'cancelled_issue_closed' });
+        assert.equal(result.state, TaskStates.POST_PROCESSING);
+        assert.equal(result.terminalReason, undefined);
+        assert.equal(result.prResult?.prNumber, 87);
+        assert.equal(mockRedisInstance.eval.mock.calls.length, 1);
+    } finally { await manager.close(); }
+});

@@ -1,3 +1,4 @@
+import { isBookkeepingCancellation } from '../../utils/workerStateManager.types.js';
 import type { ChildProcess } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Redis } from 'ioredis';
@@ -107,7 +108,10 @@ async function readAbortSignal(
     // Cancellation is durable and shared by every concurrent reviewer. One
     // execution consuming the abort marker must not let its siblings continue.
     if (taskState) {
-        try { return JSON.parse(taskState).state === 'cancelled'; } catch { /* legacy/corrupt state */ }
+        try {
+            const state = JSON.parse(taskState);
+            return state.state === 'cancelled' && !isBookkeepingCancellation(state);
+        } catch { /* legacy/corrupt state */ }
     }
     return false;
 }

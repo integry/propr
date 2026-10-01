@@ -3,17 +3,14 @@ import logger, { generateCorrelationId } from './logger.js';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
-    TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
+    TaskStates, isBookkeepingCancellation, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
     type NonTerminalTaskScanResult, type TaskStateUpdateResult, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import {
-    buildTaskStateTransition,
-    buildTaskStateMutation,
-    compareAndSetTaskStateData,
-    compareAndSetTaskState,
-    publishTaskStateTransition,
+    buildTaskStateTransition, buildTaskStateMutation, compareAndSetTaskStateData,
+    compareAndSetTaskState, publishTaskStateTransition,
 } from './workerStateTransition.js';
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
 
@@ -29,7 +26,7 @@ async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
-export { TaskStates, type TaskState, type IssueRef };
+export { TaskStates, isBookkeepingCancellation, type TaskState, type IssueRef };
 
 /**
  * Worker state manager for persistent task state tracking
@@ -176,10 +173,15 @@ export class WorkerStateManager {
             const isExplicitFailedRetry = current.state === TaskStates.FAILED
                 && newState === TaskStates.PROCESSING
                 && metadata.isRetry === true;
-            if (current.state === TaskStates.CANCELLED) return current;
+            const isHandoff = isBookkeepingCancellation(current);
+            // Recheck inside the CAS loop: a PR can be published after the
+            // cancellation caller's task scan, while it awaits GitHub/queue IO.
+            if (newState === TaskStates.CANCELLED && current.prResult
+                && (metadata.terminalReason ?? metadata.historyMetadata?.cancellationReason) === 'cancelled_issue_closed') return current;
+            if (current.state === TaskStates.CANCELLED && !isHandoff) return current;
             if (TERMINAL_TASK_STATES.has(current.state)
                 && current.state !== newState
-                && !isExplicitFailedRetry) {
+                && !isExplicitFailedRetry && !isHandoff) {
                 logger.warn({ taskId, currentState: current.state, requestedState: newState },
                     'Ignored state transition from a terminal task');
                 return current;
