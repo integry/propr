@@ -311,3 +311,35 @@ test("Ink own-App creation invokes the flow for the selected stack", async () =>
   assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" }), { keep: true });
   assert.equal(root, "/selected-stack");
 });
+
+for (const mode of ['relay', 'app'] as const) test(`Ink declining ${mode} replacement keeps authentication without creating an App`, async () => {
+  const bridge = new SetupBridge();
+  const answers = ['app', 'create', false];
+  bridge.subscribe(event => {
+    if (event.type === 'prompt') {
+      if (event.prompt.kind === 'confirm') {
+        assert.match(event.prompt.detail!, /timestamped .env backup/);
+        assert.equal(event.prompt.defaultValue, false);
+      }
+      bridge.resolve(event.prompt.id, answers.shift());
+    }
+  });
+  const hooks = buildSetupPrompts(bridge, async () => { throw new Error('must not create'); });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode, warnings: [] } }), { keep: true });
+});
+
+test('Ink paste prompt honors its signal and retires the aborted prompt', async () => {
+  const bridge = new SetupBridge();
+  const controller = new AbortController();
+  const done: number[] = [];
+  bridge.subscribe(event => { if (event.type === 'prompt-done') done.push(event.id); });
+  const prompts = capture(bridge);
+  const pending = bridge.input({ title: 'Paste redirect', mask: true }, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.deepEqual(done, [prompts[0].id]);
+  bridge.resolve(prompts[0].id, 'late answer');
+  const next = bridge.input({ title: 'Next' });
+  bridge.resolve(prompts[1].id, 'answer');
+  assert.equal(await next, 'answer');
+});

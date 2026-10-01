@@ -35,6 +35,13 @@ export interface GithubAppDependencies {
   signal?: AbortSignal;
 }
 export class GithubAppFlowError extends Error {}
+function checkCancellation(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new GithubAppFlowError('GitHub App setup cancelled.');
+}
+function timeoutSignal(timeout: number, signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(timeout);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
 const credentialKeys = ['GH_APP_ID', 'GH_INSTALLATION_ID', 'HOST_GH_PRIVATE_KEY', 'GH_PRIVATE_KEY_PATH', 'GH_WEBHOOK_SECRET', 'GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET'];
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
@@ -125,6 +132,15 @@ export async function startGithubAppListener(state: string, ttlMs = 60 * 60_000)
     base,
     setPage(page: string) { html = page; },
     receive,
+    fromPaste(raw: string, kind: 'created' | 'installed'): string | undefined {
+      // HTTP and paste-back feed one result. Only authorize a callback when no
+      // successful HTTP delivery is queued; consuming it never resets replay protection.
+      if (typeof queued.get(kind) !== 'string' && raw.trim()) receive(raw.trim(), kind);
+      const value = queued.get(kind);
+      queued.delete(kind);
+      if (value instanceof Error) throw value;
+      return value;
+    },
     wait(kind: 'created' | 'installed', timeout: number, signal?: AbortSignal): Promise<string | undefined> {
       return new Promise((accept, reject) => {
         const abort = () => { waiters.delete(kind); clearTimeout(timer); reject(new GithubAppFlowError('GitHub App setup cancelled.')); };
@@ -150,7 +166,8 @@ function assertNoCredentials(raw: string, force?: boolean): void {
 }
 
 /** Stage all writes before replacing .env; never overwrite a key belonging to another App. */
-export function writeGithubAppConfig(root: string, credentials: AppCredentials, installationId: string, options: GithubAppOptions, initialEnv: string) {
+export function writeGithubAppConfig(root: string, credentials: AppCredentials, installationId: string, options: GithubAppOptions, initialEnv: string, signal?: AbortSignal) {
+  checkCancellation(signal);
   const envPath = join(root, '.env');
   if (existingEnv(root) !== initialEnv) throw new GithubAppFlowError('.env changed during registration. Credentials were preserved in the recovery file; retry after reviewing .env.');
   assertNoCredentials(initialEnv, options.force);
@@ -176,18 +193,21 @@ export function writeGithubAppConfig(root: string, credentials: AppCredentials, 
       writeFileSync(backupPath, initialEnv, { mode: 0o600, flag: 'wx' });
     }
     writeFileSync(keyPath, credentials.pem, { mode: 0o600, flag: 'wx' });
+    checkCancellation(signal);
     renameSync(temporary, envPath);
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   return { envPath, keyPath, backupPath, fields: Object.keys(vars) };
 }
 
 export async function createGithubApp(options: GithubAppOptions, dependencies: GithubAppDependencies = {}) {
+  checkCancellation(dependencies.signal);
   const manifestOptions = buildGithubAppManifest(options); // Validate before opening GitHub or touching files.
   const target = registrationUrl(options.org);
   if (options.webhookSecret !== undefined && (!options.webhookSecret || /[\r\n]|^\s|\s$|\s#/.test(options.webhookSecret) || parse(`GH_WEBHOOK_SECRET=${options.webhookSecret}`).GH_WEBHOOK_SECRET !== options.webhookSecret)) {
     throw new GithubAppFlowError('The webhook secret must be a non-empty, single-line env-compatible value.');
   }
   const root = resolve(options.root ?? resolveSetupRoot(await createConfigManager()));
+  checkCancellation(dependencies.signal);
   const raw = existingEnv(root);
   assertNoCredentials(raw, options.force);
   mkdirSync(root, { recursive: true });
@@ -209,6 +229,7 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
   let recoveryPath: string | undefined;
   let registrationPath: string | undefined;
   try {
+    checkCancellation(dependencies.signal);
     const manifest = buildGithubAppManifest({ ...options, redirectUrl: `${listener.base}/created`, setupUrl: `${listener.base}/installed?state=${state}` });
     const page = registrationPage(manifest, `${target}?state=${state}`);
     listener.setPage(page);
@@ -219,6 +240,7 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
       io.log(localUrl);
       try { await io.open(localUrl); } catch { paste = true; io.log('Could not open a browser. Use the portable registration page below.'); }
     }
+    checkCancellation(dependencies.signal);
     if (paste) {
       registrationPath = join(root, `github-app-register-${randomBytes(4).toString('hex')}.html`);
       writeFileSync(registrationPath, page, { mode: 0o600, flag: 'wx' });
@@ -226,53 +248,70 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
     }
     const timeout = dependencies.callbackTimeoutMs ?? 55 * 60_000;
     const code = paste
-      ? listener.receive(await io.ask('Paste the complete creation redirect URL (including code and state):', AbortSignal.timeout(timeout)), 'created')
+      ? listener.fromPaste(await io.ask('Paste the complete creation redirect URL (including code and state):', timeoutSignal(timeout, dependencies.signal)), 'created')
       : await listener.wait('created', timeout, dependencies.signal);
+    checkCancellation(dependencies.signal);
     if (!code) throw new GithubAppFlowError('Timed out waiting for GitHub registration. Retry with --no-browser to paste the redirect URL.');
-    const credentials = await githubAppRequest<AppCredentials>(`/app-manifests/${encodeURIComponent(code)}/conversions`, undefined, 'POST', undefined, fetcher);
+    const credentials = await githubAppRequest<AppCredentials>(`/app-manifests/${encodeURIComponent(code)}/conversions`, undefined, 'POST', undefined, fetcher, dependencies.signal);
     if (!Number.isSafeInteger(credentials.id) || !/^[a-zA-Z0-9-]+$/.test(credentials.slug) ||
         !['pem', 'webhook_secret', 'client_id', 'client_secret'].every(key => typeof credentials[key as keyof AppCredentials] === 'string' && credentials[key as keyof AppCredentials])) {
       throw new GithubAppFlowError('GitHub returned incomplete App credentials. Check the new App in GitHub settings.');
     }
-    // Preserve the one-shot conversion response before any further network operation.
+    // Preserve a completed one-shot conversion even if cancellation arrived while
+    // awaiting it. Cancellation prevents configuration writes, not recovery writes.
     recoveryPath = join(root, `github-app-${credentials.id}-recovery.json`);
     writeFileSync(recoveryPath, JSON.stringify(credentials), { mode: 0o600, flag: 'wx' });
+    checkCancellation(dependencies.signal);
     io.log(`App created (id ${credentials.id}).`);
     if (options.webhookSecret !== undefined) {
-      await githubAppRequest('/app/hook/config', appJwt(credentials.id, credentials.pem), 'PATCH', { secret: options.webhookSecret, content_type: 'json' }, fetcher);
+      checkCancellation(dependencies.signal);
+      await githubAppRequest('/app/hook/config', appJwt(credentials.id, credentials.pem), 'PATCH', { secret: options.webhookSecret, content_type: 'json' }, fetcher, dependencies.signal);
+      // Keep recovery data aligned with a confirmed remote update before stopping.
       credentials.webhook_secret = options.webhookSecret;
       writeFileSync(recoveryPath, JSON.stringify(credentials), { mode: 0o600 });
     }
+    checkCancellation(dependencies.signal);
     const installUrl = `https://github.com/apps/${credentials.slug}/installations/new`;
     io.log(`Install it on your repositories: ${installUrl}`);
     if (!paste) { try { await io.open(installUrl); } catch { paste = true; } }
+    checkCancellation(dependencies.signal);
     let installationId: string | undefined;
     const installTimeout = dependencies.installationTimeoutMs ?? 5 * 60_000;
     if (paste) {
       try {
-        const redirect = await io.ask('After installing, paste the complete installation redirect URL (or press Enter to discover the installation):', AbortSignal.timeout(installTimeout));
-        if (redirect.trim()) installationId = listener.receive(redirect.trim(), 'installed');
-      } catch (error) { if ((error as Error).name !== 'AbortError') throw error; }
+        const redirect = await io.ask('After installing, paste the complete installation redirect URL (or press Enter to discover the installation):', timeoutSignal(installTimeout, dependencies.signal));
+        checkCancellation(dependencies.signal);
+        installationId = listener.fromPaste(redirect, 'installed');
+      } catch (error) {
+        checkCancellation(dependencies.signal);
+        if (!['AbortError', 'TimeoutError'].includes((error as Error).name)) throw error;
+        installationId = listener.fromPaste('', 'installed');
+      }
     } else installationId = await listener.wait('installed', installTimeout, dependencies.signal);
+    checkCancellation(dependencies.signal);
     if (!installationId) {
-      const installations = await githubAppRequest<AppInstallation[]>('/app/installations', appJwt(credentials.id, credentials.pem), 'GET', undefined, fetcher);
+      const installations = await githubAppRequest<AppInstallation[]>('/app/installations', appJwt(credentials.id, credentials.pem), 'GET', undefined, fetcher, dependencies.signal);
+      checkCancellation(dependencies.signal);
       if (installations.length !== 1) throw new GithubAppFlowError('Could not identify a single installation. Finish installing the new App on GitHub.');
       installationId = String(installations[0].id);
     }
     // Verify even a browser-provided ID with App authentication; never trust the callback.
-    const installation = await githubAppRequest<AppInstallation>(`/app/installations/${installationId}`, appJwt(credentials.id, credentials.pem), 'GET', undefined, fetcher);
+    const installation = await githubAppRequest<AppInstallation>(`/app/installations/${installationId}`, appJwt(credentials.id, credentials.pem), 'GET', undefined, fetcher, dependencies.signal);
+    checkCancellation(dependencies.signal);
     if (installation.app_id !== credentials.id || String(installation.id) !== installationId) throw new GithubAppFlowError('The installation does not belong to the newly created App.');
-    const result = writeGithubAppConfig(root, credentials, installationId, options, raw);
+    const result = writeGithubAppConfig(root, credentials, installationId, options, raw, dependencies.signal);
     unlinkSync(recoveryPath); recoveryPath = undefined;
     io.log(`Installed (installation ${installationId}).\nWrote private key ${result.keyPath} (0600).\nUpdated ${result.envPath}: ${result.fields.join(', ')}`);
     let checks: AppCheck[];
-    try { checks = await checkGithubApp(credentials.id, installationId, credentials.pem, fetcher); }
+    try { checks = await checkGithubApp(credentials.id, installationId, credentials.pem, fetcher, dependencies.signal); }
     catch { checks = [{ name: 'GitHub App', status: 'fail', detail: 'Credentials saved, but GitHub validation failed. Run propr check to retry.' }]; }
+    checkCancellation(dependencies.signal);
     for (const check of checks) if (check.status !== 'ok') io.log(`${check.status}: ${check.detail}`);
     io.log('Next: propr start --restart');
     return { ...result, checks };
   } catch (error) {
     if (recoveryPath) io.log(`App credentials are preserved in ${recoveryPath} (0600). Do not create another App; use https://docs.propr.dev/docs/operations/github-auth#manual-registration-and-interrupted-setup.`);
+    checkCancellation(dependencies.signal);
     if (error instanceof GithubAppFlowError) throw error;
     // Filesystem and transport errors can contain secret input; expose only controlled messages.
     if (error instanceof Error && /^(GitHub |Cannot sign a GitHub)/.test(error.message)) throw new GithubAppFlowError(error.message);

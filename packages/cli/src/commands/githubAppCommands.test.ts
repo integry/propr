@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { parse } from 'dotenv';
 import { buildGithubAppManifest, GITHUB_APP_PERMISSIONS, SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
-import { createGithubApp, createGithubAppCommand, startGithubAppListener, registrationPage, registrationUrl, writeGithubAppManifest, isPrivateGithubAppUrl, type GithubAppIo } from './githubAppCommands.js';
+import { createGithubApp, createGithubAppCommand, startGithubAppListener, registrationPage, registrationUrl, writeGithubAppConfig, writeGithubAppManifest, isPrivateGithubAppUrl, type GithubAppIo } from './githubAppCommands.js';
+import { buildSequentialPrompts } from './setup/sequential.js';
+import { buildSetupPrompts, SetupBridge } from '../tui/SetupApp.js';
 import { appJwt, installationChecks, type AppCredentials } from './githubAppApi.js';
 
 const { privateKey: pem, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
@@ -18,7 +20,7 @@ function sandbox(t: TestContext) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
-function harness(root: string, options: { noBrowser?: boolean; wrongState?: boolean; spoofInstallation?: boolean; conversionStatus?: number; discover?: boolean; secretOverride?: string } = {}) {
+function harness(root: string, options: { noBrowser?: boolean; wrongState?: boolean; spoofInstallation?: boolean; conversionStatus?: number; discover?: boolean; secretOverride?: string; forwarded?: boolean } = {}) {
   const lines: string[] = [];
   const requests: { path: string; init?: RequestInit }[] = [];
   let manifest: ReturnType<typeof buildGithubAppManifest>;
@@ -45,9 +47,19 @@ function harness(root: string, options: { noBrowser?: boolean; wrongState?: bool
     async ask(message) {
       if (message.includes('creation')) {
         readPage(readFileSync(join(root, readdirSync(root).find(name => name.endsWith('.html'))!), 'utf8'));
-        return `${manifest.redirect_url}?code=one-time-code&state=${options.wrongState ? 'wrong' : state}`;
+        const callback = `${manifest.redirect_url}?code=one-time-code&state=${options.wrongState ? 'wrong' : state}`;
+        if (options.forwarded) {
+          assert.equal((await fetch(callback)).status, 200);
+          assert.equal((await fetch(callback)).status, 400, 'HTTP replays remain rejected');
+        }
+        return callback;
       }
-      return options.discover ? '' : `${manifest.setup_url}&installation_id=${options.spoofInstallation ? 666 : 789}`;
+      const callback = `${manifest.setup_url}&installation_id=${options.spoofInstallation ? 666 : 789}`;
+      if (options.forwarded) {
+        assert.equal((await fetch(callback)).status, 200);
+        assert.equal((await fetch(callback)).status, 400, 'HTTP replays remain rejected');
+      }
+      return options.discover ? '' : callback;
     },
   };
   const fetcher: typeof fetch = async (input, init) => {
@@ -246,4 +258,187 @@ test('rejects webhook overrides that env parsers would change before registratio
   }
   assert.equal(h.requests.length, 0);
   assert.equal(h.lines.length, 0);
+});
+
+for (const discover of [false, true]) test(`forwarded SSH callbacks share the paste result (discover=${discover})`, async t => {
+  const root = sandbox(t);
+  const h = harness(root, { forwarded: true, discover });
+  const result = await createGithubApp({ root, publicUrl, browser: false }, h);
+  assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
+  assert.equal(h.requests.filter(r => r.path.startsWith('/app-manifests/')).length, 1);
+  assert.ok(!h.requests.some(r => r.path === '/app/installations'));
+});
+
+test('paste consumption retains replay protection for both callbacks', async () => {
+  const listener = await startGithubAppListener('state');
+  try {
+    for (const kind of ['created', 'installed'] as const) {
+      const callback = `${listener.base}/${kind}?state=state&${kind === 'created' ? 'code=x' : 'installation_id=1'}`;
+      assert.equal((await fetch(callback)).status, 200);
+      assert.equal(listener.fromPaste(callback, kind), kind === 'created' ? 'x' : '1');
+      assert.throws(() => listener.fromPaste(callback, kind), /already been used/);
+      assert.equal((await fetch(callback)).status, 400);
+    }
+  } finally { listener.close(); }
+});
+
+for (const stage of ['conversion', 'hook', 'discovery', 'verification', 'verification-body'] as const) {
+  test(`cancellation during ${stage} preserves credentials without committing configuration`, async t => {
+    const root = sandbox(t);
+    const original = 'GH_INSTALLATION_ID=1\nPROPR_GH_RELAY_TOKEN=x\n';
+    writeFileSync(join(root, '.env'), original);
+    const bridge = new SetupBridge();
+    const h = harness(root, { discover: stage === 'discovery', secretOverride: 'override-secret' });
+    const fetcher: typeof fetch = async (...args) => {
+      const response = await h.fetcher(...args);
+      const path = new URL(String(args[0])).pathname;
+      const target = stage === 'conversion' ? path.startsWith('/app-manifests/')
+        : stage === 'hook' ? path === '/app/hook/config'
+        : stage === 'discovery' ? path === '/app/installations'
+        : path === '/app/installations/789';
+      if (target) {
+        const cancel = () => {
+          bridge.cancel();
+          assert.equal(args[1]?.signal?.aborted, true, 'request signal includes wizard cancellation');
+        };
+        if (stage === 'verification-body') {
+          const json = response.json.bind(response);
+          t.mock.method(response, 'json', async () => { const body = await json(); cancel(); return body; });
+        } else cancel();
+      }
+      return response; // Also exercise transports that complete despite cancellation.
+    };
+    await assert.rejects(createGithubApp({
+      root, publicUrl, force: true, browser: false,
+      ...(stage === 'hook' ? { webhookSecret: 'override-secret' } : {}),
+    }, { ...h, fetcher, signal: bridge.abortController.signal }), /cancelled/);
+    assert.equal(readFileSync(join(root, '.env'), 'utf8'), original);
+    assert.deepEqual(readdirSync(root).sort(), ['.env', `github-app-${credentials.id}-recovery.json`]);
+    const saved = JSON.parse(readFileSync(join(root, `github-app-${credentials.id}-recovery.json`), 'utf8'));
+    assert.equal(saved.pem, pem);
+    assert.equal(saved.webhook_secret, stage === 'hook' ? 'override-secret' : credentials.webhook_secret);
+    assert.equal(h.requests.length, stage === 'conversion' ? 1 : 2, 'no subsequent API work after cancellation');
+  });
+}
+
+for (const stage of ['creation', 'installation']) test(`cancellation aborts the ${stage} paste prompt`, async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const controller = new AbortController();
+  const ask: GithubAppIo['ask'] = async (message, signal) => {
+    if (message.includes(stage)) {
+      const answer = new Promise<string>((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      controller.abort();
+      return answer;
+    }
+    return h.io.ask(message, signal);
+  };
+  await assert.rejects(createGithubApp({ root, publicUrl, browser: false }, {
+    ...h, io: { ...h.io, ask }, signal: controller.signal,
+  }), /cancelled/);
+  assert.ok(!existsSync(join(root, '.env')));
+  assert.equal(h.requests.length, stage === 'creation' ? 0 : 1, 'cancellation must not start installation discovery');
+  assert.equal(readdirSync(root).some(name => name.includes('recovery')), stage === 'installation');
+});
+
+for (const stage of ['registration', 'installation']) test(`cancellation while opening ${stage} stops subsequent work`, async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const controller = new AbortController();
+  const open = async (url: string) => {
+    await h.io.open(url);
+    if (url.includes('/register/') === (stage === 'registration')) controller.abort();
+  };
+  await assert.rejects(createGithubApp({ root, publicUrl }, { ...h, io: { ...h.io, open }, signal: controller.signal }), /cancelled/);
+  assert.ok(!existsSync(join(root, '.env')));
+  assert.equal(h.requests.length, stage === 'registration' ? 0 : 1);
+});
+
+for (const renderer of ['sequential', 'Ink']) test(`${renderer} confirms relay replacement and completes through the real credential guard`, async t => {
+  const root = sandbox(t);
+  const original = 'GH_INSTALLATION_ID=1\nPROPR_GH_RELAY_TOKEN=x\n';
+  writeFileSync(join(root, '.env'), original);
+  const h = harness(root);
+  let backupPath: string | undefined;
+  const createApp: typeof createGithubApp = async (options, dependencies) => {
+    assert.equal(options.force, true);
+    const result = await createGithubApp(options, { ...dependencies, ...h });
+    backupPath = result.backupPath;
+    return result;
+  };
+  const bridge = new SetupBridge();
+  const inkAnswers = ['app', 'create', true, publicUrl, ''];
+  bridge.subscribe(event => {
+    if (event.type === 'prompt') {
+      if (event.prompt.kind === 'confirm') {
+        assert.match(event.prompt.detail!, /timestamped .env backup/);
+        assert.equal(event.prompt.defaultValue, false);
+      }
+      bridge.resolve(event.prompt.id, inkAnswers.shift());
+    }
+  });
+  const answers = ['3', '1', 'y', publicUrl, ''];
+  const lines: string[] = [];
+  const hooks = renderer === 'Ink' ? buildSetupPrompts(bridge, createApp)
+    : buildSequentialPrompts({ print: line => lines.push(line ?? ''), ask: async () => answers.shift()!, close() {} }, undefined, createApp);
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: 'relay', warnings: [] }, rootDir: root }), { keep: true });
+  if (renderer === 'sequential') assert.match(lines.join('\n'), /timestamped .env backup/);
+  assert.equal(readFileSync(backupPath!, 'utf8'), original);
+  const env = parse(readFileSync(join(root, '.env')));
+  assert.equal(env.GH_AUTH_MODE, 'app');
+  assert.equal(env.GH_INSTALLATION_ID, '789');
+  assert.equal(env.PROPR_GH_RELAY_TOKEN, undefined);
+});
+
+test('an already cancelled flow or config writer cannot mutate files', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const signal = AbortSignal.abort();
+  await assert.rejects(createGithubApp({ root, publicUrl }, { ...h, signal }), /cancelled/);
+  assert.throws(() => writeGithubAppConfig(root, credentials, '789', { publicUrl }, '', signal), /cancelled/);
+  assert.deepEqual(readdirSync(root), []);
+  assert.equal(h.requests.length, 0);
+});
+
+test('cancellation during post-commit checks stops later requests and reports cancellation', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const controller = new AbortController();
+  let verifications = 0;
+  const fetcher: typeof fetch = async (...args) => {
+    const response = await h.fetcher(...args);
+    if (String(args[0]).endsWith('/app/installations/789') && ++verifications === 2) controller.abort();
+    return response;
+  };
+  await assert.rejects(createGithubApp({ root, publicUrl }, { ...h, fetcher, signal: controller.signal }), /cancelled/);
+  assert.ok(existsSync(join(root, '.env')), 'configuration committed before cancellation is retained');
+  assert.ok(!h.requests.some(r => r.path.endsWith('/access_tokens')));
+});
+
+test('cancellation aborts an in-flight API request and preserves recovery credentials', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const controller = new AbortController();
+  const fetcher: typeof fetch = async (...args) => {
+    if (!String(args[0]).endsWith('/app/installations/789')) return h.fetcher(...args);
+    const pending = new Promise<Response>((_, reject) => {
+      args[1]!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    });
+    controller.abort();
+    return pending;
+  };
+  await assert.rejects(createGithubApp({ root, publicUrl }, { ...h, fetcher, signal: controller.signal }), /cancelled/);
+  assert.ok(!existsSync(join(root, '.env')));
+  assert.ok(readdirSync(root).some(name => name.includes('recovery')));
+});
+
+test('an Ink installation prompt deadline still falls back to discovery', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const bridge = new SetupBridge();
+  const io: GithubAppIo = { ...h.io, ask: (message, signal) => message.includes('creation')
+    ? h.io.ask(message, signal) : bridge.input({ title: message, mask: true }, signal) };
+  const result = await createGithubApp({ root, publicUrl, browser: false }, { ...h, io, installationTimeoutMs: 1 });
+  assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
+  assert.ok(h.requests.some(r => r.path === '/app/installations'));
 });

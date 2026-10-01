@@ -32,11 +32,13 @@ export function appJwt(id: string | number, pem: string): string {
 }
 
 /** Never include response bodies, request URLs (conversion codes), or headers in errors. */
-export async function githubAppRequest<T>(path: string, jwt?: string, method = 'GET', body?: unknown, fetcher = fetch): Promise<T> {
+export async function githubAppRequest<T>(path: string, jwt?: string, method = 'GET', body?: unknown, fetcher = fetch, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const deadline = AbortSignal.timeout(20_000);
   let response: Response;
   try {
     response = await fetcher(`https://api.github.com${path}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(20_000),
+      method, redirect: 'error', signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
         ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
         ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -72,14 +74,16 @@ export function installationChecks(installation: AppInstallation): AppCheck[] {
 }
 
 /** Used after creation and by propr check; minting a token proves usable installation auth. */
-export async function checkGithubApp(id: string | number, installationId: string | number, pem: string, fetcher = fetch): Promise<AppCheck[]> {
+export async function checkGithubApp(id: string | number, installationId: string | number, pem: string, fetcher = fetch, signal?: AbortSignal): Promise<AppCheck[]> {
   if (!/^\d+$/.test(String(installationId))) throw new Error('Invalid GitHub installation ID.');
   const jwt = appJwt(id, pem);
-  const installation = await githubAppRequest<AppInstallation>(`/app/installations/${installationId}`, jwt, 'GET', undefined, fetcher);
+  const installation = await githubAppRequest<AppInstallation>(`/app/installations/${installationId}`, jwt, 'GET', undefined, fetcher, signal);
+  signal?.throwIfAborted();
   if (String(installation.app_id) !== String(id) || String(installation.id) !== String(installationId)) {
     throw new Error('GitHub installation does not belong to this App.');
   }
-  const token = await githubAppRequest<{ token: string }>(`/app/installations/${installationId}/access_tokens`, jwt, 'POST', undefined, fetcher);
+  const token = await githubAppRequest<{ token: string }>(`/app/installations/${installationId}/access_tokens`, jwt, 'POST', undefined, fetcher, signal);
+  signal?.throwIfAborted();
   if (!token.token) throw new Error('GitHub did not return an installation token.');
   return [{ name: 'GitHub installation token', status: 'ok', detail: 'Successfully minted an installation token.' }, ...installationChecks(installation)];
 }

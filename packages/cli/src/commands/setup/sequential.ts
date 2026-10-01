@@ -61,7 +61,7 @@ export interface SequentialIo {
    * newline). When `mask` is set the typed characters are not echoed, so
    * secrets like relay tokens don't linger on screen or in scrollback.
    */
-  ask(question: string, opts?: { mask?: boolean }): Promise<string>;
+  ask(question: string, opts?: { mask?: boolean; signal?: AbortSignal }): Promise<string>;
   /** Release any held resources (e.g. close the readline interface). */
   close(): void;
 }
@@ -115,7 +115,7 @@ export function createReadlineIo(
     },
     async ask(question, opts) {
       // Draw the prompt unmuted, then mute so only the typed answer is hidden.
-      const answer = rl.question(question);
+      const answer = rl.question(question, { signal: opts?.signal });
       muted = Boolean(opts?.mask);
       try {
         return await answer;
@@ -353,11 +353,17 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         defaultIndex: 0,
       });
       if (method === "create") {
+        const force = current.mode !== "none";
+        if (force && !await promptConfirm(io, paint, {
+          title: "Replace the current GitHub authentication?",
+          detail: "A timestamped .env backup will be created before saving the new App credentials.",
+          defaultValue: false,
+        })) return { keep: true };
         const publicUrl = await promptInput(io, paint, { title: "Public ProPR URL", defaultValue: "https://" });
         const org = await promptInput(io, paint, { title: "App owner organization (blank for your account)", defaultValue: "" });
-        await createApp({ root: rootDir, publicUrl, org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { io: {
+        await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { io: {
           log: message => io.print(message),
-          ask: (message) => io.ask(message, { mask: true }),
+          ask: (message, signal) => io.ask(message, { mask: true, signal }),
           open: openGithubAppBrowser,
         } });
         return { keep: true };

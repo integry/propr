@@ -9,8 +9,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PassThrough } from "node:stream";
 import {
   buildSequentialPrompts,
+  createReadlineIo,
   buildSequentialReporter,
   runSequentialSetup,
   SequentialSetupUnavailableError,
@@ -474,4 +476,23 @@ test("custom App creation uses the selected root and keeps the configuration it 
   const decision = await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" });
   assert.deepEqual(received, { root: "/selected-stack", publicUrl: "https://propr.example.com", org: "integry", browser: !process.env.SSH_CONNECTION });
   assert.deepEqual(decision, { keep: true });
+});
+
+for (const mode of ['relay', 'app'] as const) test(`declining ${mode} replacement keeps authentication without creating an App`, async () => {
+  const io = scriptedIo(['3', '1', '']);
+  const hooks = buildSequentialPrompts(io, undefined, async () => { throw new Error('must not create'); });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode, warnings: [] } }), { keep: true });
+  assert.match(io.lines.join('\n'), /timestamped .env backup/);
+});
+
+test('sequential paste prompts propagate cancellation into readline', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const io = createReadlineIo(input, output);
+  const controller = new AbortController();
+  try {
+    const answer = io.ask('Paste redirect: ', { mask: true, signal: controller.signal });
+    controller.abort();
+    await assert.rejects(answer, { name: 'AbortError' });
+  } finally { io.close(); input.destroy(); output.destroy(); }
 });

@@ -131,14 +131,24 @@ export class SetupBridge {
 
   // --- engine prompt primitives (return a promise the UI resolves) -------
 
-  private request<T>(make: (id: number) => SetupPrompt): Promise<T> {
+  private request<T>(make: (id: number) => SetupPrompt, signal?: AbortSignal): Promise<T> {
     // After cancellation every further prompt rejects immediately so the engine
     // unwinds instead of blocking on a view that is already gone.
     if (this.cancelled) return Promise.reject(new SetupCancelledError());
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.resolvers.set(id, resolve as (value: unknown) => void);
-      this.rejecters.set(id, reject);
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        this.resolvers.delete(id);
+        this.rejecters.delete(id);
+        cleanup();
+        this.push({ type: "prompt-done", id });
+        reject(signal!.reason);
+      };
+      this.resolvers.set(id, value => { cleanup(); resolve(value as T); });
+      this.rejecters.set(id, error => { cleanup(); reject(error); });
+      signal?.addEventListener("abort", abort, { once: true });
       this.push({ type: "prompt", prompt: make(id) });
     });
   }
@@ -153,7 +163,7 @@ export class SetupBridge {
     }));
   }
 
-  input(req: { title: string; detail?: string; defaultValue?: string; placeholder?: string; mask?: boolean }): Promise<string> {
+  input(req: { title: string; detail?: string; defaultValue?: string; placeholder?: string; mask?: boolean }, signal?: AbortSignal): Promise<string> {
     return this.request<string>((id) => ({
       id,
       kind: "input",
@@ -162,7 +172,7 @@ export class SetupBridge {
       defaultValue: req.defaultValue ?? "",
       placeholder: req.placeholder,
       mask: req.mask,
-    }));
+    }), signal);
   }
 
   select(req: { title: string; detail?: string; options: SetupPromptOption[]; defaultIndex?: number }): Promise<string> {
@@ -293,11 +303,17 @@ export function buildSetupPrompts(bridge: SetupBridge, createApp = createGithubA
         defaultIndex: 0,
       });
       if (method === "create") {
+        const force = current.mode !== "none";
+        if (force && !await bridge.confirm({
+          title: "Replace the current GitHub authentication?",
+          detail: "A timestamped .env backup will be created before saving the new App credentials.",
+          defaultValue: false,
+        })) return { keep: true };
         const publicUrl = await bridge.input({ title: "Public ProPR URL", defaultValue: "https://" });
         const org = await bridge.input({ title: "App owner organization (blank for your account)", defaultValue: "" });
-        await createApp({ root: rootDir, publicUrl, org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { signal: bridge.abortController.signal, io: {
+        await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { signal: bridge.abortController.signal, io: {
           log: message => bridge.emitLog(message),
-          ask: (message) => bridge.input({ title: message, mask: true }),
+          ask: (message, signal) => bridge.input({ title: message, mask: true }, signal),
           open: openGithubAppBrowser,
         } });
         return { keep: true };
