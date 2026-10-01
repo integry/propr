@@ -99,38 +99,22 @@ test('POST repository config persists an enabled option without enabling other r
 
 test('POST repository config synchronizes changed visual previews across branch entries', async () => {
   const saveMonitoredRepos = mock.fn(async () => true);
-  const routes = createConfigRoutes({
-    redisClient: {
-      set: mock.fn(async () => 'OK'),
-      eval: mock.fn(async () => 1),
-      publish: mock.fn(async () => 1),
-      lPush: mock.fn(async () => 1),
-      lTrim: mock.fn(async () => 'OK')
-    } as never,
-    configStore: {
-      loadMonitoredReposRaw: async () => [
-        {
-          id: 'repo-main',
-          name: 'integry/propr',
-          enabled: true,
-          baseBranch: 'main',
-          visualPreview: { enabled: false, types: ['image'] }
-        },
-        {
-          id: 'repo-release',
-          name: 'integry/propr',
-          enabled: true,
-          baseBranch: 'release',
-          visualPreview: { enabled: false, types: ['image'] }
-        }
-      ],
-      saveMonitoredRepos,
-      clearRemovedRepositoryIndexData: async () => {}
+  const routes = createRepoPostRoutes([
+    {
+      id: 'repo-main',
+      name: 'integry/propr',
+      enabled: true,
+      baseBranch: 'main',
+      visualPreview: { enabled: false, types: ['image'] }
     },
-    database: {
-      transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
-    } as never
-  });
+    {
+      id: 'repo-release',
+      name: 'integry/propr',
+      enabled: true,
+      baseBranch: 'release',
+      visualPreview: { enabled: false, types: ['image'] }
+    }
+  ], saveMonitoredRepos);
   const response = createResponse();
   const visualPreview = {
     githubAttachmentPlan: 'paid' as const,
@@ -164,30 +148,13 @@ test('POST repository config synchronizes changed visual previews across branch 
 for (const githubAttachmentPlan of ['paid', 'free'] as const) {
   test(`GET/POST legacy branch entries preserves a ${githubAttachmentPlan} override on the first entry`, async () => {
     const saveMonitoredRepos = mock.fn<(repos: RepoToMonitor[]) => Promise<boolean>>(async () => true);
-    const routes = createConfigRoutes({
-      redisClient: {
-        set: mock.fn(async () => 'OK'),
-        eval: mock.fn(async () => 1),
-        publish: mock.fn(async () => 1),
-        lPush: mock.fn(async () => 1),
-        lTrim: mock.fn(async () => 'OK')
-      } as never,
-      configStore: {
-        loadMonitoredReposRaw: async () => ['main', 'release'].map(baseBranch => ({
-          id: `repo-${baseBranch}`,
-          name: 'integry/propr',
-          enabled: true,
-          baseBranch,
-          visualPreview: { enabled: true, types: ['image'] }
-        })),
-        loadGitHubAttachmentCapacity: async () => resolveGitHubAttachmentCapacity(),
-        saveMonitoredRepos,
-        clearRemovedRepositoryIndexData: async () => {}
-      },
-      database: {
-        transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
-      } as never
-    });
+    const routes = createRepoPostRoutes(['main', 'release'].map(baseBranch => ({
+      id: `repo-${baseBranch}`,
+      name: 'integry/propr',
+      enabled: true,
+      baseBranch,
+      visualPreview: { enabled: true, types: ['image'] }
+    })), saveMonitoredRepos);
     const getResponse = createResponse();
     await routes.getRepos({} as never, getResponse as never);
     const repos = getResponse.body?.repos_to_monitor as RepoToMonitor[];
@@ -211,26 +178,10 @@ for (const githubAttachmentPlan of ['paid', 'free'] as const) {
 
 test('POST repository config preserves an omitted option for existing repositories', async () => {
   const saveMonitoredRepos = mock.fn(async () => true);
-  const routes = createConfigRoutes({
-    redisClient: {
-      set: mock.fn(async () => 'OK'),
-      eval: mock.fn(async () => 1),
-      publish: mock.fn(async () => 1),
-      lPush: mock.fn(async () => 1),
-      lTrim: mock.fn(async () => 'OK')
-    } as never,
-    configStore: {
-      loadMonitoredReposRaw: async () => [
-        { id: 'repo-1', name: 'integry/propr', enabled: false, autoFollowupOnFailedCi: true },
-        { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: true }
-      ],
-      saveMonitoredRepos,
-      clearRemovedRepositoryIndexData: async () => {}
-    },
-    database: {
-      transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
-    } as never
-  });
+  const routes = createRepoPostRoutes([
+    { id: 'repo-1', name: 'integry/propr', enabled: false, autoFollowupOnFailedCi: true },
+    { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: true }
+  ], saveMonitoredRepos);
   const response = createResponse();
 
   await routes.postRepos({
@@ -269,6 +220,7 @@ function createRepoPostRoutes(previousRepos: RepoToMonitor[], saveMonitoredRepos
     } as never,
     configStore: {
       loadMonitoredReposRaw: async () => previousRepos,
+      loadGitHubAttachmentCapacity: async () => resolveGitHubAttachmentCapacity(),
       saveMonitoredRepos,
       clearRemovedRepositoryIndexData: async () => {}
     } as never,

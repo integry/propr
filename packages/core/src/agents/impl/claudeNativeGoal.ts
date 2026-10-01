@@ -731,13 +731,22 @@ export async function executeClaudeNativeGoal(
         launch.model,
         Date.now() - start,
     );
+    return buildClaudeGoalResult(stream, completion, response, launch.sessionId);
+}
+
+function buildClaudeGoalResult(
+    stream: ClaudeGoalStream,
+    completion: ClaudeGoalCompletion,
+    response: AgentExecutionResult,
+    sessionId: string,
+): AgentExecutionResult {
     const success = completion.status === 'completed';
     return {
         ...response,
         success,
         logs: `${stream.rawOutput}${stream.stderrOutput ? `\n${stream.stderrOutput}` : ''}`,
-        sessionId: launch.sessionId,
-        conversationId: launch.sessionId,
+        sessionId,
+        conversationId: sessionId,
         modelUsed: stream.model || response.modelUsed,
         providerModel: stream.model || response.providerModel,
         tokenUsage: stream.tokenUsage,
