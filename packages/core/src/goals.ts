@@ -23,7 +23,7 @@ export const CLAUDE_GOAL_CONDITION_MAX_LENGTH = 4_000;
  * goal loop, and ProPR steers input, checkpoints, pause, and cancel into the
  * running session instead of stopping and resuming whole invocations.
  */
-const NATIVE_GOAL_AGENT_TYPES: ReadonlySet<string> = new Set(['codex', 'claude']);
+const NATIVE_GOAL_AGENT_TYPES: ReadonlySet<string> = new Set(['codex', 'claude', 'antigravity']);
 
 export function hasNativeGoalControl(agentType: string | null | undefined): boolean {
     return Boolean(agentType && NATIVE_GOAL_AGENT_TYPES.has(agentType));
