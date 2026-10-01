@@ -21,14 +21,14 @@ export interface IntentTarget {
 }
 
 export function taskIntentTarget(data: Record<string, unknown>, type = typeof data.type === 'string' ? data.type : undefined): IntentTarget | null {
+    // Goals, imports and system maintenance are not issue implementations.
+    if (data.goalId || data.taskDescription || !type || !['issue', 'pr-comment', 'review', 'merge_conflict'].includes(type)) return null;
     const repository = typeof data.repository === 'string' ? data.repository.split('/') : [];
     const repoOwner = typeof data.repoOwner === 'string' ? data.repoOwner : repository[0];
     const repoName = typeof data.repoName === 'string' ? data.repoName : repository[1];
     const pr = data.pullRequestNumber ?? data.prNumber;
-    const kind = pr !== undefined || type === 'pr-comment' || type === 'review' || type === 'merge_conflict' ? 'pr' : 'issue';
+    const kind = pr !== undefined || ['pr-comment', 'review', 'merge_conflict'].includes(type) ? 'pr' : 'issue';
     const number = pr ?? data.number ?? data.issueNumber;
-    // Goals, imports and system maintenance are not issue implementations.
-    if (data.goalId || data.taskDescription || !type || !['issue', 'pr-comment', 'review', 'merge_conflict'].includes(type)) return null;
     if (!repoOwner || !repoName || typeof number !== 'number' || number <= 0) return null;
     return { repoOwner, repoName, number, kind, ...(typeof data.triggeringLabel === 'string' ? { triggeringLabel: data.triggeringLabel } : {}) };
 }
@@ -85,14 +85,22 @@ function redisAdapter(redis: Redis): StopTaskRedisClient {
     };
 }
 
+async function clearUserStoppedProcessingLabel(target: IntentTarget, taskId?: string): Promise<void> {
+    // User stops own only the processing label, and only after sibling work ends.
+    if (!taskId || !target.triggeringLabel) return;
+    const octokit = await getAuthenticatedOctokit();
+    if (await hasProcessingSibling(target, taskId)) return;
+    await safeRemoveLabel({ octokit, owner: target.repoOwner, repo: target.repoName, issueNumber: target.number, logger: logger.withCorrelation('user-stop') }, `${target.triggeringLabel}-processing`);
+}
+
+function hasProcessingTrigger(current: CurrentTaskIntent, triggers: string[]): boolean {
+    return (current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+}
+
 export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason, taskId?: string): Promise<void> {
     if (target.kind !== 'issue') return;
-    // User stops own only the processing label, and only after sibling work ends.
     if (reason === 'cancelled_by_user') {
-        if (!taskId || !target.triggeringLabel) return;
-        const octokit = await getAuthenticatedOctokit();
-        if (await hasProcessingSibling(target, taskId)) return;
-        await safeRemoveLabel({ octokit, owner: target.repoOwner, repo: target.repoName, issueNumber: target.number, logger: logger.withCorrelation('user-stop') }, `${target.triggeringLabel}-processing`);
+        await clearUserStoppedProcessingLabel(target, taskId);
         return;
     }
     // Stopping one attempt does not withdraw the issue's intent or its siblings' status.
@@ -109,7 +117,7 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
         if (withdrawnIntentReason(target, current, triggers) !== reason) return;
         labelsToClear = target.triggeringLabel ? [target.triggeringLabel] : triggers;
         // Discovery excludes every *-cancelled label, even for another trigger.
-        markCancelled = !(current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+        markCancelled = !hasProcessingTrigger(current, triggers);
     }
     const options = { octokit, owner: target.repoOwner, repo: target.repoName, issueNumber: target.number, logger: logger.withCorrelation('intent-withdrawal') };
     for (const trigger of new Set(labelsToClear)) {
@@ -124,7 +132,7 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
             owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
         });
         markCancelled = withdrawnIntentReason(target, current, triggers) === reason
-            && !(current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
+            && !hasProcessingTrigger(current, triggers);
     }
     if (markCancelled && reason === 'cancelled_issue_closed') {
         // A completed matrix sibling may have closed the issue through its PR.
