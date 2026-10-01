@@ -55,23 +55,7 @@ test('GET repository config returns false for legacy entries with a missing opti
 
 test('POST repository config persists an enabled option without enabling other repositories', async () => {
   const saveMonitoredRepos = mock.fn(async () => true);
-  const routes = createConfigRoutes({
-    redisClient: {
-      set: mock.fn(async () => 'OK'),
-      eval: mock.fn(async () => 1),
-      publish: mock.fn(async () => 1),
-      lPush: mock.fn(async () => 1),
-      lTrim: mock.fn(async () => 'OK')
-    } as never,
-    configStore: {
-      loadMonitoredReposRaw: async () => [],
-      saveMonitoredRepos,
-      clearRemovedRepositoryIndexData: async () => {}
-    },
-    database: {
-      transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
-    } as never
-  });
+  const routes = createRepoPostRoutes([], saveMonitoredRepos);
   const response = createResponse();
 
   await routes.postRepos({
