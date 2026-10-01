@@ -12,7 +12,7 @@
  * list announces "Refreshing…".
  */
 
-import React from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 const PULSE = 'animate-pulse motion-reduce:animate-none';
 
@@ -92,11 +92,70 @@ const BlockShapes: React.FC<{ rows: number }> = ({ rows }) => (
 );
 
 /**
+ * Registers a waiting skeleton with the page and returns its release. Null
+ * outside a `PageLoadingStatus`, where every skeleton speaks for itself.
+ */
+const PageLoadingContext = createContext<(() => () => void) | null>(null);
+
+/**
+ * One voice for a page of skeletons.
+ *
+ * A page that draws several sections at once — the dashboard's panes, the
+ * analytics widgets — would otherwise put one live region per section on
+ * screen, and a screen reader would hear "Loading…" once per pane. Inside this
+ * provider every skeleton stays silent and the page says `label` once, for as
+ * long as any of them is still waiting. The region is always mounted so the
+ * announcement is a text change in a region the reader already knows about.
+ */
+export const PageLoadingStatus: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => {
+  const [pending, setPending] = useState(0);
+  const register = useCallback(() => {
+    setPending(count => count + 1);
+    return () => setPending(count => count - 1);
+  }, []);
+  return (
+    <PageLoadingContext.Provider value={register}>
+      <div role="status" className="sr-only" data-testid="page-loading-status">{pending > 0 ? label : ''}</div>
+      {children}
+    </PageLoadingContext.Provider>
+  );
+};
+
+/**
+ * The pulsing container a skeleton draws inside.
+ *
+ * On its own it is a busy `role="status"` with one `sr-only` label. Inside a
+ * `PageLoadingStatus` it drops both and reports to the page instead, so a
+ * screen of widgets announces once rather than once per widget.
+ */
+export const SkeletonRegion: React.FC<{
+  label: string;
+  className?: string;
+  children: React.ReactNode;
+  'data-testid'?: string;
+  'data-skeleton-layout'?: string;
+}> = ({ label, className = '', children, ...rest }) => {
+  const register = useContext(PageLoadingContext);
+  useEffect(() => register?.(), [register]);
+  const classes = `${PULSE} ${className}`.trim();
+  if (register) {
+    return <div aria-busy="true" className={classes} {...rest}>{children}</div>;
+  }
+  return (
+    <div role="status" aria-busy="true" className={classes} {...rest}>
+      <span className="sr-only">{label}</span>
+      {children}
+    </div>
+  );
+};
+
+/**
  * The accessible loading container every list uses.
  *
- * Exactly one `role="status"` and one `sr-only` label per skeleton. A table
- * draws rows below `lg` and columns from `lg` up inside that same element, so
- * the responsive variants never announce twice.
+ * Exactly one `role="status"` and one `sr-only` label per skeleton, or none
+ * inside a `PageLoadingStatus`. A table draws rows below `lg` and columns from
+ * `lg` up inside that same element, so the responsive variants never announce
+ * twice.
  */
 export const ListSkeleton: React.FC<ListSkeletonProps> = ({
   rows = 3,
@@ -106,14 +165,7 @@ export const ListSkeleton: React.FC<ListSkeletonProps> = ({
   className = '',
   'data-testid': testId,
 }) => (
-  <div
-    role="status"
-    aria-busy="true"
-    data-testid={testId}
-    data-skeleton-layout={layout}
-    className={`${PULSE} ${className}`.trim()}
-  >
-    <span className="sr-only">{label}</span>
+  <SkeletonRegion label={label} className={className} data-testid={testId} data-skeleton-layout={layout}>
     <div aria-hidden="true">
       {layout === 'table' ? (
         <>
@@ -128,5 +180,5 @@ export const ListSkeleton: React.FC<ListSkeletonProps> = ({
         <RowShapes rows={rows} />
       )}
     </div>
-  </div>
+  </SkeletonRegion>
 );

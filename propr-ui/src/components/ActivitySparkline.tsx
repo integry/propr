@@ -9,7 +9,7 @@ import {
 } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { tooltipStyle } from './chartConstants';
-import { SkeletonBlock } from './ui/Skeleton';
+import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface ActivitySparklineProps {
@@ -17,6 +17,12 @@ interface ActivitySparklineProps {
   isLoading?: boolean;
   deterministicSvg?: boolean;
 }
+
+/**
+ * Placeholder bar heights, in percent. Fixed so the skeleton holds still
+ * across re-renders instead of reshuffling every time its parent updates.
+ */
+const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60, 30, 70, 50];
 
 const formatDateShort = (dateStr: string): string => {
   const date = new Date(dateStr);
@@ -135,15 +141,14 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
       <div className="h-[120px]">
         {isLoading ? (
           /* Loading skeleton placeholder for the graph */
-          <div className="h-full w-full flex flex-col justify-end pb-4 animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
-            <span className="sr-only">Loading activity…</span>
+          <SkeletonRegion label="Loading activity…" className="h-full w-full flex flex-col justify-end pb-4">
             {/* Simulated bar chart skeleton */}
             <div className="flex items-end justify-between gap-1 h-[80px] px-6">
-              {[...Array(15)].map((_, i) => (
+              {PLACEHOLDER_BAR_HEIGHTS.map((height, i) => (
                 <SkeletonBlock
                   key={i}
                   className="flex-1"
-                  style={{ height: `${20 + Math.random() * 60}%` }}
+                  style={{ height: `${height}%` }}
                 />
               ))}
             </div>
@@ -153,7 +158,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
               <SkeletonBlock className="h-2 w-12" />
               <SkeletonBlock className="h-2 w-12" />
             </div>
-          </div>
+          </SkeletonRegion>
         ) : data.length > 0 && deterministicSvg ? (
           <DeterministicActivityGraph data={data} />
         ) : data.length > 0 ? (

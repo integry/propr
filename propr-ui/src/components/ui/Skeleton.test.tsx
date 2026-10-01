@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
+import React from 'react';
 import { describe, expect, it } from 'vitest';
-import { ListSkeleton, SkeletonBlock } from './Skeleton';
+import { ListSkeleton, PageLoadingStatus, SkeletonBlock, SkeletonRegion } from './Skeleton';
 
 const blocksIn = (element: HTMLElement) => Array.from(element.querySelectorAll('[data-skeleton-block]'));
 
@@ -79,5 +80,57 @@ describe('ListSkeleton', () => {
     const { container } = render(<ListSkeleton label="Loading…" layout="table" rows={3} columns={4} />);
     expect(container.querySelector('[class*="border"]')).toBeNull();
     expect(container.querySelector('[class*="divide"]')).toBeNull();
+  });
+});
+
+describe('PageLoadingStatus', () => {
+  const Page: React.FC<{ waiting: string[] }> = ({ waiting }) => (
+    <PageLoadingStatus label="Loading dashboard…">
+      {waiting.map(name => <ListSkeleton key={name} label={`Loading ${name}…`} data-testid={`${name}-skeleton`} />)}
+      {waiting.includes('chart') && (
+        <SkeletonRegion label="Loading chart…" data-testid="chart-region"><SkeletonBlock className="h-4" /></SkeletonRegion>
+      )}
+    </PageLoadingStatus>
+  );
+
+  it('speaks once for every skeleton on the page and silences their own regions', () => {
+    render(<Page waiting={['attention', 'running', 'chart']} />);
+    const statuses = screen.getAllByRole('status');
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toHaveTextContent('Loading dashboard…');
+    expect(statuses[0]).toHaveClass('sr-only');
+    for (const testId of ['attention-skeleton', 'running-skeleton', 'chart-region']) {
+      const region = screen.getByTestId(testId);
+      expect(region).not.toHaveAttribute('role');
+      expect(region).toHaveAttribute('aria-busy', 'true');
+      expect(region).toHaveClass('animate-pulse', 'motion-reduce:animate-none');
+    }
+    expect(screen.queryByText('Loading attention…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading chart…')).not.toBeInTheDocument();
+  });
+
+  it('keeps saying it until the last skeleton has gone, then falls quiet', () => {
+    const { rerender } = render(<Page waiting={['attention', 'chart']} />);
+    const status = screen.getByRole('status');
+
+    rerender(<Page waiting={['chart']} />);
+    expect(status).toHaveTextContent('Loading dashboard…');
+
+    rerender(<Page waiting={[]} />);
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toBeEmptyDOMElement();
+
+    rerender(<Page waiting={['attention']} />);
+    expect(status).toHaveTextContent('Loading dashboard…');
+  });
+});
+
+describe('SkeletonRegion', () => {
+  it('is its own busy status with a screen-reader label outside a page status', () => {
+    render(<SkeletonRegion label="Loading chart…" className="h-8"><SkeletonBlock className="h-4" /></SkeletonRegion>);
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-busy', 'true');
+    expect(status).toHaveClass('h-8', 'animate-pulse');
+    expect(within(status).getByText('Loading chart…')).toHaveClass('sr-only');
   });
 });

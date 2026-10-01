@@ -4,7 +4,7 @@ import { VolumeChart, ProcessingTimeChart, StatusSegmentedBar } from './TaskStat
 import { buildStatusBreakdown } from './taskStatusBreakdown';
 import { useSocket } from '../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
-import { SkeletonBlock } from './ui/Skeleton';
+import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 const formatDate = (dateStr: string): string => {
@@ -83,8 +83,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderDistributionSkeleton = () => (
     <div>
       <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
-      <div className="animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
-        <span className="sr-only">Loading task status…</span>
+      <SkeletonRegion label="Loading task status…">
         <SkeletonBlock className="h-2 w-full" />
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
           {[...Array(4)].map((_, i) => (
@@ -97,7 +96,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
             </div>
           ))}
         </div>
-      </div>
+      </SkeletonRegion>
     </div>
   );
 

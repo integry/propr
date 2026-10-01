@@ -354,6 +354,13 @@ export const InboxBanners: React.FC<{
   );
 };
 
+/** What a state says when the read gave no message of its own. Loading is a skeleton and says nothing here. */
+const INBOX_STATE_FALLBACK: Record<'empty' | 'error' | 'offline', string> = {
+  empty: 'New operational updates will appear here.',
+  error: 'Your notifications could not be read. Try again in a moment.',
+  offline: 'Reconnect to see your latest notifications.',
+};
+
 export const InboxState: React.FC<{
   kind: 'loading' | 'empty' | 'error' | 'offline';
   message?: string;
@@ -369,7 +376,7 @@ export const InboxState: React.FC<{
         {kind === 'empty' ? 'You’re all caught up' : kind === 'offline' ? 'Inbox unavailable offline' : 'Couldn’t load your Inbox'}
       </h2>
       <p className="mt-1 max-w-sm text-sm leading-5 text-slate-500">
-        {message ?? (kind === 'empty' ? 'New operational updates will appear here.' : 'Fetching your latest notifications…')}
+        {message || INBOX_STATE_FALLBACK[kind]}
       </p>
       {kind !== 'empty' && (
         <button type="button" onClick={onRefresh} className="mt-5 inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700">

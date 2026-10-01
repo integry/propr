@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
-import { SkeletonBlock } from './ui/Skeleton';
+import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface RepositoryBreakdownProps {
@@ -43,8 +43,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <div className="overflow-hidden animate-pulse motion-reduce:animate-none" role="status" aria-busy="true">
-          <span className="sr-only">Loading top repositories…</span>
+        <SkeletonRegion label="Loading top repositories…" className="overflow-hidden">
           <table className="w-full table-fixed">
             <thead>
               <tr className="border-b border-slate-200">
@@ -69,7 +68,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
               ))}
             </tbody>
           </table>
-        </div>
+        </SkeletonRegion>
       </div>
     );
   }

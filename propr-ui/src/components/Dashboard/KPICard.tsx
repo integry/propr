@@ -19,7 +19,10 @@ export const KPICard: React.FC<KPICardProps> = ({
     <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">{title}</div>
     <div className={`text-2xl font-bold ${color} flex items-center gap-2`}>
       {isLoading ? (
-        <SkeletonBlock pulse className="h-8 w-16" />
+        <>
+          <SkeletonBlock pulse className="h-8 w-16" />
+          <span className="sr-only">Loading…</span>
+        </>
       ) : (
         value
       )}
