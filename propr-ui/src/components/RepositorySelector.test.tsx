@@ -300,6 +300,19 @@ describe('RepositorySelector', () => {
     expect(items[2].textContent).not.toContain('7');
   });
 
+  it('groups the digits of large counts the way the pagination footer does', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos', count: 14769 },
+      { name: 'org/repo-beta', enabled: true, count: 1200 },
+    ];
+    render(<RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} />);
+    expect(screen.getByRole('button').textContent).toContain('14,769');
+    fireEvent.click(screen.getByRole('button'));
+    const items = getVisibleRepoButtons();
+    expect(items[0].textContent).toContain('14,769');
+    expect(items[1].textContent).toContain('1,200');
+  });
+
   it('hides the collapsed count badge on mobile for stacked labels', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 42 },

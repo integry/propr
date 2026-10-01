@@ -43,6 +43,7 @@ import { HappeningNowSection } from './Dashboard/HappeningNowSection';
 import { CompletedFeed } from './Dashboard/CompletedFeed';
 import { HistoricalStatsPanel } from './Dashboard/HistoricalStatsPanel';
 import { RepositoryIconProvider, type RepositoryIconInfo } from './Dashboard/sectionPrimitives';
+import { PageLoadingStatus } from './ui/Skeleton';
 import { ALL_REPOSITORIES, REPOSITORY_PARAM } from './Dashboard/sectionState';
 import { useSectionRefreshTokens } from './Dashboard/useSectionRefreshTokens';
 
@@ -119,6 +120,12 @@ const Dashboard: React.FC = () => {
 
   return (
     <RepositoryIconProvider icons={repositoryIcons}>
+      {/*
+        The four panes read side by side, so the console announces their first
+        read once rather than once per pane. The status sits outside the
+        column, so the column's rows stay exactly the panes.
+      */}
+      <PageLoadingStatus label="Loading dashboard…">
       {/*
         The phone gets a gap under the last pane. The app shell already pads
         the scrolling canvas by exactly the height of the fixed bottom
@@ -246,6 +253,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+      </PageLoadingStatus>
     </RepositoryIconProvider>
   );
 };

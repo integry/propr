@@ -118,7 +118,7 @@ const scenarios = [
     },
   },
   {
-    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 100,
+    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 50,
     usefulPath: '/api/tasks',
     usefulBody: { tasks: [task], total: 1 },
   },

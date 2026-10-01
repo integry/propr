@@ -70,6 +70,8 @@ export interface Task {
   processedAt: string | null;
   /** Reason for failure (null if not failed) */
   failedReason: string | null;
+  /** Commit the run pushed (null when it pushed none or predates commit tracking) */
+  commitHash?: string | null;
   /** Progress percentage (0-100) */
   progress: number;
   /** Number of processing attempts */
