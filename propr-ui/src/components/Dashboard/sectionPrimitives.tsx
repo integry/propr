@@ -313,6 +313,7 @@ const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
   review: Eye,
   verify: Check,
   ci: RotateCw,
+  test: RotateCw,
   fix: Wrench,
   ultrafix: Zap,
   implement: Sparkles,
