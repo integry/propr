@@ -1,3 +1,4 @@
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import fs from 'fs';
 import { isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
@@ -33,7 +34,7 @@ const RESERVED_ENV_NAMES = new Set([
     'XDG_CONFIG_HOME',
     'XDG_DATA_HOME'
 ]);
-const GITHUB_CREDENTIAL_NAME_PATTERN = /^GITHUB_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+const GITHUB_CREDENTIAL_NAME_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
@@ -41,6 +42,7 @@ export interface OpenCodeDockerArgsParams {
     config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
     taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; configPath?: string;
     repositoryInspection?: boolean;
+    gitMountArgs?: string[];
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
@@ -129,7 +131,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
-        ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
@@ -137,7 +139,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',
-        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars,
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars, ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
     appendOpenCodeDataMount(dockerArgs, dataMount);

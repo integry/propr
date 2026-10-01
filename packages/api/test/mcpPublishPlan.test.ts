@@ -626,8 +626,9 @@ test('a takeover fails its claim when the owner renews after the lapsed lease wa
 test('the owner renews its claim before each issue and aborts a request at the lease deadline', async t => {
   const id = '10000000-0000-4000-8000-000000000016';
   const db = await setup(t, id, tasks.slice(0, 2));
-  // The abort timer is measured from Date.now(), so the clock must not advance
-  // while the renewal is written or the deadline lands before the tick below.
+  // Lease deadlines use Date.now(), so advance the wall clock with the timers.
+  // Freezing it during renewal and scheduling prevents real elapsed time from
+  // shortening the lease and moving the abort deadline before the tick below.
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const renewals: string[] = [];
   const remote: Array<{ number: number; html_url: string; title: string; body: string }> = [];

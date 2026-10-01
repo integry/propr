@@ -1,5 +1,6 @@
 import { normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
 import { randomUUID } from 'crypto';
+import { assertGitHubRepositoryIdentity } from '../../core/src/git/repositoryPaths.js';
 import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@propr/core';
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
 
@@ -370,6 +371,24 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
   return success(undefined);
 }
 
+function isValidContextRepositoryName(value: string): boolean {
+  const parts = value.split('/');
+  if (parts.length !== 2) return false;
+  try {
+    assertGitHubRepositoryIdentity(parts[0], parts[1]);
+    return true;
+  } catch { return false; }
+}
+
+function normalizeContextRepositories(context: RepoToMonitor['contextRepositories']): ValidationResult<RepoToMonitor['contextRepositories']> {
+  if (context !== undefined && context !== 'all' && context !== 'none'
+      && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
+        typeof entry !== 'string' || !isValidContextRepositoryName(entry)))) {
+    return failure('Context repositories must be all, none, or up to 499 owner/repository names');
+  }
+  return success(Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context);
+}
+
 export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
   const candidateResult = parseRepoObject(repo);
   if (!candidateResult.ok) return candidateResult;
@@ -393,6 +412,8 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!cancelCiWorkflows.ok) return cancelCiWorkflows;
   const nonBlockingChecks = normalizeNonBlockingChecks(candidate.nonBlockingChecks, name);
   if (!nonBlockingChecks.ok) return nonBlockingChecks;
+  const context = normalizeContextRepositories(candidate.contextRepositories);
+  if (!context.ok) return context;
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
 
@@ -400,6 +421,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
+    contextRepositories: context.value,
     autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     cancelCiDuringFollowup: candidate.cancelCiDuringFollowup ?? false,
     cancelCiDuringFollowupWorkflows: cancelCiWorkflows.value,
@@ -422,7 +444,21 @@ export function preserveRepoSettings(
   normalizedRepos: RepoToMonitor[],
   incomingRepos: unknown[]
 ): RepoToMonitor[] {
-  let repos = preserveRepoAutoFollowup(previousRepos, normalizedRepos, incomingRepos);
+  const withContext = normalizedRepos.map((repo, index): RepoToMonitor => {
+    if ((incomingRepos[index] as Partial<RepoToMonitor>).contextRepositories !== undefined) return repo;
+    const previous = previousRepos.find(candidate => candidate.id === repo.id);
+    const matches = previousRepos.filter(candidate => repositoryKeyOf(candidate.name) === repositoryKeyOf(repo.name));
+    // Older clients may regenerate IDs or collapse branch entries. Preserve the
+    // effective repository policy, including restrictions on removed branches.
+    const settings = (matches.length ? matches : previous ? [previous] : []).map(entry => entry.contextRepositories);
+    const lists = settings.filter((setting): setting is string[] => Array.isArray(setting));
+    const contextRepositories = settings.includes('none') ? 'none'
+      : lists.length ? lists.map(list => [...new Set(list.map(repositoryKeyOf))])
+        .reduce((left, right) => left.filter(name => right.includes(name)))
+      : settings.includes('all') ? 'all' : undefined;
+    return { ...repo, contextRepositories };
+  });
+  let repos = preserveRepoAutoFollowup(previousRepos, withContext, incomingRepos);
   repos = preserveRepoCancelCiDuringFollowup(previousRepos, repos, incomingRepos);
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);

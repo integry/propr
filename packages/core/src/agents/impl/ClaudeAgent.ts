@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
@@ -109,7 +110,7 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
+            onSessionId, onContainerId, tools, environment, taskId, prNumber, reasoningLevel,
             executionMode = 'task', metadata
         } = options;
 
@@ -135,8 +136,9 @@ export class ClaudeAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
-                worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
+                worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel
             });
@@ -204,7 +206,7 @@ export class ClaudeAgent implements Agent {
      */
     private async executeNativeGoal(options: AgentTaskOptions, model: string): Promise<AgentExecutionResult> {
         const {
-            worktreePath, issueRef, githubToken, systemPrompt, tools, environment, taskId,
+            worktreePath, issueRef, systemPrompt, tools, environment, taskId,
             reasoningLevel, resumeSessionId,
         } = options;
         const startTime = Date.now();
@@ -219,15 +221,18 @@ export class ClaudeAgent implements Agent {
             // An identity persisted before the provider wrote its first
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
-            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath, githubToken, modelName: model, issueNumber: issueRef.number,
-                systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
-                ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
-            });
+            const buildGoalDockerArgs = async () => {
+                const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+                return buildDockerArgs(this.config, this.maxTurns, {
+                    worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,
+                    systemPrompt, tools, environment, taskId,
+                    reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
+                    ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+                });
+            };
             const response = await executeClaudeNativeGoal(
                 { ...options, resumeSessionId: resumable ? sessionId : undefined },
-                { dockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
+                { buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
             );
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
@@ -269,7 +274,7 @@ export class ClaudeAgent implements Agent {
                 useConfiguredReasoningLevel
             );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '',
+                worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path),
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: analysisWorkspace.tools, taskId, executionType,
                 readOnlyWorkspace: analysisWorkspace.readOnly,

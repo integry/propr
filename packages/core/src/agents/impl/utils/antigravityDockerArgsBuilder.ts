@@ -1,4 +1,4 @@
-import path from 'path';
+import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 import { buildAntigravityContainerName } from './antigravityContainerName.js';
 import {
@@ -13,6 +13,7 @@ const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASS
 interface AntigravityDockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     modelName?: string;
     issueNumber: number;
     environment?: Record<string, string>;
@@ -45,21 +46,18 @@ function buildAgentEnvironmentArgs(
 }
 
 function buildWorkspaceMountArgs(
-    params: Pick<AntigravityDockerArgsParams, 'worktreePath' | 'readOnlyWorkspace' | 'repositoryInspection'>,
-    workerOwnedGoalGit: boolean,
+    params: Pick<AntigravityDockerArgsParams, 'worktreePath' | 'readOnlyWorkspace' | 'repositoryInspection' | 'gitMountArgs'>,
+    workerOwnedGit: boolean,
 ): string[] {
     const { worktreePath, readOnlyWorkspace, repositoryInspection } = params;
     return [
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(workerOwnedGoalGit ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`] : []),
-        ...(repositoryInspection ? [] : [
-            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
-        ]),
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace)),
     ];
 }
 
-function buildCredentialArgs(repositoryInspection: boolean, workerOwnedGoalGit: boolean, githubToken: string): string[] {
-    return repositoryInspection || workerOwnedGoalGit
+function buildCredentialArgs(repositoryInspection: boolean, githubToken: string): string[] {
+    return repositoryInspection
         ? []
         : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`];
 }
@@ -85,10 +83,9 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
     const configMountTarget = executionMode === 'goal'
         ? '/home/node/.gemini'
         : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
-    const workerOwnedGoalGit = executionMode === 'goal'
-        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+    const workerOwnedGit = !agentOwnsGit(params);
     const envVars = buildAgentEnvironmentArgs(
-        repositoryInspection || workerOwnedGoalGit,
+        true,
         configEnvironment,
         environment,
     );
@@ -105,16 +102,16 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
     return [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-        ...buildWorkspaceMountArgs({ worktreePath, readOnlyWorkspace, repositoryInspection }, workerOwnedGoalGit),
+        ...buildWorkspaceMountArgs({ worktreePath, readOnlyWorkspace, repositoryInspection, gitMountArgs: params.gitMountArgs }, workerOwnedGit),
         '-v', `${configPath}:${configMountTarget}:rw`,
-        ...buildCredentialArgs(repositoryInspection, workerOwnedGoalGit, githubToken),
+        ...buildCredentialArgs(repositoryInspection, githubToken),
         '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
         '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
         ...buildRepositoryInspectionArgs(repositoryInspection),
         ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
-        ...envVars, '-w', '/home/node/workspace',
+        ...envVars, ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace',
         dockerImage, '/bin/bash', '-lc', shellCommand, 'propr-antigravity',
     ];
 }

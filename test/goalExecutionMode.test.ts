@@ -27,6 +27,8 @@ import {
 } from '../packages/core/src/agents/goalCapabilities.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import { buildCodexAppServerDockerArgs, buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { buildOpenCodeDockerArgs } from '../packages/core/src/agents/impl/openCodeUtils.ts';
+import { VibeAgent } from '../packages/core/src/agents/impl/VibeAgent.ts';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.ts';
 import type { Agent, AgentConfig } from '../packages/core/src/agents/types.ts';
 
@@ -194,8 +196,7 @@ describe('native goal provider contract', () => {
       assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
       assert.ok(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
       assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:ro'));
-      assert.equal(args.some(argument => argument === 'GH_TOKEN=token'), false);
-      assert.equal(args.some(argument => argument === 'GITHUB_TOKEN=token'), false);
+      assert.equal(args.some(argument => argument === 'GH_TOKEN=token'), true);
       assert.equal(args.some(argument => argument.includes('must-not-leak')), false);
     }
   });
@@ -417,3 +418,37 @@ const REQUIRED_GOAL_SCHEMA = { anyOf: [
   { properties: { method: { enum: ['thread/goal/get'] } } },
   { properties: { method: { enum: ['thread/goal/clear'] } } },
 ] };
+
+
+test('all five implementation adapters expose only writable task files and reject credential overrides', () => {
+  const params = { ...common, issueNumber: 1 };
+  const config = (type: AgentConfig['type']) => ({ ...baseConfig(type), envVars: {
+    GH_TOKEN: 'must-not-leak', GITHUB_TOKEN: 'must-not-leak', MISTRAL_API_KEY: 'test-key',
+  } });
+  const antigravity = new AntigravityAgent(config('antigravity')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  const vibe = new VibeAgent(config('vibe')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  const variants = [
+    buildClaudeDockerArgs(config('claude'), 1000, params),
+    buildCodexDockerArgs(config('codex'), params),
+    antigravity.buildDockerArgs(params),
+    buildOpenCodeDockerArgs({ ...params, config: config('opencode'), ensureConfigPath: () => {} }),
+    vibe.buildDockerArgs(params),
+  ];
+  for (const args of variants) {
+    assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
+    assert.ok(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
+    assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:ro'));
+    assert.ok(args.includes('GIT_CONFIG_VALUE_1=!gh auth git-credential'));
+    assert.equal(args.some(arg => arg.includes('must-not-leak')), false);
+  }
+});
+
+test('orchestrated goal adapters retain GitHub credentials and writable git mounts', () => {
+  const params = { ...common, executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } };
+  const antigravity = new AntigravityAgent(baseConfig('antigravity')) as unknown as { buildDockerArgs(input: typeof params): string[] };
+  for (const args of [buildClaudeDockerArgs(baseConfig('claude'), 1000, params), buildCodexAppServerDockerArgs(baseConfig('codex'), params), antigravity.buildDockerArgs(params)]) {
+    assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:rw'));
+    assert.ok(args.includes('GH_TOKEN=token'));
+    assert.equal(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'), false);
+  }
+});

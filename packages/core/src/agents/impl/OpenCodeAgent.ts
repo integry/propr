@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -52,7 +53,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -73,7 +74,8 @@ export class OpenCodeAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
@@ -152,7 +154,7 @@ export class OpenCodeAgent implements Agent {
         const analysisDataPath = this.resolveAnalysisDataPath();
 
         try {
-            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands === true, configPath: analysisConfigPath, dataPath: analysisDataPath });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path), modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands === true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId })

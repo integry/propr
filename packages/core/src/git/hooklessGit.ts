@@ -15,6 +15,12 @@ export function createHooklessGit(baseDir?: string): SimpleGit {
         config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
         // simple-git treats every hooksPath override as potentially dangerous.
         // This one is a fixed, non-executable sink rather than caller input.
-        unsafe: { allowUnsafeHooksPath: true },
+        unsafe: {
+            allowUnsafeHooksPath: true,
+            // configureGitAuthentication supplies credentials only through
+            // process-local config and clears (rather than runs) helpers.
+            allowUnsafeConfigEnvCount: true,
+            allowUnsafeCredentialHelper: true,
+        },
     });
 }
