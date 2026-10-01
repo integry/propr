@@ -231,6 +231,13 @@ await mock.module('@propr/core', {
     }
 });
 
+// Repository workflow execution is outside the merge-conflict fixture.
+await mock.module('../src/jobs/repositoryWorkflow.js', {
+    namedExports: {
+        runRepositoryWorkflow: async <T>(_options: unknown, execute: () => Promise<T>) => execute(),
+    },
+});
+
 // Mock helpers
 await mock.module('../src/jobs/prCommentJobHelpers.js', {
     namedExports: {

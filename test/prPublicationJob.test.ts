@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { beforeEach, mock, test } from 'node:test';
 
 let events: string[] = [];
@@ -32,7 +33,7 @@ const octokit = {
             events.push(`comment:${params.issue_number}`);
             return { data: { id: 123, html_url: 'https://github.com/upstream/project/issues/42#issuecomment-123' } };
         }
-        return { data: { head: { ref: 'fork-branch' }, labels: [{ name: 'propr' }], title: 'Contribution', body: '', user: { login: 'contributor' }, ...pullRequestState } };
+        return { data: { head: { ref: 'fork-branch' }, base: { ref: 'main' }, labels: [{ name: 'propr' }], title: 'Contribution', body: '', user: { login: 'contributor' }, ...pullRequestState } };
     },
 };
 const noOp = async () => {};
@@ -46,8 +47,11 @@ await mock.module('@propr/core', { namedExports: {
     ensureGitRepository: noOp, createLogFiles: noOp, UsageLimitError: class extends Error {},
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'],
     loadRepositoryVisualPreviewSettings: noOp,
+    refineWorkflowPreviews, repositoryWorkflowPrompt,
 } });
 const modules: Record<string, Record<string, unknown>> = {
+    // Publication fixtures have no repository workflow policy.
+    repositoryWorkflow: { prepareRepositoryWorkflow: noOp },
     prCommentJobHelpers: {
         validateAndFilterComments: async (comments: unknown) => comments,
         filterUnprocessedComments: (comments: unknown) => comments,
