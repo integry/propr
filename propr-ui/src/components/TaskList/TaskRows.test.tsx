@@ -90,6 +90,27 @@ describe('task ledger rows', () => {
     expect(within(table).queryByRole('list', { name: 'Earlier runs' })).not.toBeInTheDocument();
   });
 
+  it('keeps a single run without a summary on one line, its type in front of the title', () => {
+    const single: TaskGroup = {
+      key: 'integry/desktop-workspaces-issue-86', repoOwner: 'integry', repoName: 'desktop-workspaces', prNumber: null,
+      tasks: [{
+        id: 'issue-86', title: 'New Issue: [86 by Claude] Support configuration paths', status: 'failed',
+        createdAt: '2026-09-10T12:00:00Z', issueNumber: 86, previewMedia: [{ type: 'image', title: 'Desktop', url: 'https://github.com/user-attachments/assets/c' }],
+      }],
+    };
+    render(<TaskTableContent groupedTasks={[single]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    const title = within(table).getByRole('button', { name: 'Support configuration paths' });
+    const titleLine = title.parentElement!;
+    // Chip, type, title, previews: all on the title line, and nothing under it.
+    expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Implement', 'Support configuration paths', '1 preview']);
+    expect(titleLine.nextElementSibling).toBeNull();
+    // The owner is the same on every row, so the repository cell shows the name; the tooltip keeps both.
+    const repo = within(table).getByTestId('repository-chip');
+    expect(repo).toHaveTextContent(/^desktop-workspaces$/);
+    expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+  });
+
   it('uses the bracketed score pill', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });

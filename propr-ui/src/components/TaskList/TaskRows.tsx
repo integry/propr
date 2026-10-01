@@ -8,7 +8,7 @@ import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
-import { pluralize, TASK_RUNS_COLUMN_SPAN, type TaskRowView, type TaskRunView } from './rowModel';
+import { hasRollupLine, pluralize, TASK_RUNS_COLUMN_SPAN, type TaskRowView, type TaskRunView } from './rowModel';
 
 // Prefer catalog labels (including version punctuation), with a readable fallback
 // for custom models. The logo already identifies the provider.
@@ -108,6 +108,9 @@ const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
  * The line under a title, held to one line: `↳ 6 earlier runs · REVIEW what the
  * newest run did · 2 previews`. The type belongs to the newest run, not the PR,
  * so it travels with that run's summary rather than taking room from the title.
+ * A single run with no summary has nothing to put here: its type and previews
+ * ride on the title line instead (`TitleLineType`, `TitleLinePreviews`), and this line is not
+ * drawn at all.
  */
 export const RollupLine: React.FC<{
   row: TaskRowView;
@@ -115,9 +118,9 @@ export const RollupLine: React.FC<{
   runsId: string;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
 }> = ({ row, expanded, runsId, onToggle }) => {
+  if (!hasRollupLine(row)) return null;
   const count = row.earlierRuns.length;
   const hasSummary = Boolean(row.type || row.detail);
-  if (!count && !hasSummary && !row.previewCount) return null;
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
       {count > 0 && (
@@ -142,6 +145,19 @@ export const RollupLine: React.FC<{
     </div>
   );
 };
+
+/**
+ * What a one-line row carries on its title line: the type in front of the
+ * title (`[Issue #86]  ✦ IMPLEMENT  Support configuration…`) and the preview
+ * count after it. Rows with a rollup line keep both there.
+ */
+export const TitleLineType: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  !hasRollupLine(row) && row.type ? <span className="flex-none"><WorkTypeBadge type={row.type} /></span> : null
+);
+
+export const TitleLinePreviews: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  hasRollupLine(row) ? null : <PreviewCountBadge count={row.previewCount} />
+);
 
 /**
  * The rolled-up runs of one row as a self-contained timeline hanging off the
@@ -209,12 +225,14 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="min-w-0">
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
+            <TitleLineType row={row} />
             <TaskTitleButton title={row.title} taskId={task.id} onRowClick={onRowClick} />
+            <TitleLinePreviews row={row} />
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} />
         </div>
         <div role="cell" className="min-w-0">
-          <RepositoryChip repository={row.repository} />
+          <RepositoryChip repository={row.repository} label={row.repositoryName} />
         </div>
         <div role="cell" className="min-w-0">{getStatusPill(getDisplayStatus(task))}</div>
         <div role="cell" className="min-w-0"><TaskAgent task={task} /></div>

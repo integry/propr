@@ -45,7 +45,14 @@ export interface TaskRunView {
 export interface TaskRowView {
   key: string;
   task: Task;
+  /** `owner/name`, for the tooltip and the icon. */
   repository: string;
+  /**
+   * The name alone, as the row shows it. The repository filter already scopes
+   * the list to this instance's repositories, so the owner is the same on every
+   * row and only costs the characters that tell repositories apart.
+   */
+  repositoryName: string;
   /** The entity the row is about: the PR or issue title, sanitized. */
   title: string;
   type: string | null;
@@ -171,6 +178,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     key: group.key,
     task,
     repository: `${group.repoOwner}/${group.repoName}`,
+    repositoryName: group.repoName,
     title,
     type: newest.type,
     detail: newest.delta,
@@ -187,5 +195,12 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     }),
   };
 }
+
+/**
+ * Whether the row needs a line under its title. It does for earlier runs or
+ * for a newest-run summary; a single run with neither carries its type in
+ * front of the title instead, so it stays one line tall.
+ */
+export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;

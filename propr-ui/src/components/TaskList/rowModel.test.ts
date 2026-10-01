@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskRow, runOutcome, sanitizeTaskTitle } from './rowModel';
+import { buildTaskRow, hasRollupLine, runOutcome, sanitizeTaskTitle } from './rowModel';
 import type { Task, TaskGroup } from './types';
 
 const base: Task = { id: 'task-1', status: 'completed', createdAt: '2026-09-15T10:00:00Z' };
@@ -80,6 +80,18 @@ describe('buildTaskRow', () => {
     expect(run({ status: 'processing' })).toBe('No result yet');
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A' }, { title: 'Follow-up PR #1: A' }, { title: 'Followup: Update 2' }]));
     expect(row.earlierRuns.map(earlier => earlier.delta)).not.toContain('Follow-up run');
+  });
+
+  it('shows the repository by name, keeping the owner for the tooltip', () => {
+    const row = buildTaskRow({ ...group([{ title: 'New Issue: Add retries' }]), repoName: 'desktop-workspaces' });
+    expect(row.repository).toBe('integry/desktop-workspaces');
+    expect(row.repositoryName).toBe('desktop-workspaces');
+  });
+
+  it('needs a line under the title only for earlier runs or a summary', () => {
+    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries' }])))).toBe(false);
+    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries', subtitle: 'Retry the upload' }])))).toBe(true);
+    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries' }, { title: 'New Issue: Add retries' }])))).toBe(true);
   });
 
   it('counts only trusted previews', () => {

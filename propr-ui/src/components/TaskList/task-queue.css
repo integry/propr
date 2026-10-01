@@ -3,9 +3,10 @@
 
    The schema is locked: every width that shows the table shows all seven
    columns, so nothing is added or dropped as the window or a pane resizes.
-   REPO (10rem) and AGENT (11rem) are fixed at every width and never shrink,
-   so a repository slug or a model identifier keeps about twenty characters
-   before it truncates. The title column takes only what is left
+   REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
+   REPO shows the repository name without its owner (the repo filter already
+   scopes the list), so a 20-character name fits whole; AGENT's 190px holds a
+   long model identifier beside its provider logo. The title column takes only what is left
    (`minmax(0, 1fr)`), so a long or unbroken title wraps inside its own cell
    and never takes width from the columns beside it. Only STATUS and the
    gutters tighten on a laptop-width list (~1280px windows).
@@ -32,14 +33,14 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 11rem 4.25rem 4.5rem 3rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 3rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 11rem 4.25rem 4.5rem 3rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 3rem;
     column-gap: .5rem;
   }
 }

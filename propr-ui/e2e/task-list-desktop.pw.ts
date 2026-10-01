@@ -51,7 +51,7 @@ const tasks = [
     { title: `Ultrafix PR #2662: ${tag(2657)} Create a self-hosted GitHub App in one command (propr github-app create)`, subtitle: 'Fix GitHub App creation callback handling and review findings F1-F3', minutes: 130, took: 8, score: 8, previewMedia: [preview('callback-walkthrough', 'video')] },
   ]),
   {
-    id: 'long-title', repository: 'integry/desktop-workspace-with-long-repository-name', issueNumber: 86,
+    id: 'long-title', repository: 'integry/desktop-workspaces', repositoryOwner: 'integry', repositoryName: 'desktop-workspaces', issueNumber: 86,
     title: `New Issue: ${tag(86)} Support configuration/desktop/workspaces/a-very-long-unbroken-configuration-filename.json in the task history`,
     status: 'failed', createdAt: ago(300), processedAt: ago(300), completedAt: ago(262),
     llmProvider: 'claude', model: 'a-long-model-identifier-for-desktop-layout-verification', critiqueScore: 4,
@@ -83,7 +83,7 @@ async function fixture(page: Page, platform?: 'macos' | 'linux') {
       '/api/stats/generating-plans': { count: 0 },
       '/api/stats/tasks': { summary: { total: 7, completed: 3, failed: 1, active: 1, waiting: 1 }, dailyCounts: [], statusDistribution: [], avgProcessingTime: [] },
       '/api/stats/overview': { usage: { total_cost_usd: 0, total_tokens: 0, models: {} }, tasks: { completed: 3, planned: 7, pr_iterations_avg: 1, merged_prs: 1, total_followups: 5 }, system: { repos_indexed: 2 } },
-      '/api/stats/repositories': { repositories: [{ repository: 'integry/propr', total: 14768, completed: 3, failed: 1, inProgress: 1, successRate: 43 }, { repository: 'integry/desktop-workspace-with-long-repository-name', total: 1, completed: 0, failed: 1, inProgress: 0, successRate: 0 }] },
+      '/api/stats/repositories': { repositories: [{ repository: 'integry/propr', total: 14768, completed: 3, failed: 1, inProgress: 1, successRate: 43 }, { repository: 'integry/desktop-workspaces', total: 1, completed: 0, failed: 1, inProgress: 0, successRate: 0 }] },
       '/api/notifications/unread-count': { unreadCount: 0 },
       '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
     };
@@ -121,6 +121,20 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
       await expect(page.getByText('Showing 1–50 of 14,769 tasks')).toBeVisible();
+      // The repository filter counts the same tasks with the same digit grouping as the footer.
+      await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
+      await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
+
+      // A single run with no summary is one line: the type leads the title and nothing hangs under it.
+      const singleRun = rows.filter({ hasText: 'a-very-long-unbroken' });
+      const titleLine = singleRun.getByRole('button', { name: /^Support configuration/ }).locator('xpath=..');
+      await expect(titleLine.getByTestId('work-type-badge')).toHaveText('Implement');
+      expect(await titleLine.evaluate(line => line.nextElementSibling)).toBeNull();
+      // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
+      const repoChip = singleRun.getByTestId('repository-chip');
+      await expect(repoChip).toHaveText('desktop-workspaces');
+      await expect(repoChip).toHaveAttribute('title', 'integry/desktop-workspaces');
+      expect(await repoChip.locator('.truncate').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
 
       const layout = await table.evaluate(element => ({
         fits: element.getBoundingClientRect().right <= window.innerWidth,
@@ -132,7 +146,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       for (const height of layout.heights) expect(height).toBeLessThanOrEqual(84);
       expect(await table.getByRole('button', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
       // A long unbroken path in a title wraps inside its own cell: the metadata cells of that row
-      // keep exactly their column widths, and REPO (10rem) and AGENT (11rem) never shrink.
+      // keep exactly their column widths, and REPO (10rem) and AGENT (190px) never shrink.
       const columnWidths = await table.evaluate(element => {
         const widths = (cells: Element[]) => cells.slice(1, 4).map(cell => Math.round(cell.getBoundingClientRect().width));
         const longRow = [...element.querySelectorAll('[data-testid="task-row"]')].find(row => row.textContent!.includes('a-very-long-unbroken'))!;
@@ -142,7 +156,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         };
       });
       expect(columnWidths.longRow).toEqual(columnWidths.header);
-      expect(columnWidths.header).toEqual(width === 1920 ? [160, 128, 176] : [160, 112, 176]);
+      expect(columnWidths.header).toEqual(width === 1920 ? [160, 128, 190] : [160, 112, 190]);
       // The lead chips sit a full table inset (2rem) in from the list's left edge.
       const inset = await table.evaluate(element => {
         const chip = element.querySelector('[data-testid="task-row"] [title^="Pull request"]')!.getBoundingClientRect();

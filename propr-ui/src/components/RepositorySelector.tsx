@@ -78,7 +78,7 @@ const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' 
     : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
 );
 
-const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count}</span>;
+const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count.toLocaleString('en-US')}</span>;
 
 const RepoItem: React.FC<{
   repo: RepoOption;

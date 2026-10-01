@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronRight } from 'lucide-react';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
-import { EarlierRunsList, RollupLine, TaskAgent, TaskPrimaryChip, TaskScore } from './TaskRows';
+import { EarlierRunsList, RollupLine, TaskAgent, TaskPrimaryChip, TaskScore, TitleLinePreviews, TitleLineType } from './TaskRows';
 import type { TaskRowView } from './rowModel';
 
 interface MobileTaskCardProps {
@@ -28,12 +28,14 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex min-w-0 items-center gap-2">
             <TaskPrimaryChip task={task} prNumber={prNumber} />
+            <TitleLineType row={row} />
+            <TitleLinePreviews row={row} />
             <span className="ml-auto flex-none"><TaskScore task={task} /></span>
           </div>
           <p className="line-clamp-2 text-sm font-medium text-slate-900">{row.title}</p>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
             {getStatusPill(getDisplayStatus(task))}
-            <span className="truncate font-mono text-[11px]">{row.repository}</span>
+            <span className="truncate font-mono text-[11px]" title={row.repository}>{row.repositoryName}</span>
             <span className="text-slate-300" aria-hidden="true">·</span>
             <span>{formatRelativeTime(task.createdAt)}</span>
           </div>
