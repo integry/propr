@@ -98,6 +98,10 @@ test('without a period the endpoints keep their historical scope', async () => {
     total_cost_usd: 2,
     models: { 'claude-opus-5-5': 1, 'gpt-5.6': 1 },
   });
+  assert.deepEqual(overview.body.model_usage, [
+    { model: 'gpt-5.6', tasks: 1, tokens: 1200, cost_usd: 0.5 },
+    { model: 'claude-opus-5-5', tasks: 1, tokens: 120, cost_usd: 1.5 },
+  ]);
 });
 
 test('a period bounds task counts to tasks created inside the window', async () => {
@@ -150,6 +154,7 @@ test('a period bounds overview usage by execution start but never the indexed re
   assert.deepEqual(lastDay.body.usage, { total_tokens: 120, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 } });
   assert.equal((lastDay.body.tasks as { completed: number }).completed, 1);
   assert.deepEqual(lastDay.body.system, { repos_indexed: 1 });
+  assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', tasks: 1, tokens: 120, cost_usd: 1.5 }]);
 
   const week = await call(stats.getOverview, { period: '7d' });
   assert.equal((week.body.usage as { total_tokens: number }).total_tokens, 1320);

@@ -1,9 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import type { AnalyticsTimeframe } from '@propr/shared';
-import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
-import { getModelDisplayName } from '../utils/modelDisplay';
+/**
+ * Per-model breakdown for the Analytics console: tasks, tokens and cost.
+ *
+ * Presentational: the page reads the overview once per timeframe and hands it
+ * in, so the table and the metric strip above it can never disagree. The
+ * heading belongs to the pane that holds the table.
+ *
+ * Every model goes through one formatter, so a catalogue model and an id the
+ * catalogue has since dropped read the same way (`Claude Opus 5.5`,
+ * `GPT-5.6`) instead of a display name beside a raw slug.
+ */
+
+import React from 'react';
+import type { StatsOverviewModelUsage, StatsOverviewResponse } from '../api/taskStatsApi';
+import { formatModelName } from '../utils/modelDisplay';
 import { ProviderLogo } from './ui/ProviderLogo';
+import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
+import { formatCompactNumber, formatUsd } from './Analytics/analyticsFormat';
 
 // Model icon component using ProviderLogo for visual grouping
 const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
@@ -28,158 +41,104 @@ const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
   };
 
   return (
-    <div className={`w-6 h-6 rounded flex items-center justify-center ${iconColors[family]}`}>
-      <ProviderLogo provider={modelId} className="w-4 h-4" />
+    <div className={`flex h-5 w-5 flex-none items-center justify-center rounded-sm ${iconColors[family]}`}>
+      <ProviderLogo provider={modelId} className="h-3.5 w-3.5" />
     </div>
   );
 };
 
 interface TopModelsProps {
+  overview: StatsOverviewResponse | null;
+  loading: boolean;
+  error?: string | null;
   limit?: number;
-  metricsOverride?: StatsOverviewResponse;
-  /** Scope to a window; without one the endpoint keeps its historical scope. */
-  timeframe?: AnalyticsTimeframe;
 }
 
-const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride, timeframe }) => {
-  const [metrics, setMetrics] = useState<StatsOverviewResponse | null>(metricsOverride ?? null);
-  const [loading, setLoading] = useState(!metricsOverride);
-  const [error, setError] = useState<string | null>(null);
+/** A row whose token or cost figure the server did not report. */
+type ModelRow = Omit<StatsOverviewModelUsage, 'tokens' | 'cost_usd'> & { tokens: number | null; cost_usd: number | null };
 
-  useEffect(() => {
-    if (metricsOverride) {
-      setMetrics(metricsOverride);
-      setLoading(false);
-      setError(null);
-      return;
-    }
+/**
+ * The per-model breakdown, or the task counts alone from a server that
+ * predates it, with tokens and cost left unknown rather than shown as zero.
+ */
+const modelRows = (overview: StatsOverviewResponse): ModelRow[] =>
+  overview.model_usage
+    ?? Object.entries(overview.usage.models)
+      .map(([model, tasks]) => ({ model, tasks, tokens: null, cost_usd: null }))
+      .sort((a, b) => b.tasks - a.tasks);
 
-    // A new timeframe drops the previous one's rows, and a response that lands
-    // after the timeframe changed is ignored.
-    let active = true;
-    setMetrics(null);
-    const fetchMetrics = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const data = await getStatsOverview(timeframe);
-        if (active) setMetrics(data);
-      } catch (err) {
-        if (active) setError(err instanceof Error ? err.message : 'Failed to load model stats');
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
+const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
+const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
+const UNKNOWN = '—';
 
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 5 * 60 * 1000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, [metricsOverride, timeframe]);
+const TableHead: React.FC = () => (
+  <thead>
+    <tr className="border-b border-slate-200">
+      <th className={`${HEAD} text-left`}>Model</th>
+      <th className={`${HEAD} w-16 text-right`}>Tasks</th>
+      <th className={`${HEAD} w-20 text-right`}>Tokens</th>
+      <th className={`${HEAD} w-20 text-right`}>Cost</th>
+    </tr>
+  </thead>
+);
 
+const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }) => {
   if (loading) {
     return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-        <div className="overflow-hidden animate-pulse">
-          <table className="w-full table-fixed">
-            <thead>
-              <tr className="border-b border-slate-200">
-                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Model</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Tasks</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Usage</th>
+      <SkeletonRegion label="Loading models…">
+        <table className="w-full table-fixed" aria-hidden="true">
+          <TableHead />
+          <tbody>
+            {[...Array(3)].map((_, i) => (
+              <tr key={i} className="border-b border-slate-100 last:border-b-0">
+                <td className={CELL}><SkeletonBlock className="h-5 w-32" /></td>
+                <td className={CELL}><SkeletonBlock className="ml-auto h-4 w-6" /></td>
+                <td className={CELL}><SkeletonBlock className="ml-auto h-4 w-10" /></td>
+                <td className={CELL}><SkeletonBlock className="ml-auto h-4 w-12" /></td>
               </tr>
-            </thead>
-            <tbody>
-              {[...Array(5)].map((_, i) => (
-                <tr key={i} className="border-b border-slate-100">
-                  <td className="py-2 px-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded bg-gray-200 flex-shrink-0" />
-                      <div className="h-4 flex-1 bg-gray-200 rounded" />
-                    </div>
-                  </td>
-                  <td className="py-2 px-2 text-right">
-                    <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
-                  </td>
-                  <td className="py-2 px-2">
-                    <div className="h-3 w-8 bg-gray-200 rounded ml-auto" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            ))}
+          </tbody>
+        </table>
+      </SkeletonRegion>
     );
   }
 
   if (error) {
-    return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-        <SystemAlert>{error}</SystemAlert>
-      </div>
-    );
+    return <div className="p-3 sm:px-4"><SystemAlert>{error}</SystemAlert></div>;
   }
 
-  if (!metrics || Object.keys(metrics.usage.models).length === 0) {
-    return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-        <div className="text-slate-500 text-center py-4">No model usage yet — data appears after your first task runs.</div>
-      </div>
-    );
+  const rows = overview ? modelRows(overview) : [];
+  if (rows.length === 0) {
+    return <p className="px-3 py-4 text-sm text-slate-500 sm:px-4">No model usage in this period.</p>;
   }
 
-  // Sort models by usage (highest first) and apply limit
-  const modelEntries = Object.entries(metrics.usage.models);
-  const sortedModelEntries = [...modelEntries].sort((a, b) => b[1] - a[1]);
-  const displayModels = limit ? sortedModelEntries.slice(0, limit) : sortedModelEntries;
-  const totalModelCount = modelEntries.reduce((sum, [, count]) => sum + count, 0);
+  const displayModels = limit ? rows.slice(0, limit) : rows;
 
   return (
-    <div>
-      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-      <div className="overflow-hidden">
-        <table className="w-full table-fixed">
-          <thead>
-            <tr className="border-b border-slate-200">
-              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Model</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Tasks</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Usage</th>
-            </tr>
-          </thead>
-          <tbody>
-            {displayModels.map(([modelId, count]) => {
-              const percentage = totalModelCount > 0 ? (count / totalModelCount) * 100 : 0;
-              return (
-                <tr key={modelId} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors">
-                  <td className="py-2 px-2 min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <ModelIcon modelId={modelId} />
-                      <span className="text-slate-800 font-medium text-sm truncate" title={modelId}>
-                        {getModelDisplayName(modelId)}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="py-2 px-2 text-right">
-                    <span className="text-slate-600 text-sm">{count.toLocaleString()}</span>
-                  </td>
-                  <td className="py-2 px-2 text-right">
-                    <span className="text-xs font-medium text-slate-600">
-                      {percentage.toFixed(0)}%
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <table className="w-full table-fixed" data-testid="model-breakdown-table">
+      <TableHead />
+      <tbody>
+        {displayModels.map(row => (
+          <tr key={row.model} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
+            <td className={`${CELL} min-w-0`}>
+              <div className="flex min-w-0 items-center gap-2">
+                <ModelIcon modelId={row.model} />
+                <span className="truncate font-medium text-slate-800" title={row.model}>
+                  {formatModelName(row.model)}
+                </span>
+              </div>
+            </td>
+            <td className={`${CELL} text-right text-slate-800`}>{row.tasks.toLocaleString()}</td>
+            <td className={`${CELL} text-right text-slate-600`}>
+              {row.tokens === null ? UNKNOWN : formatCompactNumber(row.tokens)}
+            </td>
+            <td className={`${CELL} text-right text-slate-600`}>
+              {row.cost_usd === null ? UNKNOWN : formatUsd(row.cost_usd)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 };
 

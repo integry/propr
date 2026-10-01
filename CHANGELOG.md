@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the URL as `?period=`. `GET /api/stats/tasks`, `/api/stats/repositories`
   and `/api/stats/overview` accept the same optional `period` parameter and
   behave as before without it.
+- **Analytics layout**: the page is one console instead of four cards: a
+  totals band (tasks, success rate, tokens, spend) over a split pane with
+  daily activity bars and repository performance on the left, and the
+  per-model table (tasks, tokens, cost) and task status on the right. The
+  toolbar shows the repository scope as a locked `All Repos`.
+  `GET /api/stats/overview` adds `model_usage`, a per-model list of tasks,
+  tokens and cost.
 
 ## [0.9.0] - 2026-09-29
 

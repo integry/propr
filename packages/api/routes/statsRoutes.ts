@@ -4,6 +4,7 @@ import { timeApiStage } from '../apiPerformanceTiming.js';
 import { validateEnum, validateRepositoryFilter } from './validation.js';
 import { loadCompletionStats, loadRecordedSpend, successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
 import { analyticsDayKeys, readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { loadModelUsage } from './analyticsModelUsage.js';
 
 /** Periods the dashboard's historical stats section can request. */
 export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
@@ -335,6 +336,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // 2-3. Token, cost and model usage
       const usage = await loadOverviewUsage(analyticsWindow);
+      const modelUsage = await loadModelUsage(db, analyticsWindow);
 
       // 4. PR Iterations Average - count tasks per unique issue
       const allIssueIterationsQuery = db('tasks')
@@ -391,6 +393,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           total_followups: totalFollowups
         },
         usage,
+        model_usage: modelUsage,
         system: {
           repos_indexed: Number(repoStats?.count || 0)
         }

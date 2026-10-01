@@ -44,7 +44,11 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
     }
     return route.fulfill({ json: {
       tasks: { completed: 8 * scale, planned: 0, pr_iterations_avg: 1.4, merged_prs: 7 * scale, total_followups: scale },
-      usage: { total_tokens: 120_000 * scale, total_cost_usd: 4.2 * scale, models: { 'claude-opus-5-5': 5 * scale, 'gpt-5.6': 3 * scale } },
+      usage: { total_tokens: 420_000 * scale, total_cost_usd: 1.242 * scale, models: { 'claude-opus-5-5': 5 * scale, 'gpt-5.6': 3 * scale } },
+      model_usage: [
+        { model: 'claude-opus-5-5', tasks: 5 * scale, tokens: 310_000 * scale, cost_usd: 0.94 * scale },
+        { model: 'gpt-5.6', tasks: 3 * scale, tokens: 110_000 * scale, cost_usd: 0.302 * scale },
+      ],
       system: { repos_indexed: 3 },
     } });
   });
@@ -73,7 +77,7 @@ test('phones get a native select with the full labels and no horizontal overflow
   await expect(select).toBeVisible();
   await expect(select).toHaveValue('30d');
   await expect(page.getByRole('group', { name: 'Analytics timeframe' })).toBeHidden();
-  await expect(page.getByText('Top Repositories')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Repository performance/ })).toBeVisible();
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 
   await select.selectOption('7d');
@@ -92,7 +96,7 @@ test('wider screens get the segmented control, and a choice reaches every sectio
   await expect(page.getByRole('combobox', { name: 'Analytics timeframe' })).toBeHidden();
   await expect(group.getByRole('button')).toHaveText(['24h', '7d', '30d', '90d', '1y', 'All']);
   await expect(group.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('Top Repositories')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Repository performance/ })).toBeVisible();
 
   requests.length = 0;
   await group.getByRole('button', { name: 'Last 7 days' }).click();
@@ -118,4 +122,39 @@ test('the URL restores a timeframe and an unknown one falls back to the default'
   await page.goto('/analytics?period=bogus');
   await expect(page.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('Aggregate activity across every repository · Last 30 days')).toBeVisible();
+});
+
+test('the console keeps the toolbar steady: search does not move and the scope shows locked', async ({ page }) => {
+  await openAnalytics(page, 1280);
+  const scope = page.getByTestId('analytics-repository-scope');
+  await expect(scope).toBeVisible();
+  await expect(scope).toHaveText('All Repos');
+  await expect(page.getByTestId('metric-total-tasks')).toHaveText('93');
+  await expect(page.getByTestId('metric-success-rate')).toHaveText('88.9%');
+  await expect(page.getByTestId('metric-tokens')).toHaveText('4.2M');
+  await expect(page.getByTestId('metric-spend')).toHaveText('$12.42');
+  await expect(page.getByTestId('model-breakdown-table').getByRole('row')).toHaveText([
+    /Model/, /Claude Opus 5\.5/, /GPT-5\.6/,
+  ]);
+  const analyticsSearch = await page.getByTestId('header-search').boundingBox();
+  const analyticsScope = await page.getByTestId('header-scope-slot').boundingBox();
+
+  await page.goto('/');
+  await expect(page.getByTestId('header-scope-slot').getByRole('button', { name: /All Repos/ })).toBeVisible();
+  const dashboardSearch = await page.getByTestId('header-search').boundingBox();
+  const dashboardScope = await page.getByTestId('header-scope-slot').boundingBox();
+  expect(analyticsSearch).toEqual(dashboardSearch);
+  expect(analyticsScope?.x).toBe(dashboardScope?.x);
+  expect(analyticsScope?.width).toBe(dashboardScope?.width);
+});
+
+test('the 1080p console fills the canvas without cards', async ({ page }) => {
+  await fixture(page, { width: 1920, height: 1080 });
+  await stubAnalytics(page);
+  await page.goto('/analytics?period=7d');
+  await expect(page.getByText('design-system')).toBeVisible();
+  // White canvas, hairline rules, and nothing rounded and shadowed floating on it.
+  expect(await page.locator('main .shadow-sm, main .shadow, main .rounded-xl').count()).toBe(0);
+  await expect(page.getByTestId('analytics-primary-pane')).toHaveCSS('border-right-width', '1px');
+  await captureSettled(page, 'analytics-console-1080p');
 });

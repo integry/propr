@@ -87,9 +87,19 @@ export interface StatsOverviewSystem {
   repos_indexed: number;
 }
 
+/** One model's share of the period: distinct tasks, tokens and recorded cost. */
+export interface StatsOverviewModelUsage {
+  model: string;
+  tasks: number;
+  tokens: number;
+  cost_usd: number;
+}
+
 export interface StatsOverviewResponse {
   tasks: StatsOverviewTasks;
   usage: StatsOverviewUsage;
+  /** Absent from servers that predate the per-model breakdown. */
+  model_usage?: StatsOverviewModelUsage[];
   system: StatsOverviewSystem;
 }
 
