@@ -18,12 +18,20 @@ import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
 import type { Task, TaskGroup } from './types';
 
+/** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
+
 export interface TaskRunView {
   task: Task;
-  /** Workflow type for the badge (`Fix`, `Review`, `Implement`), or null. */
+  /**
+   * What the run did (`Fix`, `Review`, `Test`), or null when nothing says so.
+   * Never `Follow-up`: every earlier run is a follow-up, so the label told nothing.
+   */
   type: string | null;
   /** What this run changed. Never a repeat of the row title, never `Update`. */
   delta: string;
+  /** False when the run recorded no summary and `delta` is only a placeholder. */
+  summarized: boolean;
   previewCount: number;
 }
 
@@ -51,6 +59,27 @@ const GENERIC_TITLE = /^(?:updates?|follow-?up|changes?|task|untitled(?: task| p
 
 /** Backend placeholders written before a run has produced anything. */
 const PLACEHOLDER_SUBTITLE = /^Preparing a PR\b/i;
+
+/**
+ * Workflow labels that say a run happened, not what it did. A follow-up is
+ * named after its summary instead: `Fix the seed test` is a fix.
+ */
+const GENERIC_TYPES = new Set(['follow-up', 'continue', 'pr comment']);
+
+/** Leading verbs of a run summary, and the action each one names. */
+const SUMMARY_ACTIONS: ReadonlyArray<[RegExp, string]> = [
+  [/^(?:re-?run|run|test|verify)\b/i, 'Test'],
+  [/^(?:fix|fixes|fixed|resolve|resolves|address|addresses|repair|correct|patch|handle)\b/i, 'Fix'],
+  [/^(?:review|reviewed|audit)\b/i, 'Review'],
+  [/^(?:rebase|merge|merged)\b/i, 'Merge'],
+];
+
+/** The action a run took: its workflow type when that is specific, else what its summary leads with. */
+function runAction(type: string | null, summary: string | null): string | null {
+  if (type && !GENERIC_TYPES.has(type.toLowerCase())) return type;
+  if (!summary) return null;
+  return SUMMARY_ACTIONS.find(([pattern]) => pattern.test(summary))?.[1] ?? null;
+}
 
 const isMeaningful = (text: string | null | undefined): text is string =>
   Boolean(text) && !GENERIC_TITLE.test(text!.trim());
@@ -93,13 +122,14 @@ function entityTitle(tasks: Task[]): string {
   return 'Untitled task';
 }
 
-/** What a run changed, or its type when it recorded nothing more specific. */
-function runDelta(task: Task, rowTitle: string): { type: string | null; delta: string | null } {
-  const { type, title } = sanitizeTaskTitle(task.title);
+/** What a run changed and the action that names it, or null when it recorded nothing more specific. */
+function runDelta(task: Task, rowTitle: string): { type: string | null; workflow: string | null; delta: string | null } {
+  const { type: workflow, title } = sanitizeTaskTitle(task.title);
   const subtitle = cleanSubtitle(task.subtitle);
-  if (subtitle && subtitle !== rowTitle) return { type, delta: subtitle };
-  if (isMeaningful(title) && title !== rowTitle) return { type, delta: title };
-  return { type, delta: null };
+  const delta = subtitle && subtitle !== rowTitle ? subtitle
+    : isMeaningful(title) && title !== rowTitle ? title
+      : null;
+  return { type: runAction(workflow, delta), workflow, delta };
 }
 
 export function buildTaskRow(group: TaskGroup): TaskRowView {
@@ -115,8 +145,14 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     detail: newest.delta,
     previewCount: previewCount(task),
     earlierRuns: earlier.map(run => {
-      const { type, delta } = runDelta(run, title);
-      return { task: run, type, delta: delta ?? `${type ?? 'Task'} run`, previewCount: previewCount(run) };
+      const { type, workflow, delta } = runDelta(run, title);
+      return {
+        task: run,
+        type,
+        delta: delta ?? (type ? 'No summary recorded' : `${workflow ?? 'Task'} run`),
+        summarized: delta !== null,
+        previewCount: previewCount(run),
+      };
     }),
   };
 }

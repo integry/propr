@@ -39,11 +39,25 @@ describe('buildTaskRow', () => {
     expect(row.title).toBe('Stop work when intent is withdrawn');
     expect(row.type).toBe('Ultrafix');
     expect(row.detail).toBe('Ultrafix cycle 3 (linting)');
-    expect(row.earlierRuns.map(run => [run.type, run.delta])).toEqual([
-      ['Follow-up', 'Follow-up run'],
-      ['Fix', 'Restrict withdrawal labels'],
-      ['Review', 'Review run'],
+    expect(row.earlierRuns.map(run => [run.type, run.delta, run.summarized])).toEqual([
+      [null, 'Follow-up run', false],
+      ['Fix', 'Restrict withdrawal labels', true],
+      ['Review', 'No summary recorded', false],
     ]);
+  });
+
+  it('names a follow-up run by what it did instead of repeating Follow-up', () => {
+    const title = 'Follow-up PR #2661: [2658 by GPT-6 Astra] Read-only token';
+    const row = buildTaskRow(group([
+      { title: 'Review PR #2661: Read-only token', subtitle: 'No blocking findings' },
+      { title, subtitle: 'Fix seedCommit test failure' },
+      { title, subtitle: 'Resolve AntigravityAgent git access conflicts' },
+      { title, subtitle: 'Re-run the integration tests' },
+      { title, subtitle: 'Review the token scope' },
+      { title, subtitle: 'Update repoBranching.ts for read-only tokens' },
+    ]));
+    expect(row.earlierRuns.map(run => run.type)).toEqual(['Fix', 'Fix', 'Test', 'Review', null]);
+    expect(row.earlierRuns.map(run => run.type)).not.toContain('Follow-up');
   });
 
   it('never names a row with a meaningless title', () => {
@@ -53,7 +67,7 @@ describe('buildTaskRow', () => {
     ]));
     expect(row.title).toBe('Add retries');
     expect(row.detail).toBe('Tighten the null check');
-    expect(row.earlierRuns[0].delta).toBe('Implement run');
+    expect(row.earlierRuns[0]).toMatchObject({ type: 'Implement', delta: 'No summary recorded', summarized: false });
   });
 
   it('counts only trusted previews', () => {

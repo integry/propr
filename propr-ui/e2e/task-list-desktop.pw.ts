@@ -103,9 +103,11 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await page.goto('/tasks');
       const table = page.getByRole('table', { name: 'Tasks' });
       await expect(table).toBeVisible();
-      await expect(table.getByRole('columnheader', { name: 'Task / PR' })).toBeVisible();
-      await expect(table.getByRole('columnheader', { name: 'Status' })).toBeVisible();
-      await expect(table.getByRole('columnheader', { name: 'Score' })).toBeVisible();
+      // The column schema is the same at every width and in every row state.
+      const headers = table.getByRole('columnheader');
+      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
+      await expect(headers).toHaveText(columns);
+      for (const header of await headers.all()) await expect(header).toBeVisible();
 
       // One row per pull request, sanitized titles, no thumbnails and no nested threads.
       const rows = table.getByTestId('task-row');
@@ -124,20 +126,44 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       }));
       expect(layout.fits).toBe(true);
       expect(layout.pageFits).toBe(true);
-      for (const height of layout.heights) expect(height).toBeLessThanOrEqual(64);
+      for (const height of layout.heights) expect(height).toBeLessThanOrEqual(84);
       expect(await table.getByRole('button', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
+      // Titles wrap rather than being cut mid-word, and on a wide screen they fit on one line.
+      const longTitle = table.getByRole('button', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
+      const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
+      if (width >= 1280) expect(clamp.clipped).toBe(false);
+      if (width === 1920) expect(clamp.lines).toBe(1);
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
-      // The rollup opens in place and never navigates.
+      // The rollup opens in place, never navigates, and a mouse click leaves no focus frame behind.
       const rollup = table.getByRole('button', { name: /6 earlier runs/ });
-      await rollup.focus();
-      await page.keyboard.press('Enter');
+      await rollup.click();
       await expect(rollup).toHaveAttribute('aria-expanded', 'true');
+      await expect(rollup).toHaveCSS('outline-style', 'none');
+      await expect(rollup).toHaveCSS('box-shadow', 'none');
+      await expect(rollup).toHaveCSS('text-decoration-line', 'none');
+      await expect(headers).toHaveText(columns);
       const runs = table.getByRole('list', { name: 'Earlier runs' });
       await expect(runs.getByRole('listitem')).toHaveCount(6);
       await expect(runs).toContainText('Resolve AntigravityAgent git access conflicts');
       expect(new URL(page.url()).pathname).toBe('/tasks');
+      // Runs are one row-wide timeline cell, each labelled by what it did rather than "Follow-up".
+      await expect(runs.locator('xpath=ancestor::*[@role="cell"][1]')).toHaveAttribute('aria-colspan', '7');
+      await expect(runs.getByTestId('work-type-badge').first()).toHaveText('Fix');
+      await expect(runs.getByTestId('work-type-badge').filter({ hasText: /follow-up/i })).toHaveCount(0);
+      const scoreEdges = await table.evaluate(element => {
+        const header = [...element.querySelectorAll('[role="columnheader"]')].at(-1)!.getBoundingClientRect().right;
+        return [...element.querySelectorAll('.task-run > :last-child')].map(cell => Math.abs(cell.getBoundingClientRect().right - header));
+      });
+      for (const offset of scoreEdges) expect(offset).toBeLessThanOrEqual(1);
       if (platform === undefined && width === 1920) await capture(page, 'tasks-ledger-rollup-expanded');
+      if (platform === undefined && width === 1280) await capture(page, 'tasks-ledger-rollup-expanded-1280');
+
+      // Keyboard focus is still visible on the toggle.
+      await rollup.focus();
+      await page.keyboard.press('Enter');
+      await expect(rollup).toHaveAttribute('aria-expanded', 'false');
+      await expect(rollup).toHaveCSS('text-decoration-line', 'underline');
 
       const title = table.getByRole('button', { name: 'Stop work when an issue or PR withdraws intent' });
       await title.focus();

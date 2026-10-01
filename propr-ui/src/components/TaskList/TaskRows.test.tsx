@@ -41,6 +41,16 @@ describe('task ledger rows', () => {
       .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score']);
   });
 
+  it('keeps all seven columns when earlier runs are expanded, and spans runs across the row', () => {
+    render(<Fixture />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
+    const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
+    expect(runsCell).toHaveAttribute('aria-colspan', '7');
+    expect(runsCell.parentElement!.children).toHaveLength(1);
+  });
+
   it('renders one flat row per group with a sanitized title and a single PR chip', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });

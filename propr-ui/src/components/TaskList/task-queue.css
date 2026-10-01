@@ -1,7 +1,11 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   Columns respond to the list's own width, not the window, so the desktop app's
-   narrower panes drop secondary measures instead of wrapping rows.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE */
+   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
+
+   The schema is locked: every width that shows the table shows all seven
+   columns, so nothing is added or dropped as the window or a pane resizes.
+   The measures are fixed and compact so the title column takes the rest of
+   the row; narrow lists (the desktop app's panes) tighten the measures that
+   truncate cleanly instead of removing columns. */
 .task-queue {
   container-type: inline-size;
   width: 100%;
@@ -10,40 +14,37 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 10rem) 7.5rem minmax(0, 9rem) 5.5rem 6rem 4.5rem;
+  grid-template-columns: minmax(0, 1fr) 7rem 6.75rem 6.5rem 4.25rem 4.5rem 3rem;
   column-gap: .75rem;
   align-items: center;
 }
 
-/* Earlier runs line up under the title column, with their own compact measures. */
-.task-run { grid-template-columns: 4.5rem 6rem minmax(0, 1fr) 7.5rem 5rem 4.5rem; }
+@container (max-width: 1000px) {
+  .task-queue-grid {
+    grid-template-columns: minmax(0, 1fr) 5.5rem 6.75rem 5rem 4.25rem 4.5rem 3rem;
+    column-gap: .5rem;
+  }
+}
+
+/* Earlier runs are one full-width cell, not seven: a compact timeline of
+   when · what it did · summary, with the score kept under the SCORE column. */
+.task-run { grid-template-columns: 5rem minmax(0, 1fr) 3rem; column-gap: .75rem; }
 
 .task-title { border-radius: .125rem; line-height: 1.25rem; }
 .task-title:hover { color: #0f766e; text-decoration: underline; }
+.task-title:focus { outline: none; }
 .task-title:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
-.task-queue [role="row"]:focus-within { background: #f0fdfa; }
 
-@container (max-width: 1280px) {
-  .task-queue-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 9rem) 7.5rem minmax(0, 8rem) 5.5rem 4.5rem; }
-  .task-col-updated { display: none; }
+/* A mouse click leaves no box behind; keyboard focus is shown as an underline,
+   which marks the control without drawing a frame inside a muted table. */
+.task-rollup-toggle:focus { outline: none; }
+.task-rollup-toggle:focus-visible {
+  color: #0f172a;
+  text-decoration: underline;
+  text-decoration-color: #0d9488;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
-@container (max-width: 1100px) {
-  .task-queue-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 8rem) 7.5rem 5.5rem 4.5rem; }
-  .task-col-agent { display: none; }
-  .task-run { grid-template-columns: 4.5rem 6rem minmax(0, 1fr) 7.5rem 4.5rem; }
-  .task-run-duration { display: none; }
-}
-
-/* The repository filter in the header still scopes the list; the title needs the room more. */
-@container (max-width: 900px) {
-  .task-queue-grid { grid-template-columns: minmax(0, 1fr) 7.5rem 5.5rem 4.5rem; }
-  .task-col-repo { display: none; }
-}
-
-@container (max-width: 640px) {
-  .task-queue-grid { grid-template-columns: minmax(0, 1fr) 7.5rem 4.5rem; }
-  .task-col-duration { display: none; }
-  .task-run { grid-template-columns: 4.5rem minmax(0, 1fr) 4.5rem; }
-  .task-run > :nth-child(2), .task-run-status { display: none; }
-}
+/* Only keyboard focus tints the row, so a clicked row does not stay lit. */
+.task-queue [role="row"]:has(:focus-visible) { background: #f0fdfa; }

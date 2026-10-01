@@ -3,7 +3,7 @@ import { LoaderCircle } from 'lucide-react';
 import type { TaskGroup } from './types';
 import { TaskQueueRow } from './TaskRows';
 import { MobileTaskCard } from './MobileTaskCard';
-import { buildTaskRow } from './rowModel';
+import { buildTaskRow, TASK_QUEUE_COLUMNS } from './rowModel';
 import { SystemAlert } from '../ui/SystemAlert';
 import './task-queue.css';
 
@@ -79,13 +79,9 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
       <div role="table" aria-label="Tasks" className="task-queue hidden md:block">
         <div role="rowgroup" className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
           <div role="row" className="task-queue-grid px-4 py-2 sm:px-6">
-            <span role="columnheader" className={columnHeader}>Task / PR</span>
-            <span role="columnheader" className={`task-col-repo ${columnHeader}`}>Repo</span>
-            <span role="columnheader" className={`task-col-status ${columnHeader}`}>Status</span>
-            <span role="columnheader" className={`task-col-agent ${columnHeader}`}>Agent</span>
-            <span role="columnheader" className={`task-col-duration text-right ${columnHeader}`}>Duration</span>
-            <span role="columnheader" className={`task-col-updated text-right ${columnHeader}`}>Updated</span>
-            <span role="columnheader" className={`task-col-score text-right ${columnHeader}`}>Score</span>
+            {TASK_QUEUE_COLUMNS.map((column, index) => (
+              <span key={column} role="columnheader" className={`${index > 3 ? 'text-right ' : ''}${columnHeader}`}>{column}</span>
+            ))}
           </div>
         </div>
         <div role="rowgroup">

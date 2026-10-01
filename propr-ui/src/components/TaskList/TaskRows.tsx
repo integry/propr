@@ -8,7 +8,7 @@ import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
-import { pluralize, type TaskRowView, type TaskRunView } from './rowModel';
+import { pluralize, TASK_QUEUE_COLUMNS, type TaskRowView, type TaskRunView } from './rowModel';
 
 // Prefer catalog labels (including version punctuation), with a readable fallback
 // for custom models. The logo already identifies the provider.
@@ -80,10 +80,11 @@ export const TaskScore: React.FC<{ task: Task }> = ({ task }) => (
     : <ScoreBadge score={task.critiqueScore} bracketed dimmed={shouldDimTask(task)} />
 );
 
+/** Long titles wrap to a second line instead of being cut off mid-word. */
 const TaskTitleButton: React.FC<{ title: string; taskId: string; onRowClick: (id: string) => void }> = ({ title, taskId, onRowClick }) => (
   <button
     type="button"
-    className="task-title min-w-0 truncate text-left text-sm font-medium text-slate-900"
+    className="task-title block min-w-0 flex-1 text-left text-sm font-medium text-slate-900"
     title={title}
     onClick={event => {
       event.stopPropagation();
@@ -91,11 +92,18 @@ const TaskTitleButton: React.FC<{ title: string; taskId: string; onRowClick: (id
       onRowClick(taskId);
     }}
   >
-    {title}
+    <span className="line-clamp-2 break-words">{title}</span>
   </button>
 );
 
-/** `↳ 6 earlier runs · what the newest run did`, held to one line. */
+/** Run statuses worth calling out in the timeline; a finished run says nothing new. */
+const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
+
+/**
+ * The line under a title, held to one line: `↳ 6 earlier runs · REVIEW what the
+ * newest run did · 2 previews`. The type belongs to the newest run, not the PR,
+ * so it travels with that run's summary rather than taking room from the title.
+ */
 export const RollupLine: React.FC<{
   row: TaskRowView;
   expanded: boolean;
@@ -103,58 +111,66 @@ export const RollupLine: React.FC<{
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
 }> = ({ row, expanded, runsId, onToggle }) => {
   const count = row.earlierRuns.length;
-  if (!count && !row.detail) return null;
+  const hasSummary = Boolean(row.type || row.detail);
+  if (!count && !hasSummary && !row.previewCount) return null;
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
-      {count > 0 ? (
+      {count > 0 && (
         <button
           type="button"
           aria-expanded={expanded}
           aria-controls={runsId}
           onClick={event => onToggle(row.key, event)}
-          className="flex-none rounded-sm hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="task-rollup-toggle flex-none whitespace-nowrap rounded-sm hover:text-slate-900"
         >
           <span aria-hidden="true">{expanded ? '▾' : '↳'} </span>
           {expanded ? 'Hide ' : ''}{count} earlier {count === 1 ? 'run' : 'runs'}
         </button>
-      ) : row.detail ? <span aria-hidden="true" className="flex-none">↳</span> : null}
-      {row.detail && (
-        <span className="min-w-0 truncate" title={row.detail}>
-          {count > 0 && <span aria-hidden="true">· </span>}{row.detail}
-        </span>
       )}
+      {count > 0 && hasSummary && <span aria-hidden="true" className="flex-none">·</span>}
+      {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
+      {row.detail && <span className="min-w-0 truncate" title={row.detail}>{row.detail}</span>}
+      <PreviewCountBadge count={row.previewCount} />
     </div>
   );
 };
 
-/** The rolled-up runs of one row, each a single line that opens that run. */
+/**
+ * The rolled-up runs of one row as a compact timeline spanning the whole row:
+ * `when · what it did · summary · score`. Runs share the parent's repository and
+ * agent, so they do not borrow its cells and leave them empty.
+ */
 export const EarlierRunsList: React.FC<{
   id: string;
   runs: TaskRunView[];
   onRowClick: (taskId: string) => void;
 }> = ({ id, runs, onRowClick }) => (
   <ul id={id} aria-label="Earlier runs" className="task-earlier-runs space-y-0.5 border-l-2 border-slate-200 pl-3">
-    {runs.map(run => (
-      <li key={run.task.id}>
-        <button
-          type="button"
-          onClick={() => onRowClick(run.task.id)}
-          className="task-run grid w-full min-w-0 items-center gap-x-3 rounded-sm px-1 py-0.5 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-        >
-          <time dateTime={run.task.createdAt} title={new Date(run.task.createdAt).toLocaleString()} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">
-            {formatRelativeTime(run.task.createdAt)}
-          </time>
-          <span className="min-w-0">{run.type ? <WorkTypeBadge type={run.type} compact /> : null}</span>
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-slate-700" title={run.delta}>{run.delta}</span>
-            <PreviewCountBadge count={run.previewCount} />
-          </span>
-          <span className="task-run-status">{getStatusPill(getDisplayStatus(run.task))}</span>
-          <span className="task-run-duration whitespace-nowrap text-right font-mono text-[11px] tabular-nums text-slate-500">{taskDuration(run.task)}</span>
-          <span className="flex justify-end"><TaskScore task={run.task} /></span>
-        </button>
-      </li>
-    ))}
+    {runs.map(run => {
+      const status = getDisplayStatus(run.task);
+      const created = new Date(run.task.createdAt).toLocaleString();
+      return (
+        <li key={run.task.id}>
+          <button
+            type="button"
+            onClick={() => onRowClick(run.task.id)}
+            className="task-run grid w-full min-w-0 items-center rounded-sm py-0.5 pl-1 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
+          >
+            <time dateTime={run.task.createdAt} title={`${created} · took ${taskDuration(run.task)}`} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">
+              {formatRelativeTime(run.task.createdAt)}
+            </time>
+            <span className="flex min-w-0 items-center gap-2">
+              {/* The slot stays when a run names no action, so every summary starts at the same edge. */}
+              <span className="w-20 flex-none">{run.type && <WorkTypeBadge type={run.type} compact />}</span>
+              <span className={`min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'italic text-slate-400'}`} title={run.delta}>{run.delta}</span>
+              {!QUIET_RUN_STATUSES.has(status) && <span className="flex-none">{getStatusPill(status)}</span>}
+              <PreviewCountBadge count={run.previewCount} />
+            </span>
+            <span className="flex justify-end"><TaskScore task={run.task} /></span>
+          </button>
+        </li>
+      );
+    })}
   </ul>
 );
 
@@ -178,28 +194,26 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         onClick={event => openRow(event, task.id, onRowClick)}
       >
         <div role="cell" className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <TaskPrimaryChip task={task} prNumber={prNumber} />
-            {row.type && <WorkTypeBadge type={row.type} compact />}
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
             <TaskTitleButton title={row.title} taskId={task.id} onRowClick={onRowClick} />
-            <PreviewCountBadge count={row.previewCount} />
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} />
         </div>
-        <div role="cell" className="task-col-repo min-w-0">
+        <div role="cell" className="min-w-0">
           <RepositoryChip repository={row.repository} />
         </div>
-        <div role="cell" className="task-col-status min-w-0">{getStatusPill(getDisplayStatus(task))}</div>
-        <div role="cell" className="task-col-agent min-w-0"><TaskAgent task={task} /></div>
-        <div role="cell" className="task-col-duration whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>
-        <div role="cell" className="task-col-updated whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
+        <div role="cell" className="min-w-0">{getStatusPill(getDisplayStatus(task))}</div>
+        <div role="cell" className="min-w-0"><TaskAgent task={task} /></div>
+        <div role="cell" className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>
+        <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
           <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
         </div>
-        <div role="cell" className="task-col-score flex justify-end"><TaskScore task={task} /></div>
+        <div role="cell" className="flex justify-end"><TaskScore task={task} /></div>
       </div>
       {expanded && row.earlierRuns.length > 0 && (
-        <div role="row" className="task-runs-row px-4 pb-2 sm:px-6">
-          <div role="cell" className="task-runs-cell">
+        <div role="row" className="px-4 pb-2 sm:px-6">
+          <div role="cell" aria-colspan={TASK_QUEUE_COLUMNS.length}>
             <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} />
           </div>
         </div>
