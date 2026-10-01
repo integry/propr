@@ -136,4 +136,25 @@ describe('provider API pricing', () => {
       cacheRead: 1 / 1_000_000,
     });
   });
+
+  test('uses the published GPT-6 Sol-family API and cache rates', () => {
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6.1-sol'), {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheCreation: 2.5 / 1_000_000,
+      cacheRead: 0.1 / 1_000_000,
+    });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-sol'), {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheCreation: 2.5 / 1_000_000,
+      cacheRead: 0.2 / 1_000_000,
+    });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-luna'), {
+      prompt: 0.1 / 1_000_000,
+      completion: 0.5 / 1_000_000,
+      cacheCreation: 0.125 / 1_000_000,
+      cacheRead: 0.01 / 1_000_000,
+    });
+  });
 });

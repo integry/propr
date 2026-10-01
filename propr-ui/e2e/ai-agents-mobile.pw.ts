@@ -24,6 +24,9 @@ const agents = [{
   defaultModel: 'gpt-6-astra',
   supportedModels: [
     'gpt-6-astra',
+    'gpt-6.1-sol',
+    'gpt-6-sol',
+    'gpt-6-luna',
     'gpt-6-astra-high',
     'gpt-6-astra-xhigh',
     'gpt-5.6-sol',
@@ -109,10 +112,24 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   await expectNoPageOverflow(page);
 
   await page.getByRole('button', { name: 'Configuration' }).click();
+  const mobileConfiguration = page.getByTestId('ai-agents-mobile-configuration-scroll');
   await expect(page.getByText('Production Codex Agent').first()).toBeVisible();
   await expect(page.getByText('/home/node/.config/propr/agents/production-codex-account').first()).toBeVisible();
+  const latestModel = mobileConfiguration.getByText('gpt-6.1-sol', { exact: true });
+  await latestModel.scrollIntoViewIfNeeded();
+  await expect(latestModel).toBeVisible();
+  await expect(mobileConfiguration.getByText('gpt-6-sol', { exact: true })).toBeVisible();
+  await expect(mobileConfiguration.getByText('gpt-6-luna', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Show 2 legacy models' })).toBeVisible();
   await expectNoPageOverflow(page);
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  const agentCard = mobileConfiguration.getByText('Production Codex Agent')
+    .locator('xpath=ancestor::div[contains(@class, "border-b")][1]');
+  await agentCard.screenshot({
+    animations: 'disabled',
+    path: '../.propr/previews/codex-gpt6-models-mobile.png',
+  });
 });
 
 test('keeps the tabbed mobile layout through the app-shell breakpoint', async ({ page }) => {

@@ -32,6 +32,23 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
     }
 });
 
+test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
+    const expectedModels = [
+        ['gpt-6.1-sol', 'llm-codex-gpt61-sol', '0.153.0'],
+        ['gpt-6-sol', 'llm-codex-gpt6-sol', '0.155.0'],
+        ['gpt-6-luna', 'llm-codex-gpt6-luna', '0.155.0'],
+    ] as const;
+
+    for (const [modelId, githubLabel, minAgentVersion] of expectedModels) {
+        assert.ok(CODEX_MODELS.some(model => model.id === modelId));
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.openRouterId, `openai/${modelId}`);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.githubLabel, githubLabel);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.minAgentVersion, minAgentVersion);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.contextWindow, '1.05M');
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.maxTokens, 1050000);
+    }
+});
+
 test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () => {
     assert.strictEqual(CLAUDE_MODELS[0]?.id, 'claude-opus-5-5');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultModels[0], 'claude-opus-5-5');
@@ -84,6 +101,7 @@ test('GPT-6 Astra is the preferred Codex default and Codex CLI pin supports it',
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
+    assert.strictEqual(AGENT_DEFAULT_VERSIONS.codex, '0.160.0');
     assert.ok(
         AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.153.1', undefined, { numeric: true }) >= 0,
         `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.153.1`
