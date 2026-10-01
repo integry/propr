@@ -66,8 +66,7 @@ async function scrubLegacyCloneCredentials(clonePath: string): Promise<void> {
     }
 }
 
-async function visibleClonePaths(repositories?: string[]): Promise<string[]> {
-    const root = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
+async function visibleClonePaths(root: string, repositories?: string[]): Promise<string[]> {
     let owners;
     try { owners = await fs.readdir(root, { withFileTypes: true }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
@@ -131,7 +130,11 @@ export async function prepareAgentGitAccess(options: AgentTaskOptions): Promise<
         return (await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.id;
     })) : undefined;
     const token = await mintAgentGitHubToken(octokit, writable, repositoryIds);
-    const clones = await visibleClonePaths(repositories);
+    const root = path.resolve(process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones');
+    // The blanket mount also exposes clones retained at the default location
+    // after GIT_CLONES_BASE_PATH changes. Scrub every exposed root before launch.
+    const roots = repositories ? [root] : [...new Set([root, '/tmp/git-processor/clones'])];
+    const clones = (await Promise.all(roots.map(root => visibleClonePaths(root, repositories)))).flat();
     for (const clone of clones) await scrubLegacyCloneCredentials(clone);
     const taskMetadata = repositories ? await taskGitMetadataMount(options.worktreePath, clones, writable) : [];
     const gitMountArgs = repositories ? [

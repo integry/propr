@@ -434,10 +434,19 @@ export function preserveRepoSettings(
   normalizedRepos: RepoToMonitor[],
   incomingRepos: unknown[]
 ): RepoToMonitor[] {
-  const withContext = normalizedRepos.map((repo, index) => {
+  const withContext = normalizedRepos.map((repo, index): RepoToMonitor => {
     if ((incomingRepos[index] as Partial<RepoToMonitor>).contextRepositories !== undefined) return repo;
     const previous = previousRepos.find(candidate => candidate.id === repo.id);
-    return { ...repo, contextRepositories: previous?.contextRepositories };
+    const matches = previousRepos.filter(candidate => repositoryKeyOf(candidate.name) === repositoryKeyOf(repo.name));
+    // Older clients may regenerate IDs or collapse branch entries. Preserve the
+    // effective repository policy, including restrictions on removed branches.
+    const settings = (matches.length ? matches : previous ? [previous] : []).map(entry => entry.contextRepositories);
+    const lists = settings.filter((setting): setting is string[] => Array.isArray(setting));
+    const contextRepositories = settings.includes('none') ? 'none'
+      : lists.length ? lists.map(list => [...new Set(list.map(repositoryKeyOf))])
+        .reduce((left, right) => left.filter(name => right.includes(name)))
+      : settings.includes('all') ? 'all' : undefined;
+    return { ...repo, contextRepositories };
   });
   let repos = preserveRepoAutoFollowup(previousRepos, withContext, incomingRepos);
   repos = preserveRepoCancelCiDuringFollowup(previousRepos, repos, incomingRepos);

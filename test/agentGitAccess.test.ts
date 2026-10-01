@@ -5,6 +5,21 @@ import os from 'node:os';
 import path from 'node:path';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-agent-git-'));
+const legacyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-legacy-agent-git-'));
+const defaultRoot = '/tmp/git-processor/clones';
+// Redirect the production default root to an isolated fixture. Tests must never
+// scrub a developer's or worker's actual retained clones.
+const fixturePath = (file: string) => file === defaultRoot || file.startsWith(`${defaultRoot}/`)
+    ? legacyRoot + file.slice(defaultRoot.length) : file;
+const agentFs = {
+    ...fs,
+    readdir: (file: string, options: { withFileTypes: true }) => fs.readdir(fixturePath(file), options),
+    readFile: (file: string, encoding: 'utf8') => fs.readFile(fixturePath(file), encoding),
+    open: (file: string, flags: string, mode: number) => fs.open(fixturePath(file), flags, mode),
+    rename: (from: string, to: string) => fs.rename(fixturePath(from), fixturePath(to)),
+    rm: (file: string, options: { force: boolean }) => fs.rm(fixturePath(file), options),
+};
+await mock.module('node:fs/promises', { defaultExport: agentFs });
 const oldRoot = process.env.GIT_CLONES_BASE_PATH;
 process.env.GIT_CLONES_BASE_PATH = root;
 let repositories: Array<{ name: string; contextRepositories?: unknown }> = [];
@@ -27,11 +42,79 @@ const options = {
     prompt: 'Implement task', worktreePath: '/tmp/worktree', githubToken: 'worker-write-token',
     issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 },
 };
-beforeEach(() => { repositories = []; requests = []; permissions = undefined; });
+beforeEach(async () => {
+    repositories = []; requests = []; permissions = undefined;
+    for (const directory of [root, legacyRoot]) {
+        await fs.rm(directory, { recursive: true, force: true });
+        await fs.mkdir(directory);
+    }
+});
 after(async () => {
     await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(legacyRoot, { recursive: true, force: true });
     if (oldRoot === undefined) delete process.env.GIT_CLONES_BASE_PATH;
     else process.env.GIT_CLONES_BASE_PATH = oldRoot;
+});
+
+async function writeRetainedConfig(): Promise<string> {
+    const configPath = path.join(legacyRoot, 'retained-owner', 'repo', '.git', 'config');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, 'url = https://x-access-token:retained-write-token@github.com/owner/repo.git\n');
+    return configPath;
+}
+
+test('blanket mounts scrub configured and retained default-root clones before launch', async () => {
+    const configPaths = [root, legacyRoot].map(base => path.join(base, 'retained-owner', 'repo', '.git', 'config'));
+    for (const extra of [{}, { executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'direct' } },
+        { executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } }]) {
+        for (const configPath of configPaths) {
+            await fs.mkdir(path.dirname(configPath), { recursive: true });
+            await fs.writeFile(configPath, '[remote "origin"]\n url = https://x-access-token:retained-write-token@github.com/owner/repo.git\n');
+        }
+        const result = await prepareAgentGitAccess({ ...options, ...extra });
+        assert.ok(result.gitMountArgs!.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
+        for (const configPath of configPaths) {
+            assert.equal(await fs.readFile(configPath, 'utf8'), '[remote "origin"]\n url = https://github.com/owner/repo.git\n');
+        }
+    }
+});
+
+test('a missing configured root does not skip cleanup of retained default-root clones', async () => {
+    const configPath = await writeRetainedConfig();
+    process.env.GIT_CLONES_BASE_PATH = path.join(root, 'missing');
+    try {
+        await prepareAgentGitAccess(options);
+        assert.doesNotMatch(await fs.readFile(configPath, 'utf8'), /retained-write-token/);
+    } finally { process.env.GIT_CLONES_BASE_PATH = root; }
+});
+
+test('restricted mounts leave unexposed legacy clones alone, but blanket mounts must finish cleanup', async () => {
+    const configPath = await writeRetainedConfig();
+    await fs.writeFile(`${configPath}.lock`, 'concurrent worker operation');
+    try {
+        repositories = [{ name: 'owner/task', contextRepositories: 'none' }];
+        const restricted = await prepareAgentGitAccess(options);
+        assert.equal(restricted.gitMountArgs!.some(arg => arg.includes('/tmp/git-processor:') || arg.includes(defaultRoot)), false);
+        assert.match(await fs.readFile(configPath, 'utf8'), /retained-write-token/);
+        repositories = [];
+        await assert.rejects(prepareAgentGitAccess(options), { code: 'EEXIST' });
+        assert.equal(await fs.readFile(`${configPath}.lock`, 'utf8'), 'concurrent worker operation');
+    } finally { await fs.rm(`${configPath}.lock`); }
+    await prepareAgentGitAccess(options);
+    assert.doesNotMatch(await fs.readFile(configPath, 'utf8'), /retained-write-token/);
+});
+
+test('legacy cleanup re-reads config after acquiring mutation authority', async t => {
+    const configPath = await writeRetainedConfig();
+    const open = agentFs.open;
+    t.mock.method(agentFs, 'open', async (file: string, flags: string, mode: number) => {
+        if (file === `${defaultRoot}/retained-owner/repo/.git/config.lock`) {
+            await fs.appendFile(configPath, '# concurrent worker edit before lock\n');
+        }
+        return open(file, flags, mode);
+    });
+    await prepareAgentGitAccess(options);
+    assert.equal(await fs.readFile(configPath, 'utf8'), 'url = https://github.com/owner/repo.git\n# concurrent worker edit before lock\n');
 });
 
 test('implementation and direct goals replace the worker token with installation-wide read scope', async () => {

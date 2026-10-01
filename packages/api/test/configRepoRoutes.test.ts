@@ -278,6 +278,24 @@ function createRepoPostRoutes(previousRepos: RepoToMonitor[], saveMonitoredRepos
   });
 }
 
+test('POST repository config preserves context restrictions when an older client omits IDs and collapses branches', async () => {
+  for (const contextRepositories of ['none', ['owner/shared']] as const) {
+    const saveMonitoredRepos = mock.fn<(repos: RepoToMonitor[]) => Promise<boolean>>(async () => true);
+    const routes = createRepoPostRoutes([
+      { id: 'main', name: 'Owner/Task', enabled: true, baseBranch: 'main', contextRepositories: 'all' },
+      { id: 'release', name: 'owner/task', enabled: true, baseBranch: 'release',
+        contextRepositories: contextRepositories === 'none' ? 'none' : [...contextRepositories] }
+    ], saveMonitoredRepos);
+    const response = createResponse();
+
+    await routes.postRepos({ body: { repos_to_monitor: [{ name: 'OWNER/TASK', enabled: true }] } } as never, response as never);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(saveMonitoredRepos.mock.calls.length, 1);
+    assert.deepEqual(saveMonitoredRepos.mock.calls[0].arguments[0][0].contextRepositories, contextRepositories);
+  }
+});
+
 test('POST repository config applies a notification opt-out to every branch entry of the repository', async () => {
   const saveMonitoredRepos = mock.fn<(repos: RepoToMonitor[]) => Promise<boolean>>(async () => true);
   const routes = createRepoPostRoutes([
