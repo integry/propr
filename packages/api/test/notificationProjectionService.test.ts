@@ -791,15 +791,24 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
   });
 });
 
-test('Inbox exposes cancellation reasons without offering retry actions', async () => {
-  await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
-  await projection.projectTaskUpdate({
-    eventType: TASK_UPDATE, taskId: 'withdrawn', state: 'cancelled', timestamp: iso(),
-    metadata: { terminalReason: 'cancelled_issue_closed' },
+for (const [reason, explanation] of [
+  ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],
+  ['cancelled_label_removed', 'Cancelled because the processing trigger label was removed.'],
+  ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.'],
+  ['cancelled_by_user', 'Cancelled by a user.'],
+  ['timed_out', 'The task exceeded its time limit.'],
+  ['unknown_internal_code', 'The task ended.'],
+]) {
+  test(`Inbox explains ${reason} in human-readable text`, async () => {
+    await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'withdrawn', state: reason === 'timed_out' ? 'failed' : 'cancelled', timestamp: iso(),
+      metadata: { terminalReason: reason },
+    });
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].body, explanation);
+    assert.equal(notifications[0].severity, reason === 'timed_out' ? 'error' : 'info');
+    if (reason !== 'timed_out') assert.ok(!notifications[0].actions.includes('retry' as never));
   });
-  const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
-  assert.equal(notifications.length, 1);
-  assert.equal(notifications[0].body, 'cancelled_issue_closed');
-  assert.equal(notifications[0].severity, 'info');
-  assert.ok(!notifications[0].actions.includes('retry' as never));
-});
+}

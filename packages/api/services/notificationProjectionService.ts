@@ -7,6 +7,7 @@ import {
   type NotificationRecipient,
 } from '@propr/core';
 import {
+  formatTaskTerminalReason,
   normalizeISO8601Timestamp,
   NOTIFICATION_UPDATE,
   type DraftUpdatePayload,
@@ -20,7 +21,7 @@ import {
 
 function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
   const terminalReason = payload.metadata?.terminalReason;
-  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? terminalReason : undefined]
+  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? formatTaskTerminalReason(terminalReason) : undefined]
     .filter(Boolean).join(' · ') || undefined;
 }
 
@@ -919,7 +920,7 @@ export class NotificationProjectionService {
         : context.issueNumber !== undefined
           ? `Task ${payload.state} for issue #${context.issueNumber}`
           : `Task ${payload.state}`),
-      body: terminalReason ?? (context.description
+      body: terminalReason ? formatTaskTerminalReason(terminalReason) : (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
         : `Work for ${context.repository} did not complete.`),
       actions: taskActions({
