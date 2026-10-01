@@ -122,6 +122,7 @@ Some models require a minimum agent CLI version (for example, Sonnet 5.5 require
 
 ## Codex Models
 
+{/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
 GPT-6 Astra is the recommended default for the most demanding implementation, research, and security work. GPT-6.1 Sol offers near-Astra capability at a lower cost, GPT-6 Sol remains available for existing workflows, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6.1 Sol requires Codex CLI >= 0.153.0, while GPT-6 Sol and GPT-6 Luna require Codex CLI >= 0.155.0. The bundled Codex CLI is pinned to 0.160.0.
 
 | Model | Label | Context |

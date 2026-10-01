@@ -111,6 +111,10 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         prompt: perMillion(10), completion: perMillion(50),
         cacheCreation: perMillion(12.5), cacheRead: perMillion(1)
     },
+    // Standard short-context rates, verified 2026-10-01:
+    // https://developers.openai.com/api/docs/pricing
+    // Sol 6.1 cached reads intentionally cost $0.10/M (5% of input),
+    // while Sol 6 cached reads cost $0.20/M (10% of input).
     'openai/gpt-6.1-sol': {
         prompt: perMillion(2), completion: perMillion(10),
         cacheCreation: perMillion(2.5), cacheRead: perMillion(0.1)

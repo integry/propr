@@ -94,18 +94,23 @@ test('OpenCode catalog matches the current built-in free model set', () => {
     ]);
 });
 
-test('GPT-6 Astra is the preferred Codex default and Codex CLI pin supports it', () => {
+test('GPT-6 Astra is the preferred Codex default', () => {
     assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6-astra');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
+});
+
+test('Codex CLI defaults agree and support every catalog model', () => {
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
-    assert.strictEqual(AGENT_DEFAULT_VERSIONS.codex, '0.160.0');
-    assert.ok(
-        AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.153.1', undefined, { numeric: true }) >= 0,
-        `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.153.1`
-    );
+    for (const { id, minAgentVersion } of CODEX_MODELS) {
+        if (!minAgentVersion) continue;
+        assert.ok(
+            AGENT_DEFAULT_VERSIONS.codex.localeCompare(minAgentVersion, undefined, { numeric: true }) >= 0,
+            `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} must be >= ${minAgentVersion} for ${id}`
+        );
+    }
 });
 
 test('Gemini 3.8 Flash tiers are namespaced Antigravity models with 1M limits', () => {

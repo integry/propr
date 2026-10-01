@@ -157,4 +157,28 @@ describe('provider API pricing', () => {
       cacheRead: 0.01 / 1_000_000,
     });
   });
+
+  test('preserves Sol-specific cached-read costs through model resolution', async () => {
+    // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
+    for (const [model, expectedCost] of [
+      ['gpt-6.1-sol', 0.023],
+      ['gpt-6-sol', 0.028],
+    ] as const) {
+      const modelId = getOpenRouterId(model);
+      assert.strictEqual(modelId, `openai/${model}`);
+      const pricing = await getModelPricing(modelId);
+      assert.strictEqual(pricing, getOfficialModelPricing(modelId));
+      assert.ok(pricing);
+
+      const cost = calculateCostWithCachePricing(model, {
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        cacheCreationTokens: 2_400,
+        cacheReadTokens: 50_000,
+        totalInputWithCache: 53_400,
+        totalTokens: 54_400,
+      }, pricing);
+      assert.ok(Math.abs(cost - expectedCost) < 1e-12, `${model} cost was ${cost}`);
+    }
+  });
 });

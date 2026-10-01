@@ -123,13 +123,19 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   await expect(page.getByRole('button', { name: 'Show 2 legacy models' })).toBeVisible();
   await expectNoPageOverflow(page);
 
-  await page.setViewportSize({ width: 320, height: 900 });
-  const agentCard = mobileConfiguration.getByText('Production Codex Agent')
-    .locator('xpath=ancestor::div[contains(@class, "border-b")][1]');
-  await agentCard.screenshot({
-    animations: 'disabled',
-    path: '../.propr/previews/codex-gpt6-models-mobile.png',
-  });
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await page.setViewportSize({ width: 320, height: 900 });
+    const agentCard = mobileConfiguration.getByText('Production Codex Agent')
+      .locator('xpath=ancestor::div[contains(@class, "border-b")][1]');
+    await agentCard.screenshot({
+      animations: 'disabled',
+      path: '../.propr/previews/codex-gpt6-models-mobile.png',
+    });
+  }
+
+  if (!process.env.PROPR_CAPTURE_PREVIEWS) {
+    expect(page.viewportSize()).toEqual({ width: 320, height: 720 });
+  }
 });
 
 test('keeps the tabbed mobile layout through the app-shell breakpoint', async ({ page }) => {
