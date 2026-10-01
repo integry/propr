@@ -166,7 +166,7 @@ export const EarlierRunsList: React.FC<{
             onClick={() => onRowClick(run.task.id)}
             className="task-run grid w-full min-w-0 items-center rounded-sm py-0.5 pl-1 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
           >
-            <time dateTime={run.task.createdAt} title={`${created} · took ${taskDuration(run.task)}`} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">
+            <time dateTime={run.task.createdAt} title={`${created} · took ${taskDuration(run.task)}`} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-500">
               {formatRelativeTime(run.task.createdAt)}
             </time>
             <span className="flex min-w-0 items-center gap-2">
@@ -203,7 +203,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
     <div role="presentation" className="border-b border-slate-200" data-testid="task-row">
       <div
         role="row"
-        className="task-queue-grid cursor-pointer px-4 py-2 transition-colors hover:bg-slate-50 sm:px-6"
+        className="task-queue-grid pl-8 pr-6 cursor-pointer py-2 transition-colors hover:bg-slate-50"
         onClick={event => openRow(event, task.id, onRowClick)}
       >
         <div role="cell" className="min-w-0">
@@ -225,7 +225,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="flex justify-end"><TaskScore task={task} /></div>
       </div>
       {expanded && row.earlierRuns.length > 0 && (
-        <div role="row" className="task-queue-grid px-4 pb-2 sm:px-6">
+        <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">
           <div role="cell" aria-colspan={TASK_RUNS_COLUMN_SPAN} className="task-runs-cell min-w-0">
             <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} />
           </div>

@@ -50,7 +50,10 @@ interface TaskTableContentProps {
 
 const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
 
-/** Renders the task ledger: a flat table on desktop, one card per group on mobile. */
+/**
+ * Renders the task ledger: a flat table where the list is wide enough for its fixed
+ * metadata columns plus a readable title, and one card per group anywhere narrower.
+ */
 export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   groupedTasks,
   expandedGroups,
@@ -60,9 +63,9 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
   return (
-    <>
-      {/* Mobile Card View */}
-      <div className="task-queue md:hidden">
+    <div className="task-ledger">
+      {/* Card View (phones and narrow panes) */}
+      <div className="task-queue task-ledger-cards">
         {rows.map(({ group, row }) => (
           <MobileTaskCard
             key={group.key}
@@ -75,10 +78,10 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
         ))}
       </div>
 
-      {/* Desktop Ledger */}
-      <div role="table" aria-label="Tasks" className="task-queue hidden md:block">
+      {/* Ledger */}
+      <div role="table" aria-label="Tasks" className="task-queue task-ledger-table">
         <div role="rowgroup" className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
-          <div role="row" className="task-queue-grid px-4 py-2 sm:px-6">
+          <div role="row" className="task-queue-grid pl-8 pr-6 py-2">
             {TASK_QUEUE_COLUMNS.map((column, index) => (
               <span key={column} role="columnheader" className={`${index > 3 ? 'text-right ' : ''}${columnHeader}`}>{column}</span>
             ))}
@@ -97,6 +100,6 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
           ))}
         </div>
       </div>
-    </>
+    </div>
   );
 };

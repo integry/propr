@@ -99,7 +99,7 @@ const capture = async (page: Page, name: string) => {
 };
 
 for (const platform of [undefined, 'macos', 'linux'] as const) {
-  for (const width of [880, 1280, 1920]) {
+  for (const width of [1280, 1920]) {
     test(`${platform ?? 'web'} ${width}px Tasks is a flat, navigable ledger`, async ({ page }) => {
       await page.setViewportSize({ width, height: width === 1920 ? 1080 : 820 });
       await fixture(page, platform);
@@ -132,7 +132,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       for (const height of layout.heights) expect(height).toBeLessThanOrEqual(84);
       expect(await table.getByRole('button', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
       // A long unbroken path in a title wraps inside its own cell: the metadata cells of that row
-      // keep exactly their column widths (REPO 10rem, STATUS 8rem, AGENT 9rem on a wide list).
+      // keep exactly their column widths, and REPO (10rem) and AGENT (11rem) never shrink.
       const columnWidths = await table.evaluate(element => {
         const widths = (cells: Element[]) => cells.slice(1, 4).map(cell => Math.round(cell.getBoundingClientRect().width));
         const longRow = [...element.querySelectorAll('[data-testid="task-row"]')].find(row => row.textContent!.includes('a-very-long-unbroken'))!;
@@ -142,12 +142,21 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         };
       });
       expect(columnWidths.longRow).toEqual(columnWidths.header);
-      if (width === 1920) expect(columnWidths.header).toEqual([160, 128, 144]);
-      // Titles wrap rather than being cut mid-word, and on a wide screen they fit on one line.
+      expect(columnWidths.header).toEqual(width === 1920 ? [160, 128, 176] : [160, 112, 176]);
+      // The lead chips sit a full table inset (2rem) in from the list's left edge.
+      const inset = await table.evaluate(element => {
+        const chip = element.querySelector('[data-testid="task-row"] [title^="Pull request"]')!.getBoundingClientRect();
+        return Math.round(chip.left - element.getBoundingClientRect().left);
+      });
+      expect(inset).toBe(32);
+      // Titles wrap rather than being cut mid-word. The title column absorbs all the width the fixed
+      // metadata columns leave, so a laptop-width list clamps a long title at two lines (the full
+      // title stays in the tooltip); on a wide screen it fits on one line.
       const longTitle = table.getByRole('button', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
       const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
-      if (width >= 1280) expect(clamp.clipped).toBe(false);
-      if (width === 1920) expect(clamp.lines).toBe(1);
+      expect(clamp.lines).toBe(width === 1920 ? 1 : 2);
+      if (width === 1920) expect(clamp.clipped).toBe(false);
+      await expect(longTitle).toHaveAttribute('title', 'Give implementation runs and direct goals a read-only GitHub token');
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
       // The rollup opens in place, never navigates, and a mouse click leaves no focus frame behind.
@@ -170,6 +179,8 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(runs).not.toContainText(/follow-up run/i);
       await expect(runs).toContainText('Pushed commit 9f3c23e');
       await expect(runs).toContainText('No code changes: finished without a commit');
+      // Run timestamps are secondary but legible: slate-500 (#64748b), 4.76:1 on white.
+      await expect(runs.locator('time').first()).toHaveCSS('color', 'rgb(100, 116, 139)');
       const timeline = await table.evaluate(element => {
         const headers = [...element.querySelectorAll('[role="columnheader"]')].map(header => header.getBoundingClientRect());
         const list = element.querySelector('[aria-label="Earlier runs"]')!;
@@ -216,6 +227,26 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(page).toHaveURL(/\/tasks\/pr-2664-run-0$/);
     });
   }
+}
+
+for (const platform of [undefined, 'macos', 'linux'] as const) {
+  test(`${platform ?? 'web'} 880px narrow list shows cards instead of squeezing the ledger`, async ({ page }) => {
+    await page.setViewportSize({ width: 880, height: 820 });
+    await fixture(page, platform);
+    await page.goto('/tasks');
+    // Too narrow for the fixed metadata columns plus a readable title, so no squeezed table.
+    await expect(page.getByText('Stop work when an issue or PR withdraws intent').first()).toBeVisible();
+    await expect(page.getByRole('table', { name: 'Tasks' })).not.toBeVisible();
+    await expect(page.locator('body')).not.toContainText('by GPT-6 Astra]');
+    await expect(page.getByTestId('preview-count').first()).toHaveText('2 previews');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const rollup = page.getByRole('button', { name: /6 earlier runs/ });
+    await rollup.click();
+    await expect(rollup).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('list', { name: 'Earlier runs' }).getByRole('listitem')).toHaveCount(6);
+    expect(new URL(page.url()).pathname).toBe('/tasks');
+    if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-880`);
+  });
 }
 
 test('mobile renders one card per pull request', async ({ page }) => {

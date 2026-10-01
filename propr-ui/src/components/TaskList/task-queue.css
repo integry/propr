@@ -3,34 +3,43 @@
 
    The schema is locked: every width that shows the table shows all seven
    columns, so nothing is added or dropped as the window or a pane resizes.
-   Every metadata column has a fixed width (REPO 10rem, STATUS 8rem, AGENT
-   9rem) and the title column takes only what is left (`minmax(0, 1fr)`), so
-   a long or unbroken title wraps inside its own cell and never starves the
-   columns beside it. Lists of a laptop's width (~1280px windows) and narrow
-   lists (the desktop app's panes) step those widths down rather than remove
-   columns, so a title still has room for two lines. */
+   REPO (10rem) and AGENT (11rem) are fixed at every width and never shrink,
+   so a repository slug or a model identifier keeps about twenty characters
+   before it truncates. The title column takes only what is left
+   (`minmax(0, 1fr)`), so a long or unbroken title wraps inside its own cell
+   and never takes width from the columns beside it. Only STATUS and the
+   gutters tighten on a laptop-width list (~1280px windows).
+
+   A list too narrow to hold those fixed columns and a readable title (a
+   phone, or a narrow pane in the desktop app) shows the stacked cards
+   instead of squeezing the metadata. */
+.task-ledger {
+  container: task-ledger / inline-size;
+  width: 100%;
+  min-width: 0;
+}
+.task-ledger-table { display: none; }
+
+@container task-ledger (min-width: 60rem) {
+  .task-ledger-cards { display: none; }
+  .task-ledger-table { display: block; }
+}
+
 .task-queue {
-  container-type: inline-size;
   width: 100%;
   min-width: 0;
 }
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 9rem 4.25rem 4.5rem 3rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 11rem 4.25rem 4.5rem 3rem;
   column-gap: .75rem;
   align-items: center;
 }
 
-@container (max-width: 1100px) {
+@container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 9rem 7.5rem 8rem 4.25rem 4.5rem 3rem;
-  }
-}
-
-@container (max-width: 1000px) {
-  .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 7rem 6.75rem 6.5rem 4.25rem 4.5rem 3rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 11rem 4.25rem 4.5rem 3rem;
     column-gap: .5rem;
   }
 }
