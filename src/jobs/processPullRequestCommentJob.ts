@@ -1,11 +1,11 @@
 import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
-import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '@propr/core';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
     getAuthenticatedOctokit, hashTaskAttemptToken, logger, retryConfigs, runWithExecutionAbortSignal, withRetry,
     getStateManager, TaskStates, ensureGitRepository, createLogFiles, UsageLimitError, recordLLMMetrics,
     loadPrimaryProcessingLabels, loadRepositoryVisualPreviewSettings,
+    refineWorkflowPreviews, repositoryWorkflowPrompt,
     type CommentJobData, type UnprocessedComment, type JobResult,
 } from '@propr/core';
 import { Redis } from 'ioredis';
@@ -25,9 +25,7 @@ import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { retainOriginalScope } from './ultrafixOrchestrationService.js';
 import {
-    handleUltrafixContinuation,
-    markSelectedUltrafixFindings,
-    restorePendingCommentsIfUltrafixJobSuperseded,
+    handleUltrafixContinuation, markSelectedUltrafixFindings, restorePendingCommentsIfUltrafixJobSuperseded,
 } from './ultrafixJobHelpers.js';
 import { shouldDeferUltrafixReview } from './ultrafixReviewExecutionGate.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
@@ -38,10 +36,7 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
 import {
-    acquirePRProcessingLock,
-    ensurePRProcessingLockToken,
-    releasePRProcessingLock,
-    startPRProcessingLockHeartbeat,
+    acquirePRProcessingLock, ensurePRProcessingLockToken, releasePRProcessingLock, startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
 import { createPRCommentTaskStateIfMissing, evaluatePRCommentPreExecutionRecovery, handlePRCommentLockContention } from './prCommentCollisionRecovery.js';
 import { stopOriginalPRReviewCycle } from './prContinuationReview.js';

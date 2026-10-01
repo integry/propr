@@ -172,7 +172,7 @@ const TimelineContent: React.FC<{
             </span>
           )}
           {isRunning && (
-            <span className={`${compact ? 'text-xs' : 'text-xs'} text-blue-600 animate-pulse font-medium`}>Running...</span>
+            <span className="text-xs text-blue-600 animate-pulse font-medium">Running...</span>
           )}
         </div>
       </div>
