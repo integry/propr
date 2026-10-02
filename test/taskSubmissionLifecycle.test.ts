@@ -243,3 +243,24 @@ for (const boundary of ['before scheduling', 'after scheduling'] as const) {
     } finally { handoffDuringRetry = undefined; handoffState = undefined; outcome = 'completed'; }
   });
 }
+
+test('worker cancels a retry with a stale failure result when the issue closes after admission', async () => {
+  initialState = { state: 'failed' };
+  handoffState = { state: 'processing', prResult: { status: 'failed', prCreated: false } };
+  liveIssue = { ...liveIssue, state: 'closed', labels: [{ name: 'AI' }] };
+  cancellations.length = 0;
+  terminal.length = 0;
+  try {
+    const result = await processGitHubIssueJob({ id: 'retry-queue-job', data: {
+      repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
+      modelName: 'model', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
+    }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+    assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_issue_closed' });
+    assert.equal(cancellations[0].terminalReason, 'cancelled_issue_closed');
+    assert.deepEqual(terminal, [], 'the worker must stop before executing or publishing a result');
+  } finally {
+    initialState = undefined;
+    handoffState = undefined;
+    liveIssue = { ...liveIssue, state: 'open' };
+  }
+});

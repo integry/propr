@@ -21,6 +21,8 @@ const TERMINAL_TASK_STATES = new Set<TaskState>([
     TaskStates.CANCELLED,
 ]);
 
+const hasPullRequestResult = (task: TaskStateData): boolean => Boolean(task.prResult?.prNumber || task.prResult?.prCreated === true);
+
 async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
     const delayMs = Math.min(5 * (2 ** attempt), 100);
     await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -171,12 +173,11 @@ export class WorkerStateManager {
 
             const current = JSON.parse(stateJson) as TaskStateData;
             const isExplicitFailedRetry = current.state === TaskStates.FAILED
-                && newState === TaskStates.PROCESSING
-                && metadata.isRetry === true;
+                && newState === TaskStates.PROCESSING && metadata.isRetry === true;
             const isHandoff = isBookkeepingCancellation(current);
             // Recheck inside the CAS loop: a PR can be published after the
             // cancellation caller's task scan, while it awaits GitHub/queue IO.
-            if (newState === TaskStates.CANCELLED && current.prResult
+            if (newState === TaskStates.CANCELLED && hasPullRequestResult(current)
                 && (metadata.terminalReason ?? metadata.historyMetadata?.cancellationReason) === 'cancelled_issue_closed') return current;
             if (current.state === TaskStates.CANCELLED && !isHandoff) return current;
             if (TERMINAL_TASK_STATES.has(current.state)

@@ -10,6 +10,7 @@ import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } fro
 import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
+import { restoreIssueTrigger } from '../services/taskIntent.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 export type { DetectedIssue };
@@ -202,11 +203,6 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         allExcludeLabels.push(`${label}-cancelled`);
     }
 
-    if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
-        correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Issue has exclude labels, skipping');
-        return { status: 'ignored', reason: 'issue_has_terminal_label' };
-    }
-
     // Check for processing labels BEFORE acquiring dedup lock
     // This ensures invalid events don't block subsequent valid events
     const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
@@ -234,6 +230,20 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             ? 'Trigger actor not in whitelist, skipping'
             : 'No triggeredBy on issue — skipping (fail closed). Check that all DetectedIssue producers populate triggeredBy.');
         return { status: 'ignored', reason: 'user_not_allowed' };
+    }
+
+    if (primaryProcessingLabels.some(label => issue.labels.includes(`${label}-cancelled`))) {
+        const labels = await restoreIssueTrigger({
+            repoOwner: issue.repoOwner, repoName: issue.repoName, number: issue.number,
+            kind: 'issue', triggeringLabel,
+        });
+        if (!labels) return { status: 'ignored', reason: 'intent_not_current' };
+        issue = { ...issue, labels };
+    }
+
+    if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
+        correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Issue has exclude labels, skipping');
+        return { status: 'ignored', reason: 'issue_has_terminal_label' };
     }
 
     // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
@@ -398,7 +408,12 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     typeof label === 'string' ? label : label.name
                 );
 
-                return !allExcludeLabels.some(excludeLabel => labelNames.includes(excludeLabel));
+                // Cancelled requests need to reach restoration even if an old
+                // processing marker survived cleanup. Done markers still block.
+                const restorable = primaryProcessingLabels.some(label => labelNames.includes(label))
+                    && primaryProcessingLabels.some(label => labelNames.includes(`${label}-cancelled`));
+                return !allExcludeLabels.some(excludeLabel => labelNames.includes(excludeLabel)
+                    && (!restorable || excludeLabel.endsWith('-done')));
             });
 
             const pullRequestCount = allIssues.filter(issue => issue.pull_request).length;

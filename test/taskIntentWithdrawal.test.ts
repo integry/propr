@@ -36,6 +36,7 @@ const manager = {
     markTaskCancelled: async (id: string, by: string, metadata: any) => {
         const state = states.get(id);
         if (!state) throw new Error('missing state');
+        if (state.state === 'failed') return state;
         state.state = 'cancelled';
         state.terminalReason = metadata.terminalReason ?? metadata.historyMetadata.cancellationReason;
         state.history.push({ state: 'cancelled', metadata });
@@ -45,6 +46,8 @@ const manager = {
 const queue = {
     getJobs: async (statuses: string[]) => jobs.filter(j => statuses.includes(j.status)),
     getJob: async (id: string) => jobs.find(j => j.id === id),
+    getActive: async () => jobs.filter(j => j.status === 'active'),
+    getWaiting: async () => jobs.filter(j => j.status === 'waiting'),
     add: async (name: string, data: any, options: { jobId: string }) => jobs.find(j => j.id === options.jobId)
         ?? addJob(options.jobId, data, 'delayed', name),
 };
@@ -69,13 +72,15 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { g
     requests.push({ endpoint, params });
     onRequest?.(endpoint);
     if (trackerError) throw trackerError;
+    if (endpoint.startsWith('DELETE ')) tracker = { ...tracker, labels: (tracker.labels ?? []).filter((label: any) => (typeof label === 'string' ? label : label.name) !== params.name) };
+    if (endpoint.startsWith('POST ')) tracker = { ...tracker, labels: [...(tracker.labels ?? []), ...params.labels] };
     return { data: tracker };
 } }) } });
 await mock.module('../packages/core/src/config/configManager.js', { namedExports: { loadPrimaryProcessingLabels: async () => ['AI', 'build'] } });
 await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => ({ select: () => ({ where: () => ({ first: async () => undefined }) }) }) } });
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); return { success: true }; } } });
 await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
-const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId } = await import('../packages/core/src/services/taskIntent.js');
+const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId, restoreIssueTrigger } = await import('../packages/core/src/services/taskIntent.js');
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
     handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {},
 } });
@@ -105,7 +110,7 @@ async function removeTrigger(label: string, labels: string[]) {
 }
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
-beforeEach(() => { states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; });
+beforeEach(() => { discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -623,12 +628,14 @@ test('already cancelled admission retries previously failed withdrawal cleanup',
 });
 
 for (const path of ['webhook', 'polling', 'admission'] as const) {
-    for (const protection of ['prResult', 'own PR', 'unrelated PR'] as const) {
+    for (const protection of ['prResult', 'prCreated', 'own PR', 'failed result with own PR', 'unrelated PR'] as const) {
         test(`${path} issue closure respects ${protection}`, async () => {
             addRunning('publishing', target, 'post_processing');
             states.get('publishing').worktreeInfo = { branchName: 'work-42' };
             if (protection === 'prResult') states.get('publishing').prResult = { prNumber: 87 };
-            closingPR = { headRefName: protection === 'own PR' ? 'work-42' : 'other-work', headRepository: { nameWithOwner: 'acme/widgets' } };
+            if (protection === 'prCreated') states.get('publishing').prResult = { prCreated: true };
+            if (protection === 'failed result with own PR') states.get('publishing').prResult = { status: 'failed', prCreated: false };
+            closingPR = { headRefName: protection.includes('own PR') ? 'work-42' : 'other-work', headRepository: { nameWithOwner: 'acme/widgets' } };
             const job = addJob('publishing', target, 'active');
             tracker = { state: 'closed', labels: ['AI'] };
             if (path === 'admission') await preventWithdrawnJob(job);
@@ -696,4 +703,154 @@ test('user-stop cleanup preserves a sibling that starts during retry backoff', a
     };
     await updateWithdrawnIssueLabels(target, ['AI'], 'cancelled_by_user', 'stopped');
     assert.equal(deletes, 1);
+});
+
+
+await mock.module('../packages/core/src/daemon/configLoader.js', { namedExports: {
+    getPrimaryProcessingLabels: () => ['AI', 'build'], loadPrimaryProcessingLabelsFromConfig: async () => {},
+} });
+const { fetchIssuesForRepo, processDetectedIssue: admitDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
+const pollingOctokit = {
+    paginate: async (_endpoint: string, params: any) => tracker.state === 'open' && tracker.labels.includes(params.labels) ? [{
+        id: 42, number: 42, title: 'Restored request', html_url: 'https://github.com/acme/widgets/issues/42',
+        labels: tracker.labels, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z',
+    }] : [],
+    request: async () => ({ headers: {}, data: [{ event: 'labeled', label: { name: 'AI' }, actor: { id: 1, login: 'propr-dev[bot]' } }] }),
+};
+async function pollRestoredIssues() {
+    const issues = await fetchIssuesForRepo(pollingOctokit as never, 'acme/widgets', 'poll-restore');
+    const results = [];
+    for (const issue of issues) results.push(await admitDetectedIssue(issue, 'poll-restore', redis as never));
+    return results;
+}
+
+for (const [cancelledTrigger, restoredTrigger] of [['build', 'AI'], ['AI', 'build']]) {
+    test(`webhook restores ${restoredTrigger} after ${cancelledTrigger} cancellation and reaches admission`, async () => {
+        addRunning('old', { ...target, triggeringLabel: cancelledTrigger });
+        tracker = { state: 'open', labels: [] };
+        await cancelWithdrawnIntent({ ...target, triggeringLabel: cancelledTrigger }, 'cancelled_label_removed', redis as never);
+        assert.ok(tracker.labels.includes(`${cancelledTrigger}-cancelled`));
+        tracker.labels.push(restoredTrigger);
+        await reapplyTrigger(restoredTrigger);
+        assert.deepEqual(discovered.at(-1).labels, [restoredTrigger]);
+        const result = await admitDetectedIssue({ ...discovered.at(-1), triggeredBy: 'propr-dev[bot]' }, 'restore', redis as never);
+        assert.equal(result.status, 'accepted');
+        assert.equal(jobs.at(-1).data.triggeringLabel, restoredTrigger);
+        assert.equal(states.get('old').terminalReason, 'cancelled_label_removed');
+    });
+}
+
+for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as const) {
+    for (const restoredTrigger of ['AI', 'build']) {
+        test(`polling restores ${restoredTrigger} after ${reason} without a task, queue job or webhook`, async () => {
+            addRunning('old');
+            addJob('old-queued', target);
+            tracker = { state: reason === 'cancelled_issue_closed' ? 'closed' : 'open', labels: [] };
+            await reconcileTaskIntents(redis as never, ['acme/widgets']);
+            assert.equal(jobs.length, 0);
+            assert.ok(tracker.labels.includes('AI-cancelled'));
+            const oldStates = JSON.stringify([...states]);
+            tracker = { state: 'open', labels: [restoredTrigger, ...tracker.labels, `${restoredTrigger}-processing`] };
+            await reconcileTaskIntents(redis as never, ['acme/widgets']);
+            assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+            assert.deepEqual(tracker.labels, [restoredTrigger]);
+            assert.equal(jobs.length, 1);
+            assert.equal(jobs[0].data.triggeringLabel, restoredTrigger);
+            assert.equal(JSON.stringify([...states]), oldStates, 'the old cancellation stays terminal');
+        });
+    }
+}
+
+for (const phase of ['running', 'waiting', 'delayed', 'active', 'prioritized'] as const) {
+    test(`restoration preserves ${phase} sibling work and its processing label`, async () => {
+        tracker = { state: 'open', labels: ['AI', 'AI-processing', 'build-cancelled'] };
+        if (phase === 'running') addRunning('sibling');
+        else addJob('sibling', target, phase);
+        assert.equal(await restoreIssueTrigger(target), null);
+        assert.equal((await pollRestoredIssues())[0]?.status, 'ignored');
+        assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+        assert.ok(tracker.labels.includes('AI-processing'));
+    });
+}
+
+test('polling retains completion exclusions on cancelled issues', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-done', 'build-cancelled'] };
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.deepEqual(requests, []);
+});
+
+for (const change of ['closure', 'unlabel', 'sibling'] as const) {
+    test(`restoration rechecks ${change} after retry backoff`, async () => {
+        tracker = { state: 'open', labels: ['AI', 'AI-processing', 'build-cancelled'] };
+        let deletes = 0;
+        onRequest = endpoint => {
+            if (!endpoint.startsWith('DELETE ')) return;
+            deletes++;
+            if (change === 'closure') tracker.state = 'closed';
+            else if (change === 'unlabel') tracker.labels = ['AI-processing', 'build-cancelled'];
+            else addRunning('sibling');
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        };
+        assert.equal(await restoreIssueTrigger(target), null);
+        assert.equal(deletes, 1);
+        assert.ok(tracker.labels.includes('build-cancelled'));
+    });
+}
+
+test('restoration reads intent after awaited sibling scans', async () => {
+    tracker = { state: 'open', labels: ['AI', 'build-cancelled'] };
+    const stub = mock.method(queue, 'getJobs', async () => { tracker.state = 'closed'; return []; });
+    try { assert.equal(await restoreIssueTrigger(target), null); }
+    finally { stub.mock.restore(); }
+    assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+});
+
+test('restoration does not admit completion published during cleanup', async () => {
+    tracker = { state: 'open', labels: ['AI', 'build-cancelled'] };
+    onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) tracker.labels.push('AI-done'); };
+    assert.equal((await pollRestoredIssues())[0]?.status, 'ignored');
+    assert.equal(jobs.length, 0);
+});
+
+for (const path of ['admission', 'webhook', 'polling'] as const) {
+    test(`${path} cancels a retry with a failure result and no PR`, async () => {
+        const data = { ...target, isChildJob: true, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request' };
+        const job = addJob('retry', data, 'active');
+        const id = intentJobTaskId(job);
+        addRunning(id, data, path === 'admission' ? 'failed' : 'claude_execution');
+        states.get(id).prResult = { status: 'failed', prCreated: false };
+        states.get(id).worktreeInfo = { branchName: 'work-42' };
+        tracker = { state: 'closed', labels: ['AI'] };
+        if (path === 'admission') assert.equal(await preventWithdrawnJob(job), 'cancelled_issue_closed');
+        else if (path === 'polling') await reconcileTaskIntents(redis as never, ['acme/widgets']);
+        else await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+        if (path === 'admission') assert.equal(states.get(id).state, 'failed');
+        else assert.equal(states.get(id).terminalReason, 'cancelled_issue_closed');
+    });
+}
+
+test('a failed retry is denied even when the terminal state guard preserves the old failure', async () => {
+    addRunning('failed', target, 'failed');
+    states.get('failed').prResult = { status: 'failed', prCreated: false };
+    tracker = { state: 'closed', labels: ['AI'] };
+    const stub = mock.method(manager, 'markTaskCancelled', async (id: string) => states.get(id));
+    try { assert.equal(await preventWithdrawnJob(addJob('failed', target)), 'cancelled_issue_closed'); }
+    finally { stub.mock.restore(); }
+    assert.equal(states.get('failed').state, 'failed');
+});
+
+test('restoration preserves a sibling started during queue lookup', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-processing', 'build-cancelled'] };
+    const stub = mock.method(queue, 'getJobs', async () => { addRunning('new-sibling'); return []; });
+    try { assert.equal(await restoreIssueTrigger(target), null); }
+    finally { stub.mock.restore(); }
+    assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+});
+
+test('restoration stops when intent is withdrawn between label deletions', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-processing', 'build-cancelled'] };
+    onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) tracker.state = 'closed'; };
+    assert.equal(await restoreIssueTrigger(target), null);
+    assert.deepEqual(requests.filter(r => r.endpoint.startsWith('DELETE ')).map(r => r.params.name), ['AI-processing']);
+    assert.ok(tracker.labels.includes('build-cancelled'));
 });

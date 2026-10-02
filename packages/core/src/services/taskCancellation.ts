@@ -12,7 +12,7 @@ interface TaskStateHistory {
 }
 
 interface TaskState {
-  prResult?: unknown;
+  prResult?: { prNumber?: number; prCreated?: boolean };
   history: TaskStateHistory[];
 }
 
@@ -343,7 +343,7 @@ async function prepareIssueClosureCancellation(
   taskId: string, state: TaskState | null, isRunning: boolean, options: StopTaskExecutionOptions,
 ): Promise<boolean | StopTaskExecutionResult> {
   if (options.cancellationReason !== 'cancelled_issue_closed') return false;
-  if (state?.prResult) {
+  if (state?.prResult?.prNumber || state?.prResult?.prCreated === true) {
     return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, message: 'Task already produced a pull request.' };
   }
   if (!isRunning || !options.ensureCancelled) return false;

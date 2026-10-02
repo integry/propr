@@ -68,19 +68,43 @@ async function removeIntentLabel(target: IntentTarget, label: string, stoppedTas
     }, retryConfigs.githubApi, 'remove_intent_label');
 }
 
-/** A fresh trigger repairs status cleanup even when the old task is already terminal. */
+/** Webhooks and polling can restore a trigger without reviving the old attempt. */
 export async function restoreIssueTrigger(target: IntentTarget): Promise<string[] | null> {
     if (target.kind !== 'issue' || !target.triggeringLabel) return null;
-    const current = await readCurrentTaskIntent(target);
-    if (withdrawnIntentReason(target, current, [target.triggeringLabel])) return null;
-    const stale = [`${target.triggeringLabel}-processing`, `${target.triggeringLabel}-cancelled`];
-    for (const label of stale) await removeIntentLabel(target, label);
-    return (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '').filter(label => !stale.includes(label));
+    const triggeringLabel = target.triggeringLabel;
+    const triggers = await loadPrimaryProcessingLabels();
+    const stale = [`${triggeringLabel}-processing`, ...triggers.map(trigger => `${trigger}-cancelled`)];
+    const client = await getAuthenticatedOctokit();
+    const readRestorableIntent = async () => {
+        if (await hasProcessingSibling(target)) return null;
+        // Queue/state scans and retry backoff can outlive the triggering event.
+        const current = await readCurrentTaskIntent(target);
+        return withdrawnIntentReason(target, current, [triggeringLabel]) ? null : current;
+    };
+    for (const label of stale) {
+        const restored = await withRetry(async () => {
+            const current = await readRestorableIntent();
+            if (!current) return false;
+            if (!(current.labels ?? []).some(value => (typeof value === 'string' ? value : value.name) === label)) return true;
+            try {
+                await client.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
+                    owner: target.repoOwner, repo: target.repoName, issue_number: target.number, name: label,
+                });
+            } catch (error) {
+                if ((error as { status?: number }).status !== 404) throw error;
+            }
+            return true;
+        }, retryConfigs.githubApi, 'restore_issue_trigger');
+        if (!restored) return null;
+    }
+    // Admission must use live labels, including status published during cleanup.
+    const current = await readRestorableIntent();
+    return current ? (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '') : null;
 }
 
 /** A closed issue may be the successful result of this task's own PR. */
 export async function isIssueClosureProtected(target: IntentTarget, task: TaskStateData | null): Promise<boolean> {
-    if (task?.prResult) return true;
+    if (task?.prResult?.prNumber || task?.prResult?.prCreated === true) return true;
     const branch = task?.worktreeInfo?.branchName;
     if (typeof branch !== 'string') return false;
     const octokit = await getAuthenticatedOctokit();
@@ -112,7 +136,7 @@ function sameResource(a: IntentTarget, b: IntentTarget): boolean {
         && a.repoName.toLowerCase() === b.repoName.toLowerCase();
 }
 
-async function hasProcessingSibling(target: IntentTarget, taskId: string): Promise<boolean> {
+async function hasProcessingSibling(target: IntentTarget, taskId?: string): Promise<boolean> {
     const manager = getStateManager();
     const matches = (candidate: IntentTarget | null) => candidate && sameResource(target, candidate)
         && (!candidate.triggeringLabel || candidate.triggeringLabel === target.triggeringLabel);
@@ -313,7 +337,13 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
     if (!reason || reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await manager.getTaskState(taskId))) return null;
     await manager.createTaskStateIfAbsent(taskId, taskIntentIssueRef(data, target), typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
     const cancelled = await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
-    if (cancelled && cancelled.state !== 'cancelled') return null;
+    if (cancelled && cancelled.state !== 'cancelled') {
+        // A failed attempt remains terminal, but its queued retry must still be
+        // rejected. Only actual PR evidence exempts it from issue closure.
+        if (cancelled.state === 'failed'
+            && (reason !== 'cancelled_issue_closed' || !await isIssueClosureProtected(target, cancelled))) return reason;
+        return null;
+    }
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
     await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
     return reason;
