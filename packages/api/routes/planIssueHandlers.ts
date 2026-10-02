@@ -35,7 +35,7 @@ import {
   type UpdateIssueRequestBody,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
-import { enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
+import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
@@ -331,10 +331,11 @@ export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics 
       const target = await loadImplementationTarget({ deps, req, draftId, issueNumber });
       const { useEpic, autoMerge } = resolveImplementationSettings(target.implementationSettings, target.contextConfig);
       const implement = () => implementLoadedIssue({ ...target, draftId, issueNumber });
-      const result = enqueueEpics && useEpic
-        ? await enqueueEpicImplementation({ draftId, issueNumber, repository: `${target.owner}/${target.repo}`,
-          autoMerge, contextConfig: target.contextConfig, implement })
-        : await implement();
+      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig, implement };
+      let result: unknown;
+      if (enqueueEpics && useEpic) result = await enqueueEpicImplementation({ ...queued, autoMerge });
+      else if (enqueueEpics && autoMerge) result = await enqueueAutoMergeImplementation(queued);
+      else result = await implement();
       res.json(result);
     } catch (error) {
       sendImplementIssueError(res, error);

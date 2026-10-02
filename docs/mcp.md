@@ -246,7 +246,17 @@ fixing and merging it automatically releases the queue. Choose
 are skipped. `pause_plan` holds the next issue, and `resume_plan` starts the
 held head. Periodic recovery repairs missed advances and retries a head still
 pending fifteen minutes after dispatch. Unselected pending issues never
-start through this queue; plans without a queue retain the UI epic chain.
+start through this queue.
+
+The web UI, CLI and REST API feed the same queue. **Implement Epic** queues
+every remaining pending issue; a non-epic implementation with auto-merge
+queues the remaining pending issues behind the one it starts. Both advance
+like `epicAdvanceOn: "terminal"`, so a failed or closed issue does not stop
+the plan.
+Non-epic MCP calls start only their selected issues. No other path advances a
+plan: a plan already running when you upgrade has no queue, so once its
+current issue finishes, start the next pending issue again (with **Implement
+Epic** for an epic).
 
 The implementation result includes `executionMode`, `advanceOn`, `started`
 and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`

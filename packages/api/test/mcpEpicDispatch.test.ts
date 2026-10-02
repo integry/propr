@@ -345,14 +345,14 @@ test('PR status hook and resume route release a head held by pause', async () =>
   assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [30]);
 });
 
-async function startFromUI(issueNumber: number, autoMerge = false) {
+async function startFromUI(issueNumber: number, autoMerge = false, useEpic = true) {
   const handler = createImplementIssueHandler({ verifyOwnership: async () => ({ authorized: true,
     draft: await database('task_drafts').where({ draft_id: planId }).first() }) });
   let status = 200;
   let body: unknown;
   const response = { status(code: number) { status = code; return this; }, json(value: unknown) { body = value; } };
   await handler({ params: { id: planId, issueNumber: String(issueNumber) }, user: { id: 'user' },
-    body: { useEpic: true, autoMerge } } as never, response as never);
+    body: { useEpic, autoMerge } } as never, response as never);
   return { status, body };
 }
 
@@ -447,6 +447,56 @@ test('UI can replace a cancelled queue with the remaining epic', async () => {
   assert.deepEqual(labelCalls, []);
   assert.equal((await startFromUI(20)).status, 200);
   assert.deepEqual((await core.getEpicExecutionQueue(planId))?.issues, [20, 30, 40]);
+});
+
+test('a failed UI epic head continues the epic instead of blocking it', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  assert.equal((await startFromUI(10, true)).status, 200);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.advanceOn, 'terminal');
+  // closeFailedPlanIssue records a failed task without a PR as closed.
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.CLOSED);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.cursor, 1);
+  assert.equal(queue?.blockedReason, null);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).slice(-1),
+    [{ number: 20, labels: ['AI', 'auto-merge', 'base-epic'] }]);
+});
+
+test('a non-epic auto-merge UI request starts the next pending issue after each merge or failure', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  assert.equal((await startFromUI(30, true, false)).status, 200);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.deepEqual(queue?.issues, [30, 10, 20, 40]);
+  assert.equal(queue?.useEpic, false);
+  assert.equal(queue?.advanceOn, 'terminal');
+  assert.deepEqual(dispatches, [30]);
+  assert.deepEqual(issueLabels.get(10)?.sort(), ['auto-merge', 'base-old', 'llm-model']);
+  assert.equal(labelCalls.some(call => call.number !== 30 && call.labels.includes('AI')), false);
+  await database('plan_issues').where({ draft_id: planId, issue_number: 30 }).update({ pr_number: 300 });
+  await core.updatePlanIssueByPR(repository, 300, { status: core.PlanIssueStatus.MERGED });
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.CLOSED);
+  // The plan's stored epic label belongs to an earlier epic run; non-epic successors must not target it.
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).slice(1),
+    [{ number: 10, labels: ['AI', 'auto-merge'] }, { number: 20, labels: ['AI', 'auto-merge'] }]);
+});
+
+test('non-epic UI requests without auto-merge start only the requested issue', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  assert.equal((await startFromUI(10, false, false)).status, 200);
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [10]);
+});
+
+test('starting another auto-merge issue during an active queue runs it without replacing the queue', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  assert.equal((await startFromUI(10, true, false)).status, 200);
+  const executionId = (await core.getEpicExecutionQueue(planId))?.executionId;
+  assert.equal((await startFromUI(20, true, false)).status, 200);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.executionId, executionId);
+  await core.updatePlanIssueStatus(repository, 20, core.PlanIssueStatus.MERGED);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [10, 20, 30]);
 });
 
 async function completeAllSelectedIssues() {

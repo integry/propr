@@ -20,6 +20,8 @@ export interface EpicExecutionQueue {
   advanceOn: EpicAdvancePolicy;
   blockedReason: string | null;
   autoMerge: boolean;
+  /** Non-epic auto-merge queues start successors without the plan's epic branch label. */
+  useEpic: boolean;
   ready: boolean;
   headStartedAt: number | null;
   createdAt: number;
@@ -31,7 +33,7 @@ export interface EpicExecutionQueue {
 type QueueRow = {
   draft_id: string; execution_id: string; repository: string; issues: string; cursor: number;
   status: EpicQueueStatus; advance_on: EpicAdvancePolicy; blocked_reason: string | null;
-  auto_merge: boolean | number; ready: boolean | number; head_started_at: number | null;
+  auto_merge: boolean | number; use_epic: boolean | number; ready: boolean | number; head_started_at: number | null;
   created_at: number; updated_at: number; finalized_at: number | null; finalization_started_at: number | null;
 };
 
@@ -49,7 +51,7 @@ function fromRow(row: QueueRow): EpicExecutionQueue {
   return {
     draftId: row.draft_id, executionId: row.execution_id, repository: row.repository, issues: JSON.parse(row.issues),
     cursor: row.cursor, status: row.status, advanceOn: row.advance_on,
-    blockedReason: row.blocked_reason, autoMerge: Boolean(row.auto_merge), ready: Boolean(row.ready),
+    blockedReason: row.blocked_reason, autoMerge: Boolean(row.auto_merge), useEpic: Boolean(row.use_epic), ready: Boolean(row.ready),
     headStartedAt: row.head_started_at, createdAt: row.created_at, updatedAt: row.updated_at,
     finalizedAt: row.finalized_at, finalizationStartedAt: row.finalization_started_at,
   };
@@ -69,7 +71,7 @@ export function summarizeEpicQueue(queue: EpicExecutionQueue | null) {
 /** The insert/update is atomic even when called inside the MCP claim transaction. */
 export async function createEpicExecutionQueue(input: {
   draftId: string; repository: string; issues: number[]; advanceOn?: EpicAdvancePolicy;
-  autoMerge?: boolean; ready?: boolean; headStartedAt?: number;
+  autoMerge?: boolean; useEpic?: boolean; ready?: boolean; headStartedAt?: number;
 }, { database = db, now = Date.now }: EpicQueueDependencies = {}): Promise<EpicExecutionQueue> {
   if (!input.issues.length || new Set(input.issues).size !== input.issues.length) {
     throw new Error('An epic queue requires distinct selected issues.');
@@ -78,7 +80,7 @@ export async function createEpicExecutionQueue(input: {
   const row = {
     draft_id: input.draftId, execution_id: randomUUID(), repository: input.repository, issues: JSON.stringify(input.issues),
     cursor: 0, status: 'active', advance_on: input.advanceOn ?? 'merged', blocked_reason: input.ready === false ? 'Preparing queued issue model and epic branch labels.' : null,
-    auto_merge: input.autoMerge ?? false, ready: input.ready ?? true,
+    auto_merge: input.autoMerge ?? false, use_epic: input.useEpic ?? true, ready: input.ready ?? true,
     head_started_at: input.headStartedAt ?? null, finalized_at: null, finalization_started_at: null, created_at: timestamp, updated_at: timestamp,
   };
   const inserted = await database('epic_execution_queues').insert(row).onConflict('draft_id').ignore().returning('draft_id');
@@ -212,7 +214,7 @@ async function dispatchPendingQueueHead(queue: EpicExecutionQueue, contextConfig
   const context = typeof contextConfig === 'string' ? JSON.parse(contextConfig || '{}') : contextConfig;
   try {
     await (deps.startIssue ?? labelPlanIssueForProcessing)({ draftId, repository: queue.repository, issueNumber,
-      epicLabel: typeof context?.epicLabel === 'string' ? context.epicLabel : undefined, autoMerge: queue.autoMerge });
+      epicLabel: queue.useEpic && typeof context?.epicLabel === 'string' ? context.epicLabel : undefined, autoMerge: queue.autoMerge });
   } catch (error) {
     // Keep the claim after failure: the external outcome may be uncertain, and recovery retries after fifteen minutes.
     await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, head_started_at: timestamp })

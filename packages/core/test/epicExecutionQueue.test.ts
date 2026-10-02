@@ -3,9 +3,11 @@ import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
 import { up } from '../src/db/migrations/20261003000000_add_epic_execution_queues.js';
 import { up as epicQueueFinalization, down as removeEpicQueueFinalization } from '../src/db/migrations/20261003010000_add_epic_queue_finalization.js';
+import { up as epicQueueUseEpic, down as removeEpicQueueUseEpic } from '../src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 const starts: number[] = [];
+const startEpicLabels: Array<string | undefined> = [];
 let pullRequestState: { state: string; merged: boolean } | null = null;
 const finalizations: string[] = [];
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
@@ -19,7 +21,9 @@ await mock.module('../src/config/planIssueManager.js', { namedExports: {
   },
 } });
 await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
-  labelPlanIssueForProcessing: async ({ issueNumber }: { issueNumber: number }) => { starts.push(issueNumber); },
+  labelPlanIssueForProcessing: async ({ issueNumber, epicLabel }: { issueNumber: number; epicLabel?: string }) => {
+    starts.push(issueNumber); startEpicLabels.push(epicLabel);
+  },
   reconcileTerminalInProgressIssues: async (_repository: string, issues: unknown[]) => issues,
   finalizeEpicPlanIfComplete: async (draftId: string) => { finalizations.push(draftId); return true; },
 } });
@@ -42,13 +46,14 @@ await database.schema.createTable('plan_issues', table => {
 });
 await up(database);
 await epicQueueFinalization(database);
+await epicQueueUseEpic(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();
   await database('plan_issues').delete();
   await database('task_drafts').insert({ draft_id: 'draft', context_config: JSON.stringify({ epicLabel: 'base-epic' }) });
   await database('plan_issues').insert([10, 20, 30, 40].map(issue_number => ({ draft_id: 'draft', issue_number, status: 'pending' })));
-  starts.length = 0; finalizations.length = 0; pullRequestState = null;
+  starts.length = 0; startEpicLabels.length = 0; finalizations.length = 0; pullRequestState = null;
 });
 const input = { draftId: 'draft', repository: 'acme/repo', issues: [10, 30, 40] };
 async function status(issueNumber: number, status: string) {
@@ -328,6 +333,35 @@ test('finalization migration preserves existing queues and rolls back without de
     const original = await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first();
     assert.equal(original.status, 'completed');
     assert.equal(Object.hasOwn(original, 'finalized_at'), false);
+  } finally {
+    await oldDatabase.destroy();
+  }
+});
+
+test('non-epic auto-merge queues advance past a failed head without the plan epic label', async () => {
+  await createEpicExecutionQueue({ ...input, advanceOn: 'terminal', autoMerge: true, useEpic: false });
+  assert.equal((await getEpicExecutionQueue('draft'))?.useEpic, false);
+  await startEpicQueueHead('draft');
+  await status(10, S.CLOSED);
+  await onPlanIssueStatusChanged('draft', 10, S.CLOSED);
+  assert.deepEqual(starts, [10, 30]);
+  assert.deepEqual(startEpicLabels, [undefined, undefined]);
+  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
+});
+
+test('use_epic migration keeps existing queues on the epic branch and rolls back', async () => {
+  const oldDatabase = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await oldDatabase.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); });
+    await up(oldDatabase);
+    await epicQueueFinalization(oldDatabase);
+    await oldDatabase('task_drafts').insert({ draft_id: 'old' });
+    await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
+      repository: 'acme/repo', issues: '[10]', cursor: 0, status: 'active', created_at: 100, updated_at: 100 });
+    await epicQueueUseEpic(oldDatabase);
+    assert.equal((await getEpicExecutionQueue('old', { database: oldDatabase }))?.useEpic, true);
+    await removeEpicQueueUseEpic(oldDatabase);
+    assert.equal(Object.hasOwn(await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first(), 'use_epic'), false);
   } finally {
     await oldDatabase.destroy();
   }
