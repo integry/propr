@@ -1,5 +1,5 @@
-import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
 import 'dotenv/config';
+import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';

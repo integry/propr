@@ -99,12 +99,14 @@ function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number):
 *The task will automatically resume after the rate limit resets. No action needed.*`;
 }
 
-async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData>> {
+async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData> | null> {
     const retry = await issueQueue.getJob(jobId);
-    if (!retry || !('isRetryFromRateLimit' in retry.data) || !retry.data.isRetryFromRateLimit || !('correlationId' in retry.data) || retry.data.correlationId !== correlationId
-        || ['completed', 'failed', 'unknown'].includes(await retry.getState())) {
+    if (!retry || !('isRetryFromRateLimit' in retry.data) || !retry.data.isRetryFromRateLimit || !('correlationId' in retry.data) || retry.data.correlationId !== correlationId) {
         throw new Error(`Unable to persist issue usage-limit retry ${jobId}`);
     }
+    const state = await retry.getState();
+    if (state === 'unknown') throw new Error(`Unable to persist issue usage-limit retry ${jobId}`);
+    if (['completed', 'failed'].includes(state)) return null;
     return retry as Job<IssueJobData>;
 }
 
@@ -177,7 +179,17 @@ export async function handleUsageLimitError(
         jobId: requeueJobId,
         delay: Math.max(0, delay)
     });
-    const persistedRetry = await requireIssueRetry(String(retryJob.id ?? requeueJobId), requeuedJobData.correlationId!);
+    let persistedRetry = await requireIssueRetry(String(retryJob.id ?? requeueJobId), requeuedJobData.correlationId!);
+    for (let generation = 0; !persistedRetry && generation <= (job.attemptsMade ?? 0); generation++) {
+        // Retain a live handoff across BullMQ attempts; only replace a terminal
+        // owner. Preserve the task/correlation identity in the new queue job.
+        if (await issueRetryWasStopped(stateManager, taskId)) return;
+        const retryAttempt = createHash('sha256').update(JSON.stringify({ attempt, generation })).digest('hex').slice(0, 16);
+        const replacementId = `${requeueJobId}-${retryAttempt}`;
+        const replacement = await issueQueue.add(job.name, requeuedJobData, { jobId: replacementId, delay: Math.max(0, delay) });
+        persistedRetry = await requireIssueRetry(String(replacement.id ?? replacementId), requeuedJobData.correlationId!);
+    }
+    if (!persistedRetry) throw new Error(`Unable to persist issue usage-limit retry ${requeueJobId}`);
     if (await issueRetryWasStopped(stateManager, taskId)) {
         await persistedRetry.remove();
         return;
@@ -263,7 +275,7 @@ export async function postCancellationNotice(
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             issue_number: issueRef.number,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can re-add the AI label to restart processing.`
+            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`
         });
     } catch (commentError) {
         correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');

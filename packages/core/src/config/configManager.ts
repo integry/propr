@@ -298,7 +298,7 @@ export async function saveAiPrimaryTag(aiPrimaryTag: string): Promise<boolean> {
 export async function loadPrimaryProcessingLabels(): Promise<string[]> {
     const defaultLabels = process.env.PRIMARY_PROCESSING_LABELS
         ? process.env.PRIMARY_PROCESSING_LABELS.split(',').map(l => l.trim()).filter(l => l)
-        : [process.env.AI_PRIMARY_TAG || 'AI'];
+        : ['AI'];
 
     const labels = await getConfig<string[]>('primary_processing_labels', defaultLabels);
     logger.info({ primary_processing_labels: labels }, 'Successfully loaded primary processing labels');

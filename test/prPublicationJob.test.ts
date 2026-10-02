@@ -267,3 +267,13 @@ test('failed mapping revalidation releases the acquired lock without processing'
     await assert.rejects(processPullRequestCommentJob(job('review', 100) as never), /Mapping lookup failed/);
     assert.deepEqual(events, ['lock:pr:upstream:project:100', 'release:lock:pr:upstream:project:100']);
 });
+
+test('legacy abort-only PR jobs return the canonical user cancellation reason', async () => {
+    preparationError = new Error('Execution aborted by user');
+    const result = await processPullRequestCommentJob(job() as never);
+    assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'cancelled', reason: 'cancelled_by_user' });
+    const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+    const { formatTaskTerminalReason } = await import('@propr/shared');
+    assert.equal(completedJobTransition(result).metadata.terminalReason, 'cancelled_by_user');
+    assert.notEqual(formatTaskTerminalReason(result.reason as 'cancelled_by_user'), 'The task ended.');
+});

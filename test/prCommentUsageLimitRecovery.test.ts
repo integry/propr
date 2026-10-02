@@ -143,3 +143,39 @@ test('successive retries do not reuse a removed retry ID within the same correla
     assert.equal(new Set([firstId, secondId, thirdId]).size, 3);
     assert.equal(jobs.get(thirdId)?.data.correlationId, source.data.correlationId);
 });
+
+for (const terminal of ['completed', 'failed']) {
+    test(`BullMQ attempts avoid both ${terminal} PR retry owners`, async () => {
+        jobs.clear();
+        const comment = { id: 705, body: 'Finish this request', author: 'alice', type: 'issue' as const };
+        const source = { id: 'retried-source', name: 'processPullRequestComment', data: makeData([comment]), attemptsMade: 0 } as Job<CommentJobData>;
+        // Exhaust both the initial owner and the stable fallback on this attempt.
+        for (let i = 0; i < 2; i++) {
+            const id = await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000);
+            jobs.get(id)!.getState = async () => terminal as 'completed' | 'failed';
+        }
+        source.attemptsMade = 1;
+        const id = await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000);
+        assert.equal(await jobs.get(id)!.getState(), 'delayed');
+        assert.equal(await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000), id);
+        source.attemptsMade = 2;
+        assert.equal(await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000), id, 'later attempts reuse live replacements');
+        jobs.get(id)!.getState = async () => terminal as 'completed' | 'failed';
+        const next = await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000);
+        assert.notEqual(next, id);
+        assert.equal(await jobs.get(next)!.getState(), 'delayed');
+        assert.equal(jobs.get(id)!.data.correlationId, source.data.correlationId);
+        assert.deepEqual(jobs.get(id)!.data.comments, [comment]);
+    });
+}
+
+
+test('a BullMQ retry reuses its live PR handoff', async () => {
+    jobs.clear();
+    const comment = { id: 706, body: 'Finish this request', author: 'alice', type: 'issue' as const };
+    const source = { id: 'live-source', name: 'processPullRequestComment', data: makeData([comment]) } as Job<CommentJobData>;
+    const id = await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000);
+    source.attemptsMade = 1;
+    assert.equal(await schedulePRCommentUsageLimitRetry(source, [comment], 'retry', 1000), id);
+    assert.equal(jobs.size, 1);
+});

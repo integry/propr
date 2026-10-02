@@ -8,6 +8,8 @@ const redisValues = new Map<string, string>();
 const jobs: any[] = [];
 const requests: Array<{ endpoint: string; params: any }> = [];
 const containers: string[] = [];
+let stopContainerWait: Promise<void> | undefined;
+let onContainerStop: (() => void) | undefined;
 let tracker: any = { state: 'open', labels: [{ name: 'AI' }] };
 let trackerError: Error | undefined;
 let closingPR: any;
@@ -78,7 +80,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { g
 } }) } });
 await mock.module('../packages/core/src/config/configManager.js', { namedExports: { loadPrimaryProcessingLabels: async () => ['AI', 'build'] } });
 await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => ({ select: () => ({ where: () => ({ first: async () => undefined }) }) }) } });
-await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); return { success: true }; } } });
+await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); onContainerStop?.(); await stopContainerWait; return { success: true }; } } });
 await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
 const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId, restoreIssueTrigger } = await import('../packages/core/src/services/taskIntent.js');
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
@@ -110,7 +112,7 @@ async function removeTrigger(label: string, labels: string[]) {
 }
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
-beforeEach(() => { discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; });
+beforeEach(() => { stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -854,3 +856,36 @@ test('restoration stops when intent is withdrawn between label deletions', async
     assert.deepEqual(requests.filter(r => r.endpoint.startsWith('DELETE ')).map(r => r.params.name), ['AI-processing']);
     assert.ok(tracker.labels.includes('build-cancelled'));
 });
+
+for (const kind of ['issue', 'pr'] as const) {
+    test(`empty ${kind} cancellation skips GitHub reads and follow-up scans`, async t => {
+        const scan = t.mock.method(manager, 'scanNonTerminalTasks');
+        const scanQueue = t.mock.method(queue, 'getJobs');
+        await cancelWithdrawnIntent({ ...target, kind }, kind === 'issue' ? 'cancelled_issue_closed' : 'cancelled_pr_closed', redis as never);
+        assert.deepEqual(requests, []);
+        assert.deepEqual(clearedLoops, []);
+        assert.equal(scan.mock.callCount(), 1, 'only candidate discovery scans state');
+        assert.equal(scanQueue.mock.callCount(), 1, 'only candidate discovery scans the queue');
+    });
+}
+
+for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed'] as const) {
+    test(`${reason} records durable cancellation before a slow container stop`, async () => {
+        const ref = reason === 'cancelled_pr_closed' ? { ...target, kind: 'pr' as const, type: 'pr-comment', pullRequestNumber: 42 } : target;
+        addRunning('slow-container', ref);
+        tracker = { state: reason === 'cancelled_label_removed' ? 'open' : 'closed', labels: [], merged: false };
+        let release!: () => void;
+        stopContainerWait = new Promise<void>(resolve => { release = resolve; });
+        const stopping = new Promise<void>(resolve => { onContainerStop = resolve; });
+        const cancellation = cancelWithdrawnIntent(ref, reason, redis as never);
+        await stopping;
+        try {
+            assert.equal(states.get('slow-container').terminalReason, reason);
+            assert.equal(JSON.parse(redisValues.get('worker:abort:slow-container')!).reason, reason);
+            // Restoration during Docker stop revokes label mutation authority.
+            tracker = { state: 'open', labels: ['AI'], merged: false };
+        } finally { release(); }
+        await cancellation;
+        assert.ok(requests.every(request => request.endpoint.startsWith('GET ')));
+    });
+}

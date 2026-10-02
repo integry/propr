@@ -629,7 +629,7 @@ test('the owner renews its claim before each issue and aborts a request at the l
   // Lease deadlines use Date.now(), so advance the wall clock with the timers.
   // Freezing it during renewal and scheduling prevents real elapsed time from
   // shortening the lease and moving the abort deadline before the tick below.
-  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const renewals: string[] = [];
   const remote: Array<{ number: number; html_url: string; title: string; body: string }> = [];
   let hang = true;

@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 process.env.PROPR_DEMO_MODE = 'true';
+process.env.MERGED_PR_CANCELLATION_WAIT_MS = '20';
 let cancellationError: Error | undefined;
+let cancellationWait: Promise<void> | undefined;
+let cancellationFinished = false;
+const restore = mock.fn(async () => ['AI']);
 const handlers: string[] = [];
-beforeEach(() => { cancellationError = undefined; handlers.length = 0; });
+beforeEach(() => { cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
-    restoreIssueTrigger: async () => [],
-    cancelWithdrawnIntent: async (target: any, reason: string) => { cancellations.push({ target, reason }); if (cancellationError) throw cancellationError; },
+    restoreIssueTrigger: restore,
+    cancelWithdrawnIntent: async (target: any, reason: string) => { cancellations.push({ target, reason }); await cancellationWait; cancellationFinished = true; if (cancellationError) throw cancellationError; },
 } });
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
     handlePlanIssueStatusUpdate: async () => { handlers.push('plan-issue'); }, handlePlanPRUpdate: async () => { handlers.push('plan-pr'); }, handlePlanPRCommentTracking: async () => {},
@@ -78,3 +82,58 @@ test('withdrawal failure preserves closed issue plan tracking and standard dispo
     assert.deepEqual(handlers, ['plan-issue']);
     assert.deepEqual(result, { status: 'ignored', reason: 'unsupported_issue_action' });
 });
+
+for (const event of ['issues', 'pull_request'] as const) {
+    for (const fails of [false, true]) {
+        test(`${event} slow withdrawal finishes in the background (failure: ${fails})`, { timeout: 1000 }, async () => {
+            let finish!: () => void;
+            cancellationWait = new Promise<void>(resolve => { finish = resolve; });
+            if (fails) cancellationError = new Error('late cancellation failure');
+            const delivery = processWebhookEvent({ repository, action: 'closed',
+                ...(event === 'issues' ? { issue: { number: 42 } } : { pull_request: { number: 87, merged: false } }),
+            }, event, 'slow-withdrawal');
+            await delivery;
+            assert.equal(cancellationFinished, false);
+            assert.ok(handlers.includes(event === 'issues' ? 'plan-issue' : 'standard-pr'));
+            finish();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            assert.equal(cancellationFinished, true);
+        });
+    }
+}
+
+test('trigger payloads without stale status skip restoration and reach admission', async () => {
+    for (const labels of [['AI'], ['AI', 'unrelated-processing'], ['AI', 'AI-done']]) {
+        await processWebhookEvent({ repository, action: 'labeled', label: { name: 'AI' },
+            sender: { login: 'alice' }, issue: { number: 42, state: 'open', labels },
+        }, 'issues', 'ordinary-label');
+    }
+    assert.equal(restore.mock.callCount(), 0);
+    assert.equal(processed.length, 3);
+});
+
+for (const actor of ['alice', 'mallory', undefined, 'propr-dev[bot]']) {
+    for (const stale of ['AI-processing', 'AI-cancelled', 'build-cancelled']) {
+        test(`restoration authorizes ${actor ?? 'missing actor'} before clearing ${stale}`, async () => {
+            const oldWhitelist = process.env.GITHUB_USER_WHITELIST;
+            const oldTriggers = process.env.PRIMARY_PROCESSING_LABELS;
+            process.env.GITHUB_USER_WHITELIST = 'alice';
+            process.env.PRIMARY_PROCESSING_LABELS = 'AI,build';
+            try {
+                const result = await processWebhookEvent({ repository, action: 'labeled', label: { name: 'AI' },
+                    sender: actor ? { login: actor } : undefined,
+                    issue: { number: 42, state: 'open', labels: ['AI', stale] },
+                }, 'issues', 'restore-label');
+                const allowed = actor === 'alice' || actor === 'propr-dev[bot]';
+                assert.equal(restore.mock.callCount(), allowed ? 1 : 0);
+                assert.equal(processed.length, allowed ? 1 : 0);
+                if (!allowed) assert.deepEqual(result, { status: 'ignored', reason: 'user_not_allowed' });
+            } finally {
+                if (oldWhitelist === undefined) delete process.env.GITHUB_USER_WHITELIST;
+                else process.env.GITHUB_USER_WHITELIST = oldWhitelist;
+                if (oldTriggers === undefined) delete process.env.PRIMARY_PROCESSING_LABELS;
+                else process.env.PRIMARY_PROCESSING_LABELS = oldTriggers;
+            }
+        });
+    }
+}

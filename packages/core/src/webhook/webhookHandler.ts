@@ -1,4 +1,5 @@
 import { cancelWithdrawnIntent, restoreIssueTrigger } from '../services/taskIntent.js';
+import { isAuthorizedIssueTriggerActor } from '../daemon/issueTriggerAuthorization.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
@@ -20,6 +21,12 @@ import type {
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+
+// Share the merged-PR canceller's delivery budget. The cancellation promise
+// remains observed after timeout so durable recording and container stops finish.
+const configuredCancellationWait = Number.parseInt(process.env.MERGED_PR_CANCELLATION_WAIT_MS ?? '', 10);
+export const INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS = Number.isFinite(configuredCancellationWait) && configuredCancellationWait > 0
+    ? configuredCancellationWait : 8_000;
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
@@ -154,7 +161,10 @@ async function handleIssuesEvent(
         const [owner, repo] = payload.repository.full_name.split('/');
 
         let labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
-        if (!payload.issue.pull_request && payload.label?.name && (await loadPrimaryProcessingLabels()).includes(payload.label.name)) {
+        const triggers = !payload.issue.pull_request && payload.label?.name ? await loadPrimaryProcessingLabels() : [];
+        if (!payload.issue.pull_request && payload.label?.name && triggers.includes(payload.label.name)
+            && (labels.includes(`${payload.label.name}-processing`) || triggers.some(trigger => labels.includes(`${trigger}-cancelled`)))) {
+            if (!isAuthorizedIssueTriggerActor(payload.sender?.login)) return { status: 'ignored', reason: 'user_not_allowed' };
             const restored = await restoreIssueTrigger({ repoOwner: owner, repoName: repo, number: payload.issue.number, kind: 'issue', triggeringLabel: payload.label.name });
             if (!restored) return { status: 'ignored', reason: 'intent_not_current' };
             labels = restored;
@@ -427,10 +437,18 @@ export async function processWebhookEvent(
         }
     }
 
-    try {
-        await handleIntentWithdrawal(payload, eventType);
-    } catch (error) {
+    const cancellation = handleIntentWithdrawal(payload, eventType).catch(error => {
         correlatedLogger.warn({ error }, 'Intent withdrawal failed; continuing webhook handlers, polling will retry cancellation');
+    });
+    let waitTimer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+        cancellation.then(() => false),
+        new Promise<boolean>(resolve => { waitTimer = setTimeout(() => resolve(true), INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS); }),
+    ]);
+    clearTimeout(waitTimer);
+    if (timedOut) {
+        correlatedLogger.warn({ repository, waitMs: INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS },
+            'Intent withdrawal exceeded delivery budget; remaining cancellation work continues in the background');
     }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);

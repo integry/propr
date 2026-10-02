@@ -263,6 +263,7 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
         candidates.delete(taskId);
         candidates.set(String(job.id), { taskId, target: candidate });
     }
+    if (candidates.size === 0) return;
     // Read after the awaited scans. Event payloads and earlier polling reads
     // cannot authorize cancellation of a newly restored request.
     const triggers = await loadPrimaryProcessingLabels();

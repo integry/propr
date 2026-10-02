@@ -448,7 +448,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled' };
+            return { status: 'cancelled', reason: 'cancelled_by_user' };
         }
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit' };

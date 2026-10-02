@@ -26,7 +26,7 @@ await mock.module('@propr/core', { namedExports: {
     updateWithdrawnIssueLabels: async (...args: unknown[]) => { labels.push(args); },
     TaskStates: { CANCELLED: 'cancelled', COMPLETED: 'completed', FAILED: 'failed' },
 } });
-const { handleUsageLimitError, handleGenericError } = await import('../src/jobs/errorHandlers.js');
+const { handleUsageLimitError, handleGenericError, postCancellationNotice } = await import('../src/jobs/errorHandlers.js');
 const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
 const data = { repoOwner: 'acme', repoName: 'widgets', number: 42, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request', isChildJob: true, triggeringLabel: 'AI' };
 const source = { id: 'source', name: 'processGitHubIssue', data };
@@ -100,3 +100,49 @@ for (const boundary of ['before scheduling', 'queue add', 'state update']) {
         assert.equal([...jobs.values()][0].data.correlationId, data.correlationId);
     });
 }
+
+for (const terminal of ['completed', 'failed']) {
+    test(`a BullMQ-retried source gets a new owner after the previous retry ${terminal}`, async () => {
+        await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+        const previous = [...jobs.values()][0];
+        previous.getState = async () => terminal;
+        const retriedSource = { ...source, attemptsMade: 1 };
+        await handleUsageLimitError(new Error('usage limit'), retriedSource as any, data, options());
+        const next = [...jobs.values()].find(job => job.id !== previous.id)!;
+        assert.ok(next);
+        assert.equal(await next.getState(), 'delayed');
+        assert.equal(taskIdFor(next.data), taskIdFor(data));
+        await handleUsageLimitError(new Error('usage limit'), retriedSource as any, data, options());
+        assert.equal(jobs.size, 2, 'the same BullMQ attempt still deduplicates');
+        await handleUsageLimitError(new Error('usage limit'), { ...source, attemptsMade: 2 } as any, data, options());
+        assert.equal(jobs.size, 2, 'later attempts reuse a live replacement too');
+        next.getState = async () => terminal;
+        await handleUsageLimitError(new Error('usage limit'), { ...source, attemptsMade: 2 } as any, data, options());
+        assert.equal(jobs.size, 3, 'later attempts replace a terminal replacement');
+    });
+}
+
+test('user-stop notice explains how to restart a trigger that remains applied', async () => {
+    const request = mock.fn(async () => ({}));
+    await postCancellationNotice(data, { ...options(), octokit: { request } });
+    const [, params] = request.mock.calls[0].arguments as unknown as [string, { body: string }];
+    assert.match(params.body, /remove and re-add the trigger label/);
+});
+
+
+test('a BullMQ retry reuses its existing live issue handoff', async () => {
+    await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+    await handleUsageLimitError(new Error('usage limit'), { ...source, attemptsMade: 1 } as any, data, options());
+    assert.equal(jobs.size, 1);
+});
+
+
+test('cancellation while scheduling a replacement removes the new retry', async () => {
+    await handleUsageLimitError(new Error('usage limit'), source as any, data, options());
+    const previous = [...jobs.values()][0];
+    previous.getState = async () => 'completed';
+    let adds = 0;
+    onAdd = () => { if (++adds === 2) state = { state: 'cancelled', terminalReason: 'cancelled_by_user' }; };
+    await handleUsageLimitError(new Error('usage limit'), { ...source, attemptsMade: 1 } as any, data, options());
+    assert.deepEqual([...jobs.keys()], [previous.id]);
+});
