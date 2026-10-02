@@ -57,6 +57,22 @@ describe('New Task issue launcher', () => {
     expect(planner.createDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/What's done|Continue|Pause goal/)).not.toBeInTheDocument();
   });
+  it('shows recovery guidance only after a submission problem', async () => {
+    let resolve!: (value: submissions.TaskSubmission) => void;
+    vi.mocked(submissions.submitTask).mockReturnValue(new Promise(done => { resolve = done; }));
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    expect(await screen.findByRole('status')).toHaveTextContent('Submitting…');
+    expect(screen.queryByText(/Retry checks this submission/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start over opens a new request/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    await act(async () => resolve(pending));
+    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
+    expect(screen.getByText(/Start over opens a new request/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start over' })).toBeInTheDocument();
+  });
   it('recovers the same identity after reload without resubmitting an issue', async () => {
     sessionStorage.setItem(`task-active-submission:${API_BASE_URL}:alice`, 'saved-key');
     vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue({ key: 'saved-key', payload: { repository: 'acme/billing', instruction: 'Saved request' }, files: [] });

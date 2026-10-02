@@ -194,14 +194,23 @@ function submissionStatus(busy: boolean, result?: TaskSubmission, snapshot?: Tas
   return snapshot ? 'Confirming submission with GitHub' : null;
 }
 
+// Recovery guidance only applies once something went wrong or the outcome is
+// unknown (for example a lost response or a reload before confirmation).
+function submissionNeedsRecovery(busy: boolean, error: string | null, result?: TaskSubmission, snapshot?: TaskSnapshot) {
+  if (!snapshot) return false;
+  if (error || result?.error) return true;
+  return result ? result.state === 'prepared' || result.state === 'failed' : !busy;
+}
+
 function TaskSubmissionFeedback({ busy, result, snapshot, error, invalidRouting }:
   Pick<LauncherState, 'busy' | 'result' | 'snapshot' | 'error' | 'invalidRouting'>) {
   const status = submissionStatus(busy, result, snapshot);
+  const needsRecovery = submissionNeedsRecovery(busy, error, result, snapshot);
 
   return <>
     {invalidRouting && <p role="alert" className="text-sm text-red-700">The saved agent or model is unavailable. Choose a supported selection in Advanced Options.</p>}
     {(error || result?.error) && <p role="alert" className="break-words rounded-md bg-red-50 p-3 text-sm text-red-800">{error || result?.error}</p>}
-    {status && <div role="status" className="rounded-md border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700"><p className="font-semibold">{status}</p>{result?.issueUrl && <a href={result.issueUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-teal-700 underline">Open issue #{result.issueNumber}</a>}{snapshot && !result?.issueUrl && <p className="mt-2">Retry checks this submission before creating anything else.</p>}{snapshot && result?.state !== 'prepared' && <p className="mt-2">Start over opens a new request. It does not cancel this submission.</p>}</div>}
+    {status && <div role="status" className="rounded-md border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700"><p className="font-semibold">{status}</p>{result?.issueUrl && <a href={result.issueUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-teal-700 underline">Open issue #{result.issueNumber}</a>}{needsRecovery && !result?.issueUrl && <p className="mt-2">Retry checks this submission before creating anything else.</p>}{needsRecovery && result?.state !== 'prepared' && <p className="mt-2">Start over opens a new request. It does not cancel this submission.</p>}</div>}
   </>;
 }
 
@@ -211,7 +220,7 @@ function TaskLauncherActions({ onCancel, snapshot, result, startOver, ready, bus
 
   return <div className="flex flex-none flex-wrap justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
     <button type="button" onClick={onCancel} disabled={busy || processingFiles} className={`${button} mr-auto border-transparent text-slate-700 hover:bg-slate-100`}>Cancel</button>
-    {snapshot && <button type="button" onClick={() => void startOver()} disabled={busy || isDemoMode} className={`${button} border-slate-300 bg-white text-slate-700`}>{result?.state === 'prepared' ? 'Edit request' : 'Start over'}</button>}
+    {snapshot && (result || !busy) && <button type="button" onClick={() => void startOver()} disabled={busy || isDemoMode} className={`${button} border-slate-300 bg-white text-slate-700`}>{result?.state === 'prepared' ? 'Edit request' : 'Start over'}</button>}
     {!snapshot && <button type="button" onClick={() => void planFirst()} disabled={launchDisabled} className={`${button} border-slate-300 bg-white text-slate-700 hover:bg-slate-100`}><ScrollText aria-hidden="true" size={16} />Plan first</button>}
     {result?.state !== 'queued' && <button type="submit" disabled={launchDisabled || Boolean(planDraft) || invalidRouting} className={`${button} border-teal-600 bg-teal-600 text-white hover:bg-teal-700`}>{busy ? 'Submitting…' : snapshot ? 'Retry submission' : 'Run task'}</button>}
   </div>;
