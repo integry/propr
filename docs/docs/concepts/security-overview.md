@@ -24,7 +24,25 @@ Model calls go directly from your stack to the provider you configured. ProPR is
 
 Every implementation task runs in its own Docker container and its own Git worktree on a dedicated branch. The agent edits files; it does not commit, push, or open PRs — ProPR performs those Git and GitHub operations deterministically after the agent finishes. The main checkout is never touched, and a wrong result is contained to a branch you can review, retry, or discard. Details: [Execution Safety](../features/execution-safety.md).
 
-The container isolates the workspace; it does not keep ProPR's GitHub access or other clones away from the agent. Implementation containers receive a GitHub installation token (`GH_TOKEN`) with the installation's permissions, so the no-push rule is enforced by the workflow instructions rather than by token scope. Most agents also mount the shared git directory that holds every repository clone on the host, so an agent can read other repositories ProPR has cloned. Run repositories with different trust levels on separate stacks.
+Implementation, follow-up, review-fix, and direct-goal containers receive a
+read-only GitHub installation token. GitHub enforces the boundary: agents can
+read issues, PRs, check results and repository contents, but cannot push, merge,
+label or post issue/PR comments. The worker keeps its full credential outside the container and
+authenticates git through process environment variables; shared clone remote URLs
+do not contain it. All five adapters mount git metadata and other repositories'
+working copies read-only while keeping task files writable. GitHub permits
+[creating commit comments with `contents: read`](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment),
+so token scoping does not prohibit every possible API mutation. A strict ban on
+all API writes requires a host-side read broker.
+
+Cross-repository reads cover the installation by default. Administrators can set
+`contextRepositories` to `"none"` or a list of `owner/repository` names in the
+repository settings API to restrict both the token and mounted clones to the task
+repository plus that list. Public GitHub data remains accessible over the network.
+Orchestrated goals retain write access because they create issues and epic PRs.
+The token relay must honor scoped mint requests and return scope metadata;
+otherwise agent launch fails closed. See [Execution Safety](../features/execution-safety.md#context-repositories)
+for the configuration and relay contract.
 
 Outbound network access from agent containers is **unrestricted by default**. An optional allowlist firewall (Anthropic API, GitHub, DNS, and outbound SSH only) ships in the unified agent image but is off by default because it requires privileged containers, and its allowlist covers only Claude Code's provider — do not assume network sandboxing unless you enabled it.
 
