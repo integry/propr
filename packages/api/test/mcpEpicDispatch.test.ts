@@ -14,24 +14,38 @@ process.env.DATA_DIR = root;
 process.env.DB_FILENAME = path.join(root, 'test.sqlite');
 const labelCalls: Array<{ number: number; labels: string[] }> = [];
 const issueLabels = new Map<number, string[]>();
+let epicPR: { number: number; labels: string[] } | null = null;
+let epicLookups = 0;
+let epicLabelFailure = false;
+let beforeAuthenticatedClient: (() => Promise<void>) | undefined;
+let afterEpicLookup: (() => Promise<void>) | undefined;
 const auth = await import('../../core/src/auth/githubAuth.js');
 await mock.module('../../core/src/auth/githubAuth.js', { namedExports: { ...auth,
-  getAuthenticatedOctokit: async () => ({ request: async (route: string, input: Record<string, unknown>) => {
-    const number = Number(input.issue_number);
-    if (route.startsWith('GET') && route.includes('/issues/')) return { data: { labels: issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'] } };
-    if (route.startsWith('POST') && route.includes('/labels')) {
-      const labels = input.labels as string[];
-      labelCalls.push({ number, labels });
-      issueLabels.set(number, [...new Set([...(issueLabels.get(number) ?? []), ...labels])]);
-      return { data: [] };
-    }
-    if (route.startsWith('DELETE')) {
-      issueLabels.set(number, (issueLabels.get(number) ?? []).filter(label => label !== input.name));
-      return { data: {} };
-    }
-    if (route.startsWith('GET') && route.includes('/pulls')) return { data: [] };
-    throw new Error(`Unexpected route: ${route}`);
-  } }),
+  getAuthenticatedOctokit: async () => {
+    await beforeAuthenticatedClient?.();
+    return { request: async (route: string, input: Record<string, unknown>) => {
+      const number = Number(input.issue_number);
+      if (route.startsWith('GET') && route.includes('/issues/')) return { data: { labels: issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'] } };
+      if (route.startsWith('POST') && route.includes('/labels')) {
+        if (number === 999 && epicLabelFailure) throw new Error('Epic labeling unavailable');
+        const labels = input.labels as string[];
+        labelCalls.push({ number, labels });
+        issueLabels.set(number, [...new Set([...(issueLabels.get(number) ?? []), ...labels])]);
+        return { data: [] };
+      }
+      if (route.startsWith('DELETE')) {
+        issueLabels.set(number, (issueLabels.get(number) ?? []).filter(label => label !== input.name));
+        return { data: {} };
+      }
+      if (route.startsWith('GET') && route.includes('/pulls')) {
+        epicLookups++;
+        const data = epicPR ? [{ ...epicPR, labels: [...(issueLabels.get(epicPR.number) ?? epicPR.labels)] }] : [];
+        await afterEpicLookup?.();
+        return { data };
+      }
+      throw new Error(`Unexpected route: ${route}`);
+    } };
+  },
 } });
 const eventPublisher = await import('../../core/src/utils/eventPublisher.js');
 await mock.module('../../core/src/utils/eventPublisher.js', { namedExports: { ...eventPublisher,
@@ -105,6 +119,7 @@ beforeEach(async () => {
   dispatches.length = 0; updates.length = 0; githubCalls.length = 0; labelCalls.length = 0; issueLabels.clear();
   for (const number of [10, 20, 30, 40]) issueLabels.set(number, ['llm-old', 'base-old', 'auto-merge']);
   dispatchFailure = false; configFailure = false;
+  epicPR = null; epicLookups = 0; epicLabelFailure = false; afterEpicLookup = undefined; beforeAuthenticatedClient = undefined;
 });
 
 test('pure policy orders only selected epic issues, and preserves parallel/non-epic dispatch order', () => {
@@ -207,7 +222,7 @@ test('sequential receipt exposes queue and remains accepted through under_review
   assert.equal(data.state, 'accepted');
   assert.equal(data.targetState.epicQueue.status, 'active');
   await database('plan_issues').where({ draft_id: planId }).whereIn('issue_number', [10, 30, 40]).update({ status: 'merged' });
-  await core.startEpicQueueHead(planId, { finalize: async () => {} });
+  await core.startEpicQueueHead(planId, { finalize: async () => true });
   const completed = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
   assert.equal((completed.data as { state: string }).state, 'completed');
   assert.equal((completed.data as { targetState: { epicQueue: { status: string } } }).targetState.epicQueue.status, 'completed');
@@ -238,4 +253,141 @@ test('drafts without a queue retain the legacy processing, auto-merge and epic l
   await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'merged' });
   await core.triggerNextPendingIssue(planId, repository, 'base-epic', core.logger.withCorrelation('legacy-test'));
   assert.deepEqual(labelCalls, [{ number: 20, labels: ['AI', 'auto-merge', 'base-epic'] }]);
+});
+
+
+const { handleMergedPRNextIssueTrigger } = await import('../../core/src/webhook/planIssueTrigger.js');
+
+test('a completed subset queue lets UI merges continue the legacy chain and finalize once', async () => {
+  epicPR = { number: 999, labels: [] };
+  await run({ issues: [10, 20] });
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  await core.updatePlanIssueStatus(repository, 20, core.PlanIssueStatus.MERGED);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+  assert.equal((await core.getEpicExecutionQueue(planId))?.finalizedAt, null);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [20]);
+  // The user starts issue 30 in the UI, then its merge starts unselected issue 40.
+  issueLabels.set(30, ['base-epic']);
+  await core.updatePlanIssueStatus(repository, 30, core.PlanIssueStatus.MERGED);
+  await handleMergedPRNextIssueTrigger(repository, 30, planId, core.logger.withCorrelation('ui-merge'));
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).slice(-1), [
+    { number: 40, labels: ['AI', 'auto-merge', 'base-epic'] }
+  ]);
+  await core.updatePlanIssueStatus(repository, 40, core.PlanIssueStatus.MERGED);
+  await handleMergedPRNextIssueTrigger(repository, 40, planId, core.logger.withCorrelation('ui-finalize'));
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  issueLabels.set(999, ['AI-done']);
+  await core.reconcileEpicExecutionQueues();
+  await handleMergedPRNextIssueTrigger(repository, 40, planId, core.logger.withCorrelation('ui-duplicate'));
+  assert.equal(labelCalls.filter(call => call.number === 999).length, 1);
+});
+
+test('cancelled queues preserve the legacy UI progression path', async () => {
+  await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10] });
+  await core.cancelEpicExecutionQueue(planId);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  await core.triggerNextPendingIssue(planId, repository, 'base-epic', core.logger.withCorrelation('cancelled-ui'));
+  assert.deepEqual(labelCalls, [{ number: 20, labels: ['AI', 'auto-merge', 'base-epic'] }]);
+});
+
+async function completeAllSelectedIssues() {
+  await run({ issues: [10, 20, 30, 40] });
+  await database('plan_issues').where({ draft_id: planId }).update({ status: 'merged' });
+  await core.startEpicQueueHead(planId);
+}
+
+test('finalized epics are not relabeled after the processing label is consumed', async () => {
+  epicPR = { number: 999, labels: [] };
+  await completeAllSelectedIssues();
+  assert.deepEqual(labelCalls.filter(call => call.number === 999), [{ number: 999, labels: ['AI'] }]);
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  issueLabels.set(999, ['AI-done']);
+  assert.deepEqual(await core.reconcileEpicExecutionQueues(), { reconciled: 0 });
+  assert.deepEqual(await core.reconcileEpicExecutionQueues(), { reconciled: 0 });
+  assert.equal(epicLookups, 1);
+});
+
+test('GitHub labeling failure preserves the obligation for reconciliation', async () => {
+  epicPR = { number: 999, labels: [] };
+  epicLabelFailure = true;
+  await completeAllSelectedIssues();
+  assert.equal((await core.getEpicExecutionQueue(planId))?.finalizedAt, null);
+  epicLabelFailure = false;
+  await core.reconcileEpicExecutionQueues();
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  assert.equal(labelCalls.filter(call => call.number === 999).length, 1);
+});
+
+test('legacy completion uses persisted epic evidence when its event has no epic label', async () => {
+  epicPR = { number: 999, labels: [] };
+  epicLabelFailure = true;
+  await completeAllSelectedIssues();
+  assert.equal((await core.getEpicExecutionQueue(planId))?.finalizedAt, null);
+  epicLabelFailure = false;
+  await core.triggerNextPendingIssue(planId, repository, undefined, core.logger.withCorrelation('legacy-no-epic-label'));
+  assert.deepEqual(labelCalls.filter(call => call.number === 999), [{ number: 999, labels: ['AI'] }]);
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+});
+
+test('no open epic PR resolves finalization without repeating GitHub lookups', async () => {
+  await completeAllSelectedIssues();
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  assert.equal(epicLookups, 1);
+  await core.reconcileEpicExecutionQueues();
+  assert.equal(epicLookups, 1);
+});
+
+test('pausing during epic lookup defers labeling until recovery after resume', async () => {
+  epicPR = { number: 999, labels: [] };
+  afterEpicLookup = async () => { await core.pauseDraft(planId); };
+  await completeAllSelectedIssues();
+  assert.equal(labelCalls.some(call => call.number === 999), false);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.finalizedAt, null);
+  afterEpicLookup = undefined;
+  await core.reconcileEpicExecutionQueues();
+  assert.equal(labelCalls.some(call => call.number === 999), false);
+  await core.resumeDraft(planId);
+  await core.reconcileEpicExecutionQueues();
+  assert.equal(labelCalls.filter(call => call.number === 999).length, 1);
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+});
+
+test('a child becoming pending during epic lookup keeps finalization owed', async () => {
+  epicPR = { number: 999, labels: [] };
+  afterEpicLookup = async () => {
+    await database('plan_issues').where({ draft_id: planId, issue_number: 40 }).update({ status: 'pending' });
+  };
+  await completeAllSelectedIssues();
+  assert.equal(labelCalls.some(call => call.number === 999), false);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.finalizedAt, null);
+  afterEpicLookup = undefined;
+  await database('plan_issues').where({ draft_id: planId, issue_number: 40 }).update({ status: 'merged' });
+  await core.reconcileEpicExecutionQueues();
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+});
+
+test('replacement during epic lookup revokes the old finalizer before labeling', async () => {
+  epicPR = { number: 999, labels: [] };
+  afterEpicLookup = async () => {
+    await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [40] });
+  };
+  await completeAllSelectedIssues();
+  assert.equal(labelCalls.some(call => call.number === 999), false);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.status, 'active');
+  assert.equal(queue?.finalizedAt, null);
+  assert.equal(queue?.finalizationStartedAt, null);
+});
+
+
+test('legacy progression rechecks ownership after authentication before labeling an unselected issue', async () => {
+  await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10] });
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+  beforeAuthenticatedClient = async () => {
+    await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [40] });
+  };
+  await core.triggerNextPendingIssue(planId, repository, 'base-epic', core.logger.withCorrelation('replacement-ui'));
+  assert.equal(labelCalls.some(call => call.number === 20), false);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
 });

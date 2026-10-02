@@ -12,7 +12,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
 import { db } from '../db/connection.js';
-import { getEpicExecutionQueue } from '../services/taskPlanning/epicExecutionQueue.js';
+import { getEpicExecutionQueue, finalizeCompletedEpicQueue } from '../services/taskPlanning/epicExecutionQueue.js';
 
 interface LatestTaskHistoryRow {
     state: string;
@@ -115,13 +115,14 @@ async function getIssueLabels(
 async function addProcessingLabelToEpicPR(
     repository: string,
     epicLabel: string,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
+    log: ReturnType<typeof logger.withCorrelation>,
+    canFinalize: () => Promise<boolean>
+): Promise<boolean> {
     try {
         // Extract the Epic branch name from the label (format: base-{branchName})
         if (!epicLabel.startsWith('base-')) {
             log.debug({ epicLabel }, 'Invalid epic label format, skipping');
-            return;
+            return true;
         }
         const epicBranchName = epicLabel.slice(5); // Remove 'base-' prefix
 
@@ -136,9 +137,11 @@ async function addProcessingLabelToEpicPR(
             state: 'open'
         });
 
+        if (!await canFinalize()) return false;
+
         if (epicPRs.data.length === 0) {
             log.debug({ repository, epicBranchName }, 'No open Epic PR found');
-            return;
+            return true;
         }
 
         const epicPR = epicPRs.data[0];
@@ -149,7 +152,7 @@ async function addProcessingLabelToEpicPR(
         const existingLabels = epicPR.labels?.map(l => typeof l === 'string' ? l : l.name) || [];
         if (existingLabels.includes(primaryLabel)) {
             log.debug({ repository, prNumber: epicPR.number, primaryLabel }, 'Epic PR already has processing label');
-            return;
+            return true;
         }
 
         // Add the processing label to the Epic PR
@@ -165,6 +168,7 @@ async function addProcessingLabelToEpicPR(
             prNumber: epicPR.number,
             label: primaryLabel
         }, 'Added processing label to Epic PR - all child issues are done');
+        return true;
 
     } catch (error) {
         log.warn({
@@ -172,12 +176,13 @@ async function addProcessingLabelToEpicPR(
             epicLabel,
             error: (error as Error).message
         }, 'Failed to add processing label to Epic PR');
+        return false;
     }
 }
 
 /** Starts an issue using the same processing-label path as the legacy epic chain. */
 export async function labelPlanIssueForProcessing({
-    repository, issueNumber, correlationId, draftId, epicLabel, autoMerge = true, log: suppliedLog
+    repository, issueNumber, correlationId, draftId, epicLabel, autoMerge = true, log: suppliedLog, canStart
 }: {
     repository: string;
     issueNumber: number;
@@ -186,6 +191,7 @@ export async function labelPlanIssueForProcessing({
     epicLabel?: string;
     autoMerge?: boolean;
     log?: ReturnType<typeof logger.withCorrelation>;
+    canStart?: () => Promise<boolean>;
 }): Promise<void> {
     const log = suppliedLog ?? logger.withCorrelation(correlationId || `epic-queue-${draftId}-${issueNumber}`);
     const [owner, repo] = repository.split('/');
@@ -207,6 +213,8 @@ export async function labelPlanIssueForProcessing({
 
     const octokit = await getAuthenticatedOctokit();
 
+    if (canStart && !await canStart()) return;
+
     // Add the processing labels to trigger the issue
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
         owner,
@@ -226,21 +234,20 @@ export async function labelPlanIssueForProcessing({
 /** Labels the epic PR only after all children in the draft are done. */
 export async function finalizeEpicPlanIfComplete(draftId: string, legacy?: {
     repository: string; epicLabel?: string; log: ReturnType<typeof logger.withCorrelation>;
-}): Promise<void> {
-    // The legacy caller has already checked every issue and supplies its original label and logger.
-    if (legacy) {
-        if (legacy.epicLabel) await addProcessingLabelToEpicPR(legacy.repository, legacy.epicLabel, legacy.log);
-        return;
-    }
-    const draft = await db('task_drafts').where({ draft_id: draftId }).first('repository', 'context_config', 'paused');
-    if (!draft || draft.paused) return;
-    const issues = await getPlanIssuesByDraft(draftId);
-    if (issues.some(issue => isInProgressStatus(issue.status) || issue.status === PlanIssueStatus.PENDING)) return;
+}, canFinalize: () => Promise<boolean> = async () => true): Promise<boolean> {
+    const isReady = async () => {
+        const issues = await getPlanIssuesByDraft(draftId);
+        if (issues.some(issue => isInProgressStatus(issue.status) || issue.status === PlanIssueStatus.PENDING)) return false;
+        const draft = await db('task_drafts').where({ draft_id: draftId }).first('paused');
+        return !!draft && !draft.paused && await canFinalize();
+    };
+    const draft = await db('task_drafts').where({ draft_id: draftId }).first('repository', 'context_config');
+    if (!draft || !await isReady()) return false;
     const context = parseHistoryMetadata(draft.context_config);
-    const epicLabel = typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
-    if (epicLabel) {
-        await addProcessingLabelToEpicPR(draft.repository, epicLabel, logger.withCorrelation(`epic-complete-${draftId}`));
-    }
+    const epicLabel = legacy ? legacy.epicLabel : typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
+    if (!epicLabel) return true;
+    return addProcessingLabelToEpicPR(legacy?.repository ?? draft.repository, epicLabel,
+        legacy?.log ?? logger.withCorrelation(`epic-complete-${draftId}`), isReady);
 }
 
 /**
@@ -255,11 +262,13 @@ export async function triggerNextPendingIssue(
 ): Promise<void> {
     try {
         const queue = await getEpicExecutionQueue(draftId);
-        // A cancelled initial dispatch hands control back to the legacy chain.
-        if (queue && queue.status !== 'cancelled') {
+        // Only an active queue owns progression; finished subsets return control to the UI chain.
+        if (queue?.status === 'active') {
             log.info({ draftId, handledBy: 'epic_execution_queue' }, 'Queue owns plan issue progression');
             return;
         }
+
+        const legacyOwnsProgression = async () => (await getEpicExecutionQueue(draftId))?.status !== 'active';
 
         // Check if the draft is paused - if so, don't trigger the next issue
         const paused = await isDraftPaused(draftId);
@@ -293,11 +302,16 @@ export async function triggerNextPendingIssue(
             log.debug({ draftId }, 'No more pending issues in plan');
 
             // All issues are done - add processing label to Epic PR if present
-            await finalizeEpicPlanIfComplete(draftId, { repository, epicLabel, log });
+            if (queue?.status === 'completed') {
+                await finalizeCompletedEpicQueue(draftId, {}, queue.executionId);
+            } else {
+                await finalizeEpicPlanIfComplete(draftId, { repository, epicLabel, log }, legacyOwnsProgression);
+            }
             return;
         }
 
-        await labelPlanIssueForProcessing({ repository, issueNumber: nextPending.issue_number, draftId, epicLabel, log });
+        await labelPlanIssueForProcessing({ repository, issueNumber: nextPending.issue_number, draftId, epicLabel, log,
+            canStart: legacyOwnsProgression });
 
     } catch (error) {
         log.warn({

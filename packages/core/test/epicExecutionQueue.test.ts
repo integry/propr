@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
 import { up } from '../src/db/migrations/20261003000000_add_epic_execution_queues.js';
+import { up as epicQueueFinalization, down as removeEpicQueueFinalization } from '../src/db/migrations/20261003010000_add_epic_queue_finalization.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 const starts: number[] = [];
@@ -20,7 +21,7 @@ await mock.module('../src/config/planIssueManager.js', { namedExports: {
 await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
   labelPlanIssueForProcessing: async ({ issueNumber }: { issueNumber: number }) => { starts.push(issueNumber); },
   reconcileTerminalInProgressIssues: async (_repository: string, issues: unknown[]) => issues,
-  finalizeEpicPlanIfComplete: async (draftId: string) => { finalizations.push(draftId); },
+  finalizeEpicPlanIfComplete: async (draftId: string) => { finalizations.push(draftId); return true; },
 } });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => ({ request: async () => {
   if (!pullRequestState) throw new Error('Unexpected GitHub call');
@@ -30,7 +31,7 @@ const { PlanIssueStatus: S } = await import('../src/config/planIssueManager.js')
 const { determinePRStatusUpdate } = await import('../src/webhook/statusMachine.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, decideEpicAdvance,
   advanceEpicQueue, startEpicQueueHead, reconcileEpicExecutionQueues, readyEpicExecutionQueue,
-  cancelEpicExecutionQueue, onPlanIssueStatusChanged } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
+  cancelEpicExecutionQueue, onPlanIssueStatusChanged, finalizeCompletedEpicQueue } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
 
 await database.raw('PRAGMA foreign_keys = ON');
 await database.schema.createTable('task_drafts', table => {
@@ -40,6 +41,7 @@ await database.schema.createTable('plan_issues', table => {
   table.increments('id'); table.string('draft_id'); table.integer('issue_number'); table.integer('pr_number'); table.string('status');
 });
 await up(database);
+await epicQueueFinalization(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();
@@ -235,4 +237,97 @@ test('stale observer cannot advance a replacement execution with the same cursor
   assert.deepEqual(starts, []);
   assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
   assert.equal((await getEpicExecutionQueue('draft'))?.status, 'active');
+});
+
+
+test('successful finalization is durable and finished queues do not occupy the recovery batch', async () => {
+  await createEpicExecutionQueue({ ...input, issues: [10] });
+  await status(10, 'merged');
+  await startEpicQueueHead('draft');
+  assert.ok((await getEpicExecutionQueue('draft'))?.finalizedAt);
+  assert.deepEqual(await reconcileEpicExecutionQueues(), { reconciled: 0 });
+  assert.deepEqual(await reconcileEpicExecutionQueues(), { reconciled: 0 });
+  assert.deepEqual(finalizations, ['draft']);
+  // More than a full batch of finalized history must not delay an active queue.
+  const finished = await database('epic_execution_queues').where({ draft_id: 'draft' }).first();
+  for (let i = 0; i < 101; i++) {
+    const draftId = `finished-${i}`;
+    await database('task_drafts').insert({ draft_id: draftId });
+    await database('epic_execution_queues').insert({ ...finished, draft_id: draftId, updated_at: 0 });
+  }
+  await createEpicExecutionQueue(input);
+  assert.equal((await getEpicExecutionQueue('draft'))?.finalizedAt, null);
+  assert.deepEqual(await reconcileEpicExecutionQueues(), { reconciled: 1 });
+  assert.deepEqual(starts, [30]);
+});
+
+test('failed and deferred finalizations remain owed until reconciliation succeeds', async () => {
+  await createEpicExecutionQueue({ ...input, issues: [10] });
+  await status(10, 'merged');
+  await assert.rejects(startEpicQueueHead('draft', { finalize: async () => { throw new Error('offline'); } }), /offline/);
+  assert.equal((await getEpicExecutionQueue('draft'))?.status, 'completed');
+  assert.equal((await getEpicExecutionQueue('draft'))?.finalizedAt, null);
+  await reconcileEpicExecutionQueues({ finalize: async () => false });
+  assert.equal((await getEpicExecutionQueue('draft'))?.finalizedAt, null);
+  await reconcileEpicExecutionQueues();
+  assert.ok((await getEpicExecutionQueue('draft'))?.finalizedAt);
+  assert.deepEqual(await reconcileEpicExecutionQueues(), { reconciled: 0 });
+});
+
+test('concurrent recovery claims one finalization and a lost claim expires', async () => {
+  await createEpicExecutionQueue({ ...input, issues: [10] });
+  await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ status: 'completed', cursor: 1 });
+  await Promise.all([reconcileEpicExecutionQueues(), reconcileEpicExecutionQueues()]);
+  assert.deepEqual(finalizations, ['draft']);
+  await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ finalized_at: null, finalization_started_at: 100 });
+  await reconcileEpicExecutionQueues({ now: () => 100 + 14 * 60_000 });
+  assert.deepEqual(finalizations, ['draft']);
+  await reconcileEpicExecutionQueues({ now: () => 100 + 15 * 60_000 });
+  assert.deepEqual(finalizations, ['draft', 'draft']);
+});
+
+test('a finalizer cannot label or finalize a replacement execution after an awaited boundary', async () => {
+  await createEpicExecutionQueue({ ...input, issues: [10] });
+  await database('epic_execution_queues').where({ draft_id: 'draft' }).update({ status: 'completed', cursor: 1 });
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const pending = finalizeCompletedEpicQueue('draft', { finalize: async (_id, guard) => {
+    entered();
+    await barrier;
+    assert.equal(await guard(), false);
+    return true;
+  } });
+  await started;
+  await createEpicExecutionQueue({ ...input, issues: [40] });
+  release();
+  await pending;
+  const replacement = await getEpicExecutionQueue('draft');
+  assert.equal(replacement?.status, 'active');
+  assert.equal(replacement?.finalizedAt, null);
+  assert.equal(replacement?.finalizationStartedAt, null);
+});
+
+
+test('finalization migration preserves existing queues and rolls back without deleting them', async () => {
+  const oldDatabase = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await oldDatabase.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); });
+    await up(oldDatabase);
+    await oldDatabase('task_drafts').insert({ draft_id: 'old' });
+    await oldDatabase('epic_execution_queues').insert({ draft_id: 'old', execution_id: 'execution',
+      repository: 'acme/repo', issues: '[10]', cursor: 1, status: 'completed', created_at: 100, updated_at: 100 });
+    await epicQueueFinalization(oldDatabase);
+    const upgraded = await getEpicExecutionQueue('old', { database: oldDatabase });
+    assert.equal(upgraded?.status, 'completed');
+    assert.equal(upgraded?.finalizedAt, null);
+    assert.equal(upgraded?.finalizationStartedAt, null);
+    await removeEpicQueueFinalization(oldDatabase);
+    const original = await oldDatabase('epic_execution_queues').where({ draft_id: 'old' }).first();
+    assert.equal(original.status, 'completed');
+    assert.equal(Object.hasOwn(original, 'finalized_at'), false);
+  } finally {
+    await oldDatabase.destroy();
+  }
 });

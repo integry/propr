@@ -5,7 +5,7 @@ import logger from '../../utils/logger.js';
 import { getAuthenticatedOctokit } from '../../auth/githubAuth.js';
 import { safeUpdateLabels } from '../../utils/github/labelOperations.js';
 import { PlanIssueStatus, type PlanIssue } from '../../config/planIssueManager.js';
-import { isTerminalStatus } from '../../webhook/statusMachine.js';
+import { isTerminalStatus, isInProgressStatus } from '../../webhook/statusMachine.js';
 import { labelPlanIssueForProcessing, finalizeEpicPlanIfComplete, reconcileTerminalInProgressIssues } from '../../webhook/planIssueTrigger.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
@@ -24,20 +24,22 @@ export interface EpicExecutionQueue {
   headStartedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  finalizedAt: number | null;
+  finalizationStartedAt: number | null;
 }
 
 type QueueRow = {
   draft_id: string; execution_id: string; repository: string; issues: string; cursor: number;
   status: EpicQueueStatus; advance_on: EpicAdvancePolicy; blocked_reason: string | null;
   auto_merge: boolean | number; ready: boolean | number; head_started_at: number | null;
-  created_at: number; updated_at: number;
+  created_at: number; updated_at: number; finalized_at: number | null; finalization_started_at: number | null;
 };
 
 type StartIssue = (input: Parameters<typeof labelPlanIssueForProcessing>[0]) => Promise<void>;
 export interface EpicQueueDependencies {
   database?: Knex;
   startIssue?: StartIssue;
-  finalize?: (draftId: string) => Promise<void>;
+  finalize?: (draftId: string, canFinalize: () => Promise<boolean>) => Promise<boolean>;
   now?: () => number;
   repairSetup?: (queue: EpicExecutionQueue) => Promise<boolean>;
 }
@@ -49,6 +51,7 @@ function fromRow(row: QueueRow): EpicExecutionQueue {
     cursor: row.cursor, status: row.status, advanceOn: row.advance_on,
     blockedReason: row.blocked_reason, autoMerge: Boolean(row.auto_merge), ready: Boolean(row.ready),
     headStartedAt: row.head_started_at, createdAt: row.created_at, updatedAt: row.updated_at,
+    finalizedAt: row.finalized_at, finalizationStartedAt: row.finalization_started_at,
   };
 }
 
@@ -76,7 +79,7 @@ export async function createEpicExecutionQueue(input: {
     draft_id: input.draftId, execution_id: randomUUID(), repository: input.repository, issues: JSON.stringify(input.issues),
     cursor: 0, status: 'active', advance_on: input.advanceOn ?? 'merged', blocked_reason: input.ready === false ? 'Preparing queued issue model and epic branch labels.' : null,
     auto_merge: input.autoMerge ?? false, ready: input.ready ?? true,
-    head_started_at: input.headStartedAt ?? null, created_at: timestamp, updated_at: timestamp,
+    head_started_at: input.headStartedAt ?? null, finalized_at: null, finalization_started_at: null, created_at: timestamp, updated_at: timestamp,
   };
   const inserted = await database('epic_execution_queues').insert(row).onConflict('draft_id').ignore().returning('draft_id');
   if (!inserted.length) {
@@ -127,8 +130,42 @@ export async function advanceEpicQueue({ draftId, issueNumber, status }: {
     .update({ cursor, head_started_at: null, blocked_reason: null,
       status: cursor === queue.issues.length ? 'completed' : 'active', updated_at: timestamp });
   if (!changed) return;
-  if (cursor === queue.issues.length) await (deps.finalize ?? finalizeEpicPlanIfComplete)(draftId);
+  if (cursor === queue.issues.length) await finalizeCompletedEpicQueue(draftId, deps, queue.executionId);
   else await startEpicQueueHead(draftId, deps);
+}
+
+/** Finalization is owed until labeling succeeds or there is no epic PR to label. */
+export async function finalizeCompletedEpicQueue(draftId: string, deps: EpicQueueDependencies = {}, executionId?: string): Promise<void> {
+  const database = deps.database ?? db;
+  const queue = await getEpicExecutionQueue(draftId, deps);
+  if (!queue || queue.status !== 'completed' || queue.finalizedAt !== null
+    || (executionId !== undefined && executionId !== queue.executionId)) return;
+  const timestamp = (deps.now ?? Date.now)();
+  if (queue.finalizationStartedAt !== null && timestamp - queue.finalizationStartedAt < RETRY_PENDING_AFTER_MS) return;
+  const ownership = { draft_id: draftId, execution_id: queue.executionId, status: 'completed' };
+  const claim = database('epic_execution_queues').where(ownership).whereNull('finalized_at');
+  if (queue.finalizationStartedAt === null) claim.whereNull('finalization_started_at');
+  else claim.where({ finalization_started_at: queue.finalizationStartedAt });
+  if (!await claim.update({ finalization_started_at: timestamp, updated_at: timestamp })) return;
+  const owned = () => database('epic_execution_queues').where(ownership)
+    .whereNull('finalized_at').where({ finalization_started_at: timestamp });
+  const unfinishedStatuses = Object.values(PlanIssueStatus).filter(status =>
+    status === PlanIssueStatus.PENDING || isInProgressStatus(status));
+  const canFinalize = async () => Boolean(await owned()
+    .whereExists(database('task_drafts').select('draft_id').where({ draft_id: draftId, paused: false }))
+    .whereNotExists(database('plan_issues').select('id').where({ draft_id: draftId }).whereIn('status', unfinishedStatuses))
+    .first('draft_id'));
+  // Recheck authority and eligibility together after awaited GitHub reads, before labeling.
+  // A crash between GitHub accepting the label and persisting success can still require a retry.
+  const finalize = deps.finalize ?? ((id, guard) => finalizeEpicPlanIfComplete(id, undefined, guard));
+  try {
+    const finalized = await finalize(draftId, canFinalize);
+    await owned().update({ finalized_at: finalized ? (deps.now ?? Date.now)() : null,
+      finalization_started_at: null, updated_at: (deps.now ?? Date.now)() });
+  } catch (error) {
+    await owned().update({ finalization_started_at: null });
+    throw error;
+  }
 }
 
 /** Claims the label side effect durably; a lost dispatch is retried after 15 minutes. */
@@ -241,12 +278,13 @@ async function reconcileQueueHead(draftId: string, deps: EpicQueueDependencies):
 
 export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies = {}): Promise<{ reconciled: number }> {
   const database = deps.database ?? db;
-  const queues = await database('epic_execution_queues').whereIn('status', ['active', 'completed'])
+  const queues = await database('epic_execution_queues').where(builder => builder.where('status', 'active')
+    .orWhere(pending => pending.where('status', 'completed').whereNull('finalized_at')))
     .orderBy('updated_at').orderBy('draft_id').limit(100).select('draft_id', 'status', 'execution_id');
   let reconciled = 0;
   for (const queue of queues) {
     try {
-      if (queue.status === 'completed') await (deps.finalize ?? finalizeEpicPlanIfComplete)(queue.draft_id);
+      if (queue.status === 'completed') await finalizeCompletedEpicQueue(queue.draft_id, deps, queue.execution_id);
       else {
         const current = await getEpicExecutionQueue(queue.draft_id, deps);
         if (current && !current.ready && (deps.now ?? Date.now)() - current.createdAt >= RETRY_PENDING_AFTER_MS) {
