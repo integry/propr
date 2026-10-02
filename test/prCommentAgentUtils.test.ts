@@ -312,3 +312,33 @@ describe('PR follow-up repository validation reports', () => {
         });
     }
 });
+
+
+test('out-of-scope executions with terminal task IDs bypass workflow admission and cancellation', async (t) => {
+    const registry = AgentRegistry.getInstance();
+    let executions = 0;
+    const agent = {
+        config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+        executeTask: async () => {
+            executions++;
+            return { success: true, modelUsed: 'test', executionTimeMs: 1, summary: 'done', conversationLog: [] };
+        },
+    };
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getDefaultAgent', () => agent);
+    t.mock.method(registry, 'getAgentByAlias', () => agent);
+    for (const state of ['completed', 'failed', 'cancelled']) {
+        let stateReads = 0;
+        const params = {
+            llm: null, worktreePath: '/tmp/worktree', branchName: 'feature', prompt: 'Resolve conflicts',
+            pullRequestNumber: 2663, repoOwner: 'integry', repoName: 'propr', taskId: `original-${state}`,
+            stateManager: { getTaskState: async () => { stateReads++; return { state }; } } as never,
+            correlatedLogger: logger as never, githubToken: 'token',
+            redisClient: { eval: async () => assert.fail('out-of-scope caller entered repository slot') } as never,
+        };
+        assert.equal((await resolveAndExecuteAgent(params)).claudeResult.success, true);
+        assert.equal(stateReads, 0);
+        await assert.rejects(resolveAndExecuteAgent({ ...params, applyRepositoryWorkflow: true }), /Task ended/);
+    }
+    assert.equal(executions, 3);
+});

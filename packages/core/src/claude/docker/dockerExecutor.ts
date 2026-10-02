@@ -1,3 +1,4 @@
+import { repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
@@ -344,6 +345,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
             const finalStderr = stderrDecoder.end();
             stderrTail.append(finalStderr);
             const stderr = stderrTail.value;
+            const workflow = repositoryWorkflowExecution.getStore();
+            if (workflow && args.some(arg => arg.includes(workflow.marker))) {
+                workflow.stderr = stderr;
+            }
             liveOutput?.stdout(finalStdout);
             liveOutput?.stderr(finalStderr);
             inspectSessionLines(finalStdout, new Date().toISOString(), true);

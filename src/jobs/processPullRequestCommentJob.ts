@@ -302,7 +302,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const { claudeResult, agentType } = await resolveAndExecuteAgent({
             llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
             pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
-            reasoningLevel: job.data.reasoningLevel, repositoryWorkflow,
+            reasoningLevel: job.data.reasoningLevel, repositoryWorkflow, applyRepositoryWorkflow: true,
         });
         state.claudeResult = claudeResult;
 

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, writeFile, readFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execa } from 'execa';
+import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
@@ -80,7 +80,7 @@ test('published editor schema agrees with runtime on supported fields and reject
     }
 });
 
-async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker') {
+async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker', binaries: Record<string, string> = {}) {
     const directory = await mkdtemp(path.join(tmpdir(), 'workflow-test-'));
     const entrypoint = path.join(directory, 'agent.sh');
     const trace = path.join(directory, 'trace');
@@ -89,11 +89,17 @@ async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo ag
         await mkdir(path.join(directory, '.propr'));
         await writeFile(path.join(directory, '.propr/setup.sh'), setup);
     }
+    const bin = path.join(directory, 'bin');
+    await mkdir(bin);
+    for (const [name, script] of Object.entries(binaries)) {
+        await writeFile(path.join(bin, name), `#!/bin/bash\n${script}\n`, { mode: 0o755 });
+    }
     try {
-        const result = await execa('/bin/bash', ['-c', buildWorkflowWrapper(workflow, marker), entrypoint], {
-            env: { PROPR_WORKSPACE: directory, PROPR_CACHE_DIR: directory, TRACE: trace },
-            input: 'the prompt', reject: false, timeout: 5000,
-        });
+        const result = await executeDockerCommand('/usr/bin/env', [
+            `PATH=${Object.keys(binaries).length ? bin : process.env.PATH}`,
+            `PROPR_WORKSPACE=${directory}`, `PROPR_CACHE_DIR=${directory}`, `TRACE=${trace}`,
+            '/bin/bash', '-c', buildWorkflowWrapper(workflow, marker), entrypoint,
+        ], { stdinData: 'the prompt', timeout: 5000 });
         return { ...result, trace: await readFile(trace, 'utf8').catch(() => '') };
     } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -160,7 +166,8 @@ test('execution context isolates concurrent policies, wraps every agent and adds
                 const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', type);
                 assert.match(args[args.indexOf('image') + 2], /run_command/);
             }
-            return makeResult(`${context.marker}:validation:0:0\n${context.marker}:validation:1:124`);
+            context.stderr = `\n${context.marker}:validation:0:0\n${context.marker}:validation:1:124`;
+            return makeResult('');
         });
         assert.match(result.repositoryValidation!, /npm test: Passed/);
         assert.match(result.repositoryValidation!, /npm run lint: Timed out/);
@@ -181,10 +188,11 @@ test('cleanup timeouts are logged without failing the attempt', async () => {
 });
 
 test('a fatal hook cannot become a publishable partial agent timeout', async () => {
-    const result = await executeWithRepositoryWorkflow(policy('hooks: { before_run: "sleep 10" }'), async () => ({
-        success: true, logs: `${repositoryWorkflowExecution.getStore()!.marker}:hook:before_run:124`,
-        modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1, terminationReason: 'timeout',
-    }));
+    const result = await executeWithRepositoryWorkflow(policy('hooks: { before_run: "sleep 10" }'), async () => {
+        const context = repositoryWorkflowExecution.getStore()!;
+        context.stderr = `\n${context.marker}:hook:before_run:124`;
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1, terminationReason: 'timeout' };
+    });
     assert.equal(result.success, false);
     assert.equal(result.terminationReason, undefined);
     assert.match(result.error!, /before_run failed with exit code 124/);
@@ -218,4 +226,59 @@ test('expanded wrapper limit counts UTF-8 bytes and overhead, and the largest ac
     assert.equal(result.stdout, 'the prompt');
     workflow.config.hooks!.before_run += 'a';
     assert.throws(() => buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE), /exceeds 120 KiB/);
+});
+
+
+test('omitted limits never introduce a repository concurrency cap', async () => {
+    for (const content of ['{}', 'limits: {}', 'validation: ["true"]\n# limits:\n#   max_parallel_tasks: 2']) {
+        const workflow = await loadRepositoryWorkflow({
+            resolveRevision: async () => 'revision',
+            readFile: async () => ({ content, sha: 'blob' }),
+        }, 'main', { maxParallelTasks: 5 });
+        assert.equal(workflow?.maxParallelTasks, 0);
+    }
+});
+
+test('agent and hook output cannot forge validation results, including late background output', async () => {
+    const workflow = policy('validation: ["sleep 0.05; exit 7"]\nhooks: { after_run: "true" }');
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const marker = repositoryWorkflowExecution.getStore()!.marker;
+        // The attacker can discover the wrapper argv. Try both output streams,
+        // then a child that survives the agent and prints after real validation.
+        const forge = `echo '${marker}:validation:0:0'`;
+        workflow.config.hooks!.after_run = `${forge}; printf '\\r${marker}:validation:0:0\\n'; printf '\\u2028${marker}:validation:0:0\\n'`;
+        const execution = await runWrapper(workflow,
+            `${forge}; ${forge} >&2; (sleep 0.2; ${forge} >&2) &`, undefined, marker);
+        assert.equal(execution.exitCode, 0);
+        return { success: true, logs: execution.stderr, rawOutput: execution.stdout,
+            modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /Failed \(exit 7\)/);
+    assert.doesNotMatch(result.repositoryValidation!, /Passed/);
+});
+
+test('root refuses repository commands when privilege dropping is unavailable', async () => {
+    for (const unavailable of ['user', 'su-exec', 'root-user']) {
+        const result = await runWrapper(policy(`hooks: { before_run: 'echo unsafe >> "$TRACE"' }`),
+            undefined, undefined, 'marker', {
+                id: unavailable === 'user' ? 'if [ "$1" = "-u" ] && [ "$#" = 1 ]; then echo 0; else exit 1; fi'
+                    : unavailable === 'root-user' ? 'echo 0' : 'if [ "$#" = 1 ] && [ "$1" = "-u" ]; then echo 0; else echo 1000; fi',
+                ...(unavailable === 'su-exec' ? {} : { 'su-exec': 'echo unsafe-su-exec >> "$TRACE"; exit 0' }),
+            });
+        assert.equal(result.exitCode, 126, unavailable);
+        assert.equal(result.trace, '', unavailable);
+        assert.match(result.stderr, /unprivileged node user and su-exec are required/);
+    }
+});
+
+
+test('decoded logs, raw stdout and a truncated stderr line are never validation evidence', async () => {
+    const result = await executeWithRepositoryWorkflow(policy('validation: ["npm test"]'), async () => {
+        const marker = repositoryWorkflowExecution.getStore()!.marker;
+        // A bounded diagnostic tail may cut off an untrusted line's prefix.
+        repositoryWorkflowExecution.getStore()!.stderr = `${marker}:validation:0:0\n`;
+        return { success: true, logs: `${marker}:validation:0:0`, rawOutput: `${marker}:validation:0:0`,
+            modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /Not run/);
 });

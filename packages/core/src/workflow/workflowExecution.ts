@@ -5,7 +5,7 @@ import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 
 /** Scoped to one execution, including synthetic-provider retries; never process-global policy. */
-export const repositoryWorkflowExecution = new AsyncLocalStorage<{ workflow: ResolvedRepositoryWorkflow; marker: string }>();
+export const repositoryWorkflowExecution = new AsyncLocalStorage<{ workflow: ResolvedRepositoryWorkflow; marker: string; stderr?: string }>();
 
 export async function executeWithRepositoryWorkflow(
     workflow: ResolvedRepositoryWorkflow | undefined,
@@ -14,9 +14,14 @@ export async function executeWithRepositoryWorkflow(
     getExecutionOwnershipContext()?.signal.throwIfAborted();
     if (!workflow) return execute();
     const marker = `PROPR_WORKFLOW_${randomUUID()}`;
-    const result = await repositoryWorkflowExecution.run({ workflow, marker }, execute);
-    const logs = `${result.logs}\n${result.rawOutput ?? ''}`;
-    const failure = logs.match(new RegExp(`${marker}:hook:(after_create|before_run):([1-9][0-9]*)`));
+    const context = { workflow, marker, stderr: '' };
+    const result = await repositoryWorkflowExecution.run(context, execute);
+    // Only the transport's raw stderr is authoritative. Agent result logs may
+    // include decoded JSON strings that bypass filtering of literal markers.
+    const logs = context.stderr;
+    // Require a literal LF before reports: the bounded transport tail can start
+    // midway through an untrusted line, and JS multiline anchors also accept CR.
+    const failure = logs.match(new RegExp(`\\n${marker}:hook:(after_create|before_run):([1-9][0-9]*)(?=\\n|$)`));
     if (failure) {
         result.success = false;
         result.terminationReason = undefined;
@@ -25,7 +30,7 @@ export async function executeWithRepositoryWorkflow(
     const validation = workflow.config.validation ?? [];
     if (validation.length) {
         const reports = validation.map((command, index) => {
-            const matches = [...logs.matchAll(new RegExp(`${marker}:validation:${index}:([0-9]+)`, 'g'))];
+            const matches = [...logs.matchAll(new RegExp(`\\n${marker}:validation:${index}:([0-9]+)(?=\\n|$)`, 'g'))];
             const code = matches.at(-1)?.[1];
             const status = code === undefined ? 'Not run (execution ended before validation)' : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})`;
             return `- ${command.replace(/\n/g, ' ')}: ${status}`;
@@ -63,17 +68,25 @@ mkdir -p "$PROPR_CACHE_DIR" 2>/dev/null || true
 chown node:node "$PROPR_CACHE_DIR" 2>/dev/null || true
 cd "$PROPR_WORKSPACE" || exit 1
 run_command() {
-    if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
+    current_uid=$(id -u) || return 126
+    if [ "$current_uid" = "0" ]; then
+        if ! command -v su-exec >/dev/null 2>&1 || ! id node >/dev/null 2>&1 || [ "$(id -u node)" = "0" ]; then
+            echo "Cannot run repository workflow command: unprivileged node user and su-exec are required" >&2
+            return 126
+        fi
         su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=5s ${workflow.timeoutMs / 1000}s /bin/bash -c "$1" </dev/null >&2
     else
         timeout --signal=TERM --kill-after=5s ${workflow.timeoutMs / 1000}s /bin/bash -c "$1" </dev/null >&2
     fi
-}
+# Child output is untrusted, even when it knows the marker from /proc.
+# Prefix every line so fragments from concurrent children cannot form a report.
+# This also covers output from surviving background children.
+} > >(/bin/sed -u 's/^/ProPR command output: /' >&2) 2>&1
 run_hook() {
     echo "Running ProPR workflow hook: $1" >&2
     run_command "$2"
     hook_exit=$?
-    echo "${marker}:hook:$1:$hook_exit" >&2
+    printf '\\n%s\\n' "${marker}:hook:$1:$hook_exit" >&2
     if [ "$hook_exit" -ne 0 ]; then echo "ProPR workflow hook $1 failed with exit code $hook_exit" >&2; fi
     return "$hook_exit"
 }
@@ -91,9 +104,9 @@ ${hooks.after_create ? `${hook('after_create')} || exit $?` : implicitSetup}
 ${hook('before_run')} || exit $?
 # Preserve the agent's stdin; repository commands never consume its prompt.
 agent_started=1
-"$entrypoint" "$@"
+"$entrypoint" "$@" 2> >(/bin/sed -u 's/^/ProPR command output: /' >&2)
 agent_exit=$?
-${(workflow.config.validation ?? []).map((command, index) => `run_command ${quote(command)}\necho "${marker}:validation:${index}:$?" >&2`).join('\n')}
+${(workflow.config.validation ?? []).map((command, index) => `run_command ${quote(command)}\nprintf '\\n%s\\n' "${marker}:validation:${index}:$?" >&2`).join('\n')}
 exit "$agent_exit"
 `.trim();
     if (Buffer.byteLength(script, 'utf8') > WORKFLOW_WRAPPER_MAX_BYTES) {

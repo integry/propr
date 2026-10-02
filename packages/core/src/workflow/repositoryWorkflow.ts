@@ -104,7 +104,7 @@ export async function loadRepositoryWorkflow(source: WorkflowSource, baseBranch:
     const workflow = {
         revision, baseBranch, fileRevision: file.sha, config, instructionText: instructions?.content,
         timeoutMs: Math.min(config.hooks?.timeout_ms ?? WORKFLOW_TIMEOUT_MS, defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS),
-        maxParallelTasks: Math.min(config.limits?.max_parallel_tasks ?? defaults.maxParallelTasks, defaults.maxParallelTasks),
+        maxParallelTasks: config.limits?.max_parallel_tasks === undefined ? 0 : Math.min(config.limits.max_parallel_tasks, defaults.maxParallelTasks),
     };
     // Validate the actual quoted argv, including all hooks, validation and wrapper overhead.
     buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE);
