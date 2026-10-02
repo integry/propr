@@ -7,7 +7,9 @@ import type { CheckpointOutcome, PreparedThinkingLogEvent } from './checkpointLo
 const gutterLabelRow = 'flex min-h-[1.4219rem] items-center gap-1.5';
 
 const checkpointStateLabel = (outcome: CheckpointOutcome | undefined): string => {
-  if (!outcome) return 'Checkpoint requested';
+  // The goal API exposes only its latest durable checkpoint. An unmatched declaration may be an
+  // older published checkpoint rather than a still-pending request, so keep this fallback neutral.
+  if (!outcome) return 'Checkpoint request';
   if (outcome.state === 'processing') return 'Publishing checkpoint';
   if (outcome.state === 'completed') return outcome.commitSha ? 'Checkpoint published' : 'Checkpoint completed';
   if (outcome.state === 'failed') return 'Checkpoint failed';

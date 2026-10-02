@@ -101,7 +101,7 @@ function declarationRemainder(text: string, source: JsonObjectSource): string {
   let removalEnd = source.end;
   const prefix = text.slice(0, source.start);
   const suffix = text.slice(source.end);
-  const opening = prefix.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:json)?[ \t]*\r?\n[ \t]*$/i);
+  const opening = prefix.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})[^\r\n]*\r?\n[ \t]*$/);
   const closing = suffix.match(/^[ \t]*\r?\n[ \t]*(`{3,}|~{3,})[ \t]*(?:\r?\n|$)/);
   if (opening && closing
     && opening[1][0] === closing[1][0]
@@ -109,7 +109,15 @@ function declarationRemainder(text: string, source: JsonObjectSource): string {
     removalStart = opening.index! + (opening[0].startsWith('\n') ? 1 : 0);
     removalEnd += closing[0].length;
   }
-  return `${text.slice(0, removalStart)}${text.slice(removalEnd)}`.trim();
+  const before = text.slice(0, removalStart);
+  const after = text.slice(removalEnd);
+  const beforeWithoutSpace = before.replace(/[ \t]+$/, '');
+  const afterWithoutSpace = after.replace(/^[ \t]+/, '');
+  const hadAdjacentSpace = beforeWithoutSpace !== before || afterWithoutSpace !== after;
+  const joinsInlineText = hadAdjacentSpace
+    && !/[\r\n]$/.test(beforeWithoutSpace)
+    && !/^[\r\n]/.test(afterWithoutSpace);
+  return `${beforeWithoutSpace}${joinsInlineText ? ' ' : ''}${afterWithoutSpace}`.trim();
 }
 
 /** Parse the last structured checkpoint declaration and retain any narration around it. */

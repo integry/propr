@@ -139,8 +139,70 @@ describe('ThinkingLog', () => {
       id: 'checkpoint-new', type: 'thought', content, timestamp: '2026-09-10T00:02:00.000Z',
     }]} />);
 
-    expect(screen.getByText('Checkpoint requested')).toBeInTheDocument();
+    expect(screen.getByText('Checkpoint request')).toBeInTheDocument();
     expect(screen.queryByText('Push failed')).not.toBeInTheDocument();
+  });
+
+  it('keeps an older declaration neutral when only the latest checkpoint outcome is available', () => {
+    render(<ThinkingLog checkpointOutcome={{
+      kind: 'agent', state: 'completed', commitSha: 'def5678', message: 'feat: second slice',
+      include: null, exclude: null, summary: null, error: null,
+      createdAt: '2026-09-10T00:03:01.000Z',
+    }} events={[
+      {
+        id: 'checkpoint-first', type: 'thought', timestamp: '2026-09-10T00:01:00.000Z',
+        content: JSON.stringify({ checkpointReady: true, message: 'feat: first slice' }),
+      },
+      {
+        id: 'checkpoint-second', type: 'thought', timestamp: '2026-09-10T00:03:00.000Z',
+        content: JSON.stringify({ checkpointReady: true, message: 'feat: second slice' }),
+      },
+    ]} />);
+
+    expect(screen.getByText('Checkpoint request')).toBeInTheDocument();
+    expect(screen.getByText('Checkpoint published')).toBeInTheDocument();
+    expect(screen.getByText('def5678')).toBeInTheDocument();
+    expect(screen.queryByText('Checkpoint requested')).not.toBeInTheDocument();
+  });
+
+  it('keeps an agent declaration neutral when the latest outcome is the final checkpoint', () => {
+    render(<ThinkingLog checkpointOutcome={{
+      kind: 'final', state: 'completed', commitSha: 'final123', message: 'Final checkpoint',
+      include: null, exclude: null, summary: null, error: null,
+      createdAt: '2026-09-10T00:04:00.000Z',
+    }} events={[{
+      id: 'checkpoint-before-final', type: 'thought', timestamp: '2026-09-10T00:03:00.000Z',
+      content: JSON.stringify({ checkpointReady: true, message: 'feat: agent slice' }),
+    }]} />);
+
+    expect(screen.getByText('Checkpoint request')).toBeInTheDocument();
+    expect(screen.queryByText('Checkpoint requested')).not.toBeInTheDocument();
+    expect(screen.queryByText('final123')).not.toBeInTheDocument();
+  });
+
+  it.each(['jsonc', 'JSON5', 'javascript'])(
+    'removes a declaration-only fence with the %s info string',
+    infoString => {
+      const declaration = JSON.stringify({ checkpointReady: true, message: `test: ${infoString} fence` });
+      const { container } = render(<ThinkingLog events={[{
+        id: `checkpoint-${infoString}`, type: 'thought',
+        content: `Narration before the declaration.\n\`\`\`${infoString}\n${declaration}\n\`\`\``,
+      }]} />);
+
+      expect(screen.getByText('Narration before the declaration.')).toBeInTheDocument();
+      expect(container.querySelector('pre')).toBeNull();
+      expect(screen.queryByText(declaration)).not.toBeInTheDocument();
+    },
+  );
+
+  it('collapses whitespace around a declaration embedded in narration', () => {
+    const declaration = JSON.stringify({ checkpointReady: true, message: 'test: inline declaration' });
+    render(<ThinkingLog events={[{
+      id: 'checkpoint-inline', type: 'thought',
+      content: `Ready:  ${declaration}   — continuing.`,
+    }]} />);
+
+    expect(screen.getByText('Ready: — continuing.')).toHaveTextContent(/^Ready: — continuing\.$/);
   });
 
   it('shows a matching worker publication failure on the latest checkpoint', () => {

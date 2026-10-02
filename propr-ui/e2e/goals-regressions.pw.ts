@@ -46,6 +46,11 @@ const checkpointDeclaration = JSON.stringify({
   summary: 'The responsive dashboard and its focused coverage are ready.',
 });
 
+const earlierCheckpointDeclaration = JSON.stringify({
+  checkpointReady: true,
+  message: 'feat(goals): publish dashboard foundation',
+});
+
 async function stubGoalApis(page: Page): Promise<void> {
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
@@ -90,7 +95,7 @@ async function stubGoalApis(page: Page): Promise<void> {
         ...goal,
         launchStrategy: 'direct',
         checkpoint: {
-          intervalMinutes: 15, count: 1, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
+          intervalMinutes: 15, count: 2, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
           latest: {
             kind: 'agent', state: 'completed', message: 'feat(goals): publish stable dashboard slice',
             summary: 'The responsive dashboard and its focused coverage are ready.',
@@ -105,6 +110,7 @@ async function stubGoalApis(page: Page): Promise<void> {
       await route.fulfill({ json: {
         events: [
           { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
+          { id: 'checkpoint-0', type: 'thought', content: earlierCheckpointDeclaration, timestamp: '2026-09-10T00:01:00.000Z' },
           { id: 'checkpoint-1', type: 'thought', content: `Stable dashboard work is **ready for review**.\n\`\`\`json\n${checkpointDeclaration}\n\`\`\``, timestamp: '2026-09-10T00:01:30.000Z' },
           { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
         ],
@@ -221,18 +227,23 @@ test('highlights checkpoint declarations in the readable goal log', async ({ pag
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/goals/goal-1');
 
-  const checkpoint = page.getByTestId('goal-checkpoint-event');
-  await expect(checkpoint).toBeVisible();
-  await expect(checkpoint.getByText('CHECKPOINT', { exact: true })).toBeVisible();
-  await expect(checkpoint.getByText('Stable dashboard work is', { exact: false })).toBeVisible();
-  await expect(checkpoint.getByText('Checkpoint published')).toBeVisible();
-  await expect(checkpoint.getByText('feat(goals): publish stable dashboard slice')).toBeVisible();
-  await expect(checkpoint.getByText('3 included · 1 excluded')).toBeVisible();
-  await expect(checkpoint.getByText('abc1234')).toBeVisible();
+  const checkpoints = page.getByTestId('goal-checkpoint-event');
+  await expect(checkpoints).toHaveCount(2);
+  const earlierCheckpoint = checkpoints.filter({ hasText: 'feat(goals): publish dashboard foundation' });
+  const latestCheckpoint = checkpoints.filter({ hasText: 'feat(goals): publish stable dashboard slice' });
+  await expect(earlierCheckpoint.getByText('Checkpoint request')).toBeVisible();
+  await expect(earlierCheckpoint.getByText('Checkpoint requested')).toHaveCount(0);
+  await expect(latestCheckpoint.getByText('CHECKPOINT', { exact: true })).toBeVisible();
+  await expect(latestCheckpoint.getByText('Stable dashboard work is', { exact: false })).toBeVisible();
+  await expect(latestCheckpoint.getByText('Checkpoint published')).toBeVisible();
+  await expect(latestCheckpoint.getByText('3 included · 1 excluded')).toBeVisible();
+  await expect(latestCheckpoint.getByText('abc1234')).toBeVisible();
   await expect(page.getByText(checkpointDeclaration)).toHaveCount(0);
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir('../.propr/previews', { recursive: true });
-    await checkpoint.screenshot({ path: '../.propr/previews/goal-checkpoint-log.png', animations: 'disabled' });
+    const implementationLog = page.getByRole('heading', { name: 'Implementation log' })
+      .locator('..').locator('..').locator('..');
+    await implementationLog.screenshot({ path: '../.propr/previews/goal-checkpoint-log.png', animations: 'disabled' });
   }
 });
 
