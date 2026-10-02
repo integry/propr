@@ -112,7 +112,9 @@ describe('AgentsListSection web login', () => {
   it('offers login for supported agents and opens their dialog', () => {
     renderList();
 
-    const loginButtons = screen.getAllByRole('button', { name: 'Log in' });
+    expect(screen.queryByRole('menuitem', { name: 'Log in' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for codex' }));
+    const loginButtons = screen.getAllByRole('menuitem', { name: 'Log in' });
     expect(loginButtons).toHaveLength(1);
     fireEvent.click(loginButtons[0]);
     expect(screen.getByRole('dialog')).toHaveTextContent('Login dialog for codex');
@@ -120,7 +122,8 @@ describe('AgentsListSection web login', () => {
 
   it('disables login in demo mode', () => {
     renderList(true);
-    expect(screen.getByRole('button', { name: 'Log in' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for codex' }));
+    expect(screen.getByRole('menuitem', { name: 'Log in' })).toBeDisabled();
   });
 
   it('saves a newly managed agent before opening its login dialog', async () => {

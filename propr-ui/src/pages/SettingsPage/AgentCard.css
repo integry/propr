@@ -1,0 +1,21 @@
+.coding-agent-card {
+  container-type: inline-size;
+}
+
+/* Keep the path inline when the configuration pane has room for it. */
+@container (min-width: 400px) {
+  .coding-agent-header {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 25%) auto;
+  }
+
+  .coding-agent-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .coding-agent-path {
+    grid-column: 2;
+    grid-row: 1;
+    margin-left: 0;
+  }
+}
