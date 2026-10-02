@@ -4,7 +4,7 @@ import { isUsageTipsCooldownDays } from '@propr/shared';
  *
  * Functions for interacting with the ProPR backend system settings endpoints.
  * These functions provide a typed interface to view and update global system configuration
- * like worker concurrency, auto-followup thresholds, and model settings.
+ * like worker concurrency and model settings.
  */
 
 import { ApiClient, createApiClient } from "./client.js";
@@ -62,9 +62,13 @@ export interface SystemSettings {
   planner_generation_model: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Retained for REST compatibility only. Post-implementation analysis
+   * was removed, so this setting has no effect.
    */
   auto_followup_score_threshold: number;
+
+  /** Deprecation reasons for legacy settings returned by the server. */
+  deprecated_settings?: Record<string, string>;
 
   /**
    * When enabled, the system will automatically merge the PR base branch into
@@ -191,7 +195,8 @@ export interface UpdateSettingsOptions {
   planner_generation_model?: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Legacy REST update option accepted for compatibility only.
+   * Post-implementation analysis was removed, so writing this has no effect.
    */
   auto_followup_score_threshold?: number;
 
@@ -271,7 +276,7 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = keyof SystemSettings;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings'>;
 
 /**
  * List of valid setting keys for validation.
@@ -285,7 +290,6 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "analysis_model_fast",
   "planner_context_model",
   "planner_generation_model",
-  "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
   "dashboard_summary_enabled",
   "model_reasoning_level",
@@ -325,17 +329,13 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       if (!isUsageTipsCooldownDays(parsed)) throw new Error('Cooldown must be an integer from 1 to 365');
       return parsed;
     }
-    case "worker_concurrency":
-    case "auto_followup_score_threshold": {
+    case "worker_concurrency": {
       if (!/^-?\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be an integer`);
       }
       const parsed = Number(value);
       if (!Number.isSafeInteger(parsed)) {
         throw new Error(`Invalid value for ${key}: must be an integer up to ${Number.MAX_SAFE_INTEGER}`);
-      }
-      if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
-        throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }
       if (key === "worker_concurrency" && parsed < 1) {
         throw new Error(`Invalid value for ${key}: must be at least 1`);
@@ -443,7 +443,6 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
  * ```typescript
  * const settings = await getSettings();
  * console.log(`Worker concurrency: ${settings.worker_concurrency}`);
- * console.log(`Auto-followup threshold: ${settings.auto_followup_score_threshold}`);
  * ```
  */
 export async function getSettings(client?: ApiClient): Promise<GetSettingsResponse> {
@@ -469,7 +468,7 @@ export async function getSettings(client?: ApiClient): Promise<GetSettingsRespon
  * // Update multiple settings
  * await updateSettings({
  *   worker_concurrency: 10,
- *   auto_followup_score_threshold: 7
+ *   auto_resolve_merge_conflicts: true
  * });
  * ```
  */
@@ -499,8 +498,8 @@ export async function updateSettings(
  * // Update worker concurrency
  * await updateSetting("worker_concurrency", 10);
  *
- * // Update auto-followup threshold
- * await updateSetting("auto_followup_score_threshold", 7);
+ * // Update merge-conflict resolution
+ * await updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export async function updateSetting(
@@ -563,7 +562,7 @@ export async function triggerSummarizationReindexAll(
  * await settingsApi.updateSettings({ worker_concurrency: 10 });
  *
  * // Update a single setting
- * await settingsApi.updateSetting("auto_followup_score_threshold", 7);
+ * await settingsApi.updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export const settingsApi = {

@@ -16,9 +16,11 @@ interface TaskStatsChartProps {
   data?: TaskStatsResponse | null;
   mode?: 'all' | 'trends' | 'distribution';
   isLoading?: boolean;
+  /** Off where the surrounding pane already names the chart. */
+  showHeading?: boolean;
 }
 
-const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading }) => {
+const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading, showHeading = true }) => {
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +84,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   // Loading skeleton for distribution mode (segmented bar + tabular legend)
   const renderDistributionSkeleton = () => (
     <div>
-      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
+      {showHeading && <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>}
       <SkeletonRegion label="Loading task status…">
         <SkeletonBlock className="h-2 w-full" />
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
@@ -186,7 +188,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     <>
       {statusBreakdown.length > 0 && (
         <div>
-          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
+          {showHeading && <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>}
           <StatusSegmentedBar data={statusBreakdown} />
         </div>
       )}

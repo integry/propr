@@ -24,7 +24,7 @@ docker-compose -f docker-compose.prod.yml up -d --scale worker=3
 
 Higher concurrency is not always better. Watch queue depth, model rate limits, repository size, and average task duration before increasing it.
 
-Separate `analysis-worker` and `indexing-worker` services process repository analysis and indexing jobs independently of implementation work.
+The separate `indexing-worker` service processes repository indexing jobs independently of implementation work.
 
 ## Model-Specific Processing
 

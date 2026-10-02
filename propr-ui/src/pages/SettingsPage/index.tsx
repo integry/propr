@@ -79,7 +79,7 @@ const AdminSettingsPage: React.FC = () => {
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
     let value: string | number | boolean;
-    const numericFields = ['usage_tips_dismissal_cooldown_days', 'auto_followup_score_threshold', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    const numericFields = ['usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
     if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
@@ -163,12 +163,11 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'general-configuration',
       category: 'automation',
-      searchText: 'general configuration processing worker concurrency auto followup score threshold resolve merge conflicts ultrafix rating goal maximum cycles pause seconds',
+      searchText: 'general configuration processing worker concurrency resolve merge conflicts ultrafix rating goal maximum cycles pause seconds',
       content: (
         <GeneralSettingsSection
           settings={{
             worker_concurrency: settings.worker_concurrency,
-            auto_followup_score_threshold: settings.auto_followup_score_threshold,
             auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
             ultrafix_rating_goal: settings.ultrafix_rating_goal,
             ultrafix_max_cycles: settings.ultrafix_max_cycles,

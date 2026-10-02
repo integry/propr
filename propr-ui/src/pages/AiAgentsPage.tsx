@@ -333,7 +333,10 @@ const AiAgentsPage: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="h-full overflow-y-auto bg-white overscroll-contain">
+          <div
+            className="h-full overflow-y-auto bg-white overscroll-contain"
+            data-testid="ai-agents-mobile-configuration-scroll"
+          >
             <div className="px-4 py-4">
               {renderConfiguration('mobile')}
             </div>

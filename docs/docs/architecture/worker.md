@@ -84,7 +84,7 @@ The worker registers BullMQ processors for several job names:
 - `processMergeConflict` — merge and conflict-resolution commands
 - `processGoal` — long-running [goal](../features/goals.md) sessions
 
-Separate `analysis-worker` and `indexing-worker` services handle repository analysis and indexing jobs so heavy implementation work does not block them.
+The separate `indexing-worker` service handles repository indexing jobs so heavy implementation work does not block them.
 
 The same worker structure applies across job types: prepare, run, finalize, record.
 

@@ -63,7 +63,6 @@ Direct service commands are mainly for development (run `npm run build` first, o
 ```bash
 npm run daemon            # issue/comment intake (npm run daemon:dev for tsx + debug logs)
 npm run worker            # task execution
-npm run analysis-worker   # analysis jobs
 npm run indexing-worker   # repository indexing
 npm run dashboard         # API server (packages/api)
 ```

@@ -84,7 +84,6 @@ export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPrev
 interface ConfigSettings {
     worker_concurrency?: number;
     analysis_model_fast?: string;
-    analysis_model_advanced?: string;
     planner_context_model?: string;
     planner_generation_model?: string;
     [key: string]: unknown;
@@ -100,18 +99,17 @@ function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
     return redacted;
 }
 
-// --- Auto-Followup Score Threshold ---
+// --- Legacy API compatibility for retired analysis follow-up settings ---
 
 /**
- * Default threshold for auto-followup on low implementation scores.
- * Range: 0-9 (0 = disabled, 1-9 = trigger if score is at or below this value)
+ * Historical default retained for REST compatibility; it no longer affects execution.
  */
 const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 
 /**
  * Loads the auto-followup score threshold from the database.
- * Returns 0 if disabled, or a value 1-9 indicating the threshold.
  * Falls back to default if the stored value is malformed or out of range.
+ * @deprecated REST compatibility only; post-implementation analysis was removed.
  */
 export async function loadAutoFollowupScoreThreshold(): Promise<number> {
     const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
@@ -125,6 +123,7 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
 
 /**
  * Saves the auto-followup score threshold to the database.
+ * @deprecated REST compatibility only; this setting has no effect.
  * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
  * @throws Error if threshold is not a valid integer in range 0-9
  */

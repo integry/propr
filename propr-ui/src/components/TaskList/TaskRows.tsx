@@ -1,8 +1,7 @@
 import React from 'react';
 import { ChevronDown, CornerDownRight, Images } from 'lucide-react';
 import type { Task } from './types';
-import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
-import { ScoreBadge } from './ScoreBadge';
+import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
@@ -72,13 +71,6 @@ export const TaskAgent: React.FC<{ task: Task }> = ({ task }) => {
     </span>
   );
 };
-
-/** Bracketed `[ ● 9 ]` pill, or a quiet dash so the column never collapses. */
-export const TaskScore: React.FC<{ task: Task }> = ({ task }) => (
-  task.critiqueScore === null || task.critiqueScore === undefined
-    ? <span className="text-xs text-slate-300" aria-label="No score">—</span>
-    : <ScoreBadge score={task.critiqueScore} bracketed dimmed={shouldDimTask(task)} />
-);
 
 /**
  * Long titles wrap to a second line instead of being cut off mid-word. An
@@ -161,10 +153,8 @@ export const TitleLinePreviews: React.FC<{ row: TaskRowView }> = ({ row }) => (
 
 /**
  * The rolled-up runs of one row as a self-contained timeline hanging off the
- * toggle's caret: `when · what it did · summary [score]`. The score sits right
- * after the summary it grades, so a run reads as one cluster instead of being
- * matched to a pill at the far edge of a wide table. Runs share the parent's
- * repository and agent, so they borrow none of its cells.
+ * toggle's caret: `when · what it did · summary`. Each run reads as one cluster.
+ * Runs share the parent's repository and agent, so they borrow none of its cells.
  */
 export const EarlierRunsList: React.FC<{
   id: string;
@@ -189,10 +179,6 @@ export const EarlierRunsList: React.FC<{
               {/* The slot stays when a run names no action, so every summary starts at the same edge. */}
               <span className="w-20 flex-none">{run.type && <WorkTypeBadge type={run.type} compact />}</span>
               <span className={`task-run-summary min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'text-slate-500'}`} title={run.delta}>{run.delta}</span>
-              {/* The score follows the summary it grades, held to the line's height so scored and unscored runs match. */}
-              {typeof run.task.critiqueScore === 'number' && (
-                <span className="flex h-5 flex-none items-center"><ScoreBadge score={run.task.critiqueScore} bracketed dimmed={shouldDimTask(run.task)} /></span>
-              )}
               {!QUIET_RUN_STATUSES.has(status) && <span className="flex-none">{getStatusPill(status)}</span>}
               <PreviewCountBadge count={run.previewCount} />
             </span>
@@ -240,7 +226,6 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
           <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
         </div>
-        <div role="cell" className="flex justify-end"><TaskScore task={task} /></div>
       </div>
       {expanded && row.earlierRuns.length > 0 && (
         <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">

@@ -13,6 +13,10 @@ import {
   parseGoalCheckpointDeclaration,
 } from '../packages/core/src/goals.ts';
 import {
+  parseGoalCheckpointDeclaration as parseSharedGoalCheckpointDeclaration,
+  parseGoalCheckpointOutput,
+} from '../packages/shared/src/goalCheckpoints.ts';
+import {
   GoalCapabilityProbe,
   antigravityConversationIdentity,
   antigravityGoalCommandProbeSucceeded,
@@ -66,6 +70,24 @@ after(async () => {
 });
 
 describe('native goal provider contract', () => {
+  test('core and browser surfaces use the same checkpoint parser', () => {
+    const declaration = '{"checkpointReady":true,"message":"feat: shared parser"}';
+    assert.deepEqual(
+      parseGoalCheckpointDeclaration(declaration),
+      parseSharedGoalCheckpointDeclaration(declaration),
+    );
+    const output = parseGoalCheckpointOutput([
+      'Stable work is ready.',
+      '```json',
+      declaration,
+      '```',
+    ].join('\n'));
+    assert.deepEqual(output, {
+      declaration: { checkpointReady: true, message: 'feat: shared parser' },
+      remainder: 'Stable work is ready.',
+    });
+  });
+
   test('separates the direct goal command from ProPR delivery context', () => {
     const options = {
       objective: 'Ship the dashboard', launchStrategy: 'direct', maxParallelTasks: 3, ultrafix: true,

@@ -68,7 +68,6 @@ export type ExecutionType =
     | 'title-generation'
     | 'summarization'
     | 'context-analysis'
-    | 'task-analysis'
     | 'repo-chat'
     | 'repo-improvements'
     | 'pr-review'
