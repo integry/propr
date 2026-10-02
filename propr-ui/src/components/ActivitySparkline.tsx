@@ -13,13 +13,21 @@
  * a lighter dashed midline between them, so a bar's height can be read to
  * within a task or two without hovering it; the exact figure is still one
  * hover away. The heading belongs to the pane that holds the chart.
+ *
+ * Every bar that has room gets its own date, directly under it: a week reads
+ * as weekdays over days, and a longer window steps at an even stride counted
+ * back from today (see `planActivityAxis`). Each day owns its whole column:
+ * hovering anywhere in it lights a ceiling-to-baseline track behind the bar
+ * and opens that day's count, so the hover target is the day's slot, not a
+ * thin bar inside it.
  */
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { midlineTick, tooltipStyle } from './chartConstants';
 import { dailyBarFill, utcToday } from './Dashboard/chartPalette';
+import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
@@ -34,20 +42,43 @@ interface ActivitySparklineProps {
  */
 const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60, 30, 70, 50];
 
+/** The y-axis gutter, which the plot and the skeleton are both inset by. */
+const Y_AXIS_WIDTH = 28;
+
+/** The hover track behind a day's bar (slate-100: slate-50 vanishes on the white canvas). */
+const COLUMN_TRACK_FILL = '#F1F5F9';
+
+/** One day's date under its bar: the weekday or day on top, the date, month or year beneath. */
+const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel> }> = ({
+  x = 0, y = 0, payload, labels,
+}) => {
+  const label = payload ? labels.get(payload.value) : undefined;
+  if (!label) return null;
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={10} className="tabular-nums" data-testid="activity-date-label">
+      <tspan x={x} dy="0.71em" fill="#64748B">{label.primary}</tspan>
+      {label.secondary && <tspan x={x} dy="1.2em" fill="#94A3B8">{label.secondary}</tspan>}
+    </text>
+  );
+};
+
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
-  const first = data[0]?.displayDate ?? '';
-  const middle = data[Math.floor(data.length / 2)]?.displayDate ?? '';
-  const last = data[data.length - 1]?.displayDate ?? '';
   // Never a rounded-up invention: the top rule is a count the window reached.
   const max = Math.max(1, ...data.map(point => point.count));
   const mid = midlineTick(max);
   const today = utcToday();
+  const [plotWidth, setPlotWidth] = useState(0);
+  const labels = useMemo(
+    () => planActivityAxis(data.map(point => point.date), data.length > 0 ? plotWidth / data.length : 0),
+    [data, plotWidth],
+  );
+  const onResize = (width: number) => setPlotWidth(Math.max(0, width - Y_AXIS_WIDTH));
 
   return (
     <div data-testid="activity-chart">
       <div className="h-48 xl:h-64">
         {isLoading ? (
-          <SkeletonRegion label="Loading activity…" className="flex h-full w-full flex-col justify-end pb-2">
+          <SkeletonRegion label="Loading activity…" className="flex h-full w-full flex-col justify-end pb-7">
             <div className="flex h-[85%] items-end justify-between gap-1 pl-7">
               {PLACEHOLDER_BAR_HEIGHTS.map((height, i) => (
                 <SkeletonBlock key={i} className="flex-1" style={{ height: `${height}%` }} />
@@ -55,8 +86,8 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
             </div>
           </SkeletonRegion>
         ) : data.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 6 }} barCategoryGap="15%">
+          <ResponsiveContainer width="100%" height="100%" onResize={onResize}>
+            <BarChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%">
               {/*
                 The baseline and maximum rules, then a lighter midline that reads
                 as a guide. Both are grids, so they sit behind the bars.
@@ -65,9 +96,17 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
               {mid !== null && (
                 <CartesianGrid vertical={false} horizontalValues={[mid]} strokeDasharray="3 3" stroke="#F1F5F9" />
               )}
-              <XAxis dataKey="displayDate" hide />
+              <XAxis
+                dataKey="date"
+                axisLine={false}
+                tickLine={false}
+                // Every day is a tick; the plan decides which ones carry a date.
+                interval={0}
+                height={28}
+                tick={<DateTick labels={labels} />}
+              />
               <YAxis
-                width={28}
+                width={Y_AXIS_WIDTH}
                 axisLine={false}
                 tickLine={false}
                 domain={[0, max]}
@@ -78,17 +117,18 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                 allowDecimals={false}
                 tick={{ fill: '#94A3B8', fontSize: 10 }}
               />
+              {/* The cursor is the day's whole column, ceiling to baseline. */}
               <Tooltip
-                cursor={{ fill: '#F1F5F9' }}
-                content={({ active, payload, label }) =>
+                cursor={{ fill: COLUMN_TRACK_FILL }}
+                content={({ active, payload }) =>
                   active && payload && payload.length ? (
                     <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
-                      {label}: {payload[0].value} tasks
+                      {(payload[0].payload as ActivitySparklineProps['data'][number]).displayDate}: {payload[0].value} tasks
                     </div>
                   ) : null
                 }
               />
-              <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={28} isAnimationActive={false}>
+              <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
                 {data.map(point => (
                   <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
                 ))}
@@ -109,14 +149,6 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
           </SystemAlert>
         )}
       </div>
-      {/* The date rail is inset by the y-axis gutter so it sits under the plot. */}
-      {!isLoading && data.length > 0 && (
-        <div className="flex justify-between pl-7 pt-1 text-[10px] tabular-nums text-slate-400">
-          <span>{first}</span>
-          {data.length > 2 && <span>{middle}</span>}
-          <span>{last}</span>
-        </div>
-      )}
     </div>
   );
 };

@@ -134,6 +134,46 @@ describe('AnalyticsPage', () => {
     expect(container.querySelector('.shadow-sm, .rounded-xl')).toBeNull();
   });
 
+  it('opens the filtered Tasks list from a repository row', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [
+      { repository: 'example/workspace', total: 18, completed: 15, failed: 3, inProgress: 0, successRate: 83.3 },
+      { repository: 'example/docs', total: 4, completed: 4, failed: 0, inProgress: 0, successRate: 100 },
+    ] });
+    vi.mocked(getStatsOverview).mockResolvedValue(overview);
+
+    renderPage();
+
+    const repositories = await screen.findByTestId('repository-performance-table');
+    // The identity cell is a real link, for the keyboard and a new tab.
+    expect(within(repositories).getByRole('link', { name: 'Tasks in example/workspace' }))
+      .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace');
+    // A failure count goes straight to the failures; a zero is not a link.
+    expect(within(repositories).getByRole('link', { name: '3 failed tasks in example/workspace' }))
+      .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace&status=failed');
+    expect(within(repositories).queryByRole('link', { name: /failed tasks in example\/docs/ })).toBeNull();
+
+    // The whole row is the pointer target.
+    const docsRow = within(repositories).getByText('docs').closest('tr')!;
+    expect(docsRow).toHaveClass('cursor-pointer', 'hover:bg-slate-50');
+    fireEvent.click(within(docsRow).getByText('100%'));
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?repository=example%2Fdocs');
+  });
+
+  it('opens the LLM log for a model row', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] });
+    vi.mocked(getStatsOverview).mockResolvedValue(overview);
+
+    renderPage();
+
+    const models = await screen.findByTestId('model-breakdown-table');
+    expect(within(models).getByRole('link', { name: 'LLM log for claude-opus-5-5' }))
+      .toHaveAttribute('href', '/llm-logs?model=claude-opus-5-5');
+    fireEvent.click(within(models).getByText('$3.02'));
+    expect(screen.getByTestId('location')).toHaveTextContent('/llm-logs?model=gpt-5.6');
+  });
+
   it('shows the repository scope read-only in the toolbar slot', () => {
     vi.mocked(getTaskStats).mockReturnValue(new Promise(() => {}));
     vi.mocked(getRepositoryStats).mockReturnValue(new Promise(() => {}));

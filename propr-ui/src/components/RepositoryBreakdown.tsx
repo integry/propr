@@ -8,11 +8,17 @@
  * Repositories are monospace code chips, the same entity treatment as every
  * other technical identifier in the app, drawn without their owner: the owner
  * is constant across the instance and stays in the chip's tooltip.
+ *
+ * Each row opens the Tasks list filtered to its repository, and a non-zero
+ * failure count opens it filtered to that repository's failures.
  */
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 import type { RepositoryStats } from '../api/taskStatsApi';
 import { CodeChip } from './ui/CodeChip';
+import { DrillDownCell, DrillDownRow } from './Analytics/DrillDownRow';
+import { tasksHref } from './Analytics/drillDownLinks';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
@@ -86,18 +92,32 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ repositories,
     <table className="w-full table-fixed" data-testid="repository-performance-table">
       <TableHead />
       <tbody>
-        {displayRepos.map(repo => (
-          <tr key={repo.repository} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
-            <td className={`${CELL} min-w-0`}>
-              <CodeChip title={repo.repository}>{repo.repository.split('/').pop()}</CodeChip>
-            </td>
-            <td className={`${CELL} text-right text-slate-800`}>{repo.total.toLocaleString()}</td>
-            <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.completed.toLocaleString()}</td>
-            <td className={`${CELL} ${WIDE} text-right ${repo.failed > 0 ? 'text-red-600' : 'text-slate-400'}`}>{repo.failed.toLocaleString()}</td>
-            <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.inProgress.toLocaleString()}</td>
-            <td className={`${CELL} text-right font-medium ${successTone(repo.successRate)}`}>{repo.successRate}%</td>
-          </tr>
-        ))}
+        {displayRepos.map(repo => {
+          const name = repo.repository.split('/').pop();
+          return (
+            <DrillDownRow key={repo.repository} to={tasksHref(repo.repository)}>
+              <DrillDownCell to={tasksHref(repo.repository)} label={`Tasks in ${repo.repository}`} className={CELL}>
+                <CodeChip title={repo.repository} className="transition-colors group-hover:border-slate-300 group-hover:bg-white">{name}</CodeChip>
+              </DrillDownCell>
+              <td className={`${CELL} text-right text-slate-800`}>{repo.total.toLocaleString()}</td>
+              <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.completed.toLocaleString()}</td>
+              <td className={`${CELL} ${WIDE} text-right ${repo.failed > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                {repo.failed > 0 ? (
+                  <Link
+                    to={tasksHref(repo.repository, 'failed')}
+                    title={`Failed tasks in ${repo.repository}`}
+                    aria-label={`${repo.failed.toLocaleString()} failed tasks in ${repo.repository}`}
+                    className="underline decoration-red-200 underline-offset-2 hover:decoration-red-600"
+                  >
+                    {repo.failed.toLocaleString()}
+                  </Link>
+                ) : repo.failed.toLocaleString()}
+              </td>
+              <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.inProgress.toLocaleString()}</td>
+              <td className={`${CELL} text-right font-medium ${successTone(repo.successRate)}`}>{repo.successRate}%</td>
+            </DrillDownRow>
+          );
+        })}
       </tbody>
     </table>
   );

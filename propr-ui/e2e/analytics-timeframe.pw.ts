@@ -97,6 +97,9 @@ test('wider screens get the segmented control, and a choice reaches every sectio
   await expect(group.getByRole('button')).toHaveText(['24h', '7d', '30d', '90d', '1y', 'All']);
   await expect(group.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('heading', { name: /Repository performance/ })).toBeVisible();
+  // A month labels every day with room for one, and steps evenly from today where there is not.
+  await expect(page.getByTestId('activity-date-label').last()).toHaveText('23');
+  await captureSettled(page, 'analytics-activity-month');
 
   requests.length = 0;
   await group.getByRole('button', { name: 'Last 7 days' }).click();
@@ -195,4 +198,68 @@ test('history is quiet: only today is teal, the scale has a midline, and the rig
     cells.slice(1).map(cell => Math.round(cell.getBoundingClientRect().width)));
   expect(new Set(widths).size).toBe(1);
   await captureSettled(page, 'analytics-quiet-history');
+});
+
+test('a week labels every day under its bar, and each day owns its full-height column', async ({ page }) => {
+  await openAnalytics(page, 1440, '?period=7d');
+  await expect(page.getByText('design-system')).toBeVisible();
+
+  const chart = page.getByTestId('activity-chart');
+  // Eight days, eight labels: the weekday over the day, Sep 16 through today.
+  const labels = chart.getByTestId('activity-date-label');
+  await expect(labels).toHaveCount(8);
+  expect(await labels.allTextContents()).toEqual([
+    'WedSep 16', 'Thu17', 'Fri18', 'Sat19', 'Sun20', 'Mon21', 'Tue22', 'Wed23',
+  ]);
+
+  // Each label sits under its own bar, not on a rail of its own.
+  const bars = chart.locator('.recharts-bar-rectangle path');
+  const barBoxes = await bars.evaluateAll(paths => paths.map(path => path.getBoundingClientRect())
+    .map(box => ({ center: box.x + box.width / 2, width: box.width })));
+  const labelCenters = await labels.evaluateAll(texts => texts.map(text => {
+    const box = text.getBoundingClientRect();
+    return box.x + box.width / 2;
+  }));
+  // Wide bars, not stilts.
+  expect(barBoxes.every(box => box.width >= 32)).toBe(true);
+  // Days with tasks have bars; every bar has its date centred under it.
+  for (const bar of barBoxes) {
+    expect(labelCenters.some(center => Math.abs(center - bar.center) < 2)).toBe(true);
+  }
+
+  // Hovering anywhere in a day's column lights a ceiling-to-baseline track behind its bar.
+  // The first grid holds the baseline and maximum rules, so it spans the plot top to bottom.
+  const plot = await chart.locator('.recharts-cartesian-grid').first().boundingBox();
+  const lastBar = barBoxes.at(-1)!;
+  await page.mouse.move(lastBar.center, plot!.y + 4);
+  const track = chart.locator('.recharts-tooltip-cursor');
+  await expect(track).toBeVisible();
+  const trackBox = await track.boundingBox();
+  // Within the grid lines' stroke.
+  expect(trackBox!.height).toBeGreaterThanOrEqual(plot!.height - 2);
+  expect(trackBox!.width).toBeGreaterThan(lastBar.width);
+  await expect(page.getByText('Sep 23: 7 tasks')).toBeVisible();
+  await captureSettled(page, 'analytics-activity-week');
+});
+
+test('repository and model rows drill down to the filtered lists', async ({ page }) => {
+  await openAnalytics(page, 1440, '?period=7d');
+  const repositories = page.getByTestId('repository-performance-table');
+  await expect(repositories.getByText('workspace')).toBeVisible();
+
+  await expect(repositories.getByRole('link', { name: 'Tasks in example/workspace', exact: true }))
+    .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace');
+  await expect(repositories.getByRole('link', { name: '3 failed tasks in example/workspace' }))
+    .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace&status=failed');
+  await expect(page.getByTestId('model-breakdown-table').getByRole('link', { name: 'LLM log for gpt-5.6' }))
+    .toHaveAttribute('href', '/llm-logs?model=gpt-5.6');
+
+  const row = repositories.locator('tbody tr').first();
+  await expect(row).toHaveCSS('cursor', 'pointer');
+  await row.hover();
+  await expect(row).toHaveCSS('background-color', 'rgb(248, 250, 252)');
+  await captureSettled(page, 'analytics-row-drill-down');
+
+  await row.getByRole('cell').last().click();
+  await expect(page).toHaveURL(/\/tasks\?repository=example%2Fworkspace$/);
 });

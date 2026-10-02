@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-model table (tasks, tokens, cost), task status and token consumption
   (input against output, spend per million tokens) on the right. Past days'
   activity bars are neutral slate and only today's is teal; the chart's scale
-  carries a midline. The toolbar shows the repository scope as a locked
+  carries a midline, and every day that has room is labelled under its bar
+  (weekday over day for a week). Repository rows open the Tasks list filtered
+  to that repository, a failure count opens its failed tasks, and model rows
+  open the LLM log for that model. The toolbar shows the repository scope as a locked
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
 

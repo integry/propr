@@ -8,6 +8,8 @@
  * Every model goes through one formatter, so a catalogue model and an id the
  * catalogue has since dropped read the same way (`Claude Opus 5.5`,
  * `GPT-5.6`) instead of a display name beside a raw slug.
+ *
+ * Each row opens the LLM log filtered to its model.
  */
 
 import React from 'react';
@@ -17,6 +19,8 @@ import { ProviderLogo } from './ui/ProviderLogo';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 import { formatCompactNumber, formatUsd } from './Analytics/analyticsFormat';
+import { DrillDownCell, DrillDownRow } from './Analytics/DrillDownRow';
+import { modelLogsHref } from './Analytics/drillDownLinks';
 
 // Model icon component using ProviderLogo for visual grouping
 const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
@@ -124,15 +128,13 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
       <TableHead />
       <tbody>
         {displayModels.map(row => (
-          <tr key={row.model} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
-            <td className={`${CELL} min-w-0`}>
-              <div className="flex min-w-0 items-center gap-2">
-                <ModelIcon modelId={row.model} />
-                <span className="truncate font-medium text-slate-800" title={row.model}>
-                  {formatModelName(row.model)}
-                </span>
-              </div>
-            </td>
+          <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
+            <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${row.model}`} className={CELL}>
+              <ModelIcon modelId={row.model} />
+              <span className="truncate font-medium text-slate-800 group-hover:text-slate-950 group-hover:underline group-hover:decoration-slate-300 group-hover:underline-offset-2" title={row.model}>
+                {formatModelName(row.model)}
+              </span>
+            </DrillDownCell>
             <td className={`${CELL} text-right text-slate-800`}>{row.tasks.toLocaleString()}</td>
             <td className={`${CELL} text-right text-slate-600`}>
               {row.tokens === null ? UNKNOWN : formatCompactNumber(row.tokens)}
@@ -140,7 +142,7 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
             <td className={`${CELL} text-right text-slate-600`}>
               {row.cost_usd === null ? UNKNOWN : formatUsd(row.cost_usd)}
             </td>
-          </tr>
+          </DrillDownRow>
         ))}
       </tbody>
     </table>
