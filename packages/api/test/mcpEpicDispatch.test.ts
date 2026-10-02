@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- epic dispatch and receipt lifecycle regressions share one database and GitHub fixture */
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
