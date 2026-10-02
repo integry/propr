@@ -1,5 +1,10 @@
 // Task Statistics Types and API
+import type { AnalyticsTimeframe } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
+
+/** Without a period each endpoint keeps its historical scope. */
+const periodQuery = (period?: AnalyticsTimeframe): string =>
+  period ? `?period=${encodeURIComponent(period)}` : '';
 
 export interface DailyCount {
   date: string;
@@ -29,8 +34,8 @@ export interface TaskStatsResponse {
   summary: TaskStatsSummary;
 }
 
-export const getTaskStats = async (): Promise<TaskStatsResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/stats/tasks`, {
+export const getTaskStats = async (period?: AnalyticsTimeframe): Promise<TaskStatsResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/tasks${periodQuery(period)}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
@@ -53,8 +58,8 @@ export interface RepositoryStatsResponse {
   repositories: RepositoryStats[];
 }
 
-export const getRepositoryStats = async (): Promise<RepositoryStatsResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/stats/repositories`, {
+export const getRepositoryStats = async (period?: AnalyticsTimeframe): Promise<RepositoryStatsResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/repositories${periodQuery(period)}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
@@ -74,6 +79,9 @@ export interface StatsOverviewTasks {
 
 export interface StatsOverviewUsage {
   total_tokens: number;
+  /** Prompt and completion tokens; absent from servers that predate the split. */
+  input_tokens?: number;
+  output_tokens?: number;
   total_cost_usd: number;
   models: Record<string, number>;
 }
@@ -82,14 +90,24 @@ export interface StatsOverviewSystem {
   repos_indexed: number;
 }
 
+/** One model's share of the period: distinct tasks, tokens and recorded cost. */
+export interface StatsOverviewModelUsage {
+  model: string;
+  tasks: number;
+  tokens: number;
+  cost_usd: number;
+}
+
 export interface StatsOverviewResponse {
   tasks: StatsOverviewTasks;
   usage: StatsOverviewUsage;
+  /** Absent from servers that predate the per-model breakdown. */
+  model_usage?: StatsOverviewModelUsage[];
   system: StatsOverviewSystem;
 }
 
-export const getStatsOverview = async (): Promise<StatsOverviewResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/stats/overview`, {
+export const getStatsOverview = async (period?: AnalyticsTimeframe): Promise<StatsOverviewResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/overview${periodQuery(period)}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'

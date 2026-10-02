@@ -17,7 +17,7 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
-- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens, total cost, and task counts per model
+- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
