@@ -6,15 +6,20 @@
  * rounds off the spikes and empty days an operator is looking for. Each bar
  * is exactly one day's count, flat on the zero baseline.
  *
- * The scale is the window's own maximum and zero, both always labelled, so a
- * bar's height means something without hovering it; the exact figure is still
- * one hover away. The heading belongs to the pane that holds the chart.
+ * History is quiet: a day that has closed is a neutral slate bar, and only
+ * today's bar, still accumulating, is brand teal — the dashboard's rule.
+ *
+ * The scale is the window's own maximum and zero, both always labelled, with
+ * a lighter dashed midline between them, so a bar's height can be read to
+ * within a task or two without hovering it; the exact figure is still one
+ * hover away. The heading belongs to the pane that holds the chart.
  */
 
 import React from 'react';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
-import { tooltipStyle } from './chartConstants';
+import { midlineTick, tooltipStyle } from './chartConstants';
+import { dailyBarFill, utcToday } from './Dashboard/chartPalette';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
@@ -29,14 +34,14 @@ interface ActivitySparklineProps {
  */
 const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60, 30, 70, 50];
 
-const BAR_FILL = '#14B8A6';
-
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
   const first = data[0]?.displayDate ?? '';
   const middle = data[Math.floor(data.length / 2)]?.displayDate ?? '';
   const last = data[data.length - 1]?.displayDate ?? '';
   // Never a rounded-up invention: the top rule is a count the window reached.
   const max = Math.max(1, ...data.map(point => point.count));
+  const mid = midlineTick(max);
+  const today = utcToday();
 
   return (
     <div data-testid="activity-chart">
@@ -52,16 +57,23 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
         ) : data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 6 }} barCategoryGap="15%">
-              <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#E2E8F0" />
+              {/*
+                The baseline and maximum rules, then a lighter midline that reads
+                as a guide. Both are grids, so they sit behind the bars.
+              */}
+              <CartesianGrid vertical={false} horizontalValues={[0, max]} strokeDasharray="3 3" stroke="#E2E8F0" />
+              {mid !== null && (
+                <CartesianGrid vertical={false} horizontalValues={[mid]} strokeDasharray="3 3" stroke="#F1F5F9" />
+              )}
               <XAxis dataKey="displayDate" hide />
               <YAxis
                 width={28}
                 axisLine={false}
                 tickLine={false}
                 domain={[0, max]}
-                ticks={[0, max]}
-                // Both, always: recharts drops an edge tick it thinks will not
-                // fit, and the baseline is the one it drops.
+                ticks={mid === null ? [0, max] : [0, mid, max]}
+                // Every one, always: recharts drops an edge tick it thinks will
+                // not fit, and the baseline is the one it drops.
                 interval={0}
                 allowDecimals={false}
                 tick={{ fill: '#94A3B8', fontSize: 10 }}
@@ -76,7 +88,11 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                   ) : null
                 }
               />
-              <Bar dataKey="count" fill={BAR_FILL} radius={[2, 2, 0, 0]} maxBarSize={28} isAnimationActive={false} />
+              <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={28} isAnimationActive={false}>
+                {data.map(point => (
+                  <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         ) : (

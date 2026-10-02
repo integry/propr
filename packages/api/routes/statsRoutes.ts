@@ -300,6 +300,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     const totalCost = Number(costStats?.cost || 0);
     return {
       total_tokens: inputTokens + outputTokens,
+      input_tokens: inputTokens, output_tokens: outputTokens,
       total_cost_usd: Number(totalCost.toFixed(2)),
       models: modelDistribution
     };

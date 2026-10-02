@@ -95,6 +95,8 @@ test('without a period the endpoints keep their historical scope', async () => {
   assert.equal((overview.body.tasks as { completed: number }).completed, 2);
   assert.deepEqual(overview.body.usage, {
     total_tokens: 1320,
+    input_tokens: 1100,
+    output_tokens: 220,
     total_cost_usd: 2,
     models: { 'claude-opus-5-5': 1, 'gpt-5.6': 1 },
   });
@@ -151,7 +153,9 @@ test('a period bounds overview usage by execution start but never the indexed re
   const stats = createStatsRoutes({ db: database, now: () => NOW });
 
   const lastDay = await call(stats.getOverview, { period: '24h' });
-  assert.deepEqual(lastDay.body.usage, { total_tokens: 120, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 } });
+  assert.deepEqual(lastDay.body.usage, {
+    total_tokens: 120, input_tokens: 100, output_tokens: 20, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 },
+  });
   assert.equal((lastDay.body.tasks as { completed: number }).completed, 1);
   assert.deepEqual(lastDay.body.system, { repos_indexed: 1 });
   assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', tasks: 1, tokens: 120, cost_usd: 1.5 }]);

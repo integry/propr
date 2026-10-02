@@ -11,10 +11,11 @@
  *
  * The page is one console on a white canvas, not a grid of cards: a totals
  * band across the top, then a split pane — activity and repositories on the
- * left 60%, models and task status on the right 40% — divided by the same 1px
- * rules the dashboard uses. Each pane is as tall as its content, and the
- * column rule runs to the bottom of the canvas, so there is no card padded
- * out to match its neighbour and no grey floor under the last row.
+ * left 60%; models, task status and token consumption on the right 40% —
+ * divided by the same 1px rules the dashboard uses. Each pane is as tall as
+ * its content, and the column rule runs to the bottom of the canvas, so there
+ * is no card padded out to match its neighbour and no grey floor under the
+ * last row.
  */
 
 import React, { useCallback } from 'react';
@@ -31,6 +32,7 @@ import TaskStatsChart from '../components/TaskStatsChart';
 import ActivitySparkline from '../components/ActivitySparkline';
 import RepositoryBreakdown from '../components/RepositoryBreakdown';
 import TopModels from '../components/TopModels';
+import TokenConsumption from '../components/Analytics/TokenConsumption';
 import AnalyticsTimeframeSelector from '../components/Analytics/AnalyticsTimeframeSelector';
 import { AnalyticsMetricStrip, UNAVAILABLE, type AnalyticsMetric } from '../components/Analytics/AnalyticsMetricStrip';
 import { LockedRepositoryScope } from '../components/Analytics/LockedRepositoryScope';
@@ -133,8 +135,9 @@ const AnalyticsPage: React.FC = () => {
       <div className="flex flex-none flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-6">
         <div className="min-w-0">
           <h1 className="text-lg font-bold text-slate-900">Analytics</h1>
+          {/* Static: the pressed timeframe and the activity heading already say which period. */}
           <p className="text-sm text-slate-500" data-testid="analytics-timeframe-summary">
-            Aggregate activity across every repository · {timeframeLabel}
+            Aggregate activity across all repositories
           </p>
         </div>
         <AnalyticsTimeframeSelector value={timeframe} onChange={changeTimeframe} />
@@ -176,6 +179,9 @@ const AnalyticsPage: React.FC = () => {
                   ? <SystemAlert>{tasks.error}</SystemAlert>
                   : <TaskStatsChart data={tasks.data} mode="distribution" isLoading={tasks.loading} showHeading={false} />}
               </div>
+            </Pane>
+            <Pane id="analytics-tokens-heading" title="Token consumption">
+              <TokenConsumption overview={overview.data} loading={overview.loading} error={overview.error} />
             </Pane>
           </div>
         </div>

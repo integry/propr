@@ -20,7 +20,7 @@ type Overview = Awaited<ReturnType<typeof getStatsOverview>>;
 
 const overview = {
   tasks: { completed: 7, planned: 0, pr_iterations_avg: 1, merged_prs: 7, total_followups: 1 },
-  usage: { total_tokens: 4_200_000, total_cost_usd: 12.42, models: { 'claude-opus-5-5': 5, 'gpt-5.6': 3 } },
+  usage: { total_tokens: 4_200_000, input_tokens: 3_150_000, output_tokens: 1_050_000, total_cost_usd: 12.42, models: { 'claude-opus-5-5': 5, 'gpt-5.6': 3 } },
   model_usage: [
     { model: 'claude-opus-5-5', tasks: 5, tokens: 3_100_000, cost_usd: 9.4 },
     { model: 'gpt-5.6', tasks: 3, tokens: 1_100_000, cost_usd: 3.02 },
@@ -110,6 +110,7 @@ describe('AnalyticsPage', () => {
     expect(within(primary).getByRole('heading', { name: /Repository performance/ })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Models' })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Task status' })).toBeInTheDocument();
+    expect(within(secondary).getByRole('heading', { name: 'Token consumption' })).toBeInTheDocument();
     expect(screen.getByTestId('analytics-split').className).toContain('lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]');
     expect(primary).toHaveClass('lg:border-r', 'lg:border-slate-200');
 
@@ -122,6 +123,12 @@ describe('AnalyticsPage', () => {
     const models = within(secondary).getByTestId('model-breakdown-table');
     const modelRows = within(models).getAllByRole('row').slice(1).map(row => row.textContent);
     expect(modelRows).toEqual(['Claude Opus 5.553.1M$9.40', 'GPT-5.631.1M$3.02']);
+
+    // The right pane accounts for the period's tokens: prompt against completion, and their price.
+    const tokens = within(secondary).getByTestId('token-consumption');
+    expect(within(tokens).getByTestId('token-row-input')).toHaveTextContent('Input · prompt3.2M75%');
+    expect(within(tokens).getByTestId('token-row-output')).toHaveTextContent('Output · completion1.1M25%');
+    expect(within(tokens).getByTestId('token-row-per-million')).toHaveTextContent('Spend per 1M tokens$2.96');
 
     // No floating cards: nothing on the canvas is a rounded, shadowed box.
     expect(container.querySelector('.shadow-sm, .rounded-xl')).toBeNull();
@@ -166,7 +173,9 @@ describe('AnalyticsPage', () => {
       'Last 24 hours', 'Last 7 days', 'Last 30 days', 'Last 90 days', 'Last 12 months', 'All time',
     ]);
 
-    expect(screen.getByTestId('analytics-timeframe-summary')).toHaveTextContent('Aggregate activity across every repository · Last 30 days');
+    // The subtitle never echoes the period: the pressed button and the activity heading carry it.
+    expect(screen.getByTestId('analytics-timeframe-summary')).toHaveTextContent(/^Aggregate activity across all repositories$/);
+    expect(screen.getByRole('heading', { name: /Activity · Last 30 days/ })).toBeInTheDocument();
     await waitFor(() => expect(getTaskStats).toHaveBeenCalledWith('30d'));
     expect(getRepositoryStats).toHaveBeenCalledWith('30d');
     expect(getStatsOverview).toHaveBeenCalledWith('30d');
@@ -189,7 +198,8 @@ describe('AnalyticsPage', () => {
     expect(getStatsOverview).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId('location')).toHaveTextContent('/analytics?period=7d');
     expect(screen.getByRole('button', { name: 'Last 7 days' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('analytics-timeframe-summary')).toHaveTextContent('· Last 7 days');
+    expect(screen.getByRole('heading', { name: /Activity · Last 7 days/ })).toBeInTheDocument();
+    expect(screen.getByTestId('analytics-timeframe-summary')).toHaveTextContent(/^Aggregate activity across all repositories$/);
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Analytics timeframe' }), { target: { value: '30d' } });
     await waitFor(() => expect(getTaskStats).toHaveBeenLastCalledWith('30d'));
@@ -210,7 +220,7 @@ describe('AnalyticsPage', () => {
 
     renderPage('/analytics?period=bogus');
     expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('analytics-timeframe-summary')).toHaveTextContent('· Last 30 days');
+    expect(screen.getByRole('heading', { name: /Activity · Last 30 days/ })).toBeInTheDocument();
     await waitFor(() => expect(getTaskStats).toHaveBeenCalledWith('30d'));
     expect(getRepositoryStats).toHaveBeenCalledWith('30d');
   });

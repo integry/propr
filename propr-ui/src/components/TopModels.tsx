@@ -68,6 +68,11 @@ const modelRows = (overview: StatsOverviewResponse): ModelRow[] =>
       .sort((a, b) => b.tasks - a.tasks);
 
 const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
+/**
+ * One width for every figure column, so tasks, tokens and cost read as three
+ * evenly spaced columns instead of a cluster pinched against the right edge.
+ */
+const METRIC_COLUMN = 'w-20 2xl:w-28';
 const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
 const UNKNOWN = '—';
 
@@ -75,9 +80,9 @@ const TableHead: React.FC = () => (
   <thead>
     <tr className="border-b border-slate-200">
       <th className={`${HEAD} text-left`}>Model</th>
-      <th className={`${HEAD} w-16 text-right`}>Tasks</th>
-      <th className={`${HEAD} w-20 text-right`}>Tokens</th>
-      <th className={`${HEAD} w-20 text-right`}>Cost</th>
+      <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Tasks</th>
+      <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Tokens</th>
+      <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Cost</th>
     </tr>
   </thead>
 );

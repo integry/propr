@@ -44,7 +44,7 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
     }
     return route.fulfill({ json: {
       tasks: { completed: 8 * scale, planned: 0, pr_iterations_avg: 1.4, merged_prs: 7 * scale, total_followups: scale },
-      usage: { total_tokens: 420_000 * scale, total_cost_usd: 1.242 * scale, models: { 'claude-opus-5-5': 5 * scale, 'gpt-5.6': 3 * scale } },
+      usage: { total_tokens: 420_000 * scale, input_tokens: 315_000 * scale, output_tokens: 105_000 * scale, total_cost_usd: 1.242 * scale, models: { 'claude-opus-5-5': 5 * scale, 'gpt-5.6': 3 * scale } },
       model_usage: [
         { model: 'claude-opus-5-5', tasks: 5 * scale, tokens: 310_000 * scale, cost_usd: 0.94 * scale },
         { model: 'gpt-5.6', tasks: 3 * scale, tokens: 110_000 * scale, cost_usd: 0.302 * scale },
@@ -82,7 +82,7 @@ test('phones get a native select with the full labels and no horizontal overflow
 
   await select.selectOption('7d');
   await expect(page).toHaveURL(/\/analytics\?period=7d$/);
-  await expect(page.getByText('Aggregate activity across every repository · Last 7 days')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Activity · Last 7 days/ })).toBeVisible();
   await expect(page.getByText('design-system')).toBeVisible();
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
   await captureSettled(page, 'analytics-timeframe-mobile');
@@ -102,7 +102,7 @@ test('wider screens get the segmented control, and a choice reaches every sectio
   await group.getByRole('button', { name: 'Last 7 days' }).click();
   await expect(page).toHaveURL(/\/analytics\?period=7d$/);
   await expect(group.getByRole('button', { name: 'Last 7 days' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('Aggregate activity across every repository · Last 7 days')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Activity · Last 7 days/ })).toBeVisible();
   await expect.poll(() => [...new Set(requests)].sort()).toEqual([
     '/api/stats/overview?period=7d',
     '/api/stats/repositories?period=7d',
@@ -121,7 +121,7 @@ test('the URL restores a timeframe and an unknown one falls back to the default'
 
   await page.goto('/analytics?period=bogus');
   await expect(page.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('Aggregate activity across every repository · Last 30 days')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Activity · Last 30 days/ })).toBeVisible();
 });
 
 test('the console keeps the toolbar steady: search does not move and the scope shows locked', async ({ page }) => {
@@ -157,4 +157,42 @@ test('the 1080p console fills the canvas without cards', async ({ page }) => {
   expect(await page.locator('main .shadow-sm, main .shadow, main .rounded-xl').count()).toBe(0);
   await expect(page.getByTestId('analytics-primary-pane')).toHaveCSS('border-right-width', '1px');
   await captureSettled(page, 'analytics-console-1080p');
+});
+
+test('history is quiet: only today is teal, the scale has a midline, and the right pane accounts for tokens', async ({ page }) => {
+  await openAnalytics(page, 1440, '?period=7d');
+  await expect(page.getByText('design-system')).toBeVisible();
+
+  const chart = page.getByTestId('activity-chart');
+  const bars = chart.locator('.recharts-bar-rectangle path');
+  await expect(bars.first()).toBeVisible();
+  const fills = await bars.evaluateAll(paths => paths.map(path => path.getAttribute('fill')));
+  // Seven settled days with tasks, then today; an empty day draws no bar.
+  expect(fills.slice(0, -1).every(fill => fill === '#CBD5E1')).toBe(true);
+  expect(fills.at(-1)).toBe('#14B8A6');
+  // The busiest day is 8, so the scale reads 0, a dashed midline at 4, and 8.
+  const ticks = chart.locator('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value');
+  await expect(ticks).toHaveCount(3);
+  expect((await ticks.allTextContents()).map(text => Number(text.trim())).sort((a, b) => a - b)).toEqual([0, 4, 8]);
+  // The midline is a grid line, drawn behind the bars, and lighter than the edge rules.
+  const strokes = await chart.locator('.recharts-cartesian-grid-horizontal line').evaluateAll(lines =>
+    lines.map(line => `${line.getAttribute('stroke')} ${line.getAttribute('stroke-dasharray')}`).sort());
+  expect(strokes).toEqual(['#E2E8F0 3 3', '#E2E8F0 3 3', '#F1F5F9 3 3']);
+  const gridBeforeBars = await chart.locator('svg.recharts-surface').evaluate(svg => {
+    const nodes = Array.from(svg.querySelectorAll('.recharts-cartesian-grid, .recharts-bar'));
+    return nodes.findIndex(node => node.classList.contains('recharts-bar')) === nodes.length - 1;
+  });
+  expect(gridBeforeBars).toBe(true);
+
+  await expect(page.getByTestId('analytics-timeframe-summary')).toHaveText('Aggregate activity across all repositories');
+
+  const tokens = page.getByTestId('token-consumption');
+  await expect(tokens.getByTestId('token-row-input')).toContainText('945K');
+  await expect(tokens.getByTestId('token-row-output')).toContainText('315K');
+
+  // Tasks, tokens and cost share one width.
+  const widths = await page.getByTestId('model-breakdown-table').locator('th').evaluateAll(cells =>
+    cells.slice(1).map(cell => Math.round(cell.getBoundingClientRect().width)));
+  expect(new Set(widths).size).toBe(1);
+  await captureSettled(page, 'analytics-quiet-history');
 });

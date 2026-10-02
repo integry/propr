@@ -18,10 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analytics layout**: the page is one console instead of four cards: a
   totals band (tasks, success rate, tokens, spend) over a split pane with
   daily activity bars and repository performance on the left, and the
-  per-model table (tasks, tokens, cost) and task status on the right. The
-  toolbar shows the repository scope as a locked `All Repos`.
-  `GET /api/stats/overview` adds `model_usage`, a per-model list of tasks,
-  tokens and cost.
+  per-model table (tasks, tokens, cost), task status and token consumption
+  (input against output, spend per million tokens) on the right. Past days'
+  activity bars are neutral slate and only today's is teal; the chart's scale
+  carries a midline. The toolbar shows the repository scope as a locked
+  `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
+  of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
 
 ## [0.9.0] - 2026-09-29
 

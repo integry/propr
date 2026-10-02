@@ -79,6 +79,9 @@ export interface StatsOverviewTasks {
 
 export interface StatsOverviewUsage {
   total_tokens: number;
+  /** Prompt and completion tokens; absent from servers that predate the split. */
+  input_tokens?: number;
+  output_tokens?: number;
   total_cost_usd: number;
   models: Record<string, number>;
 }
