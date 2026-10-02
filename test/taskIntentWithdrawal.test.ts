@@ -15,6 +15,13 @@ let trackerError: Error | undefined;
 let closingPR: any;
 let onClosingPR: (() => void) | undefined;
 let onRequest: ((endpoint: string) => void) | undefined;
+const timeline: any[] = [];
+// Every timeline change bumps the polled issue's updated_at, as on GitHub.
+let timelineRevision = 0;
+function recordLabeled(...names: string[]) {
+    timeline.push(...names.map(name => ({ event: 'labeled', label: { name }, actor: { id: 1, login: 'propr-dev[bot]' } })));
+    timelineRevision++;
+}
 const redis = {
     get: async (key: string) => key.startsWith('worker:state:')
         ? (states.has(key.slice(13)) ? JSON.stringify(states.get(key.slice(13))) : null)
@@ -75,7 +82,10 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { g
     onRequest?.(endpoint);
     if (trackerError) throw trackerError;
     if (endpoint.startsWith('DELETE ')) tracker = { ...tracker, labels: (tracker.labels ?? []).filter((label: any) => (typeof label === 'string' ? label : label.name) !== params.name) };
-    if (endpoint.startsWith('POST ')) tracker = { ...tracker, labels: [...(tracker.labels ?? []), ...params.labels] };
+    if (endpoint.startsWith('POST ')) {
+        tracker = { ...tracker, labels: [...(tracker.labels ?? []), ...params.labels] };
+        recordLabeled(...params.labels);
+    }
     return { data: tracker };
 } }) } });
 await mock.module('../packages/core/src/config/configManager.js', { namedExports: { loadPrimaryProcessingLabels: async () => ['AI', 'build'] } });
@@ -112,7 +122,7 @@ async function removeTrigger(label: string, labels: string[]) {
 }
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
-beforeEach(() => { stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; });
+beforeEach(() => { stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; timeline.length = 0; recordLabeled('AI'); });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -715,9 +725,9 @@ const { fetchIssuesForRepo, processDetectedIssue: admitDetectedIssue } = await i
 const pollingOctokit = {
     paginate: async (_endpoint: string, params: any) => tracker.state === 'open' && tracker.labels.includes(params.labels) ? [{
         id: 42, number: 42, title: 'Restored request', html_url: 'https://github.com/acme/widgets/issues/42',
-        labels: tracker.labels, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z',
+        labels: tracker.labels, created_at: '2026-10-01T00:00:00Z', updated_at: `2026-10-02T00:00:00.${timelineRevision}Z`,
     }] : [],
-    request: async () => ({ headers: {}, data: [{ event: 'labeled', label: { name: 'AI' }, actor: { id: 1, login: 'propr-dev[bot]' } }] }),
+    request: async () => ({ headers: {}, data: [...timeline] }),
 };
 async function pollRestoredIssues() {
     const issues = await fetchIssuesForRepo(pollingOctokit as never, 'acme/widgets', 'poll-restore');
@@ -753,6 +763,7 @@ for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as co
             assert.ok(tracker.labels.includes('AI-cancelled'));
             const oldStates = JSON.stringify([...states]);
             tracker = { state: 'open', labels: [restoredTrigger, ...tracker.labels, `${restoredTrigger}-processing`] };
+            recordLabeled(restoredTrigger);
             await reconcileTaskIntents(redis as never, ['acme/widgets']);
             assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
             assert.deepEqual(tracker.labels, [restoredTrigger]);
@@ -762,6 +773,36 @@ for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as co
         });
     }
 }
+
+for (const trigger of ['AI', 'build']) {
+    test(`polling does not restart a closed ${trigger} issue that is reopened without reapplying the trigger`, async () => {
+        addRunning('old', { ...target, triggeringLabel: trigger });
+        tracker = { state: 'closed', labels: [trigger, `${trigger}-processing`] };
+        recordLabeled(trigger);
+        await reconcileTaskIntents(redis as never, ['acme/widgets']);
+        assert.equal(states.get('old').terminalReason, 'cancelled_issue_closed');
+        assert.ok(tracker.labels.includes(`${trigger}-cancelled`));
+        tracker = { ...tracker, state: 'open' };
+        assert.deepEqual(await pollRestoredIssues(), []);
+        assert.ok(tracker.labels.includes(`${trigger}-cancelled`));
+        assert.equal(jobs.length, 0);
+
+        tracker = { ...tracker, labels: tracker.labels.filter((label: string) => label !== trigger) };
+        tracker = { ...tracker, labels: [...tracker.labels, trigger] };
+        recordLabeled(trigger);
+        assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+        assert.equal(jobs.length, 1);
+        assert.ok(!tracker.labels.includes(`${trigger}-cancelled`));
+    });
+}
+
+test('polling skips a cancelled issue when the timeline cannot show trigger reapplication', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    timeline.length = 0;
+    timelineRevision++;
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+});
 
 for (const phase of ['running', 'waiting', 'delayed', 'active', 'prioritized'] as const) {
     test(`restoration preserves ${phase} sibling work and its processing label`, async () => {
