@@ -34,7 +34,7 @@ describe('buildTaskRow', () => {
       { title: 'Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: 'Ultrafix cycle 3 (linting)' },
       { title: 'Followup: Update 3', subtitle: 'Update', commitHash: '9f3c21e81a4d' },
       { title: 'Fix PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: 'Restrict withdrawal labels' },
-      { title: 'Review PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: null, critiqueScore: 9 },
+      { title: 'Review PR #2664: [2659 by GPT-6 Astra] Stop work when intent is withdrawn', subtitle: null },
     ]));
     expect(row.title).toBe('Stop work when intent is withdrawn');
     expect(row.type).toBe('Ultrafix');

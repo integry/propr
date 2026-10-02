@@ -12,11 +12,6 @@ services:
       - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode
       - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode
 
-  analysis-worker:
-    volumes:
-      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro
-      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
-
   indexing-worker:
     volumes:
       - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro

@@ -1,3 +1,4 @@
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agents/agentGitAccess.js';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -37,6 +38,7 @@ export interface BuildClaudePromptOptions {
 export interface DockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     prompt: string;
     promptFilePath?: string;
     modelName?: string;
@@ -248,7 +250,8 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:/home/node/workspace:rw`,
-        '-v', '/tmp/git-processor:/tmp/git-processor:rw',
+        ...(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath)),
+        ...buildAgentGitCredentialArgs(),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${CLAUDE_CONFIG_PATH}:/home/node/.claude:rw`,
         ...(fs.existsSync(path.join(os.homedir(), '.claude.json')) ? ['-v', `${path.join(os.homedir(), '.claude.json')}:/home/node/.claude.json:rw`] : []),

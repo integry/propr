@@ -7,7 +7,7 @@ import type { Knex } from 'knex';
 import {
   AttachmentService, AgentRegistry, getAuthenticatedOctokit, loadMonitoredReposRaw,
   loadPrimaryProcessingLabels, resolvePlanIssueDefaultSelection, safeAddLabel, logger,
-  insertTaskSubmission, resumeTaskSubmission, submissionMarker, submissionAssetPath,
+  insertTaskSubmission, resumeTaskSubmission, submissionMarker, submissionAssetPath, resolveVisualPreviewUploadToken,
   type MulterFile, type SubmissionAttachment, type SubmissionPayload, type TaskSubmission,
 } from '@propr/core';
 import { resolveGitHubMetadataToken, handleGitHubRepositoryAccessError } from '../githubMetadataAuth.js';
@@ -15,6 +15,8 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
+import { githubInlineEligibility, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
   goalAttachmentUpload(req, res, error => {
@@ -78,14 +80,66 @@ async function storeUploads(files: MulterFile[]): Promise<SubmissionAttachment[]
   return stored;
 }
 
-function submissionServices(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, enqueue = enqueueIssueImplementationJob) {
+type SubmissionOctokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+type SubmissionCoordinates = { owner: string; repo: string };
+
+export interface SubmissionImageUploadServices {
+  resolveToken?: () => Promise<string>;
+  upload?: typeof uploadGitHubAttachment;
+}
+
+/**
+ * Hosts submitted images as GitHub attachments, the same way pull request
+ * previews are published, so the issue renders them inline. This is best
+ * effort: the worktree delivery stays authoritative when uploads fail.
+ */
+export async function uploadSubmissionImages(octokit: SubmissionOctokit, coordinates: SubmissionCoordinates, files: SubmissionAttachment[],
+  { resolveToken = resolveVisualPreviewUploadToken, upload = uploadGitHubAttachment }: SubmissionImageUploadServices = {}): Promise<Map<string, string>> {
+  const urls = new Map<string, string>();
+  const images = files.flatMap(file => {
+    const contentType = VISUAL_PREVIEW_CONTENT_TYPES[file.extension.toLowerCase()];
+    if (!contentType?.startsWith('image/')) return [];
+    const body = Buffer.from(file.content, 'base64');
+    return githubInlineEligibility(contentType, body.byteLength).eligible ? [{ file, contentType, body }] : [];
+  });
+  if (!images.length) return urls;
+  const repository = `${coordinates.owner}/${coordinates.repo}`;
+  let authToken: string;
+  let repositoryId: number;
+  try {
+    authToken = await resolveToken();
+    repositoryId = (await octokit.request('GET /repos/{owner}/{repo}', coordinates)).data.id;
+  } catch (error) {
+    logger.warn({ error: (error as Error).message, repository }, 'Submitted images will not be embedded in the issue');
+    return urls;
+  }
+  for (const { file, contentType, body } of images) {
+    try {
+      urls.set(file.id, await upload({ name: `${file.id}${file.extension}`, contentType, body, authToken, repositoryId }));
+    } catch (error) {
+      logger.warn({ error: (error as Error).message, repository, attachmentId: file.id }, 'Could not embed a submitted image in the issue');
+    }
+  }
+  return urls;
+}
+
+// Attachment names are user input; keep them inert inside Markdown image text.
+const imageAltText = (name: string) => name.replace(/\s+/g, ' ').replace(/[\\[\]<>]/g, '\\$&');
+
+export function submissionIssueBody(row: TaskSubmission, payload: SubmissionPayload, files: SubmissionAttachment[], imageUrls: ReadonlyMap<string, string> = new Map()): string {
+  const references = files.map(file => `- ${JSON.stringify(file.originalName)}: ${submissionAssetPath(file, row.id)}`).join('\n');
+  const previews = files.flatMap(file => imageUrls.has(file.id) ? [`![${imageAltText(file.originalName)}](${imageUrls.get(file.id)})`] : []).join('\n\n');
+  const attachments = references ? `\n\nAttachments (delivered to the task worktree):\n${references}${previews ? `\n\n${previews}` : ''}` : '';
+  return `${payload.instruction}\n\n---\nSubmitted by @${payload.username} through ProPR.${attachments}\n${submissionMarker(row.id)}`;
+}
+
+function submissionServices(octokit: SubmissionOctokit, enqueue = enqueueIssueImplementationJob, images?: SubmissionImageUploadServices) {
   const coordinates = (row: TaskSubmission) => { const [owner, repo] = row.repository.split('/'); return { owner, repo }; };
   return {
     async createIssue(row: TaskSubmission) {
       const payload = JSON.parse(row.payload) as SubmissionPayload;
       const files = JSON.parse(row.attachments) as SubmissionAttachment[];
-      const references = files.map(file => `- ${JSON.stringify(file.originalName)}: ${submissionAssetPath(file, row.id)}`).join('\n');
-      const body = `${payload.instruction}\n\n---\nSubmitted by @${payload.username} through ProPR.${references ? `\n\nAttachments (delivered to the task worktree):\n${references}` : ''}\n${submissionMarker(row.id)}`;
+      const body = submissionIssueBody(row, payload, files, await uploadSubmissionImages(octokit, coordinates(row), files, images));
       const { data } = await octokit.request('POST /repos/{owner}/{repo}/issues', {
         ...coordinates(row), title: payload.instruction.trim().split('\n')[0].slice(0, 100) || 'New task', body,
         // No trigger label until the durable association and all routing are ready.
@@ -192,6 +246,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
   getOctokit: typeof getAuthenticatedOctokit;
   processingLabels: typeof loadPrimaryProcessingLabels;
   enqueue: typeof enqueueIssueImplementationJob;
+  images: SubmissionImageUploadServices;
 }> }) {
   const checkAccess = services.authorize ?? authorizeTaskSubmissionRepository;
   const resolveRouting = services.routing ?? routing;
@@ -227,7 +282,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
         row = await insertTaskSubmission(db, { user_id: String(req.user!.id), submission_key: key, payload_hash: payloadHash,
           repository, payload: JSON.stringify(payload), attachments: JSON.stringify(attachments) });
       }
-      const result = await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue));
+      const result = await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue, services.images));
       res.status(result.state === 'queued' ? 200 : 202).json(publicSubmission(result));
     } catch (error) { await sendError(req, res, error); }
     finally { await removeTemporaryGoalUploads(files); }
@@ -244,7 +299,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       await checkAccess(req, row.repository);
       const payload = JSON.parse(row.payload) as SubmissionPayload;
       await resolveRouting(payload);
-      res.json(publicSubmission(await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue))));
+      res.json(publicSubmission(await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue, services.images))));
     } catch (error) { await sendError(req, res, error); }
   };
   return { submit, get, retry };

@@ -12,3 +12,12 @@ export const axisProps = {
   stroke: '#64748B',
   tick: { fill: '#64748B', fontSize: 12 },
 };
+
+/**
+ * The midline between zero and a chart's maximum, as a whole count, or null
+ * when the maximum is too small to have a distinct one.
+ */
+export const midlineTick = (max: number): number | null => {
+  const mid = Math.round(max / 2);
+  return mid > 0 && mid < max ? mid : null;
+};

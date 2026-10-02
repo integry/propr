@@ -96,22 +96,24 @@ async function markRejectedUploadCredential(): Promise<void> {
   }
 }
 
-export const uploadVisualPreviewAsset: VisualPreviewAssetUploader = async ({
-  absolutePath,
+export interface GitHubAttachmentUploadOptions {
+  name: string;
+  contentType: string;
+  body: Buffer;
+  authToken: string;
+  repositoryId: number;
+}
+
+/** Uploads bytes to GitHub's user-attachment storage and returns the trusted asset URL. */
+export async function uploadGitHubAttachment({
+  name,
+  contentType,
+  body,
   authToken,
   repositoryId,
-  capacity,
-}) => {
-  const contentType = VISUAL_PREVIEW_CONTENT_TYPES[path.extname(absolutePath).toLowerCase()];
-  if (!contentType) throw new Error(`Unsupported visual preview attachment type: ${path.basename(absolutePath)}`);
-
-  const limit = await validateAttachmentFile(absolutePath, capacity);
-  let body: Buffer;
-  try { body = await readFile(absolutePath); }
-  catch { throw new Error('Visual preview source is unavailable'); }
-  if (body.byteLength > limit) throw new Error('Visual preview grew beyond the GitHub attachment limit');
+}: GitHubAttachmentUploadOptions): Promise<string> {
   const uploadUrl = new URL('https://uploads.github.com/user-attachments/assets');
-  uploadUrl.searchParams.set('name', path.basename(absolutePath));
+  uploadUrl.searchParams.set('name', name);
   uploadUrl.searchParams.set('content_type', contentType);
   uploadUrl.searchParams.set('repository_id', String(repositoryId));
 
@@ -140,8 +142,8 @@ export const uploadVisualPreviewAsset: VisualPreviewAssetUploader = async ({
       // Discard best-effort: cancellation failure must not expose or replace the upload error.
     }
     const message = response.status === 404
-      ? `GitHub could not upload ${path.basename(absolutePath)} because the token owner does not have write access to the repository`
-      : `GitHub could not upload ${path.basename(absolutePath)} (HTTP ${response.status})`;
+      ? `GitHub could not upload ${name} because the token owner does not have write access to the repository`
+      : `GitHub could not upload ${name} (HTTP ${response.status})`;
     if (response.status === 401) await markRejectedUploadCredential();
     if ([401, 403, 404].includes(response.status)) throw new VisualPreviewUploadAuthenticationError(message);
     throw new Error(message);
@@ -153,6 +155,23 @@ export const uploadVisualPreviewAsset: VisualPreviewAssetUploader = async ({
     throw new Error('GitHub uploaded a visual preview but did not return a valid attachment URL');
   }
   return attachmentUrl;
+}
+
+export const uploadVisualPreviewAsset: VisualPreviewAssetUploader = async ({
+  absolutePath,
+  authToken,
+  repositoryId,
+  capacity,
+}) => {
+  const contentType = VISUAL_PREVIEW_CONTENT_TYPES[path.extname(absolutePath).toLowerCase()];
+  if (!contentType) throw new Error(`Unsupported visual preview attachment type: ${path.basename(absolutePath)}`);
+
+  const limit = await validateAttachmentFile(absolutePath, capacity);
+  let body: Buffer;
+  try { body = await readFile(absolutePath); }
+  catch { throw new Error('Visual preview source is unavailable'); }
+  if (body.byteLength > limit) throw new Error('Visual preview grew beyond the GitHub attachment limit');
+  return uploadGitHubAttachment({ name: path.basename(absolutePath), contentType, body, authToken, repositoryId });
 };
 
 interface BaseVisualPreviewPublicationOptions {

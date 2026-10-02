@@ -149,21 +149,3 @@ export interface LiveDetails {
   /** Where in the live output log this state was read (see `LiveOutputPosition`). */
   liveOutputPosition?: LiveOutputPosition;
 }
-
-export interface AnalysisData {
-  report?: string;
-  analysis?: string;
-  content?: string;
-  error?: string;
-}
-
-export type AnalysisApiData = {
-  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
-};
-
-export interface ParsedAnalysis {
-  recommendations?: string[];
-  error_analysis?: string;
-  implementation_critique?: string;
-  efficiency_notes?: string;
-}

@@ -111,7 +111,7 @@ test("preview deploy preserves only the credentials required by relay-backed pre
   assert.doesNotMatch(result.previewEnv, /^GH_WEBHOOK_SECRET=/m);
   assert.match(result.stdout, /API health check passed/);
   assert.doesNotMatch(result.dockerLog, /(?:^|\n)cp /);
-  const stopIndex = result.dockerLog.indexOf(" stop api daemon worker analysis-worker indexing-worker");
+  const stopIndex = result.dockerLog.indexOf(" stop api daemon worker indexing-worker");
   const startupIndex = result.dockerLog.indexOf(" up -d --build");
   assert.ok(stopIndex >= 0);
   assert.ok(startupIndex > stopIndex);

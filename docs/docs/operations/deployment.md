@@ -213,7 +213,6 @@ The launcher starts these containers (stack prefix configurable with `PROPR_STAC
 - `propr-redis`
 - `propr-daemon`
 - `propr-worker`
-- `propr-analysis-worker`
 - `propr-indexing-worker`
 - `propr-api` — publishes `127.0.0.1:4000` by default (override with `API_PORT`)
 - `propr-ui` — publishes `127.0.0.1:5173` by default (override with `UI_PORT`)

@@ -114,7 +114,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.154.0
+ARG CODEX_CLI_VERSION=0.160.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -138,6 +138,9 @@ RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
 
 FROM agent-base AS vibe-cli
 ARG VIBE_CLI_VERSION=2.25.8
+# mistral-vibe only publishes cp312 wheels; Debian bookworm's system python3 is 3.11,
+# so have uv fetch a managed interpreter into UV_PYTHON_INSTALL_DIR (/opt/uv/python).
+ARG VIBE_PYTHON_VERSION=3.12
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
@@ -147,7 +150,7 @@ RUN case "${VIBE_CLI_VERSION}" in \
         *"@"*|*"://"*|*.whl|*.tar.gz) vibe_install_spec="${VIBE_CLI_VERSION}" ;; \
         *) vibe_install_spec="mistral-vibe==${VIBE_CLI_VERSION}" ;; \
     esac \
-    && uv tool install "${vibe_install_spec}" \
+    && uv tool install --python "${VIBE_PYTHON_VERSION}" "${vibe_install_spec}" \
     && chmod -R a+rX /opt/uv \
     && uv cache clean \
     && vibe --version \
@@ -207,7 +210,7 @@ RUN set -eu; \
 
 FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.284
-ARG CODEX_CLI_VERSION=0.154.0
+ARG CODEX_CLI_VERSION=0.160.0
 ARG ANTIGRAVITY_CLI_VERSION=1.2.4
 ARG OPENCODE_CLI_VERSION=1.18.31
 ARG VIBE_CLI_VERSION=2.25.8

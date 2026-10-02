@@ -1,21 +1,39 @@
-import React from 'react';
-import {
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-} from 'recharts';
+/**
+ * Tasks created per day, as one bar per day.
+ *
+ * Discrete bars, not a smoothed area: the buckets are whole UTC days, and a
+ * monotone curve between them invents values for the hours in between and
+ * rounds off the spikes and empty days an operator is looking for. Each bar
+ * is exactly one day's count, flat on the zero baseline.
+ *
+ * History is quiet: a day that has closed is a neutral slate bar, and only
+ * today's bar, still accumulating, is brand teal — the dashboard's rule.
+ *
+ * The scale is the window's own maximum and zero, both always labelled, with
+ * a lighter dashed midline between them, so a bar's height can be read to
+ * within a task or two without hovering it; the exact figure is still one
+ * hover away. The heading belongs to the pane that holds the chart.
+ *
+ * Every bar that has room gets its own date, directly under it: a week reads
+ * as weekdays over days, and a longer window steps at an even stride counted
+ * back from today (see `planActivityAxis`). Each day owns its whole column:
+ * hovering anywhere in it lights a ceiling-to-baseline track behind the bar
+ * and opens that day's count, so the hover target is the day's slot, not a
+ * thin bar inside it.
+ */
+
+import React, { useMemo, useState } from 'react';
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
-import { tooltipStyle } from './chartConstants';
+import { midlineTick, tooltipStyle } from './chartConstants';
+import { dailyBarFill, utcToday } from './Dashboard/chartPalette';
+import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface ActivitySparklineProps {
   data: Array<{ date: string; displayDate: string; count: number }>;
   isLoading?: boolean;
-  deterministicSvg?: boolean;
 }
 
 /**
@@ -24,206 +42,98 @@ interface ActivitySparklineProps {
  */
 const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60, 30, 70, 50];
 
-const formatDateShort = (dateStr: string): string => {
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
+/** The y-axis gutter, which the plot and the skeleton are both inset by. */
+const Y_AXIS_WIDTH = 28;
 
-const DeterministicActivityGraph: React.FC<{ data: ActivitySparklineProps['data'] }> = ({ data }) => {
-  const width = 300;
-  const height = 120;
-  const left = 34;
-  const right = 8;
-  const top = 10;
-  const bottom = 24;
-  const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
-  const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
-  const middleDate = data.length > 0 ? formatDateShort(data[Math.floor(data.length / 2)].date) : '';
-  const max = Math.max(...data.map((point) => point.count));
-  const min = Math.min(...data.map((point) => point.count));
-  const range = Math.max(1, max - min);
-  const points = data.map((point, index) => {
-    const x = left + (index / Math.max(1, data.length - 1)) * (width - left - right);
-    const y = top + (1 - (point.count - min) / range) * (height - top - bottom);
-    return { x, y };
-  });
-  const linePath = points.reduce((path, point, index) => {
-    if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+/** The hover track behind a day's bar (slate-100: slate-50 vanishes on the white canvas). */
+const COLUMN_TRACK_FILL = '#F1F5F9';
 
-    const previous = points[index - 1];
-    const controlX = (previous.x + point.x) / 2;
-    return `${path} C ${controlX.toFixed(1)} ${previous.y.toFixed(1)}, ${controlX.toFixed(1)} ${point.y.toFixed(1)}, ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
-  }, '');
-  const areaPath = `${linePath} L ${(width - right).toFixed(1)} ${(height - bottom).toFixed(1)} L ${left.toFixed(1)} ${(height - bottom).toFixed(1)} Z`;
-
+/** One day's date under its bar: the weekday or day on top, the date, month or year beneath. */
+const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel> }> = ({
+  x = 0, y = 0, payload, labels,
+}) => {
+  const label = payload ? labels.get(payload.value) : undefined;
+  if (!label) return null;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-[120px] w-full overflow-visible" aria-hidden="true">
-      <defs>
-        <linearGradient id="sparklineGradientSvg" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#14B8A6" stopOpacity="0.2" />
-          <stop offset="100%" stopColor="#14B8A6" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <text x="8" y={top + 4} className="fill-slate-400 text-[10px]">{max}</text>
-      <text x="8" y={top + (height - top - bottom) / 2 + 4} className="fill-slate-400 text-[10px]">{Math.round(max / 2)}</text>
-      <line x1={left} x2={width - right} y1={top} y2={top} className="stroke-slate-200" strokeWidth="1" />
-      <line x1={left} x2={width - right} y1={top + (height - top - bottom) / 2} y2={top + (height - top - bottom) / 2} className="stroke-slate-200" strokeWidth="1" />
-      <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} className="stroke-slate-200" strokeWidth="1" />
-      <path d={areaPath} fill="url(#sparklineGradientSvg)" />
-      <path d={linePath} fill="none" stroke="#14B8A6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
-      {points.filter((_, index) => index === data.length - 1 || index === data.length - 8 || index === data.length - 15).map((point) => (
-        <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="3" fill="#14B8A6" stroke="white" strokeWidth="1.5" />
-      ))}
-      <text x={left} y={height - 4} textAnchor="start" className="fill-slate-400 text-[10px]">{startDate}</text>
-      <text x={(left + width - right) / 2} y={height - 4} textAnchor="middle" className="fill-slate-400 text-[10px]">{middleDate}</text>
-      <text x={width - right} y={height - 4} textAnchor="end" className="fill-slate-400 text-[10px]">{endDate}</text>
-    </svg>
+    <text x={x} y={y} textAnchor="middle" fontSize={10} className="tabular-nums" data-testid="activity-date-label">
+      <tspan x={x} dy="0.71em" fill="#64748B">{label.primary}</tspan>
+      {label.secondary && <tspan x={x} dy="1.2em" fill="#94A3B8">{label.secondary}</tspan>}
+    </text>
   );
 };
 
-const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false, deterministicSvg = false }) => {
-  // Get first, middle and last dates for minimal axis display
-  const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
-  const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
-  const middleIndex = Math.floor(data.length / 2);
-  const middleDate = data.length > 0 ? formatDateShort(data[middleIndex].date) : '';
-
-  // Calculate max value for Y axis - use exact max, no padding
-  const maxCount = data.length > 0 ? Math.max(...data.map(d => d.count)) : 0;
-  const yAxisMax = maxCount || 10;
-  const yAxisMiddle = Math.round(yAxisMax / 2);
-
-  // Custom tick for X axis - shows first (left-aligned), middle (center), and last (right-aligned)
-  const renderXAxisTick = (props: { x: number; y: number; payload: { index: number } }) => {
-    const { x, y, payload } = props;
-    const index = payload.index;
-
-    let label = '';
-    let textAnchor: 'start' | 'middle' | 'end' = 'middle';
-
-    if (index === 0) {
-      label = startDate;
-      textAnchor = 'start';
-    } else if (index === data.length - 1) {
-      label = endDate;
-      textAnchor = 'end';
-    } else if (index === middleIndex) {
-      label = middleDate;
-      textAnchor = 'middle';
-    }
-
-    if (!label) return null;
-
-    return (
-      <text
-        x={x}
-        y={y + 12}
-        fill="#9CA3AF"
-        fontSize={10}
-        textAnchor={textAnchor}
-      >
-        {label}
-      </text>
-    );
-  };
-
-  // Custom Y axis ticks - show only top and middle
-  const yAxisTicks = [yAxisMiddle, yAxisMax];
+const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
+  // Never a rounded-up invention: the top rule is a count the window reached.
+  const max = Math.max(1, ...data.map(point => point.count));
+  const mid = midlineTick(max);
+  const today = utcToday();
+  const [plotWidth, setPlotWidth] = useState(0);
+  const labels = useMemo(
+    () => planActivityAxis(data.map(point => point.date), data.length > 0 ? plotWidth / data.length : 0),
+    [data, plotWidth],
+  );
+  const onResize = (width: number) => setPlotWidth(Math.max(0, width - Y_AXIS_WIDTH));
 
   return (
-    <div>
-      {/* Utility header style - small, uppercase, gray, bold */}
-      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-        Activity (30 Days)
-      </h4>
-
-      {/* Sparkline container - no card styling, compact height */}
-      <div className="h-[120px]">
+    <div data-testid="activity-chart">
+      <div className="h-48 xl:h-64">
         {isLoading ? (
-          /* Loading skeleton placeholder for the graph */
-          <SkeletonRegion label="Loading activity…" className="h-full w-full flex flex-col justify-end pb-4">
-            {/* Simulated bar chart skeleton */}
-            <div className="flex items-end justify-between gap-1 h-[80px] px-6">
+          <SkeletonRegion label="Loading activity…" className="flex h-full w-full flex-col justify-end pb-7">
+            <div className="flex h-[85%] items-end justify-between gap-1 pl-7">
               {PLACEHOLDER_BAR_HEIGHTS.map((height, i) => (
-                <SkeletonBlock
-                  key={i}
-                  className="flex-1"
-                  style={{ height: `${height}%` }}
-                />
+                <SkeletonBlock key={i} className="flex-1" style={{ height: `${height}%` }} />
               ))}
             </div>
-            {/* X-axis placeholder */}
-            <div className="flex justify-between px-6 mt-2">
-              <SkeletonBlock className="h-2 w-12" />
-              <SkeletonBlock className="h-2 w-12" />
-              <SkeletonBlock className="h-2 w-12" />
-            </div>
           </SkeletonRegion>
-        ) : data.length > 0 && deterministicSvg ? (
-          <DeterministicActivityGraph data={data} />
         ) : data.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 5, right: 5, left: 25, bottom: 5 }}>
-              <defs>
-                {/* Teal gradient fill - fading to transparent */}
-                <linearGradient id="sparklineGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#14B8A6" stopOpacity={0.2} />
-                  <stop offset="100%" stopColor="#14B8A6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-
-              {/* No CartesianGrid - removed for minimalist look */}
-
-              {/* Minimal Y-Axis - only show top and middle values */}
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: '#9CA3AF', fontSize: 10 }}
-                ticks={yAxisTicks}
-                domain={[0, yAxisMax]}
-                width={20}
-              />
-
-              {/* Minimal X-Axis - show start (left-aligned), middle, and end (right-aligned) dates */}
+          <ResponsiveContainer width="100%" height="100%" onResize={onResize}>
+            <BarChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%">
+              {/*
+                The baseline and maximum rules, then a lighter midline that reads
+                as a guide. Both are grids, so they sit behind the bars.
+              */}
+              <CartesianGrid vertical={false} horizontalValues={[0, max]} strokeDasharray="3 3" stroke="#E2E8F0" />
+              {mid !== null && (
+                <CartesianGrid vertical={false} horizontalValues={[mid]} strokeDasharray="3 3" stroke="#F1F5F9" />
+              )}
               <XAxis
-                dataKey="displayDate"
+                dataKey="date"
                 axisLine={false}
                 tickLine={false}
-                tick={renderXAxisTick}
+                // Every day is a tick; the plan decides which ones carry a date.
                 interval={0}
-                tickMargin={8}
+                height={28}
+                tick={<DateTick labels={labels} />}
               />
-
+              <YAxis
+                width={Y_AXIS_WIDTH}
+                axisLine={false}
+                tickLine={false}
+                domain={[0, max]}
+                ticks={mid === null ? [0, max] : [0, mid, max]}
+                // Every one, always: recharts drops an edge tick it thinks will
+                // not fit, and the baseline is the one it drops.
+                interval={0}
+                allowDecimals={false}
+                tick={{ fill: '#94A3B8', fontSize: 10 }}
+              />
+              {/* The cursor is the day's whole column, ceiling to baseline. */}
               <Tooltip
-                contentStyle={{
-                  ...tooltipStyle,
-                  padding: '6px 10px',
-                  fontSize: '12px',
-                }}
-                content={({ active, payload, label }) => {
-                  if (active && payload && payload.length) {
-                    const value = payload[0].value;
-                    return (
-                      <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
-                        {label}: {value} tasks
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
+                cursor={{ fill: COLUMN_TRACK_FILL }}
+                content={({ active, payload }) =>
+                  active && payload && payload.length ? (
+                    <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
+                      {(payload[0].payload as ActivitySparklineProps['data'][number]).displayDate}: {payload[0].value} tasks
+                    </div>
+                  ) : null
+                }
               />
-
-              {/* Teal area with gradient fill */}
-              <Area
-                type="monotone"
-                dataKey="count"
-                stroke="#14B8A6"
-                strokeWidth={2}
-                fill="url(#sparklineGradient)"
-                dot={false}
-                activeDot={{ r: 3, fill: '#14B8A6', stroke: '#FFFFFF', strokeWidth: 1 }}
-              />
-            </AreaChart>
+              <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
+                {data.map(point => (
+                  <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
+                ))}
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         ) : (
           <SystemAlert

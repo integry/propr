@@ -276,6 +276,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         pr_review_context_model: typeof settings.pr_review_context_model === 'string' ? settings.pr_review_context_model : '',
         ...reviewContextBudgetSettingsResponse(settings),
         auto_followup_score_threshold: autoFollowup.value,
+        deprecated_settings: {
+          auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.'
+        },
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
         usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ usage_tips_dismissal_cooldown_days: await configStore.getConfig('usage_tips_dismissal_cooldown_days', 45) }).cooldownDays,

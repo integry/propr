@@ -12,7 +12,7 @@
   "overrides": {
     "@electron/packager": "20.3.0",
     "@electron/rebuild": "4.2.0",
-    "hono": "4.13.5",
+    "hono": "4.13.12",
     "react": "19.2.7"
   },
   "scripts": {
@@ -49,8 +49,6 @@
     "worker:dev": "LOG_LEVEL=debug tsx src/worker.ts",
     "worker:reset": "node dist/src/worker.js --reset",
     "worker:reset:dev": "LOG_LEVEL=debug tsx src/worker.ts --reset",
-    "analysis-worker": "node dist/src/analysis_worker.js",
-    "analysis-worker:dev": "LOG_LEVEL=debug tsx src/analysis_worker.ts",
     "indexing-worker": "node dist/src/indexing_worker.js",
     "indexing-worker:dev": "LOG_LEVEL=debug tsx src/indexing_worker.ts",
     "dashboard": "node dist/packages/api/server.js",

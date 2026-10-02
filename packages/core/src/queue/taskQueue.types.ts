@@ -131,13 +131,6 @@ export interface GoalJobData {
     continuationKind?: 'run' | 'input';
 }
 
-export interface AnalysisJobData {
-    taskId: string;
-    executionId: string;
-    sessionId: string;
-    correlationId: string;
-}
-
 export interface SystemTaskJobData {
     type: 'revert';
     repoName: string;
@@ -185,7 +178,7 @@ export interface MergeConflictJobData {
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
 
 export interface ClaudeOutputResult {
     type?: string;

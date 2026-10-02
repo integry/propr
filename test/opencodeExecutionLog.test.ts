@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
-import type { AgentConfig } from '../packages/core/src/agents/types.js';
+import type { AgentConfig, AgentTaskOptions } from '../packages/core/src/agents/types.js';
 import type { LlmLogEntry } from '../packages/core/src/utils/llmLogger.js';
 
 // Avoid loading the agent registry through the logger's model lookup before
@@ -51,6 +51,11 @@ await mock.module('../packages/core/src/agents/impl/utils/index.js', {
 
 await mock.module('../packages/core/src/config/configManager.js', {
   namedExports: { resolveConfigPath: (path: string) => path },
+});
+// Token minting and mount policy have their own tests; keep this fixture
+// focused on attribution through the execution and failure paths.
+await mock.module('../packages/core/src/agents/agentGitAccess.js', {
+  namedExports: { prepareAgentGitAccess: async (options: AgentTaskOptions) => options, prepareAnalysisGitAccess: async () => ({ githubToken: '', gitMountArgs: [] }) },
 });
 const { parseOpenCodeJsonl } = await import('../packages/core/src/agents/impl/openCodeParsing.js');
 await mock.module('../packages/core/src/agents/impl/openCodeUtils.js', {

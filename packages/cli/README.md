@@ -413,7 +413,7 @@ propr setting update worker_concurrency 4            # Update a setting
 propr setting update github_user_whitelist "a,b,c"   # Update whitelist
 ```
 
-**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`, `auto_followup_score_threshold`
+**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`
 
 ---
 

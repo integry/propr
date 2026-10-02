@@ -13,7 +13,7 @@ import {
 } from './worktreeOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { assertRepositoryClonePath } from './repositoryPaths.js';
-import { redactAuthenticatedGitUrl } from './repoBranching.js';
+import { configureGitRemoteAuthentication, redactAuthenticatedGitUrl } from './repoBranching.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
 
@@ -293,6 +293,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
+        await configureGitRemoteAuthentication(git);
         await git.raw(['fetch', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`, '--prune']);
         logger.debug({ branchName }, 'Fetched latest changes for branch with explicit refspec');
 

@@ -166,3 +166,25 @@ test('keeps the contained settings column usable on a phone', async ({ page }) =
   expect(overflow).toBeLessThanOrEqual(1);
   await capture(page, 'settings-mobile');
 });
+
+
+test('fast analysis model describes the review context scout', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=models');
+  const field = page.getByLabel('Fast Analysis Model');
+  await expect(field).toBeVisible();
+  await expect(field).toHaveValue('codex:gpt-5-codex');
+  await expect(page.getByText('Used by /review to gather repository context before the review.')).toBeVisible();
+  await expect(page.getByText('Post-Implementation Analysis Model')).toHaveCount(0);
+  await field.scrollIntoViewIfNeeded();
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    const directory = path.resolve('../.propr/previews');
+    await mkdir(directory, { recursive: true });
+    await page.locator('label[for="analysis_model_fast"]').locator('..').screenshot({
+      animations: 'disabled', path: path.join(directory, 'fast-analysis-model.png'),
+    });
+  }
+  await page.getByRole('tab', { name: 'Automation' }).click();
+  await expect(page.getByLabel('Auto-Followup Score Threshold')).toHaveCount(0);
+});

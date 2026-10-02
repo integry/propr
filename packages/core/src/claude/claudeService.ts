@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess } from '../agents/agentGitAccess.js';
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
@@ -124,8 +125,9 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         await setWorktreeOwnership(worktreePath, issueRef.number);
         const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
+        const access = await prepareAgentGitAccess({ worktreePath, githubToken, issueRef, prompt });
         const dockerArgs = buildDockerArgs({
-            worktreePath, githubToken, prompt, modelName, issueNumber: issueRef.number,
+            worktreePath, githubToken: access.githubToken, gitMountArgs: access.gitMountArgs, prompt, modelName, issueNumber: issueRef.number,
             CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS,
             systemPrompt: options.systemPrompt, tools: options.tools, agentAlias: 'claude'
         });
