@@ -204,6 +204,9 @@ describe('agent config migration', () => {
         assert.ok(codex.supportedModels.includes('gpt-5.6-luna'));
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
         assert.ok(codex.supportedModels.includes('gpt-6-astra'));
+        assert.ok(codex.supportedModels.includes('gpt-6.1-sol'));
+        assert.ok(codex.supportedModels.includes('gpt-6-sol'));
+        assert.ok(codex.supportedModels.includes('gpt-6-luna'));
         assert.strictEqual(codex.defaultModel, 'gpt-6-astra');
     });
 
@@ -236,6 +239,9 @@ describe('agent config migration', () => {
         assert.ok(agent.supportedModels.includes('gpt-5.6-terra'));
         assert.ok(agent.supportedModels.includes('gpt-5.6-luna'));
         assert.ok(agent.supportedModels.includes('gpt-6-astra'));
+        assert.ok(agent.supportedModels.includes('gpt-6.1-sol'));
+        assert.ok(agent.supportedModels.includes('gpt-6-sol'));
+        assert.ok(agent.supportedModels.includes('gpt-6-luna'));
         assert.strictEqual(agent.defaultModel, 'gpt-6-astra');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.codex);
     });

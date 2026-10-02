@@ -136,4 +136,49 @@ describe('provider API pricing', () => {
       cacheRead: 1 / 1_000_000,
     });
   });
+
+  test('uses the published GPT-6 Sol-family API and cache rates', () => {
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6.1-sol'), {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheCreation: 2.5 / 1_000_000,
+      cacheRead: 0.1 / 1_000_000,
+    });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-sol'), {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheCreation: 2.5 / 1_000_000,
+      cacheRead: 0.2 / 1_000_000,
+    });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-luna'), {
+      prompt: 0.1 / 1_000_000,
+      completion: 0.5 / 1_000_000,
+      cacheCreation: 0.125 / 1_000_000,
+      cacheRead: 0.01 / 1_000_000,
+    });
+  });
+
+  test('preserves Sol-specific cached-read costs through model resolution', async () => {
+    // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
+    for (const [model, expectedCost] of [
+      ['gpt-6.1-sol', 0.023],
+      ['gpt-6-sol', 0.028],
+    ] as const) {
+      const modelId = getOpenRouterId(model);
+      assert.strictEqual(modelId, `openai/${model}`);
+      const pricing = await getModelPricing(modelId);
+      assert.strictEqual(pricing, getOfficialModelPricing(modelId));
+      assert.ok(pricing);
+
+      const cost = calculateCostWithCachePricing(model, {
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        cacheCreationTokens: 2_400,
+        cacheReadTokens: 50_000,
+        totalInputWithCache: 53_400,
+        totalTokens: 54_400,
+      }, pricing);
+      assert.ok(Math.abs(cost - expectedCost) < 1e-12, `${model} cost was ${cost}`);
+    }
+  });
 });
