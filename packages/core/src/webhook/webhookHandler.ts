@@ -59,6 +59,9 @@ export interface DetectedIssue {
     triggeredById?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
     source?: 'webhook' | 'polling';
+    // Set only when the producer saw the trigger applied after any
+    // `<trigger>-cancelled` marker. Without it, a cancelled issue stays excluded.
+    triggerReapplied?: boolean;
 }
 
 export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void | DeliveryDisposition>;
@@ -186,7 +189,8 @@ async function handleIssuesEvent(
             // doc comment in issueDetection.ts for the threat model.
             triggeredBy: payload.sender?.login,
             ...(payload.sender?.id === undefined ? {} : { triggeredById: String(payload.sender.id) }),
-            source: 'webhook'
+            source: 'webhook',
+            ...(payload.label?.name && triggers.includes(payload.label.name) ? { triggerReapplied: true } : {})
         };
 
         return normalizeDisposition(await processDetectedIssue(issue, correlationId));

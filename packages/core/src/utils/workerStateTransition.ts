@@ -60,7 +60,9 @@ export function buildTaskStateMutation(
 }
 
 function resolveTerminalReason(newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
-    const cancellationReason = metadata.historyMetadata?.cancellationReason;
+    // Jobs queued before the rename still report the legacy `user_cancelled`.
+    const rawReason = metadata.historyMetadata?.cancellationReason;
+    const cancellationReason = rawReason === 'user_cancelled' ? 'cancelled_by_user' : rawReason;
     const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
     return metadata.terminalReason
         ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)

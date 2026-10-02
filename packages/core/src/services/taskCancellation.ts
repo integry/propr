@@ -170,7 +170,7 @@ async function setAbortSignal(taskId: string, options: StopTaskExecutionOptions)
   await options.redisClient.set(`worker:abort:${taskId}`, JSON.stringify({
     timestamp: new Date().toISOString(),
     requestedBy: options.requestedBy ?? 'user',
-    reason: options.cancellationReason ?? 'cancelled_by_user'
+    ...(options.cancellationReason ? { reason: options.cancellationReason } : {})
   }), { EX: 3600 });
 }
 
@@ -242,7 +242,9 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
     const recorded = await mark(taskId, options.requestedBy ?? 'user', {
       ...(options.reason ? { reason: options.reason } : {}),
       historyMetadata: {
-        cancellationReason: options.cancellationReason ?? 'cancelled_by_user',
+        // Without an explicit reason, markTaskCancelled attributes only
+        // non-system stops to a user; system stops stay unattributed.
+        ...(options.cancellationReason ? { cancellationReason: options.cancellationReason } : {}),
         ...historyMetadata
       }
     });

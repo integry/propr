@@ -124,8 +124,9 @@ or an issue missing its processing trigger. GitHub read failures prevent startup
 and are retried rather than treated as cancellation.
 
 Cancelled issue work loses its `<trigger>-processing` and `<trigger>-waiting`
-labels (and any stale `<trigger>-done` label) and gains `<trigger>-cancelled`. To request new work, restore the issue's
-open state and reapply the trigger label; reopening alone restarts nothing in
+labels (and any stale `<trigger>-done` label) and gains `<trigger>-cancelled`. A `<trigger>-done` label stays, and no
+cancelled label is added, when a sibling attempt for that trigger already opened a PR. To request new work, restore the issue's
+open state and reapply the trigger label; reopening alone, or applying any other label, restarts nothing in
 either intake mode. Reapplying a trigger clears its stale
 processing and cancelled labels, including after failed withdrawal cleanup.
 Withdrawal and user cancellations are terminal and never automatically retried.

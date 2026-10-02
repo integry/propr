@@ -405,3 +405,19 @@ for (const boundary of ['initial read', 'atomic cancellation']) {
     assert.deepEqual(queue.removed, []);
   });
 }
+
+test('stops without a cancellation reason do not attribute system callers to a user', async () => {
+  for (const requestedBy of ['system', 'octocat']) {
+    const redis = makeFakeRedis({ 'worker:state:task-a': runningTaskState() });
+    const cancelCalls: Array<{ by: string; metadata: { historyMetadata?: Record<string, unknown> } }> = [];
+    await stopTaskExecution('task-a', {
+      redisClient: redis, requestedBy, ensureCancelled: true, getQueue: async () => makeFakeQueue([]),
+      markCancelled: async (_id, by, metadata) => { cancelCalls.push({ by, metadata }); },
+    });
+    // markTaskCancelled derives `cancelled_by_user` from a non-system actor.
+    assert.equal(cancelCalls[0].by, requestedBy);
+    assert.equal(cancelCalls[0].metadata.historyMetadata?.cancellationReason, undefined);
+    const abort = JSON.parse(redis.store.get('worker:abort:task-a')!);
+    assert.equal(abort.reason, undefined);
+  }
+});

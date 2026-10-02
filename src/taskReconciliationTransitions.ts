@@ -33,7 +33,11 @@ function cancelledJobTransition(
         reason: status === 'cancelled'
             ? formatTaskTerminalReason(reason ?? '')
             : `Task job ${status}${reason ? `: ${reason}` : ''}`,
-        metadata: { ...metadata, ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}) },
+        metadata: {
+            ...metadata,
+            ...(status === 'cancelled' && reason === 'user_cancelled' ? { terminalReason: 'cancelled_by_user' } : {}),
+            ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}),
+        },
     };
 }
 

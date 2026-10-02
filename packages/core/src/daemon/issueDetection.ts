@@ -244,7 +244,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         return { status: 'ignored', reason: 'user_not_allowed' };
     }
 
-    if (primaryProcessingLabels.some(label => issue.labels.includes(`${label}-cancelled`))) {
+    // Only a trigger reapplication is renewed intent. Unrelated label events
+    // fall through to the exclude check, which keeps cancelled issues idle.
+    if (issue.triggerReapplied && primaryProcessingLabels.some(label => issue.labels.includes(`${label}-cancelled`))) {
         const labels = await restoreIssueTrigger({
             repoOwner: issue.repoOwner, repoName: issue.repoName, number: issue.number,
             kind: 'issue', triggeringLabel,
@@ -470,8 +472,8 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after the
                 // `<trigger>-cancelled` marker, matching webhook-mode behaviour.
-                if (primaryProcessingLabels.some(label => labels.includes(`${label}-cancelled`))
-                    && (!evidence?.actor || evidence.cancelledSinceApplied)) {
+                const cancelled = primaryProcessingLabels.some(label => labels.includes(`${label}-cancelled`));
+                if (cancelled && (!evidence?.actor || evidence.cancelledSinceApplied)) {
                     correlatedLogger.debug(
                         { issueNumber: issue.number, repository: repoFullName },
                         'Cancelled issue has no trigger reapplication after cancellation — skipping'
@@ -505,7 +507,9 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     updatedAt: issue.updated_at,
                     ...(triggeredBy ? { triggeredBy } : {}),
                     ...(labelApplier ? { triggeredById: labelApplier.userId } : {}),
-                    source: 'polling' as const
+                    source: 'polling' as const,
+                    // The cancelled-marker gate above already required newer trigger evidence.
+                    ...(cancelled ? { triggerReapplied: true } : {})
                 };
             }));
             for (const r of results) {

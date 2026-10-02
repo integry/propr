@@ -89,7 +89,15 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { g
     return { data: tracker };
 } }) } });
 await mock.module('../packages/core/src/config/configManager.js', { namedExports: { loadPrimaryProcessingLabels: async () => ['AI', 'build'] } });
-await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => ({ select: () => ({ where: () => ({ first: async () => undefined }) }) }) } });
+// Completed task history rows returned to sibling-PR lookups.
+const completedTaskRows: Array<{ initial_job_data: string; metadata: string }> = [];
+await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => {
+    const query: any = {
+        join: () => query, whereRaw: () => query, where: () => query, select: () => query, first: async () => undefined,
+        then: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve([...completedTaskRows]).then(resolve, reject),
+    };
+    return query;
+} } });
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { namedExports: { stopDockerContainer: async (id: string) => { containers.push(id); onContainerStop?.(); await stopContainerWait; return { success: true }; } } });
 await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
 const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId, restoreIssueTrigger } = await import('../packages/core/src/services/taskIntent.js');
@@ -122,7 +130,7 @@ async function removeTrigger(label: string, labels: string[]) {
 }
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
-beforeEach(() => { stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; timeline.length = 0; recordLabeled('AI'); });
+beforeEach(() => { completedTaskRows.length = 0; stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; timeline.length = 0; recordLabeled('AI'); });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -928,5 +936,74 @@ for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed', 'canc
         } finally { release(); }
         await cancellation;
         assert.ok(requests.every(request => request.endpoint.startsWith('GET ')));
+    });
+}
+
+for (const label of ['bug', 'llm-codex-astra']) {
+    test(`webhook ${label} label on a reopened cancelled issue does not restart work`, async () => {
+        addRunning('old');
+        tracker = { state: 'closed', labels: ['AI', 'AI-processing'] };
+        await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+        assert.ok(tracker.labels.includes('AI-cancelled'));
+        tracker = { ...tracker, state: 'open', labels: [...tracker.labels, label] };
+        requests.length = 0;
+        const deliver = (applied: string) => processWebhookEvent({
+            repository: { full_name: 'acme/widgets' }, action: 'labeled', label: { name: applied },
+            sender: { login: 'propr-dev[bot]', id: 1 },
+            issue: { number: 42, state: 'open', labels: tracker.labels.map((name: string) => ({ name })) },
+        }, 'issues', `labeled-${applied}`);
+        await initializeWebhookHandler({
+            issueProcessor: (issue, correlationId) => admitDetectedIssue(issue, correlationId, redis as never), commentProcessor: async () => {},
+            commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: redis as never,
+        });
+        try {
+            const result = await deliver(label);
+            assert.equal(result.status, 'ignored');
+            assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+            assert.ok(tracker.labels.includes('AI-cancelled'));
+            assert.equal(jobs.length, 0);
+            // Reapplying the trigger is renewed intent and still restarts work.
+            tracker = { ...tracker, labels: tracker.labels.filter((name: string) => name !== 'AI') };
+            tracker = { ...tracker, labels: [...tracker.labels, 'AI'] };
+            assert.equal((await deliver('AI')).status, 'accepted');
+            assert.ok(!tracker.labels.includes('AI-cancelled'));
+            assert.equal(jobs.length, 1);
+        } finally {
+            await initializeWebhookHandler({
+                issueProcessor: async issue => { discovered.push(issue); }, commentProcessor: async () => {},
+                commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: redis as never,
+            });
+        }
+    });
+}
+
+test('a requeued retry is live sibling work for user-stop cleanup and restoration', async () => {
+    addRunning('stopped', target, 'cancelled');
+    states.get('stopped').terminalReason = 'cancelled_by_user';
+    addRunning('retry', target, 'cancelled');
+    states.get('retry').history.push({ state: 'cancelled', metadata: { jobResultStatus: 'requeued' } });
+    addJob('retry', target, 'delayed');
+    await updateWithdrawnIssueLabels(target, ['AI', 'build'], 'cancelled_by_user', 'stopped');
+    assert.deepEqual(requests, []);
+    tracker = { state: 'open', labels: ['AI', 'build-cancelled'] };
+    assert.equal(await restoreIssueTrigger(target), null);
+    assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+    assert.ok(tracker.labels.includes('build-cancelled'));
+});
+
+for (const sibling of ['same-trigger PR', 'other-trigger PR', 'no PR'] as const) {
+    test(`trigger removal with a ${sibling} sibling ${sibling === 'same-trigger PR' ? 'keeps' : 'clears'} the completion marker`, async () => {
+        addRunning('model-b');
+        tracker = { state: 'open', labels: ['AI-processing', 'AI-done'] };
+        if (sibling !== 'no PR') completedTaskRows.push({
+            initial_job_data: JSON.stringify({ triggeringLabel: sibling === 'same-trigger PR' ? 'AI' : 'build' }),
+            metadata: JSON.stringify({ pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' } }),
+        });
+        await cancelWithdrawnIntent(target, 'cancelled_label_removed', redis as never);
+        assert.equal(states.get('model-b').terminalReason, 'cancelled_label_removed');
+        assert.ok(!tracker.labels.includes('AI-processing'));
+        const kept = sibling === 'same-trigger PR';
+        assert.equal(tracker.labels.includes('AI-done'), kept);
+        assert.equal(tracker.labels.includes('AI-cancelled'), !kept);
     });
 }

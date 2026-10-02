@@ -3067,6 +3067,8 @@ test('terminal reasons persist in Redis, history, and task update events', async
         const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
         assert.equal(event.metadata.terminalReason, reason);
     }
+    const legacy = buildTaskStateTransition(initial, TaskStates.CANCELLED, { historyMetadata: { cancellationReason: 'user_cancelled' } });
+    assert.equal(legacy.state.terminalReason, 'cancelled_by_user');
     const timeoutMetadata = { terminalReason: 'timed_out' as const, error: { message: 'Agent timed out after the overall timeout' } };
     const timeout = buildTaskStateTransition(initial, TaskStates.FAILED, timeoutMetadata);
     assert.equal(timeout.state.terminalReason, 'timed_out');

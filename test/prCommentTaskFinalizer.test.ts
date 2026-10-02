@@ -256,6 +256,16 @@ test('finalization explicitly reports incomplete durable publication', async () 
     assert.equal(result.publication?.historyPersisted, false);
 });
 
+test('both completion finalizers map the legacy user_cancelled result to a user cancellation', async () => {
+    const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+    const store = createStore(makeTask());
+    await finalizeCompletedPRCommentTask('task-123', { status: 'cancelled', reason: 'user_cancelled' }, store);
+    assert.equal(store.current().history.at(-1)!.reason, 'Cancelled by a user.');
+    const recovered = completedJobTransition({ status: 'cancelled', reason: 'user_cancelled' });
+    assert.equal(recovered.reason, 'Cancelled by a user.');
+    assert.equal(recovered.metadata.terminalReason, 'cancelled_by_user');
+});
+
 test('both completion finalizers keep cancellation codes out of history reasons', async () => {
     const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
     for (const [reason, explanation] of [
