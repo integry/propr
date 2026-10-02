@@ -5,6 +5,8 @@ import { AgentConfig } from '../../api/proprApi';
 import { type AgentType, MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
 import './AgentCard.css';
+import type { AgentHealthState } from './useAgentHealth';
+import AgentHealthFeedback from './AgentHealthFeedback';
 
 const AliasChip: React.FC<{ alias: string; modelId: string }> = ({ alias, modelId }) => {
   const [copyStatus, setCopyStatus] = useState<'copied' | 'failed' | null>(null);
@@ -137,6 +139,8 @@ interface AgentCardProps {
   onToggle: () => void;
   onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
+  health?: AgentHealthState;
+  onRecheck?: () => void;
 }
 
 const AgentCard: React.FC<AgentCardProps> = ({
@@ -147,6 +151,8 @@ const AgentCard: React.FC<AgentCardProps> = ({
   onToggle,
   onSelectModel,
   readOnly = false,
+  health,
+  onRecheck,
 }) => {
   const [expanded, setExpanded] = useState(agent.type === 'claude' || agent.type === 'codex');
   const [showLegacyModels, setShowLegacyModels] = useState(false);
@@ -294,6 +300,10 @@ const AgentCard: React.FC<AgentCardProps> = ({
           {agent.configPath}
         </code>
       </div>
+
+      {agent.enabled && health && (
+        <AgentHealthFeedback agent={agent} health={health} onLogin={onLogin} onRecheck={onRecheck} readOnly={readOnly} />
+      )}
 
       <div id={modelsId} hidden={!expanded} className="mt-2">
         {currentModels.map(renderModelRow)}
