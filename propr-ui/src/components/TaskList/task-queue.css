@@ -1,7 +1,7 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
+   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED
 
-   The schema is locked: every width that shows the table shows all seven
+   The schema is locked: every width that shows the table shows all six
    columns, so nothing is added or dropped as the window or a pane resizes.
    REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
    REPO shows the repository name without its owner (the repo filter already
@@ -33,21 +33,20 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 3rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 3rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem;
     column-gap: .5rem;
   }
 }
 
 /* Earlier runs are one timeline block spanning TASK / PR through STATUS:
-   when · what it did · summary [score]. They never reach the SCORE column,
-   so no run is read across an empty gap to a pill at the far edge. */
+   when · what it did · summary. Each summary stays beside its timestamp. */
 .task-runs-cell { grid-column: 1 / span 3; }
 .task-run { grid-template-columns: 5rem minmax(0, 1fr); column-gap: .75rem; }
 

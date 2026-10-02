@@ -5,7 +5,7 @@ title: Configuration Reference
 
 ProPR reads its configuration from the `.env` file in the stack root — the directory you run `propr` from. `propr setup`, `propr relay enroll`, and `propr tunnel setup` write most of these values for you; this page is the reference for reading or hand-editing the file. Where the value shipped in `.env.example` differs from the fallback the code uses when a variable is unset, both are shown.
 
-Deep dives live elsewhere: [Production Deployment](./deployment.md), [PWA, Web Push, and Badges](./pwa-web-push.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
+Additional details are available in: [Production Deployment](./deployment.md), [PWA, Web Push, and Badges](./pwa-web-push.md), [GitHub Authentication](./github-auth.md), [Worker Runtime](../architecture/worker-runtime.md), and [Agent Tank](./agent-tank.md).
 
 ## Core & GitHub Auth
 
@@ -98,7 +98,7 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CODEX_STREAM_TRANSPORT` | `websocket` | Codex response transport. `websocket` avoids long-lived HTTP response deadlines, `sse` supports environments that cannot carry WebSockets, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
 | `CODEX_STREAM_IDLE_TIMEOUT_MS` | `1800000` (30 minutes) | Maximum quiet period on a Codex response stream before reconnecting. This is separate from the whole-task `CODEX_TIMEOUT_MS`. | Optional tuning. |
 | `CODEX_STREAM_MAX_RETRIES` | `5` | Number of Codex response-stream reconnect attempts. Zero disables retries. | Optional tuning. |
-| `ANALYSIS_MODEL_FAST` / `PLANNER_CONTEXT_MODEL` / `PLANNER_GENERATION_MODEL` | Unset | Initial values the settings API reports for the fast-analysis and planner models while **Settings → Models** has no saved value; `ANALYSIS_MODEL_FAST` is also the PR-review fast-analysis fallback. A saved setting wins. Prefer choosing models in Settings. | Optional. |
+| `ANALYSIS_MODEL_FAST` / `PLANNER_CONTEXT_MODEL` / `PLANNER_GENERATION_MODEL` | Unset | Initial values for **Fast analysis model** and planner models while **Settings → Models** has no saved value. The fast analysis model (`analysis_model_fast`) is used by `/review` to gather repository context before the review. `ANALYSIS_MODEL_FAST` remains its environment fallback. A saved setting wins. Prefer choosing models in Settings. | Optional. |
 | `CONTEXT_ANALYSIS_TIMEOUT_MS` | `3600000` (60 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `PROPR_PLAN_GENERATION_MODE` | `file` | `file`: the planning agent writes one JSON file per issue in a scratch workspace and runs the plan validator until it passes; ProPR re-validates before saving. `response`: the plan is parsed from the agent's reply. If the file workspace or agent cannot be started at all, ProPR falls back to `response` for that run; an invalid plan fails instead. | Optional. |
 | `PROPR_PLAN_WORKSPACE_ROOT` | `/tmp/git-processor/plan-workspaces` | Scratch workspaces for plan agents. Must be the same path for the API and the Docker daemon, like the worktree root. | Custom worktree layouts only. |

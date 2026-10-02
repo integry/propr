@@ -77,11 +77,6 @@ export interface StatusResponse {
   connectAccount?: unknown;
 }
 
-export interface TaskAnalysisResponse {
-  analysis: unknown | null;
-  message?: string;
-}
-
 export interface QueueStats {
   active: number;
   activeGoals?: number;

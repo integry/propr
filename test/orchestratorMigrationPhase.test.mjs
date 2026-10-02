@@ -34,6 +34,14 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   exit 0
 fi
 
+if [ "$1" = "stop" ] && [ "$4" = "propr-analysis-worker" ]; then
+  touch "$DOCKER_FAKE_LOG.analysis-stopped"
+fi
+
+if [ "$1" = "rm" ] && [ "$2" = "propr-analysis-worker" ]; then
+  touch "$DOCKER_FAKE_LOG.analysis-removed"
+fi
+
 if [ "$1" = "ps" ]; then
   case " $* " in
     *" name=^propr-migrate$ "*)
@@ -46,6 +54,7 @@ if [ "$1" = "ps" ]; then
       ;;
   esac
   for service in daemon worker analysis-worker indexing-worker api; do
+    if [ "$service" = "analysis-worker" ] && [ -f "$DOCKER_FAKE_LOG.analysis-removed" ]; then continue; fi
     case " $* " in
       *" name=^propr-$service$ "*)
         case ",\${DOCKER_FAKE_RUNNING_SERVICES:-}," in
@@ -128,7 +137,8 @@ test('full stack startup completes one migration phase before creating services'
     startStack(config(), { ui: false, docs: false, tunnel: false });
 
     const runs = fake.lines().filter(line => line.startsWith('run '));
-    assert.equal(runs.length, 7, 'one migration process plus six core services');
+    assert.equal(runs.length, 6, 'one migration process plus five core services');
+    assert.ok(runs.every(line => !line.includes('analysis-worker')));
     assert.match(runs[0], /^run --rm --init --name propr-migrate /);
     assert.match(runs[0], / node dist\/src\/migrate\.js$/);
     assert.doesNotMatch(runs[0], /--restart/);
@@ -138,7 +148,7 @@ test('full stack startup completes one migration phase before creating services'
     const detached = runs.slice(1);
     assert.ok(detached.every(line => line.startsWith('run -d ')));
     const databaseServices = detached.filter(line => /propr\.service=(daemon|worker|analysis-worker|indexing-worker|api)/.test(line));
-    assert.equal(databaseServices.length, 5);
+    assert.equal(databaseServices.length, 4);
     assert.ok(databaseServices.every(line => line.includes('PROPR_MIGRATIONS_PREAPPLIED=1')));
     assert.doesNotMatch(detached.find(line => line.includes('propr.service=redis')), /PROPR_MIGRATIONS_PREAPPLIED/);
   } finally {
@@ -276,10 +286,10 @@ test('full stack refuses to migrate under a surviving database service', () => {
 test('async full stack also leaves surviving database services untouched', async () => {
   const fake = installFakeDocker();
   try {
-    process.env.DOCKER_FAKE_RUNNING_SERVICES = 'analysis-worker';
+    process.env.DOCKER_FAKE_RUNNING_SERVICES = 'indexing-worker';
     await assert.rejects(
       startStackAsync(config(), { ui: false, docs: false, tunnel: false }),
-      /Refusing to run database migrations while database services are running \(propr-analysis-worker\).*left untouched/,
+      /Refusing to run database migrations while database services are running \(propr-indexing-worker\).*left untouched/,
     );
     assert.equal(fake.lines().filter(line => line.startsWith('run ')).length, 0);
     assert.equal(fake.lines().filter(line => line.startsWith('rm ')).length, 0);
@@ -347,3 +357,19 @@ test('async migration phase also waits for the one-shot container', async () => 
     fake.restore();
   }
 });
+
+for (const [kind, start] of [['launcher/CLI', startStack], ['desktop', startStackAsync]]) {
+  test(`${kind} startup stops and removes the retired analysis worker before migration`, async () => {
+    const fake = installFakeDocker();
+    try {
+      process.env.DOCKER_FAKE_RUNNING_SERVICES = 'analysis-worker';
+      await start(config(), { ui: false, docs: false, tunnel: false });
+      const lines = fake.lines();
+      const stop = lines.indexOf('stop -t 10 propr-analysis-worker');
+      const remove = lines.indexOf('rm propr-analysis-worker');
+      const migration = lines.findIndex(line => line.startsWith('run --rm --init --name propr-migrate '));
+      assert.ok(stop >= 0 && remove > stop && migration > remove);
+      assert.ok(lines.filter(line => line.startsWith('run ')).every(line => !line.includes('analysis-worker')));
+    } finally { fake.restore(); }
+  });
+}

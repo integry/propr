@@ -20,7 +20,6 @@ interface SettingsApiData {
   planner_generation_model?: string;
   default_agent_alias?: string;
   github_user_whitelist?: string[];
-  auto_followup_score_threshold?: number;
   usage_tips_enabled?: boolean;
   usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
@@ -44,7 +43,6 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     planner_context_model: settingsData.planner_context_model || '',
     planner_generation_model: settingsData.planner_generation_model || '',
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
-    auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
     usage_tips_enabled: parseUsageTipsSettings({ ...settingsData }).enabled,
     usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ ...settingsData }).cooldownDays,

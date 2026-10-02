@@ -84,7 +84,6 @@ export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPrev
 interface ConfigSettings {
     worker_concurrency?: number;
     analysis_model_fast?: string;
-    analysis_model_advanced?: string;
     planner_context_model?: string;
     planner_generation_model?: string;
     [key: string]: unknown;
@@ -100,7 +99,7 @@ function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
     return redacted;
 }
 
-// --- Auto-Followup Score Threshold ---
+// --- Legacy API compatibility for retired analysis follow-up settings ---
 
 /**
  * Default threshold for auto-followup on low implementation scores.

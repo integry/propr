@@ -54,6 +54,7 @@ test("getAllDisplaySettings includes label and keyword config values", async () 
   const { settings: displaySettings, errors } = await getAllDisplaySettings(SETTINGS, async (endpoint) => responses[endpoint]);
 
   assert.equal(displaySettings.worker_concurrency, 2);
+  assert.ok(!('auto_followup_score_threshold' in displaySettings));
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["ai-primary-tag"], "ai");
   assert.deepEqual(displaySettings["primary-processing-labels"], ["propr", "ai"]);
@@ -74,6 +75,7 @@ test("getAllDisplaySettings keeps system settings when an extra config endpoint 
   });
 
   assert.equal(displaySettings.worker_concurrency, 2);
+  assert.ok(!('auto_followup_score_threshold' in displaySettings));
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["followup-keywords"], undefined);
   assert.deepEqual(errors, ["followup-keywords: backend unavailable"]);

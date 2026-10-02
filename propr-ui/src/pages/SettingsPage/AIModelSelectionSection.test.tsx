@@ -55,6 +55,10 @@ describe('AIModelSelectionSection', () => {
       />
     );
 
+    expect(screen.getByText('Fast analysis model')).toBeInTheDocument();
+    expect(screen.getByText('Used by /review to gather repository context before the review.')).toBeInTheDocument();
+    expect(screen.queryByText('Post-Implementation Analysis Model')).not.toBeInTheDocument();
+
     const options = within(screen.getByLabelText('Reasoning Level'))
       .getAllByRole('option')
       .map(option => option.textContent);

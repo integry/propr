@@ -109,7 +109,6 @@ export interface TaskSummary {
   /**
    * Critique score from analysis.
    */
-  critiqueScore: number | null;
 }
 
 /**

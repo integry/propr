@@ -108,7 +108,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table).toBeVisible();
       // The column schema is the same at every width and in every row state.
       const headers = table.getByRole('columnheader');
-      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
+      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'];
       await expect(headers).toHaveText(columns);
       for (const header of await headers.all()) await expect(header).toBeVisible();
 
@@ -218,7 +218,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         };
       });
       expect(timeline.blockRight).toBeLessThanOrEqual(timeline.statusRight + 1);
-      expect(timeline.scoreGaps).toHaveLength(3);
+      expect(timeline.scoreGaps).toHaveLength(0);
       for (const gap of timeline.scoreGaps) expect(gap).toBeLessThanOrEqual(12);
       // The rail is threaded from the caret: it starts inside the caret's box, on its centre line.
       expect(Math.abs(timeline.railCentre - timeline.caretCentre)).toBeLessThanOrEqual(1);

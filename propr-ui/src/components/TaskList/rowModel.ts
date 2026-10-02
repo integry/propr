@@ -4,7 +4,7 @@
  * The task list used to unroll every run of a pull request as its own nested
  * row under the newest one, so a single busy PR filled the screen and the page
  * boundary in the footer stopped meaning anything. A group is now one row: the
- * newest run carries the status, agent, duration and score, and the runs before
+ * newest run carries the status, agent and duration, and the runs before
  * it are rolled up behind `↳ N earlier runs`.
  *
  * Titles are written for GitHub, not for a ledger: `Ultrafix PR #2664: [2659 by
@@ -19,9 +19,9 @@ import { splitWorkTitle } from '../Dashboard/workTitle';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
-export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'] as const;
 
-/** Expanded runs span TASK / PR through STATUS, keeping each run beside its score instead of stretched to the SCORE rail. */
+/** Expanded runs span TASK / PR through STATUS, keeping each run summary beside its timestamp. */
 export const TASK_RUNS_COLUMN_SPAN = 3;
 
 export interface TaskRunView {

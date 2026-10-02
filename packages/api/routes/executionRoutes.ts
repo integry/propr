@@ -4,7 +4,7 @@ import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
-import { validateSessionId, validateTaskId, validateLogType } from './validation.js';
+import { validateSessionId, validateLogType } from './validation.js';
 import { sendSafeJson } from './jsonResponse.js';
 
 interface ExecutionRoutesDeps {
@@ -133,32 +133,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
     }
   }
 
-  async function getAnalysis(req: FlatRequest, res: Response): Promise<void> {
-    try {
-      // Validate taskId parameter
-      const taskIdValidation = validateTaskId(req.params.taskId);
-      if (!taskIdValidation.valid) {
-        res.status(400).json({ error: taskIdValidation.error });
-        return;
-      }
-
-      const latestExecution = await db('llm_executions').where({ task_id: req.params.taskId }).orderBy('start_time', 'desc').first('execution_id', 'analysis_report');
-      if (!latestExecution) {
-        res.status(404).json({ error: 'No execution data found for this task.' });
-        return;
-      }
-      if (!latestExecution.analysis_report) {
-        res.status(202).json({ message: 'Analysis is pending or has not been run for this execution.', analysis: null });
-        return;
-      }
-      res.json(redactVisualPreviewValue({ analysis: latestExecution.analysis_report }));
-    } catch (error) {
-      console.error('Error in /api/task/:taskId/analysis:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  return { getPrompt, getLogs, getLogByType, getAnalysis };
+  return { getPrompt, getLogs, getLogByType };
 }
 
 async function getPromptData(redisClient: RedisClientType, sessionId: string, conversationId?: string): Promise<Record<string, unknown> | null> {

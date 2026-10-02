@@ -135,3 +135,11 @@ test('find_setting ranks aliases and environment names and explains access', asy
   assert.equal(followupKeywords.matches[0].id, 'workflow.followup_keywords');
   assert.match(followupKeywords.matches[0].howToChange, /`propr setting update followup-keywords <csv>`/);
 });
+
+test('fast analysis model describes the review context scout', () => {
+  const entry = SETTINGS_CATALOG.find(setting => setting.id === 'models.analysis_model_fast');
+  assert.equal(entry?.label, 'Fast analysis model');
+  assert.equal(entry?.description, 'Used by /review to gather repository context before the review.');
+  assert.deepEqual(entry?.env, ['ANALYSIS_MODEL_FAST']);
+  assert.ok(!SETTINGS_CATALOG.some(setting => setting.id === 'automation.auto_followup_score_threshold'));
+});

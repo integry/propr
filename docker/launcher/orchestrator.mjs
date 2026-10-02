@@ -911,10 +911,15 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 // service registry
 // ---------------------------------------------------------------------------
 
-export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
+export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
-const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'indexing-worker', 'api']);
+// Retired containers are recognized for upgrades and database safety only.
+// Their old Redis jobs are left inert: no current service consumes that queue.
+const RETIRED_SERVICES = ['analysis-worker'];
+const MANAGED_SERVICES = [...SERVICES, ...RETIRED_SERVICES];
+const DATABASE_CONTAINER_SERVICES = new Set([...DATABASE_SERVICES, ...RETIRED_SERVICES]);
 // This value is intentionally module-private. A caller cannot opt a database
 // service out of its migration gate by passing an option to startService();
 // only startStack(), after its owner process exits successfully, can provide
@@ -926,7 +931,7 @@ function imageTagForService(cfg, service) {
     if (service === 'ui') return cfg.images.ui;
     if (service === 'docs') return cfg.images.docs;
     if (service === 'tunnel') return cfg.cloudflaredImage;
-    // daemon/worker/analysis-worker/indexing-worker/api all run the app image
+    // daemon/worker/indexing-worker/api all run the app image
     return cfg.images.app;
 }
 
@@ -1031,12 +1036,6 @@ export function buildServiceSpec(cfg, service) {
                 ...vibePromptCacheArgs(cfg),
                 ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg, { opencodeDataReadWrite: true }),
-            ]);
-        case 'analysis-worker':
-            return appSpec(cfg, ['dist/src/analysis_worker.js'], [
-                ...vibePromptCacheArgs(cfg),
-                ...managedCredentialArgs(cfg),
-                ...agentCredentialArgs(cfg),
             ]);
         case 'indexing-worker':
             return appSpec(cfg, ['dist/src/indexing_worker.js'], [
@@ -1197,6 +1196,7 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     const started = [];
     const freshnessCache = new Map();
     try {
+        for (const service of RETIRED_SERVICES) stopService(cfg, service, { onLog });
         runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
             startService(cfg, service, {
@@ -1207,7 +1207,7 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
                 // service's normal fail-closed migration gate.
                 migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
                 // The migration phase already verified/pulled this exact app
-                // image tag. Avoid repeating the freshness check for all five
+                // image tag. Avoid repeating the freshness check for all four
                 // app containers.
                 pull: !DATABASE_SERVICES.has(service),
             });
@@ -1254,7 +1254,7 @@ function containerRunning(cfg, name) {
 }
 
 function runningDatabaseServiceNames(cfg) {
-    return [...DATABASE_SERVICES]
+    return [...DATABASE_CONTAINER_SERVICES]
         .map((service) => `${cfg.stack}-${service}`)
         .filter((name) => containerRunning(cfg, name));
 }
@@ -1363,7 +1363,7 @@ async function assertNoLiveMigrationOwnerAsync(cfg, service, signal) {
 
 async function runningDatabaseServiceNamesAsync(cfg, signal) {
     const running = [];
-    for (const service of DATABASE_SERVICES) {
+    for (const service of DATABASE_CONTAINER_SERVICES) {
         const name = `${cfg.stack}-${service}`;
         if (await containerRunningAsync(cfg, name, signal)) running.push(name);
     }
@@ -1502,6 +1502,7 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
     const started = [];
     const freshnessCache = new Map();
     try {
+        for (const service of RETIRED_SERVICES) await stopServiceAsync(cfg, service, { onLog, signal });
         await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal });
         for (const service of toStart) {
             await startServiceAsync(cfg, service, {
@@ -1593,7 +1594,7 @@ function validateReplacementMarker(cfg, marker) {
     if (!marker || typeof marker !== 'object' || Array.isArray(marker)
         || marker.schemaVersion !== 1 || marker.stack !== cfg.stack
         || !Array.isArray(marker.containers) || marker.containers.length === 0
-        || marker.containers.length > SERVICES.length) {
+        || marker.containers.length > MANAGED_SERVICES.length) {
         throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
     }
     const ids = new Set();
@@ -1601,7 +1602,7 @@ function validateReplacementMarker(cfg, marker) {
     for (const container of marker.containers) {
         if (!container || typeof container !== 'object' || Array.isArray(container)
             || typeof container.id !== 'string' || !/^[a-f0-9]{64}$/.test(container.id)
-            || typeof container.service !== 'string' || !SERVICES.includes(container.service)
+            || typeof container.service !== 'string' || !MANAGED_SERVICES.includes(container.service)
             || container.name !== `${cfg.stack}-${container.service}`
             || ids.has(container.id) || services.has(container.service)) {
             throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is invalid`);
@@ -1609,7 +1610,7 @@ function validateReplacementMarker(cfg, marker) {
         ids.add(container.id);
         services.add(container.service);
     }
-    if (!marker.containers.some((container) => DATABASE_SERVICES.has(container.service))) {
+    if (!marker.containers.some((container) => DATABASE_CONTAINER_SERVICES.has(container.service))) {
         throw new Error(`Refusing to resume ${cfg.stack} container replacement because its recovery marker is not root-bound`);
     }
     return marker;
@@ -1694,7 +1695,7 @@ function replacementMountsMatch(cfg, service, mounts, rootPaths) {
             type: 'volume', destination: '/data', name: `${cfg.stack}-redis-data`,
         });
     }
-    if (DATABASE_SERVICES.has(service)) {
+    if (DATABASE_CONTAINER_SERVICES.has(service)) {
         if (!hasReplacementMount(mounts, {
             type: 'bind', source: rootPaths.data, destination: '/usr/src/app/data',
         }) || !hasReplacementMount(mounts, {
@@ -1730,7 +1731,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
         throw new Error(`Failed to list ${cfg.stack} containers: ${(listed.stderr || '').trim()}`);
     }
     const ids = listed.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
-    if (ids.length > SERVICES.length || new Set(ids).size !== ids.length
+    if (ids.length > MANAGED_SERVICES.length || new Set(ids).size !== ids.length
         || ids.some((id) => !/^[a-f0-9]{64}$/.test(id))) {
         throw new Error(`Refusing to replace ${cfg.stack} containers because the ownership target set is invalid`);
     }
@@ -1748,7 +1749,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
             || container.name !== `/${cfg.stack}-${service}`
             || container.labels['propr.stack'] !== cfg.stack
             || typeof service !== 'string'
-            || !SERVICES.includes(service)
+            || !MANAGED_SERVICES.includes(service)
             || services.has(service)
             || (recovery && (recoveryById.get(container.id)?.name !== container.name.slice(1)
                 || recoveryById.get(container.id)?.service !== service))
@@ -1756,7 +1757,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
             throw new Error(`Refusing to replace ${cfg.stack} containers because ownership metadata does not match the managed root and service set`);
         }
         services.add(service);
-        if (DATABASE_SERVICES.has(service)) rootBoundServices += 1;
+        if (DATABASE_CONTAINER_SERVICES.has(service)) rootBoundServices += 1;
         validated.push({ id: container.id, name: container.name.slice(1), service });
     }
     if (validated.length > 0 && rootBoundServices === 0) {
@@ -1768,7 +1769,7 @@ export async function replaceStackContainersAsync(cfg, { onLog, signal } = {}) {
     // A retry can therefore re-prove this exact root even if interruption lands
     // between any two removals; the final root-bound removal leaves no target.
     const replacementOrder = validated.toSorted((left, right) =>
-        Number(DATABASE_SERVICES.has(left.service)) - Number(DATABASE_SERVICES.has(right.service)));
+        Number(DATABASE_CONTAINER_SERVICES.has(left.service)) - Number(DATABASE_CONTAINER_SERVICES.has(right.service)));
     for (const container of replacementOrder) {
         const stopped = await dockerAsync(['stop', '-t', '10', container.id], { signal });
         if (stopped.status !== 0) {

@@ -84,7 +84,6 @@
 | **Issue job modules** | `issueJob/agent.ts`, `context.ts`, `github.ts`, `completion.ts`, `worktree.ts` | **HIGH** |
 | **Epic PR service** | `epicPRService.ts` | **HIGH** - 4 bug fixes |
 | **Task execution service** | `taskExecutionService.ts` | **HIGH** - issue creation, comments |
-| **Analysis service** | `analysisService.ts` | **MEDIUM** - commit hash polling |
 | **Retry handler** | `retryHandler.ts` | **HIGH** - used by everything |
 | **Worker state manager** | `workerStateManager.ts` | **HIGH** - all task state |
 | **Git operations** | `worktreeCreation.ts`, `worktreeOperations.ts`, `commitOperations.ts`, `fetchOperations.ts`, `repoBranching.ts` | **HIGH** |
@@ -213,9 +212,6 @@ These functions contain complex logic that has historically produced bugs, yet h
 
 11. **`truncatePlanName(planName)` / `generateEpicBranchName()`** in `epicPRService.ts`
     - Branch name generation with collision prevention
-
-12. **`extractCommitHashFromMetadata(metadata)`** in `analysisService.ts`
-    - Extracts hash from 7 different nested metadata paths
 
 ### 4.2 Critical Stateful Logic with Zero Coverage
 
@@ -479,30 +475,6 @@ describe('parseCodexStreamOutput')
   ✦ handles non-JSON lines gracefully (bug fix fb96f8f6)
   ✦ handles empty stdout
   ✦ handles unknown event types
-```
-
-### 5.10 Analysis Service (MEDIUM — test/analysisService.test.ts)
-
-```
-describe('extractCommitHashFromMetadata')
-  ✦ extracts from metadata.commitHash
-  ✦ extracts from metadata.commit_hash
-  ✦ extracts from nested metadata.commitResult.hash
-  ✦ extracts hash from GitHub comment body via regex
-  ✦ returns null when no hash found
-  ✦ handles string metadata (JSON.parse)
-  ✦ handles object metadata directly
-
-describe('waitForCommitHash')
-  ✦ returns immediately when hash already present
-  ✦ polls and returns when hash appears
-  ✦ times out after 6 retries (60s)
-  ✦ handles task disappearing during polling
-
-describe('compactConversationLog')
-  ✦ omits Read/Grep/Glob tool output
-  ✦ preserves agent messages
-  ✦ handles non-array input
 ```
 
 ### 5.11 Model Aliases — Enhanced (MEDIUM — extend test/modelAliases.test.ts)
@@ -833,7 +805,6 @@ Each bug fix implies a corner case that should be tested. This is the **most imp
 
 1. **Versioned state updates** — workerStateManager uses last-write-wins with no optimistic locking
 2. **Idempotent comment posting** — comment creation in post-processing can create duplicates if job retries
-3. **Bounded retry in analysisService.waitForCommitHash** — currently fixed 6×10s, should use exponential backoff
 4. **Graceful Redis disconnection in abort checker** — dockerExecutor's abort polling silently returns false if Redis unavailable
 5. **Comment pagination in systemTaskJob** — cascade delete fetches 100 comments per page but may miss later pages for high-comment PRs
 6. **Concurrent task stop requests** — no lock on stop endpoint, multiple simultaneous stops could race
