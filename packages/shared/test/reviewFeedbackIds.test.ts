@@ -4,11 +4,13 @@ import {
   canonicalizeReviewFeedbackSelection,
   describeReviewFeedbackSelection,
   formatReviewFeedbackSelection,
+  formatFixCommand,
   isEmptyReviewFeedbackSelection,
   isMalformedReviewFeedbackToken,
   normalizeReviewFeedbackId,
   REVIEW_FINDING_ID_PATTERN,
   REVIEW_SUGGESTION_ID_PATTERN,
+  REVIEW_FEEDBACK_SELECT_ALL_KEYWORD,
 } from '../src/reviewFeedbackIds.js';
 
 test('identifiers are recognised per namespace and canonicalised to upper case', () => {
@@ -49,6 +51,11 @@ test('canonicalisation dedupes, preserves order and reports namespace mismatches
 test('selections render for the command line and for a human receipt', () => {
   const selection = { findingIds: ['F20'], suggestionIds: ['S3', 'S5'] };
   assert.equal(formatReviewFeedbackSelection(selection), 'F20 S3 S5');
+  assert.equal(formatFixCommand(selection), '/fix F20 S3 S5');
+  assert.equal(formatFixCommand({ findingIds: ['F1', 'F2'], suggestionIds: [] }), '/fix F1 F2');
+  assert.equal(formatFixCommand({ findingIds: [], suggestionIds: ['S2'] }), '/fix S2');
+  assert.equal(formatFixCommand({ findingIds: [], suggestionIds: [] }), '');
+  assert.equal(REVIEW_FEEDBACK_SELECT_ALL_KEYWORD, 'all');
   assert.equal(describeReviewFeedbackSelection(selection), 'finding F20 · suggestions S3, S5');
   assert.equal(describeReviewFeedbackSelection({ findingIds: ['F1', 'F2'], suggestionIds: [] }), 'findings F1, F2');
   assert.equal(describeReviewFeedbackSelection({ findingIds: [], suggestionIds: ['S1'] }), 'suggestion S1');

@@ -18,12 +18,14 @@ const {
     markReviewFindingsProcessed: markStructuredReviewFindingsProcessed,
 } = await import('../src/jobs/reviewCommentGatherer.js');
 const { renderPublicReview } = await import('../src/jobs/reviewOutputParser.js');
+const { buildCompletionComment } = await import('../src/jobs/prCompletionComment.js');
 const {
     formatReviewCommentsSection: formatSelectedReviewRecords,
     hasAuthorizedFixFeedback,
     parseFixFindingSelection,
     parseFixSelection,
     prepareFixReviewFeedback,
+    selectedReviewFeedbackIds,
     resolveReviewFeedback,
     selectReviewFeedback,
 } = await import('../src/jobs/reviewFindingSelector.js');
@@ -567,6 +569,88 @@ describe('/fix structured finding selection', () => {
         reviewStatus: 'valid_with_blockers' as const,
     });
 
+    test('/fix all goes through intake, includes only pending current records, and consumes each record', async () => {
+        const processedKey = 'processed-review-comments:o:r:1:findings';
+        const sets = new Map<string, Set<string>>([[processedKey, new Set(['90:F:F1', '91:S:S2'])]]);
+        const redis = {
+            async smembers(key: string) { return [...(sets.get(key) ?? [])]; },
+            async expire() { return 1; },
+            async eval(_script: string, _keyCount: number, _lockKey: string, key: string, _token: string, _ttl: number, ...members: string[]) {
+                const values = sets.get(key) ?? new Set<string>();
+                members.forEach(member => values.add(member));
+                sets.set(key, values);
+                return 1;
+            },
+        };
+        const comments = [1, 2, 3].map(number => ({
+            id: 89 + number,
+            body: `${renderPublicReview(STRUCTURED_REVIEW, undefined, { firstFindingNumber: number, firstSuggestionNumber: number })}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date(Date.now() - (number === 3 ? 8 * 24 * 3600 * 1000 : 0)).toISOString(),
+        }));
+        const commandMeta = buildCommandMeta(parseSlashCommand('/fix all\nS999 is prose; keep the API stable.')!);
+        const job = { data: {
+            commandMode: 'fix', commandMeta,
+            commandInstructions: (commandMeta as { instructions: string }).instructions,
+        } };
+        const options = {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: redis as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            prProcessingLockKey: 'lock:pr:o:r:1', prProcessingLockToken: 'attempt-token',
+        };
+        const prepared = await prepareFixReviewFeedback({ job: job as any, allComments: comments, ...options });
+        assert.strictEqual(prepared.fixSelection.selectAll, true);
+        assert.deepStrictEqual(prepared.resolution.selected, { findingIds: ['F2'], suggestionIds: ['S1'] });
+        assert.deepStrictEqual(prepared.resolution.unresolved, { findingIds: [], suggestionIds: [] });
+        assert.strictEqual(job.data.commandInstructions, 'S999 is prose; keep the API stable.');
+        assert.match(prepared.reviewCommentsSection, /Address actionable finding F2 and requested suggestion S1 only/);
+        assert.doesNotMatch(prepared.reviewCommentsSection, /### (?:F1|F3|S2|S3):/);
+
+        const completion = await buildCompletionComment({ commitHash: 'abcdef1234' }, [], {
+            changesSummary: 'Applied the selected feedback.', commitMessage: 'Fix review feedback',
+            llm: undefined, authorsText: '',
+            addressedFeedback: selectedReviewFeedbackIds(prepared.selectedReviewComments),
+        }, { success: true, modifiedFiles: [], summary: 'Applied the selected feedback.' } as any);
+        assert.match(completion, /^> Addressed finding F2 · suggestion S1$/m);
+
+        await markStructuredReviewFindingsProcessed(prepared.selectedReviewComments, options);
+        assert.deepStrictEqual([...sets.get(processedKey)!].sort(), ['90:F:F1', '90:S:S1', '91:F:F2', '91:S:S2']);
+        const regathered = await gatherStructuredReviewComments(comments, options);
+        assert.strictEqual(hasAuthorizedFixFeedback(resolveReviewFeedback(regathered, parseFixSelection('all'))), false);
+    });
+
+    test('/fix all is uncapped through the worker while explicit IDs retain their cap', async () => {
+        const comments = Array.from({ length: 51 }, (_, index) => ({
+            id: 100 + index,
+            body: `${renderPublicReview(STRUCTURED_REVIEW, undefined, { firstFindingNumber: index + 1, firstSuggestionNumber: index + 1 })}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }));
+        const prepare = (argumentsText: string) => prepareFixReviewFeedback({
+            job: { data: { commandMode: 'fix', commandInstructions: argumentsText } } as any,
+            allComments: comments,
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+        const prepared = await prepare('all');
+        assert.strictEqual(prepared.resolution.selected.findingIds.length, 51);
+        assert.strictEqual(prepared.resolution.selected.suggestionIds.length, 51);
+        await assert.rejects(prepare([
+            ...prepared.resolution.selected.findingIds, ...prepared.resolution.selected.suggestionIds,
+        ].join(' ')), /at most 100 review items/);
+    });
+
+    test('/fix all authorizes a suggestion-only review and drops empty reviews', () => {
+        const suggestionOnly = { ...reviewComment(), actionableFindings: [] };
+        const empty = { ...reviewComment({ id: 46 }), actionableFindings: [], suggestions: [] };
+        const resolution = resolveReviewFeedback([suggestionOnly, empty], parseFixSelection('all'));
+        assert.deepStrictEqual(resolution.comments, [suggestionOnly]);
+        assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: ['S1'] });
+        assert.strictEqual(hasAuthorizedFixFeedback(resolution), true);
+    });
+
     test('bare /fix selects blockers and keeps suggestion prose out of the prompt', () => {
         const all = [reviewComment()];
         const selected = selectReviewFeedback(all, parseFixFindingSelection(''));
@@ -659,7 +743,10 @@ describe('/fix structured finding selection', () => {
             user: { login: 'propr-bot', type: 'Bot' },
             created_at: new Date().toISOString(),
         }];
-        const job = { data: { commandMode: 'fix', ultrafixMeta: { workEpoch: 1 }, commandInstructions: 'F1 S1' } };
+        const job = { data: {
+            commandMode: 'fix', ultrafixMeta: { workEpoch: 1 }, commandInstructions: 'all',
+            commandMeta: buildCommandMeta(parseSlashCommand('/fix all')!),
+        } };
         const prepared = await prepareFixReviewFeedback({
             job: job as any,
             allComments: comments as any,
@@ -672,7 +759,8 @@ describe('/fix structured finding selection', () => {
         assert.deepStrictEqual(prepared.resolution.selected, { findingIds: ['F1'], suggestionIds: [] });
         assert.deepStrictEqual(prepared.selectedReviewComments[0].suggestions, []);
         // The loop's own instructions are still forwarded verbatim.
-        assert.strictEqual(prepared.fixSelection.instructions, 'F1 S1');
+        assert.strictEqual(prepared.fixSelection.instructions, 'all');
+        assert.strictEqual(prepared.fixSelection.selectAll, undefined);
     });
 
     test('a manual fix hands the prompt the stripped instruction text', async () => {

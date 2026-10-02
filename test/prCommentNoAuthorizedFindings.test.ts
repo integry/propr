@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { closeConnection, closeStateManager } from '@propr/core';
 import { handleNoAuthorizedFindings } from '../src/jobs/prCommentNoAuthorizedFindings.js';
+import { hasAuthorizedFixFeedback, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
 
 after(async () => {
   await closeStateManager();
@@ -13,8 +14,13 @@ describe('no-authorized-findings completion recap', () => {
     const updates: Array<{ taskId: string; state: string; metadata: Record<string, unknown> }> = [];
     const comments: Array<Record<string, unknown>> = [];
 
+    const resolution = resolveReviewFeedback([], parseFixSelection('all'));
+    assert.equal(hasAuthorizedFixFeedback(resolution), false);
+    assert.deepEqual(resolution.selected, { findingIds: [], suggestionIds: [] });
+    assert.deepEqual(resolution.unresolved, { findingIds: [], suggestionIds: [] });
+
     await handleNoAuthorizedFindings({
-      job: { data: {} } as never,
+      job: { data: { commandMode: 'fix', commandInstructions: 'all' } } as never,
       taskId: 'fix-no-findings',
       taskUrl: 'https://propr.example/tasks/fix-no-findings',
       stateManager: {
@@ -39,6 +45,7 @@ describe('no-authorized-findings completion recap', () => {
     });
 
     assert.equal(comments.length, 1);
+    assert.match(String(comments[0].body), /Use `\/fix all` to request every pending finding and suggestion/);
     assert.equal(updates.length, 1);
     assert.equal(updates[0].taskId, 'fix-no-findings');
     assert.equal(updates[0].state, 'completed');

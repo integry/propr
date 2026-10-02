@@ -93,6 +93,7 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
         'No files were changed because this `/fix` command resolved to no review record.',
         ...problems,
         'Name at least one `F#` finding or `S#` suggestion from a current review comment, for example `/fix F20 S3`. '
+            + 'Use `/fix all` to request every pending finding and suggestion. '
             + 'Any text after the identifiers, and every line below the command, is passed through as instructions.',
         `[View Task Execution](${taskUrl})`,
     ].join('\n\n') + `${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;

@@ -1,14 +1,32 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { buildCommandMeta, closeConnection, parseSlashCommand } from '@propr/core';
-import { parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
+import { type FixSelection, parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
 
 after(async () => {
     await closeConnection();
 });
 
 describe('/fix command-line selection', () => {
-    const cases: Array<[string, string, { findingIds: string[]; suggestionIds: string[]; instructions: string; malformedIds: string[] }]> = [
+    const cases: Array<[string, string, FixSelection]> = [
+        ['selects all pending feedback', 'all',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['accepts uppercase ALL', 'ALL',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['accepts trailing commas and whitespace after all', '  all , ',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['keeps inline instructions after all', 'all; keep it',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'keep it', malformedIds: [] }],
+        ['keeps following lines after all as prose', 'all\nbelow',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'below', malformedIds: [] }],
+        ['combines inline and following instructions after all', 'all , ; keep it\r\n\r\nS3 is prose.\r\nMore.',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'keep it\n\nS3 is prose.\nMore.', malformedIds: [] }],
+        ['keeps all in ordinary instructions', 'all the failing tests',
+            { findingIds: [], suggestionIds: [], instructions: 'all the failing tests', malformedIds: [] }],
+        ['does not combine all with selectors', 'all F3',
+            { findingIds: [], suggestionIds: [], instructions: 'all F3', malformedIds: [] }],
+        ['does not interpret all below the command as a shorthand', '\nall',
+            { findingIds: [], suggestionIds: [], instructions: 'all', malformedIds: [] }],
         ['mixes both namespaces in any order', 'F20 S3 S5',
             { findingIds: ['F20'], suggestionIds: ['S3', 'S5'], instructions: '', malformedIds: [] }],
         ['accepts suggestions on their own', 'S3',
