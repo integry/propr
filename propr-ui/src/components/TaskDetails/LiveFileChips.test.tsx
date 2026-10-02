@@ -55,7 +55,7 @@ describe('LiveFileChips live refreshes', () => {
     expect(fileChangesMocks.getFileChanges).toHaveBeenCalledTimes(2);
   });
 
-  it('shows 32 full file paths in a bounded list ordered by changed lines and keeps every diff accessible', async () => {
+  it('shows the shared directory once with 32 filenames ordered by changed lines and keeps every diff accessible', async () => {
     const files = Array.from({ length: 32 }, (_, index) => ({
       path: `src/credentials/agentWorkerCredentialValidation${index}.test.ts`,
       status: 'modified', linesAdded: index + 1, linesRemoved: index,
@@ -70,7 +70,8 @@ describe('LiveFileChips live refreshes', () => {
     expect(buttons).toHaveLength(32);
     expect(buttons[0]).toHaveAccessibleName(`View diff for ${files[31].path}`);
     expect(buttons[0]).toHaveTextContent('agentWorkerCredentialValidation31.test.ts');
-    expect(buttons[0]).toHaveTextContent('src/credentials/');
+    expect(within(list).getAllByText('src/credentials/')).toHaveLength(1);
+    expect(buttons[0]).not.toHaveTextContent('src/credentials/');
     expect(buttons[31]).toHaveAccessibleName(`View diff for ${files[0].path}`);
     fireEvent.click(buttons[31]);
     expect(screen.getByTitle('Close diff view')).toBeInTheDocument();

@@ -324,32 +324,28 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   }
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-900'}`}>
+    <div id="execution-event-log-section" className={`border-t border-zinc-800 bg-zinc-950 text-zinc-300 font-mono flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
       {/* VS Code Terminal Footer Bar - Solid full-width bar with zinc palette */}
       <button
         type="button"
         aria-expanded={!collapsed}
         aria-controls="execution-event-log-content"
-        className={`flex w-full items-center justify-between px-3 sm:px-6 h-9 text-left transition-all duration-300 cursor-pointer flex-shrink-0 ${
-          collapsed
-            ? 'bg-slate-100 hover:bg-slate-200 border-t border-slate-200 text-slate-500'
-            : 'bg-zinc-900 text-white'
-        }`}
+        className="flex w-full items-center justify-between px-3 sm:px-6 h-9 text-left bg-zinc-950 text-zinc-300 hover:bg-zinc-900 transition-all duration-300 cursor-pointer flex-shrink-0"
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5 flex-shrink-0">
-          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>{'>_'}</span>
-          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-white'}`}>
+          <span className="font-mono text-sm font-bold text-zinc-400">{'>_'}</span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-300">
             {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({formatEventCount(events.length + omittedEventCount, historyTruncated)})
           </span>
         </div>
         <div className="flex items-center gap-3 justify-end min-w-0 flex-1 pl-4">
           {collapsed && summaryMessage && (
-            <span className="text-[10px] text-slate-500 truncate text-right font-mono">
+            <span className="text-[10px] text-zinc-400 truncate text-right font-mono">
               {summaryMessage}
             </span>
           )}
-          <span className={`flex-shrink-0 ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>
+          <span className="flex-shrink-0 text-zinc-400">
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
@@ -361,7 +357,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
             ? 'max-h-0 opacity-0'
-            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-900 text-zinc-300'
+            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-950 text-zinc-300'
         }`}
       >
         <div

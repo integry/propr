@@ -125,6 +125,21 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
     (b.linesAdded + b.linesRemoved) - (a.linesAdded + a.linesRemoved) || a.path.localeCompare(b.path)
   ), [fileChanges]);
 
+  const commonDirectory = useMemo(() => {
+    const parts = sortedFiles[0]?.path.split('/').slice(0, -1) ?? [];
+    for (const file of sortedFiles.slice(1)) {
+      const directory = file.path.split('/').slice(0, -1);
+      while (parts.length && !parts.every((part, index) => part === directory[index])) {
+        parts.pop();
+      }
+    }
+    return parts.length ? `${parts.join('/')}/` : '';
+  }, [sortedFiles]);
+  const directoryParts = commonDirectory.split('/').filter(Boolean);
+  const directoryLabel = directoryParts.length > 3
+    ? `${directoryParts[0]}/…/${directoryParts[directoryParts.length - 1]}/`
+    : commonDirectory;
+
   // Don't render if no file changes and not loading
   if (!isLoading && fileChanges.length === 0 && !error) {
     return null;
@@ -174,8 +189,15 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
       ) : (
         /* A bounded list keeps large changesets from taking over the timeline. */
         <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded border border-slate-200">
+          {commonDirectory && (
+            <div className="sticky top-0 border-b border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px] text-slate-500 break-all" title={commonDirectory}>
+              {directoryLabel}
+            </div>
+          )}
           {sortedFiles.map(file => {
             const isSelected = selectedFilePath === file.path;
+            const relativePath = file.path.slice(commonDirectory.length);
+            const parentDirectory = relativePath.split('/').slice(-2, -1).map(part => `${part}/`).join('');
             return (
               <button
                 key={file.path}
@@ -187,8 +209,8 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
                 {getStatusIndicator(file.status)}
                 <span className="min-w-0 flex-1 break-all">
                   <span className="block text-slate-700">{file.path.split('/').pop()}</span>
-                  {file.path.includes('/') && (
-                    <span className="mt-0.5 block text-[10px] text-slate-400">{file.path.slice(0, file.path.lastIndexOf('/') + 1)}</span>
+                  {parentDirectory && (
+                    <span className="mt-0.5 block text-[10px] text-slate-400">{parentDirectory}</span>
                   )}
                 </span>
                 {(file.linesAdded > 0 || file.linesRemoved > 0) && (

@@ -78,6 +78,31 @@ for (const width of [390, 1440]) {
       await expect(consumption).toContainText(`${completed ? '1.0' : '0.4'}% weekly quota`);
       await expect(task.getByText('Analyzing Request', { exact: true })).toHaveCount(1);
       await expect(task.getByText('8s', { exact: true })).toBeVisible();
+      for (const label of ['Task Queued', 'Analyzing Request', 'Implementing Changes', ...(completed ? ['Task Completed'] : [])]) {
+        const alignment = await task.getByText(label, { exact: label !== 'Task Completed' }).evaluate(node => {
+          const row = node.closest('.group')!;
+          const timestamp = row.firstElementChild!.firstElementChild!;
+          const duration = node.parentElement!.nextElementSibling!;
+          const timestampText = document.createRange();
+          timestampText.selectNodeContents(timestamp);
+          return {
+            labelTop: node.getBoundingClientRect().top,
+            timestampTop: timestamp.getBoundingClientRect().top,
+            durationTop: duration.getBoundingClientRect().top,
+            labelHeight: getComputedStyle(node).lineHeight,
+            timestampHeight: getComputedStyle(timestamp).lineHeight,
+            timestampRight: timestampText.getBoundingClientRect().right,
+            iconLeft: row.children[1].lastElementChild!.getBoundingClientRect().left,
+          };
+        });
+        expect(alignment.labelTop).toBe(alignment.timestampTop);
+        expect(alignment.labelTop).toBe(alignment.durationTop);
+        expect(alignment.labelHeight).toBe(alignment.timestampHeight);
+        expect(alignment.timestampRight).toBeLessThanOrEqual(alignment.iconLeft);
+      }
+      const terminal = task.locator('#execution-event-log-section');
+      await expect(terminal).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+      await expect(terminal).toHaveCSS('color', 'rgb(212, 212, 216)');
       await expect(task.getByRole('menuitem', { name: 'Delete' })).toHaveCount(0);
       await expect(task.getByRole('region', { name: 'Changed files' }).getByRole('button')).toHaveCount(32);
       const more = task.getByRole('button', { name: 'More task actions' });
@@ -85,14 +110,15 @@ for (const width of [390, 1440]) {
       const deletion = task.getByRole('menuitem', { name: 'Delete' });
       if (completed) await expect(deletion).toBeEnabled();
       else await expect(deletion).toBeDisabled();
-      if (width === 1440) await capture(page, `task-details-${completed ? 'completed' : 'live'}-${width}`);
       await page.keyboard.press('Escape');
       await expect(more).toBeFocused();
       await expect(task.getByRole('menu')).toHaveCount(0);
-      if (width === 390) await capture(page, `task-details-${completed ? 'completed' : 'live'}-${width}`);
+      await capture(page, `task-details-${completed ? 'completed' : 'live'}-${width}`);
 
       const list = task.getByRole('region', { name: 'Changed files' });
       await expect(list.getByRole('button')).toHaveCount(32);
+      await expect(list.getByText('packages/…/utils/', { exact: true })).toHaveCount(1);
+      await expect(list.getByRole('button').first()).not.toContainText('packages/core/src/agents/impl/utils/');
       const metrics = await list.evaluate(node => ({ height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY }));
       expect(metrics.height).toBeLessThanOrEqual(192);
       expect(metrics.scrollHeight).toBeGreaterThan(metrics.height);
@@ -103,6 +129,11 @@ for (const width of [390, 1440]) {
       await lastFile.click();
       await expect(page.getByTitle('Close diff view')).toBeVisible();
       await page.getByTitle('Close diff view').click();
+      if (width === 1440 && completed) {
+        await terminal.getByRole('button', { name: /EXECUTION LOG/ }).click();
+        await expect(task.locator('#execution-event-log-content')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+        await capture(page, 'task-details-terminal-expanded');
+      }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     });
   }
