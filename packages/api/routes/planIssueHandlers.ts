@@ -1,6 +1,8 @@
 import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
+  db,
+  safeUpdateLabels,
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
@@ -342,7 +344,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      const body = req.body as UpdateIssueRequestBody;
+      const body = req.body as UpdateIssueRequestBody & { syncEpicLabels?: boolean };
       const requestValidationError = validateUpdateIssueRequest(body);
       if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
@@ -355,6 +357,23 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);
       if (shouldUpdateConfig) {
         await updateIssueConfigWithRollback({ draftId, issueNumber, repository, currentIssue, updates: configUpdates });
+        if (body.syncEpicLabels === true) {
+          const { getEpicExecutionQueue } = await import('@propr/core');
+          const queue = await getEpicExecutionQueue(draftId);
+          if (!queue || queue.status !== 'active' || !queue.issues.includes(issueNumber)) throw new Error('Active epic queue is missing for selected issue');
+          const draft = await db('task_drafts').where({ draft_id: draftId }).first('context_config');
+          const context = parseContextConfig(draft?.context_config);
+          if (typeof context?.epicLabel !== 'string') throw new Error('Epic branch selector is missing for queued issue');
+          const [owner, repo] = repository.split('/');
+          const octokit = await getAuthenticatedOctokit();
+          const githubIssue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
+          const staleBaseLabels = githubIssue.data.labels.map(label => typeof label === 'string' ? label : label.name)
+            .filter((label): label is string => !!label && label.startsWith('base-') && label !== context.epicLabel);
+          const synced = await safeUpdateLabels({ octokit, owner, repo, issueNumber,
+            logger: logger.withCorrelation(`queued-issue-${draftId}-${issueNumber}`) }, staleBaseLabels,
+          [context.epicLabel, ...(queue.autoMerge ? ['auto-merge'] : [])]);
+          if (!synced.success) throw new Error(`Failed to synchronize queued epic labels: ${synced.errors.join('; ')}`);
+        }
       }
       let updated: PlanIssue | null;
       try {

@@ -499,3 +499,5 @@ export { LIVE_OUTPUT_MAX_BYTES, LIVE_OUTPUT_TTL_SECONDS, liveOutputKey, liveOutp
 export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingChecks.js';
 
 export * from './services/usageTips/index.js';
+
+export * from './services/taskPlanning/epicExecutionQueue.js';

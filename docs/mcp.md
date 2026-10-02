@@ -229,6 +229,34 @@ and additionally requires merge scope. `create_goal` explicitly starts work.
 `/merge` means updating a PR branch; `merge_pull_request` separately requires
 the exact head and satisfied checks/reviews/branch protection.
 
+With `implement_plan` and `useEpic: true`, `epicExecution` defaults to
+`"sequential"`. Exactly the selected issue numbers run in publication order
+(`plan_issues.id`), regardless of their order in the request. The first issue
+starts immediately; the rest are durably queued. Sequential epics accept one
+model per issue. `epicExecution: "parallel"` restores the previous fan-out,
+including comparisons with up to four models. Non-epic calls keep fan-out and
+ignore these epic execution options.
+
+`epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
+successor. A closed head (including a failed task reconciled to closed) leaves
+the queue active and records a human-readable `blockedReason`; reopening,
+fixing and merging it automatically releases the queue. Choose
+`epicAdvanceOn: "terminal"` to advance on any core terminal issue status
+(currently merged or closed). Issues already in an eligible terminal state
+are skipped. `pause_plan` holds the next issue, and `resume_plan` starts the
+held head. Periodic recovery repairs missed advances and retries a head still
+pending fifteen minutes after dispatch. Unselected pending issues never
+start through this queue; plans without a queue retain the UI epic chain.
+
+The implementation result includes `executionMode`, `advanceOn`, `started`
+and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
+expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
+(null when no queue exists). Sequential receipts remain `accepted` until the
+queue is completed; dispatching the first issue or opening its PR does not
+complete the operation. Queue status is `active`, `completed` or `cancelled`.
+Both new arguments are optional, so omitting them preserves existing
+idempotency receipt hashes.
+
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
 across retries of the same action, and repeat the same arguments exactly.
 Omitting an optional argument and supplying it are different payloads. Reusing a key with different arguments

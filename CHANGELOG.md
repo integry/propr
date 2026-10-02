@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sequential MCP epics**: `implement_plan` now queues exactly the selected
+  issues in publication order for `useEpic: true`, starts one model on the head,
+  and advances durably after merge. Optional `epicAdvanceOn: "terminal"` also
+  advances on closed/failed issues; the default records a `blockedReason` until
+  a blocked head is fixed and merged. Pause/resume holds and releases the next
+  issue, and worker reconciliation repairs missed advancement and dispatch.
+  Results and plan/operation reads expose queue progress; receipts stay
+  accepted until completion. `epicExecution: "parallel"` restores fan-out and
+  multi-model comparisons. Existing idempotency hashes and the UI chain for
+  plans without queues are preserved.
+
 - **Analytics timeframe**: one selector in the Analytics header scopes the
   activity, task status, repository and model sections to the last 24 hours,
   7 days, 30 days (default), 90 days, 12 months or all time. The choice is kept

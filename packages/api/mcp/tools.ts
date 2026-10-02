@@ -7,7 +7,7 @@ import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import type { InstancePermission } from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
-import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw } from '@propr/core';
+import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, getEpicExecutionQueue, summarizeEpicQueue } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
@@ -335,10 +335,12 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     await trackTaskSubmission(deps, row, principal, receipt);
     await trackExecution(deps, row, principal, receipt);
     await trackCancellation(deps, row, principal, receipt);
-    if (row.state === 'accepted' && row.tool === 'implement_plan' && Array.isArray(result.issues)) {
+    if (row.tool === 'implement_plan' && Array.isArray(result.issues)) {
       const issues = await db('plan_issues').where({ draft_id: result.planId }).whereIn('issue_number', result.issues).select('issue_number', 'status', 'task_id', 'pr_number');
-      receipt.targetState = { issues };
-      if (issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
+      const epicQueue = summarizeEpicQueue(await getEpicExecutionQueue(String(result.planId), { database: db }));
+      receipt.targetState = { issues, epicQueue };
+      if (row.state === 'accepted' && (!epicQueue || epicQueue.status === 'completed')
+        && issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
     }
     await syncReceiptLifecycle(operations, row, receipt, !!unavailableOutcome);
     const durableRow = await operations.get(principal, row.id);

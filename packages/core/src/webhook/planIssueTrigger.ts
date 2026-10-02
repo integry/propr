@@ -12,6 +12,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
 import { db } from '../db/connection.js';
+import { getEpicExecutionQueue } from '../services/taskPlanning/epicExecutionQueue.js';
 
 interface LatestTaskHistoryRow {
     state: string;
@@ -51,7 +52,7 @@ async function latestTaskHistory(taskId: string): Promise<LatestTaskHistoryRow |
         .first<LatestTaskHistoryRow>();
 }
 
-async function reconcileTerminalInProgressIssues(
+export async function reconcileTerminalInProgressIssues(
     repository: string,
     planIssues: PlanIssue[],
     log: ReturnType<typeof logger.withCorrelation>
@@ -174,6 +175,74 @@ async function addProcessingLabelToEpicPR(
     }
 }
 
+/** Starts an issue using the same processing-label path as the legacy epic chain. */
+export async function labelPlanIssueForProcessing({
+    repository, issueNumber, correlationId, draftId, epicLabel, autoMerge = true, log: suppliedLog
+}: {
+    repository: string;
+    issueNumber: number;
+    correlationId?: string;
+    draftId?: string;
+    epicLabel?: string;
+    autoMerge?: boolean;
+    log?: ReturnType<typeof logger.withCorrelation>;
+}): Promise<void> {
+    const log = suppliedLog ?? logger.withCorrelation(correlationId || `epic-queue-${draftId}-${issueNumber}`);
+    const [owner, repo] = repository.split('/');
+    const processingLabels = getPrimaryProcessingLabels();
+    const primaryLabel = processingLabels[0] || 'AI';
+
+    // Build labels list: processing label, auto-merge, and epic label if present
+    const labelsToAdd = [primaryLabel];
+    if (autoMerge) labelsToAdd.push('auto-merge');
+    if (epicLabel) {
+        labelsToAdd.push(epicLabel);
+    }
+
+    log.info({
+        draftId,
+        nextIssueNumber: issueNumber,
+        labels: labelsToAdd
+    }, 'Triggering next pending issue in plan');
+
+    const octokit = await getAuthenticatedOctokit();
+
+    // Add the processing labels to trigger the issue
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: labelsToAdd
+    });
+
+    log.info({
+        draftId,
+        issueNumber: issueNumber,
+        labels: labelsToAdd
+    }, 'Added processing labels to next pending issue');
+
+}
+
+/** Labels the epic PR only after all children in the draft are done. */
+export async function finalizeEpicPlanIfComplete(draftId: string, legacy?: {
+    repository: string; epicLabel?: string; log: ReturnType<typeof logger.withCorrelation>;
+}): Promise<void> {
+    // The legacy caller has already checked every issue and supplies its original label and logger.
+    if (legacy) {
+        if (legacy.epicLabel) await addProcessingLabelToEpicPR(legacy.repository, legacy.epicLabel, legacy.log);
+        return;
+    }
+    const draft = await db('task_drafts').where({ draft_id: draftId }).first('repository', 'context_config', 'paused');
+    if (!draft || draft.paused) return;
+    const issues = await getPlanIssuesByDraft(draftId);
+    if (issues.some(issue => isInProgressStatus(issue.status) || issue.status === PlanIssueStatus.PENDING)) return;
+    const context = parseHistoryMetadata(draft.context_config);
+    const epicLabel = typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
+    if (epicLabel) {
+        await addProcessingLabelToEpicPR(draft.repository, epicLabel, logger.withCorrelation(`epic-complete-${draftId}`));
+    }
+}
+
 /**
  * Triggers the next pending issue in a plan by adding processing labels.
  * Only triggers if there are no issues currently being processed or under review.
@@ -185,6 +254,13 @@ export async function triggerNextPendingIssue(
     log: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     try {
+        const queue = await getEpicExecutionQueue(draftId);
+        // A cancelled initial dispatch hands control back to the legacy chain.
+        if (queue && queue.status !== 'cancelled') {
+            log.info({ draftId, handledBy: 'epic_execution_queue' }, 'Queue owns plan issue progression');
+            return;
+        }
+
         // Check if the draft is paused - if so, don't trigger the next issue
         const paused = await isDraftPaused(draftId);
         if (paused) {
@@ -217,43 +293,11 @@ export async function triggerNextPendingIssue(
             log.debug({ draftId }, 'No more pending issues in plan');
 
             // All issues are done - add processing label to Epic PR if present
-            if (epicLabel) {
-                await addProcessingLabelToEpicPR(repository, epicLabel, log);
-            }
+            await finalizeEpicPlanIfComplete(draftId, { repository, epicLabel, log });
             return;
         }
 
-        const [owner, repo] = repository.split('/');
-        const processingLabels = getPrimaryProcessingLabels();
-        const primaryLabel = processingLabels[0] || 'AI';
-
-        // Build labels list: processing label, auto-merge, and epic label if present
-        const labelsToAdd = [primaryLabel, 'auto-merge'];
-        if (epicLabel) {
-            labelsToAdd.push(epicLabel);
-        }
-
-        log.info({
-            draftId,
-            nextIssueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Triggering next pending issue in plan');
-
-        const octokit = await getAuthenticatedOctokit();
-
-        // Add the processing labels to trigger the issue
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo,
-            issue_number: nextPending.issue_number,
-            labels: labelsToAdd
-        });
-
-        log.info({
-            draftId,
-            issueNumber: nextPending.issue_number,
-            labels: labelsToAdd
-        }, 'Added processing labels to next pending issue');
+        await labelPlanIssueForProcessing({ repository, issueNumber: nextPending.issue_number, draftId, epicLabel, log });
 
     } catch (error) {
         log.warn({
