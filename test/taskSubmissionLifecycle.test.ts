@@ -168,7 +168,7 @@ for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', '
       if (reason === 'cancelled_by_user') {
         assert.equal(githubComments.length, 1);
         assert.match(githubComments[0], /Execution Cancelled/);
-        assert.match(githubComments[0], /re-add the AI label/);
+        assert.match(githubComments[0], /remove and re-add the trigger label/);
         assert.equal(labelCleanups.length, 1);
         assert.equal(labelCleanups[0][2], reason);
         assert.equal(labelCleanups[0][3], 'ordinary-task', 'cleanup must exclude only the stopped attempt');
