@@ -2,10 +2,16 @@
   container-type: inline-size;
 }
 
+/* Leave room below the trigger while the menu is open, including narrow
+   panes where its right rail would otherwise cover model titles and aliases. */
+.coding-agent-header-menu-open {
+  margin-bottom: 128px;
+}
+
 /* Keep the path inline when the configuration pane has room for it. */
 @container (min-width: 400px) {
   .coding-agent-header {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 25%) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 35%) auto;
   }
 
   .coding-agent-actions {
@@ -13,7 +19,7 @@
     grid-row: 1;
   }
 
-  .coding-agent-path {
+  .coding-agent-details {
     grid-column: 2;
     grid-row: 1;
     margin-left: 0;

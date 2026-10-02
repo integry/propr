@@ -2,6 +2,9 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig } from '../../api/proprApi';
 import AgentCard from './AgentCard';
+import { getAgentTankUsage } from '../../api/revertApi';
+
+vi.mock('../../api/revertApi', () => ({ getAgentTankUsage: vi.fn() }));
 
 const agent: AgentConfig = {
   id: 'claude-1',
@@ -29,6 +32,59 @@ function renderCard(overrides: Partial<React.ComponentProps<typeof AgentCard>> =
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AgentCard', () => {
+  it('keeps Ready in the header without a body status row, including when collapsed', () => {
+    renderCard({ health: { agentId: agent.id, status: 'ready', model: 'probe' } });
+    const ready = screen.getByText('Ready');
+    expect(ready.closest('.coding-agent-header')).not.toBeNull();
+    expect(ready).toHaveAttribute('title', 'Checked with probe');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse claude models' }));
+    expect(ready).toBeVisible();
+  });
+
+  it('offers login only for authentication failures and keeps retries neutral', () => {
+    const onRecheck = vi.fn();
+    const callbacks = renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'auth_required', error: 'Session expired' }, onRecheck });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    expect(callbacks.onLogin).toHaveBeenCalledOnce();
+    const retry = screen.getByRole('button', { name: 'Check again' });
+    expect(retry).toHaveClass('border-slate-300', 'text-slate-700', 'bg-white', 'hover:bg-slate-50');
+    fireEvent.click(retry);
+    expect(onRecheck).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'View Quota / Usage' })).not.toBeInTheDocument();
+  });
+
+  it('opens provider usage for rate limits without offering login in the alert or menu', async () => {
+    vi.mocked(getAgentTankUsage).mockResolvedValue({ enabled: true, agents: {
+      antigravity: { name: 'antigravity', usage: { models: [{ model: 'Gemini Flash', percentUsed: 100, resetsIn: '2h' }] } },
+      codex: { name: 'codex', usage: { session: { percent: 20 } } },
+    } });
+    const callbacks = renderCard({ agent: { ...agent, type: 'antigravity', alias: 'antigravity' }, health: { agentId: agent.id, status: 'error', errorCode: 'rate_limit', error: 'HTTP 429' }, onRecheck: vi.fn() });
+    expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
+    expect(getAgentTankUsage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'View Quota / Usage' }));
+    const usage = screen.getByRole('region', { name: 'antigravity quota / usage' });
+    expect(await within(usage).findByText('100%')).toBeVisible();
+    expect(within(usage).getByText('Gemini Flash')).toBeVisible();
+    expect(within(usage).queryByText('Codex')).not.toBeInTheDocument();
+    expect(callbacks.onLogin).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for antigravity' }));
+    expect(screen.queryByRole('menuitem', { name: 'Log in' })).not.toBeInTheDocument();
+  });
+
+  it('explains when usage tracking is disabled instead of presenting an empty action', async () => {
+    vi.mocked(getAgentTankUsage).mockResolvedValue({ enabled: false });
+    renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'rate_limit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'View Quota / Usage' }));
+    expect(await screen.findByText(/Usage tracking is disabled/)).toBeVisible();
+  });
+
+  it('does not offer login for unrelated health failures', () => {
+    renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'unknown', error: 'Check timed out' }, onRecheck: vi.fn() });
+    expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
+  });
+
   it('copies one short alias per model and exposes the canonical ID in its tooltip', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });

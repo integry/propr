@@ -26,6 +26,16 @@ export interface AgentHealthResult {
   status: 'ready' | 'error' | 'disabled';
   model?: string;
   error?: string;
+  errorCode?: 'auth_required' | 'rate_limit' | 'unknown';
+}
+
+function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCode']> {
+  const details = error as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown } | undefined;
+  const text = [details?.code, details?.status, details?.statusCode, details?.message, error].join(' ');
+  // Quota failures can also suggest signing in; rate limits take precedence.
+  if (/\b429\b|rate[\s_-]*limit|resource[\s_-]*exhausted|too many requests|quota|usage limit/i.test(text)) return 'rate_limit';
+  if (/\b401\b|unauthenticated|unauthorized|authentication|not logged in|log[ -]?in|sign[ -]?in|session.{0,30}expired|expired.{0,30}(?:session|token|credentials)/i.test(text)) return 'auth_required';
+  return 'unknown';
 }
 
 export function createAgentHealthCheck(dependencies: {
@@ -42,7 +52,7 @@ export function createAgentHealthCheck(dependencies: {
     if (existing) return existing;
     const probe = async (): Promise<AgentHealthResult> => {
       const model = agentHealthModel(config);
-      if (!model) return { agentId, status: 'error', error: 'No models configured. Edit this agent to add a model.' };
+      if (!model) return { agentId, status: 'error', errorCode: 'unknown', error: 'No models configured. Edit this agent to add a model.' };
       try {
         const result = await dependencies.createAgent(config).analyze('Reply with only OK. Do not use tools.', {
           model,
@@ -51,11 +61,11 @@ export function createAgentHealthCheck(dependencies: {
           suppressLlmLog: true,
         });
         if (!result.success || !result.response?.trim()) {
-          return { agentId, model, status: 'error', error: redactSecrets(result.error || 'Agent returned no response.').slice(0, 2000) };
+          return { agentId, model, status: 'error', errorCode: healthErrorCode(result.error), error: redactSecrets(result.error || 'Agent returned no response.').slice(0, 2000) };
         }
         return { agentId, model, status: 'ready' };
       } catch (error) {
-        return { agentId, model, status: 'error', error: redactSecrets(error instanceof Error ? error.message : 'Agent check failed.').slice(0, 2000) };
+        return { agentId, model, status: 'error', errorCode: healthErrorCode(error), error: redactSecrets(error instanceof Error ? error.message : 'Agent check failed.').slice(0, 2000) };
       }
     };
     const promise = probe();

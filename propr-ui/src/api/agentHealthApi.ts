@@ -5,6 +5,7 @@ export interface AgentHealthResult {
   status: 'ready' | 'error' | 'disabled';
   model?: string;
   error?: string;
+  errorCode?: 'auth_required' | 'rate_limit' | 'unknown';
 }
 
 export function checkAgentHealth(agentId: string, configurationKey = agentId): Promise<AgentHealthResult> {

@@ -76,6 +76,12 @@ for (const viewport of [
     await expect(configuration.getByRole('button', { name: 'Copy flash38-high', exact: true })).toBeVisible();
     await configuration.getByRole('button', { name: 'More actions for antigravity' }).click();
     await expect(configuration.getByRole('menuitem', { name: 'Log in' })).toBeFocused();
+    const menu = await configuration.getByRole('menu').boundingBox();
+    const trigger = await configuration.getByRole('button', { name: 'More actions for antigravity' }).boundingBox();
+    const firstModel = await configuration.getByRole('button', { name: 'Copy flash38-medium', exact: true }).locator('xpath=../..').boundingBox();
+    expect(menu!.y).toBeGreaterThanOrEqual(trigger!.y + trigger!.height);
+    expect(Math.abs(menu!.x + menu!.width - trigger!.x - trigger!.width)).toBeLessThanOrEqual(1);
+    expect(firstModel!.y).toBeGreaterThanOrEqual(menu!.y + menu!.height);
     await page.keyboard.press('ArrowDown');
     await expect(configuration.getByRole('menuitem', { name: 'Edit path' })).toBeFocused();
     await page.keyboard.press('Escape');
@@ -107,9 +113,9 @@ for (const viewport of [
         return route.fulfill({ json: {
           agentId: healthMatch[1], model: 'lightweight-model',
           ...(healthMatch[1] === 'codex-config' && !codexReady
-            ? { status: 'error', error: 'Your login session has expired. Please log in again.' }
+            ? { status: 'error', errorCode: 'auth_required', error: 'Your login session has expired. Please log in again.' }
             : healthMatch[1] === 'antigravity-config'
-              ? { status: 'error', error: 'Provider rate limit reached. Try again later.' }
+              ? { status: 'error', errorCode: 'rate_limit', error: 'Provider rate limit reached. Try again later.' }
               : { status: 'ready' }),
         } });
       }
@@ -123,6 +129,9 @@ for (const viewport of [
         '/api/config/agents': { agents: fixtureAgents },
         '/api/config/synthetic-agents': { synthetic_agents: [] },
         '/api/config/agent-tank/status': { available: false },
+        '/api/config/agent-tank/usage': { enabled: true, agents: {
+          antigravity: { name: 'antigravity', usage: { models: [{ model: 'Gemini Flash', percentUsed: 100, resetsIn: '2h' }] } },
+        } },
         '/api/notifications/unread-count': { unreadCount: 0 },
         '/api/notifications': { notifications: [], unreadCount: 0, nextCursor: null },
         '/api/agents/codex-config/login-sessions': {
@@ -141,10 +150,19 @@ for (const viewport of [
     const codexCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /codex models$/ }) });
     const claudeCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /claude models$/ }) });
     const disabledCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /vibe models$/ }) });
+    const rateLimitedCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /antigravity models$/ }) });
     await expect(codexCard.getByRole('alert')).toContainText('Your login session has expired.');
     await expect(codexCard.getByRole('button', { name: 'Log in', exact: true })).toBeVisible();
     await expect(claudeCard.getByText('Ready', { exact: true })).toBeVisible();
+    await expect(claudeCard.locator('.coding-agent-header').getByText('Ready', { exact: true })).toBeVisible();
     await expect(claudeCard.getByRole('button', { name: 'Log in', exact: true })).toHaveCount(0);
+    await expect(rateLimitedCard.getByRole('button', { name: 'Log in', exact: true })).toHaveCount(0);
+    await expect(rateLimitedCard.getByRole('button', { name: 'View Quota / Usage' })).toBeVisible();
+    for (const card of [codexCard, rateLimitedCard]) {
+      const retry = card.getByRole('button', { name: 'Check again' });
+      await expect(retry).toHaveCSS('border-top-color', 'rgb(203, 213, 225)');
+      await expect(retry).toHaveCSS('color', 'rgb(51, 65, 85)');
+    }
     await expect(disabledCard.getByText('Checking agent…')).toHaveCount(0);
     expect(checked).not.toContain('vibe-config');
     expect(new Set(checked).size).toBe(4);
@@ -157,6 +175,14 @@ for (const viewport of [
       await page.mouse.move(0, 0);
       await configuration.screenshot({ animations: 'disabled', path: `../.propr/previews/agent-health-${viewport.name}.png` });
     }
+    await rateLimitedCard.getByRole('button', { name: 'View Quota / Usage' }).click();
+    await expect(rateLimitedCard.getByRole('region', { name: 'antigravity quota / usage' }).getByText('100%')).toBeVisible();
+    if (process.env.PROPR_CAPTURE_PREVIEWS && viewport.name === 'desktop') {
+      await rateLimitedCard.screenshot({ animations: 'disabled', path: '../.propr/previews/agent-quota-usage.png' });
+    }
+    await rateLimitedCard.getByRole('button', { name: 'View Quota / Usage' }).click();
+    await rateLimitedCard.getByRole('button', { name: 'Check again' }).click();
+    await expect.poll(() => checked.filter(id => id === 'antigravity-config').length).toBe(2);
     await codexCard.getByRole('button', { name: 'Log in', exact: true }).click();
     await expect(page.getByRole('dialog')).toContainText('Log in to codex');
     await expect(page.getByRole('dialog')).toContainText('Login completed. New jobs can now use these credentials.');

@@ -91,3 +91,25 @@ test('redacts credentials from provider errors before returning them to the card
   assert.ok(!result?.error?.includes(token));
   assert.match(result?.error ?? '', /REDACTED/);
 });
+
+test('distinguishes authentication, quota, HTTP 429, and unrelated failures for card actions', async () => {
+  for (const [error, expected] of [
+    ['Your login session has expired. Please log in again.', 'auth_required'],
+    ['Provider rate limit reached. Try again later.', 'rate_limit'],
+    ['HTTP 429: Too many requests. Please log in again.', 'rate_limit'],
+    ['RESOURCE_EXHAUSTED', 'rate_limit'],
+    ['Quota exhausted', 'rate_limit'],
+    ['Docker execution timed out', 'unknown'],
+  ] as const) {
+    const check = createAgentHealthCheck({
+      loadAgents: async () => [config],
+      createAgent: () => ({ analyze: async () => ({ success: false, response: '', error }) }),
+    });
+    assert.equal((await check(config.id))?.errorCode, expected, error);
+  }
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [config],
+    createAgent: () => ({ analyze: async () => { throw Object.assign(new Error('Request failed'), { status: 429 }); } }),
+  });
+  assert.equal((await check(config.id))?.errorCode, 'rate_limit');
+});

@@ -191,7 +191,7 @@ describe('agent health checks', () => {
     render(<AgentsListSection {...props} agents={[agents[0]]} />);
     expect(screen.getByText('Checking agent…')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Collapse codex models' }));
-    finish({ agentId: 'codex-1', status: 'error', error: 'Login expired' });
+    finish({ agentId: 'codex-1', status: 'error', errorCode: 'auth_required', error: 'Login expired' });
     expect(await screen.findByRole('alert')).toHaveTextContent('Login expired');
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
     expect(screen.getByRole('dialog')).toHaveTextContent('Login dialog for codex');

@@ -143,6 +143,17 @@ interface AgentCardProps {
   onRecheck?: () => void;
 }
 
+const AgentHeaderStatus: React.FC<{ health?: AgentHealthState }> = ({ health }) => {
+  if (health?.status !== 'ready' && health?.status !== 'checking') return null;
+  const ready = health.status === 'ready';
+  return (
+    <span role="status" title={ready ? `Checked with ${health.model}` : 'Checking agent…'} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-slate-500">
+      <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'animate-pulse bg-slate-400'}`} />
+      {ready ? 'Ready' : <><span aria-hidden="true">Checking…</span><span className="sr-only">Checking agent…</span></>}
+    </span>
+  );
+};
+
 const AgentCard: React.FC<AgentCardProps> = ({
   agent,
   onLogin,
@@ -220,8 +231,8 @@ const AgentCard: React.FC<AgentCardProps> = ({
   );
 
   return (
-    <div className="coding-agent-card border-b border-slate-100 py-4 first:pt-0">
-      <div className="coding-agent-header grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+    <div className={`coding-agent-card relative border-b border-slate-100 py-4 first:pt-0 ${menuOpen ? 'z-30' : ''}`}>
+      <div className={`coding-agent-header grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 ${menuOpen ? 'coding-agent-header-menu-open' : ''}`}>
         <button
           type="button"
           onClick={() => setExpanded(current => !current)}
@@ -280,7 +291,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
                 onKeyDown={handleMenuKeyDown}
                 className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white p-1 shadow-lg"
               >
-                {isAgentLoginSupported(agent.type) && (
+                {isAgentLoginSupported(agent.type) && !(health?.status === 'error' && health.errorCode === 'rate_limit') && (
                   <button type="button" role="menuitem" disabled={readOnly} onClick={() => runAction(onLogin)} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-xs text-slate-700 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-300">
                     <LogIn className="h-3.5 w-3.5" aria-hidden="true" />Log in
                   </button>
@@ -296,12 +307,15 @@ const AgentCard: React.FC<AgentCardProps> = ({
           </div>
         </div>
 
-        <code className="coding-agent-path ml-[30px] min-w-0 truncate font-mono text-[11px] text-slate-500" title={agent.configPath}>
-          {agent.configPath}
-        </code>
+        <div className="coding-agent-details ml-[30px] flex min-w-0 items-center gap-2">
+          <code className="min-w-0 truncate font-mono text-[11px] text-slate-500" title={agent.configPath}>
+            {agent.configPath}
+          </code>
+          {agent.enabled && <AgentHeaderStatus health={health} />}
+        </div>
       </div>
 
-      {agent.enabled && health && (
+      {agent.enabled && health?.status === 'error' && (
         <AgentHealthFeedback agent={agent} health={health} onLogin={onLogin} onRecheck={onRecheck} readOnly={readOnly} />
       )}
 
