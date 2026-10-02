@@ -1,9 +1,17 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare, GitCommitHorizontal } from 'lucide-react';
+import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare } from 'lucide-react';
 import { formatReviewPromptOverview } from './reviewPromptOverview';
 import { HISTORY_TRUNCATED_NOTICE } from './liveDetailsMerge';
+import {
+  CheckpointLogEntry,
+} from './CheckpointLogEntry';
+import {
+  prepareCheckpointEvents,
+  type CheckpointOutcome,
+  type PreparedThinkingLogEvent,
+} from './checkpointLog';
 
 // Simple thought type detection based on content
 const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
@@ -18,79 +26,6 @@ interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
 }
 
-interface CheckpointLogItem {
-  message: string;
-  summary?: string;
-  include?: string[];
-  exclude?: string[];
-}
-
-const checkpointPaths = (value: unknown): string[] | null | undefined => {
-  if (value == null) return undefined;
-  if (!Array.isArray(value) || value.length === 0 || value.length > 1_000
-    || value.some(path => typeof path !== 'string' || !path.trim())) return null;
-  const paths = [...new Set(value as string[])];
-  return paths.some(path => path.trim() !== path || path.includes('\\') || path.includes('\0')
-    || path.includes('\n') || path.includes('\r') || path.startsWith('/')
-    || path.split('/').some(part => part === '' || part === '.' || part === '..' || part === '.git'))
-    ? null
-    : paths;
-};
-
-const jsonObjects = (content: string): unknown[] => {
-  const values: unknown[] = [];
-  let start = -1;
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index];
-    if (start < 0) {
-      if (character === '{') {
-        start = index;
-        depth = 1;
-      }
-      continue;
-    }
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === '"') quoted = false;
-      continue;
-    }
-    if (character === '"') quoted = true;
-    else if (character === '{') depth += 1;
-    else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        try { values.push(JSON.parse(content.slice(start, index + 1))); } catch { /* Keep malformed output as ordinary narration. */ }
-        start = -1;
-      }
-    }
-  }
-  return values;
-};
-
-/** Find the same structured handoff that the goal worker accepts, even when a provider fences it or prefixes prose. */
-const checkpointLogItem = (content: string | undefined): CheckpointLogItem | null => {
-  if (!content) return null;
-  const candidate = jsonObjects(content).reverse().find(value => value && typeof value === 'object'
-    && !Array.isArray(value) && (value as Record<string, unknown>).checkpointReady === true) as Record<string, unknown> | undefined;
-  if (!candidate || candidate.rejected === true || typeof candidate.message !== 'string'
-    || !candidate.message.trim() || candidate.message.length > 500) return null;
-  if (candidate.summary != null && (typeof candidate.summary !== 'string'
-    || !candidate.summary.trim() || candidate.summary.length > 4_000)) return null;
-  const include = checkpointPaths(candidate.include);
-  const exclude = checkpointPaths(candidate.exclude);
-  if (include === null || exclude === null || include?.some(path => exclude?.includes(path))) return null;
-  return {
-    message: candidate.message.trim(),
-    ...(typeof candidate.summary === 'string' && candidate.summary.trim() ? { summary: candidate.summary.trim() } : {}),
-    ...(include ? { include } : {}),
-    ...(exclude ? { exclude } : {}),
-  };
-};
-
 // The entry's first line on the right is 14px text on `leading-relaxed`, i.e. a 1.4219rem line box.
 // The gutter's label row claims exactly that box and centres in it, so `ACTION` and the first line of
 // the entry start on the same horizontal line instead of the label floating a couple of pixels above.
@@ -104,6 +39,8 @@ interface ThinkingLogProps {
   showHeader?: boolean;
   /** Earlier output was discarded by the server, so the oldest messages may be missing. */
   historyTruncated?: boolean;
+  /** Durable worker state for the newest agent checkpoint declaration, when the payload matches. */
+  checkpointOutcome?: CheckpointOutcome | null;
 }
 
 // Get category display info for gutter-style output
@@ -189,48 +126,8 @@ const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
   </div>
 );
 
-const CheckpointEntry: React.FC<{ event: ThinkingLogEvent; checkpoint: CheckpointLogItem }> = ({ event, checkpoint }) => {
-  const scope = [
-    checkpoint.include ? `${checkpoint.include.length} included` : 'All changed files',
-    checkpoint.exclude?.length ? `${checkpoint.exclude.length} excluded` : null,
-  ].filter(Boolean).join(' · ');
-
-  return (
-    <div data-testid="goal-checkpoint-event" className="border-b border-emerald-100 bg-emerald-50/40 py-3 last:border-b-0">
-      <div className="flex items-start gap-3">
-        <div className="flex w-[100px] flex-shrink-0 flex-col items-start">
-          <div className={gutterLabelRow}>
-            <GitCommitHorizontal className="h-3 w-3 text-emerald-600" />
-            <span className="font-mono text-[11px] font-bold uppercase tracking-tighter text-emerald-700">
-              CHECKPOINT
-            </span>
-          </div>
-          {event.relativeTime && (
-            <span className="ml-[18px] mt-0.5 font-mono text-[10px] text-emerald-700/70">
-              {event.relativeTime}
-            </span>
-          )}
-        </div>
-
-        <div className="min-w-0 flex-1 overflow-hidden border-l-2 border-emerald-500 bg-white/70 px-3 py-2">
-          <p className="m-0 text-[10px] font-bold uppercase tracking-widest text-emerald-700">Checkpoint ready</p>
-          <p className="mt-1 break-words font-mono text-[13px] font-semibold leading-relaxed text-slate-800">
-            {checkpoint.message}
-          </p>
-          {checkpoint.summary && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-600">
-              {checkpoint.summary}
-            </p>
-          )}
-          <p className="mt-2 text-[11px] font-medium text-emerald-700">{scope}</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 interface TerminalLogEntryProps {
-  event: ThinkingLogEvent;
+  event: PreparedThinkingLogEvent;
   todoContext?: string;
   isHighlighted?: boolean;
 }
@@ -240,9 +137,9 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
     return <UserMessageEntry event={event} />;
   }
 
-  const checkpoint = checkpointLogItem(event.content);
+  const checkpoint = event.checkpoint;
   if (checkpoint) {
-    return <CheckpointEntry event={event} checkpoint={checkpoint} />;
+    return <CheckpointLogEntry event={event} checkpoint={checkpoint} />;
   }
 
   const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
@@ -296,7 +193,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
 interface ThoughtGroupProps {
   title: string;
-  events: ThinkingLogEvent[];
+  events: PreparedThinkingLogEvent[];
   isCompleted: boolean;
   todoId?: string;
   isHighlighted?: boolean;
@@ -344,12 +241,23 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, showHeader = true, historyTruncated = false }) => {
+const ThinkingLog: React.FC<ThinkingLogProps> = ({
+  events,
+  todos = [],
+  highlightedTodoId,
+  showHeader = true,
+  historyTruncated = false,
+  checkpointOutcome,
+}) => {
+  const preparedEvents = useMemo(() => {
+    return prepareCheckpointEvents(events, checkpointOutcome);
+  }, [checkpointOutcome, events]);
+
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
       // No todos, just show all events ungrouped
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // For now, create logical groups based on event timing and todo completion
@@ -361,22 +269,22 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     // If we have events but no clear grouping, show them in a single group
     if (completedTodos.length === 0 && !inProgressTodo) {
-      return [{ title: 'Initial Analysis', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Initial Analysis', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // Simple strategy: split events roughly equally among completed todos + current
     const totalGroups = completedTodos.length + (inProgressTodo ? 1 : 0);
 
-    if (totalGroups === 0 || events.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+    if (totalGroups === 0 || preparedEvents.length === 0) {
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
-    const eventsPerGroup = Math.ceil(events.length / totalGroups);
+    const eventsPerGroup = Math.ceil(preparedEvents.length / totalGroups);
 
     completedTodos.forEach((todo, idx) => {
       const start = idx * eventsPerGroup;
-      const end = Math.min(start + eventsPerGroup, events.length);
-      const groupEvents = events.slice(start, end);
+      const end = Math.min(start + eventsPerGroup, preparedEvents.length);
+      const groupEvents = preparedEvents.slice(start, end);
 
       if (groupEvents.length > 0) {
         groups.push({
@@ -390,7 +298,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     if (inProgressTodo) {
       const start = completedTodos.length * eventsPerGroup;
-      const groupEvents = events.slice(start);
+      const groupEvents = preparedEvents.slice(start);
 
       if (groupEvents.length > 0) {
         groups.push({
@@ -404,11 +312,11 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     // If no groups were created, show all events
     if (groups.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     return groups;
-  }, [events, todos]);
+  }, [preparedEvents, todos]);
 
   if (events.length === 0) {
     return null;

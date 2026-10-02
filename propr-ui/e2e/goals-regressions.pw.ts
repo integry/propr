@@ -105,7 +105,7 @@ async function stubGoalApis(page: Page): Promise<void> {
       await route.fulfill({ json: {
         events: [
           { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
-          { id: 'checkpoint-1', type: 'thought', content: checkpointDeclaration, timestamp: '2026-09-10T00:01:30.000Z' },
+          { id: 'checkpoint-1', type: 'thought', content: `Stable dashboard work is **ready for review**.\n\`\`\`json\n${checkpointDeclaration}\n\`\`\``, timestamp: '2026-09-10T00:01:30.000Z' },
           { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
         ],
         todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
@@ -224,8 +224,11 @@ test('highlights checkpoint declarations in the readable goal log', async ({ pag
   const checkpoint = page.getByTestId('goal-checkpoint-event');
   await expect(checkpoint).toBeVisible();
   await expect(checkpoint.getByText('CHECKPOINT', { exact: true })).toBeVisible();
+  await expect(checkpoint.getByText('Stable dashboard work is', { exact: false })).toBeVisible();
+  await expect(checkpoint.getByText('Checkpoint published')).toBeVisible();
   await expect(checkpoint.getByText('feat(goals): publish stable dashboard slice')).toBeVisible();
   await expect(checkpoint.getByText('3 included · 1 excluded')).toBeVisible();
+  await expect(checkpoint.getByText('abc1234')).toBeVisible();
   await expect(page.getByText(checkpointDeclaration)).toHaveCount(0);
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir('../.propr/previews', { recursive: true });

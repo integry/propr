@@ -74,7 +74,7 @@ describe('ExecutionEventLog', () => {
 });
 
 describe('ThinkingLog', () => {
-  it('renders a structured goal handoff as a highlighted checkpoint instead of raw JSON', () => {
+  it('renders narration and a published checkpoint without raw JSON', () => {
     const declaration = JSON.stringify({
       checkpointReady: true,
       message: 'feat(goals): publish stable work',
@@ -83,23 +83,91 @@ describe('ThinkingLog', () => {
       summary: 'The coherent implementation slice and its tests are ready.',
     });
 
-    render(<ThinkingLog events={[{
-      id: 'checkpoint-1',
-      type: 'thought',
-      content: `Stable work is ready.\n\
+    render(<ThinkingLog checkpointOutcome={{
+      kind: 'agent', state: 'completed', commitSha: 'abc1234',
+      message: 'feat(goals): publish stable work',
+      include: ['src/goals.ts', 'test/goals.test.ts'], exclude: ['src/follow-up.ts'],
+      summary: 'The coherent implementation slice and its tests are ready.', error: null,
+      createdAt: '2026-09-10T00:01:31.000Z',
+    }} events={[{
+      id: 'checkpoint-1', type: 'thought', timestamp: '2026-09-10T00:01:30.000Z',
+      content: `Stable work is **ready**.\n\
 \`\`\`json\n${declaration}\n\`\`\``,
       relativeTime: '12m 4s',
     }]} />);
 
     expect(screen.getByTestId('goal-checkpoint-event')).toHaveClass('bg-emerald-50/40');
     expect(screen.getByText('CHECKPOINT')).toBeInTheDocument();
-    expect(screen.getByText('Checkpoint ready')).toBeInTheDocument();
+    expect(screen.getByText('Stable work is', { exact: false })).toBeInTheDocument();
+    expect(screen.getByText('ready').tagName).toBe('STRONG');
+    expect(screen.getByText('Checkpoint published')).toBeInTheDocument();
     expect(screen.getByText('feat(goals): publish stable work')).toBeInTheDocument();
     expect(screen.getByText('The coherent implementation slice and its tests are ready.')).toBeInTheDocument();
     expect(screen.getByText('2 included · 1 excluded')).toBeInTheDocument();
-    expect(screen.getByText('12m 4s')).toBeInTheDocument();
+    expect(screen.getByText('abc1234')).toBeInTheDocument();
+    expect(screen.getByText('12m 4s')).toHaveClass('text-slate-500');
     expect(screen.queryByText(declaration)).not.toBeInTheDocument();
     expect(screen.queryByText('ACTION')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['an unsafe path', { message: 'feat: unsafe', include: ['../outside.ts'] }, /normalized repository-relative file/],
+    ['an empty message', { message: '' }, /non-empty string/],
+    ['overlapping paths', { message: 'feat: overlap', include: ['src/a.ts'], exclude: ['src/a.ts'] }, /both included and excluded/],
+  ])('renders %s as a muted rejected checkpoint instead of raw JSON', (_name, fields, error) => {
+    const declaration = JSON.stringify({ checkpointReady: true, ...fields });
+    render(<ThinkingLog events={[{
+      id: `rejected-${_name}`, type: 'thought', content: `This scope needs checking.\n${declaration}`,
+      relativeTime: '13m 2s',
+    }]} />);
+
+    const rejected = screen.getByTestId('goal-checkpoint-rejected-event');
+    expect(rejected).toHaveClass('bg-slate-50/70');
+    expect(screen.getByText('This scope needs checking.')).toBeInTheDocument();
+    expect(screen.getByText('Checkpoint rejected')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(error);
+    expect(screen.queryByText(declaration)).not.toBeInTheDocument();
+  });
+
+  it('does not attach stale durable state to a newer checkpoint request', () => {
+    const content = JSON.stringify({ checkpointReady: true, message: 'feat: new request' });
+    render(<ThinkingLog checkpointOutcome={{
+      kind: 'agent', state: 'failed', commitSha: null, message: 'feat: new request',
+      include: null, exclude: null, summary: null, error: 'Push failed',
+      createdAt: '2026-09-10T00:01:00.000Z',
+    }} events={[{
+      id: 'checkpoint-new', type: 'thought', content, timestamp: '2026-09-10T00:02:00.000Z',
+    }]} />);
+
+    expect(screen.getByText('Checkpoint requested')).toBeInTheDocument();
+    expect(screen.queryByText('Push failed')).not.toBeInTheDocument();
+  });
+
+  it('shows a matching worker publication failure on the latest checkpoint', () => {
+    const content = JSON.stringify({ checkpointReady: true, message: 'feat: publish this slice' });
+    render(<ThinkingLog checkpointOutcome={{
+      kind: 'agent', state: 'failed', commitSha: null, message: 'feat: publish this slice',
+      include: null, exclude: null, summary: null, error: 'Push failed after the request was accepted',
+      createdAt: '2026-09-10T00:02:01.000Z',
+    }} events={[{
+      id: 'checkpoint-failed', type: 'thought', content, timestamp: '2026-09-10T00:02:00.000Z',
+    }]} />);
+
+    expect(screen.getByText('Checkpoint failed')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Push failed after the request was accepted');
+  });
+
+  it('reuses parsed checkpoint output when polling recreates an event', () => {
+    const content = JSON.stringify({ checkpointReady: true, message: 'test: cache parser result 8271' });
+    const parse = vi.spyOn(JSON, 'parse');
+    const { rerender } = render(<ThinkingLog events={[{ id: 'cached-1', type: 'thought', content }]} />);
+    const parsesAfterFirstRender = parse.mock.calls.length;
+
+    rerender(<ThinkingLog events={[{ id: 'cached-1', type: 'thought', content }]} />);
+
+    expect(parsesAfterFirstRender).toBeGreaterThan(0);
+    expect(parse).toHaveBeenCalledTimes(parsesAfterFirstRender);
+    parse.mockRestore();
   });
 
   it('discloses output discarded by retention in the readable view', () => {
