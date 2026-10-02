@@ -12,11 +12,7 @@ import {
     getExecutionOwnershipContext,
     resolveExecutionArgs,
 } from './dockerExecutionOwnership.js';
-import {
-    plannerAbortSignalKeyForTask,
-    scheduleForceKill,
-    setupAbortChecker,
-} from './dockerAbortController.js';
+import { plannerAbortSignalKeyForTask, scheduleForceKill, setupAbortChecker } from './dockerAbortController.js';
 import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../agents/impl/utils/boundedProviderOutput.js';
 import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
 import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
