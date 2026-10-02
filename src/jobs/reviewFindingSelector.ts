@@ -25,7 +25,7 @@ export interface FixSelection extends ReviewFeedbackSelection {
     selectAll?: true;
     /** Command-line remainder plus every following line, verbatim and trimmed. */
     instructions: string;
-    /** Selector-shaped tokens that are not valid identifiers, e.g. `S0`. */
+    /** Invalid identifiers or incompatible selector clauses, e.g. `S0` or `ALL S3`. */
     malformedIds: string[];
 }
 
@@ -54,6 +54,7 @@ export interface FixCommandText {
  * here could tell that apart from a selector line.
  * The `all` shorthand must stand alone, apart from commas/whitespace or a `;`
  * introducing instructions. `all the tests` remains ordinary instruction prose.
+ * Combining `all` with selector-shaped tokens fails the whole request closed.
  *
  * Parsing stops at the first non-selector token on the command line; that token
  * and the rest of the line join the instructions. A `;` still closes the
@@ -82,6 +83,14 @@ export function parseFixCommand(command: FixCommandText): FixSelection {
             selectAll: true,
             instructions: [allMatch[1] ?? '', ...following].join('\n').trim(),
         };
+    }
+    // Inspect only the selector clause. IDs after `;` or on following lines
+    // are instructions, while `all S3` must never fall back to bare `/fix`.
+    const selectorClause = commandLine.split(';', 1)[0].trim();
+    const selectorTokens = selectorClause.split(/[,\s]+/);
+    if (selectorTokens[0]?.toLowerCase() === REVIEW_FEEDBACK_SELECT_ALL_KEYWORD
+        && selectorTokens.slice(1).some(token => normalizeReviewFeedbackId(token) || isMalformedReviewFeedbackToken(token))) {
+        return { ...selection, malformedIds: [selectorClause.toUpperCase()] };
     }
     const tokens = [...commandLine.matchAll(/[^,\s]+/g)].map(match => ({ value: match[0], start: match.index }));
     const seen = new Set<string>();

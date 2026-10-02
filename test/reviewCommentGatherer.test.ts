@@ -620,6 +620,61 @@ describe('/fix structured finding selection', () => {
         assert.strictEqual(hasAuthorizedFixFeedback(resolveReviewFeedback(regathered, parseFixSelection('all'))), false);
     });
 
+    for (const [command, instructions] of [
+        ['/fix all\nKeep the API stable.', 'Keep the API stable.'],
+        ['/fix all; Keep the API stable.', 'Keep the API stable.'],
+        ['/fix all; Keep the API stable.\nS3 is context, not a selector.', 'Keep the API stable.\nS3 is context, not a selector.'],
+    ]) {
+        for (const withCommandMeta of [true, false]) {
+            test(`all selects every pending record and forwards context (${withCommandMeta ? 'intake' : 'legacy'}): ${JSON.stringify(command)}`, async () => {
+                const comments = [1, 2].map(number => ({
+                    id: 89 + number,
+                    body: `${renderPublicReview(STRUCTURED_REVIEW, undefined, { firstFindingNumber: number, firstSuggestionNumber: number })}\n<!-- propr:ai-review model="test" -->`,
+                    user: { login: 'propr-bot', type: 'Bot' },
+                    created_at: new Date().toISOString(),
+                }));
+                const commandMeta = buildCommandMeta(parseSlashCommand(command)!);
+                const job = { data: {
+                    commandMode: 'fix',
+                    ...(withCommandMeta && { commandMeta }),
+                    commandInstructions: (commandMeta as { instructions: string }).instructions,
+                } };
+                const prepared = await prepareFixReviewFeedback({
+                    job: job as any, allComments: comments,
+                    repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+                    redisClient: { smembers: async () => [] } as any,
+                    correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+                });
+                assert.strictEqual(prepared.fixSelection.selectAll, true);
+                assert.deepStrictEqual(prepared.resolution.selected, { findingIds: ['F1', 'F2'], suggestionIds: ['S1', 'S2'] });
+                assert.strictEqual(job.data.commandInstructions, instructions);
+                assert.strictEqual(prepared.fixSelection.instructions, instructions);
+            });
+        }
+    }
+
+    for (const command of ['/fix all S3', '/fix all F3', '/fix all S0']) {
+        test(`${command} refuses every pending record through the worker`, async () => {
+            const commandMeta = buildCommandMeta(parseSlashCommand(command)!);
+            const prepared = await prepareFixReviewFeedback({
+                job: { data: { commandMode: 'fix', commandMeta } } as any,
+                allComments: [{
+                    id: 90, body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="test" -->`,
+                    user: { login: 'propr-bot', type: 'Bot' }, created_at: new Date().toISOString(),
+                }],
+                repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+                redisClient: { smembers: async () => [] } as any,
+                correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            });
+            assert.deepStrictEqual(prepared.resolution.selected, { findingIds: [], suggestionIds: [] });
+            assert.deepStrictEqual(prepared.selectedReviewComments, []);
+            assert.deepStrictEqual(prepared.resolution.malformedIds, [command.slice(5).toUpperCase()]);
+            assert.strictEqual(hasAuthorizedFixFeedback(prepared.resolution), false);
+            assert.match(prepared.reviewCommentsSection, /No review findings or suggestions were selected/);
+            assert.doesNotMatch(prepared.reviewCommentsSection, /### [FS]\d+:/);
+        });
+    }
+
     test('/fix all is uncapped through the worker while explicit IDs retain their cap', async () => {
         const comments = Array.from({ length: 51 }, (_, index) => ({
             id: 100 + index,

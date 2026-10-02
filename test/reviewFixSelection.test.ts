@@ -23,8 +23,14 @@ describe('/fix command-line selection', () => {
             { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'keep it\n\nS3 is prose.\nMore.', malformedIds: [] }],
         ['keeps all in ordinary instructions', 'all the failing tests',
             { findingIds: [], suggestionIds: [], instructions: 'all the failing tests', malformedIds: [] }],
-        ['does not combine all with selectors', 'all F3',
-            { findingIds: [], suggestionIds: [], instructions: 'all F3', malformedIds: [] }],
+        ['refuses all combined with a finding selector', 'all F3',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL F3'] }],
+        ['refuses all combined with a suggestion selector', 'all S3',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL S3'] }],
+        ['refuses all combined with a malformed selector', 'all S0',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL S0'] }],
+        ['refuses mixed selectors even with trailing context', 'ALL, f3 s3; keep it small\nMore context.',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL, F3 S3'] }],
         ['does not interpret all below the command as a shorthand', '\nall',
             { findingIds: [], suggestionIds: [], instructions: 'all', malformedIds: [] }],
         ['mixes both namespaces in any order', 'F20 S3 S5',
@@ -101,6 +107,23 @@ describe('/fix intake preserves the command-line boundary', () => {
         const fix = meta as { commandLine?: string; bodyInstructions?: string };
         return parseFixCommand({ commandLine: fix.commandLine, bodyInstructions: fix.bodyInstructions });
     };
+
+    for (const body of ['/fix all\nS3 is prose; keep the API stable.', '/fix all; S3 is prose; keep the API stable.']) {
+        test(`preserves all selection and context through intake: ${JSON.stringify(body)}`, () => {
+            assert.deepStrictEqual(selectionFor(body), {
+                selectAll: true, findingIds: [], suggestionIds: [], malformedIds: [],
+                instructions: 'S3 is prose; keep the API stable.',
+            });
+        });
+    }
+
+    test('all combined with a selector fails closed through intake', () => {
+        const selection = selectionFor('/fix all S3');
+        assert.deepStrictEqual(selection.malformedIds, ['ALL S3']);
+        const resolution = resolveReviewFeedback([], selection);
+        assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: [] });
+        assert.deepStrictEqual(resolution.malformedIds, ['ALL S3']);
+    });
 
     test('a bare /fix whose instructions begin with an identifier selects nothing', () => {
         const selection = selectionFor('/fix\nS3 is already done; keep the blocker correction localized.');

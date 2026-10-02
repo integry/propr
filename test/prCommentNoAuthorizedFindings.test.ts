@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { closeConnection, closeStateManager } from '@propr/core';
+import { buildCommandMeta, closeConnection, closeStateManager, parseSlashCommand } from '@propr/core';
 import { handleNoAuthorizedFindings } from '../src/jobs/prCommentNoAuthorizedFindings.js';
-import { hasAuthorizedFixFeedback, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
+import { hasAuthorizedFixFeedback, parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
 
 after(async () => {
   await closeStateManager();
@@ -10,6 +10,35 @@ after(async () => {
 });
 
 describe('no-authorized-findings completion recap', () => {
+  test('/fix all S3 fails closed and posts an explanation of the accepted syntax', async () => {
+    const commandMeta = buildCommandMeta(parseSlashCommand('/fix all S3')!);
+    assert.equal(commandMeta.mode, 'fix');
+    if (commandMeta.mode !== 'fix') throw new Error('Expected fix metadata');
+    const resolution = resolveReviewFeedback([], parseFixCommand(commandMeta));
+    assert.equal(hasAuthorizedFixFeedback(resolution), false);
+    const comments: Array<Record<string, unknown>> = [];
+    await handleNoAuthorizedFindings({
+      job: { data: { commandMode: 'fix', commandMeta } } as never,
+      taskId: 'fix-mixed-all', taskUrl: 'https://propr.example/tasks/fix-mixed-all',
+      stateManager: { updateTaskState: async () => ({}) } as never,
+      octokit: {
+        request: async (_route: string, options: Record<string, unknown>) => {
+          comments.push(options);
+          return { data: { html_url: 'https://github.com/acme/repo/pull/81#issuecomment-3', body: options.body } };
+        },
+      } as never,
+      unprocessedComments: [], redisClient: {} as never,
+      repoOwner: 'acme', repoName: 'repo', pullRequestNumber: 81,
+      correlatedLogger: { warn() {} } as never, correlationId: 'correlation-3',
+      malformedIds: resolution.malformedIds,
+    });
+    assert.equal(comments.length, 1);
+    const body = String(comments[0].body);
+    assert.match(body, /`all` cannot be combined with `F#` or `S#` selectors on the command line/);
+    assert.match(body, /Nothing was applied/);
+    assert.match(body, /after `;` or on a following line/);
+  });
+
   test('persists the no-change outcome for a manual fix notification', async () => {
     const updates: Array<{ taskId: string; state: string; metadata: Record<string, unknown> }> = [];
     const comments: Array<Record<string, unknown>> = [];
