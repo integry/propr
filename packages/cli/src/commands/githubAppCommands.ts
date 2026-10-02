@@ -204,7 +204,7 @@ export function writeGithubAppConfig(root: string, credentials: AppCredentials, 
   try {
     const cleaned = initialEnv.split(/\r?\n/).filter(line => {
       const key = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=/.exec(line)?.[1];
-      return !key || !(key in vars || key === 'GH_PRIVATE_KEY_PATH' || key === 'ENABLE_GITHUB_WEBHOOKS' || /^PROPR_(GH_RELAY_|ROUTING_)/.test(key));
+      return !key || !(key in vars || key === 'GH_PRIVATE_KEY_PATH' || key === 'ENABLE_GITHUB_WEBHOOKS' || key === 'PROPR_WEB_AUTH_MODE' || /^PROPR_(GH_RELAY_|ROUTING_)/.test(key));
     }).join('\n');
     writeFileSync(temporary, cleaned, { mode: 0o600, flag: 'wx' });
     upsertEnvVars(temporary, vars);
@@ -414,7 +414,7 @@ export async function writeGithubAppManifest(options: GithubAppOptions) {
   mkdirSync(root, { recursive: true });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   // No secrets in this file. A manifest cannot specify GitHub's webhook secret.
-  const snippet = `# Register by POSTing the manifest to ${registrationUrl(options.org)}.\n# Fill these after manual registration. Set the same webhook secret on GitHub.\nGH_APP_ID=\nGH_INSTALLATION_ID=\nHOST_GH_PRIVATE_KEY=\nGH_WEBHOOK_SECRET=\nGH_OAUTH_CLIENT_ID=\nGH_OAUTH_CLIENT_SECRET=\nGH_OAUTH_CALLBACK_URL=${manifest.callback_urls[0]}\nGH_AUTH_MODE=app\nPROPR_DEMO_MODE=false\nGITHUB_EVENT_INTAKE_MODE=direct_webhook\n# Remove PROPR_GH_RELAY_* and PROPR_ROUTING_* from the stack .env.\n`;
+  const snippet = `# Register by POSTing the manifest to ${registrationUrl(options.org)}.\n# Fill these after manual registration. Set the same webhook secret on GitHub.\nGH_APP_ID=\nGH_INSTALLATION_ID=\nHOST_GH_PRIVATE_KEY=\nGH_WEBHOOK_SECRET=\nGH_OAUTH_CLIENT_ID=\nGH_OAUTH_CLIENT_SECRET=\nGH_OAUTH_CALLBACK_URL=${manifest.callback_urls[0]}\nGH_AUTH_MODE=app\nPROPR_DEMO_MODE=false\nGITHUB_EVENT_INTAKE_MODE=direct_webhook\n# Remove PROPR_GH_RELAY_*, PROPR_ROUTING_*, and PROPR_WEB_AUTH_MODE from the stack .env.\n`;
   writeFileSync(envSnippetPath, snippet, { mode: 0o600 });
   return { manifestPath, envSnippetPath };
 }

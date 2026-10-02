@@ -109,9 +109,9 @@ test('default App names are sanitized and truncated, and explicit names enforce 
   assert.equal(buildGithubAppManifest({ publicUrl, name: 'My custom App' }).name, 'My custom App');
 });
 
-test('browser flow writes usable credentials, backs up env, removes all relay/duplicate keys, and never logs secrets', async t => {
+test('browser flow writes usable credentials, backs up env, removes stale Connect/duplicate keys, and never logs secrets', async t => {
   const root = sandbox(t);
-  const original = '# retained\nOTHER=value\nPROPR_GH_RELAY_TOKEN=relay-secret\nPROPR_ROUTING_URL=wss://example.com\nGH_AUTH_MODE=relay\nGH_APP_ID=111\nGH_APP_ID=222\nGH_PRIVATE_KEY_PATH=/old/key\n';
+  const original = '# retained\nOTHER=value\nPROPR_GH_RELAY_TOKEN=relay-secret\nPROPR_ROUTING_URL=wss://example.com\nPROPR_WEB_AUTH_MODE=connect\nGH_AUTH_MODE=relay\nGH_APP_ID=111\nGH_APP_ID=222\nGH_PRIVATE_KEY_PATH=/old/key\n';
   writeFileSync(join(root, '.env'), original);
   const h = harness(root, { secretOverride: 'override-secret' });
   const result = await createGithubApp({ root, publicUrl, org: 'integry', force: true, webhookSecret: 'override-secret' }, h);
@@ -122,6 +122,7 @@ test('browser flow writes usable credentials, backs up env, removes all relay/du
   assert.equal(env.GH_PRIVATE_KEY_PATH, undefined);
   assert.equal(env.PROPR_GH_RELAY_TOKEN, undefined);
   assert.equal(env.PROPR_ROUTING_URL, undefined);
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
   assert.equal(env.GH_AUTH_MODE, 'app');
   assert.equal(env.GH_WEBHOOK_SECRET, 'override-secret');
   assert.equal(env.GH_OAUTH_CLIENT_SECRET, credentials.client_secret);
@@ -215,7 +216,9 @@ test('manual manifest shares builder, protects existing output, and has no secre
   const root = sandbox(t);
   const result = await writeGithubAppManifest({ root, publicUrl, webhookUrl: 'https://hooks.example.com/webhook', webhookSecret: 'do-not-write-this' });
   assert.deepEqual(JSON.parse(readFileSync(result.manifestPath, 'utf8')), buildGithubAppManifest({ publicUrl, webhookUrl: 'https://hooks.example.com/webhook' }));
-  assert.ok(!readFileSync(result.envSnippetPath, 'utf8').includes('do-not-write-this'));
+  const envSnippet = readFileSync(result.envSnippetPath, 'utf8');
+  assert.ok(!envSnippet.includes('do-not-write-this'));
+  assert.match(envSnippet, /Remove .*PROPR_WEB_AUTH_MODE/);
   await assert.rejects(writeGithubAppManifest({ root, publicUrl }), /--force/);
 });
 
@@ -550,10 +553,10 @@ for (const stage of ['installation', 'token'] as const) {
   }
 }
 
-test('ordinary checks skip GitHub App requests; explicit verification warns offline and fails authoritative rejection', async t => {
+test('ordinary checks skip GitHub App requests; explicit verification reports requests and unavailable host keys', async t => {
   const root = sandbox(t);
   writeFileSync(join(root, 'key.pem'), pem);
-  const env = {
+  const env: Record<string, string> = {
     GH_AUTH_MODE: 'app', GH_APP_ID: String(credentials.id), GH_INSTALLATION_ID: '789',
     HOST_GH_PRIVATE_KEY: join(root, 'key.pem'), PROPR_DEMO_MODE: 'false',
     GITHUB_EVENT_INTAKE_MODE: 'direct_webhook', GH_WEBHOOK_SECRET: 'test-secret',
@@ -584,4 +587,15 @@ test('ordinary checks skip GitHub App requests; explicit verification warns offl
   }
   assert.equal(requests.length, 3);
   assert.ok(requests.every(url => url === 'https://api.github.com/app/installations/789'));
+
+  delete process.env.HOST_GH_PRIVATE_KEY;
+  process.env.GH_PRIVATE_KEY_PATH = '/usr/src/app/data/key.pem';
+  delete env.HOST_GH_PRIVATE_KEY;
+  Object.assign(env, { GH_PRIVATE_KEY_PATH: '/usr/src/app/data/key.pem' });
+  writeFileSync(join(root, '.env'), Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n'));
+  const containerKeyOnly = await runChecks({ ...options, verify: true });
+  const skipped = containerKeyOnly.results.find(r => r.name === 'GitHub App API');
+  assert.equal(skipped?.status, 'warn');
+  assert.match(skipped?.detail ?? '', /verification skipped.*host-readable private key/i);
+  assert.equal(requests.length, 3, 'a container-only key path must not trigger a GitHub request');
 });

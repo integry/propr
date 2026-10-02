@@ -414,16 +414,26 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  const githubAuthChecks = checkGithubAuth(fileEnv, cfg);
+  const githubAuth = resolveGithubAuthForCheck(fileEnv);
+  const githubAuthChecks = checkGithubAuth(fileEnv, cfg, githubAuth);
   for (const r of githubAuthChecks) emit(r);
-  if (options.verify && githubAuthChecks.some(r => r.name === "GitHub auth mode" && r.detail === "GitHub App (own/shared app)") &&
-      !githubAuthChecks.some(r => r.status === "fail") && cfg.hostGhPrivateKey) {
-    try {
-      const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
-        process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
-      for (const r of checks) emit({ ...r, group: "GitHub" });
-    } catch (error) {
-      emit({ ...githubAppCheckFailure(error), group: "GitHub" });
+  if (options.verify && githubAuth.mode === "app") {
+    if (!cfg.hostGhPrivateKey) {
+      emit({
+        name: "GitHub App API",
+        status: "warn",
+        detail: "verification skipped — no host-readable private key path is configured",
+        group: "GitHub",
+        fix: "Set HOST_GH_PRIVATE_KEY to the host path of the App's .pem file; GH_PRIVATE_KEY_PATH is resolved inside the app containers.",
+      });
+    } else if (!githubAuthChecks.some(r => r.status === "fail")) {
+      try {
+        const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
+          process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
+        for (const r of checks) emit({ ...r, group: "GitHub" });
+      } catch (error) {
+        emit({ ...githubAppCheckFailure(error), group: "GitHub" });
+      }
     }
   }
 
@@ -535,6 +545,19 @@ function isPlaceholder(value: string | undefined): boolean {
 const RELAY_URL_KEY = "PROPR_GH_RELAY_URL";
 const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 
+function resolveGithubAuthForCheck(env: Record<string, string>): ReturnType<typeof resolveGithubAuthMode> {
+  const val = (key: string): string | undefined => process.env[key] ?? env[key];
+  return resolveGithubAuthMode({
+    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+    ghAuthMode: val("GH_AUTH_MODE"),
+    relayUrl: val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL,
+    relayToken: val(RELAY_TOKEN_KEY),
+    appId: val("GH_APP_ID"),
+    privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
+    installationId: val("GH_INSTALLATION_ID"),
+  });
+}
+
 /**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
@@ -543,7 +566,11 @@ const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
  * The mode itself comes from @propr/shared's resolveGithubAuthMode — the same
  * function the backend uses — so this check cannot drift from boot behavior.
  */
-function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
+function checkGithubAuth(
+  env: Record<string, string>,
+  cfg: OrchestratorConfig,
+  resolved: ReturnType<typeof resolveGithubAuthMode>,
+): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -552,15 +579,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   // mode here, so `propr check` cannot drift from boot behavior.
   const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
   const relayToken = val(RELAY_TOKEN_KEY);
-  const { mode, warnings } = resolveGithubAuthMode({
-    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
-    ghAuthMode: val("GH_AUTH_MODE"),
-    relayUrl,
-    relayToken,
-    appId: val("GH_APP_ID"),
-    privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
-    installationId: val("GH_INSTALLATION_ID"),
-  });
+  const { mode, warnings } = resolved;
   for (const warning of warnings) {
     out.push({ name: "GitHub auth", status: "warn", detail: warning, group: "GitHub" });
   }

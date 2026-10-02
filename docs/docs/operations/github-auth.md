@@ -59,9 +59,9 @@ from the App's settings for GitHub login. Set the App's webhook URL to
 chmod 600 /srv/propr/github-app.pem /srv/propr/.env
 ```
 
-Remove stale `PROPR_GH_RELAY_*`, `PROPR_ROUTING_*`, and `GH_PRIVATE_KEY_PATH`
-settings from `.env` and exported environment variables when switching from
-relay mode. Then run `propr check --root /srv/propr --verify` and
+Remove stale `PROPR_GH_RELAY_*`, `PROPR_ROUTING_*`, `PROPR_WEB_AUTH_MODE`, and
+`GH_PRIVATE_KEY_PATH` settings from `.env` and exported environment variables
+when switching from relay mode. Then run `propr check --root /srv/propr --verify` and
 `propr start --root /srv/propr --restart`.
 
 Agent task and repository-associated analysis tokens require **Contents**, **Issues**,
@@ -130,7 +130,8 @@ and creates the PEM with mode `0600`. It saves `GH_APP_ID`, `GH_INSTALLATION_ID`
 `GH_OAUTH_CALLBACK_URL` in `.env`. The same App handles GitHub login at
 `<public-url>/api/auth/github/callback`. It selects `GH_AUTH_MODE=app`, disables
 demo mode, selects `GITHUB_EVENT_INTAKE_MODE=direct_webhook`, and removes active
-relay/routing settings and stale `GH_PRIVATE_KEY_PATH` assignments.
+relay/routing settings plus stale `PROPR_WEB_AUTH_MODE` and `GH_PRIVATE_KEY_PATH`
+assignments.
 
 Existing credentials require `--force`; before replacing `.env`, the command
 creates `.env.bak-<timestamp>-<suffix>` with mode `0600`. Unrelated settings are
@@ -245,7 +246,8 @@ Recover `id` → `GH_APP_ID`, `webhook_secret` → `GH_WEBHOOK_SECRET`, `client_
 with a local editor. Save `pem` as a private key file at mode `0600` and set
 `HOST_GH_PRIVATE_KEY` to its absolute path. Set `GH_INSTALLATION_ID` from the
 installation's GitHub settings URL and use the remaining fields in the manual
-env template. Remove relay/routing keys, then run `propr check --verify`. If a secret
+env template. Remove relay/routing keys and `PROPR_WEB_AUTH_MODE`, then run
+`propr check --verify`. If a secret
 override request was interrupted, verify the signing secret matches on GitHub.
 Delete the recovery file after successfully restoring the configuration.
 
