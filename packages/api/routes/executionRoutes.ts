@@ -13,7 +13,7 @@ interface ExecutionRoutesDeps {
 }
 
 export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
-  const { redisClient, db } = deps;
+  const { redisClient } = deps;
 
   async function getPrompt(req: FlatRequest, res: Response): Promise<void> {
     try {
