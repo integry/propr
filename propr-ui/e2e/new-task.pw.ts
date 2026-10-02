@@ -89,6 +89,27 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
 }
 
 
+test('the next task preselects the last used repository, agent, and model', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await fixture(page);
+  await page.goto('/tasks/new');
+  await page.getByText('Select a repository', { exact: true }).click();
+  await page.getByRole('button', { name: /acme.*billing/ }).click();
+  await page.getByLabel('Prompt', { exact: true }).fill(title);
+  await page.locator('summary', { hasText: 'Advanced Options' }).click();
+  await page.getByLabel('Agent', { exact: true }).selectOption('codex');
+  await page.getByLabel('Model', { exact: true }).selectOption('gpt-6-astra');
+  await page.getByRole('button', { name: 'Run task', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
+  await page.goto('/tasks/new');
+  const dialog = page.getByRole('dialog', { name: 'New task' });
+  await expect(dialog.getByText('billing', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('codex · gpt-6-astra', { exact: true })).toBeVisible();
+  await page.getByLabel('Prompt', { exact: true }).fill('Show invoice totals in the account currency');
+  await expect(page.getByRole('button', { name: 'Run task', exact: true })).toBeEnabled();
+  await screenshot(page, 'new-task-remembered-settings-desktop');
+});
+
 test('repository and todo launchers prefill the request without completing the todo', async ({ page }) => {
   const requests = await fixture(page);
   await page.goto('/repositories');

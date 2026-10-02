@@ -48,28 +48,3 @@ test('legacy URL snapshots still get process credentials if cleanup strips the s
         assert.deepEqual(events, ['remote.origin.url', 'mint', 'authenticated']);
     } finally { git.getConfig = async key => { events.push(key); return { value: remoteUrl }; }; }
 });
-
-// Drive execution analysis through its actual fetch path, with unrelated storage
-// and LLM dependencies replaced so no live Redis, database, or provider is needed.
-await mock.module('ioredis', { namedExports: { Redis: class { async get() { return '{}'; } } } });
-await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: (table: string) => ({
-    where() { return this; },
-    orderBy: async () => [{ type: 'text', content: 'execution' }],
-    first: async () => table === 'tasks'
-        ? { task_id: 'task', repository: 'owner/private', issue_number: 1, commit_hash: 'abc123' }
-        : { task_id: 'task', execution_id: 'execution' },
-}) } });
-await mock.module('../packages/core/src/claude/claudeService.js', { namedExports: { runLightweightLLMAnalysis: async () => 'analysis' } });
-await mock.module('../packages/core/src/claude/prompts/promptGenerator.js', { namedExports: { generateExecutionAnalysisPrompt: () => 'prompt' } });
-await mock.module('fs', { defaultExport: { existsSync: () => true } });
-await mock.module('execa', { namedExports: { execa: async (_cmd: string, args: string[]) => {
-    assert.ok(!args.includes('fetch'), 'Network fetch must use the authenticated git instance');
-    return { stdout: 'diff', exitCode: 0 };
-} } });
-const { getExecutionAnalysis } = await import('../packages/core/src/services/analysisService.js');
-
-test('execution analysis configures worker credentials before fetching private commit context', async () => {
-    const result = await getExecutionAnalysis({ executionId: 'execution', sessionId: 'session', correlationId: 'test', model: 'model' });
-    assert.ok('report' in result);
-    assert.deepEqual(events, ['remote.origin.url', 'mint', 'authenticated', 'fetch']);
-});

@@ -108,13 +108,14 @@ interface UsageMetricRecordRow {
  * are not populated (e.g. pre-migration rows or migration not yet applied).
  *
  * Heuristics:
- * - execution_type determines the work type (implementation/task-analysis → task,
+ * - execution_type determines the work type (implementation/context-analysis → task,
  *   plan-generation/plan-refinement → plan, otherwise → repository)
  * - draft_id often encodes the issue number in a structured format like
  *   "{owner}-{repo}-{number}-{agent}-{model}-{uuid}". We use the repository
  *   field to anchor the prefix and extract the number.
  */
 const PLAN_EXEC_TYPES = new Set(['plan-generation', 'plan-refinement', 'title-generation']);
+// Keep task-analysis here solely to display historical persisted logs as task work.
 const TASK_EXEC_TYPES = new Set(['implementation', 'task-analysis', 'context-analysis', 'pr-review']);
 
 /** Extract an issue number from a structured draft_id using the repo as anchor. */

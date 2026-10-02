@@ -1,13 +1,10 @@
-import type { AnalysisApiData, AnalysisData, LogFilesData } from './types';
+import type { LogFilesData } from './types';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 const isOptionalNullableString = (value: unknown): value is string | null | undefined =>
   value === undefined || value === null || typeof value === 'string';
-
-const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(value, key);
 
 export function isLogFilesData(value: unknown): value is LogFilesData {
   if (!isRecord(value)) return false;
@@ -32,22 +29,4 @@ export function isLogFilesData(value: unknown): value is LogFilesData {
   const hasLegacyFiles = hasSessionId && isRecord(value.files);
   if (isRecord(value.files) && !hasSessionId) return false;
   return hasLogFiles || hasError || hasLegacyFiles;
-}
-
-export function isAnalysisData(value: unknown): value is AnalysisApiData {
-  if (!isRecord(value)) return false;
-  const recognizedKeys = ['report', 'analysis', 'content', 'error'];
-  if (!recognizedKeys.every(key => isOptionalNullableString(value[key]))) return false;
-  return recognizedKeys.some(key => hasOwn(value, key)
-    && typeof value[key] === 'string'
-    && value[key].trim().length > 0);
-}
-
-export function normalizeAnalysisData(value: AnalysisApiData): AnalysisData {
-  return {
-    report: typeof value.report === 'string' ? value.report : undefined,
-    analysis: typeof value.analysis === 'string' ? value.analysis : undefined,
-    content: typeof value.content === 'string' ? value.content : undefined,
-    error: typeof value.error === 'string' ? value.error : undefined,
-  };
 }

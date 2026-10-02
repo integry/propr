@@ -19,7 +19,7 @@ RUN_ID="sqlite-smoke-${GITHUB_RUN_ID:-local}-$$-$RANDOM"
 ROOT_DIR="$(mktemp -d "/tmp/propr-${RUN_ID}.XXXXXX")"
 OWNER_FILE="$ROOT_DIR/.propr-sqlite-smoke-owner"
 ACTIVE_STACKS=()
-DATABASE_SERVICES=(daemon worker analysis-worker indexing-worker api)
+DATABASE_SERVICES=(daemon worker indexing-worker api)
 
 if [[ ! "$STARTUP_ATTEMPTS" =~ ^[0-9]+$ ]] || (( STARTUP_ATTEMPTS < 2 || STARTUP_ATTEMPTS > 10 )); then
   echo "SQLITE_STARTUP_ATTEMPTS must be an integer from 2 through 10" >&2
@@ -163,7 +163,6 @@ assert_packaged_topology() {
   local -A commands=(
     [daemon]='["node","dist/src/daemon.js"]'
     [worker]='["node","dist/src/worker.js"]'
-    [analysis-worker]='["node","dist/src/analysis_worker.js"]'
     [indexing-worker]='["node","dist/src/indexing_worker.js"]'
     [api]='["node","dist/packages/api/server.js"]'
   )

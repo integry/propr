@@ -1,12 +1,10 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { renderMarkdown } from './renderMarkdown';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import ResultOverview from './ResultOverview';
-import { parseAnalysis } from './AnalysisUtils';
-import { generateFollowupContent } from './utils';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
@@ -120,7 +118,6 @@ const TaskDetails: React.FC = () => {
 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
-  const [detailedAnalysisExpanded, setDetailedAnalysisExpanded] = useState<boolean | undefined>(undefined);
 
   const totalDuration = useTotalDuration(taskData.history);
   const commitInfo = useCommitInfo(taskData.history, taskData.taskInfo);
@@ -142,8 +139,6 @@ const TaskDetails: React.FC = () => {
     setFollowupModalOpen(true);
   }, []);
 
-  const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
-
   const executionLogRef = useClickOutsideCollapse(
     thinkingLog.eventsCollapsed,
     thinkingLog.collapseEvents,
@@ -161,7 +156,6 @@ const TaskDetails: React.FC = () => {
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
-  const score = parsedAnalysis?.implementation_critique_score;
   const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
   const headerProps = {
     taskInfo: taskData.taskInfo,
@@ -233,7 +227,6 @@ const TaskDetails: React.FC = () => {
           </div>
           <SectionLabelHeader
             commandMode={taskData.taskInfo?.commandMode}
-            score={score}
             ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
             className="hidden lg:flex flex-1 px-4 items-center gap-3"
           />
@@ -274,30 +267,20 @@ const TaskDetails: React.FC = () => {
             {/* Mobile section header */}
             <SectionLabelHeader
               commandMode={taskData.taskInfo?.commandMode}
-              score={score}
               ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
               className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white lg:hidden"
             />
-            {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
+            {/* Scrollable Content Area - Summary + Thinking Log in same scroll flow */}
             {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
             <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
               <div
                 data-testid="task-output-scroll"
                 role="region"
-                aria-label="Task analysis and implementation log"
+                aria-label="Task implementation log"
                 className="min-w-0 overflow-x-hidden scrollbar-stealth lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
               >
                 <TaskVisualPreviews previews={taskData.previewMedia} />
-                {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
-                  <ResultOverview
-                    analysis={taskData.analysis}
-                    loading={taskData.analysisLoading}
-                    renderMarkdown={renderMarkdown}
-                    detailedAnalysisExpanded={detailedAnalysisExpanded}
-                    onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
-                    extractedSummary={thinkingLog.extractedSummary}
-                  />
-                )}
+                <ResultOverview extractedSummary={thinkingLog.extractedSummary} renderMarkdown={renderMarkdown} />
 
                 <div className="p-3 lg:p-4 min-w-0 overflow-hidden">
                   <ThinkingLog
@@ -356,7 +339,7 @@ const TaskDetails: React.FC = () => {
         isOpen={followupModalOpen}
         onClose={() => setFollowupModalOpen(false)}
         onSubmit={handleFollowupSubmit}
-        initialContent={generateFollowupContent(taskData.analysis, taskData.history)}
+        initialContent={'Please address the following based on the previous task execution:\n\n'}
         taskInfo={taskData.taskInfo}
       />
     </div>

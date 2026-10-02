@@ -129,6 +129,32 @@ describe('New Task issue launcher', () => {
     fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
     expect(screen.getByRole('button', { name: 'Run task' })).toBeEnabled();
   });
+  it('remembers the last used repository, agent, and model once the issue is created', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'issue_created', error: null });
+    renderPage();
+    await screen.findByRole('option', { name: 'issue-only' });
+    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'model-1' } });
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(`task-routing:${API_BASE_URL}:alice`) || '{}'))
+      .toEqual({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+  });
+  it('preselects the remembered repository and drops it when no longer available', async () => {
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+    const { unmount } = render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'model-1' })).toBeInTheDocument());
+    expect(screen.getByLabelText('Repository')).toHaveValue('acme/billing');
+    expect(screen.getByLabelText('Agent')).toHaveValue('issue-only');
+    expect(screen.getByLabelText('Model')).toHaveValue('model-1');
+    unmount();
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/retired' }));
+    render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Fix invoice dates' } });
+    await waitFor(() => expect(screen.getByRole('option', { name: 'issue-only' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Run task' })).toBeDisabled();
+  });
   it.each(['prepared', 'failed'] as const)('allows a %s submission without an issue to be abandoned and a new identity submitted', async state => {
     vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, issueNumber: null, issueUrl: null });
     renderPage();

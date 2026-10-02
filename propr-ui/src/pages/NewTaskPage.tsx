@@ -18,7 +18,8 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50';
 interface Prefill { initialRepository?: string; initialPrompt?: string; todoIds?: string[] }
-function savedRouting(scope: string): { agentAlias?: string; model?: string } {
+// Last used repository and routing, preselected for the next task.
+function savedRouting(scope: string): { repository?: string; agentAlias?: string; model?: string } {
   try { return JSON.parse(localStorage.getItem(`task-routing:${scope}`) || '{}'); } catch { return {}; }
 }
 
@@ -34,8 +35,8 @@ function useNewTaskLauncher(scope: string) {
   const location = useLocation();
   const { isDemoMode } = useDemoMode();
   const prefill = (location.state || {}) as Prefill;
-  const saved = savedRouting(scope);
-  const [repository, setRepository] = useState(prefill.initialRepository || '');
+  const [saved] = useState(() => savedRouting(scope));
+  const [repository, setRepository] = useState(prefill.initialRepository || saved.repository || '');
   const [instruction, setInstruction] = useState(prefill.initialPrompt || '');
   const [files, setFiles] = useState<File[]>([]);
   const [todoIds, setTodoIds] = useState(prefill.todoIds);
@@ -58,7 +59,12 @@ function useNewTaskLauncher(scope: string) {
 
   useEffect(() => {
     let active = true;
-    void getInstanceCatalog().then(value => { if (active) setCatalog(value); }).catch(error => { if (active) setError(error.message); });
+    void getInstanceCatalog().then(value => {
+      if (!active) return;
+      setCatalog(value);
+      // Drop a remembered repository that is no longer available on this instance.
+      if (saved.repository) setRepository(current => current === saved.repository && !value.repositories.some(repo => repo.name === current && repo.enabled) ? '' : current);
+    }).catch(error => { if (active) setError(error.message); });
     void listTaskSnapshots(scope).then(values => { if (active) setRecoverable(values); }).catch(error => { if (active) setError(error.message); });
     const key = sessionStorage.getItem(activeStorageKey);
     void taskSnapshotStorage(scope, key || undefined).then(value => {
@@ -70,7 +76,7 @@ function useNewTaskLauncher(scope: string) {
       void getTaskSubmission(value.key).then(row => { if (active && sessionStorage.getItem(activeStorageKey) === value.key) setResult(row); }).catch(() => undefined);
     }).catch(() => undefined).finally(() => { if (active) setReady(true); });
     return () => { active = false; };
-  }, [scope, activeStorageKey]);
+  }, [scope, activeStorageKey, saved.repository]);
 
   useEffect(() => {
     if (!snapshot || !result) return;
@@ -100,8 +106,8 @@ function useNewTaskLauncher(scope: string) {
       setSnapshot(current);
       const next = result ? await retryTaskSubmission(current.key) : await submitTask(current.key, current.payload, current.files);
       setResult(next);
-      if (next.state === 'queued') {
-        try { localStorage.setItem(`task-routing:${scope}`, JSON.stringify({ agentAlias, model })); } catch { /* Routing preferences are optional. */ }
+      if (next.state !== 'prepared' && next.state !== 'failed') {
+        try { localStorage.setItem(`task-routing:${scope}`, JSON.stringify({ repository: current.payload.repository, agentAlias: current.payload.agentAlias || '', model: current.payload.model || '' })); } catch { /* Routing preferences are optional. */ }
       }
     } catch (error) {
       setError((error as Error).message);

@@ -113,7 +113,7 @@ cleanup() {
   echo "▸ cleaning up"
   docker rm -f "$STACK-launcher" 2>/dev/null || true
   # The launcher traps SIGTERM and tears down its siblings, but belt-and-braces:
-  for c in api daemon worker analysis-worker indexing-worker ui docs redis; do
+  for c in api daemon worker indexing-worker ui docs redis; do
     docker rm -f "$STACK-$c" 2>/dev/null || true
   done
   docker network rm "${STACK}-net" 2>/dev/null || true

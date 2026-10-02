@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 const taskId = 'task-responsive-2252';
 const startedAt = Date.parse('2026-09-09T20:00:00.000Z');
@@ -45,7 +47,7 @@ const events = Array.from({ length: 28 }, (_, index) => {
       type: 'thought',
       timestamp,
       content: index === 26
-        ? `## Summary of Changes\n\nAnalysis summary final marker.\n\n${'The completed analysis remains reachable inside its intended pane. '.repeat(40)}`
+        ? `## Summary of Changes\n\nImplementation summary final marker.\n\n${'The implementation summary remains reachable inside its intended pane. '.repeat(40)}`
         : index === 27
           ? 'Implementation log final marker. The narrow workspace still exposes the final implementation reasoning.'
           : `Analysis entry ${index + 1}. ${'Measured responsive behavior remains readable. '.repeat(4)}`,
@@ -100,7 +102,7 @@ async function stubTaskDetailsApis(page: Page): Promise<void> {
         json: {
           history,
           taskInfo: {
-            title: 'Desktop task details with long timeline, analysis, and raw execution output',
+            title: 'Desktop task details with long timeline and raw execution output',
             subtitle: 'Responsive geometry fixture',
             type: 'issue',
             number: 2252,
@@ -167,14 +169,25 @@ for (const viewport of [
   test(`keeps long TaskDetails sections reachable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await stubTaskDetailsApis(page);
+    const analysisRequests: string[] = [];
+    page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/analysis')) analysisRequests.push(request.url()); });
     await page.goto(`/tasks/${taskId}`);
 
     const taskDetails = page.getByTestId('task-details');
     const workspace = page.getByTestId('task-workspace-scroll');
     const timeline = page.getByTestId('task-timeline-scroll');
     const output = page.getByTestId('task-output-scroll');
-    const analysisSection = page.getByTestId('task-analysis');
+    const summarySection = page.getByTestId('task-summary');
     await expect(taskDetails).toBeVisible();
+    await expect(page.getByTestId('task-analysis')).toHaveCount(0);
+    await expect(page.getByText('Implementation Review Details')).toHaveCount(0);
+    await expect(page.locator('[title^="Score:"]')).toHaveCount(0);
+    expect(analysisRequests).toEqual([]);
+    if (process.env.PROPR_CAPTURE_PREVIEWS && viewport.width === 1280) {
+      const directory = path.resolve('../.propr/previews');
+      await mkdir(directory, { recursive: true });
+      await page.screenshot({ animations: 'disabled', path: path.join(directory, 'task-details-without-analysis.png') });
+    }
     // Scoped to the panel: the sidebar owns a 'Logs' navigation group button at
     // these widths, so an unscoped role query is ambiguous.
     await expect(taskDetails.getByRole('button', { name: 'Follow Up' })).toBeVisible();
@@ -186,7 +199,7 @@ for (const viewport of [
       expect(metrics.overflowY).toBe('auto');
       expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
       await expectReachableWithin(page.getByText('Timeline final checkpoint'), workspace);
-      await expectReachableWithin(analysisSection.getByText(/Analysis summary final marker/), workspace);
+      await expectReachableWithin(summarySection.getByText(/Implementation summary final marker/), workspace);
       await expectReachableWithin(output.getByText(/Implementation log final marker/), workspace);
       await expect(workspace.getByText('IMPLEMENTATION', { exact: true })).toBeVisible();
     } else {
@@ -197,7 +210,7 @@ for (const viewport of [
       expect(outputMetrics.overflowY).toBe('auto');
       expect(outputMetrics.scrollHeight).toBeGreaterThan(outputMetrics.clientHeight);
       await expectReachableWithin(page.getByText('Timeline final checkpoint'), timeline);
-      await expectReachableWithin(analysisSection.getByText(/Analysis summary final marker/), output);
+      await expectReachableWithin(summarySection.getByText(/Implementation summary final marker/), output);
       await expectReachableWithin(output.getByText(/Implementation log final marker/), output);
     }
 

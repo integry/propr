@@ -1146,6 +1146,9 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 7,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
             usage_tips_enabled: true,
             usage_tips_dismissal_cooldown_days: 45,
@@ -1224,6 +1227,9 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 120000,
             pr_review_context_budget_percent: 40,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: true,
             usage_tips_enabled: true,
             usage_tips_dismissal_cooldown_days: 45,
@@ -1294,6 +1300,9 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
             usage_tips_enabled: true,
             usage_tips_dismissal_cooldown_days: 45,
@@ -2994,6 +3003,9 @@ describe('config route follow-up helpers', () => {
                 pr_review_max_context_tokens: 0,
                 pr_review_context_budget_percent: 100,
                 auto_followup_score_threshold: 4,
+                deprecated_settings: {
+                    auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+                },
                 auto_resolve_merge_conflicts: false,
                 usage_tips_enabled: true,
                 usage_tips_dismissal_cooldown_days: 45,

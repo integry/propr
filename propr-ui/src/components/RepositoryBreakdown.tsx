@@ -1,138 +1,125 @@
-import React, { useState, useEffect } from 'react';
-import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
+/**
+ * Repository performance for the Analytics console.
+ *
+ * Presentational: the page reads the stats once per timeframe and hands them
+ * in, so the table, the metric strip and the charts always describe the same
+ * window. The heading belongs to the pane that holds the table.
+ *
+ * Repositories are monospace code chips, the same entity treatment as every
+ * other technical identifier in the app, drawn without their owner: the owner
+ * is constant across the instance and stays in the chip's tooltip.
+ *
+ * Each row opens the Tasks list filtered to its repository, and a non-zero
+ * failure count opens it filtered to that repository's failures.
+ */
+
+import React from 'react';
+import { Link } from 'react-router-dom';
+import type { RepositoryStats } from '../api/taskStatsApi';
+import { CodeChip } from './ui/CodeChip';
+import { DrillDownCell, DrillDownRow } from './Analytics/DrillDownRow';
+import { tasksHref } from './Analytics/drillDownLinks';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface RepositoryBreakdownProps {
+  repositories: RepositoryStats[] | null;
+  loading: boolean;
+  error?: string | null;
   limit?: number;
-  repositoriesOverride?: RepositoryStats[];
 }
 
-const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, repositoriesOverride }) => {
-  const [repositories, setRepositories] = useState<RepositoryStats[]>([]);
-  const [loading, setLoading] = useState(!repositoriesOverride);
-  const [error, setError] = useState<string | null>(null);
+const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
+const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
+/** Count columns only appear once the pane is wide enough to hold them. */
+const WIDE = 'hidden sm:table-cell';
 
-  useEffect(() => {
-    if (repositoriesOverride) {
-      setRepositories(repositoriesOverride);
-      setLoading(false);
-      setError(null);
-      return;
-    }
+const successTone = (rate: number): string =>
+  rate >= 90 ? 'text-slate-900' : rate >= 50 ? 'text-amber-600' : 'text-red-600';
 
-    const fetchStats = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const data = await getRepositoryStats();
-        setRepositories(data.repositories || []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load repository stats');
-      } finally {
-        setLoading(false);
-      }
-    };
+const TableHead: React.FC = () => (
+  <thead>
+    <tr className="border-b border-slate-200">
+      <th className={`${HEAD} text-left`}>Repository</th>
+      <th className={`${HEAD} w-20 text-right`}>Tasks</th>
+      <th className={`${HEAD} ${WIDE} w-24 text-right`}>Completed</th>
+      <th className={`${HEAD} ${WIDE} w-20 text-right`}>Failed</th>
+      <th className={`${HEAD} ${WIDE} w-28 text-right`}>In progress</th>
+      <th className={`${HEAD} w-24 text-right`}>Success</th>
+    </tr>
+  </thead>
+);
 
-    fetchStats();
-    const interval = setInterval(fetchStats, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [repositoriesOverride]);
-
+const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ repositories, loading, error, limit }) => {
   if (loading) {
     return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <SkeletonRegion label="Loading top repositories…" className="overflow-hidden">
-          <table className="w-full table-fixed">
-            <thead>
-              <tr className="border-b border-slate-200">
-                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Name</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Total</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Success</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...Array(5)].map((_, i) => (
-                <tr key={i} className="border-b border-slate-100">
-                  <td className="py-2 px-2">
-                    <SkeletonBlock className="h-4 w-24" />
-                  </td>
-                  <td className="py-2 px-2 text-right">
-                    <SkeletonBlock className="ml-auto h-4 w-8" />
-                  </td>
-                  <td className="py-2 px-2">
-                    <SkeletonBlock className="ml-auto h-3 w-8" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </SkeletonRegion>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <SystemAlert>{error}</SystemAlert>
-      </div>
-    );
-  }
-
-  if (repositories.length === 0) {
-    return (
-      <div>
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <div className="text-slate-500 text-center py-4">No repository activity yet — data appears after your first task runs.</div>
-      </div>
-    );
-  }
-
-  // Apply limit if specified, sort by total tasks descending
-  const displayRepos = limit
-    ? [...repositories].sort((a, b) => b.total - a.total).slice(0, limit)
-    : repositories;
-
-  return (
-    <div>
-      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-      <div className="overflow-hidden">
-        <table className="w-full table-fixed">
-          <thead>
-            <tr className="border-b border-slate-200">
-              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Name</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Total</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Success</th>
-            </tr>
-          </thead>
+      <SkeletonRegion label="Loading top repositories…">
+        <table className="w-full table-fixed" aria-hidden="true">
+          <TableHead />
           <tbody>
-            {displayRepos.map((repo) => (
-              <tr key={repo.repository} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors">
-                <td className="py-2 px-2 min-w-0">
-                  <span className="text-slate-800 font-medium text-sm truncate block" title={repo.repository}>
-                    {repo.repository.split('/').pop()}
-                  </span>
-                </td>
-                <td className="py-2 px-2 text-right">
-                  <span className="text-slate-600 text-sm">{repo.total}</span>
-                </td>
-                <td className="py-2 px-2 text-right">
-                  <span className={`text-xs font-medium ${
-                    repo.successRate >= 90 ? 'text-slate-900' :
-                    repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
-                  }`}>
-                    {repo.successRate}%
-                  </span>
-                </td>
+            {[...Array(4)].map((_, i) => (
+              <tr key={i} className="border-b border-slate-100 last:border-b-0">
+                <td className={CELL}><SkeletonBlock className="h-5 w-28" /></td>
+                <td className={CELL}><SkeletonBlock className="ml-auto h-4 w-8" /></td>
+                <td className={`${CELL} ${WIDE}`}><SkeletonBlock className="ml-auto h-4 w-8" /></td>
+                <td className={`${CELL} ${WIDE}`}><SkeletonBlock className="ml-auto h-4 w-8" /></td>
+                <td className={`${CELL} ${WIDE}`}><SkeletonBlock className="ml-auto h-4 w-8" /></td>
+                <td className={CELL}><SkeletonBlock className="ml-auto h-4 w-10" /></td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
+      </SkeletonRegion>
+    );
+  }
+
+  if (error) {
+    return <div className="p-3 sm:px-4"><SystemAlert>{error}</SystemAlert></div>;
+  }
+
+  if (!repositories || repositories.length === 0) {
+    return (
+      <p className="px-3 py-4 text-sm text-slate-500 sm:px-4">
+        No repository activity in this period.
+      </p>
+    );
+  }
+
+  const sorted = [...repositories].sort((a, b) => b.total - a.total);
+  const displayRepos = limit ? sorted.slice(0, limit) : sorted;
+
+  return (
+    <table className="w-full table-fixed" data-testid="repository-performance-table">
+      <TableHead />
+      <tbody>
+        {displayRepos.map(repo => {
+          const name = repo.repository.split('/').pop();
+          return (
+            <DrillDownRow key={repo.repository} to={tasksHref(repo.repository)}>
+              <DrillDownCell to={tasksHref(repo.repository)} label={`Tasks in ${repo.repository}`} className={CELL}>
+                <CodeChip title={repo.repository} className="transition-colors group-hover:border-slate-300 group-hover:bg-white">{name}</CodeChip>
+              </DrillDownCell>
+              <td className={`${CELL} text-right text-slate-800`}>{repo.total.toLocaleString()}</td>
+              <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.completed.toLocaleString()}</td>
+              <td className={`${CELL} ${WIDE} text-right ${repo.failed > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                {repo.failed > 0 ? (
+                  <Link
+                    to={tasksHref(repo.repository, 'failed')}
+                    title={`Failed tasks in ${repo.repository}`}
+                    aria-label={`${repo.failed.toLocaleString()} failed tasks in ${repo.repository}`}
+                    className="underline decoration-red-200 underline-offset-2 hover:decoration-red-600"
+                  >
+                    {repo.failed.toLocaleString()}
+                  </Link>
+                ) : repo.failed.toLocaleString()}
+              </td>
+              <td className={`${CELL} ${WIDE} text-right text-slate-600`}>{repo.inProgress.toLocaleString()}</td>
+              <td className={`${CELL} text-right font-medium ${successTone(repo.successRate)}`}>{repo.successRate}%</td>
+            </DrillDownRow>
+          );
+        })}
+      </tbody>
+    </table>
   );
 };
 
