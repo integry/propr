@@ -309,9 +309,14 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const refreshPlanImplementation = async (row: Operation, result: Record<string, unknown>, receipt: ReturnType<McpOperations['project']>): Promise<void> => {
     if (row.tool === 'implement_plan' && Array.isArray(result.issues)) {
       const issues = await db('plan_issues').where({ draft_id: result.planId }).whereIn('issue_number', result.issues).select('issue_number', 'status', 'task_id', 'pr_number');
-      const epicQueue = summarizeEpicQueue(await getEpicExecutionQueue(String(result.planId), { database: db }));
+      const queue = await getEpicExecutionQueue(String(result.planId), { database: db });
+      const epicQueue = summarizeEpicQueue(queue);
       receipt.targetState = { issues, epicQueue };
-      if (row.state === 'accepted' && (!epicQueue || epicQueue.status === 'completed')
+      // Only this operation's sequential queue can delay its completion. A
+      // replacement proves the old queue finished: only terminal rows are replaced.
+      const queueFinished = result.executionMode !== 'sequential' || !queue || queue.status === 'completed'
+        || (typeof result.executionId === 'string' && queue.executionId !== result.executionId);
+      if (row.state === 'accepted' && queueFinished
         && issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
     }
   };
@@ -580,7 +585,7 @@ export function addPlanImplementationTool(
       if (available.some(issue => issue.status !== 'pending')) throw new McpError('PRECONDITION_FAILED', 'A selected issue has already started.', 409);
       const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
         useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
-      await db.transaction(async tx => {
+      const executionId = await db.transaction(async tx => {
         for (const number of args.issues) {
           const id = `${args.planId}:${number}`;
           const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
@@ -592,9 +597,10 @@ export function addPlanImplementationTool(
           });
         }
         if (dispatch.mode === 'sequential') {
-          await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
+          const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
             autoMerge: args.autoMerge, ready: false, headStartedAt: Date.now() }, { database: tx });
+          return queue.executionId;
         }
       });
       const results = [];
@@ -624,6 +630,7 @@ export function addPlanImplementationTool(
         await readyEpicExecutionQueue(args.planId);
       }
       return { status: 202, data: { planId: args.planId, issues: args.issues, executionMode: dispatch.mode,
+        ...(executionId ? { executionId } : {}),
         advanceOn: dispatch.advanceOn, started: dispatch.dispatchNow, queued: dispatch.queued, results,
         message: dispatch.mode === 'sequential' ? 'Epic implementation requested. Remaining selected issues are queued in publication order.' : 'Implementation requested. Inspect plan issues and tasks for execution state.' } };
     } });

@@ -142,6 +142,8 @@ test('sequential MCP dispatches exactly one head and configures/claims every sel
   assert.deepEqual(data.started, [10]);
   assert.deepEqual(data.queued, [30, 40]);
   const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(typeof data.executionId, 'string');
+  assert.equal(data.executionId, queue?.executionId);
   assert.deepEqual(queue?.issues, [10, 30, 40]);
   assert.equal(queue?.ready, true);
   for (const number of [30, 40]) {
@@ -226,6 +228,91 @@ test('sequential receipt exposes queue and remains accepted through under_review
   const completed = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
   assert.equal((completed.data as { state: string }).state, 'completed');
   assert.equal((completed.data as { targetState: { epicQueue: { status: string } } }).targetState.epicQueue.status, 'completed');
+});
+
+for (const queueStatus of ['active', 'cancelled'] as const) {
+  for (const mode of ['non-epic', 'parallel'] as const) {
+    test(`${mode} receipt completes independently of an unrelated ${queueStatus} queue`, async () => {
+      dispatchFailure = queueStatus === 'cancelled';
+      if (dispatchFailure) await assert.rejects(run({ issues: [10, 30] }), /dispatch failed/);
+      else await run({ issues: [10, 30] });
+      assert.equal((await core.getEpicExecutionQueue(planId))?.status, queueStatus);
+      dispatchFailure = false;
+
+      const operations = new McpOperations(database);
+      const parsed = args({ issues: [20], idempotencyKey: 'independent-request',
+        ...(mode === 'non-epic' ? { useEpic: false } : { epicExecution: 'parallel' }) });
+      const accepted = await operations.run(principal, { tool: 'implement_plan', args: parsed, repository }, operationId =>
+        implement.run({ principal, args: parsed, operationId } as never));
+      assert.equal(accepted.state, 'accepted');
+      assert.equal(Object.hasOwn(accepted.result as object, 'executionId'), false);
+      const processing = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
+      assert.equal((processing.data as { state: string }).state, 'accepted');
+
+      await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).update({ status: 'under_review' });
+      const completed = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
+      assert.equal((completed.data as { state: string }).state, 'completed');
+      assert.equal((await operations.get(principal, String(accepted.operationId))).lifecycle, 'completed');
+      assert.equal((await core.getEpicExecutionQueue(planId))?.status, queueStatus);
+    });
+  }
+
+  test(`completed sequential receipt is independent of its ${queueStatus} replacement before its first poll`, async () => {
+    const operations = new McpOperations(database);
+    const parsed = args({ issues: [10, 30] });
+    const accepted = await operations.run(principal, { tool: 'implement_plan', args: parsed, repository }, operationId =>
+      implement.run({ principal, args: parsed, operationId } as never));
+    const originalExecutionId = (accepted.result as { executionId: string }).executionId;
+    assert.equal(originalExecutionId, (await core.getEpicExecutionQueue(planId))?.executionId);
+    await database('plan_issues').where({ draft_id: planId }).whereIn('issue_number', [10, 30]).update({ status: 'merged' });
+    await core.startEpicQueueHead(planId, { finalize: async () => true });
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+    assert.equal((await operations.get(principal, String(accepted.operationId))).lifecycle, 'accepted');
+
+    dispatchFailure = queueStatus === 'cancelled';
+    const nextArgs = args({ issues: [40], idempotencyKey: 'replacement-request' });
+    const replacement = await operations.run(principal, { tool: 'implement_plan', args: nextArgs, repository }, operationId =>
+      implement.run({ principal, args: nextArgs, operationId } as never));
+    const queue = await core.getEpicExecutionQueue(planId);
+    assert.equal(queue?.status, queueStatus);
+    assert.notEqual(queue?.executionId, originalExecutionId);
+
+    if (queueStatus === 'active') {
+      assert.equal((replacement.result as { executionId: string }).executionId, queue?.executionId);
+      await database('plan_issues').where({ draft_id: planId, issue_number: 40 }).update({ status: 'under_review' });
+      const pending = await getOperation.run({ principal, args: { operationId: replacement.operationId } } as never);
+      assert.equal((pending.data as { state: string }).state, 'accepted');
+    }
+    const completed = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
+    assert.equal((completed.data as { state: string }).state, 'completed');
+    assert.equal((await operations.get(principal, String(accepted.operationId))).lifecycle, 'completed');
+    assert.equal((await core.getEpicExecutionQueue(planId))?.executionId, queue?.executionId);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, queueStatus);
+  });
+}
+
+test('sequential result retains its execution identity across awaited queue finalization', async () => {
+  await database('plan_issues').where({ draft_id: planId }).whereIn('issue_number', [20, 30, 40]).update({ status: 'merged' });
+  // The head can finish before the initial implementation request returns.
+  const handler = mock.method(planner, 'implementIssue', async (req: Request, res: Response) => {
+    await database('plan_issues').where({ draft_id: planId, issue_number: Number(req.params.issueNumber) }).update({ status: 'merged' });
+    res.json({ issueNumber: Number(req.params.issueNumber) });
+  });
+  let originalExecutionId: string | undefined;
+  afterEpicLookup = async () => {
+    const queue = await core.getEpicExecutionQueue(planId);
+    assert.equal(queue?.status, 'completed');
+    originalExecutionId = queue?.executionId;
+    await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [40], ready: false });
+  };
+  try {
+    const result = await run({ issues: [10] });
+    assert.equal(typeof originalExecutionId, 'string');
+    assert.equal((result.data as { executionId: string }).executionId, originalExecutionId);
+    assert.notEqual((await core.getEpicExecutionQueue(planId))?.executionId, originalExecutionId);
+  } finally {
+    handler.mock.restore();
+  }
 });
 
 test('status-write hooks and concurrent webhook observers dispatch the selected successor only once', async () => {
