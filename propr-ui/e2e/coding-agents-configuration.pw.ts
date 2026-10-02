@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { AGENT_DEFAULTS, AGENT_MODELS, type AgentType } from '@propr/shared';
 
 const agents = (['claude', 'codex', 'vibe', 'antigravity', 'opencode'] as const).map(type => ({
@@ -11,6 +11,24 @@ const agents = (['claude', 'codex', 'vibe', 'antigravity', 'opencode'] as const)
   supportedModels: AGENT_MODELS[type].map(model => model.id),
   defaultModel: type === 'claude' ? 'claude-opus-5-5' : type === 'codex' ? 'gpt-6.1-sol' : AGENT_MODELS[type][0].id,
 }));
+
+async function expectHeaderRails(configuration: Locator) {
+  const headers = configuration.locator('.coding-agent-header');
+  const rails = await headers.evaluateAll(elements => elements.map(element => {
+    const left = (selector: string) => element.querySelector(selector)!.getBoundingClientRect().left;
+    const path = element.querySelector('.coding-agent-path')!.getBoundingClientRect();
+    const status = element.querySelector('.coding-agent-status')!.getBoundingClientRect();
+    return { path: path.left, status: status.left, toggle: left('label'), menu: left('[aria-haspopup="menu"]'), pathRight: path.right };
+  }));
+  expect(rails).toHaveLength(agents.length);
+  for (const rail of rails) {
+    for (const slot of ['path', 'status', 'toggle', 'menu'] as const) {
+      expect(Math.abs(rail[slot] - rails[0][slot])).toBeLessThanOrEqual(1);
+    }
+    expect(rail.pathRight).toBeLessThanOrEqual(rail.status);
+  }
+  await expect(configuration.getByText('Inactive', { exact: true })).toBeVisible();
+}
 
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 900 },
@@ -49,6 +67,8 @@ for (const viewport of [
     for (const provider of ['vibe', 'antigravity', 'opencode'] as AgentType[]) {
       await expect(configuration.getByRole('button', { name: `Expand ${provider} models` })).toBeVisible();
     }
+    await expect(configuration.getByText('Ready', { exact: true })).toHaveCount(4);
+    await expectHeaderRails(configuration);
     const opusAlias = configuration.getByRole('button', { name: 'Copy opus55', exact: true });
     await expect(opusAlias).toHaveAttribute('title', /claude-opus-5-5/);
     const modelRow = opusAlias.locator('xpath=../..');
@@ -103,7 +123,6 @@ for (const viewport of [
   test(`${viewport.name} shows agent failures and prominent login with enabled-only checks`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const checked: string[] = [];
-    const fixtureAgents = agents.map(agent => ({ ...agent, supportedModels: [agent.defaultModel] }));
     let codexReady = false;
     await page.route('**/api/**', async route => {
       const pathname = new URL(route.request().url()).pathname;
@@ -126,7 +145,7 @@ for (const viewport of [
           displayName: 'Configuration Fixture', email: null, avatarUrl: null, role: 'admin',
           permissions: ['instance.manage_agents'], authorizationSource: 'local',
         },
-        '/api/config/agents': { agents: fixtureAgents },
+        '/api/config/agents': { agents },
         '/api/config/synthetic-agents': { synthetic_agents: [] },
         '/api/config/agent-tank/status': { available: false },
         '/api/config/agent-tank/usage': { enabled: true, agents: {
@@ -152,6 +171,9 @@ for (const viewport of [
     const disabledCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /vibe models$/ }) });
     const rateLimitedCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /antigravity models$/ }) });
     await expect(codexCard.getByRole('alert')).toContainText('Your login session has expired.');
+    await expect(codexCard.getByRole('alert')).toContainText('Authentication Expired');
+    await expect(rateLimitedCard.getByRole('alert')).toContainText('Rate Limit Exceeded');
+    await expectHeaderRails(configuration);
     await expect(codexCard.getByRole('button', { name: 'Log in', exact: true })).toBeVisible();
     await expect(claudeCard.getByText('Ready', { exact: true })).toBeVisible();
     await expect(claudeCard.locator('.coding-agent-header').getByText('Ready', { exact: true })).toBeVisible();
@@ -167,6 +189,7 @@ for (const viewport of [
     expect(checked).not.toContain('vibe-config');
     expect(new Set(checked).size).toBe(4);
     expect(checked).toHaveLength(4);
+    const codexModelCount = await codexCard.locator('.coding-agent-name').textContent();
     await codexCard.getByRole('button', { name: 'Collapse codex models' }).click();
     await expect(codexCard.getByRole('alert')).toBeVisible();
     const overflow = await configuration.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));
@@ -190,6 +213,7 @@ for (const viewport of [
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(codexCard.getByText('Ready', { exact: true })).toBeVisible();
     await expect(codexCard.getByRole('alert')).toHaveCount(0);
+    await expect(codexCard.locator('.coding-agent-name')).toHaveText(codexModelCount!);
     expect(checked.filter(id => id === 'codex-config')).toHaveLength(2);
   });
 }

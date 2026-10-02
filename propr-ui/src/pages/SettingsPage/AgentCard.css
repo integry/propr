@@ -2,26 +2,61 @@
   container-type: inline-size;
 }
 
+.coding-agent-header {
+  grid-template-columns: minmax(0, 1fr) 5rem auto;
+}
+
+.coding-agent-name {
+  grid-column: 1 / 3;
+}
+
+.coding-agent-path {
+  grid-column: 1;
+  grid-row: 2;
+  margin-left: 30px;
+}
+
+.coding-agent-status {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.coding-agent-actions {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  justify-self: end;
+}
+
 /* Leave room below the trigger while the menu is open, including narrow
    panes where its right rail would otherwise cover model titles and aliases. */
 .coding-agent-header-menu-open {
   margin-bottom: 128px;
 }
 
-/* Keep the path inline when the configuration pane has room for it. */
+/* Give names, paths, status dots, and controls independent vertical rails.
+   Paths can shrink in a resized pane; names, status, and controls stay fixed. */
 @container (min-width: 400px) {
   .coding-agent-header {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 35%) auto;
+    grid-template-columns: 11rem minmax(0, 8rem) 5rem minmax(4.5rem, 1fr);
+  }
+
+  .coding-agent-name {
+    grid-column: 1;
   }
 
   .coding-agent-actions {
-    grid-column: 3;
+    grid-column: 4;
     grid-row: 1;
   }
 
-  .coding-agent-details {
+  .coding-agent-path {
     grid-column: 2;
     grid-row: 1;
     margin-left: 0;
+  }
+
+  .coding-agent-status {
+    grid-column: 3;
+    grid-row: 1;
   }
 }

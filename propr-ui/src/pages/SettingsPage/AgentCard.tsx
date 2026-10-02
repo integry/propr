@@ -167,7 +167,13 @@ interface AgentCardProps {
   onRecheck?: () => void;
 }
 
-const AgentHeaderStatus: React.FC<{ health?: AgentHealthState }> = ({ health }) => {
+const AgentHeaderStatus: React.FC<{ enabled: boolean; health?: AgentHealthState }> = ({ enabled, health }) => {
+  if (!enabled || health?.status === 'disabled') return (
+    <span role="status" className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-slate-400" />
+      Inactive
+    </span>
+  );
   if (health?.status !== 'ready' && health?.status !== 'checking') return null;
   const ready = health.status === 'ready';
   return (
@@ -256,14 +262,14 @@ const AgentCard: React.FC<AgentCardProps> = ({
 
   return (
     <div className={`coding-agent-card relative border-b border-slate-100 py-4 first:pt-0 ${menuOpen ? 'z-30' : ''}`}>
-      <div className={`coding-agent-header grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 ${menuOpen ? 'coding-agent-header-menu-open' : ''}`}>
+      <div className={`coding-agent-header grid items-center gap-x-2 gap-y-1 ${menuOpen ? 'coding-agent-header-menu-open' : ''}`}>
         <button
           type="button"
           onClick={() => setExpanded(current => !current)}
           aria-expanded={expanded}
           aria-controls={modelsId}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${agent.alias} models`}
-          className="flex min-h-8 min-w-0 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="coding-agent-name flex min-h-8 min-w-0 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
           {expanded
             ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
@@ -275,7 +281,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
           </span>
         </button>
 
-        <div className="coding-agent-actions row-span-2 flex items-center gap-2">
+        <div className="coding-agent-actions flex items-center justify-end gap-2">
           <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
@@ -331,11 +337,11 @@ const AgentCard: React.FC<AgentCardProps> = ({
           </div>
         </div>
 
-        <div className="coding-agent-details ml-[30px] flex min-w-0 items-center gap-2">
-          <code className="min-w-0 truncate font-mono text-[11px] text-slate-500" title={agent.configPath}>
-            {agent.configPath}
-          </code>
-          {agent.enabled && <AgentHeaderStatus health={health} />}
+        <code className="coding-agent-path min-w-0 truncate font-mono text-[11px] text-slate-500" title={agent.configPath}>
+          {agent.configPath}
+        </code>
+        <div className="coding-agent-status min-w-0">
+          <AgentHeaderStatus enabled={agent.enabled} health={health} />
         </div>
       </div>
 

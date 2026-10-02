@@ -16,11 +16,14 @@ export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck,
   const usageId = useId();
   if (health.status !== 'error') return null;
   const rateLimited = health.errorCode === 'rate_limit';
+  const title = rateLimited ? 'Rate Limit Exceeded'
+    : health.errorCode === 'auth_required' ? 'Authentication Expired'
+      : 'Agent unavailable';
   return (
     <>
       <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
         <div role="alert" className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-          <p className="font-medium">Agent unavailable</p>
+          <p className="font-medium">{title}</p>
           <p className="mt-1">{health.error || 'Agent check failed.'}</p>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">

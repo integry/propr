@@ -32,6 +32,17 @@ function renderCard(overrides: Partial<React.ComponentProps<typeof AgentCard>> =
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AgentCard', () => {
+  it.each([undefined, { agentId: agent.id, status: 'ready' as const, model: 'probe' },
+    { agentId: agent.id, status: 'error' as const, errorCode: 'auth_required' as const }])('labels disabled providers Inactive even with stale health (%j)', health => {
+    renderCard({ agent: { ...agent, type: 'vibe', alias: 'vibe', enabled: false }, health });
+    const inactive = screen.getByRole('status');
+    expect(inactive).toHaveTextContent('Inactive');
+    expect(inactive).toHaveClass('text-slate-400');
+    expect(inactive.closest('.coding-agent-header')).not.toBeNull();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('keeps Ready in the header without a body status row, including when collapsed', () => {
     renderCard({ health: { agentId: agent.id, status: 'ready', model: 'probe' } });
     const ready = screen.getByText('Ready');
@@ -45,6 +56,7 @@ describe('AgentCard', () => {
   it('offers login only for authentication failures and keeps retries neutral', () => {
     const onRecheck = vi.fn();
     const callbacks = renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'auth_required', error: 'Session expired' }, onRecheck });
+    expect(screen.getByRole('alert')).toHaveTextContent('Authentication Expired');
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
     expect(callbacks.onLogin).toHaveBeenCalledOnce();
     const retry = screen.getByRole('button', { name: 'Check again' });
@@ -60,6 +72,7 @@ describe('AgentCard', () => {
       codex: { name: 'codex', usage: { session: { percent: 20 } } },
     } });
     const callbacks = renderCard({ agent: { ...agent, type: 'antigravity', alias: 'antigravity' }, health: { agentId: agent.id, status: 'error', errorCode: 'rate_limit', error: 'HTTP 429' }, onRecheck: vi.fn() });
+    expect(screen.getByRole('alert')).toHaveTextContent('Rate Limit Exceeded');
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
     expect(getAgentTankUsage).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'View Quota / Usage' }));
@@ -81,6 +94,7 @@ describe('AgentCard', () => {
 
   it('does not offer login for unrelated health failures', () => {
     renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'unknown', error: 'Check timed out' }, onRecheck: vi.fn() });
+    expect(screen.getByRole('alert')).toHaveTextContent('Agent unavailable');
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
   });
