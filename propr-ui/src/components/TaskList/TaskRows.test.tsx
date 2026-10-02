@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskTableContent } from './StateComponents';
-import type { TaskGroup } from './types';
+import type { Task, TaskGroup } from './types';
 
 const prTitle = 'Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when an issue or PR withdraws intent';
 const group: TaskGroup = {
@@ -13,12 +13,12 @@ const group: TaskGroup = {
     subtitle: index ? `Change number ${index}` : 'Ultrafix cycle 3 (linting)',
     status: index ? 'completed' : 'processing', createdAt: `2026-09-10T12:0${9 - index}:00Z`, completedAt: index ? '2026-09-10T12:10:00Z' : null,
     issueNumber: 2664, linkedIssueNumber: 2659, prNumber: 2664, llmProvider: 'codex', model: 'gpt-6-astra',
-    critiqueScore: index === 1 ? 8 : null,
+    critiqueScore: index === 0 ? 9 : index === 1 ? 8 : null,
     previewMedia: index === 0 ? [
       { type: 'image' as const, title: 'Desktop', url: 'https://github.com/user-attachments/assets/a' },
       { type: 'image' as const, title: 'Mobile', url: 'https://github.com/user-attachments/assets/b' },
     ] : undefined,
-  })),
+  } as Task & { critiqueScore: number | null })),
 };
 
 function Fixture({ onRowClick = vi.fn() }: { onRowClick?: (id: string) => void }) {
@@ -112,8 +112,14 @@ describe('task ledger rows', () => {
   });
 
   it('ignores historical critique scores in rows and earlier runs', () => {
+    expect((group.tasks[0] as Task & { critiqueScore: number }).critiqueScore).toBe(9);
+    expect((group.tasks[1] as Task & { critiqueScore: number }).critiqueScore).toBe(8);
     render(<Fixture />);
+    expect(screen.queryByTitle('Code Quality Score: 9/10')).not.toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));
+    for (const runs of screen.getAllByRole('list', { name: 'Earlier runs' })) {
+      expect(runs).toHaveTextContent('Change number 1');
+    }
     expect(screen.queryByTitle('Code Quality Score: 8/10')).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Score' })).not.toBeInTheDocument();
   });

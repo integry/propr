@@ -204,12 +204,6 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         return {
           blockRight: list.closest('[role="cell"]')!.getBoundingClientRect().right,
           statusRight: headers[2].right,
-          // Each score sits right after the summary it grades, not out on the SCORE rail.
-          scoreGaps: [...list.querySelectorAll('.task-run')].flatMap(run => {
-            const score = run.querySelector('[title^="Code Quality Score"]');
-            const summary = run.querySelector('.task-run-summary');
-            return score && summary ? [score.getBoundingClientRect().left - summary.getBoundingClientRect().right] : [];
-          }),
           railCentre: listBox.left + parseFloat(rail.borderLeftWidth) / 2,
           caretCentre: caret.left + caret.width / 2,
           railTop: listBox.top + parseFloat(rail.top),
@@ -218,8 +212,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         };
       });
       expect(timeline.blockRight).toBeLessThanOrEqual(timeline.statusRight + 1);
-      expect(timeline.scoreGaps).toHaveLength(0);
-      for (const gap of timeline.scoreGaps) expect(gap).toBeLessThanOrEqual(12);
+      await expect(table.locator('[title^="Code Quality Score"]')).toHaveCount(0);
       // The rail is threaded from the caret: it starts inside the caret's box, on its centre line.
       expect(Math.abs(timeline.railCentre - timeline.caretCentre)).toBeLessThanOrEqual(1);
       expect(timeline.railTop).toBeGreaterThanOrEqual(timeline.caretTop);

@@ -201,7 +201,9 @@ export interface SystemSettings {
   analysis_model_fast?: string;
   planner_context_model?: string;
   planner_generation_model?: string;
+  /** @deprecated REST compatibility only; this setting has no effect. */
   auto_followup_score_threshold?: number;
+  deprecated_settings?: Record<string, string>;
   usage_tips_enabled?: boolean;
   usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;

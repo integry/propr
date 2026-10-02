@@ -1,5 +1,5 @@
 # Multi-stage prod build for the Propr application image.
-# Single image runs daemon, worker,, indexing-worker, or api
+# Single image runs daemon, worker, indexing-worker, or api
 # depending on the command passed at runtime.
 #
 # Build from the monorepo root:

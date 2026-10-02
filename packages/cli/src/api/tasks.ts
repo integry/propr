@@ -105,10 +105,6 @@ export interface TaskSummary {
    * Plan issue status if part of a plan.
    */
   planIssueStatus: string | null;
-
-  /**
-   * Critique score from analysis.
-   */
 }
 
 /**

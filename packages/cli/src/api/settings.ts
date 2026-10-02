@@ -62,9 +62,13 @@ export interface SystemSettings {
   planner_generation_model: string;
 
   /**
-   * Legacy response field accepted for compatibility with older APIs. No longer used.
+   * @deprecated Retained for REST compatibility only. Post-implementation analysis
+   * was removed, so this setting has no effect.
    */
   auto_followup_score_threshold: number;
+
+  /** Deprecation reasons for legacy settings returned by the server. */
+  deprecated_settings?: Record<string, string>;
 
   /**
    * When enabled, the system will automatically merge the PR base branch into
@@ -191,7 +195,8 @@ export interface UpdateSettingsOptions {
   planner_generation_model?: string;
 
   /**
-   * Legacy response field accepted for compatibility with older APIs. No longer used.
+   * @deprecated Legacy REST update option accepted for compatibility only.
+   * Post-implementation analysis was removed, so writing this has no effect.
    */
   auto_followup_score_threshold?: number;
 
@@ -271,7 +276,7 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold'>;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings'>;
 
 /**
  * List of valid setting keys for validation.

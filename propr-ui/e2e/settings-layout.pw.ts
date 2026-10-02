@@ -172,7 +172,7 @@ test('fast analysis model describes the review context scout', async ({ page }) 
   await page.setViewportSize({ width: 1280, height: 820 });
   await installSettingsFixture(page);
   await page.goto('/settings?tab=models');
-  const field = page.getByLabel('Fast analysis model');
+  const field = page.getByLabel('Fast Analysis Model');
   await expect(field).toBeVisible();
   await expect(field).toHaveValue('codex:gpt-5-codex');
   await expect(page.getByText('Used by /review to gather repository context before the review.')).toBeVisible();

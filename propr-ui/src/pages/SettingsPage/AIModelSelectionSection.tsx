@@ -325,7 +325,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Fast analysis model"
+          label="Fast Analysis Model"
           htmlFor="analysis_model_fast"
           helperText="Used by /review to gather repository context before the review."
         >

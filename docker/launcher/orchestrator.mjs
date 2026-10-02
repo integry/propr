@@ -1831,14 +1831,16 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 
 /** Parse the `docker ps` table into per-service stack status (shared by sync/async). */
 export function parseStackStatus(cfg, stdout) {
-    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const expectedNames = new Set(MANAGED_SERVICES.map((service) => `${cfg.stack}-${service}`));
     const byName = new Map();
     for (const line of stdout.split('\n').filter(Boolean)) {
         const [name, state, status, ports] = line.split('\t');
         if (expectedNames.has(name)) byName.set(name, { state, status, ports: ports || '' });
     }
 
-    const services = SERVICES.map((service) => {
+    // Show retired services only while their containers still exist on an upgraded stack.
+    const visibleServices = [...SERVICES, ...RETIRED_SERVICES.filter((service) => byName.has(`${cfg.stack}-${service}`))];
+    const services = visibleServices.map((service) => {
         const name = `${cfg.stack}-${service}`;
         const found = byName.get(name);
         return {
@@ -1902,7 +1904,7 @@ export function inspectStackStatus(cfg, { timeout, env } = {}) {
         return { result };
     }
 
-    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const expectedNames = new Set(MANAGED_SERVICES.map((service) => `${cfg.stack}-${service}`));
     const seenExpectedNames = new Set();
     const validStates = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
     for (const line of result.stdout.split('\n')) {
