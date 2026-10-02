@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, describe, test } from 'node:test';
 import { buildCommandMeta, closeConnection, parseSlashCommand } from '@propr/core';
 import { type FixSelection, parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
@@ -8,6 +9,19 @@ after(async () => {
 });
 
 describe('/fix command-line selection', () => {
+    test('the command reference documents mixed all/selectors as rejected', () => {
+        const reference = readFileSync(new URL('../docs/docs/features/pr-commands.md', import.meta.url), 'utf8');
+        const paragraph = reference.split(/\n\s*\n/).find(text => text.includes('`/fix all F3`'));
+        assert.ok(paragraph, 'the command reference must explain mixed all/selectors');
+        assert.match(paragraph, /`\/fix all F3` or `\/fix all S3`\s+is rejected and nothing is applied/);
+        assert.match(paragraph, /use `\/fix all` alone, or name the records\s+explicitly/);
+        for (const argumentsText of ['all F3', 'all S3']) {
+            const resolution = resolveReviewFeedback([], parseFixSelection(argumentsText));
+            assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: [] });
+            assert.deepStrictEqual(resolution.malformedIds, [argumentsText.toUpperCase()]);
+        }
+    });
+
     const cases: Array<[string, string, FixSelection]> = [
         ['selects all pending feedback', 'all',
             { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],

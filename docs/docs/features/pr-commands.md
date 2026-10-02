@@ -172,8 +172,11 @@ all current review comments, post:
 `all` is case-insensitive and must stand alone on the command line, apart from
 trailing commas or whitespace. Use `;` for inline instructions, as in
 `/fix all; keep the API stable`, or put instructions on following lines.
-`/fix all the failing tests` and `/fix all F3` keep the bare `/fix` meaning:
-blockers only, with `all the failing tests` or `all F3` passed as instructions.
+`/fix all the failing tests` keeps the bare `/fix` meaning: blockers only, with
+`all the failing tests` passed as instructions. `/fix all F3` or `/fix all S3`
+is rejected and nothing is applied: use `/fix all` alone, or name the records
+explicitly. `/fix all` with context on following lines still selects every
+pending finding and suggestion.
 Like bare `/fix`, `/fix all` is not subject to the explicit identifier count cap.
 
 Or name exactly what to address. A review publishes merge-blocking findings as
