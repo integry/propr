@@ -7,7 +7,7 @@ import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import type { InstancePermission } from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
-import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, getEpicExecutionQueue, summarizeEpicQueue } from '@propr/core';
+import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
@@ -25,7 +25,7 @@ import { McpOperations, type OperationResult, type Operation } from './operation
 import { syncLifecycle } from './operationLifecycle.js';
 import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { addTaskSubmissionTools, trackTaskSubmission } from './toolsTaskSubmissions.js';
-import { addPlanningTools } from './toolsPlanning.js';
+import { addPlanningTools, planEpicDispatch } from './toolsPlanning.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
 import { addContextTools } from './toolsContext.js';
 import { addAdministrationTools } from './toolsAdministration.js';
@@ -306,6 +306,15 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     await authorizeStoredTool(source, principal, repositories);
     row.repository = source.repository;
   };
+  const refreshPlanImplementation = async (row: Operation, result: Record<string, unknown>, receipt: ReturnType<McpOperations['project']>): Promise<void> => {
+    if (row.tool === 'implement_plan' && Array.isArray(result.issues)) {
+      const issues = await db('plan_issues').where({ draft_id: result.planId }).whereIn('issue_number', result.issues).select('issue_number', 'status', 'task_id', 'pr_number');
+      const epicQueue = summarizeEpicQueue(await getEpicExecutionQueue(String(result.planId), { database: db }));
+      receipt.targetState = { issues, epicQueue };
+      if (row.state === 'accepted' && (!epicQueue || epicQueue.status === 'completed')
+        && issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
+    }
+  };
   tools.push({ name: 'get_operation', description: 'Read a durable mutation receipt and honest lifecycle. "accepted" means the request was recorded and handed to the backend; "running" means execution was observed; the loop/receipt is only "completed" when the backend reached a terminal success state. Poll no faster than retryAfterSeconds.', scope: 'read', readOnly: true, schema: z.object({ operationId: z.uuid() }).strict(), run: async ({ principal, args }) => {
     const row = await operations.get(principal, args.operationId);
     await authorizeOperation(row, principal);
@@ -335,13 +344,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     await trackTaskSubmission(deps, row, principal, receipt);
     await trackExecution(deps, row, principal, receipt);
     await trackCancellation(deps, row, principal, receipt);
-    if (row.tool === 'implement_plan' && Array.isArray(result.issues)) {
-      const issues = await db('plan_issues').where({ draft_id: result.planId }).whereIn('issue_number', result.issues).select('issue_number', 'status', 'task_id', 'pr_number');
-      const epicQueue = summarizeEpicQueue(await getEpicExecutionQueue(String(result.planId), { database: db }));
-      receipt.targetState = { issues, epicQueue };
-      if (row.state === 'accepted' && (!epicQueue || epicQueue.status === 'completed')
-        && issues.length === result.issues.length && issues.every(issue => ['under_review', 'merged', 'closed'].includes(issue.status))) receipt.state = 'completed';
-    }
+    await refreshPlanImplementation(row, result, receipt);
     await syncReceiptLifecycle(operations, row, receipt, !!unavailableOutcome);
     const durableRow = await operations.get(principal, row.id);
     const durableReceipt = operations.project(durableRow);
@@ -552,3 +555,76 @@ export function workflow(tools: McpTool[], definition: Omit<McpTool, 'run'>, han
 
 /** Dispatch, authorization and access recording for one call live beside the catalog. */
 export { executeTool } from './toolExecution.js';
+
+/** Register implementation dispatch separately from plan editing and publication. */
+export function addPlanImplementationTool(
+  tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>, target: McpTool['target'],
+): void {
+  const { db, policy } = deps;
+  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues. Epics default to sequential execution in publication order with one model, advancing on merge; epicExecution: parallel restores fan-out and epicAdvanceOn: terminal advances on closure too. Paused plans hold the next issue. Ultrafix is bounded to 10 cycles.', scope: 'execute', target,
+    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), epicExecution: z.enum(['sequential', 'parallel']).optional(), epicAdvanceOn: z.enum(['merged', 'terminal']).optional(), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: z.number().int().min(1).max(10).default(9), ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
+      if (args.autoMerge) policy.requireScope(principal, 'merge');
+      if (args.runUltrafix) policy.requireScope(principal, 'review');
+      if (new Set(args.issues).size !== args.issues.length) throw new McpError('INVALID_INPUT', 'Select each issue only once.');
+      // Reject comparisons before any claims or GitHub calls.
+      planEpicDispatch({ issues: args.issues, planOrder: args.issues, useEpic: args.useEpic,
+        epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
+      const [agents, synthetic] = await Promise.all([loadAgents(), loadSyntheticAgents()]);
+      for (const model of args.models) {
+        const supported = agents.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.supportedModels.includes(model.model_name))
+          || synthetic.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.models.some(choice => choice.enabled && choice.id === model.model_name));
+        if (!supported) throw new McpError('INVALID_MODEL', 'Choose an enabled agent and supported model from list_models.');
+      }
+      const available = await db('plan_issues').where({ draft_id: args.planId }).whereIn('issue_number', args.issues).orderBy('id');
+      if (available.length !== new Set(args.issues).size) throw new McpError('NOT_FOUND', 'One or more selected issues do not belong to this plan.', 404);
+      if (available.some(issue => issue.status !== 'pending')) throw new McpError('PRECONDITION_FAILED', 'A selected issue has already started.', 409);
+      const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
+        useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
+      await db.transaction(async tx => {
+        for (const number of args.issues) {
+          const id = `${args.planId}:${number}`;
+          const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
+            value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id }), expires_at: null }).onConflict(['kind', 'id']).ignore().returning('id');
+          if (!inserted.length) throw new McpError('IMPLEMENTATION_ALREADY_REQUESTED', 'An implementation receipt already owns a selected issue. Inspect the plan and prior operation before recovery.', 409);
+          await tx('plan_issues').where({ draft_id: args.planId, issue_number: number }).update({
+            run_ultrafix: args.runUltrafix, ultrafix_goal: args.runUltrafix ? args.ultrafixGoal : null,
+            ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
+          });
+        }
+        if (dispatch.mode === 'sequential') {
+          await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
+            issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
+            autoMerge: args.autoMerge, ready: false, headStartedAt: Date.now() }, { database: tx });
+        }
+      });
+      const results = [];
+      const prepareIssue = async (number: number) => {
+        await policy.repository(principal, args.repository, true);
+        if (!args.autoMerge) {
+          const [owner, repo] = args.repository.split('/');
+          try { await principal.github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { owner, repo, issue_number: number, name: 'auto-merge' }); }
+          catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
+        }
+      };
+      try {
+        for (const number of dispatch.dispatchNow) {
+          await prepareIssue(number);
+          results.push((await callWorkflow(planner.implementIssue, principal, { params: { id: args.planId, issueNumber: String(number) }, body: { repository: args.repository, models: args.models, useEpic: args.useEpic, autoMerge: args.autoMerge } })).data);
+        }
+      } catch (error) {
+        if (dispatch.mode === 'sequential') await cancelEpicExecutionQueue(args.planId);
+        throw error;
+      }
+      if (dispatch.mode === 'sequential') {
+        for (const number of dispatch.queued) {
+          await prepareIssue(number);
+          await callWorkflow(planner.updateIssue, principal, { params: { id: args.planId, issueNumber: String(number) },
+            body: { agent_alias: args.models[0].agent_alias, model_name: args.models[0].model_name, syncEpicLabels: true } });
+        }
+        await readyEpicExecutionQueue(args.planId);
+      }
+      return { status: 202, data: { planId: args.planId, issues: args.issues, executionMode: dispatch.mode,
+        advanceOn: dispatch.advanceOn, started: dispatch.dispatchNow, queued: dispatch.queued, results,
+        message: dispatch.mode === 'sequential' ? 'Epic implementation requested. Remaining selected issues are queued in publication order.' : 'Implementation requested. Inspect plan issues and tasks for execution state.' } };
+    } });
+}

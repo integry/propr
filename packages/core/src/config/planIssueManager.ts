@@ -237,15 +237,10 @@ export async function updatePlanIssue(
             updated_at: db.fn.now()
         };
 
-        if (updates.pr_number !== undefined) updateData.pr_number = updates.pr_number;
-        if (updates.status !== undefined) updateData.status = updates.status;
-        if (updates.agent_alias !== undefined) updateData.agent_alias = updates.agent_alias;
-        if (updates.model_name !== undefined) updateData.model_name = updates.model_name;
-        if (updates.followup_count !== undefined) updateData.followup_count = updates.followup_count;
-        if (updates.task_id !== undefined) updateData.task_id = updates.task_id;
-        if (updates.run_ultrafix !== undefined) updateData.run_ultrafix = updates.run_ultrafix;
-        if (updates.ultrafix_goal !== undefined) updateData.ultrafix_goal = updates.ultrafix_goal;
-        if (updates.ultrafix_max_cycles !== undefined) updateData.ultrafix_max_cycles = updates.ultrafix_max_cycles;
+        for (const field of ['pr_number', 'status', 'agent_alias', 'model_name', 'followup_count',
+            'task_id', 'run_ultrafix', 'ultrafix_goal', 'ultrafix_max_cycles'] as const) {
+            if (updates[field] !== undefined) updateData[field] = updates[field];
+        }
 
         await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })

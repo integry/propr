@@ -155,6 +155,13 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
       .update({ blocked_reason: null });
   }
   if (issue.status !== PlanIssueStatus.PENDING) return;
+  await dispatchPendingQueueHead(queue, draft.context_config, deps);
+}
+
+async function dispatchPendingQueueHead(queue: EpicExecutionQueue, contextConfig: unknown, deps: EpicQueueDependencies): Promise<void> {
+  const database = deps.database ?? db;
+  const draftId = queue.draftId;
+  const issueNumber = queue.issues[queue.cursor];
   const timestamp = (deps.now ?? Date.now)();
   if (queue.headStartedAt !== null && timestamp - queue.headStartedAt < RETRY_PENDING_AFTER_MS) return;
   const claim = database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor, ready: true });
@@ -165,7 +172,7 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   claim.whereExists(database('plan_issues').select('id').where({ draft_id: draftId, issue_number: issueNumber, status: 'pending' }));
   const changed = await claim.update({ head_started_at: timestamp, blocked_reason: null, updated_at: timestamp });
   if (!changed) return;
-  const context = typeof draft.context_config === 'string' ? JSON.parse(draft.context_config || '{}') : draft.context_config;
+  const context = typeof contextConfig === 'string' ? JSON.parse(contextConfig || '{}') : contextConfig;
   try {
     await (deps.startIssue ?? labelPlanIssueForProcessing)({ draftId, repository: queue.repository, issueNumber,
       epicLabel: typeof context?.epicLabel === 'string' ? context.epicLabel : undefined, autoMerge: queue.autoMerge });
@@ -222,6 +229,16 @@ async function reconcileReopenedQueueHead(queue: EpicExecutionQueue, issue: Plan
   }
 }
 
+async function reconcileQueueHead(draftId: string, deps: EpicQueueDependencies): Promise<void> {
+  const database = deps.database ?? db;
+  const head = await getEpicExecutionQueue(draftId, deps);
+  if (!head) return;
+  const issue = await database('plan_issues').where({ draft_id: head.draftId, issue_number: head.issues[head.cursor] }).first<PlanIssue>();
+  if (!issue) return;
+  await reconcileTerminalInProgressIssues(head.repository, [issue], logger.withCorrelation(`epic-reconcile-${head.draftId}`));
+  await reconcileReopenedQueueHead(head, issue);
+}
+
 export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies = {}): Promise<{ reconciled: number }> {
   const database = deps.database ?? db;
   const queues = await database('epic_execution_queues').whereIn('status', ['active', 'completed'])
@@ -237,14 +254,7 @@ export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies =
           await database('epic_execution_queues').where({ draft_id: queue.draft_id, execution_id: current.executionId, status: 'active', ready: false })
             .update({ ready: repaired, blocked_reason: repaired ? null : 'Initial epic dispatch did not establish model and branch labels; inspect the implementation operation before recovery.', updated_at: (deps.now ?? Date.now)() });
         }
-        const head = await getEpicExecutionQueue(queue.draft_id, deps);
-        if (head) {
-          const issue = await database('plan_issues').where({ draft_id: head.draftId, issue_number: head.issues[head.cursor] }).first<PlanIssue>();
-          if (issue) {
-            await reconcileTerminalInProgressIssues(head.repository, [issue], logger.withCorrelation(`epic-reconcile-${head.draftId}`));
-            await reconcileReopenedQueueHead(head, issue);
-          }
-        }
+        await reconcileQueueHead(queue.draft_id, deps);
         await startEpicQueueHead(queue.draft_id, deps);
       }
       await database('epic_execution_queues').where({ draft_id: queue.draft_id, execution_id: queue.execution_id })
