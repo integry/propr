@@ -13,7 +13,6 @@ import {
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
-import { handleMergedPRNextIssueTrigger } from './planIssueTrigger.js';
 import { notificationService } from '../services/notificationService.js';
 import type {
     IssuesEvent,
@@ -201,14 +200,8 @@ async function handleEpicPROpened(
     }
 }
 
-/**
- * Handles triggering the next pending issue after a PR is merged.
- * Checks if epic PR has pending checks and defers if necessary.
- */
 // Re-export from statusMachine for backwards compatibility
 export { determinePRStatusUpdate } from './statusMachine.js';
-// Re-export from planIssueTrigger for backwards compatibility
-export { triggerNextPendingIssue } from './planIssueTrigger.js';
 
 /**
  * Checks for repository renames by inspecting the PR body for issue references
@@ -283,16 +276,6 @@ export async function handlePlanPRUpdate(
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
             log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
-        }
-
-        // When a PR is merged, trigger the next pending issue in the same plan
-        // Check both newStatus and current status to handle race conditions
-        const isMerged = newStatus === PlanIssueStatus.MERGED
-            || (action === 'closed' && payload.pull_request.merged === true && planIssue.status === PlanIssueStatus.MERGED);
-        if (isMerged && planIssue.draft_id) {
-            await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
-        } else if (isMerged) {
-            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');

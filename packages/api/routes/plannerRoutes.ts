@@ -70,7 +70,7 @@ const upload = multer({
 export const attachmentUpload = upload.single('file');
 export const goalAttachmentUpload = upload.array('files', 10);
 
-interface PlannerRoutesDeps { db: Knex; }
+interface PlannerRoutesDeps { db: Knex; enqueueEpics?: boolean; }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
@@ -305,7 +305,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const getRepositoryInfo = withAuthCheck(db, createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier }));
   const downloadContext = withAuthCheck(db, createDownloadContextHandler({ verifyOwnership: ownershipVerifier }));
   const getIssues = withAuthCheck(db, createGetIssuesHandler({ verifyOwnership: ownershipVerifier }));
-  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }, { enqueueEpics: deps.enqueueEpics }));
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 

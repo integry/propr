@@ -2,7 +2,6 @@ import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
   db,
-  safeUpdateLabels,
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
@@ -36,6 +35,7 @@ import {
   type UpdateIssueRequestBody,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
+import { enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
@@ -287,7 +287,7 @@ function sendImplementIssueError(res: Response, error: unknown): void {
     res.status(409).json({ error: error.message });
     return;
   }
-  if (error instanceof ImplementationRequestError) {
+  if (error instanceof ImplementationRequestError || error instanceof EpicQueueRequestError) {
     res.status(error.status).json({ error: error.message });
     return;
   }
@@ -322,14 +322,19 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
     }
   };
 }
-export function createImplementIssueHandler(deps: PlanIssueDeps) {
+export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics = true }: { enqueueEpics?: boolean } = {}) {
   return async function implementIssue(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseIssueNumberParam(req, res);
     if (issueNumber === null) return;
     try {
       const target = await loadImplementationTarget({ deps, req, draftId, issueNumber });
-      const result = await implementLoadedIssue({ ...target, draftId, issueNumber });
+      const { useEpic, autoMerge } = resolveImplementationSettings(target.implementationSettings, target.contextConfig);
+      const implement = () => implementLoadedIssue({ ...target, draftId, issueNumber });
+      const result = enqueueEpics && useEpic
+        ? await enqueueEpicImplementation({ draftId, issueNumber, repository: `${target.owner}/${target.repo}`,
+          autoMerge, contextConfig: target.contextConfig, implement })
+        : await implement();
       res.json(result);
     } catch (error) {
       sendImplementIssueError(res, error);
@@ -364,15 +369,8 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
           const draft = await db('task_drafts').where({ draft_id: draftId }).first('context_config');
           const context = parseContextConfig(draft?.context_config);
           if (typeof context?.epicLabel !== 'string') throw new Error('Epic branch selector is missing for queued issue');
-          const [owner, repo] = repository.split('/');
-          const octokit = await getAuthenticatedOctokit();
-          const githubIssue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
-          const staleBaseLabels = githubIssue.data.labels.map(label => typeof label === 'string' ? label : label.name)
-            .filter((label): label is string => !!label && label.startsWith('base-') && label !== context.epicLabel);
-          const synced = await safeUpdateLabels({ octokit, owner, repo, issueNumber,
-            logger: logger.withCorrelation(`queued-issue-${draftId}-${issueNumber}`) }, staleBaseLabels,
-          [context.epicLabel, ...(queue.autoMerge ? ['auto-merge'] : [])]);
-          if (!synced.success) throw new Error(`Failed to synchronize queued epic labels: ${synced.errors.join('; ')}`);
+          await syncQueuedEpicIssueSelectors({ draftId, repository, issueNumber, epicLabel: context.epicLabel,
+            autoMerge: queue.autoMerge, selection: buildUpdatedConfigState(currentIssue, configUpdates) });
         }
       }
       let updated: PlanIssue | null;

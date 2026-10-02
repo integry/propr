@@ -10,9 +10,7 @@ import {
 } from './statusMachine.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
-import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
 import { db } from '../db/connection.js';
-import { getEpicExecutionQueue, finalizeCompletedEpicQueue } from '../services/taskPlanning/epicExecutionQueue.js';
 
 interface LatestTaskHistoryRow {
     state: string;
@@ -76,36 +74,6 @@ export async function reconcileTerminalInProgressIssues(
     }));
 
     return reconciledIssues;
-}
-
-/**
- * Gets all labels from an issue.
- */
-async function getIssueLabels(
-    repository: string,
-    issueNumber: number,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<string[]> {
-    try {
-        const [owner, repo] = repository.split('/');
-        const octokit = await getAuthenticatedOctokit();
-
-        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner,
-            repo,
-            issue_number: issueNumber
-        });
-
-        const labels = response.data.labels as Array<{ name: string } | string>;
-        return labels.map(label => typeof label === 'string' ? label : label.name);
-    } catch (error) {
-        log.warn({
-            repository,
-            issueNumber,
-            error: (error as Error).message
-        }, 'Failed to get issue labels');
-        return [];
-    }
 }
 
 /**
@@ -180,9 +148,9 @@ async function addProcessingLabelToEpicPR(
     }
 }
 
-/** Starts an issue using the same processing-label path as the legacy epic chain. */
+/** Starts an issue using the processing-label path owned by the epic queue. */
 export async function labelPlanIssueForProcessing({
-    repository, issueNumber, correlationId, draftId, epicLabel, autoMerge = true, log: suppliedLog, canStart
+    repository, issueNumber, correlationId, draftId, epicLabel, autoMerge = true
 }: {
     repository: string;
     issueNumber: number;
@@ -190,10 +158,8 @@ export async function labelPlanIssueForProcessing({
     draftId?: string;
     epicLabel?: string;
     autoMerge?: boolean;
-    log?: ReturnType<typeof logger.withCorrelation>;
-    canStart?: () => Promise<boolean>;
 }): Promise<void> {
-    const log = suppliedLog ?? logger.withCorrelation(correlationId || `epic-queue-${draftId}-${issueNumber}`);
+    const log = logger.withCorrelation(correlationId || `epic-queue-${draftId}-${issueNumber}`);
     const [owner, repo] = repository.split('/');
     const processingLabels = getPrimaryProcessingLabels();
     const primaryLabel = processingLabels[0] || 'AI';
@@ -213,8 +179,6 @@ export async function labelPlanIssueForProcessing({
 
     const octokit = await getAuthenticatedOctokit();
 
-    if (canStart && !await canStart()) return;
-
     // Add the processing labels to trigger the issue
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
         owner,
@@ -232,9 +196,7 @@ export async function labelPlanIssueForProcessing({
 }
 
 /** Labels the epic PR only after all children in the draft are done. */
-export async function finalizeEpicPlanIfComplete(draftId: string, legacy?: {
-    repository: string; epicLabel?: string; log: ReturnType<typeof logger.withCorrelation>;
-}, canFinalize: () => Promise<boolean> = async () => true): Promise<boolean> {
+export async function finalizeEpicPlanIfComplete(draftId: string, canFinalize: () => Promise<boolean> = async () => true): Promise<boolean> {
     const isReady = async () => {
         const issues = await getPlanIssuesByDraft(draftId);
         if (issues.some(issue => isInProgressStatus(issue.status) || issue.status === PlanIssueStatus.PENDING)) return false;
@@ -244,106 +206,8 @@ export async function finalizeEpicPlanIfComplete(draftId: string, legacy?: {
     const draft = await db('task_drafts').where({ draft_id: draftId }).first('repository', 'context_config');
     if (!draft || !await isReady()) return false;
     const context = parseHistoryMetadata(draft.context_config);
-    const epicLabel = legacy ? legacy.epicLabel : typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
+    const epicLabel = typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
     if (!epicLabel) return true;
-    return addProcessingLabelToEpicPR(legacy?.repository ?? draft.repository, epicLabel,
-        legacy?.log ?? logger.withCorrelation(`epic-complete-${draftId}`), isReady);
-}
-
-/**
- * Triggers the next pending issue in a plan by adding processing labels.
- * Only triggers if there are no issues currently being processed or under review.
- */
-export async function triggerNextPendingIssue(
-    draftId: string,
-    repository: string,
-    epicLabel: string | undefined,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    try {
-        const queue = await getEpicExecutionQueue(draftId);
-        // Only an active queue owns progression; finished subsets return control to the UI chain.
-        if (queue?.status === 'active') {
-            log.info({ draftId, handledBy: 'epic_execution_queue' }, 'Queue owns plan issue progression');
-            return;
-        }
-
-        const legacyOwnsProgression = async () => (await getEpicExecutionQueue(draftId))?.status !== 'active';
-
-        // Check if the draft is paused - if so, don't trigger the next issue
-        const paused = await isDraftPaused(draftId);
-        if (paused) {
-            log.info({ draftId }, 'Skipping next issue trigger - draft execution is paused');
-            return;
-        }
-
-        // Get all issues in the same plan
-        const planIssues = await reconcileTerminalInProgressIssues(
-            repository,
-            await getPlanIssuesByDraft(draftId),
-            log
-        );
-
-        // Check if there are any issues currently in progress (processing or under_review)
-        // These statuses indicate an active PR or processing that hasn't completed yet
-        const hasInProgressIssue = planIssues.some(issue => isInProgressStatus(issue.status));
-        if (hasInProgressIssue) {
-            const inProgressIssues = planIssues.filter(issue => isInProgressStatus(issue.status));
-            log.debug({
-                draftId,
-                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
-            }, 'Skipping next issue trigger - there are issues still in progress');
-            return;
-        }
-
-        // Find the next pending issue
-        const nextPending = planIssues.find(issue => issue.status === PlanIssueStatus.PENDING);
-        if (!nextPending) {
-            log.debug({ draftId }, 'No more pending issues in plan');
-
-            // All issues are done - add processing label to Epic PR if present
-            if (queue?.status === 'completed') {
-                await finalizeCompletedEpicQueue(draftId, {}, queue.executionId);
-            } else {
-                await finalizeEpicPlanIfComplete(draftId, { repository, epicLabel, log }, legacyOwnsProgression);
-            }
-            return;
-        }
-
-        await labelPlanIssueForProcessing({ repository, issueNumber: nextPending.issue_number, draftId, epicLabel, log,
-            canStart: legacyOwnsProgression });
-
-    } catch (error) {
-        log.warn({
-            draftId,
-            error: (error as Error).message
-        }, 'Failed to trigger next pending issue');
-    }
-}
-
-/**
- * Handles triggering the next issue after a PR is merged.
- * Checks for auto-merge label and epic label before triggering.
- */
-export async function handleMergedPRNextIssueTrigger(
-    repository: string,
-    issueNumber: number,
-    draftId: string,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    const issueLabels = await getIssueLabels(repository, issueNumber, log);
-    const hasAutoMerge = issueLabels.includes('auto-merge');
-    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
-    const isEpicSequentialMerge = !!epicLabel;
-    log.info({ repository, issueNumber, issueLabels, hasAutoMerge, epicLabel, isEpicSequentialMerge }, 'Checking auto-merge for next issue trigger');
-
-    if (!hasAutoMerge && !isEpicSequentialMerge) {
-        log.info({ repository, issueNumber }, 'Skipping next issue trigger - no auto-merge or epic label');
-        return;
-    }
-
-    // Trigger next issue immediately - no need to wait for Epic PR checks since:
-    // 1. Child issues can start processing independently
-    // 2. triggerNextPendingIssue already guards against triggering while issues are in progress
-    await triggerNextPendingIssue(draftId, repository, epicLabel, log);
+    return addProcessingLabelToEpicPR(draft.repository, epicLabel,
+        logger.withCorrelation(`epic-complete-${draftId}`), isReady);
 }

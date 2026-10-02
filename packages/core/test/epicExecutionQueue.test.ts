@@ -192,20 +192,21 @@ test('failed label dispatch retains claim until recovery and status wrapper neve
   assert.equal(summarizeEpicQueue(null), null);
 });
 
-test('queue-only reconciliation observes a reopened or later-merged closed PR', async () => {
+test('reconciliation preserves a manual issue close even when its PR is open or merged', async () => {
   await createEpicExecutionQueue(input);
   await database('plan_issues').where({ draft_id: 'draft', issue_number: 10 }).update({ status: 'closed', pr_number: 100 });
   await onPlanIssueStatusChanged('draft', 10, S.CLOSED);
   pullRequestState = { state: 'open', merged: false };
   await reconcileEpicExecutionQueues();
-  assert.equal((await database('plan_issues').where({ issue_number: 10 }).first()).status, 'under_review');
-  assert.equal((await getEpicExecutionQueue('draft'))?.blockedReason, null);
+  assert.equal((await database('plan_issues').where({ issue_number: 10 }).first()).status, 'closed');
+  assert.match((await getEpicExecutionQueue('draft'))?.blockedReason ?? '', /closed/);
   assert.deepEqual(starts, []);
   await status(10, 'closed');
   pullRequestState = { state: 'closed', merged: true };
   await reconcileEpicExecutionQueues();
-  assert.deepEqual(starts, [30]);
-  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+  assert.equal((await database('plan_issues').where({ issue_number: 10 }).first()).status, 'closed');
+  assert.deepEqual(starts, []);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
 });
 
 test('stale observer cannot advance a replacement execution with the same cursor', async () => {

@@ -123,7 +123,8 @@ function scopeRepositories(query: Knex.QueryBuilder, column: string, repository:
 export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const { db, taskQueue, redisClient, policy } = deps;
   const tools: McpTool[] = [];
-  const planner = createPlannerRoutes({ db });
+  // MCP claims its selected queue atomically with execution receipts before invoking the head handler.
+  const planner = createPlannerRoutes({ db, enqueueEpics: false });
   const goals = createGoalRoutes({ ...deps.goalServices, db, taskQueue, redisClient });
   const tasks = createTaskRoutes({ db, taskQueue });
   const docker = createDockerRoutes({ redisClient, stopTaskExecution: (id, options) => stopTaskExecution(id, { ...options, exactTaskId: true }) });
@@ -592,6 +593,7 @@ export function addPlanImplementationTool(
             value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id }), expires_at: null }).onConflict(['kind', 'id']).ignore().returning('id');
           if (!inserted.length) throw new McpError('IMPLEMENTATION_ALREADY_REQUESTED', 'An implementation receipt already owns a selected issue. Inspect the plan and prior operation before recovery.', 409);
           await tx('plan_issues').where({ draft_id: args.planId, issue_number: number }).update({
+            ...(dispatch.mode === 'sequential' ? args.models[0] : {}),
             run_ultrafix: args.runUltrafix, ultrafix_goal: args.runUltrafix ? args.ultrafixGoal : null,
             ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
           });
