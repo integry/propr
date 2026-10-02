@@ -1,6 +1,7 @@
 export interface SettingEntry {
   id: string;
   label: string;
+  description?: string;
   aliases: string[];
   scope: 'instance' | 'repository' | 'user' | 'environment';
   ui?: string;
@@ -50,10 +51,9 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
     mcp: { read: 'get_trigger_access_configuration' }, env: ['GITHUB_USER_BLACKLIST'], restartRequired: true, mcpStatus: 'read_only',
     reason: 'The environment-owned deny list is intentionally read-only in MCP.', docs: configurationReference,
   },
-  execution('models.analysis_model_fast', 'Fast analysis model', 'Settings → Models → Model selection', ['analysis_model_fast'], ['ANALYSIS_MODEL_FAST']),
+  { ...execution('models.analysis_model_fast', 'Fast analysis model', 'Settings → Models → Model selection', ['analysis_model_fast'], ['ANALYSIS_MODEL_FAST']), description: 'Used by /review to gather repository context before the review.' },
   execution('models.planner_context_model', 'Planner context model', 'Settings → Models → Model selection', ['planner_context_model'], ['PLANNER_CONTEXT_MODEL']),
   execution('models.planner_generation_model', 'Planner generation model', 'Settings → Models → Model selection', ['planner_generation_model'], ['PLANNER_GENERATION_MODEL']),
-  execution('automation.auto_followup_score_threshold', 'Automatic follow-up score threshold', 'Settings → Automation → General configuration', ['auto_followup_score_threshold']),
   execution('automation.auto_resolve_merge_conflicts', 'Automatic merge-conflict resolution', 'Settings → Automation → General configuration', ['auto_resolve_merge_conflicts']),
   execution('models.dashboard_summary_enabled', 'Dashboard AI summaries', 'Settings → Models → Model selection', ['dashboard_summary_enabled']),
   execution('models.model_reasoning_level', 'Model reasoning level', 'Settings → Models → Model selection', ['model_reasoning_level']),

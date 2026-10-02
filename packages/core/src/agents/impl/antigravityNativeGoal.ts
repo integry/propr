@@ -53,7 +53,7 @@ interface GoalMessage {
 export type StartAntigravitySegment = (
     message: string,
     options: { conversationId?: string; launch: boolean },
-) => AntigravityGoalSegment;
+) => AntigravityGoalSegment | Promise<AntigravityGoalSegment>;
 
 function checkpointFeedback(outcome: GoalCheckpointOutcome): string {
     if (!outcome.accepted) {
@@ -226,7 +226,7 @@ class AntigravityGoalProtocol {
 
     private async runSegment(message: GoalMessage): Promise<SegmentObservation & { turnId: string }> {
         const launch = !this.conversationId;
-        const segment = this.startSegment(message.text, { conversationId: this.conversationId, launch });
+        const segment = await this.startSegment(message.text, { conversationId: this.conversationId, launch });
         this.segments.push(segment);
         await this.waitForIdentity(segment);
         this.turn += 1;
@@ -316,7 +316,7 @@ function addTokenUsage(total: TokenUsage, usage: TokenUsage): TokenUsage {
 
 export interface AntigravityNativeGoalLaunch {
     /** Docker args for one invocation; `launch` keeps slash commands enabled for `/goal`. */
-    buildDockerArgs(options: { conversationId?: string; launch: boolean }): string[];
+    buildDockerArgs(options: { conversationId?: string; launch: boolean }): string[] | Promise<string[]>;
     model: string;
     timeoutMs: number;
 }
@@ -338,10 +338,14 @@ export async function executeAntigravityNativeGoal(
     const stopCurrent = (): void => { current?.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', stopCurrent, { once: true });
     const deadline = setTimeout(() => { expired = true; stopCurrent(); }, launch.timeoutMs);
-    const startSegment: StartAntigravitySegment = (message, segmentOptions) => {
+    const startSegment: StartAntigravitySegment = async (message, segmentOptions) => {
         if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
         if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
-        const args = resolveExecutionArgs('docker', launch.buildDockerArgs(segmentOptions), options.taskId, ownership?.attemptGeneration);
+        const dockerArgs = await launch.buildDockerArgs(segmentOptions);
+        // Minting is asynchronous: cancellation or timeout may have won meanwhile.
+        if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
+        if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
+        const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
         const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
         current = child;
         // Print mode reads the prompt from non-TTY stdin, avoiding argv limits.

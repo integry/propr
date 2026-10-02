@@ -22,6 +22,8 @@ import {
 } from '../api/dashboardApi';
 import {
   CURRENT_DAY_FILL,
+  SETTLED_DAY_FILL,
+  dailyBarFill,
   dailyPointFill,
   utcToday,
 } from './Dashboard/chartPalette';
@@ -212,6 +214,13 @@ describe('Dashboard studio design rules', () => {
     expect(dailyPointFill('2026-09-17', today)).toBeNull();
     // A settled day carries no marker, however many completions it holds.
     expect(dailyPointFill('2020-01-01', today)).toBeNull();
+  });
+
+  it('draws past days of a daily bar chart in neutral slate and only today in teal', () => {
+    const today = utcToday();
+    expect(dailyBarFill(today, today)).toBe(CURRENT_DAY_FILL);
+    expect(dailyBarFill('2026-09-17', today)).toBe(SETTLED_DAY_FILL);
+    expect(SETTLED_DAY_FILL).toBe('#CBD5E1');
   });
 
   it('spends no row on a page bar: the filter sits in the global toolbar and the console starts at the top', async () => {

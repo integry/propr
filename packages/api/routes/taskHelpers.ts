@@ -3,7 +3,6 @@ import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
-import { loadCritiqueScores } from './critiqueScore.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -149,7 +148,7 @@ export async function getTasksFromDb(
   if (pageTasks.length === 0) return { tasks: [], total, offset, limit };
 
   const taskIds = pageTasks.map((row: Record<string, unknown>) => String(row.task_id));
-  const { historyByTask, planStatusByTask, critiqueScoreByTask, commentMetadataByTask } = await timeApiStage(
+  const { historyByTask, planStatusByTask, commentMetadataByTask } = await timeApiStage(
     'sql.tasks.enrichment',
     async () => enrichTaskPage(db, taskIds, Boolean(excludeMerged))
   );
@@ -162,7 +161,6 @@ export async function getTasksFromDb(
       ...row,
       ...historyByTask.get(String(row.task_id)),
       plan_issue_status: planStatusByTask.get(String(row.task_id)) ?? null,
-      critique_score: critiqueScoreByTask.get(String(row.task_id)) ?? null,
     }),
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
@@ -172,7 +170,6 @@ export async function getTasksFromDb(
 interface TaskPageEnrichment {
   historyByTask: Map<string, Record<string, unknown>>;
   planStatusByTask: Map<string, unknown>;
-  critiqueScoreByTask: Map<string, unknown>;
   commentMetadataByTask: Map<string, unknown>;
 }
 
@@ -199,11 +196,6 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
   if (excludeMerged) planIssueQuery.whereNot('status', 'merged');
   const planIssueRows = await planIssueQuery;
 
-  // Only executions belonging to this page are read, newest first, so the
-  // "latest valid outer analysis report" choice never evaluates JSON for
-  // unrelated tasks.
-  const critiqueScoreByTask = await loadCritiqueScores(db, taskIds);
-
   // Only rows that may carry a completion comment are read; the helper confirms the parsed shape.
   const commentRows = await db('task_history')
     .whereIn('task_id', taskIds)
@@ -228,7 +220,7 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
     if (!planStatusByTask.has(taskId)) planStatusByTask.set(taskId, row.status);
   }
 
-  return { historyByTask, planStatusByTask, critiqueScoreByTask, commentMetadataByTask };
+  return { historyByTask, planStatusByTask, commentMetadataByTask };
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {
@@ -273,9 +265,6 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
   const { title, subtitle, llmProvider, prNumber: jobDataPrNumber, issueNumber: jobDataIssueNumber } = parseInitialJobData(row);
   const prNumber = (row.pr_number as number | null) || jobDataPrNumber || extractPrNumberFromFinalResult(row);
   const linkedIssueNumber = jobDataIssueNumber;
-  const critiqueScore = row.critique_score !== null && row.critique_score !== undefined
-    ? typeof row.critique_score === 'number' ? row.critique_score : parseFloat(row.critique_score as string)
-    : null;
 
   return {
     id: row.task_id, issueId: row.task_id, repository: row.repository,
@@ -290,7 +279,6 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     commitHash: typeof row.commit_hash === 'string' && row.commit_hash ? row.commit_hash : null,
     progress: (row.state === 'completed' || row.state === 'failed' || row.state === 'cancelled') ? 100 : (row.state === 'processing' ? 50 : 0),
     attemptsMade: 1, modelName: row.model_name, model: row.model_name, llmProvider,
-    planIssueStatus: row.plan_issue_status || null,
-    critiqueScore: critiqueScore !== null && !isNaN(critiqueScore) ? critiqueScore : null
+    planIssueStatus: row.plan_issue_status || null
   };
 }

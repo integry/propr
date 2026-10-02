@@ -1,5 +1,5 @@
 # Multi-stage prod build for the Propr application image.
-# Single image runs daemon, worker, analysis-worker, indexing-worker, or api
+# Single image runs daemon, worker, indexing-worker, or api
 # depending on the command passed at runtime.
 #
 # Build from the monorepo root:
@@ -130,7 +130,6 @@ ENTRYPOINT ["/sbin/tini", "--"]
 
 # Default command: daemon. Override at `docker run` for worker / api / etc.
 #   docker run propr/app node dist/src/worker.js
-#   docker run propr/app node dist/src/analysis_worker.js
 #   docker run propr/app node dist/src/indexing_worker.js
 #   docker run propr/app node dist/packages/api/server.js
 #   docker run --rm propr/app node dist/src/migrate.js

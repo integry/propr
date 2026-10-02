@@ -187,6 +187,44 @@ describe('Antigravity native goal protocol', () => {
         assert.match(segments[1].message, /published your checkpoint as commit abc1234/);
     });
 
+    test('async relaunch preparation preserves pending input until the new conversation invocation accepts it', async () => {
+        const state = harness();
+        const { segments, start } = scripted([[{}, {}, {}], [completed()]]);
+        let release!: () => void;
+        let preparing!: () => void;
+        const ready = new Promise<void>(resolve => { preparing = resolve; });
+        const running = runAntigravityGoalProtocol(async (message, options) => {
+            if (segments.length === 1) {
+                preparing();
+                await new Promise<void>(resolve => { release = resolve; });
+            }
+            return start(message, options);
+        }, taskOptions(state), COMMAND);
+        state.snapshot.pendingInputs = [{ id: 'input-1', message: 'Also add multiply(a, b).' }];
+        await ready;
+        assert.equal(segments.length, 1);
+        assert.deepEqual(state.delivered, []);
+        assert.equal(state.snapshot.pendingInputs.length, 1);
+        release();
+        assert.equal((await running).status, 'completed');
+        assert.deepEqual(state.delivered, [['input-1', 'agy-conversation:2']]);
+    });
+
+    test('failed async relaunch preparation leaves input pending for a later attempt', async () => {
+        const state = harness();
+        const { segments, start } = scripted([[{}, {}, {}]]);
+        const running = runAntigravityGoalProtocol(async (message, options) => {
+            if (segments.length === 1) throw new Error('Scoped token unavailable');
+            return start(message, options);
+        }, taskOptions(state), COMMAND);
+        state.snapshot.pendingInputs = [{ id: 'input-1', message: 'Keep this instruction.' }];
+        await assert.rejects(running, /Scoped token unavailable/);
+        assert.equal(segments.length, 1);
+        assert.deepEqual(state.delivered, []);
+        assert.deepEqual(state.undeliverable, []);
+        assert.equal(state.snapshot.pendingInputs[0].id, 'input-1');
+    });
+
     test('a rejected checkpoint is fed back instead of committed', async () => {
         const state = harness();
         const { segments, start } = scripted([

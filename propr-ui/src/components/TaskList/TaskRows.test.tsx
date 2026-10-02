@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskTableContent } from './StateComponents';
-import type { TaskGroup } from './types';
+import type { Task, TaskGroup } from './types';
 
 const prTitle = 'Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when an issue or PR withdraws intent';
 const group: TaskGroup = {
@@ -13,12 +13,12 @@ const group: TaskGroup = {
     subtitle: index ? `Change number ${index}` : 'Ultrafix cycle 3 (linting)',
     status: index ? 'completed' : 'processing', createdAt: `2026-09-10T12:0${9 - index}:00Z`, completedAt: index ? '2026-09-10T12:10:00Z' : null,
     issueNumber: 2664, linkedIssueNumber: 2659, prNumber: 2664, llmProvider: 'codex', model: 'gpt-6-astra',
-    critiqueScore: index === 1 ? 8 : null,
+    critiqueScore: index === 0 ? 9 : index === 1 ? 8 : null,
     previewMedia: index === 0 ? [
       { type: 'image' as const, title: 'Desktop', url: 'https://github.com/user-attachments/assets/a' },
       { type: 'image' as const, title: 'Mobile', url: 'https://github.com/user-attachments/assets/b' },
     ] : undefined,
-  })),
+  } as Task & { critiqueScore: number | null })),
 };
 
 function Fixture({ onRowClick = vi.fn() }: { onRowClick?: (id: string) => void }) {
@@ -38,14 +38,14 @@ describe('task ledger rows', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     expect(within(table).getAllByRole('columnheader').map(header => header.textContent))
-      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score']);
+      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated']);
   });
 
-  it('keeps all seven columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
+  it('keeps all six columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
     const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
     expect(runsCell).toHaveAttribute('aria-colspan', '3');
     expect(runsCell.parentElement!.children).toHaveLength(1);
@@ -111,14 +111,17 @@ describe('task ledger rows', () => {
     expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
   });
 
-  it('uses the bracketed score pill', () => {
+  it('ignores historical critique scores in rows and earlier runs', () => {
+    expect((group.tasks[0] as Task & { critiqueScore: number }).critiqueScore).toBe(9);
+    expect((group.tasks[1] as Task & { critiqueScore: number }).critiqueScore).toBe(8);
     render(<Fixture />);
-    const table = screen.getByRole('table', { name: 'Tasks' });
-    fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
-    const score = within(table).getByTitle('Code Quality Score: 8/10');
-    expect(score.textContent).toBe('[8]');
-    // The run's score follows its summary directly rather than sitting in a far-off column.
-    expect(score.parentElement!.previousElementSibling).toHaveTextContent('Change number 1');
+    expect(screen.queryByTitle('Code Quality Score: 9/10')).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));
+    for (const runs of screen.getAllByRole('list', { name: 'Earlier runs' })) {
+      expect(runs).toHaveTextContent('Change number 1');
+    }
+    expect(screen.queryByTitle('Code Quality Score: 8/10')).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Score' })).not.toBeInTheDocument();
   });
 
   it('keeps selection from opening a row and permits intentional keyboard activation', () => {

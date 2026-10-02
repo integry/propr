@@ -320,7 +320,9 @@ async function syntheticBenchmark() {
 }
 
 async function browserSelfTest() {
-  const { chromium, expect } = await import('@playwright/test');
+  // Optional dev-only dependency: a non-literal specifier keeps tsc from requiring its types in builds that don't install it.
+  const playwrightModule = '@playwright/test';
+  const { chromium, expect } = await import(playwrightModule);
   const fixturePath = '../propr-ui/e2e/dashboard-sections.fixture.js';
   const { fixture, outcomes, minutesAgo } = await import(fixturePath);
   const capture = process.argv.includes('--capture');
@@ -328,15 +330,15 @@ async function browserSelfTest() {
   const context = await browser.newContext({ baseURL: option('url') ?? 'http://127.0.0.1:4173' });
   const page = await context.newPage();
 
-  let socket: import('@playwright/test').WebSocketRoute | undefined;
+  let socket: any;
   let connections = 0;
-  await page.routeWebSocket('**/socket.io/**', ws => {
+  await page.routeWebSocket('**/socket.io/**', (ws: any) => {
     socket = ws; connections++;
     ws.send('0' + JSON.stringify({ sid: 'fixture-' + connections, upgrades: [], pingInterval: 100000, pingTimeout: 100000, maxPayload: 1000000 }));
-    ws.onMessage(message => { if (String(message).startsWith('40')) ws.send('40' + JSON.stringify({ sid: 'fixture-' + connections })); });
+    ws.onMessage((message: unknown) => { if (String(message).startsWith('40')) ws.send('40' + JSON.stringify({ sid: 'fixture-' + connections })); });
   });
   await fixture(page, { width: 1440, height: 1000 }, [], []);
-  await page.route('**/api/auth/demo-mode', route => route.fulfill({ json: { demoMode: false } }));
+  await page.route('**/api/auth/demo-mode', (route: any) => route.fulfill({ json: { demoMode: false } }));
   let revision = 'r1';
   let count = 24;
   let histories = 0;
@@ -350,7 +352,7 @@ async function browserSelfTest() {
   const gate = new Promise<void>(resolve => { release = resolve; });
   const summary = () => ({ ...outcomes[1], id: 'latest-' + revision, entityId: 'entity-one', revision, eventCount: count, title: 'Improve dashboard outcomes', detail: 'Completed the latest follow-up.' });
   const historyItems = (start: number, end: number) => Array.from({ length: end - start }, (_, i) => ({ ...outcomes[0], id: `${revision}-earlier-${i + start}`, taskId: `history-${i + start}`, title: 'Improve dashboard outcomes', detail: `Validated workflow ${i + start + 1}`, occurredAt: minutesAgo(i + start + 10) }));
-  await page.route('**/api/dashboard/outcomes?**', async route => {
+  await page.route('**/api/dashboard/outcomes?**', async (route: any) => {
     const params = new URL(route.request().url()).searchParams;
     if (params.get('view') !== 'history') {
       summaries++;

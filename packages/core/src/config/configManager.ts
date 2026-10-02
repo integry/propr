@@ -11,7 +11,7 @@ import { createManagedPreviewStorageClient } from '../services/previewStorage/ru
 import { loadGitHubAttachmentCapacity } from '../services/visualPreviewCapacityService.js';
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
-import { getConfig, saveConfig } from './configStore.js';
+import { getConfig, getConfigStrict, saveConfig } from './configStore.js';
 import type { Knex } from 'knex';
 export {
     clearRemovedRepositoryIndexData,
@@ -28,6 +28,8 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    /** Agent context reads: installation-wide (default), task only, or an explicit list. */
+    contextRepositories?: 'all' | 'none' | string[];
     autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
     cancelCiDuringFollowup?: boolean; // Defaults to false; cancels obsolete PR validation while a follow-up implements
     // Exactly which validation workflows that option may cancel: workflow file
@@ -82,7 +84,6 @@ export function normalizeStoredVisualPreviewSettings(value: unknown): VisualPrev
 interface ConfigSettings {
     worker_concurrency?: number;
     analysis_model_fast?: string;
-    analysis_model_advanced?: string;
     planner_context_model?: string;
     planner_generation_model?: string;
     [key: string]: unknown;
@@ -98,18 +99,17 @@ function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
     return redacted;
 }
 
-// --- Auto-Followup Score Threshold ---
+// --- Legacy API compatibility for retired analysis follow-up settings ---
 
 /**
- * Default threshold for auto-followup on low implementation scores.
- * Range: 0-9 (0 = disabled, 1-9 = trigger if score is at or below this value)
+ * Historical default retained for REST compatibility; it no longer affects execution.
  */
 const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 
 /**
  * Loads the auto-followup score threshold from the database.
- * Returns 0 if disabled, or a value 1-9 indicating the threshold.
  * Falls back to default if the stored value is malformed or out of range.
+ * @deprecated REST compatibility only; post-implementation analysis was removed.
  */
 export async function loadAutoFollowupScoreThreshold(): Promise<number> {
     const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
@@ -123,6 +123,7 @@ export async function loadAutoFollowupScoreThreshold(): Promise<number> {
 
 /**
  * Saves the auto-followup score threshold to the database.
+ * @deprecated REST compatibility only; this setting has no effect.
  * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
  * @throws Error if threshold is not a valid integer in range 0-9
  */
@@ -164,6 +165,11 @@ export async function loadMonitoredRepos(): Promise<string[]> {
     const repos = rawRepos.filter(r => r.enabled).map(r => r.name);
     logger.info({ repos_to_monitor: repos, total_configured: rawRepos.length }, 'Successfully loaded enabled monitored repositories');
     return repos;
+}
+
+/** Agent launches must fail closed when repository access policy cannot be read. */
+export async function loadMonitoredReposStrict(): Promise<RepoToMonitor[]> {
+    return getConfigStrict<RepoToMonitor[]>('repos_to_monitor', []);
 }
 
 /**

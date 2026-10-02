@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  getTaskHistory, getTaskAnalysis, getTaskLiveDetails,
+  getTaskHistory, getTaskLiveDetails,
   stopTaskExecution, StopExecutionResponse, deleteTask
 } from '../../api/proprApi';
-import { HistoryItem, TaskInfo, LiveDetails, LiveEvent, TodoItem, AnalysisData, UsageMetricRecord } from './types';
+import { HistoryItem, TaskInfo, LiveDetails, LiveEvent, TodoItem, UsageMetricRecord } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
 import { trustedPreviewMedia, type PublishedVisualPreview, type TaskUpdatePayload, type TaskLiveUpdatePayload } from '@propr/shared';
-import { isAnalysisData, normalizeAnalysisData } from './apiDataGuards';
 import { useLiveRefreshScheduler } from '../../hooks/useLiveRefreshScheduler';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import {
@@ -180,8 +179,6 @@ export const useTaskData = (taskId: string | undefined) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDetails, setLiveDetails] = useState<LiveDetails>({ events: [], todos: [], currentTask: null });
-  const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
   const [stopFailed, setStopFailed] = useState<boolean>(false);
   const [deletingTask, setDeletingTask] = useState<boolean>(false);
@@ -382,32 +379,6 @@ export const useTaskData = (taskId: string | undefined) => {
     };
   }, [requestScopeKey, taskId, isConnected, subscribeToTask, unsubscribeFromTask, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskUpdate, onTaskLiveUpdate, handleTaskUpdate, handleTaskLiveUpdate]);
 
-  // Fetch analysis data (separate from task updates, typically only needed once)
-  useEffect(() => {
-    const fetchAnalysis = async () => {
-      if (!taskId) return;
-
-      try {
-        setAnalysisLoading(true);
-        const analysisData = await getTaskAnalysis(taskId);
-        const nextAnalysis = analysisData.analysis;
-        setAnalysis(
-          isAnalysisData(nextAnalysis)
-            ? normalizeAnalysisData(nextAnalysis)
-            : typeof nextAnalysis === 'string'
-              ? { analysis: nextAnalysis }
-              : null
-        );
-      } catch (err) {
-        console.error('Error fetching analysis:', err);
-      } finally {
-        setAnalysisLoading(false);
-      }
-    };
-
-    fetchAnalysis();
-  }, [taskId]);
-
   // Live details are now delivered entirely via WebSocket
   // Initial data is sent when subscribing to task:live, then only new events on updates
   // No HTTP fallback needed
@@ -483,8 +454,6 @@ export const useTaskData = (taskId: string | undefined) => {
     loading,
     error,
     liveDetails,
-    analysis,
-    analysisLoading,
     stoppingExecution,
     stopFailed,
     handleStopExecution,

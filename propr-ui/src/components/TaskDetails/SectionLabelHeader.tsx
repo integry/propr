@@ -1,5 +1,4 @@
 import React from 'react';
-import { GeometricScorePill } from './ResultOverview';
 import { RefreshCw } from 'lucide-react';
 
 function getSectionLabel(commandMode: string | undefined): string {
@@ -10,12 +9,11 @@ function getSectionLabel(commandMode: string | undefined): string {
 
 interface SectionLabelHeaderProps {
   commandMode: string | undefined;
-  score: number | undefined;
   ultrafixCycle?: boolean;
   className?: string;
 }
 
-const SectionLabelHeader: React.FC<SectionLabelHeaderProps> = ({ commandMode, score, ultrafixCycle, className }) => {
+const SectionLabelHeader: React.FC<SectionLabelHeaderProps> = ({ commandMode, ultrafixCycle, className }) => {
   const label = getSectionLabel(commandMode);
   return (
     <div className={className}>
@@ -30,9 +28,6 @@ const SectionLabelHeader: React.FC<SectionLabelHeaderProps> = ({ commandMode, sc
           </span>
         )}
       </div>
-      {score !== undefined && (
-        <GeometricScorePill score={score} />
-      )}
     </div>
   );
 };

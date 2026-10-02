@@ -100,7 +100,7 @@ describe('packaged acceptance stats fixtures', () => {
     });
     // These stats moved off the dashboard onto /analytics, which maps
     // dailyCounts itself and hands the rest to TaskStatsChart.
-    assert.match(analyticsPageSource, /\(taskStats\?\.dailyCounts \?\? \[\]\)\.map/);
+    assert.match(analyticsPageSource, /\(tasks\.data\?\.dailyCounts \?\? \[\]\)\.map/);
     for (const field of ['total', 'completed', 'failed']) {
       assert.match(taskStatsChartSource, new RegExp(`stats\\.summary\\.${field}`));
     }
@@ -142,12 +142,14 @@ describe('packaged acceptance stats fixtures', () => {
     });
     assert.deepEqual(Object.keys(repositories), interfaceFields('RepositoryStatsResponse'));
     assert.deepEqual(repositories, { repositories: [] });
-    assert.match(topModelsSource, /Object\.keys\(metrics\.usage\.models\)/);
-    assert.match(topModelsSource, /Object\.entries\(metrics\.usage\.models\)/);
+    // The fixture predates the per-model breakdown, so the models table must
+    // fall back to the task counts in usage.models when model_usage is absent.
+    assert.match(topModelsSource, /overview\.model_usage\s*\?\?\s*Object\.entries\(overview\.usage\.models\)/);
     assert.match(repositoryReportSource, /metrics\.usage\.total_cost_usd\.toFixed/);
     assert.equal(typeof overview.usage.models, 'object');
     assert.equal(Array.isArray(overview.usage.models), false);
-    assert.match(repositoryBreakdownSource, /setRepositories\(data\.repositories \|\| \[\]\)/);
+    assert.match(analyticsPageSource, /repositories\.data\?\.repositories \?\? null/);
+    assert.match(repositoryBreakdownSource, /\[\.\.\.repositories\]\.sort/);
     assert.ok(Array.isArray(repositories.repositories));
   });
 

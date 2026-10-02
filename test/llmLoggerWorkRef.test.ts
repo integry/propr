@@ -216,6 +216,23 @@ describe('buildLlmLogRow', () => {
 /* ------------------------------------------------------------------ */
 
 describe('createLlmLogFromAnalysis', () => {
+  it('still logs lightweight review context analysis with its task reference', () => {
+    const workRef = buildAnalysisWorkRef('context-analysis', 'review-context-42', 'integry/propr', { taskNumber: 42, prNumber: 99 });
+    const entry = createLlmLogFromAnalysis({
+      executionType: 'context-analysis',
+      modelUsed: 'test-model',
+      executionTimeMs: 1000,
+      success: true,
+      workRef,
+    });
+    const row = buildLlmLogRow(entry, undefined, true);
+    assert.strictEqual(row.execution_type, 'context-analysis');
+    assert.strictEqual(row.work_type, 'task');
+    assert.strictEqual(row.task_id, 'review-context-42');
+    assert.strictEqual(row.task_number, 42);
+    assert.strictEqual(row.pr_number, 99);
+  });
+
   it('creates a complete LlmLogEntry with workRef', () => {
     const entry = createLlmLogFromAnalysis({
       executionType: 'plan-generation',

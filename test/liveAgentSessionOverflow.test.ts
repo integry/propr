@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 
 let failing = false;
 class FakeRedis {
@@ -17,6 +17,8 @@ class FakeRedis {
 mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
 const { ClaudeGoalStream } = await import('../packages/core/src/agents/impl/claudeNativeGoal.js');
 const { AppServerConnection } = await import('../packages/core/src/agents/impl/codexAppServerConnection.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+after(() => closeConnection());
 
 function fakeChild() {
     return Object.assign(new EventEmitter(), {

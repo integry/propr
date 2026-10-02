@@ -230,7 +230,11 @@ jobs:
           NON_ROOT
 
       - name: Install dependencies as non-root
-        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
+        # Retry interrupted registry downloads; permanent install errors still
+        # fail immediately. Keep the installer and retries under the node user.
+        run: >-
+          runuser --user node -- env HOME=/home/node
+          node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts
 
       - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
         run: |
