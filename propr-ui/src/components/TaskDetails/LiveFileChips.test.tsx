@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LiveFileChips from './LiveFileChips';
 
@@ -54,4 +54,30 @@ describe('LiveFileChips live refreshes', () => {
     // Fixture count: 1 initial + 1 coalesced live read (previously 1 + 3).
     expect(fileChangesMocks.getFileChanges).toHaveBeenCalledTimes(2);
   });
+
+  it('shows the shared directory once with 32 filenames ordered by changed lines and keeps every diff accessible', async () => {
+    const files = Array.from({ length: 32 }, (_, index) => ({
+      path: `src/credentials/agentWorkerCredentialValidation${index}.test.ts`,
+      status: 'modified', linesAdded: index + 1, linesRemoved: index,
+      diff: `+Added validation ${index}`,
+    }));
+    fileChangesMocks.getFileChanges.mockResolvedValue({ files });
+    render(<LiveFileChips taskId="task-1" isActive={false} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const list = screen.getByRole('region', { name: 'Changed files' });
+    expect(list).toHaveClass('max-h-48', 'overflow-y-auto');
+    const buttons = within(list).getAllByRole('button');
+    expect(buttons).toHaveLength(32);
+    expect(buttons[0]).toHaveAccessibleName(`View diff for ${files[31].path}`);
+    expect(buttons[0]).toHaveTextContent('agentWorkerCredentialValidation31.test.ts');
+    expect(within(list).getAllByText('src/credentials/')).toHaveLength(1);
+    expect(buttons[0]).not.toHaveTextContent('src/credentials/');
+    expect(buttons[31]).toHaveAccessibleName(`View diff for ${files[0].path}`);
+    fireEvent.click(buttons[31]);
+    expect(screen.getByTitle('Close diff view')).toBeInTheDocument();
+    expect(document.querySelector('pre')).toHaveTextContent('+Added validation 0');
+    fireEvent.click(screen.getByTitle('Close diff view'));
+    expect(screen.queryByTitle('Close diff view')).not.toBeInTheDocument();
+  });
+
 });
