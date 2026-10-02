@@ -45,11 +45,11 @@ describe('New Task issue launcher', () => {
     await waitFor(() => expect(run).toBeEnabled());
     expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
     fireEvent.click(run);
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open issue #42' })).toHaveAttribute('href', pending.issueUrl);
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View issue #42' })).toHaveAttribute('href', pending.issueUrl);
     const [key, payload] = vi.mocked(submissions.submitTask).mock.calls[0];
     expect(payload).toMatchObject({ repository: 'acme/billing', instruction: 'Fix invoice dates', todoIds: ['todo-1'] });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry submission' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent' }));
     expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks/ordinary-issue-task');
     expect(submissions.retryTaskSubmission).toHaveBeenCalledWith(key);
     expect(submissions.submitTask).toHaveBeenCalledTimes(1);
@@ -57,28 +57,48 @@ describe('New Task issue launcher', () => {
     expect(planner.createDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/What's done|Continue|Pause goal/)).not.toBeInTheDocument();
   });
-  it('shows recovery guidance only after a submission problem', async () => {
+  it('shows submission progress on the button and a partial failure as one warning', async () => {
     let resolve!: (value: submissions.TaskSubmission) => void;
     vi.mocked(submissions.submitTask).mockReturnValue(new Promise(done => { resolve = done; }));
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());
     fireEvent.click(run);
-    expect(await screen.findByRole('status')).toHaveTextContent('Submitting…');
-    expect(screen.queryByText(/Retry checks this submission/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Start over opens a new request/)).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Submitting…' })).toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
     await act(async () => resolve(pending));
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByText(/Start over opens a new request/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start over' })).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Issue #42 created, but agent failed to queue');
+    expect(alert).toHaveTextContent('Queue unavailable');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start over opens a new request/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Retry agent' })).toBeEnabled();
+  });
+  it('closes a partial failure without keeping its local retry state', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    const close = await screen.findByRole('button', { name: 'Close' });
+    const key = vi.mocked(submissions.submitTask).mock.calls[0][0];
+    fireEvent.click(close);
+    expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    expect(submissions.taskSnapshotStorage).toHaveBeenCalledWith(`${API_BASE_URL}:alice`, key, null);
+    expect(sessionStorage.getItem(`task-active-submission:${API_BASE_URL}:alice`)).toBeNull();
+    expect(submissions.retryTaskSubmission).not.toHaveBeenCalled();
   });
   it('recovers the same identity after reload without resubmitting an issue', async () => {
     sessionStorage.setItem(`task-active-submission:${API_BASE_URL}:alice`, 'saved-key');
     vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue({ key: 'saved-key', payload: { repository: 'acme/billing', instruction: 'Saved request' }, files: [] });
     vi.mocked(submissions.getTaskSubmission).mockResolvedValue(pending);
     renderPage();
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt')).toHaveValue('Saved request');
     expect(submissions.getTaskSubmission).toHaveBeenCalledWith('saved-key');
     expect(submissions.submitTask).not.toHaveBeenCalled();
@@ -109,8 +129,8 @@ describe('New Task issue launcher', () => {
     fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
     expect(screen.getByRole('button', { name: 'Run task' })).toBeEnabled();
   });
-  it.each(['prepared', 'failed'] as const)('allows a %s submission to be abandoned and a new identity submitted', async state => {
-    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, ...(state === 'prepared' ? { issueNumber: null, issueUrl: null } : {}) });
+  it.each(['prepared', 'failed'] as const)('allows a %s submission without an issue to be abandoned and a new identity submitted', async state => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, issueNumber: null, issueUrl: null });
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());

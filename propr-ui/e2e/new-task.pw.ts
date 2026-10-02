@@ -75,7 +75,7 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(dialog.getByRole('link', { name: /New Plan|New Goal/ })).toHaveCount(0);
     await screenshot(page, `new-task-${device}`);
     await page.getByRole('button', { name: 'Run task', exact: true }).click();
-    await expect(page.getByRole('link', { name: 'Open issue #42' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
     await expect(page.getByTestId('task-details')).toBeVisible();
     await expect(page.getByText(title, { exact: true }).filter({ visible: true }).first()).toBeVisible();
@@ -117,16 +117,19 @@ test('mobile dispatch error keeps the issue, instruction and attachments availab
   await page.getByLabel('Prompt', { exact: true }).fill(title);
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'invoice-example.txt', mimeType: 'text/plain', buffer: Buffer.from('Expected invoice date: 22/09/2026') });
   await page.getByRole('button', { name: 'Run task', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('existing issue');
+  await expect(page.getByRole('alert')).toHaveCount(1);
+  await expect(page.getByRole('alert')).toContainText('Issue #42 created, but agent failed to queue');
   await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue(title);
   await expect(page.getByText('invoice-example.txt')).toBeVisible();
-  await page.getByRole('button', { name: 'Retry submission' }).scrollIntoViewIfNeeded();
-  await expect(page.getByRole('link', { name: 'Open issue #42' })).toBeVisible();
-  const retryBox = await page.getByRole('button', { name: 'Retry submission' }).boundingBox();
+  await page.getByRole('button', { name: 'Retry agent' }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
+  const retryBox = await page.getByRole('button', { name: 'Retry agent' }).boundingBox();
   expect(retryBox!.y + retryBox!.height).toBeLessThanOrEqual(844);
-  await expect(page.getByRole('button', { name: 'Start over' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Start over' })).toHaveCount(0);
   await screenshot(page, 'new-task-error-mobile');
-  await page.getByRole('button', { name: 'Start over' }).click();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await page.goto('/tasks/new');
   await expect(page.getByLabel('Prompt', { exact: true })).toBeEnabled();
   await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue('');
   await expect(page.getByText('invoice-example.txt')).toHaveCount(0);
@@ -180,7 +183,7 @@ test('completing one tab preserves another tab’s lost-response request and att
   }
   await other.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'recovery.txt', mimeType: 'text/plain', buffer: Buffer.from('Retain these recovery bytes') });
   await page.getByRole('button', { name: 'Run task', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Retry submission' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Retry agent' })).toBeEnabled();
   await other.getByRole('button', { name: 'Run task', exact: true }).click();
   await expect(other.getByRole('alert')).toContainText('HTTP 503');
   expect(keys[1]).not.toBe(keys[0]);
@@ -210,7 +213,7 @@ test('legacy recovery snapshots are adopted and discarded only with their matchi
   await page.getByRole('button', { name: /acme.*billing/ }).click();
   await page.getByLabel('Prompt', { exact: true }).fill(title);
   await page.getByRole('button', { name: 'Run task', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Retry submission' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Retry agent' })).toBeEnabled();
   await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open('propr-task-launcher', 1); request.onsuccess = () => resolve(request.result); });
     try {
@@ -231,12 +234,13 @@ test('legacy recovery snapshots are adopted and discarded only with their matchi
   });
   await page.reload();
   await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue(title);
-  await expect(page.getByRole('button', { name: 'Start over' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Start over' }).click();
+  await expect(page.getByRole('button', { name: 'Close', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await page.goto('/tasks/new');
   await expect(page.getByLabel('Prompt', { exact: true })).toBeEnabled();
-  await page.reload();
   await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue('');
-  await expect(page.getByRole('button', { name: 'Retry submission' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Retry agent' })).toHaveCount(0);
 });
 
 test('task modal traps focus and dismisses back to the task list', async ({ page }) => {
