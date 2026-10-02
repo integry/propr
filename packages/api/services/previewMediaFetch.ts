@@ -30,7 +30,8 @@ export type PreviewMediaErrorCode =
   | 'PREVIEW_SOURCE_REJECTED'
   | 'PREVIEW_TOO_LARGE'
   | 'PREVIEW_INVALID_TYPE'
-  | 'PREVIEW_UNAVAILABLE';
+  | 'PREVIEW_UNAVAILABLE'
+  | 'ATTACHMENT_NOT_FOUND';
 
 export class PreviewMediaError extends Error {
   constructor(
