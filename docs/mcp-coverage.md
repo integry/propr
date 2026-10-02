@@ -41,6 +41,7 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Guarded PR merge | `merge_pull_request`; `expectedHead` is required to avoid merging code the caller has not seen |
 | Preview/revert a PR commit | `get_pull_request_revert_preview`, `revert_pull_request_commit`; exact commit, comment and head |
 | Published visual evidence | `list_visual_previews`, `get_visual_preview`; list exact task/PR preview metadata, then fetch bounded/downscaled image content. Videos remain metadata-only; `repositories/{owner}/{repo}/previews/{previewId}` resource |
+| Comment image attachments | `get_comment_attachment`; fetch one `github.com/user-attachments` image embedded in an issue/PR comment (or description) through the caller's GitHub access as bounded/downscaled image content, independent of ProPR managed preview storage. Discover attachments from `get_pull_request_discussion` comment `attachments`. Videos remain metadata-only |
 | Bundled product documentation | `list_docs`, `search_docs`, `get_doc`; stable paths, bounded section/chunk reads, normalized redacted content and `docs/{path}` resource. The MCP guide is `mcp/guide` |
 | Configuration discovery | `find_setting`; structured UI/MCP/CLI/environment reachability, permissions, restart requirements and browser/environment-only boundaries |
 | Indexed overview/tree/path/search/freshness | `get_repository_context` |
@@ -174,7 +175,9 @@ adopts it.
 returns 4096-character body chunks and parsed F# findings and S# suggestions
 (`currentFindingIds` and `currentSuggestionIds` honor the worker’s seven-day age
 limit, known head and consumption state), and supports exact
-comment/task lookup. New reviews persist reviewed head and task identity in the
+comment/task lookup. A comment embedding GitHub user attachments lists them under
+`attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
+`get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
 existing review marker; legacy reviews explicitly report an unknown head.
 `fix_review_findings` requires `reviewCommentId` and at least one identifier
 across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
