@@ -29,6 +29,15 @@ HOST_GH_PRIVATE_KEY=/home/you/propr/app-private-key.pem
 `propr check` verifies all three are set (not placeholders) and that the key file
 is readable.
 
+Agent task and repository-associated analysis tokens require **Contents**, **Issues**,
+**Pull requests**, and **Metadata** read access (`contents`, `issues`, `pull_requests`,
+`metadata`). These are minimum installation grants; the worker still needs its
+existing write permissions to publish changes. ProPR requests **Checks**, **Actions**,
+and **Commit statuses** read access (`checks`, `actions`, `statuses`) only when the
+installation grants them. Missing optional grants do not prevent agent launches;
+those agents cannot read the corresponding CI context. After changing App permissions,
+approve the updated permissions on the installation too.
+
 ### Relay mode (shared GitHub App)
 
 When you use a **shared** GitHub App provided by the vendor, you don't hold its
@@ -93,13 +102,44 @@ self-hosted (own) relay must implement this contract:
 
 - **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token` (PROPR_GH_RELAY_URL includes the version prefix, e.g. `https://webhook.propr.dev/v1`)
   - Header: `Authorization: Bearer <PROPR_GH_RELAY_TOKEN>`
-  - Body: `{ "installation_id": "<id>" }` (optional; the relay may infer the
-    installation from the credential)
+  - JSON body (all fields optional):
+
+    ```json
+    {
+      "installation_id": "12345",
+      "permissions": { "contents": "read", "issues": "read", "pull_requests": "read", "metadata": "read" },
+      "repository_ids": [123, 456]
+    }
+    ```
+
+    `installation_id` may be inferred from the relay credential. When supplied,
+    `permissions` limits the token's permissions and `repository_ids` limits its
+    repositories. Omitted scope fields use the installation's grants/access.
 - **Behavior:** verify the relay token → map it to an installation → mint an
-  installation access token via the shared App's key (optionally scoping
-  repositories/permissions).
-- **Response (2xx):** `{ "token": "ghs_...", "expires_at": "<ISO 8601>" }`
+  installation access token via the shared App's key. Forward `permissions` and
+  `repository_ids` to GitHub unchanged; never ignore them or fall back to a
+  broader token. Each request must mint a fresh token for the container launch.
+- **Response (2xx):** return `token`, `expires_at` (ISO 8601), and GitHub's actual
+  `permissions` and `repositories` metadata. Both metadata fields are required
+  by this contract; do not merely echo the requested scope. Each repository
+  object must include its numeric `id`. For example:
+
+  ```json
+  {
+    "token": "ghs_...",
+    "expires_at": "2026-10-01T23:00:00Z",
+    "permissions": { "contents": "read", "issues": "read", "pull_requests": "read", "metadata": "read" },
+    "repositories": [{ "id": 123 }, { "id": 456 }]
+  }
+  ```
+
+  ProPR checks the metadata against the requested scope and rejects missing or
+  mismatched attestations for scoped requests.
 - **401/403:** the relay credential is invalid or expired.
+- **422:** GitHub rejected requested permissions that the installation does not
+  grant. Preserve this HTTP status: ProPR retries without optional `checks`,
+  `actions`, and `statuses` reads while retaining required read permissions and
+  the repository restriction. Never convert this error to a 2xx or generic 5xx.
 
 The relay token is the long-lived secret binding your stack to your installation;
 treat it like a password. ProPR redacts it (and `ghs_` tokens) from logs.

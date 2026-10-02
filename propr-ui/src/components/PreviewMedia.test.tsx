@@ -1,11 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
 import { downsampleToCanvas } from './previewDownsampling';
-import { ParentTaskRow, ChildTaskRow } from './TaskList/TaskRows';
-import { MobileTaskCard } from './TaskList/MobileTaskCard';
+import { TaskTableContent } from './TaskList/StateComponents';
 import { InboxCard } from '../pages/InboxPageComponents';
 import { AuthProvider } from '../contexts/AuthContext';
 import type { CurrentUser } from '../api/proprTypes';
@@ -64,13 +63,14 @@ describe('preview thumbnails', () => {
     expect(screen.queryByAltText('Published screen 0')).not.toBeInTheDocument();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:account-b');
   });
-  it.each([false, true])('renders 3 previews in parent and child rows (desktop=%s)', desktopLayout => {
-    render(<table><tbody><ParentTaskRow group={group} task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /><ChildTaskRow task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /></tbody></table>);
-    for (const row of screen.getAllByRole('row')) expect(within(row).getAllByRole('img', { name: /Published screen/ })).toHaveLength(3);
-  });
-  it('renders 3 previews in the mobile task layout', () => {
-    render(<MobileTaskCard group={group} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
-    expect(screen.getAllByRole('img', { name: /Published screen/ })).toHaveLength(3);
+  // A dense task ledger announces evidence instead of drawing thumbnails that load as empty boxes.
+  it('announces previews as a count in the task ledger instead of drawing thumbnails', () => {
+    render(<TaskTableContent groupedTasks={[group]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
+    expect(screen.queryAllByRole('img', { name: /Published screen/ })).toHaveLength(0);
+    const badges = screen.getAllByTestId('preview-count');
+    // One in the desktop ledger, one in the mobile card.
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) expect(badge).toHaveTextContent('5 previews');
   });
   it.each([['task', 'success', 1], ['task', 'error', 0], ['task', 'warning', 0], ['review', 'success', 0], ['plan', 'success', 0]])('Inbox %s/%s shows %s previews', (kind, severity, count) => {
     const notification = { id: 'n-1', kind, severity, target: { type: kind, repository: 'acme/web', taskId: 'task-1' }, readAt: null,

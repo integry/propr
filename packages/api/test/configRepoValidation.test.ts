@@ -265,3 +265,15 @@ test('non-blocking checks are normalized, validated and kept by clients that do 
   const clearedValue = normalizeRepoConfig(cleared[0]);
   if (clearedValue.ok) assert.deepEqual(preserveRepoSettings(previous, [clearedValue.value], cleared)[0].nonBlockingChecks, []);
 });
+
+
+test('context repository names use the launch identity limits', () => {
+  for (const name of [`${'a'.repeat(101)}/repo`, `owner/${'a'.repeat(101)}`, 'owner/.', 'owner/..', 'owner/repo/extra']) {
+    const result = normalizeRepoConfig({ name: 'owner/task', enabled: true, contextRepositories: [name] });
+    assert.equal(result.ok, false, name);
+  }
+  for (const name of [`${'a'.repeat(100)}/${'b'.repeat(100)}`, 'Owner_Name/repo.name-1']) {
+    const result = normalizeRepoConfig({ name: 'owner/task', enabled: true, contextRepositories: [name] });
+    assert.equal(result.ok, true, name);
+  }
+});

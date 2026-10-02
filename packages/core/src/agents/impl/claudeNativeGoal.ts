@@ -672,11 +672,22 @@ async function detectContainer(
 }
 
 export interface ClaudeNativeGoalLaunch {
-    dockerArgs: string[];
+    buildDockerArgs(): Promise<string[]>;
     sessionId: string;
     transcriptPath: string;
     model: string;
     timeoutMs: number;
+}
+
+function resolveClaudeGoalExecution(options: AgentTaskOptions): { control: GoalExecutionControl; command: string } {
+    const control = options.goalControl;
+    if (!control || !options.nativeGoalObjective) {
+        throw new Error('Claude native goal execution requires durable goal controls and an objective');
+    }
+    const command = options.nativeGoalObjective.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
+        ? options.nativeGoalObjective
+        : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
+    return { control, command };
 }
 
 /** Run one attempt of a Claude native `/goal` session with live ProPR controls. */
@@ -685,17 +696,13 @@ export async function executeClaudeNativeGoal(
     launch: ClaudeNativeGoalLaunch,
 ): Promise<AgentExecutionResult> {
     const start = Date.now();
-    const control = options.goalControl;
-    if (!control || !options.nativeGoalObjective) {
-        throw new Error('Claude native goal execution requires durable goal controls and an objective');
-    }
-    const command = options.nativeGoalObjective.startsWith(NATIVE_GOAL_COMMAND_PREFIX)
-        ? options.nativeGoalObjective
-        : `${NATIVE_GOAL_COMMAND_PREFIX}${options.nativeGoalObjective}`;
+    const { control, command } = resolveClaudeGoalExecution(options);
     const ownership = getExecutionOwnershipContext();
-    const args = resolveExecutionArgs('docker', launch.dockerArgs, options.taskId, ownership?.attemptGeneration);
     // The identity is assigned up front, so persist it before any provider work.
     await options.onSessionId?.(launch.sessionId);
+    const dockerArgs = await launch.buildDockerArgs();
+    if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
+    const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
@@ -729,13 +736,22 @@ export async function executeClaudeNativeGoal(
         launch.model,
         Date.now() - start,
     );
+    return buildClaudeGoalResult(stream, completion, response, launch.sessionId);
+}
+
+function buildClaudeGoalResult(
+    stream: ClaudeGoalStream,
+    completion: ClaudeGoalCompletion,
+    response: AgentExecutionResult,
+    sessionId: string,
+): AgentExecutionResult {
     const success = completion.status === 'completed';
     return {
         ...response,
         success,
         logs: `${stream.rawOutput}${stream.stderrOutput ? `\n${stream.stderrOutput}` : ''}`,
-        sessionId: launch.sessionId,
-        conversationId: launch.sessionId,
+        sessionId,
+        conversationId: sessionId,
         modelUsed: stream.model || response.modelUsed,
         providerModel: stream.model || response.providerModel,
         tokenUsage: stream.tokenUsage,

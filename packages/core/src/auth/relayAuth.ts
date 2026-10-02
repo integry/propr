@@ -30,10 +30,19 @@ export interface RelayInstallationAuthentication {
   type: 'token';
   tokenType: 'installation';
   token: string;
+  permissions?: Record<string, string>;
+  repositoryIds?: number[];
+}
+
+export interface RelayAuthOptions {
+  refresh?: boolean;
+  type?: string;
+  permissions?: Record<string, string>;
+  repositoryIds?: number[];
 }
 
 export interface RelayAuthInterface {
-  (options?: { type?: string }): Promise<RelayInstallationAuthentication>;
+  (options?: RelayAuthOptions): Promise<RelayInstallationAuthentication>;
   hook(
     request: RequestInterface,
     route: Route | EndpointOptions,
@@ -44,6 +53,8 @@ export interface RelayAuthInterface {
 interface RelayTokenResponse {
   token?: string;
   expires_at?: string;
+  permissions?: Record<string, string>;
+  repositories?: Array<{ id: number }>;
 }
 
 // Refresh slightly before the token actually expires, mirroring createAppAuth.
@@ -53,13 +64,28 @@ const REFRESH_MARGIN_MS = 60_000;
 const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
 
+function assertRelayTokenScope(data: RelayTokenResponse, options: RelayAuthOptions): void {
+    // Old relays may ignore unknown request fields. Never treat their full token
+    // as scoped: require the mint response to attest to the requested limits.
+    if (options.permissions && (!data.permissions
+        || Object.entries(data.permissions).some(([key, value]) => options.permissions![key] !== value)
+        || Object.keys(options.permissions).some(key => data.permissions![key] !== options.permissions![key]))) {
+      throw new Error('GitHub token relay did not honor scoped permissions; update the relay before launching agents.');
+    }
+    if (options.repositoryIds && (!data.repositories
+        || data.repositories.length !== options.repositoryIds.length
+        || data.repositories.some(repo => !options.repositoryIds!.includes(repo.id)))) {
+      throw new Error('GitHub token relay did not honor the context repository restriction.');
+    }
+}
+
 export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): RelayAuthInterface {
   const { relayUrl, relayToken, installationId } = strategyOptions;
   const endpoint = `${relayUrl.replace(/\/+$/, '')}/installation-token`;
-  const cache: { token: string | null; expiresAt: number } = { token: null, expiresAt: 0 };
-  let pendingFetch: Promise<string> | null = null;
+  type CacheEntry = { auth?: RelayInstallationAuthentication; expiresAt: number; pending?: Promise<RelayInstallationAuthentication> };
+  const caches = new Map<string, CacheEntry>();
 
-  async function fetchToken(): Promise<string> {
+  async function fetchToken(options: RelayAuthOptions, cache: CacheEntry): Promise<RelayInstallationAuthentication> {
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -69,7 +95,11 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
           'content-type': 'application/json',
           accept: 'application/json',
         },
-        body: JSON.stringify(installationId ? { installation_id: installationId } : {}),
+        body: JSON.stringify({
+          ...(installationId ? { installation_id: installationId } : {}),
+          ...(options.permissions ? { permissions: options.permissions } : {}),
+          ...(options.repositoryIds ? { repository_ids: options.repositoryIds } : {}),
+        }),
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
     } catch (error) {
@@ -82,7 +112,7 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
       );
     }
     if (!response.ok) {
-      throw new Error(`GitHub token relay returned HTTP ${response.status} for ${endpoint}.`);
+      throw Object.assign(new Error(`GitHub token relay returned HTTP ${response.status} for ${endpoint}.`), { status: response.status });
     }
 
     let data: RelayTokenResponse;
@@ -95,22 +125,39 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
       throw new Error('GitHub token relay response did not include a token.');
     }
 
-    cache.token = data.token;
+    assertRelayTokenScope(data, options);
+    cache.auth = { type: 'token', tokenType: 'installation', token: data.token,
+      ...(data.permissions ? { permissions: data.permissions } : {}),
+      ...(data.repositories ? { repositoryIds: data.repositories.map(repo => repo.id) } : {}),
+    };
     const parsed = data.expires_at ? new Date(data.expires_at).getTime() : NaN;
     cache.expiresAt = Number.isNaN(parsed) ? Date.now() + DEFAULT_TOKEN_TTL_MS : parsed;
-    return data.token;
+    return cache.auth;
   }
 
-  async function getToken(): Promise<string> {
-    if (cache.token && Date.now() < cache.expiresAt - REFRESH_MARGIN_MS) {
-      return cache.token;
-    }
-    if (pendingFetch) return pendingFetch;
-    pendingFetch = fetchToken().finally(() => { pendingFetch = null; });
-    return pendingFetch;
+  function cacheFor(options: RelayAuthOptions): CacheEntry {
+    const key = JSON.stringify([
+      Object.entries(options.permissions ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+      options.repositoryIds ? [...options.repositoryIds].sort((a, b) => a - b) : null,
+    ]);
+    let cache = caches.get(key);
+    if (!cache) { cache = { expiresAt: 0 }; caches.set(key, cache); }
+    return cache;
   }
 
-  const auth = (async (options?: { type?: string }): Promise<RelayInstallationAuthentication> => {
+  async function getToken(options: RelayAuthOptions = {}): Promise<RelayInstallationAuthentication> {
+    // Explicit container launches need a newly minted token even when another
+    // request for the same scope is cached or in flight. Keep that mint isolated
+    // so a slower old request cannot overwrite newer shared cache state.
+    if (options.refresh) return fetchToken(options, { expiresAt: 0 });
+    const cache = cacheFor(options);
+    if (cache.auth && Date.now() < cache.expiresAt - REFRESH_MARGIN_MS) return cache.auth;
+    if (cache.pending) return cache.pending;
+    cache.pending = fetchToken(options, cache).finally(() => { cache.pending = undefined; });
+    return cache.pending;
+  }
+
+  const auth = (async (options?: RelayAuthOptions): Promise<RelayInstallationAuthentication> => {
     // The relay only issues installation tokens. Fail loudly if a call site ever
     // requests a different auth type (e.g. an app JWT) instead of silently
     // handing back an installation token.
@@ -119,12 +166,11 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
         `The GitHub token relay auth strategy only supports auth({ type: "installation" }); got type "${options.type}".`,
       );
     }
-    const token = await getToken();
-    return { type: 'token', tokenType: 'installation', token };
+    return getToken(options);
   }) as RelayAuthInterface;
 
   auth.hook = async (request, route, parameters) => {
-    const token = await getToken();
+    const { token } = await getToken();
     const endpointOptions = request.endpoint.merge(route as Route, parameters);
     endpointOptions.headers.authorization = `token ${token}`;
     try {
@@ -132,9 +178,10 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
     } catch (error) {
       if ((error as { status?: number }).status === 401) {
         // Invalidate and retry once with a fresh token (edge-of-expiry race).
-        cache.token = null;
+        const cache = cacheFor({});
+        cache.auth = undefined;
         cache.expiresAt = 0;
-        const freshToken = await getToken();
+        const { token: freshToken } = await getToken();
         endpointOptions.headers.authorization = `token ${freshToken}`;
         return await request(endpointOptions as EndpointOptions);
       }

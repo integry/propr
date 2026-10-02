@@ -26,6 +26,7 @@ async function createDatabase(): Promise<Knex> {
     table.text('final_result');
     table.integer('issue_number');
     table.integer('pr_number');
+    table.string('commit_hash');
   });
   await database.schema.createTable('task_history', table => {
     table.increments('history_id').primary();
@@ -66,7 +67,7 @@ test('task pages preserve filters and enrich only unique task identities', async
   await database('tasks').insert([
     {
       task_id: 'newest', repository: 'acme/widget', task_type: 'issue', model_name: 'gpt',
-      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z',
+      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z', commit_hash: 'abc1234def',
       initial_job_data: JSON.stringify({ title: 'Needle performance work' }),
     },
     {
@@ -127,9 +128,11 @@ test('task pages preserve filters and enrich only unique task identities', async
   assert.equal(newest.critiqueScore, null);
   assert.equal(newest.processedAt, '2026-09-14T05:01:00.000Z');
   assert.equal(newest.completedAt, '2026-09-14T05:03:00.000Z');
+  assert.equal(newest.commitHash, 'abc1234def');
   const tied = (all.tasks as Array<Record<string, unknown>>)[1];
   assert.equal(tied.status, 'failed');
   assert.equal(tied.failedReason, 'first tie');
+  assert.equal(tied.commitHash, null);
   assert.equal((all.tasks as Array<Record<string, unknown>>)[2].critiqueScore, 8.5);
 
   const openReview = await getTasksFromDb({

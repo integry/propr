@@ -8,7 +8,7 @@ import type { Request, Response } from 'express';
 import { closeConnection, insertTaskSubmission } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as identityMigration } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
-import { createTaskSubmissionRoutes, authorizeTaskSubmissionRepository } from '../routes/taskSubmissionRoutes.js';
+import { createTaskSubmissionRoutes, authorizeTaskSubmissionRepository, uploadSubmissionImages } from '../routes/taskSubmissionRoutes.js';
 import { configureDemoMode } from '../demoMode.js';
 
 after(closeConnection);
@@ -148,6 +148,65 @@ test('attachment processing persists worker-readable bytes before publishing the
     assert.equal(value.state.body.state, 'queued');
     assert.equal(await fs.pathExists(filename), false);
   } finally { await fs.remove(filename); await db.destroy(); }
+});
+
+test('submitted images are embedded in the issue through GitHub attachments', async () => {
+  configureDemoMode(false);
+  const db = await fixture();
+  const uploads: Array<{ name: string; contentType: string; body: string; authToken: string; repositoryId: number }> = [];
+  let issueBody = '';
+  try {
+    const image = { id: 'image-1', originalName: 'pasted [screen]\n<shot>.png', mimeType: 'image/webp', extension: '.webp', content: Buffer.from('webp-bytes').toString('base64') };
+    const text = { id: 'text-1', originalName: 'notes.txt', mimeType: 'text/plain', extension: '.txt', content: Buffer.from('notes').toString('base64') };
+    const row = await insertTaskSubmission(db, {
+      user_id: 'alice', submission_key: 'stable-key', payload_hash: 'hash', repository: 'owner/repo', attachments: JSON.stringify([image, text]),
+      payload: JSON.stringify({ instruction: 'Match the screenshot', username: 'alice', trigger: 'AI', routingLabel: 'llm-agent-model' }),
+    });
+    const routes = createTaskSubmissionRoutes({ db, services: {
+      authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true }),
+      routing: async () => ({ agentAlias: 'agent', model: 'model', routingLabel: 'llm-agent-model' }),
+      processingLabels: async () => ['AI'], enqueue: async () => undefined,
+      images: {
+        resolveToken: async () => 'user-token',
+        upload: async options => { uploads.push({ ...options, body: options.body.toString() }); return 'https://github.com/user-attachments/assets/abc-123'; },
+      },
+      getOctokit: async () => ({ request: async (route: string, body: Record<string, unknown>) => {
+        if (route === 'GET /repos/{owner}/{repo}') return { data: { id: 99 } };
+        if (route === 'POST /repos/{owner}/{repo}/issues') {
+          issueBody = String(body.body);
+          return { data: { number: 42, html_url: 'https://github.com/owner/repo/issues/42' } };
+        }
+        if (route.endsWith('/timeline')) return { data: [] };
+        return { data: {} };
+      } }) as never,
+    } });
+    const value = response();
+    await routes.retry(request({}), value.res);
+    assert.equal(value.state.body.state, 'queued');
+    assert.deepEqual(uploads, [{ name: 'image-1.webp', contentType: 'image/webp', body: 'webp-bytes', authToken: 'user-token', repositoryId: 99 }]);
+    assert.ok(issueBody.includes(`- "pasted [screen]\\n<shot>.png": .propr/assets/${row.id}/image-1.webp`));
+    assert.ok(issueBody.includes(`- "notes.txt": .propr/assets/${row.id}/text-1.txt`));
+    assert.ok(issueBody.includes('![pasted \\[screen\\] \\<shot\\>.png](https://github.com/user-attachments/assets/abc-123)'));
+    assert.ok(issueBody.endsWith(`\n<!-- propr-task-submission:${row.id} -->`));
+  } finally { await db.destroy(); }
+});
+
+test('image embedding is best effort and never blocks issue creation', async () => {
+  const image = { id: 'image-1', originalName: 'a.png', mimeType: 'image/webp', extension: '.webp', content: Buffer.from('bytes').toString('base64') };
+  const octokit = { request: async () => ({ data: { id: 99 } }) } as never;
+  const missingToken = await uploadSubmissionImages(octokit, { owner: 'owner', repo: 'repo' }, [image], {
+    resolveToken: async () => { throw new Error('No GitHub user credential is configured'); },
+    upload: async () => assert.fail('Uploads require a credential'),
+  });
+  assert.equal(missingToken.size, 0);
+  const rejected = await uploadSubmissionImages(octokit, { owner: 'owner', repo: 'repo' }, [image, { ...image, id: 'image-2' }], {
+    resolveToken: async () => 'token',
+    upload: async ({ name }) => { if (name === 'image-1.webp') throw new Error('HTTP 500'); return 'https://github.com/user-attachments/assets/ok'; },
+  });
+  assert.deepEqual([...rejected], [['image-2', 'https://github.com/user-attachments/assets/ok']]);
+  const noImages = await uploadSubmissionImages({ request: async () => assert.fail('Text-only submissions need no GitHub request') } as never,
+    { owner: 'owner', repo: 'repo' }, [{ ...image, extension: '.txt' }], { resolveToken: async () => assert.fail('No token needed') });
+  assert.equal(noImages.size, 0);
 });
 
 

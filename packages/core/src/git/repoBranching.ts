@@ -2,7 +2,7 @@ import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
 
@@ -12,10 +12,43 @@ interface InstallationAuth {
     token: string;
 }
 
+/** Keep worker write credentials out of every filesystem visible to agents. */
+export function configureGitAuthentication(git: SimpleGit, authToken: string): void {
+    const environment = { ...process.env };
+    // Worker git commands are non-interactive. Inherited pager/editor overrides
+    // are unnecessary and simple-git rejects them in an explicit environment.
+    // In particular, npm scripts inject EDITOR even when the shell leaves it unset.
+    delete environment.GIT_PAGER;
+    delete environment.PAGER;
+    delete environment.EDITOR;
+    delete environment.GIT_EDITOR;
+    delete environment.GIT_SEQUENCE_EDITOR;
+
+    git.env({
+        ...environment,
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: '',
+        GIT_CONFIG_KEY_1: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${authToken}`).toString('base64')}`,
+    });
+}
+
+export async function configureGitRemoteAuthentication(git: SimpleGit, token?: string, remoteName = 'origin'): Promise<void> {
+    if (token) { configureGitAuthentication(git, token); return; }
+    const remoteUrl = remoteName.startsWith('https://')
+        ? remoteName : (await git.getConfig(`remote.${remoteName}.url`)).value;
+    // A legacy URL can be scrubbed after getConfig returns. Authenticate it too
+    // so this command never depends on credentials remaining in shared config.
+    if (remoteUrl && /^https:\/\/(?:[^/]+@)?github\.com\//.test(remoteUrl)) {
+        configureGitAuthentication(git, await getGitHubInstallationToken());
+    }
+}
+
 export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {
-    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+    configureGitAuthentication(git, authToken);
     try {
-        await git.remote(['set-url', 'origin', authenticatedUrl]);
+        await git.remote(['set-url', 'origin', repoUrl]);
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
@@ -35,6 +68,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
         const git: SimpleGit = createHooklessGit(worktreePath);
 
         if (repoUrl && currentToken) await setupAuthenticatedRemote(git, repoUrl, currentToken);
+        else await configureGitRemoteAuthentication(git, currentToken);
 
         logger.info({ worktreePath, branchName, baseBranch }, 'Ensuring branch is properly set up and pushed...');
 
@@ -150,6 +184,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
+        else await configureGitRemoteAuthentication(git, token, remote);
 
         try {
             const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
