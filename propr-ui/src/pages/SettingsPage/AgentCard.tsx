@@ -131,6 +131,30 @@ const ModelRow: React.FC<{
   </div>
 );
 
+const LegacyModelsToggle: React.FC<{
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}> = ({ count, expanded, onToggle }) => {
+  if (count === 0) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      className="flex min-h-8 w-full cursor-pointer items-center justify-center gap-1.5 border-y border-dashed border-slate-200 bg-transparent py-2 text-[11px] font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
+    >
+      {expanded
+        ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+        : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
+      {expanded
+        ? 'Hide legacy models'
+        : `Show ${count} legacy ${count === 1 ? 'model' : 'models'}`}
+    </button>
+  );
+};
+
 interface AgentCardProps {
   agent: AgentConfig;
   onLogin: () => void;
@@ -321,21 +345,11 @@ const AgentCard: React.FC<AgentCardProps> = ({
 
       <div id={modelsId} hidden={!expanded} className="mt-2">
         {currentModels.map(renderModelRow)}
-        {legacyModels.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowLegacyModels(current => !current)}
-            aria-expanded={showLegacyModels}
-            className="flex min-h-8 w-full cursor-pointer items-center justify-center gap-1.5 border-y border-dashed border-slate-200 bg-transparent py-2 text-[11px] font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
-          >
-            {showLegacyModels
-              ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-              : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
-            {showLegacyModels
-              ? 'Hide legacy models'
-              : `Show ${legacyModels.length} legacy ${legacyModels.length === 1 ? 'model' : 'models'}`}
-          </button>
-        )}
+        <LegacyModelsToggle
+          count={legacyModels.length}
+          expanded={showLegacyModels}
+          onToggle={() => setShowLegacyModels(current => !current)}
+        />
         {showLegacyModels && legacyModels.map(renderModelRow)}
       </div>
     </div>
