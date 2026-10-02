@@ -16,7 +16,7 @@ import type {
     IssueCommentEvent, IssueCommentCreatedEvent, IssueCommentDeletedEvent, IssueCommentEditedEvent,
     PullRequestReviewCommentEvent, PullRequestReviewCommentCreatedEvent,
     PullRequestReviewCommentDeletedEvent, PullRequestReviewCommentEditedEvent,
-    PullRequestEvent, PullRequestUnlabeledEvent,
+    PullRequestEvent,
     CheckRunEvent, PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
@@ -135,8 +135,6 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
 }
 
-const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
-
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
@@ -147,6 +145,10 @@ function isPushEvent(payload: unknown): payload is PushEvent {
 
 function isStatusEvent(payload: unknown): payload is StatusEventPayload {
     return typeof payload === 'object' && payload !== null && 'sha' in payload && 'state' in payload && !('action' in payload) && !('commits' in payload);
+}
+
+function hasStaleTriggerLabels(labels: string[], trigger: string, triggers: string[]): boolean {
+    return labels.includes(`${trigger}-processing`) || triggers.some(label => labels.includes(`${label}-cancelled`));
 }
 
 async function handleIssuesEvent(
@@ -163,7 +165,7 @@ async function handleIssuesEvent(
         let labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
         const triggers = !payload.issue.pull_request && payload.label?.name ? await loadPrimaryProcessingLabels() : [];
         if (!payload.issue.pull_request && payload.label?.name && triggers.includes(payload.label.name)
-            && (labels.includes(`${payload.label.name}-processing`) || triggers.some(trigger => labels.includes(`${trigger}-cancelled`)))) {
+            && hasStaleTriggerLabels(labels, payload.label.name, triggers)) {
             if (!isAuthorizedIssueTriggerActor(payload.sender?.login)) return { status: 'ignored', reason: 'user_not_allowed' };
             const restored = await restoreIssueTrigger({ repoOwner: owner, repoName: repo, number: payload.issue.number, kind: 'issue', triggeringLabel: payload.label.name });
             if (!restored) return { status: 'ignored', reason: 'intent_not_current' };
@@ -193,36 +195,17 @@ async function handleIssuesEvent(
     return { status: 'ignored', reason: 'unsupported_issue_action' };
 }
 
-async function handleUltrafixLabelRemoval(
-    payload: unknown,
-    eventType: WebhookEventType,
-    correlationId: string,
-): Promise<void> {
+async function handleUltrafixLabelRemoval(payload: unknown, eventType: WebhookEventType, correlationId: string): Promise<void> {
+    const event = eventType === 'pull_request' && isPullRequestEvent(payload) ? payload
+        : eventType === 'issues' && isIssuesEvent(payload) && payload.issue.pull_request ? payload : null;
+    if (!event || event.action !== 'unlabeled' || event.label?.name !== 'ultrafix') return;
+    const owner = event.repository.owner.login;
+    const repo = event.repository.name;
+    const prNumber = 'pull_request' in event ? event.pull_request.number : event.issue.number;
     const log = logger.withCorrelation(correlationId);
-
-    if (eventType === 'pull_request' && isPullRequestEvent(payload) && isPullRequestUnlabeledEvent(payload)) {
-        if (payload.label?.name !== 'ultrafix') return;
-        const owner = payload.repository.owner.login;
-        const repo = payload.repository.name;
-        const prNumber = payload.pull_request.number;
-        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
-            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
-        }
-        return;
-    }
-
-    if (eventType === 'issues' && isIssuesEvent(payload)) {
-        const labelName = 'label' in payload ? payload.label?.name : undefined;
-        const isPrIssue = 'pull_request' in payload.issue && !!payload.issue.pull_request;
-        if (payload.action !== 'unlabeled' || labelName !== 'ultrafix' || !isPrIssue) return;
-        const owner = payload.repository.owner.login;
-        const repo = payload.repository.name;
-        const prNumber = payload.issue.number;
-        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
-            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
-        }
+    if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+        log.info({ owner, repo, prNumber }, `Cleared ultrafix loop state after ${eventType === 'pull_request' ? 'PR' : 'issue'} ultrafix label removal`);
     }
 }
 

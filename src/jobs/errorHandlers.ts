@@ -115,6 +115,10 @@ async function issueRetryWasStopped(stateManager: WorkerStateManager, taskId: st
     return state?.state === 'cancelled' && !isBookkeepingCancellation(state);
 }
 
+function issueUsageLimitRetryJobId(issueRef: IssueJobData, attempt: string): string {
+    return `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry-${attempt}`;
+}
+
 export async function handleUsageLimitError(
     error: UsageLimitError,
     job: Job<IssueJobData>,
@@ -172,7 +176,7 @@ export async function handleUsageLimitError(
         isRetryFromRateLimit: true
     };
 
-    const requeueJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry-${attempt}`;
+    const requeueJobId = issueUsageLimitRetryJobId(issueRef, attempt);
 
     if (await issueRetryWasStopped(stateManager, taskId)) return;
     const retryJob = await issueQueue.add(job.name, requeuedJobData, {
