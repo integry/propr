@@ -533,3 +533,6 @@ export {
 
 export * from './usageTips.js';
 export * from './notificationLinks.js';
+
+// Browser-safe checkpoint parsing shared by goal workers and readable timelines.
+export * from './goalCheckpoints.js';
