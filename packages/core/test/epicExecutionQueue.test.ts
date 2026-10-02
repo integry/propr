@@ -4,6 +4,7 @@ import knex from 'knex';
 import { up } from '../src/db/migrations/20261003000000_add_epic_execution_queues.js';
 import { up as epicQueueFinalization, down as removeEpicQueueFinalization } from '../src/db/migrations/20261003010000_add_epic_queue_finalization.js';
 import { up as epicQueueUseEpic, down as removeEpicQueueUseEpic } from '../src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
+import { up as epicQueueParallel } from '../src/db/migrations/20261003030000_add_epic_queue_parallel.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 const starts: number[] = [];
@@ -47,6 +48,7 @@ await database.schema.createTable('plan_issues', table => {
 await up(database);
 await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
+await epicQueueParallel(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();

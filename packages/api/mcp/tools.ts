@@ -586,14 +586,16 @@ export function addPlanImplementationTool(
       if (available.some(issue => issue.status !== 'pending')) throw new McpError('PRECONDITION_FAILED', 'A selected issue has already started.', 409);
       const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
         useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
-      const executionId = await db.transaction(async tx => {
+      const queued = new Set(dispatch.queued);
+      const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallel?: boolean }> => {
         for (const number of args.issues) {
           const id = `${args.planId}:${number}`;
           const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
             value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id }), expires_at: null }).onConflict(['kind', 'id']).ignore().returning('id');
           if (!inserted.length) throw new McpError('IMPLEMENTATION_ALREADY_REQUESTED', 'An implementation receipt already owns a selected issue. Inspect the plan and prior operation before recovery.', 409);
           await tx('plan_issues').where({ draft_id: args.planId, issue_number: number }).update({
-            ...(dispatch.mode === 'sequential' ? args.models[0] : {}),
+            // The head keeps its prior selection until its handler replaces that model label.
+            ...(queued.has(number) ? args.models[0] : {}),
             run_ultrafix: args.runUltrafix, ultrafix_goal: args.runUltrafix ? args.ultrafixGoal : null,
             ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
           });
@@ -602,9 +604,22 @@ export function addPlanImplementationTool(
           const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
             autoMerge: args.autoMerge, ready: false, headStartedAt: Date.now() }, { database: tx });
-          return queue.executionId;
+          return { executionId: queue.executionId };
         }
+        if (args.useEpic) {
+          // An active epic execution's finalization stays owed until the whole plan is done, so it also
+          // covers these children. A non-epic execution owes no epic finalization and cannot cover them.
+          const active = await getEpicExecutionQueue(args.planId, { database: tx });
+          if (active?.status === 'active' && !active.useEpic) throw new McpError('PRECONDITION_FAILED', 'A non-epic execution queue is running for this plan. Wait for it to finish before starting a parallel epic.', 409);
+          if (active?.status !== 'active') {
+            await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository, issues: dispatch.dispatchNow,
+              advanceOn: dispatch.advanceOn, autoMerge: args.autoMerge, parallel: true }, { database: tx });
+            return { parallel: true };
+          }
+        }
+        return {};
       });
+      const executionId = claimed.executionId;
       const results = [];
       const prepareIssue = async (number: number) => {
         await policy.repository(principal, args.repository, true);
@@ -620,7 +635,7 @@ export function addPlanImplementationTool(
           results.push((await callWorkflow(planner.implementIssue, principal, { params: { id: args.planId, issueNumber: String(number) }, body: { repository: args.repository, models: args.models, useEpic: args.useEpic, autoMerge: args.autoMerge } })).data);
         }
       } catch (error) {
-        if (dispatch.mode === 'sequential') await cancelEpicExecutionQueue(args.planId);
+        if (executionId || claimed.parallel) await cancelEpicExecutionQueue(args.planId);
         throw error;
       }
       if (dispatch.mode === 'sequential') {

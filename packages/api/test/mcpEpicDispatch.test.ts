@@ -82,6 +82,7 @@ const repository = 'acme/repo';
 const planId = '10000000-0000-4000-8000-000000000001';
 const models = [{ agent_alias: 'test', model_name: 'model' }];
 const dispatches: number[] = [];
+const headSelections: Array<string | null> = [];
 const updates: Array<{ number: number; body: unknown }> = [];
 const githubCalls: string[] = [];
 let dispatchFailure = false;
@@ -100,6 +101,8 @@ const planner = {
   implementIssue: async (req: Request, res: Response) => {
     const number = Number(req.params.issueNumber);
     dispatches.push(number);
+    // The real handler derives the label it removes from the selection persisted before it runs.
+    headSelections.push((await database('plan_issues').where({ draft_id: planId, issue_number: number }).first()).model_name);
     if (dispatchFailure) throw new Error('dispatch failed');
     await database('plan_issues').where({ draft_id: planId, issue_number: number }).update({ status: 'processing', ...models[0] });
     res.json({ issueNumber: number });
@@ -125,7 +128,7 @@ beforeEach(async () => {
   await database('mcp_operations').delete();
   await database('task_drafts').insert({ draft_id: planId, user_id: 'user', repository, status: 'executed', context_config: JSON.stringify({ epicLabel: 'base-epic' }) });
   await database('plan_issues').insert([10, 20, 30, 40].map(issue_number => ({ draft_id: planId, repository, issue_number, status: 'pending' })));
-  dispatches.length = 0; updates.length = 0; githubCalls.length = 0; labelCalls.length = 0; issueLabels.clear();
+  dispatches.length = 0; headSelections.length = 0; updates.length = 0; githubCalls.length = 0; labelCalls.length = 0; issueLabels.clear();
   for (const number of [10, 20, 30, 40]) issueLabels.set(number, ['llm-old', 'base-old', 'auto-merge']);
   dispatchFailure = false; configFailure = false;
   epicPR = null; epicLookups = 0; epicLabelFailure = false; queuedLabelFailure = false; afterEpicLookup = undefined;
@@ -176,13 +179,55 @@ test('parallel and non-epic modes preserve fan-out and multi-model support', asy
   await run({ epicExecution: 'parallel', models: [...models, ...models] });
   assert.deepEqual(dispatches, [40, 10, 30]);
   assert.deepEqual(updates, []);
-  assert.equal(await core.getEpicExecutionQueue(planId), null);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.parallel, true);
+  assert.deepEqual(queue?.issues, [40, 10, 30]);
 });
 
 test('non-epic calls ignore sequential execution preference', async () => {
   const result = await run({ useEpic: false, epicExecution: 'sequential', models: [...models, ...models] });
   assert.deepEqual(dispatches, [40, 10, 30]);
   assert.equal((result.data as { executionMode: string }).executionMode, 'parallel');
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+});
+
+test('a parallel epic labels its epic PR once after all children finish, without serializing dispatch', async () => {
+  epicPR = { number: 999, labels: [] };
+  await run({ epicExecution: 'parallel' });
+  assert.deepEqual(dispatches, [40, 10, 30]);
+  await core.updatePlanIssueStatus(repository, 40, core.PlanIssueStatus.MERGED);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.CLOSED);
+  assert.equal(labelCalls.some(call => call.number === 999), false);
+  // The unselected issue still blocks the whole-plan completion check.
+  await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).update({ status: 'merged' });
+  await core.updatePlanIssueStatus(repository, 30, core.PlanIssueStatus.MERGED);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  await core.reconcileEpicExecutionQueues();
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')), [{ number: 999, labels: ['AI'] }]);
+});
+
+test('a parallel epic cannot start under a non-epic queue that owes no epic finalization', async () => {
+  await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [20], useEpic: false });
+  await assert.rejects(run({ epicExecution: 'parallel' }), error => error instanceof McpError && error.code === 'PRECONDITION_FAILED');
+  assert.deepEqual(dispatches, []);
+  assert.equal((await database('mcp_records').where({ kind: 'issue_execution' })).length, 0);
+});
+
+test('parallel epic dispatch failure releases its finalization obligation', async () => {
+  dispatchFailure = true;
+  await assert.rejects(run({ epicExecution: 'parallel' }), /dispatch failed/);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+});
+
+test('the sequential head keeps its prior model until its handler replaces that model label', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update({ agent_alias: 'test', model_name: 'other' });
+  await run();
+  assert.deepEqual(headSelections, ['other']);
+  for (const number of [30, 40]) {
+    assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: number }).first()).model_name, 'model');
+  }
+  assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).first()).model_name, 'other');
 });
 
 test('multiple models fail before any claim, queue or GitHub call', async () => {
@@ -262,7 +307,10 @@ for (const queueStatus of ['active', 'cancelled'] as const) {
       const completed = await getOperation.run({ principal, args: { operationId: accepted.operationId } } as never);
       assert.equal((completed.data as { state: string }).state, 'completed');
       assert.equal((await operations.get(principal, String(accepted.operationId))).lifecycle, 'completed');
-      assert.equal((await core.getEpicExecutionQueue(planId))?.status, queueStatus);
+      // A parallel epic registers its own finalization only where no active execution already owes one.
+      const replacement = mode === 'parallel' && queueStatus === 'cancelled';
+      assert.equal((await core.getEpicExecutionQueue(planId))?.status, replacement ? 'active' : queueStatus);
+      assert.equal((await core.getEpicExecutionQueue(planId))?.parallel, replacement);
     });
   }
 
@@ -478,6 +526,15 @@ test('a non-epic auto-merge UI request starts the next pending issue after each 
   // The plan's stored epic label belongs to an earlier epic run; non-epic successors must not target it.
   assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).slice(1),
     [{ number: 10, labels: ['AI', 'auto-merge'] }, { number: 20, labels: ['AI', 'auto-merge'] }]);
+  // Completing the non-epic queue must not activate the historical epic PR.
+  epicPR = { number: 999, labels: [] };
+  await core.updatePlanIssueStatus(repository, 20, core.PlanIssueStatus.MERGED);
+  await core.updatePlanIssueStatus(repository, 40, core.PlanIssueStatus.MERGED);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+  assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+  await core.reconcileEpicExecutionQueues();
+  assert.equal(epicLookups, 0);
+  assert.equal(labelCalls.some(call => call.number === 999), false);
 });
 
 test('non-epic UI requests without auto-merge start only the requested issue', async () => {

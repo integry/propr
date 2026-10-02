@@ -234,13 +234,17 @@ With `implement_plan` and `useEpic: true`, `epicExecution` defaults to
 (`plan_issues.id`), regardless of their order in the request. The first issue
 starts immediately; the rest are durably queued. Sequential epics accept one
 model per issue. `epicExecution: "parallel"` restores the previous fan-out,
-including comparisons with up to four models. Non-epic calls keep fan-out and
+including comparisons with up to four models. A parallel epic still records a
+queue that starts nothing; once all of its issues are merged or closed, it
+labels the epic PR for completion, like a sequential epic. A parallel epic is
+rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
 ignore these epic execution options.
 
 `epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
 successor. A closed head (including a failed task reconciled to closed) leaves
-the queue active and records a human-readable `blockedReason`; reopening,
-fixing and merging it automatically releases the queue. Choose
+the queue active and records a human-readable `blockedReason`. If the head was
+closed because its PR was closed without merging, reopening, fixing and merging
+that PR releases the queue. A source issue you closed by hand stays closed. Choose
 `epicAdvanceOn: "terminal"` to advance on any core terminal issue status
 (currently merged or closed). Issues already in an eligible terminal state
 are skipped. `pause_plan` holds the next issue, and `resume_plan` starts the
@@ -252,7 +256,8 @@ The web UI, CLI and REST API feed the same queue. **Implement Epic** queues
 every remaining pending issue; a non-epic implementation with auto-merge
 queues the remaining pending issues behind the one it starts. Both advance
 like `epicAdvanceOn: "terminal"`, so a failed or closed issue does not stop
-the plan.
+the plan. A finished non-epic queue never labels an epic PR, even if the plan
+ran as an epic earlier.
 Non-epic MCP calls start only their selected issues. No other path advances a
 plan: a plan already running when you upgrade has no queue, so once its
 current issue finishes, start the next pending issue again (with **Implement
@@ -261,7 +266,8 @@ Epic** for an epic).
 The implementation result includes `executionMode`, `advanceOn`, `started`
 and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
 expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
-(null when no queue exists). Sequential receipts remain `accepted` until the
+(null when no queue exists). A parallel epic's queue also reports
+`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
 queue is completed; dispatching the first issue or opening its PR does not
 complete the operation. Queue status is `active`, `completed` or `cancelled`.
 Both new arguments are optional, so omitting them preserves existing

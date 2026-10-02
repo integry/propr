@@ -271,7 +271,8 @@ export async function handlePlanPRUpdate(
         const planIssue = await findOrLinkPlanIssue(payload, repository, prNumber, log);
         if (!planIssue) return;
 
-        const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
+        const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status)
+            ?? await recoverPRClosedPlanIssue(payload, repository, planIssue, log);
 
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
@@ -279,6 +280,40 @@ export async function handlePlanPRUpdate(
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
+    }
+}
+
+/**
+ * A closed, unmerged PR records its plan issue as closed while the source issue
+ * stays open. Reopening or merging that same PR may recover the issue; a manual
+ * source-issue close stays closed. GitHub's current PR state is the evidence, so
+ * a delayed reopened event cannot revive a PR that has been closed again.
+ */
+async function recoverPRClosedPlanIssue(
+    payload: PullRequestEvent,
+    repository: string,
+    planIssue: NonNullable<Awaited<ReturnType<typeof findPlanIssueByRepoAndPR>>>,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<PlanIssueStatus | null> {
+    const recoverable = payload.action === 'reopened' || (payload.action === 'closed' && payload.pull_request.merged === true);
+    if (!recoverable || planIssue.status !== PlanIssueStatus.CLOSED || planIssue.pr_number !== payload.pull_request.number) return null;
+    try {
+        const [owner, repo] = repository.split('/');
+        const octokit = await getAuthenticatedOctokit();
+        const [{ data: pr }, { data: issue }] = await Promise.all([
+            octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: planIssue.pr_number }),
+            octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: planIssue.issue_number }),
+        ]);
+        const mergedAt = pr.merged_at ? Date.parse(pr.merged_at) : null;
+        // The merge itself may close the source issue through its closing keyword.
+        const closedByMerge = mergedAt !== null && !!issue.closed_at && Date.parse(issue.closed_at) >= mergedAt;
+        if (issue.state === 'closed' && !closedByMerge) return null;
+        const recovered = mergedAt !== null ? PlanIssueStatus.MERGED : pr.state === 'open' ? PlanIssueStatus.UNDER_REVIEW : null;
+        if (recovered) log.info({ repository, prNumber: planIssue.pr_number, issueNumber: planIssue.issue_number, recovered }, 'Recovered plan issue closed by its unmerged PR');
+        return recovered;
+    } catch (error) {
+        log.warn({ repository, prNumber: planIssue.pr_number, error: (error as Error).message }, 'Could not verify closed plan issue recovery');
+        return null;
     }
 }
 

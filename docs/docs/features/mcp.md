@@ -35,7 +35,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 `implement_plan` with `useEpic: true` runs selected issues sequentially in plan
 publication order. It starts one issue and durably queues the rest, using one
 model per issue. `epicExecution: "parallel"` restores fan-out (up to four
-models); non-epic calls keep their existing fan-out. `epicAdvanceOn: "merged"`
+models) and labels the epic PR once every issue finishes; non-epic calls keep their existing fan-out. `epicAdvanceOn: "merged"`
 is the default: closed or failed heads record a `blockedReason` and wait until
 fixed and merged. `epicAdvanceOn: "terminal"` advances on any core terminal
 issue state. `pause_plan` holds the successor and `resume_plan` starts it.

@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issue, and worker reconciliation repairs missed advancement and dispatch.
   Results and plan/operation reads expose queue progress; receipts stay
   accepted until completion. `epicExecution: "parallel"` restores fan-out and
-  multi-model comparisons. Existing idempotency hashes are preserved. UI, CLI
+  multi-model comparisons, and still labels the epic PR once every issue is done.
+  A head closed with its unmerged PR resumes when that PR is reopened and merged. Existing idempotency hashes are preserved. UI, CLI
   and API **Implement Epic** and non-epic auto-merge requests feed the same
   queue with `terminal` advancement, so a failed issue still continues the
   plan. Plans already running at upgrade have no queue; restart them from
