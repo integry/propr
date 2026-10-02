@@ -119,8 +119,10 @@ workers do not operate.
 Click **Create GitHub App**, then **Install**, choosing the repositories ProPR may
 access. Add `--org your-org` to register it under that organization; your GitHub
 account must be allowed to create Apps there. The default name is
-`ProPR (propr.example.com)`. Use `--name` to override it. If GitHub says the name
-is taken, edit the name in GitHub's form and submit again.
+`ProPR-propr-example-com`: hostname punctuation is replaced with hyphens and the
+result is truncated to GitHub's 34-character limit. Use `--name` to override it;
+the CLI rejects longer names before opening GitHub. If GitHub says the name is
+taken, edit the name in GitHub's form and submit again.
 
 The command writes an absolute `HOST_GH_PRIVATE_KEY` path under the stack root
 and creates the PEM with mode `0600`. It saves `GH_APP_ID`, `GH_INSTALLATION_ID`,
@@ -196,18 +198,24 @@ the installation redirect URL. You can instead press Enter after installation
 to discover it through GitHub's API. The portable HTML file is deleted when the
 command exits.
 
-The listener binds only to `127.0.0.1` on a random port. It validates a one-time
-state and exchanges the code within GitHub's one-hour limit. Installation IDs
-are verified using the new App's JWT. After five minutes without an installation
-callback, the CLI lists the new App's installations and accepts a single result,
-then verifies it. Missing or ambiguous installations stop the flow.
+The listener binds only to `127.0.0.1` on a random port. GitHub uses the
+manifest's `redirect_url` and `setup_url` to redirect the **user's browser**
+after App creation and installation; GitHub's servers do not call the loopback
+listener. A browser on the CLI machine reaches it normally. With a browser on a
+different machine, paste-back is the primary path and does not depend on the
+listener receiving the navigation. The normal browser flow also accepts a
+pasted URL as a fallback.
 
-GitHub's manifest documentation does not explicitly guarantee loopback HTTP
-`redirect_url` and `setup_url` acceptance. Probot uses local registration
-callbacks, but the authenticated GitHub registration round trip must still be
-verified for your environment. Paste-back handles an unreachable callback; it
-cannot bypass a URL GitHub refuses at registration time. If GitHub rejects these
-URLs, use the manual manifest path with HTTPS callbacks you control.
+Webhook delivery is separate: GitHub's servers POST only to the public
+`hook_attributes.url` (by default `<public-url>/webhook`), never to this
+loopback listener. The CLI warns when that webhook URL is private because
+GitHub could not reach it.
+
+The listener validates a one-time state and exchanges the code within GitHub's
+one-hour limit. Installation IDs are verified using the new App's JWT. After
+five minutes without an installation redirect, the CLI lists the new App's
+installations and accepts a single result, then verifies it. Missing or
+ambiguous installations stop the flow.
 
 ### Manual registration and interrupted setup
 

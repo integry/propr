@@ -10,6 +10,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PassThrough } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildSequentialPrompts,
   createReadlineIo,
@@ -476,6 +479,21 @@ test("custom App creation uses the selected root and keeps the configuration it 
   const decision = await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" });
   assert.deepEqual(received, { root: "/selected-stack", publicUrl: "https://propr.example.com", org: "integry", browser: !process.env.SSH_CONNECTION });
   assert.deepEqual(decision, { keep: true });
+});
+
+test("custom App creation confirms and forces replacement for a stray credential key", async t => {
+  const root = mkdtempSync(join(tmpdir(), "propr-sequential-credentials-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, ".env"), "GH_WEBHOOK_SECRET=stray-secret\n");
+  const io = scriptedIo(["2", "1", "y", "https://propr.example.com", ""]);
+  let receivedForce: boolean | undefined;
+  const hooks = buildSequentialPrompts(io, undefined, async options => {
+    receivedForce = options.force;
+    return { envPath: join(root, ".env"), keyPath: join(root, "key.pem"), backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: root }), { keep: true });
+  assert.equal(receivedForce, true);
+  assert.match(io.lines.join("\n"), /Replace the current GitHub authentication/);
 });
 
 for (const mode of ['relay', 'app'] as const) test(`declining ${mode} replacement keeps authentication without creating an App`, async () => {

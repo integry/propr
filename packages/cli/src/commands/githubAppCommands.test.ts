@@ -20,7 +20,7 @@ function sandbox(t: TestContext) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
-function harness(root: string, options: { noBrowser?: boolean; wrongState?: boolean; spoofInstallation?: boolean; conversionStatus?: number; discover?: boolean; secretOverride?: string; forwarded?: boolean } = {}) {
+function harness(root: string, options: { noBrowser?: boolean; wrongState?: boolean; spoofInstallation?: boolean; conversionStatus?: number; discover?: boolean; secretOverride?: string; forwarded?: boolean; browserCannotReachLoopback?: boolean } = {}) {
   const lines: string[] = [];
   const requests: { path: string; init?: RequestInit }[] = [];
   let manifest: ReturnType<typeof buildGithubAppManifest>;
@@ -39,14 +39,15 @@ function harness(root: string, options: { noBrowser?: boolean; wrongState?: bool
         const response = await fetch(url);
         readPage(await response.text());
         const callback = `${manifest.redirect_url}?code=one-time-code&state=${options.wrongState ? 'wrong' : state}`;
-        await fetch(callback);
-      } else if (!options.discover) {
+        if (!options.browserCannotReachLoopback) await fetch(callback);
+      } else if (!options.discover && !options.browserCannotReachLoopback) {
         await fetch(`${manifest.setup_url}&installation_id=${options.spoofInstallation ? 666 : 789}`);
       }
     },
     async ask(message) {
-      if (message.includes('creation')) {
-        readPage(readFileSync(join(root, readdirSync(root).find(name => name.endsWith('.html'))!), 'utf8'));
+      if (message.includes('creation') || message.includes('Waiting for GitHub')) {
+        const registrationFile = readdirSync(root).find(name => name.endsWith('.html'));
+        if (registrationFile) readPage(readFileSync(join(root, registrationFile), 'utf8'));
         const callback = `${manifest.redirect_url}?code=one-time-code&state=${options.wrongState ? 'wrong' : state}`;
         if (options.forwarded) {
           assert.equal((await fetch(callback)).status, 200);
@@ -87,6 +88,7 @@ function harness(root: string, options: { noBrowser?: boolean; wrongState?: bool
 
 test('manifest permissions snapshot and handler dispatch stay aligned', () => {
   const manifest = buildGithubAppManifest({ publicUrl });
+  assert.equal(manifest.name, 'ProPR-propr-example-com');
   assert.deepEqual(manifest.default_permissions, { contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read', actions: 'write' });
   assert.deepEqual(manifest.default_events, [...SUPPORTED_WEBHOOK_EVENTS]);
   const handler = readFileSync(new URL('../../../core/src/webhook/webhookHandler.ts', import.meta.url), 'utf8');
@@ -97,6 +99,14 @@ test('manifest permissions snapshot and handler dispatch stay aligned', () => {
   assert.equal(manifest.hook_attributes.url, `${publicUrl}/webhook`);
   assert.deepEqual(manifest.callback_urls, [`${publicUrl}/api/auth/github/callback`]);
   assert.equal(manifest.public, false);
+});
+
+test('default App names are sanitized and truncated, and explicit names enforce GitHub length', () => {
+  const manifest = buildGithubAppManifest({ publicUrl: `https://${'long.host.'.repeat(6)}example.com:8443` });
+  assert.match(manifest.name, /^[a-zA-Z0-9-]+$/);
+  assert.ok(manifest.name.length <= 34);
+  assert.throws(() => buildGithubAppManifest({ publicUrl, name: 'x'.repeat(35) }), /34 characters/);
+  assert.equal(buildGithubAppManifest({ publicUrl, name: 'My custom App' }).name, 'My custom App');
 });
 
 test('browser flow writes usable credentials, backs up env, removes all relay/duplicate keys, and never logs secrets', async t => {
@@ -137,6 +147,15 @@ test('SSH paste-back and JSON command output expose only field names and paths',
   assert.ok(existsSync(json.keyPath));
   for (const secret of [pem, credentials.client_secret, credentials.webhook_secret, 'installation-token-secret']) assert.ok(![...output, ...h.lines].join('').includes(secret));
   assert.ok(!readdirSync(root).some(name => name.endsWith('.html')));
+});
+
+test('browser flow falls back to pasted user redirects without loopback delivery', async t => {
+  const root = sandbox(t);
+  const h = harness(root, { browserCannotReachLoopback: true });
+  const result = await createGithubApp({ root, publicUrl }, h);
+  assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
+  assert.equal(h.getManifest().hook_attributes.url, `${publicUrl}/webhook`, 'GitHub server webhooks remain public');
+  assert.match(h.lines.join('\n'), /Opening GitHub/);
 });
 
 test('refuses existing credentials before opening browser or changing files', async t => {
@@ -464,6 +483,21 @@ for (const command of ['create', 'manifest']) {
     assert.deepEqual(h.lines, []);
   });
 }
+
+test('commands reject an overlong App name before browser, network, or file side effects', async t => {
+  const root = sandbox(t);
+  const h = harness(root);
+  const errors: string[] = [];
+  const previousExitCode = process.exitCode;
+  t.after(() => { process.exitCode = previousExitCode; });
+  t.mock.method(console, 'error', (line: string) => errors.push(line));
+  await createGithubAppCommand(h).parseAsync(['create', '--root', root, '--public-url', publicUrl, '--name', 'x'.repeat(35)], { from: 'user' });
+  assert.equal(process.exitCode, 1);
+  assert.match(errors.join('\n'), /34 characters/);
+  assert.deepEqual(readdirSync(root), []);
+  assert.deepEqual(h.requests, []);
+  assert.deepEqual(h.lines, []);
+});
 
 test('SSH instructions specify the required loopback host and identical forwarding ports', async t => {
   const root = sandbox(t);

@@ -83,7 +83,12 @@ export async function openGithubAppBrowser(url: string): Promise<void> {
   });
 }
 
-/** Loopback-only receiver. Codes are single-use; setup callbacks are independently authenticated. */
+/**
+ * Loopback-only receiver for browser navigations after creation/installation.
+ * GitHub does not make server-to-server requests here: webhook POSTs go to the
+ * manifest's public hook_attributes.url. Codes are single-use and setup
+ * callbacks are independently authenticated.
+ */
 export async function startGithubAppListener(state: string, ttlMs = 60 * 60_000) {
   const createdAt = Date.now();
   let html = '';
@@ -164,9 +169,18 @@ export async function startGithubAppListener(state: string, ttlMs = 60 * 60_000)
 }
 
 function existingEnv(root: string): string { return existsSync(join(root, '.env')) ? readFileSync(join(root, '.env'), 'utf8') : ''; }
-function assertNoCredentials(raw: string, force?: boolean): void {
+function hasGithubAppCredentialsInEnv(raw: string): boolean {
   const env = parse(raw);
-  if (!force && credentialKeys.some(key => env[key]?.trim())) {
+  return credentialKeys.some(key => env[key]?.trim());
+}
+
+/** Uses the exact .env credential test enforced by github-app create. */
+export function hasGithubAppCredentials(root?: string): boolean {
+  return root ? hasGithubAppCredentialsInEnv(existingEnv(root)) : false;
+}
+
+function assertNoCredentials(raw: string, force?: boolean): void {
+  if (!force && hasGithubAppCredentialsInEnv(raw)) {
     throw new GithubAppFlowError('Existing GitHub App credentials found. Use --force to replace them (a timestamped .env backup will be created).');
   }
 }
@@ -252,10 +266,35 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
       writeFileSync(registrationPath, page, { mode: 0o600, flag: 'wx' });
       io.log(`Registration page: ${pathToFileURL(registrationPath).href}\nFor SSH, copy this HTML file to your browser's machine and open it there. It submits the manifest to ${target}.\nAlternatively, forward the same local and remote loopback port (${new URL(listener.base).port}) and open exactly ${localUrl}. Use 127.0.0.1, not localhost; do not change the port.`);
     }
+    const awaitBrowserOrPaste = async (kind: 'created' | 'installed', prompt: string, timeout: number, blankFinishes = false) => {
+      // A local browser normally reaches the loopback listener directly. Keep
+      // paste-back active in parallel so browser isolation, forwarding mistakes,
+      // or a remote browser never make listener delivery a hard dependency.
+      const stopPaste = new AbortController();
+      const pasteSignal = timeoutSignal(timeout, dependencies.signal
+        ? AbortSignal.any([dependencies.signal, stopPaste.signal])
+        : stopPaste.signal);
+      const received = listener.wait(kind, timeout, dependencies.signal)
+        .then(value => ({ source: 'listener' as const, value }));
+      const pasted = io.ask(prompt, pasteSignal).then(
+        raw => ({ source: 'paste' as const, value: listener.fromPaste(raw, kind) }),
+        error => ({ source: 'paste-error' as const, error }),
+      );
+      try {
+        const first = await Promise.race([received, pasted]);
+        if (first.source === 'listener') return first.value;
+        if (first.source === 'paste') return first.value ?? (blankFinishes ? undefined : (await received).value);
+        checkCancellation(dependencies.signal);
+        if (['AbortError', 'TimeoutError'].includes((first.error as Error).name)) return (await received).value;
+        throw first.error;
+      } finally {
+        stopPaste.abort();
+      }
+    };
     const timeout = dependencies.callbackTimeoutMs ?? 55 * 60_000;
     const code = paste
       ? listener.fromPaste(await io.ask('Paste the complete creation redirect URL (including code and state):', timeoutSignal(timeout, dependencies.signal)), 'created')
-      : await listener.wait('created', timeout, dependencies.signal);
+      : await awaitBrowserOrPaste('created', 'Waiting for GitHub. If the browser cannot load the 127.0.0.1 redirect, paste its complete URL here:', timeout);
     checkCancellation(dependencies.signal);
     if (!code) throw new GithubAppFlowError('Timed out waiting for GitHub registration. Retry with --no-browser to paste the redirect URL.');
     const credentials = await githubAppRequest<AppCredentials>(`/app-manifests/${encodeURIComponent(code)}/conversions`, undefined, 'POST', undefined, fetcher, dependencies.signal);
@@ -293,7 +332,7 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
         if (!['AbortError', 'TimeoutError'].includes((error as Error).name)) throw error;
         installationId = listener.fromPaste('', 'installed');
       }
-    } else installationId = await listener.wait('installed', installTimeout, dependencies.signal);
+    } else installationId = await awaitBrowserOrPaste('installed', 'Waiting for installation. If the browser cannot load the 127.0.0.1 redirect, paste its complete URL here (or press Enter to discover it):', installTimeout, true);
     checkCancellation(dependencies.signal);
     if (!installationId) {
       const installations = await githubAppRequest<AppInstallation[]>('/app/installations', appJwt(credentials.id, credentials.pem), 'GET', undefined, fetcher, dependencies.signal);
@@ -337,7 +376,7 @@ export function createGithubAppCommand(dependencies: GithubAppDependencies = {})
     const child = new Command(name).description(name === 'create' ? 'Create, install, and save a GitHub App using the manifest flow' : 'Write a manifest and env template for manual registration')
       .requiredOption('--public-url <url>', 'Public URL of this ProPR stack')
       .option('--org <login>', 'Organization that will own the App')
-      .option('--name <name>', 'App name (must be globally unique)')
+      .option('--name <name>', 'App name (must be globally unique and at most 34 characters)')
       .option('--webhook-url <url>', 'Override the public /webhook URL')
       .option('--webhook-secret <secret>', 'Override the GitHub-generated webhook signing secret')
       .option('--allow-workflow-changes', 'Request Workflows write permission for edits to .github/workflows/*')

@@ -1,4 +1,4 @@
-import { createGithubApp, openGithubAppBrowser } from "../commands/githubAppCommands.js";
+import { createGithubApp, hasGithubAppCredentials, openGithubAppBrowser } from "../commands/githubAppCommands.js";
 /**
  * Interactive Ink view for `propr setup`.
  *
@@ -303,7 +303,7 @@ export function buildSetupPrompts(bridge: SetupBridge, createApp = createGithubA
         defaultIndex: 0,
       });
       if (method === "create") {
-        const force = current.mode !== "none";
+        const force = current.mode !== "none" || hasGithubAppCredentials(rootDir);
         if (force && !await bridge.confirm({
           title: "Replace the current GitHub authentication?",
           detail: "A timestamped .env backup will be created before saving the new App credentials.",

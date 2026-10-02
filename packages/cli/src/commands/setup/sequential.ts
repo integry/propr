@@ -1,4 +1,4 @@
-import { createGithubApp, openGithubAppBrowser } from "../githubAppCommands.js";
+import { createGithubApp, hasGithubAppCredentials, openGithubAppBrowser } from "../githubAppCommands.js";
 /**
  * Sequential (readline) fallback wizard for `propr setup`.
  *
@@ -353,7 +353,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         defaultIndex: 0,
       });
       if (method === "create") {
-        const force = current.mode !== "none";
+        const force = current.mode !== "none" || hasGithubAppCredentials(rootDir);
         if (force && !await promptConfirm(io, paint, {
           title: "Replace the current GitHub authentication?",
           detail: "A timestamped .env backup will be created before saving the new App credentials.",

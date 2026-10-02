@@ -120,7 +120,7 @@ Both commands use the same manifest builder.
 | `--public-url <url>` | Required public stack URL; webhook defaults to `/webhook` |
 | `--root <dir>` | Stack root; otherwise uses `PROPR_ROOT`, saved root, or cwd |
 | `--org <login>` | Register the App under this organization |
-| `--name <name>` | Override `ProPR (<host>)`; choose another in GitHub's form if taken |
+| `--name <name>` | Override the sanitized `ProPR-<host>` default (maximum 34 characters); choose another in GitHub's form if taken |
 | `--webhook-url <url>` | Override the webhook endpoint |
 | `--webhook-secret <secret>` | `create`: update GitHub and `.env` with this secret after conversion |
 | `--allow-workflow-changes` | Request Workflows write; otherwise pushes editing `.github/workflows/*` fail |
@@ -130,7 +130,9 @@ Both commands use the same manifest builder.
 
 Over SSH, copy the printed HTML form to your browser's machine and open it, then
 paste each GitHub redirect URL back into the terminal. An unreachable loopback
-page is expected on a remote machine; copy its URL from the address bar. See
+page is expected on a remote machine; GitHub redirects the browser there rather
+than calling localhost from its servers, so copy the URL from the address bar.
+Webhook POSTs use the public `--webhook-url` instead. See
 [Create your own App](../operations/github-auth.md#create-your-own-app) for the
 permission/event tables, callback constraints, and interrupted-setup recovery.
 

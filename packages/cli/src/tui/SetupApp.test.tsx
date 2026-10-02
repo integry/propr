@@ -7,6 +7,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SetupBridge, SetupCancelledError, buildSetupPrompts, type SetupPrompt } from "./SetupApp.js";
 import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
 import { runSetup, type SetupActions, type SetupPrompts } from "../commands/setup/engine.js";
@@ -310,6 +313,28 @@ test("Ink own-App creation invokes the flow for the selected stack", async () =>
   });
   assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: "/selected-stack" }), { keep: true });
   assert.equal(root, "/selected-stack");
+});
+
+test("Ink own-App creation confirms and forces replacement for a stray credential key", async t => {
+  const root = mkdtempSync(join(tmpdir(), "propr-ink-credentials-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, ".env"), "GH_WEBHOOK_SECRET=stray-secret\n");
+  const bridge = new SetupBridge();
+  const answers = ["app", "create", true, "https://propr.example.com", ""];
+  let sawConfirmation = false;
+  bridge.subscribe(event => {
+    if (event.type !== "prompt") return;
+    if (event.prompt.kind === "confirm") sawConfirmation = true;
+    bridge.resolve(event.prompt.id, answers.shift());
+  });
+  let receivedForce: boolean | undefined;
+  const hooks = buildSetupPrompts(bridge, async options => {
+    receivedForce = options.force;
+    return { envPath: join(root, ".env"), keyPath: join(root, "key.pem"), backupPath: undefined, fields: [], checks: [] };
+  });
+  assert.deepEqual(await hooks.configureGithubAuth!({ current: { mode: "none", warnings: [] }, rootDir: root }), { keep: true });
+  assert.equal(sawConfirmation, true);
+  assert.equal(receivedForce, true);
 });
 
 for (const mode of ['relay', 'app'] as const) test(`Ink declining ${mode} replacement keeps authentication without creating an App`, async () => {
