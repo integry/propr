@@ -6,7 +6,6 @@ import { mergeIncrementalLiveDetails, normalizeLiveTodos, useTaskData, type Incr
 
 const apiMocks = vi.hoisted(() => ({
   getTaskHistory: vi.fn(),
-  getTaskAnalysis: vi.fn(),
   getTaskLiveDetails: vi.fn(),
   stopTaskExecution: vi.fn(),
   deleteTask: vi.fn(),
@@ -165,7 +164,6 @@ describe('task detail history refreshes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     apiMocks.getTaskHistory.mockResolvedValue({ history: [], taskInfo: null, usageMetricRecords: [] });
     apiMocks.getTaskLiveDetails.mockResolvedValue({ events: [], todos: [], currentTask: null });
-    apiMocks.getTaskAnalysis.mockResolvedValue({ analysis: null });
   });
 
   afterEach(() => {
@@ -243,7 +241,6 @@ it('does not let disconnect cleanup authorize an HTTP read older than socket con
   vi.clearAllMocks();
   socketMocks.isConnected = true;
   apiMocks.getTaskHistory.mockResolvedValue({ history: [], taskInfo: null });
-  apiMocks.getTaskAnalysis.mockResolvedValue({ analysis: null });
   const persisted = deferred<LiveDetails>();
   apiMocks.getTaskLiveDetails.mockReturnValue(persisted.promise);
   const { result, rerender, unmount } = renderHook(() => useTaskData('task'));

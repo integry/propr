@@ -38,3 +38,9 @@ test('dashboard_summary_enabled accepts booleans only', async () => {
   assert.equal(parseSettingValue('dashboard_summary_enabled', 'true'), true);
   assert.throws(() => parseSettingValue('dashboard_summary_enabled', 'yes'), /true.*false/);
 });
+
+test('legacy threshold and response deprecation metadata are not writable CLI setting keys', async () => {
+  const { isValidSettingKey } = await import('./settings.js');
+  assert.equal(isValidSettingKey('auto_followup_score_threshold'), false);
+  assert.equal(isValidSettingKey('deprecated_settings'), false);
+});

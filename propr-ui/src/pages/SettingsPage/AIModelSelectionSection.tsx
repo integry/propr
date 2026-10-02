@@ -325,9 +325,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Post-Implementation Analysis Model"
+          label="Fast Analysis Model"
           htmlFor="analysis_model_fast"
-          helperText="Analyzes the agent run, prompt, and diff after implementation. This is not used for PR review."
+          helperText="Used by /review to gather repository context before the review."
         >
           {hasAgents ? (
             <select

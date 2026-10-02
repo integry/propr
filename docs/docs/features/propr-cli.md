@@ -335,10 +335,9 @@ Settings keys:
 | `default_agent_alias` | Alias of the default implementation agent |
 | `worker_concurrency` | Number of concurrent workers for processing tasks |
 | `github_user_whitelist` | GitHub usernames allowed to use the system |
-| `analysis_model_fast` | Model for fast analysis operations |
+| `analysis_model_fast` | Used by `/review` to gather repository context before the review |
 | `planner_context_model` | Model for planner context generation |
 | `planner_generation_model` | Model for planner generation |
-| `auto_followup_score_threshold` | Score threshold (0–9) for auto-followup |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
 | `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
 | `model_reasoning_level` | Reasoning level for GPT and Claude agents (empty = agent default) |

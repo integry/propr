@@ -11,7 +11,6 @@ export type {
     UnprocessedComment,
     TaskImportJobData,
     GoalJobData,
-    AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
@@ -32,7 +31,6 @@ import type {
     IssueJobData,
     CommentJobData,
     GoalJobData,
-    AnalysisJobData,
     IndexingJobData,
     JobData,
     JobResult,
@@ -62,13 +60,11 @@ const connectionOptions: RedisOptions = {
 // Lazy-initialized Redis connection and queues
 let redisConnection: Redis | null = null;
 let _issueQueue: Queue<IssueJobData | CommentJobData | import('./taskQueue.types.js').GoalJobData> | null = null;
-let _analysisQueue: Queue<AnalysisJobData> | null = null;
 let _indexingQueue: Queue<IndexingJobData> | null = null;
 let isInitialized = false;
 
 export const GITHUB_ISSUE_QUEUE_NAME = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
 export const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
-export const ANALYSIS_QUEUE_NAME = process.env.ANALYSIS_QUEUE_NAME || 'analysis-processor';
 export const INDEXING_QUEUE_NAME = process.env.INDEXING_QUEUE_NAME || 'indexing-processor';
 
 /**
@@ -113,27 +109,6 @@ async function ensureInitialized(): Promise<void> {
         logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
     });
 
-    const analysisQueueOptions: QueueOptions = {
-        connection: redisConnection,
-        defaultJobOptions: {
-            attempts: 2,
-            backoff: {
-                type: 'exponential',
-                delay: 60000,
-            },
-            removeOnComplete: {
-                age: 24 * 3600,
-                count: 1000,
-            },
-            removeOnFail: true,
-        },
-    };
-
-    _analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, analysisQueueOptions);
-    _analysisQueue.on('error', (err: Error) => {
-        logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
-    });
-
     const indexingQueueOptions: QueueOptions = {
         connection: redisConnection,
         defaultJobOptions: {
@@ -170,14 +145,6 @@ export async function getIssueQueue(): Promise<Queue<IssueJobData | CommentJobDa
 }
 
 /**
- * Get the analysis queue, initializing if needed.
- */
-export async function getAnalysisQueue(): Promise<Queue<AnalysisJobData>> {
-    await ensureInitialized();
-    return _analysisQueue!;
-}
-
-/**
  * Get the indexing queue, initializing if needed.
  */
 export async function getIndexingQueue(): Promise<Queue<IndexingJobData>> {
@@ -187,22 +154,13 @@ export async function getIndexingQueue(): Promise<Queue<IndexingJobData>> {
 
 // Legacy synchronous exports for backward compatibility
 // These will throw if accessed before initialization
-// Use getIssueQueue(), getAnalysisQueue(), getIndexingQueue() for safe access
+// Use getIssueQueue(), getIndexingQueue() for safe access
 export const issueQueue = new Proxy({} as Queue<IssueJobData | CommentJobData | import('./taskQueue.types.js').GoalJobData>, {
     get(_target, prop) {
         if (!_issueQueue) {
             throw new Error('issueQueue accessed before initialization. Use getIssueQueue() instead or call ensureInitialized() first.');
         }
         return (_issueQueue as unknown as Record<string | symbol, unknown>)[prop];
-    }
-});
-
-export const analysisQueue = new Proxy({} as Queue<AnalysisJobData>, {
-    get(_target, prop) {
-        if (!_analysisQueue) {
-            throw new Error('analysisQueue accessed before initialization. Use getAnalysisQueue() instead or call ensureInitialized() first.');
-        }
-        return (_analysisQueue as unknown as Record<string | symbol, unknown>)[prop];
     }
 });
 
@@ -333,9 +291,6 @@ export async function shutdownQueue(): Promise<void> {
         if (_issueQueue) {
             await _issueQueue.close();
         }
-        if (_analysisQueue) {
-            await _analysisQueue.close();
-        }
         if (_indexingQueue) {
             await _indexingQueue.close();
         }
@@ -345,7 +300,6 @@ export async function shutdownQueue(): Promise<void> {
 
         // Reset state
         _issueQueue = null;
-        _analysisQueue = null;
         _indexingQueue = null;
         redisConnection = null;
         isInitialized = false;

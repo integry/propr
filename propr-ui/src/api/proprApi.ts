@@ -28,7 +28,7 @@ export interface DemoModeStatus {
 export * from './proprTypes';
 
 import type {
-  TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
+  QueueStats, GeneratingPlansResponse,
   GetTasksOptions, StopExecutionResponse, DeleteTaskResponse, CurrentUser,
   InstanceCatalogResponse
 } from './proprTypes';
@@ -102,13 +102,6 @@ export const getReadinessTaskExistence = (): Promise<GetTasksResponse> =>
 
 export const getTaskHistory = async (taskId: string): Promise<unknown> => {
   const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/history`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getTaskAnalysis = async (taskId: string): Promise<TaskAnalysisResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, { credentials: 'include' });
-  if (response.status === 202) return { analysis: null, message: 'Analysis pending...' };
   await handleApiResponse(response);
   return response.json();
 };

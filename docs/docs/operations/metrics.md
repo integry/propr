@@ -49,7 +49,7 @@ Check these on the dashboard each day:
 
 Every LLM execution is recorded in the SQLite `llm_logs` table and shown on the **LLM Log** page in the Web UI. Each entry records:
 
-- Execution type (implementation, task analysis, plan generation, PR review, and so on)
+- Execution type (implementation, plan generation, PR review, and so on)
 - Model name and agent alias
 - Work reference — the task, plan, PR, or repository the call belongs to
 - Input/output token counts and cache creation/read tokens

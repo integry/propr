@@ -135,16 +135,17 @@ const path = require('node:path');
 const args = process.argv.slice(2);
 const apiId = 'a'.repeat(64);
 const uiId = 'b'.repeat(64);
+const retiredId = 'c'.repeat(64);
 fs.appendFileSync(process.env.PROPR_TEST_DOCKER_LOG, JSON.stringify(args) + '\\n');
-if (args[0] === 'ps') process.stdout.write(apiId + '\\n' + uiId + '\\n');
+if (args[0] === 'ps') process.stdout.write(apiId + '\\n' + uiId + '\\n' + retiredId + '\\n');
 if (args[0] === 'inspect') {
   const id = args.at(-1);
-  const service = id === apiId ? 'api' : 'ui';
+  const service = id === apiId ? 'api' : id === retiredId ? 'analysis-worker' : 'ui';
   const root = process.env.PROPR_TEST_MANAGED_ROOT;
-  const mounts = service === 'api' ? [
+  const mounts = service !== 'ui' ? [
     { Type: 'bind', Source: path.join(root, 'data'), Destination: '/usr/src/app/data' },
     { Type: 'bind', Source: path.join(root, 'logs'), Destination: '/usr/src/app/logs' },
-    { Type: 'bind', Source: path.join(root, '.env'), Destination: '/usr/src/app/.env' },
+    ...(service === 'api' ? [{ Type: 'bind', Source: path.join(root, '.env'), Destination: '/usr/src/app/.env' }] : []),
   ] : [];
   process.stdout.write([id, '/desktop-owned-' + service, {
     'propr.stack': 'desktop-owned', 'propr.service': service,
@@ -163,9 +164,10 @@ if (args[0] === 'inspect') {
     const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
     assert.deepEqual(calls.map((call: string[]) => [call[0], call.at(-1)]), [
       ["ps", "{{.ID}}"],
-      ["inspect", "a".repeat(64)], ["inspect", "b".repeat(64)],
+      ["inspect", "a".repeat(64)], ["inspect", "b".repeat(64)], ["inspect", "c".repeat(64)],
       ["stop", "b".repeat(64)], ["rm", "b".repeat(64)],
       ["stop", "a".repeat(64)], ["rm", "a".repeat(64)],
+      ["stop", "c".repeat(64)], ["rm", "c".repeat(64)],
     ]);
     const mutations = calls.filter((call: string[]) => call[0] === "stop" || call[0] === "rm");
     assert.equal(mutations.flat().some((argument: string) => /volume|network|data|credential/i.test(argument)), false);

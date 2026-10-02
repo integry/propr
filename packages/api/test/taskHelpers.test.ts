@@ -125,7 +125,7 @@ test('task pages preserve filters and enrich only unique task identities', async
 
   const newest = (all.tasks as Array<Record<string, unknown>>)[0];
   assert.equal(newest.planIssueStatus, 'merged');
-  assert.equal(newest.critiqueScore, null);
+  assert.ok(!('critiqueScore' in newest));
   assert.equal(newest.processedAt, '2026-09-14T05:01:00.000Z');
   assert.equal(newest.completedAt, '2026-09-14T05:03:00.000Z');
   assert.equal(newest.commitHash, 'abc1234def');
@@ -133,7 +133,7 @@ test('task pages preserve filters and enrich only unique task identities', async
   assert.equal(tied.status, 'failed');
   assert.equal(tied.failedReason, 'first tie');
   assert.equal(tied.commitHash, null);
-  assert.equal((all.tasks as Array<Record<string, unknown>>)[2].critiqueScore, 8.5);
+  assert.ok((all.tasks as Array<Record<string, unknown>>).every(task => !('critiqueScore' in task)));
 
   const openReview = await getTasksFromDb({
     db: database, status: 'all', repository: 'all', limit: 10, offset: 0,
@@ -172,7 +172,8 @@ test('presentation enrichment queries are constrained to the selected page', asy
   database.on('query', event => queries.push({ sql: event.sql, bindings: event.bindings ?? [] }));
   await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 1, offset: 0 });
 
-  assert.equal(queries.length, 6);
+  assert.equal(queries.length, 5);
+  assert.ok(queries.every(query => !/analysis_report/i.test(query.sql)));
   assert.doesNotMatch(queries[0].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   assert.doesNotMatch(queries[1].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   for (const query of queries.slice(2)) {

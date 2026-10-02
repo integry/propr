@@ -6,7 +6,6 @@ import { useTaskData, applyTaskLiveUpdate, mergeFullLiveDetails } from './useTas
 
 const apiMocks = vi.hoisted(() => ({
   getTaskHistory: vi.fn(),
-  getTaskAnalysis: vi.fn(),
   getTaskLiveDetails: vi.fn(),
   stopTaskExecution: vi.fn(),
   deleteTask: vi.fn(),
@@ -79,7 +78,6 @@ describe('full history follow-up regressions', () => {
     socketMocks.liveUpdateHandler = null;
     socketMocks.taskUpdateHandler = null;
     apiMocks.getTaskHistory.mockResolvedValue({ history: [{ state: 'COMPLETED' }], taskInfo: null });
-    apiMocks.getTaskAnalysis.mockResolvedValue({ analysis: null });
     apiMocks.getTaskLiveDetails.mockResolvedValue(details(0, 510));
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); });

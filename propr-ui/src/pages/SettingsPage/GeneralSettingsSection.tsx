@@ -4,7 +4,6 @@ import { SETTINGS_CONTROL } from './settingsStyles';
 
 interface GeneralSettings {
   worker_concurrency: string;
-  auto_followup_score_threshold: number;
   auto_resolve_merge_conflicts: boolean;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
@@ -42,32 +41,6 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             placeholder="2"
             className={SETTINGS_CONTROL}
           />
-        </SettingsField>
-
-        <SettingsField
-          label="Auto-Followup Score Threshold"
-          htmlFor="auto_followup_score_threshold"
-          helperText="Post a retry follow-up when critique score is at or below this threshold. Set to 0 to disable."
-        >
-          <select
-            id="auto_followup_score_threshold"
-            name="auto_followup_score_threshold"
-            value={settings.auto_followup_score_threshold}
-            onChange={onSettingChange}
-            onBlur={onBlur}
-            className={SETTINGS_CONTROL}
-          >
-            <option value={0}>Disabled</option>
-            <option value={1}>1 (Very Low)</option>
-            <option value={2}>2</option>
-            <option value={3}>3</option>
-            <option value={4}>4 (Default)</option>
-            <option value={5}>5</option>
-            <option value={6}>6</option>
-            <option value={7}>7</option>
-            <option value={8}>8</option>
-            <option value={9}>9 (High)</option>
-          </select>
         </SettingsField>
 
         <SettingsCheckboxField
