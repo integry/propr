@@ -27,23 +27,6 @@ const getStatusIndicator = (status: FileChange['status']) => {
   }
 };
 
-// Get background color class based on status
-const getChipBgClass = (status: FileChange['status'], isSelected: boolean) => {
-  if (isSelected) {
-    return 'bg-primary-100 border-primary-300';
-  }
-  switch (status) {
-    case 'added':
-      return 'bg-green-50 border-green-200 hover:bg-green-100';
-    case 'deleted':
-      return 'bg-red-50 border-red-200 hover:bg-red-100';
-    case 'renamed':
-      return 'bg-yellow-50 border-yellow-200 hover:bg-yellow-100';
-    default:
-      return 'bg-gray-50 border-gray-200 hover:bg-gray-100';
-  }
-};
-
 const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -138,11 +121,9 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
     setSelectedFilePath(filePath === selectedFilePath ? null : filePath);
   };
 
-  // Get just the filename from the path
-  const getFileName = (path: string) => {
-    const parts = path.split('/');
-    return parts[parts.length - 1];
-  };
+  const sortedFiles = useMemo(() => [...fileChanges].sort((a, b) =>
+    (b.linesAdded + b.linesRemoved) - (a.linesAdded + a.linesRemoved) || a.path.localeCompare(b.path)
+  ), [fileChanges]);
 
   // Don't render if no file changes and not loading
   if (!isLoading && fileChanges.length === 0 && !error) {
@@ -152,7 +133,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   return (
     <div className="relative border-t border-gray-100 pt-2">
       {/* Header - Utility Header style */}
-      <div className="flex items-center justify-between mb-2 mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2 mt-4">
         <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
           {isActive && (
@@ -191,21 +172,27 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
           <span>{error}</span>
         </div>
       ) : (
-        /* Dense list of monospace code chips */
-        <div className="flex flex-wrap gap-1.5">
-          {fileChanges.map(file => {
+        /* A bounded list keeps large changesets from taking over the timeline. */
+        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded border border-slate-200">
+          {sortedFiles.map(file => {
             const isSelected = selectedFilePath === file.path;
             return (
               <button
                 key={file.path}
                 onClick={() => handleSelectFile(file.path)}
-                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] font-mono transition-colors cursor-pointer ${getChipBgClass(file.status, isSelected)}`}
+                aria-label={`View diff for ${file.path}`}
+                className={`flex w-full min-w-0 items-start gap-2 border-b border-slate-100 px-2 py-2 text-left font-mono text-xs transition-colors last:border-b-0 ${isSelected ? 'bg-primary-50' : 'hover:bg-slate-50'}`}
                 title={file.path}
               >
                 {getStatusIndicator(file.status)}
-                <span className="truncate max-w-[150px]">{getFileName(file.path)}</span>
+                <span className="min-w-0 flex-1 break-all">
+                  <span className="block text-slate-700">{file.path.split('/').pop()}</span>
+                  {file.path.includes('/') && (
+                    <span className="mt-0.5 block text-[10px] text-slate-400">{file.path.slice(0, file.path.lastIndexOf('/') + 1)}</span>
+                  )}
+                </span>
                 {(file.linesAdded > 0 || file.linesRemoved > 0) && (
-                  <span className="flex items-center gap-0.5 text-[10px] opacity-70">
+                  <span className="flex flex-shrink-0 items-center gap-1 text-[10px]">
                     {file.linesAdded > 0 && <span className="text-green-600">+{file.linesAdded}</span>}
                     {file.linesRemoved > 0 && <span className="text-red-500">-{file.linesRemoved}</span>}
                   </span>
@@ -214,6 +201,10 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
             );
           })}
         </div>
+      )}
+
+      {!error && fileChanges.length > 5 && (
+        <p className="mt-1.5 text-[10px] text-slate-500">Most modified first · Scroll to view all {fileChanges.length} files</p>
       )}
 
       {/* Diff Viewer Overlay */}

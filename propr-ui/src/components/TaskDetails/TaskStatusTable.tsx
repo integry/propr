@@ -231,18 +231,44 @@ const TaskTimelineItem: React.FC<{
   );
 };
 
+// Consecutive updates to a pipeline phase represent one lifecycle. Keep its
+// original start time and latest metadata. Execution entries can be distinct
+// retries, checkpoints, or pool attempts, so never collapse those by state.
+const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
+  const steps: HistoryItem[] = [];
+  for (const item of history) {
+    const previous = steps[steps.length - 1];
+    const state = item.state?.toUpperCase();
+    if (previous && ['PENDING', 'PROCESSING', 'POST_PROCESSING'].includes(state ?? '') &&
+      previous.state?.toUpperCase() === state &&
+      previous.metadata?.ultrafixCycle === item.metadata?.ultrafixCycle) {
+      steps[steps.length - 1] = {
+        ...previous, ...item,
+        state: previous.state,
+        timestamp: previous.timestamp ?? item.timestamp,
+        metadata: { ...previous.metadata, ...item.metadata },
+      };
+    } else {
+      steps.push(item);
+    }
+  }
+  return steps;
+};
+
 const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false, commandMode }) => {
+  const timelineHistory = useMemo(() => coalescePipelineHistory(history ?? []), [history]);
+
   // Pre-calculate durations to find the longest one for highlighting
   const { itemsWithDuration, maxDurationIndex, startDate } = useMemo(() => {
-    if (!history || history.length === 0) {
+    if (timelineHistory.length === 0) {
       return { itemsWithDuration: [], maxDurationIndex: -1, startDate: '' };
     }
 
     let maxDur = 0;
     let maxIdx = -1;
 
-    const processed = history.map((item, index) => {
-      const nextItem = history[index + 1];
+    const processed = timelineHistory.map((item, index) => {
+      const nextItem = timelineHistory[index + 1];
       const duration = nextItem && item.timestamp && nextItem.timestamp
         ? new Date(nextItem.timestamp).getTime() - new Date(item.timestamp).getTime()
         : null;
@@ -257,9 +283,9 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
     return {
       itemsWithDuration: processed,
       maxDurationIndex: maxIdx,
-      startDate: history[0].timestamp ? formatDateOnly(history[0].timestamp) : ''
+      startDate: timelineHistory[0].timestamp ? formatDateOnly(timelineHistory[0].timestamp) : ''
     };
-  }, [history]);
+  }, [timelineHistory]);
 
   if (!history || history.length === 0) return null;
 
@@ -273,10 +299,10 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
       <div className="relative">
         {itemsWithDuration.map((item, index) => (
           <TaskTimelineItem
-            key={index}
+            key={`${item.state}-${item.timestamp}-${index}`}
             item={item}
             index={index}
-            history={history}
+            history={timelineHistory}
             maxDurationIndex={maxDurationIndex}
             isLast={index === itemsWithDuration.length - 1}
             compact={compact}
