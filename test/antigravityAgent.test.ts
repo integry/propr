@@ -138,19 +138,30 @@ describe('toAntigravityCliModelId', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-low'), 'gemini-3.7-flash-low');
     });
 
+    test('passes every Claude 5.5 reasoning tier to the CLI', () => {
+        for (const family of ['opus', 'sonnet']) {
+            for (const tier of ['low', 'medium', 'high']) {
+                const id = `antigravity-claude-${family}-5.5-${tier}`;
+                const displayName = `Claude ${family === 'opus' ? 'Opus' : 'Sonnet'} 5.5 (${tier[0].toUpperCase()}${tier.slice(1)})`;
+                assert.strictEqual(toAntigravityCliModelId(id), displayName);
+                assert.strictEqual(toAntigravityCliModelId(`antigravity:${id}`), displayName);
+            }
+        }
+    });
+
     test('maps older ProPR ids to the CLI display names accepted by --model', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.6-flash-high'), 'Gemini 3.6 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'Gemini 3.5 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-high'), 'Gemini 3.1 Pro (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-4.6-thinking'), 'Claude Sonnet 4.6 (Thinking)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'Claude Opus 4.6 (Thinking)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-5.5-high'), 'Claude Sonnet 5.5 (High)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-5.5-high'), 'Claude Opus 5.5 (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'GPT-OSS 120B (Medium)');
     });
 
     test('strips an optional antigravity: route prefix before mapping', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.8-flash-low'), 'gemini-3.8-flash-low');
         assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'Gemini 3.1 Pro (Low)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-4.6-thinking'), 'Claude Sonnet 4.6 (Thinking)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-5.5-high'), 'Claude Sonnet 5.5 (High)');
     });
 
     test('leaves an already-native model name unchanged', () => {

@@ -13,27 +13,24 @@ export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
     'antigravity-gemini-3.5-flash-low': 'Gemini 3.5 Flash (Low)',
     'antigravity-gemini-3.1-pro-low': 'Gemini 3.1 Pro (Low)',
     'antigravity-gemini-3.1-pro-high': 'Gemini 3.1 Pro (High)',
-    'antigravity-claude-sonnet-4.6-thinking': 'Claude Sonnet 4.6 (Thinking)',
-    'antigravity-claude-opus-4.6-thinking': 'Claude Opus 4.6 (Thinking)',
+    'antigravity-claude-sonnet-5.5-medium': 'Claude Sonnet 5.5 (Medium)',
+    'antigravity-claude-sonnet-5.5-high': 'Claude Sonnet 5.5 (High)',
+    'antigravity-claude-sonnet-5.5-low': 'Claude Sonnet 5.5 (Low)',
+    'antigravity-claude-opus-5.5-medium': 'Claude Opus 5.5 (Medium)',
+    'antigravity-claude-opus-5.5-high': 'Claude Opus 5.5 (High)',
+    'antigravity-claude-opus-5.5-low': 'Claude Opus 5.5 (Low)',
     'antigravity-gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)'
 };
 
-// ProPR namespaces Antigravity model IDs with an `antigravity-` prefix so they
-// don't collide with other agents' models in config/labels (see
-// ANTIGRAVITY_MODELS in modelDefinitions). The Antigravity CLI (`agy --model`)
-// expects the exact external ID for Gemini 3.8 and 3.7 models. Older models still use
-// the HUMAN-READABLE display name exactly as `agy models` lists it — e.g.
-// "Gemini 3.1 Pro (High)" or "Claude Sonnet 4.6 (Thinking)".
+// ProPR namespaces Antigravity model IDs to avoid collisions with other agents.
+// Gemini 3.8 and 3.7 use exact external IDs. Other models use the CLI's
+// human-readable model and effort name, e.g. "Claude Sonnet 5.5 (High)".
+// Keep the effort in the --model argument so the CLI selects the requested tier.
 //
-// Slugs are unreliable: some happen to resolve (`gpt-oss-120b-medium`) while
-// others silently fall back to the default model (`gemini-3.1-pro-high`,
-// `claude-sonnet-4-6-thinking`). For those older models, the display name is
-// verified against the image and avoids silent fallback.
-//
-// ANTIGRAVITY_MODEL_LABELS remains the single source of truth for display names
-// and is also used to render model names in parsed output.
-//   'antigravity-gemini-3.1-pro-high'        -> 'Gemini 3.1 Pro (High)'
-//   'antigravity-claude-sonnet-4.6-thinking' -> 'Claude Sonnet 4.6 (Thinking)'
+// Bare slugs are unreliable: older models such as gemini-3.1-pro-high silently
+// fall back to the default. Keep the established display-name mapping for those
+// models instead of relying on namespace stripping.
+// ANTIGRAVITY_MODEL_LABELS also supplies display names for parsed output.
 const ANTIGRAVITY_CANONICAL_MODEL_IDS: Record<string, string> = {
     'antigravity-gemini-3.8-flash-high': 'gemini-3.8-flash-high',
     'antigravity-gemini-3.8-flash-medium': 'gemini-3.8-flash-medium',

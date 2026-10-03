@@ -318,6 +318,28 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.configPath, '~/.gemini');
     });
 
+    test('migrates retired Antigravity Claude models and preserves overrides', () => {
+        for (const family of ['opus', 'sonnet']) {
+            const oldModel = `antigravity-claude-${family}-4.6-thinking`;
+            const newModel = `antigravity-claude-${family}-5.5-high`;
+            const agent = createAgent({
+                type: 'antigravity',
+                supportedModels: [oldModel],
+                defaultModel: oldModel,
+                modelCustomLabels: { [oldModel]: 'review-model' },
+                modelReasoningLevels: { [oldModel]: 'high' }
+            });
+            assert.strictEqual(migrateAgentConfig(agent), true);
+            assert.strictEqual(agent.defaultModel, newModel);
+            assert.ok(agent.supportedModels.includes(newModel));
+            assert.ok(!agent.supportedModels.includes(oldModel));
+            assert.strictEqual(new Set(agent.supportedModels).size, agent.supportedModels.length);
+            assert.deepStrictEqual(agent.modelCustomLabels, { [newModel]: 'review-model' });
+            assert.deepStrictEqual(agent.modelReasoningLevels, { [newModel]: 'high' });
+            assert.strictEqual(migrateAgentConfig(agent), false);
+        }
+    });
+
     test('adds Gemini 3.8 tiers without changing an existing Antigravity default', () => {
         const existingDefault = 'antigravity-gemini-3.6-flash-medium';
         const agent = createAgent({

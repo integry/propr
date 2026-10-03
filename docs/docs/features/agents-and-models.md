@@ -157,9 +157,11 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 | Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
 | Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
 | Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
-| Claude Sonnet 4.6 Thinking | `llm-antigravity-sonnet46-thinking` |
-| Claude Opus 4.6 Thinking | `llm-antigravity-opus46-thinking` |
+| Claude Sonnet 5.5 Low / Medium / High | `llm-antigravity-sonnet55-low` / `-sonnet55-medium` / `-sonnet55-high` |
+| Claude Opus 5.5 Low / Medium / High | `llm-antigravity-opus55-low` / `-opus55-medium` / `-opus55-high` |
 | GPT-OSS 120B Medium | `llm-antigravity-gpt-oss-120b` |
+
+Reasoning effort is part of each Antigravity model selection. Claude 5.5 and Gemini Flash offer low, medium, and high; Gemini 3.1 Pro offers low and high; GPT-OSS uses medium. Saved Claude 4.6 Thinking selections migrate to the matching Claude 5.5 High model, preserving custom labels.
 
 ## OpenCode Models
 

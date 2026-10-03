@@ -173,3 +173,26 @@ test('Vibe GLM models share defaults, names, labels, limits, and runtime version
     assert.strictEqual(AGENT_DEFAULTS.vibe.defaultCliVersion, '2.25.8');
     assert.strictEqual(AGENT_DEFAULT_VERSIONS.vibe, '2.25.8');
 });
+
+test('Antigravity offers supported reasoning tiers for Claude 5.5, Flash, Pro and GPT-OSS', () => {
+    const tiersFor = (prefix: string) => ANTIGRAVITY_MODELS
+        .filter(model => model.id.startsWith(prefix))
+        .map(model => model.id.slice(prefix.length)).sort();
+
+    for (const family of ['opus', 'sonnet']) {
+        assert.deepStrictEqual(tiersFor(`antigravity-claude-${family}-5.5-`), ['high', 'low', 'medium']);
+        for (const tier of ['low', 'medium', 'high']) {
+            const model = MODEL_INFO_MAP[`antigravity-claude-${family}-5.5-${tier}`];
+            assert.strictEqual(model.shortAlias, `${family}55-${tier}`);
+            assert.strictEqual(model.githubLabel, `llm-antigravity-${family}55-${tier}`);
+            assert.strictEqual(model.openRouterId, `anthropic/claude-${family}-5.5`);
+            assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(model.id));
+        }
+    }
+    assert.ok(!ANTIGRAVITY_MODELS.some(model => model.id.includes('4.6-thinking')));
+    for (const version of ['3.8', '3.7', '3.6', '3.5']) {
+        assert.deepStrictEqual(tiersFor(`antigravity-gemini-${version}-flash-`), ['high', 'low', 'medium']);
+    }
+    assert.deepStrictEqual(tiersFor('antigravity-gemini-3.1-pro-'), ['high', 'low']);
+    assert.deepStrictEqual(tiersFor('antigravity-gpt-oss-120b-'), ['medium']);
+});

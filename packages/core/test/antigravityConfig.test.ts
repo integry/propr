@@ -31,7 +31,7 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
-        supportedModels: ['antigravity-gemini-3.7-flash-medium', 'antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-4.6-thinking'],
+        supportedModels: ['antigravity-gemini-3.7-flash-medium', 'antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-5.5-high'],
         defaultModel: 'antigravity-gemini-3.5-flash-medium',
         ...overrides
     };
@@ -97,10 +97,20 @@ test('Antigravity is the canonical selectable agent type', () => {
 });
 
 test('Antigravity metadata includes non-Google model families', () => {
-    const opusModel = MODEL_INFO_MAP['antigravity-claude-opus-4.6-thinking'];
-    assert.equal(opusModel.name, 'Antigravity Claude Opus 4.6 Thinking');
-    assert.equal(opusModel.openRouterId, 'anthropic/claude-opus-4.6');
-    assert.equal(getModelHardLimit('antigravity-claude-opus-4.6-thinking'), 980000);
+    const opusModel = MODEL_INFO_MAP['antigravity-claude-opus-5.5-high'];
+    assert.equal(opusModel.name, 'Antigravity Claude Opus 5.5 High');
+    assert.equal(opusModel.openRouterId, 'anthropic/claude-opus-5.5');
+    assert.equal(getModelHardLimit('antigravity-claude-opus-5.5-high'), 980000);
+});
+
+test('Claude 5.5 effort labels resolve without colliding with Claude Code models', () => {
+    for (const family of ['opus', 'sonnet']) {
+        for (const tier of ['low', 'medium', 'high']) {
+            const id = `antigravity-claude-${family}-5.5-${tier}`;
+            assert.equal(resolveModelAlias(`antigravity-${family}55-${tier}`), id);
+            assert.equal(getModelHardLimit(id), 980000);
+        }
+    }
 });
 
 test('Gemini 3.8 Flash uses the Antigravity 1M model limit', () => {

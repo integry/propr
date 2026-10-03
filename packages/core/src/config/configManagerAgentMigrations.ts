@@ -166,6 +166,31 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
+    // Preserve the model family and reasoning intent of retired Thinking models.
+    const replacements: Record<string, string> = {
+        'antigravity-claude-sonnet-4.6-thinking': 'antigravity-claude-sonnet-5.5-high',
+        'antigravity-claude-opus-4.6-thinking': 'antigravity-claude-opus-5.5-high'
+    };
+    const replaceModel = (model: string) => replacements[model] ?? model;
+    if (agent.supportedModels.some(model => replacements[model])) {
+        agent.supportedModels = [...new Set(agent.supportedModels.map(replaceModel))];
+        migrated = true;
+    }
+    if (agent.defaultModel && replacements[agent.defaultModel]) {
+        agent.defaultModel = replaceModel(agent.defaultModel);
+        migrated = true;
+    }
+    for (const key of ['modelCustomLabels', 'modelReasoningLevels'] as const) {
+        const overrides = agent[key];
+        if (!overrides) continue;
+        for (const [oldModel, newModel] of Object.entries(replacements)) {
+            if (overrides[oldModel] === undefined) continue;
+            overrides[newModel] ??= overrides[oldModel];
+            delete overrides[oldModel];
+            migrated = true;
+        }
+    }
+
     if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
         agent.configPath = '~/.gemini';
         migrated = true;

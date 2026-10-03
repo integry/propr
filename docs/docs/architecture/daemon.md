@@ -87,7 +87,7 @@ Model labels route work to configured models; the worker's dispatch step resolve
 llm-claude-opus5
 llm-codex-gpt56-sol
 llm-antigravity-pro-high
-llm-antigravity-opus46-thinking
+llm-antigravity-opus55-high
 ```
 
 If an issue carries a trigger label but no model label, ProPR falls back to the deployment default model (`DEFAULT_CLAUDE_MODEL`, or the catalog default when unset). The exact model labels available in a deployment come from AI Agents in the Web UI.
