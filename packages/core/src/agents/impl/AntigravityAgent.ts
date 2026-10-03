@@ -30,11 +30,7 @@ const DEFAULT_ANTIGRAVITY_ANALYSIS_TIMEOUT_MS = 3600000;
 
 const DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/transcripts/antigravity';
 
-function isSuccessfulAnalysisResult(
-    result: { timedOut?: boolean; exitCode: number | null },
-    summary: string | undefined,
-    protocolError?: string,
-): boolean {
+function isSuccessfulAnalysisResult(result: { timedOut?: boolean; exitCode: number | null }, summary: string | undefined, protocolError?: string): boolean {
     return !protocolError && !result.timedOut && (result.exitCode === 0 || !!summary);
 }
 
@@ -293,12 +289,7 @@ export class AntigravityAgent implements Agent {
      * capture cumulative re-read context across agentic turns), but it lands in the
      * right order of magnitude instead of near zero.
      */
-    private resolveTokenUsage(
-        reported: TokenUsage,
-        prompt: string,
-        summary: string | undefined,
-        conversationLog: AntigravityOutputEvent[]
-    ): TokenUsage | undefined {
+    private resolveTokenUsage(reported: TokenUsage, prompt: string, summary: string | undefined, conversationLog: AntigravityOutputEvent[]): TokenUsage | undefined {
         if (reported.input_tokens || reported.output_tokens || reported.cache_read_input_tokens || reported.reasoning_output_tokens) return reported;
 
         let inputText = '';
