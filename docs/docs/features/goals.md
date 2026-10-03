@@ -33,7 +33,7 @@ The detail console brings together context, current activity, progress, artifact
 
 **Orchestrate through ProPR.** The agent decides how to break the objective down, creates GitHub issues, and starts and monitors their implementation through ProPR, optionally building an epic PR from the resulting PRs. It must track every issue and PR it creates and finish with a validated draft PR containing the final implementation.
 
-In both strategies, **max parallel tasks** is a limit the agent enforces itself; ProPR does not schedule a plan graph for goals. With **Ultrafix** enabled, the agent runs Ultrafix as part of delivery before declaring the goal complete; with it disabled, the agent runs Ultrafix only if a later correction asks for it.
+In both strategies, **max parallel tasks** is a limit the agent enforces itself; ProPR does not schedule a plan graph for goals. With **Ultrafix** enabled, the agent runs Ultrafix as part of delivery before declaring the goal complete; with it disabled, the agent runs Ultrafix only if a later correction asks for it. Ultrafix does not merge: the goal still ends with a draft pull request. The web UI, API and MCP's `create_goal` share the same limits: 1–32 parallel tasks, and a checkpoint cadence of 5–120 minutes for direct goals only.
 
 ## Corrections, pause and cancel
 

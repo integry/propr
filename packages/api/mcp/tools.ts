@@ -6,6 +6,10 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import type { InstancePermission } from '@propr/shared';
+import {
+  DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+  MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
+} from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
 import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
@@ -50,6 +54,19 @@ export const textSchema = z.string().min(1).max(65536);
 export const pageShape = { offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) };
 export const mutationShape = { idempotencyKey: z.string().regex(/^[\w.-]{8,128}$/) };
 export const planShape = { repository: repositorySchema, planId: z.uuid() };
+/** MCP view of the shared goal creation contract; the goal route re-validates with the same rules. */
+export const createGoalSchema = z.object({
+  ...mutationShape, repository: repositorySchema, objective: textSchema, agentId: idSchema, model: idSchema,
+  launchStrategy: z.enum(GOAL_LAUNCH_STRATEGIES),
+  baseBranch: z.string().min(1).max(GOAL_BASE_BRANCH_MAX_LENGTH).optional(),
+  // Omitted stays 1 so existing receipts and idempotent retries keep their payload identity.
+  maxParallelTasks: z.number().int().min(MIN_GOAL_PARALLEL_TASKS).max(MAX_GOAL_PARALLEL_TASKS).default(1),
+  checkpointIntervalMinutes: z.number().int().min(MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES).max(MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES).optional()
+    .describe('Direct goals only.'),
+  ultrafix: z.boolean().default(false).describe('Run Ultrafix before delivering the draft PR. Never merges.'),
+}).strict().refine(args => validateGoalCheckpointInterval(args) === null, {
+  message: 'checkpointIntervalMinutes only applies to direct goals', path: ['checkpointIntervalMinutes'],
+});
 export const goalShape = { repository: repositorySchema, goalId: z.uuid() };
 export const taskShape = { repository: repositorySchema, taskId: idSchema };
 const agentActivitySchema = z.object({
@@ -214,11 +231,11 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
     return ok(await goalInputPage(db, row, { offset: args.offset, limit: args.limit }));
   } });
-  workflow(tools, { name: 'create_goal', description: 'Create a goal and explicitly START autonomous work. Requires a supported model and launch strategy.', scope: 'execute', schema: z.object({ ...mutationShape, repository: repositorySchema, objective: textSchema, agentId: idSchema, model: idSchema, launchStrategy: z.enum(['direct', 'orchestrate']), baseBranch: idSchema.optional(), maxParallelTasks: z.number().int().min(1).max(8).default(1), checkpointIntervalMinutes: z.number().int().min(5).max(120).optional(), ultrafix: z.literal(false).default(false) }).strict() }, goals.create, args => ({ body: args, idempotencyKey: args.idempotencyKey }));
+  workflow(tools, { name: 'create_goal', description: `Create a goal and explicitly START autonomous work; the agent runs without further confirmation and delivers a draft pull request. Requires an agent and model reported by get_goal_capabilities, which also returns this creation contract. maxParallelTasks is ${MIN_GOAL_PARALLEL_TASKS}–${MAX_GOAL_PARALLEL_TASKS} (default 1). checkpointIntervalMinutes is ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES}–${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES} (default ${DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES}) and only valid for direct goals. ultrafix: true asks the agent to run Ultrafix before delivery; it never merges or grants merge authority.`, scope: 'execute', schema: createGoalSchema }, goals.create, args => ({ body: args, idempotencyKey: args.idempotencyKey }));
   for (const action of ['pause', 'resume', 'cancel'] as const) workflow(tools, { name: `${action}_goal`, description: `${action} your goal. Cancellation acceptance does not mean execution has stopped.`, scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape }).strict(), target: goalTarget }, goals[action], args => ({ params: { goalId: args.goalId }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'send_goal_input', description: 'Deliver a correction or question to your running goal. This instance persists exactly one operator input kind, so instruction and question produce the same durable input and differ only on this receipt; state your intent in the message itself. Acceptance means the input was queued for the next provider boundary, not that the agent has read or acted on it — confirm with get_goal or list_goal_inputs.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, message: textSchema, kind: z.enum(['instruction', 'question']).optional().describe('Omit for an instruction. Recorded on the mutation receipt. Both kinds map to the same durable goal input this backend supports.') }).strict(), target: goalTarget }, goals.input, args => ({ params: { goalId: args.goalId }, body: { message: args.message }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'set_goal_model', description: 'Request a supported model change for your goal.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, model: idSchema }).strict(), target: goalTarget }, goals.requestModel, args => ({ params: { goalId: args.goalId }, body: { model: args.model }, idempotencyKey: args.idempotencyKey }));
-  workflow(tools, { name: 'get_goal_capabilities', description: 'Get current native goal support for configured agents.', scope: 'read', readOnly: true, schema: z.object({}).strict() }, goals.capabilities, () => ({}));
+  workflow(tools, { name: 'get_goal_capabilities', description: 'Get current native goal support for configured agents, plus the goal creation contract (launch strategies, maxParallelTasks and checkpoint bounds, Ultrafix support) shared by the API, MCP, UI and CLI.', scope: 'read', readOnly: true, schema: z.object({}).strict() }, goals.capabilities, () => ({}));
 
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];

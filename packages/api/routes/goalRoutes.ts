@@ -9,9 +9,6 @@ import {
   getEventPublisher,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  GOAL_LAUNCH_STRATEGIES,
-  MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   buildNativeGoalCommand,
   buildNativeGoalContext,
   hasNativeGoalControl,
@@ -34,6 +31,7 @@ import {
   type MulterFile,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import { GOAL_CREATION_CONTRACT, validateGoalCreationOptions } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
@@ -64,7 +62,6 @@ interface GoalRoutesDeps {
   getOctokit?: typeof getAuthenticatedOctokit;
 }
 
-const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const cannedInputs = {
   done: "What's done?",
   left: "What's left?",
@@ -159,29 +156,6 @@ async function findOwnedGoal(db: Knex, req: Request, res: Response): Promise<Goa
   const row = await db('goals').where({ goal_id: goalId, owner_id: ownerId }).first() as GoalRow | undefined;
   if (!row) res.status(404).json({ error: 'Goal not found' });
   return row ?? null;
-}
-
-function validateCreateBody(body: Record<string, unknown>): string | null {
-  if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
-  if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
-  if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
-  if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
-  if (typeof body.model !== 'string' || !body.model) return 'model is required';
-  if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
-  if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
-  if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
-  return validateCreateCheckpointInterval(body);
-}
-
-function validateCreateCheckpointInterval(body: Record<string, unknown>): string | null {
-  if (body.checkpointIntervalMinutes == null) return null;
-  if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
-  if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
-    || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
-    || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
-    return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
-  }
-  return null;
 }
 
 function buildCreateIdentity(
@@ -341,7 +315,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         objectiveMaxCharacters: capability.goalCapable ? nativeGoalObjectiveMaxLength(capability.agentType) : null,
       };
     });
-    res.json({ agents });
+    res.json({ agents, creation: GOAL_CREATION_CONTRACT });
   };
 
   const list = async (req: Request, res: Response) => {
@@ -392,7 +366,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     try { body = requestBody(req); } catch (error) {
       return void res.status(400).json({ error: (error as Error).message });
     }
-    const validationError = validateCreateBody(body);
+    const validationError = validateGoalCreationOptions(body);
     if (validationError) return void res.status(400).json({ error: validationError });
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
