@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOwnership.js';
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
+import { redactSecrets } from '../utils/secretRedaction.js';
 
 export interface WorkflowObservation { hooks: Map<string, string>; validation: Map<number, string> }
 
@@ -92,14 +93,35 @@ export async function executeWithRepositoryWorkflow(
     }
     const validation = workflow.config.validation ?? [];
     if (validation.length) {
-        const reports = validation.map((command, index) => {
+        result.repositoryValidation = buildRepositoryValidationReport(validation.map((command, index) => {
             const code = observed.validation.get(index);
-            const status = code === undefined ? 'Not run (execution ended before validation)' : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})`;
-            return `- ${command.replace(/\n/g, ' ')}: ${status}`;
-        });
-        result.repositoryValidation = `### Repository validation\n\n${reports.join('\n')}`;
+            return { command, status: code === undefined ? 'Not run (execution ended before validation)' : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})` };
+        }));
     }
     return result;
+}
+
+// Completion comments share GitHub's 65,536-character body limit with summaries and logs.
+export const REPOSITORY_VALIDATION_REPORT_MAX_LENGTH = 12_000;
+const VALIDATION_LABEL_MAX_LENGTH = 200;
+const ELLIPSIS = '…';
+
+/**
+ * Valid commands may be far longer than a comment can hold. Labels are redacted
+ * before shortening so a cut can never leave an unrecognisable secret prefix,
+ * and every command keeps its index and status within the aggregate budget.
+ */
+export function buildRepositoryValidationReport(entries: Array<{ command: string; status: string }>): string {
+    const header = '### Repository validation\n\n';
+    const prefixes = entries.map((entry, index) => ({ prefix: `- [${index + 1}] `, suffix: `: ${entry.status}` }));
+    const fixed = header.length + prefixes.reduce((total, { prefix, suffix }) => total + prefix.length + suffix.length + 1, 0);
+    const labelBudget = Math.min(VALIDATION_LABEL_MAX_LENGTH, Math.floor((REPOSITORY_VALIDATION_REPORT_MAX_LENGTH - fixed) / Math.max(entries.length, 1)));
+    const lines = entries.map((entry, index) => {
+        const label = redactSecrets(entry.command).replace(/\s+/g, ' ').trim();
+        const shown = label.length <= labelBudget ? label : `${label.slice(0, Math.max(labelBudget - ELLIPSIS.length, 0)).trimEnd()}${ELLIPSIS}`;
+        return `${prefixes[index].prefix}${shown}${prefixes[index].suffix}`;
+    });
+    return `${header}${lines.join('\n')}`;
 }
 
 // Below Linux's 128 KiB per-argument ceiling (including its terminating NUL).

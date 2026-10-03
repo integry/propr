@@ -7,7 +7,8 @@ import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
-import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers } from '../src/workflow/workflowExecution.js';
+import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from '../src/workflow/workflowExecution.js';
+import { generateCompletionComment } from '../src/utils/github/logFiles.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../src/agents/impl/utils/boundedProviderOutput.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
 
@@ -320,10 +321,10 @@ test('reports split across chunks keep the line-boundary and prefix checks', asy
             `${marker}:validation:1:0\r\n`, `ProPR command output: ${'y'.repeat(200)}`, `${marker}:validation:2:0\n`, '']);
         return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
     });
-    assert.match(result.repositoryValidation!, /- a: Passed/);
-    assert.match(result.repositoryValidation!, /- b: Not run/);
-    assert.match(result.repositoryValidation!, /- c: Not run/);
-    assert.match(result.repositoryValidation!, /- d: Not run/);
+    assert.match(result.repositoryValidation!, /- \[1\] a: Passed/);
+    assert.match(result.repositoryValidation!, /- \[2\] b: Not run/);
+    assert.match(result.repositoryValidation!, /- \[3\] c: Not run/);
+    assert.match(result.repositoryValidation!, /- \[4\] d: Not run/);
 });
 
 test('a real wrapper keeps the first validation result after a later command floods stderr', async () => {
@@ -337,4 +338,43 @@ test('a real wrapper keeps the first validation result after a later command flo
     });
     assert.match(result.repositoryValidation!, /exit 5: Failed \(exit 5\)/);
     assert.match(result.repositoryValidation!, /: Passed/);
+});
+
+test('validation reports for long accepted commands stay within the completion comment budget', async () => {
+    const execute = async (validation: string[], reports: (marker: string) => string) => {
+        const content = JSON.stringify({ validation });
+        assert.ok(Buffer.byteLength(content) < 128 * 1024);
+        const workflow = await loadRepositoryWorkflow({
+            resolveRevision: async () => 'revision',
+            readFile: async () => ({ content, sha: 'blob' }),
+        }, 'main', { maxParallelTasks: 5 });
+        return executeWithRepositoryWorkflow(workflow, async () => {
+            observeStderr(reports(repositoryWorkflowExecution.getStore()!.marker));
+            return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1, summary: 'Implemented' };
+        });
+    };
+
+    const passed = await execute([': #' + 'a'.repeat(75_000)], marker => `\n${marker}:validation:0:0\n`);
+    assert.ok(passed.repositoryValidation!.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
+    assert.match(passed.repositoryValidation!, /^- \[1\] : #a+…: Passed$/m);
+    const comment = await generateCompletionComment(passed, { repoOwner: 'o', repoName: 'r', number: 1 });
+    assert.ok(comment.length < 65_536, `completion comment has ${comment.length} characters`);
+    assert.ok(comment.includes(passed.repositoryValidation!));
+
+    // Failed and not-run commands include the command too; every index and status survives.
+    const many = Array.from({ length: 100 }, (_, index) => `: ${index} #${'b'.repeat(1_000)}`);
+    const mixed = await execute(many, marker => `\n${many.slice(0, 50).map((_, index) => `${marker}:validation:${index}:${index % 2 ? 7 : 124}`).join('\n')}\n`);
+    const lines = mixed.repositoryValidation!.split('\n').slice(2);
+    assert.ok(mixed.repositoryValidation!.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
+    assert.equal(lines.length, 100);
+    lines.forEach((line, index) => {
+        assert.ok(line.startsWith(`- [${index + 1}] : ${index} #`), line);
+        assert.ok(line.endsWith(index >= 50 ? ': Not run (execution ended before validation)' : index % 2 ? ': Failed (exit 7)' : ': Timed out'), line);
+    });
+
+    // Shortening happens after redaction, so a secret cut at the boundary cannot leak a prefix.
+    const secret = 'x'.repeat(40);
+    const redacted = await execute([`: ${'c'.repeat(180)} GITHUB_TOKEN=${secret}`], () => '');
+    assert.doesNotMatch(redacted.repositoryValidation!, /xxxx/);
+    assert.match(redacted.repositoryValidation!, /: Not run/);
 });

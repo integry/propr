@@ -311,6 +311,26 @@ describe('PR follow-up repository validation reports', () => {
             }
         });
     }
+
+    test('bounds a report for a long accepted command in both completion branches', async () => {
+        const { buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } = await import('@propr/core');
+        const command = ': #' + 'a'.repeat(75_000);
+        for (const status of ['Passed', 'Failed (exit 1)', 'Not run (execution ended before validation)']) {
+            const repositoryValidation = buildRepositoryValidationReport([{ command, status }, { command: 'npm test', status: 'Passed' }]);
+            assert.ok(repositoryValidation.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
+            for (const commitResult of [{ commitHash: 'abcdef1234567' }, null]) {
+                const comment = await buildCompletionComment(commitResult, [], {
+                    changesSummary: 'Checked the requested follow-up.',
+                    commitMessage: 'Fix requested behavior',
+                    llm: 'claude-sonnet-test',
+                    authorsText: '@example',
+                }, { success: true, summary: 'Checked the requested follow-up.', repositoryValidation } as never);
+                assert.ok(comment.length < 65_536, `completion comment has ${comment.length} characters`);
+                assert.match(comment, new RegExp(`- \\[1\\] : #a+…: ${status.replace(/[()]/g, '\\$&')}`));
+                assert.match(comment, /- \[2\] npm test: Passed/);
+            }
+        }
+    });
 });
 
 
