@@ -13,7 +13,9 @@ let onPrepare: (() => void) | undefined;
 let onTaskStateRead: ((taskId: string) => void) | undefined;
 const log = { info() {}, warn() {}, error() {}, debug() {} };
 const taskStates = new Map<string, string>();
+const cancellations: Array<Record<string, unknown>> = [];
 const stateManager = {
+    markTaskCancelled: async (taskId: string, _by: string, metadata: Record<string, unknown>) => { taskStates.set(taskId, 'cancelled'); cancellations.push(metadata); },
     updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean }) => {
         taskStates.set(taskId, state);
         events.push(`state:${taskId}:${state}${metadata?.isRetry ? ':retry' : ''}`);
@@ -38,6 +40,7 @@ const octokit = {
 const noOp = async () => {};
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
 await mock.module('@propr/core', { namedExports: {
+    preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
     hashTaskAttemptToken: () => 'hash', logger: { ...log, withCorrelation: () => log },
     retryConfigs: { githubApi: {} }, withRetry: async (fn: () => unknown) => fn(),
@@ -124,15 +127,19 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 });
 beforeEach(() => {
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
+    cancellations.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
 
-for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'pull_request_closed']] as const) {
-    test(`a follow-up on a ${reason.replace('pull_request_', '')} pull request is skipped before any work`, async () => {
+for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'cancelled_pr_closed']] as const) {
+    test(`a follow-up ends with ${reason} before any work`, async () => {
         pullRequestState = pullRequest;
         const result = await processPullRequestCommentJob(job('fix') as never);
-        assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'skipped', reason });
+        assert.deepEqual({ status: result.status, reason: result.reason }, { status: pullRequest.merged ? 'skipped' : 'cancelled', reason });
+        if (!pullRequest.merged) assert.deepEqual(cancellations, [{
+            reason: 'Cancelled because the pull request was closed without merging.', terminalReason: 'cancelled_pr_closed',
+        }]);
         // No starting comment, no worktree for the deleted head branch, no agent.
         assert.ok(!events.includes('comment:42'));
         assert.ok(!events.includes('prepare'));
@@ -259,4 +266,14 @@ test('failed mapping revalidation releases the acquired lock without processing'
     onLockAcquired = () => { resolutionError = new Error('Mapping lookup failed'); };
     await assert.rejects(processPullRequestCommentJob(job('review', 100) as never), /Mapping lookup failed/);
     assert.deepEqual(events, ['lock:pr:upstream:project:100', 'release:lock:pr:upstream:project:100']);
+});
+
+test('legacy abort-only PR jobs return the canonical user cancellation reason', async () => {
+    preparationError = new Error('Execution aborted by user');
+    const result = await processPullRequestCommentJob(job() as never);
+    assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'cancelled', reason: 'cancelled_by_user' });
+    const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+    const { formatTaskTerminalReason } = await import('@propr/shared');
+    assert.equal(completedJobTransition(result).metadata.terminalReason, 'cancelled_by_user');
+    assert.notEqual(formatTaskTerminalReason(result.reason as 'cancelled_by_user'), 'The task ended.');
 });

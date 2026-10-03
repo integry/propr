@@ -1,3 +1,4 @@
+import { preventWithdrawnJob } from '@propr/core';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
@@ -385,6 +386,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processSystemTaskJob,
             processMergeConflictJob,
             processGoalJob,
+        },
+        beforeProcess: async job => {
+            const reason = await preventWithdrawnJob(job);
+            return reason ? { status: 'cancelled', reason } : null;
         },
         beforeRun: configuredWorker => {
             taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);

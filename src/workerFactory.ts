@@ -27,8 +27,10 @@ export type MainWorkerFactory = (
     options: { concurrency: number; autorun: boolean },
 ) => Promise<MainWorker>;
 
-export function createMainJobProcessor(processors: MainJobProcessors) {
+export function createMainJobProcessor(processors: MainJobProcessors, beforeProcess?: (job: Job<MainJobData>) => Promise<JobResult | null>) {
     return async (job: Job<MainJobData>): Promise<JobResult> => {
+        const stopped = await beforeProcess?.(job);
+        if (stopped) return stopped;
         switch (job.name) {
             case 'processGitHubIssue':
                 return processors.processGitHubIssueJob(job as Job<IssueJobData>);
@@ -53,11 +55,12 @@ export async function createConfiguredMainWorker(options: {
     concurrency: number;
     workerFactory: MainWorkerFactory;
     processors: MainJobProcessors;
+    beforeProcess?: (job: Job<MainJobData>) => Promise<JobResult | null>;
     beforeRun?: (worker: MainWorker) => void;
 }): Promise<MainWorker> {
     const worker = await options.workerFactory(
         options.queueName,
-        createMainJobProcessor(options.processors),
+        createMainJobProcessor(options.processors, options.beforeProcess),
         { concurrency: options.concurrency, autorun: false },
     );
     options.beforeRun?.(worker);

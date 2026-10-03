@@ -122,6 +122,7 @@ export async function handleUltrafixContinuation(
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
+    if ((await params.stateManager.getTaskState(params.taskId))?.state === 'cancelled') return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
     try {
         const continuationResult = await continueUltrafixLoop({

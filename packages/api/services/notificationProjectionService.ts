@@ -7,6 +7,7 @@ import {
   type NotificationRecipient,
 } from '@propr/core';
 import {
+  formatTaskTerminalReason,
   normalizeISO8601Timestamp,
   NOTIFICATION_UPDATE,
   type DraftUpdatePayload,
@@ -18,9 +19,26 @@ import {
   type TaskUpdatePayload,
 } from '@propr/shared';
 
+function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
+  const terminalReason = payload.metadata?.terminalReason;
+  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? formatTaskTerminalReason(terminalReason) : undefined]
+    .filter(Boolean).join(' · ') || undefined;
+}
+
 const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
+const CANCELLATION_REASONS = new Set([
+  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
+]);
+
+function isNotifiableCancellation(payload: TaskUpdatePayload): boolean {
+  const terminalReason = payload.metadata?.terminalReason;
+  return payload.state === 'cancelled'
+    && typeof terminalReason === 'string'
+    && CANCELLATION_REASONS.has(terminalReason);
+}
+
 const TERMINAL_ACTIVITY_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 // Repository settings change rarely while lifecycle projections are frequent;
 // a short TTL removes almost all reads yet applies an operator's change quickly.
@@ -640,7 +658,7 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
-    if (payload.state === 'failed') {
+    if (payload.state === 'failed' || isNotifiableCancellation(payload)) {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
       });
@@ -928,25 +946,26 @@ export class NotificationProjectionService {
 
   private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {
     const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    const terminalReason = typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined;
     return this.createPullRequestAwareEvent({
       deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
       kind: 'task',
-      severity: 'error',
+      severity: payload.state === 'cancelled' ? 'info' : 'error',
       target: {
         type: 'task', repository: context.repository, taskId: payload.taskId,
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
       title: context.subjectTitle ?? (context.prNumber !== undefined
-        ? `Task failed for PR #${context.prNumber}`
+        ? `Task ${payload.state} for PR #${context.prNumber}`
         : context.issueNumber !== undefined
-          ? `Task failed for issue #${context.issueNumber}`
-          : 'Task failed'),
-      body: context.description
+          ? `Task ${payload.state} for issue #${context.issueNumber}`
+          : `Task ${payload.state}`),
+      body: terminalReason ? formatTaskTerminalReason(terminalReason) : (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
-        : `Work for ${context.repository} did not complete.`,
+        : `Work for ${context.repository} did not complete.`),
       actions: taskActions({
-        followup: context.followupEligible,
+        followup: payload.state !== 'cancelled' && context.followupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
@@ -1080,7 +1099,7 @@ export class NotificationProjectionService {
       prNumber,
       description: taskDescription(initial),
       subjectTitle: subjectTitle(initial),
-      recap: notificationRecap(historyMetadata),
+      recap: taskNotificationRecap(historyMetadata, payload),
       commandMode,
       isReview,
       reviewDeferred,

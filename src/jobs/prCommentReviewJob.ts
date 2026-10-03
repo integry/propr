@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import { AgentRegistry, getAuthenticatedOctokit, loadPrReviewModel, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
@@ -189,6 +190,7 @@ async function handleUltrafixContinuation(
     params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; currentReviewCommentIds: number[]; currentReviewResultCount: number }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
+    if ((await params.stateManager.getTaskState(params.taskId))?.state === 'cancelled') return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
     try {
         const continuationResult = await continueUltrafixLoop({
@@ -217,6 +219,19 @@ async function resolveUltrafixHistoryMeta(
         await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber), job.data.commandMode);
 }
 
+async function handleSkippedPRValidation(
+    params: ExecuteReviewParams,
+    reason: string | undefined,
+): Promise<JobResult> {
+    const { context: { pullRequestNumber, correlatedLogger }, taskId, stateManager } = params;
+    if (reason === 'pull_request_closed') {
+        await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason('cancelled_pr_closed'), terminalReason: 'cancelled_pr_closed' });
+        return { status: 'cancelled', reason: 'cancelled_pr_closed', pullRequestNumber };
+    }
+    correlatedLogger.info({ pullRequestNumber, reason }, 'Skipping review processing');
+    return { status: 'skipped', reason, pullRequestNumber };
+}
+
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
     let { llm } = params;
@@ -224,10 +239,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
-    if (validation.skip) {
-        correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping review processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
-    }
+    if (validation.skip) return handleSkippedPRValidation(params, validation.reason);
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
@@ -377,6 +389,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reviewCtx,
         getNextAuthenticatedReviewRecordNumbers(allComments, state.startingWorkComment.data.user?.login),
     );
+
+    const finalState = await stateManager.getTaskState(taskId);
+    if (finalState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: finalState.terminalReason };
 
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
     await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });

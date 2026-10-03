@@ -28,6 +28,7 @@ export interface JobContext {
 
 export interface CurrentIssueData {
   data: {
+    state?: string;
     title: string;
     body: string | null | undefined;
     body_html?: string;
