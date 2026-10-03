@@ -60,6 +60,21 @@ For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until 
 
 Full syntax, parameters, and trigger rules for every command are in [PR Comment Commands](./pr-commands.md).
 
+## Withdrawing Work
+
+Closing a PR without merging cancels queued and running follow-up, review and
+Ultrafix work for that PR, with terminal reason `cancelled_pr_closed`. Its Ultrafix
+loop is cleared. Polling checks active and queued PRs each cycle, and workers
+recheck the live PR before starting, so missed webhooks cannot start work on a
+closed PR. Cancellation uses the same stop mechanism as the task view and
+`propr task stop`; cancelled attempts are never automatically retried.
+
+Closing the source issue or removing its processing trigger cancels only that
+issue's implementation work. Existing PRs and their independent follow-ups remain
+open. Removing a model label does not cancel work. See
+[task state and terminal reasons](../architecture/worker.md#cancellation-and-terminal-reasons)
+for reason codes and issue state labels.
+
 ## Automatic Follow-Up For Failed CI
 
 **Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.

@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import {
     TaskStates,
     taskStateExpectation,
@@ -101,6 +102,13 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 },
             };
         case 'cancelled':
+            return {
+                state: TaskStates.CANCELLED,
+                metadata: {
+                    reason: formatTaskTerminalReason(reason ?? ''),
+                    historyMetadata: { ...historyMetadata, cancellationReason: reason },
+                },
+            };
         case 'requeued':
         case 'rescheduled':
             return {

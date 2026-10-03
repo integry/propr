@@ -296,7 +296,7 @@ export async function createPRCommentTaskStateIfMissing(params: {
     if (params.preexistingState) return;
     const { job, taskId, stateManager, modelName, correlatedLogger } = params;
     try {
-        await stateManager.createTaskState(taskId, {
+        await stateManager.createTaskStateIfAbsent(taskId, {
             number: job.data.pullRequestNumber,
             pullRequestNumber: job.data.pullRequestNumber,
             repoOwner: job.data.repoOwner,

@@ -83,6 +83,7 @@ const stateManager = {
 await database.schema.createTable('tasks', table => { table.string('task_id'); table.string('commit_hash'); });
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
 await mock.module('@propr/core', { namedExports: {
+    preventWithdrawnJob: async () => null,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
     logger: { ...log, withCorrelation: () => log },
     getStateManager: () => stateManager,

@@ -3048,3 +3048,157 @@ test('a retry writer that loses to cancellation cannot resurrect the task', asyn
     assert.equal(mockRedisInstance.eval.mock.calls.length, 2);
     await stateManager.close();
 });
+
+test('terminal reasons persist in Redis, history, and task update events', async () => {
+    const { buildTaskStateTransition, publishTaskStateTransition } = await import('../packages/core/src/utils/workerStateTransition.js');
+    const initial: TaskStateData = {
+        taskId: 'reason-task', issueRef: { number: 42, repoOwner: 'acme', repoName: 'widgets' },
+        correlationId: 'reason-test', state: TaskStates.PROCESSING, createdAt: '2026-09-30T00:00:00Z',
+        updatedAt: '2026-09-30T00:00:00Z', attempts: 1, history: [],
+    };
+    for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user'] as const) {
+        const metadata = { historyMetadata: { cancellationReason: reason } };
+        const transition = buildTaskStateTransition(initial, TaskStates.CANCELLED, metadata);
+        assert.equal(transition.state.terminalReason, reason);
+        assert.equal(transition.state.history.at(-1)?.metadata?.terminalReason, reason);
+        await publishTaskStateTransition(initial.taskId, transition, metadata);
+        const persisted = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(JSON.parse(persisted.metadata).terminalReason, reason);
+        const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(event.metadata.terminalReason, reason);
+    }
+    const legacy = buildTaskStateTransition(initial, TaskStates.CANCELLED, { historyMetadata: { cancellationReason: 'user_cancelled' } });
+    assert.equal(legacy.state.terminalReason, 'cancelled_by_user');
+    const timeoutMetadata = { terminalReason: 'timed_out' as const, error: { message: 'Agent timed out after the overall timeout' } };
+    const timeout = buildTaskStateTransition(initial, TaskStates.FAILED, timeoutMetadata);
+    assert.equal(timeout.state.terminalReason, 'timed_out');
+    assert.equal(timeout.state.history.at(-1)?.metadata?.terminalReason, 'timed_out');
+    await publishTaskStateTransition(initial.taskId, timeout, timeoutMetadata);
+    const persistedTimeout = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+    assert.equal(JSON.parse(persistedTimeout.metadata).terminalReason, 'timed_out');
+    const timeoutEvent = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+    assert.equal(timeoutEvent.metadata.terminalReason, 'timed_out');
+    const retry = buildTaskStateTransition(timeout.state, TaskStates.PROCESSING, { isRetry: true });
+    assert.equal(retry.state.terminalReason, undefined);
+});
+
+test('transport timeout errors do not claim the agent exceeded its overall time limit', async () => {
+    const { buildTaskStateTransition, publishTaskStateTransition } = await import('../packages/core/src/utils/workerStateTransition.js');
+    const initial: TaskStateData = {
+        taskId: 'network-failure', issueRef: { number: 42, repoOwner: 'acme', repoName: 'widgets' },
+        correlationId: 'network-test', state: TaskStates.PROCESSING, createdAt: '2026-09-30T00:00:00Z',
+        updatedAt: '2026-09-30T00:00:00Z', attempts: 1, history: [],
+    };
+    for (const message of ['connect ETIMEDOUT 140.82.0.1:443', 'Redis command timeout', 'git push timed out']) {
+        const metadata = { error: { message, category: 'timeout' } };
+        const transition = buildTaskStateTransition(initial, TaskStates.FAILED, metadata);
+        assert.equal(transition.state.terminalReason, undefined);
+        assert.equal(transition.state.lastError?.message, message);
+        assert.equal(transition.state.history.at(-1)?.metadata?.terminalReason, undefined);
+        await publishTaskStateTransition(initial.taskId, transition, metadata);
+        const persisted = mockDbHistoryInsert.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(JSON.parse(persisted.metadata).terminalReason, undefined);
+        const event = mockPublishTaskUpdate.mock.calls.at(-1)?.arguments[0] as any;
+        assert.equal(event.metadata.terminalReason, undefined);
+    }
+});
+
+for (const status of ['requeued', 'rescheduled']) {
+    test(`${status} bookkeeping cancellation can resume the original task without losing its correlation`, async () => {
+        const handoff: TaskStateData = {
+            taskId: 'goal-child', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+            correlationId: 'parent-goal', state: TaskStates.CANCELLED,
+            createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1,
+            history: [{ state: TaskStates.CANCELLED, timestamp: '2026-10-01T00:01:00Z',
+                reason: `Task job ${status}: rate_limit`, metadata: { jobResultStatus: status } }],
+        };
+        mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(handoff));
+        mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+        const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+        try {
+            const resumed = await manager.updateTaskState(handoff.taskId, TaskStates.PROCESSING, { isRetry: true });
+            assert.equal(resumed.state, TaskStates.PROCESSING);
+            assert.equal(resumed.taskId, handoff.taskId);
+            assert.equal(resumed.correlationId, 'parent-goal');
+            assert.equal(resumed.attempts, 2);
+            for (const terminalReason of ['cancelled_by_user', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed'] as const) {
+                mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...handoff, terminalReason }));
+                const stopped = await manager.updateTaskState(handoff.taskId, TaskStates.PROCESSING, { isRetry: true });
+                assert.equal(stopped.state, TaskStates.CANCELLED);
+                assert.equal(stopped.terminalReason, terminalReason);
+            }
+        } finally { await manager.close(); }
+    });
+}
+
+test('closure cancellation losing a CAS race to a published PR result preserves successful post-processing', async () => {
+    const current: TaskStateData = {
+        taskId: 'publishing-pr', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        correlationId: 'original-request', state: TaskStates.POST_PROCESSING,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1, history: [],
+    };
+    let stored = JSON.stringify(current);
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => {
+        stored = JSON.stringify({ ...current, version: 3, prResult: { prNumber: 87 } });
+        return 0;
+    });
+    const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    try {
+        const result = await manager.markTaskCancelled(current.taskId, 'system', { terminalReason: 'cancelled_issue_closed' });
+        assert.equal(result.state, TaskStates.POST_PROCESSING);
+        assert.equal(result.terminalReason, undefined);
+        assert.equal(result.prResult?.prNumber, 87);
+        assert.equal(mockRedisInstance.eval.mock.calls.length, 1);
+    } finally { await manager.close(); }
+});
+
+for (const prResult of [{ status: 'failed', prCreated: false }, { status: 'failed' }, {}]) {
+    test(`closure cancellation accepts a retried task with no PR: ${JSON.stringify(prResult)}`, async () => {
+        const failed: TaskStateData = {
+            taskId: 'failed-retry', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+            correlationId: 'original-request', state: TaskStates.FAILED, prResult,
+            createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1, history: [],
+        };
+        let stored = JSON.stringify(failed);
+        mockRedisInstance.get.mock.mockImplementation(async () => stored);
+        mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+        const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+        try {
+            const resumed = await manager.updateTaskState(failed.taskId, TaskStates.PROCESSING, { isRetry: true });
+            assert.equal(resumed.state, TaskStates.PROCESSING);
+            stored = JSON.stringify(resumed);
+            const result = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed' });
+            assert.equal(result.state, TaskStates.CANCELLED);
+            assert.equal(result.terminalReason, 'cancelled_issue_closed');
+        } finally { await manager.close(); }
+    });
+}
+
+test('a failed task records withdrawal only when its live queued retry was removed', async () => {
+    const failed: TaskStateData = {
+        taskId: 'failed-with-retry', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        correlationId: 'original-request', state: TaskStates.FAILED,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1, history: [],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(failed));
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+    const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    try {
+        const kept = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed' });
+        assert.equal(kept.state, TaskStates.FAILED);
+        assert.equal(kept.terminalReason, undefined);
+        const withdrawn = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+        assert.equal(withdrawn.state, TaskStates.CANCELLED);
+        assert.equal(withdrawn.terminalReason, 'cancelled_issue_closed');
+        for (const state of [TaskStates.COMPLETED, TaskStates.CANCELLED]) {
+            mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...failed, state, terminalReason: state === TaskStates.CANCELLED ? 'cancelled_by_user' : undefined }));
+            const protectedState = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+            assert.equal(protectedState.state, state);
+        }
+        mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...failed, prResult: { prNumber: 87 } }));
+        const withPR = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+        assert.equal(withPR.state, TaskStates.FAILED);
+    } finally { await manager.close(); }
+});

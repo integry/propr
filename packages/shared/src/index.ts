@@ -318,6 +318,7 @@ export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
 export {
   TASK_LIFECYCLE_STATES,
   ACTIVE_TASK_LIFECYCLE_STATES,
+  formatTaskTerminalReason,
   type TaskLifecycleState,
 } from './taskLifecycle.js';
 

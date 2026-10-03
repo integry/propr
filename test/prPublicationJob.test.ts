@@ -24,7 +24,9 @@ let resolvedWorkflow: ResolvedRepositoryWorkflow | undefined;
 let policyLoads = 0;
 let agentError: Error | undefined;
 const processingMetadata: Array<Record<string, unknown>> = [];
+const cancellations: Array<Record<string, unknown>> = [];
 const stateManager = {
+    markTaskCancelled: async (taskId: string, _by: string, metadata: Record<string, unknown>) => { taskStates.set(taskId, 'cancelled'); cancellations.push(metadata); },
     updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean; historyMetadata?: Record<string, unknown> }) => {
         if (state === 'processing') processingMetadata.push(metadata?.historyMetadata ?? {});
         taskStates.set(taskId, state);
@@ -51,6 +53,7 @@ const octokit = {
 const noOp = async () => {};
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
 await mock.module('@propr/core', { namedExports: {
+    preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
     hashTaskAttemptToken: () => 'hash', logger: { ...log, withCorrelation: () => log },
     retryConfigs: { githubApi: {} }, withRetry: async (fn: () => unknown) => fn(),
@@ -151,15 +154,19 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 beforeEach(() => {
     refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
+    cancellations.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
 
-for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'pull_request_closed']] as const) {
-    test(`a follow-up on a ${reason.replace('pull_request_', '')} pull request is skipped before any work`, async () => {
+for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'cancelled_pr_closed']] as const) {
+    test(`a follow-up ends with ${reason} before any work`, async () => {
         pullRequestState = pullRequest;
         const result = await processPullRequestCommentJob(job('fix') as never);
-        assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'skipped', reason });
+        assert.deepEqual({ status: result.status, reason: result.reason }, { status: pullRequest.merged ? 'skipped' : 'cancelled', reason });
+        if (!pullRequest.merged) assert.deepEqual(cancellations, [{
+            reason: 'Cancelled because the pull request was closed without merging.', terminalReason: 'cancelled_pr_closed',
+        }]);
         // No starting comment, no worktree for the deleted head branch, no agent.
         assert.ok(!events.includes('comment:42'));
         assert.ok(!events.includes('prepare'));
@@ -358,4 +365,14 @@ test('a follow-up refused on a base without a workflow loads the new base policy
     assert.equal(policyLoads, 2, 'the retargeted base branch policy is loaded');
     assert.equal((processingMetadata.at(-1)?.repositoryWorkflow as { baseBranch?: string } | undefined)?.baseBranch, 'release');
     assert.equal((waiting.data as { repositoryWorkflowBaseBranch?: unknown }).repositoryWorkflowBaseBranch, undefined);
+});
+
+test('legacy abort-only PR jobs return the canonical user cancellation reason', async () => {
+    preparationError = new Error('Execution aborted by user');
+    const result = await processPullRequestCommentJob(job() as never);
+    assert.deepEqual({ status: result.status, reason: result.reason }, { status: 'cancelled', reason: 'cancelled_by_user' });
+    const { completedJobTransition } = await import('../src/taskReconciliationTransitions.js');
+    const { formatTaskTerminalReason } = await import('@propr/shared');
+    assert.equal(completedJobTransition(result).metadata.terminalReason, 'cancelled_by_user');
+    assert.notEqual(formatTaskTerminalReason(result.reason as 'cancelled_by_user'), 'The task ended.');
 });

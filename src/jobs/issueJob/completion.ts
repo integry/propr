@@ -52,6 +52,7 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
     : null;
   const taskResult = {
     status,
+    ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -66,6 +67,7 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
       new Error(claudeResult?.error || 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
+        ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)

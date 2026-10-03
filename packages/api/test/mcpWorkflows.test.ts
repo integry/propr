@@ -14,7 +14,7 @@ import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextp
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { McpPrincipal } from '../mcp/policy.js';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import type { CommentJobData, StopTaskExecutionOptions, UnprocessedComment } from '@propr/core';
 import type { ToolDeps } from '../mcp/tools.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
@@ -29,12 +29,24 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
   const queueStates = new Map<string, string>();
   const issueQueue = { getJobs: async () => [], getJob: async (id: string) => queueStates.has(id) ? { getState: async () => queueStates.get(id) } : undefined, add: async (name: string, data: Record<string, unknown>, options?: { jobId?: string }) => { if (queueFailure) throw new Error('Queue connection lost after write'); issueJobs.push({ name, data }); if (options?.jobId) queueStates.set(options.jobId, 'waiting'); return { id: options?.jobId || String(issueJobs.length) }; } };
   const cacheReads: string[] = [];
+  const cancellationRequests = new Map<string, { requestedBy: string; reason: unknown }>();
   let githubBoundary: unknown;
-  // Only outbound GitHub, Git transport and queue boundaries are fixtures. Catalog, handlers,
-  // label orchestration, authorization and persistence remain the real code.
+  // Only outbound GitHub, Git transport, queue and Redis boundaries are fixtures. Catalog, handlers,
+  // label orchestration, authorization and SQLite persistence remain the real code.
   const boundary = await mock.module('@propr/core', { namedExports: { ...core,
     getAuthenticatedOctokit: async () => githubBoundary,
     getIssueQueue: async () => issueQueue, getIndexingQueue: async () => issueQueue, issueQueue,
+    stopTaskExecution: (taskId: string, options: StopTaskExecutionOptions) => core.stopTaskExecution(taskId, {
+      ...options,
+      // The shared helper imports these dependencies internally, bypassing the barrel mock.
+      getQueue: async () => issueQueue,
+      markCancelled: async (id, requestedBy, metadata) => {
+        cancellationRequests.set(id, { requestedBy, reason: metadata.historyMetadata?.cancellationReason });
+        // Exercise the abort-signal fallback. The cancellation fixture supplies the
+        // worker's eventual terminal outcome, including completion/failure races.
+        throw new Error('Fixture cancellation state store unavailable');
+      },
+    }),
     ensureRepoCloned: async () => root, fetchLatestChanges: async () => ({ success: true }), publishIndexingStatus: async () => {},
     getStoredFileChanges: async (taskId: string) => { cacheReads.push(taskId); return { taskId, lastUpdated: new Date().toISOString(), files: [{ path: 'src/retry.ts', linesAdded: 1, linesRemoved: 0, status: 'modified', diff: '+Handle transient failures\n' }] }; },
   } });
@@ -121,14 +133,14 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     const { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } = await import('../../../src/jobs/prPendingComments.js');
     const { updateTaskTitleForPR } = await import('../../../src/jobs/prCommentJobHelpers.js');
     const correlatedLogger = core.logger.withCorrelation('mcp-pending-regression');
-    const stateManager = { updateIssueRef: async () => {} } as unknown as InstanceType<typeof core.WorkerStateManager>;
+    const stateManager = { updateIssueRef: async () => {}, getTaskState: async () => null } as unknown as InstanceType<typeof core.WorkerStateManager>;
     const deps: ToolDeps = { db, policy, taskQueue: { add: async (_name: string, data: Record<string, unknown>) => { jobs.push(data); return { id: String(jobs.length) }; }, getJobs: async () => [] } as never,
-      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async () => 'OK', eval: evalRedis } as never, runtimeBuildQueue: {} as never,
+      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async (key: string, value: string) => { redisValues.set(key, value); return 'OK'; }, eval: evalRedis } as never, runtimeBuildQueue: {} as never,
       goalServices: { generateTitle: async () => 'Fixture goal', loadVisualPreviewSettings: async () => ({ enabled: false, types: ['image'] }), getOctokit: async () => github as never,
         stopExecution: async () => ({ success: true, containerStopped: stopGoalImmediately, removedQueuedJobs: stopGoalImmediately ? 1 : 0 }) as never,
         getCapabilities: async () => [{ agentId: agent.config.id, agentAlias: 'claude', agentType: 'claude', goalCapable: true, lifecycle: { launch: 'goal-prompt', resume: 'whole-session', runningInput: 'safe-boundary-resume' }, controls: { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true } }] } };
     // Exercise the worker's Redis pickup, command normalization and durable title update.
-    // Only Redis/queue transport and the Redis issue-ref update are fixtures.
+    // Only Redis/queue transport and the Redis state-manager calls are fixtures.
     const persistCommentTask = async (taskId: string, jobData: CommentJobData, pending: UnprocessedComment[] = []) => {
       const key = core.getPendingPrCommentsKey(jobData.repoOwner, jobData.repoName, jobData.pullRequestNumber);
       pendingComments.set(key, pending.map(comment => JSON.stringify(comment)));
@@ -264,6 +276,13 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const resume = await call('resume_goal', { repository, goalId }, true); assert.equal(resume.state, 'completed', JSON.stringify(resume));
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'running');
         await verifyCancellation({ call, client, principal, deps, agentId: agent.config.id, modern, root, taskId, issueNumber, redisValues, plannerSignals, setStopGoalImmediately: value => { stopGoalImmediately = value; } });
+        assert.equal(cancellationRequests.size, modern ? 3 : 6, 'each task stop attempts to record cancellation');
+        for (const [id, request] of cancellationRequests) {
+          assert.deepEqual(request, { requestedBy: 'fixture-user', reason: 'cancelled_by_user' });
+          const abort = JSON.parse(redisValues.get(`worker:abort:${id}`)!);
+          assert.equal(abort.requestedBy, request.requestedBy);
+          assert.equal(abort.reason, request.reason);
+        }
         const cancel = await call('cancel_goal', { repository, goalId }, true); assert.equal(cancel.state, 'accepted');
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'cancelled');
         assert.equal((await call('get_operation', { operationId: cancel.operationId })).result.cancellation, 'confirmed');

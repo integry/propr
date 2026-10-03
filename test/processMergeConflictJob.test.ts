@@ -25,7 +25,7 @@ const mockOctokit = {
 };
 
 const mockStateManager = {
-    createTaskState: mock.fn(async () => {}),
+    createTaskStateIfAbsent: mock.fn(async () => {}),
     updateTaskState: mock.fn(async () => {}),
     getTaskState: mock.fn(async () => null),
     updateHistoryMetadata: mock.fn(async () => {}),
@@ -400,7 +400,7 @@ function createMockJob(overrides: Partial<{
 function resetAllMocks() {
     mockOctokit.request.mock.resetCalls();
     mockOctokit.auth.mock.resetCalls();
-    mockStateManager.createTaskState.mock.resetCalls();
+    mockStateManager.createTaskStateIfAbsent.mock.resetCalls();
     mockStateManager.updateTaskState.mock.resetCalls();
     mockMergeBaseIntoBranch.mock.resetCalls();
     mockCommitChanges.mock.resetCalls();
@@ -620,7 +620,7 @@ describe('processMergeConflictJob', () => {
 
         await processMergeConflictJob(createMockJob());
 
-        const createCall = mockStateManager.createTaskState.mock.calls[0];
+        const createCall = mockStateManager.createTaskStateIfAbsent.mock.calls[0];
         assert.strictEqual(createCall.arguments[1].modelName, 'gpt-5.5');
         assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 1);
     });

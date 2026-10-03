@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
@@ -153,6 +154,11 @@ const TimelineContent: React.FC<{
             <div className="mt-1 break-words text-xs text-slate-500" title={`Base commit: ${item.metadata.repositoryWorkflow.revision}; workflow blob: ${item.metadata.repositoryWorkflow.fileRevision}`}>
               Workflow: {item.metadata.repositoryWorkflow.path}
               <span className="block break-all">{item.metadata.repositoryWorkflow.baseBranch} @ {item.metadata.repositoryWorkflow.revision.slice(0, 12)}</span>
+            </div>
+          )}
+          {item.metadata?.terminalReason && (
+            <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
+              {formatTaskTerminalReason(item.metadata.terminalReason)}
             </div>
           )}
           {routing && (

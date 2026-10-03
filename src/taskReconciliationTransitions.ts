@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import { TaskStates, type JobResult, type TaskStateData } from '@propr/core';
 import { sanitizeErrorMessage } from './jobs/errorSanitizer.js';
 import type { PersistedTaskTerminalTransition } from './persistedTaskStateStore.js';
@@ -22,6 +23,24 @@ export function failedTaskTransition(
     };
 }
 
+function cancelledJobTransition(
+    status: string,
+    reason: string | undefined,
+    metadata: Record<string, unknown>,
+): PersistedTaskTerminalTransition {
+    return {
+        state: TaskStates.CANCELLED,
+        reason: status === 'cancelled'
+            ? formatTaskTerminalReason(reason ?? '')
+            : `Task job ${status}${reason ? `: ${reason}` : ''}`,
+        metadata: {
+            ...metadata,
+            ...(status === 'cancelled' && reason === 'user_cancelled' ? { terminalReason: 'cancelled_by_user' } : {}),
+            ...(status === 'cancelled' && reason?.startsWith('cancelled_') ? { terminalReason: reason } : {}),
+        },
+    };
+}
+
 export function completedJobTransition(value: unknown): PersistedTaskTerminalTransition {
     const result = value !== null && typeof value === 'object'
         ? value as JobResult
@@ -33,12 +52,8 @@ export function completedJobTransition(value: unknown): PersistedTaskTerminalTra
         jobResultStatus: status ?? null,
         jobResultReason: reason ?? null,
     };
-    if (status === 'cancelled' || status === 'requeued' || status === 'rescheduled') {
-        return {
-            state: TaskStates.CANCELLED,
-            reason: `Task job ${status}${reason ? `: ${reason}` : ''}`,
-            metadata,
-        };
+    if (status && ['cancelled', 'requeued', 'rescheduled'].includes(status)) {
+        return cancelledJobTransition(status, reason, metadata);
     }
     if (status === 'failed') {
         return failedTaskTransition(
