@@ -148,8 +148,10 @@ async function hasProcessingSibling(target: IntentTarget, taskId?: string): Prom
         const id = intentJobTaskId(job as unknown as { id?: string; data: Record<string, unknown> });
         if (id === taskId) continue;
         const state = await manager.getTaskState(id);
-        // A requeued/rescheduled retry is recorded as cancelled but is still pending work.
-        if (!state || !['completed', 'failed', 'cancelled'].includes(state.state) || isBookkeepingCancellation(state)) return true;
+        // A requeued/rescheduled retry is recorded as cancelled but is still pending work,
+        // and a failed attempt's queued retry resumes it. Only completion or a genuine
+        // withdrawal ends a job's claim on the processing label.
+        if (!state || !['completed', 'cancelled'].includes(state.state) || isBookkeepingCancellation(state)) return true;
     }
     // Scan after the awaited queue reads so newly started siblings are included.
     let cursor = '0';
@@ -258,8 +260,10 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     // until the marker exists, so a failed publish cannot readmit it on reopen.
     if (markCancelled && !await publishCancelledMarker(target, triggers, reason, revokingDone)) return;
     // Renewed intent owns these labels; stop before any later deletion or retry.
+    // The label scope was chosen for `reason`: a different withdrawal (e.g. a
+    // reopen that swaps triggers after closure) may leave another trigger live.
     // A reopen landing between this read and the DELETE is an unavoidable API race.
-    const stillWithdrawn = async () => withdrawnIntentReason(target, await readCurrentTaskIntent(target), triggers) !== null;
+    const stillWithdrawn = async () => withdrawnIntentReason(target, await readCurrentTaskIntent(target), triggers) === reason;
     const labels = [...new Set(labelsToClear)].flatMap(trigger => [`${trigger}-processing`, `${trigger}-waiting`, ...staleDone.filter(label => label === `${trigger}-done`)]);
     for (const label of labels) {
         if (!await removeIntentLabel(target, label, stillWithdrawn)) return;

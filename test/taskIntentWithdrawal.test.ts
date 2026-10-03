@@ -1160,3 +1160,33 @@ for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as co
         assert.deepEqual(tracker.labels, ['AI-cancelled']);
     });
 }
+
+for (const phase of ['waiting', 'delayed', 'active', 'prioritized'] as const) {
+    test(`a failed attempt's ${phase} retry is live sibling work for restoration and user-stop cleanup`, async () => {
+        const data = { ...target, isChildJob: true, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request' };
+        const id = intentJobTaskId(addJob('retry', data, phase));
+        addRunning(id, data, 'failed');
+        tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+        recordLabeled('AI');
+        assert.equal(await restoreIssueTrigger(target), null);
+        assert.equal((await pollRestoredIssues())[0]?.status ?? 'ignored', 'ignored');
+        assert.deepEqual(jobs.map(job => job.id), ['retry']);
+        assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+        addRunning('stopped', target, 'cancelled');
+        states.get('stopped').terminalReason = 'cancelled_by_user';
+        await updateWithdrawnIssueLabels(target, ['AI', 'build'], 'cancelled_by_user', 'stopped');
+        assert.ok(requests.every(r => r.endpoint.startsWith('GET ')));
+        assert.ok(tracker.labels.includes('AI-processing'));
+    });
+}
+
+test('closure cleanup stops when a reopen swaps triggers between deletions', async () => {
+    tracker = { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] };
+    onRequest = endpoint => {
+        // The user reopens, removes AI and applies build, which is admitted.
+        if (endpoint.startsWith('DELETE ') && tracker.state === 'closed') tracker = { state: 'open', labels: ['build', 'build-processing'] };
+    };
+    await updateWithdrawnIssueLabels(target, ['AI', 'build'], 'cancelled_issue_closed');
+    assert.deepEqual(requests.filter(r => r.endpoint.startsWith('DELETE ')).map(r => r.params.name), ['AI-processing']);
+    assert.deepEqual(tracker.labels, ['build', 'build-processing']);
+});
