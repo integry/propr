@@ -7,6 +7,7 @@ import { safeUpdateLabels } from '../../utils/github/labelOperations.js';
 import { PlanIssueStatus, type PlanIssue } from '../../config/planIssueManager.js';
 import { isTerminalStatus, isInProgressStatus } from '../../webhook/statusMachine.js';
 import { labelPlanIssueForProcessing, finalizeEpicPlanIfComplete, reconcileTerminalInProgressIssues } from '../../webhook/planIssueTrigger.js';
+import { queuedModelLabel } from './epicQueueModelLabel.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
 export type EpicQueueStatus = 'active' | 'completed' | 'cancelled';
@@ -395,23 +396,6 @@ async function verifiedQueueHeadSelectors(queue: EpicExecutionQueue,
   // Do not silently create an epic or choose a default model during recovery.
   if (!modelLabel || !labels.includes(modelLabel) || (queue.useEpic && (!epicLabel || !labels.includes(epicLabel)))) return null;
   return { epicLabel, modelLabel };
-}
-
-async function queuedModelLabel(selection: { agent_alias: string; model_name: string }): Promise<string | null> {
-  const { AgentRegistry } = await import('../../agents/AgentRegistry.js');
-  const { MODEL_INFO_MAP } = await import('../../config/modelDefinitions.js');
-  const { buildAgentModelLlmLabel, buildDynamicLlmLabel } = await import('@propr/shared');
-  const { toProprOpenCodeModelId } = await import('../../agents/impl/openCodeUtils.js');
-  const registry = AgentRegistry.getInstance();
-  await registry.ensureInitialized();
-  const modelInfo = MODEL_INFO_MAP[selection.model_name];
-  const agent = registry.getAgentByAlias(selection.agent_alias) ?? registry.getAllAgents().find(candidate =>
-    candidate.config.supportedModels.some(model => model.toLowerCase() === selection.model_name.toLowerCase()
-      || (candidate.config.type === 'opencode' && model.toLowerCase() === toProprOpenCodeModelId(selection.model_name).toLowerCase())));
-  if (!agent) return modelInfo?.githubLabel ?? null;
-  if (modelInfo?.githubLabel) return buildAgentModelLlmLabel(agent.config.type, agent.config.alias, modelInfo);
-  const model = agent.config.type === 'opencode' ? toProprOpenCodeModelId(selection.model_name) : selection.model_name;
-  return buildDynamicLlmLabel(agent.config.alias, model);
 }
 
 async function reconcileQueueHead(draftId: string, deps: EpicQueueDependencies): Promise<void> {
