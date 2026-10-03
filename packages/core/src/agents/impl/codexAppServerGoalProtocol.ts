@@ -367,6 +367,9 @@ async function observeActiveTurnWithThread(
             continue;
         }
         for (const input of snapshot.pendingInputs) {
+            // The turn can end while earlier inputs were delivered; its
+            // questions are gone, so leave the rest for the next turn.
+            if (completed) break;
             if (await providerRequests.answer(input, turnId)) continue;
             await connection.request('turn/steer', {
                 threadId,

@@ -862,7 +862,13 @@ an answer; the blocker clears only when the provider confirms it.
           return;
         }
         if (page.goals.length === 0) {
-          console.log("No goals are waiting on you.");
+          // A page can empty out while a later page still holds blockers;
+          // only an exhausted listing means nothing is waiting.
+          if (page.nextOffset === null) {
+            console.log("No goals are waiting on you.");
+          } else {
+            console.log(`No goals on this page are waiting on you. More goals: --offset ${page.nextOffset}`);
+          }
           return;
         }
         for (const entry of page.goals as GoalAttentionEntry[]) {

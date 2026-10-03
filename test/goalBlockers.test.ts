@@ -8,7 +8,9 @@ import {
   type GoalBlockerGoalState,
   type GoalBlockerRow,
 } from '../packages/shared/src/goalBlockers.ts';
-import { codexServerRequestBlocker, codexUserInputResponse } from '../packages/core/src/agents/impl/codexAppServerBlockers.ts';
+import { CodexProviderRequests, codexServerRequestBlocker, codexUserInputResponse } from '../packages/core/src/agents/impl/codexAppServerBlockers.ts';
+import type { AppServerConnection } from '../packages/core/src/agents/impl/codexAppServerConnection.ts';
+import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { closeGoalBlockers, recordGoalBlocker, resolveGoalBlocker } from '../packages/core/src/goals/goalBlockerStore.ts';
 
 after(async () => {
@@ -26,6 +28,16 @@ const fixtures = {
         id: 'db', header: 'Database', question: 'Which database should the migration target?', isOther: true, isSecret: false,
         options: [{ label: 'Postgres', description: 'Production' }, { label: 'SQLite', description: 'Local' }],
       }],
+    },
+  },
+  multiQuestionInput: {
+    id: 9, method: 'item/tool/requestUserInput',
+    params: {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-12', isBlocking: true,
+      questions: [
+        { id: 'db', header: 'Database', question: 'Which database should the migration target?', isOther: true, isSecret: false, options: null },
+        { id: 'region', header: 'Region', question: 'Which region should it deploy to?', isOther: true, isSecret: false, options: null },
+      ],
     },
   },
   secretInput: {
@@ -86,6 +98,19 @@ describe('Codex App Server provider event fixtures', () => {
     assert.deepEqual(blocker.answerQuestionIds, []);
   });
 
+  test('a request asking several questions is handed off rather than given one answer for all', () => {
+    const blocker = codexServerRequestBlocker(fixtures.multiQuestionInput)!;
+    assert.equal(blocker.report.summary, '2 questions: Which database should the migration target?');
+    assert.equal(blocker.report.questions?.length, 2);
+    assert.deepEqual(blocker.report.responseActions, ['pause', 'cancel']);
+    assert.deepEqual(blocker.answerQuestionIds, []);
+    assert.throws(() => codexUserInputResponse(['db', 'region'], 'Postgres'), /exactly one/);
+    // A malformed second question is still a question ProPR cannot answer for the operator.
+    const partly = codexServerRequestBlocker({ ...fixtures.multiQuestionInput, params: { ...fixtures.multiQuestionInput.params,
+      questions: [fixtures.multiQuestionInput.params.questions[0], { id: 'region', question: '' }] } })!;
+    assert.deepEqual(partly.answerQuestionIds, []);
+  });
+
   test('approvals are reported with a redacted reason and never offer an approve action', () => {
     const command = codexServerRequestBlocker(fixtures.commandApproval)!;
     assert.equal(command.report.category, 'approval');
@@ -124,6 +149,68 @@ describe('Codex App Server provider event fixtures', () => {
       assert.equal(goalBlockerSupport(provider).approval, 'unavailable');
       assert.equal(goalBlockerSupport(provider).paused, 'supported');
     }
+  });
+});
+
+/** A connection stub holding the queues the App Server reader fills between awaits. */
+function providerRequestHarness() {
+  const queued = { requests: [] as Array<Record<string, unknown>>, resolved: [] as Array<number | string> };
+  const responses: Array<{ id: number | string; result: Record<string, unknown> }> = [];
+  const calls: string[] = [];
+  const connection = {
+    takeServerRequests: () => queued.requests.splice(0),
+    takeResolvedServerRequests: () => queued.resolved.splice(0),
+    respond: (id: number | string, result: Record<string, unknown>) => { responses.push({ id, result }); },
+  } as unknown as AppServerConnection;
+  const control = {
+    reportBlocker: async (report: { requestKey: string }) => { calls.push(`report:${report.requestKey}`); },
+    resolveBlocker: async (key: string, reason: string) => { calls.push(`resolve:${key}:${reason}`); },
+    markInputDelivered: async (id: string) => { calls.push(`delivered:${id}`); },
+  } as unknown as NonNullable<AgentTaskOptions['goalControl']>;
+  return { queued, responses, calls, requests: new CodexProviderRequests(connection, control) };
+}
+
+describe('Codex provider requests', () => {
+  test('a question answers with the next input and stays open until the provider resolves it', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), true);
+    assert.deepEqual(harness.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'later' }, 'turn-1'), false,
+      'an answered question does not take a second input');
+    assert.deepEqual(harness.calls, ['report:codex:thread-1:turn-1:item-7:user-input', 'delivered:input-1']);
+  });
+
+  test('a resolution received while the caller awaited releases the question before any input is spent on it', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    // `serverRequest/resolved` arrives during the caller's `control.load()`.
+    harness.queued.resolved.push(0);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, [], 'no reply is written to a resolved request');
+    assert.deepEqual(harness.calls, [
+      'report:codex:thread-1:turn-1:item-7:user-input',
+      'resolve:codex:thread-1:turn-1:item-7:user-input:provider_resolved',
+    ], 'the input is left for ordinary delivery, not marked delivered');
+  });
+
+  test('a question raised and resolved between syncs never receives the input', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    harness.queued.resolved.push(0);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, []);
+    assert.ok(!harness.calls.includes('delivered:input-1'));
+  });
+
+  test('a multi-question request never consumes an input', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.multiQuestionInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, []);
   });
 });
 

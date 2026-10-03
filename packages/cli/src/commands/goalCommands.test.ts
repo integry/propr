@@ -415,6 +415,10 @@ test("goal attention lists blockers with the supported command for each action, 
   assert.doesNotMatch(human.stdout, /approve/i);
   const empty = await run(["attention"], () => ({ body: { goals: [], offset: 0, limit: 20, nextOffset: null } }));
   assert.match(empty.stdout, /No goals are waiting on you/);
+  const emptyPage = await run(["attention", "--limit", "1"], () => ({ body: { goals: [], offset: 0, limit: 1, nextOffset: 1 } }));
+  assert.doesNotMatch(emptyPage.stdout, /No goals are waiting on you/);
+  assert.match(emptyPage.stdout, /No goals on this page are waiting on you/);
+  assert.match(emptyPage.stdout, /More goals: --offset 1/);
 
   const detail = {
     currentActivity: { currentFocus: null, entries: [], order: "newest_first" },

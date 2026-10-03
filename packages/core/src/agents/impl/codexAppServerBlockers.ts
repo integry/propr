@@ -66,7 +66,8 @@ function userInputBlocker(params: Params): CodexServerRequestBlocker | null {
     // A non-blocking request lets the provider carry on without an answer, so
     // nothing is waiting on the operator.
     if (params.isBlocking === false) return null;
-    const questions = (Array.isArray(params.questions) ? params.questions : [])
+    const requested = Array.isArray(params.questions) ? params.questions : [];
+    const questions = requested
         .slice(0, GOAL_BLOCKER_MAX_QUESTIONS)
         .flatMap(item => {
             const record = item && typeof item === 'object' ? item as Params : {};
@@ -87,7 +88,9 @@ function userInputBlocker(params: Params): CodexServerRequestBlocker | null {
         });
     if (!questions.length) return null;
     // A secret answer would be persisted as goal input; hand those off instead.
-    const answerable = !questions.some(question => question.confidential);
+    // One goal input answers exactly one question, so a request asking several
+    // is handed off rather than given the same answer to each.
+    const answerable = requested.length === 1 && questions.length === 1 && !questions[0].confidential;
     const summary = questions.length === 1
         ? questions[0].question
         : `${questions.length} questions: ${questions[0].question}`;
@@ -164,9 +167,10 @@ export function codexServerRequestBlocker(message: { id?: unknown; method?: unkn
     return null;
 }
 
-/** The `ToolRequestUserInputResponse` carrying one operator input as the answer to every question. */
+/** The `ToolRequestUserInputResponse` carrying one operator input as the answer to a single-question request. */
 export function codexUserInputResponse(questionIds: string[], answer: string): Record<string, unknown> {
-    return { answers: Object.fromEntries(questionIds.map(id => [id, { answers: [answer] }])) };
+    if (questionIds.length !== 1) throw new Error('A goal input answers exactly one Codex question');
+    return { answers: { [questionIds[0]]: { answers: [answer] } } };
 }
 
 interface OpenProviderRequest {
@@ -191,6 +195,16 @@ export class CodexProviderRequests {
     ) {}
 
     async sync(): Promise<void> {
+        await this.persist(this.absorb());
+    }
+
+    /**
+     * Apply every request and resolution the connection has already received
+     * to the local map, without awaiting, and return the durable writes owed.
+     */
+    private absorb(): { reports: GoalBlockerReport[]; resolved: string[] } {
+        const reports: GoalBlockerReport[] = [];
+        const resolved: string[] = [];
         for (const message of this.connection.takeServerRequests()) {
             const blocker = codexServerRequestBlocker(message);
             if (!blocker || message.id === undefined) continue;
@@ -202,22 +216,36 @@ export class CodexProviderRequests {
                     answered: false,
                 });
             }
-            await this.control.reportBlocker?.(blocker.report);
+            reports.push(blocker.report);
         }
         for (const id of this.connection.takeResolvedServerRequests()) {
             const request = this.open.get(id);
             if (!request) continue;
             this.open.delete(id);
-            await this.control.resolveBlocker?.(request.requestKey, 'provider_resolved');
+            resolved.push(request.requestKey);
         }
+        return { reports, resolved };
     }
 
-    /** Deliver an operator input as the reply to the oldest unanswered question, if one is waiting. */
+    private async persist(work: { reports: GoalBlockerReport[]; resolved: string[] }): Promise<void> {
+        for (const report of work.reports) await this.control.reportBlocker?.(report);
+        for (const requestKey of work.resolved) await this.control.resolveBlocker?.(requestKey, 'provider_resolved');
+    }
+
+    /**
+     * Deliver an operator input as the reply to the oldest unanswered question, if one is waiting.
+     * Resolutions received while the caller awaited are applied first, with no await before the
+     * response, so an input is never spent on a question the server already reported resolved.
+     */
     async answer(input: { id: string; message: string }, turnId: string): Promise<boolean> {
+        const work = this.absorb();
         const question = [...this.open.values()].find(request => !request.answered && request.answerQuestionIds.length);
+        if (question) {
+            this.connection.respond(question.id, codexUserInputResponse(question.answerQuestionIds, input.message));
+            question.answered = true;
+        }
+        await this.persist(work);
         if (!question) return false;
-        this.connection.respond(question.id, codexUserInputResponse(question.answerQuestionIds, input.message));
-        question.answered = true;
         await this.control.markInputDelivered(input.id, turnId);
         return true;
     }

@@ -50,7 +50,8 @@ export const GOAL_BLOCKER_PROVIDER_SUPPORT: Readonly<Record<string, GoalBlockerP
     question: 'supported',
     approval: 'handoff',
     paused: 'supported',
-    notes: 'Codex App Server `item/tool/requestUserInput` server requests are questions answered with the next goal input; '
+    notes: 'Codex App Server `item/tool/requestUserInput` server requests asking one question are answered with the next goal input; '
+      + 'multi-question and secret requests are handed off; '
       + 'command, file-change and permission approval requests are reported but never approved by ProPR. '
       + '`serverRequest/resolved` or the end of the turn resolves them.',
   },
