@@ -298,6 +298,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'role', 'running', 'section', 'since', 'stage', 'started', 'state', 'status', 'stopped', 'submitted', 'success', 'true',
     'timing', 'token_endpoint_auth_methods_supported', 'tool', 'transport', 'truncated', 'tunnel_id',
     'ultrafix', 'unknown', 'until', 'validation', 'workflow',
+    // Comment attachment fields and selectors returned by get_pull_request_discussion.
+    'alt', 'attachments', 'fetchable', 'image', 'index', 'issue', 'type', 'video',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',

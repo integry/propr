@@ -30,6 +30,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |
+| Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Product docs and where a setting lives | `search_docs`, `get_doc`, `find_setting` |
 
 `implement_plan` with `useEpic: true` runs selected issues sequentially in plan

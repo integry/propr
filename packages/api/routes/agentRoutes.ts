@@ -15,6 +15,7 @@ import {
 } from '@propr/core';
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
 import { requireManageAgents } from '../permissionGuards.js';
+import { createAgentHealthCheck } from '../services/agentHealthCheck.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -211,6 +212,23 @@ async function executeChatQuery(
 
 export function createAgentRoutes() {
   const router = Router();
+  const checkAgentHealth = createAgentHealthCheck({
+    loadAgents,
+    createAgent: config => getAgentRegistry().createAgentFromConfig(config),
+  });
+
+  router.post('/:agentId/health', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await checkAgentHealth(String(req.params.agentId), req.query.fresh === 'true');
+      if (!result) {
+        res.status(404).json({ error: 'Agent not found' });
+        return;
+      }
+      res.json(result);
+    } catch {
+      res.status(500).json({ error: 'Could not check agent health' });
+    }
+  });
 
   router.get('/opencode/models', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
     try {

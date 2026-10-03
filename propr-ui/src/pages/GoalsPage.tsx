@@ -26,6 +26,7 @@ import { useThinkingLog } from '../components/TaskDetails/useThinkingLog';
 import { trustedPreviewMedia } from '@propr/shared';
 import VisualPreviewGallery from '../components/VisualPreviewGallery';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
+import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { RepositoryChip } from '../components/ui/RepositoryChip';
 import { ListSkeleton } from '../components/ui/Skeleton';
@@ -310,10 +311,10 @@ function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange
     && objectiveCharacters > objectiveMaxCharacters;
   const unsupportedAgents = agents.filter(agent => !agent.goalCapable);
   const showRuntimeDiagnostics = agents.length > 0 && unsupportedAgents.length === agents.length;
-  const repositoryOptions = useMemo<RepoOption[]>(() => repositories.map(repo => ({
+  const repositoryOptions = useDecoratedRepoOptions(useMemo<RepoOption[]>(() => repositories.map(repo => ({
     name: repo.name,
     enabled: repo.enabled,
-  })), [repositories]);
+  })), [repositories]));
   const markDirty = useCallback(() => onDirtyChange(true), [onDirtyChange]);
 
   const applyCapabilities = useCallback((capabilities: GoalCapability[]) => {
@@ -654,7 +655,7 @@ function GoalList() {
   const initialLoading = goalsResource.loading;
   const refreshing = goalsResource.refreshing;
   const error = goalsResource.error;
-  const repositoryOptions = useMemo<RepoOption[]>(() => {
+  const repositoryOptions = useDecoratedRepoOptions(useMemo<RepoOption[]>(() => {
     const counts = new Map<string, number>();
     goals.forEach(goal => counts.set(goal.repository, (counts.get(goal.repository) || 0) + 1));
     return [
@@ -662,7 +663,7 @@ function GoalList() {
       ...Array.from(counts, ([name, count]) => ({ name, enabled: true, count }))
         .sort((left, right) => left.name.localeCompare(right.name)),
     ];
-  }, [goals]);
+  }, [goals]));
   const searchTerms = useMemo(
     () => debouncedSearch.toLowerCase().split(/\s+/).filter(Boolean),
     [debouncedSearch],
