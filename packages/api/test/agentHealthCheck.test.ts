@@ -63,6 +63,65 @@ test('shares concurrent probes and passes a bounded lightweight analysis without
   assert.equal(calls, 1);
 });
 
+test('post-login refresh waits for the pending old-credential probe and analyzes updated credentials', async () => {
+  const finishes: ((result: AnalysisResult) => void)[] = [];
+  const credentialsUsed: string[] = [];
+  let credentials = 'expired';
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [config],
+    createAgent: () => {
+      credentialsUsed.push(credentials);
+      return { analyze: async () => new Promise(resolve => { finishes.push(resolve); }) };
+    },
+  });
+  const initial = check(config.id);
+  await new Promise(resolve => setImmediate(resolve));
+  credentials = 'logged-in';
+  const refresh = check(config.id, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(credentialsUsed, ['expired']);
+  finishes[0]({ success: false, response: '', error: 'Login expired' });
+  assert.equal((await initial)?.errorCode, 'auth_required');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(credentialsUsed, ['expired', 'logged-in']);
+  // A normal concurrent read must share the new probe, not the settled old one.
+  const sibling = check(config.id);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finishes.length, 2);
+  finishes[1]({ success: true, response: 'OK' });
+  assert.equal((await refresh)?.status, 'ready');
+  assert.equal((await sibling)?.status, 'ready');
+});
+
+test('queued refresh reloads configuration after waiting, including disabled and deleted agents', async () => {
+  for (const update of ['edit', 'disable', 'delete'] as const) {
+    let configured = [config];
+    let finish!: (result: AnalysisResult) => void;
+    const probedPaths: string[] = [];
+    const check = createAgentHealthCheck({
+      loadAgents: async () => configured,
+      createAgent: agent => {
+        probedPaths.push(agent.configPath);
+        return { analyze: async () => probedPaths.length === 1
+          ? new Promise(resolve => { finish = resolve; })
+          : { success: true, response: 'OK' } };
+      },
+    });
+    const initial = check(config.id);
+    await new Promise(resolve => setImmediate(resolve));
+    const refresh = check(config.id, true);
+    await new Promise(resolve => setImmediate(resolve));
+    configured = update === 'delete' ? [] : [{ ...config,
+      ...(update === 'disable' ? { enabled: false } : { configPath: '/updated/credentials' }),
+    }];
+    finish({ success: false, response: '', error: 'Login expired' });
+    await initial;
+    const result = await refresh;
+    assert.equal(result?.status, update === 'edit' ? 'ready' : update === 'disable' ? 'disabled' : undefined);
+    assert.deepEqual(probedPaths, update === 'edit' ? [config.configPath, '/updated/credentials'] : [config.configPath]);
+  }
+});
+
 test('returns CLI and runtime errors, treats empty output as failure, and permits a fresh check', async () => {
   const outcomes = [
     async () => ({ success: false, response: '', error: 'Login expired' }),

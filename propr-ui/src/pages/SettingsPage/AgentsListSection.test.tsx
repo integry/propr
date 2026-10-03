@@ -170,12 +170,12 @@ describe('agent health checks', () => {
     const view = render(<StrictMode><AgentsListSection {...props} agents={configured} /></StrictMode>);
     await screen.findByText('Ready');
     expect(checkAgentHealth).toHaveBeenCalledTimes(1);
-    expect(checkAgentHealth).toHaveBeenCalledWith('codex-1', expect.any(String));
+    expect(checkAgentHealth).toHaveBeenCalledWith('codex-1', expect.any(String), false);
     view.rerender(<StrictMode><AgentsListSection {...props} agents={[...configured]} saving /></StrictMode>);
     expect(checkAgentHealth).toHaveBeenCalledTimes(1);
     view.rerender(<StrictMode><AgentsListSection {...props} /></StrictMode>);
     await waitFor(() => expect(checkAgentHealth).toHaveBeenCalledTimes(2));
-    expect(checkAgentHealth).toHaveBeenLastCalledWith('vibe-1', expect.any(String));
+    expect(checkAgentHealth).toHaveBeenLastCalledWith('vibe-1', expect.any(String), false);
   });
 
   it('does not probe while loading or in demo mode', () => {
@@ -202,6 +202,27 @@ describe('agent health checks', () => {
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
+  it('requests a fresh probe when login closes while the initial check is pending', async () => {
+    let finishInitial!: (result: Awaited<ReturnType<typeof checkAgentHealth>>) => void;
+    let finishRefresh!: (result: Awaited<ReturnType<typeof checkAgentHealth>>) => void;
+    vi.mocked(checkAgentHealth)
+      .mockImplementationOnce(() => new Promise(resolve => { finishInitial = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    render(<AgentsListSection {...props} agents={[agents[0]]} />);
+    expect(screen.getByText('Checking agent…')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for codex' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Log in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close login' }));
+    expect(checkAgentHealth).toHaveBeenLastCalledWith('codex-1', expect.any(String), true);
+    finishInitial({ agentId: 'codex-1', status: 'error', errorCode: 'auth_required', error: 'Login expired' });
+    await waitFor(() => expect(screen.getByText('Checking agent…')).toBeVisible());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    finishRefresh({ agentId: 'codex-1', status: 'ready' });
+    expect(await screen.findByText('Ready')).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(checkAgentHealth).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces request failures and can retry agents without interactive login', async () => {
     vi.mocked(checkAgentHealth).mockRejectedValueOnce(new Error('Check timed out'));
     render(<AgentsListSection {...props} agents={[agents[1]]} />);
@@ -210,6 +231,7 @@ describe('agent health checks', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await screen.findByText('Ready');
     expect(checkAgentHealth).toHaveBeenCalledTimes(2);
+    expect(checkAgentHealth).toHaveBeenLastCalledWith('vibe-1', expect.any(String), true);
   });
 
   it('ignores a stale result after an agent is disabled or edited', async () => {

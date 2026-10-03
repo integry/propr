@@ -219,7 +219,7 @@ export function createAgentRoutes() {
 
   router.post('/:agentId/health', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
     try {
-      const result = await checkAgentHealth(String(req.params.agentId));
+      const result = await checkAgentHealth(String(req.params.agentId), req.query.fresh === 'true');
       if (!result) {
         res.status(404).json({ error: 'Agent not found' });
         return;

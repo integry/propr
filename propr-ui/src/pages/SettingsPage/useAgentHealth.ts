@@ -21,7 +21,7 @@ export function useAgentHealth(agents: AgentConfig[], paused: boolean) {
       activeKeys.add(key);
       let request = requests.current.get(key);
       if (!request) {
-        request = checkAgentHealth(agent.id, key).catch((error: unknown): AgentHealthResult => ({
+        request = checkAgentHealth(agent.id, key, (currentRevisions[agent.id] ?? 0) > 0).catch((error: unknown): AgentHealthResult => ({
           agentId: agent.id,
           status: 'error',
           error: error instanceof Error ? error.message : 'Could not check agent health.',

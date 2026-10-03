@@ -43,13 +43,19 @@ export function createAgentHealthCheck(dependencies: {
   createAgent: (config: AgentConfig) => Pick<Agent, 'analyze'>;
 }) {
   const inFlight = new Map<string, Promise<AgentHealthResult>>();
-  return async (agentId: string): Promise<AgentHealthResult | undefined> => {
+  return async function check(agentId: string, fresh = false): Promise<AgentHealthResult | undefined> {
     const config = (await dependencies.loadAgents()).find(agent => agent.id === agentId);
     if (!config) return undefined;
     if (!config.enabled) return { agentId, status: 'disabled' };
     const key = JSON.stringify(config);
     const existing = inFlight.get(key);
-    if (existing) return existing;
+    if (existing) {
+      if (!fresh) return existing;
+      // Login changes credentials without changing config. A refresh must wait
+      // for the old probe, then reload config and create a new agent instance.
+      await existing;
+      return check(agentId, fresh);
+    }
     const probe = async (): Promise<AgentHealthResult> => {
       const model = agentHealthModel(config);
       if (!model) return { agentId, status: 'error', errorCode: 'unknown', error: 'No models configured. Edit this agent to add a model.' };
@@ -68,12 +74,10 @@ export function createAgentHealthCheck(dependencies: {
         return { agentId, model, status: 'error', errorCode: healthErrorCode(error), error: redactSecrets(error instanceof Error ? error.message : 'Agent check failed.').slice(0, 2000) };
       }
     };
-    const promise = probe();
+    const promise = probe().finally(() => {
+      if (inFlight.get(key) === promise) inFlight.delete(key);
+    });
     inFlight.set(key, promise);
-    try {
-      return await promise;
-    } finally {
-      inFlight.delete(key);
-    }
+    return promise;
   };
 }

@@ -217,3 +217,72 @@ for (const viewport of [
     expect(checked.filter(id => id === 'codex-config')).toHaveLength(2);
   });
 }
+
+for (const viewport of [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'mobile', width: 320, height: 900 },
+]) {
+  test(`${viewport.name} refreshes after successful login during a pending health probe`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const codex = agents.find(agent => agent.type === 'codex')!;
+    let initialProbe!: import('@playwright/test').Route;
+    let refreshedProbe!: import('@playwright/test').Route;
+    let checks = 0;
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/agents/codex-config/health') {
+        checks++;
+        if (checks === 1) initialProbe = route;
+        else {
+          expect(url.searchParams.get('fresh')).toBe('true');
+          refreshedProbe = route;
+        }
+        return;
+      }
+      const responses: Record<string, unknown> = {
+        '/api/auth/demo-mode': { demoMode: false },
+        '/api/auth/user': {
+          id: 'configuration-fixture', login: 'configuration-fixture', username: 'configuration-fixture',
+          displayName: 'Configuration Fixture', email: null, avatarUrl: null, role: 'admin',
+          permissions: ['instance.manage_agents'], authorizationSource: 'local',
+        },
+        '/api/config/agents': { agents: [codex] },
+        '/api/config/synthetic-agents': { synthetic_agents: [] },
+        '/api/config/agent-tank/status': { available: false },
+        '/api/notifications/unread-count': { unreadCount: 0 },
+        '/api/notifications': { notifications: [], unreadCount: 0, nextCursor: null },
+        '/api/agents/codex-config/login-sessions': {
+          id: 'fixture-login', agentId: 'codex-config', agentAlias: 'codex', agentType: 'codex',
+          status: 'succeeded', output: 'Login completed.', createdAt: new Date().toISOString(),
+        },
+      };
+      return route.fulfill(url.pathname in responses
+        ? { json: responses[url.pathname] }
+        : { status: 503, json: { error: 'Unavailable in configuration fixture' } });
+    });
+    await page.goto('/ai-agents');
+    if (viewport.name === 'mobile') await page.getByRole('button', { name: 'Configuration', exact: true }).click();
+    const configuration = page.getByTestId(viewport.name === 'desktop'
+      ? 'ai-agents-configuration-pane' : 'ai-agents-mobile-configuration-scroll');
+    const card = configuration.locator('.coding-agent-card');
+    await expect(card.getByText('Checking agent…')).toBeVisible();
+    await expect.poll(() => checks).toBe(1);
+    await card.getByRole('button', { name: 'More actions for codex' }).click();
+    await card.getByRole('menuitem', { name: 'Log in' }).click();
+    await expect(page.getByRole('dialog')).toContainText('Login completed. New jobs can now use these credentials.');
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect.poll(() => checks).toBe(2);
+    await initialProbe.fulfill({ json: {
+      agentId: codex.id, status: 'error', errorCode: 'auth_required', error: 'Login expired',
+    } });
+    await expect(card.getByText('Checking agent…')).toBeVisible();
+    await expect(card.getByRole('alert')).toHaveCount(0);
+    await refreshedProbe.fulfill({ json: { agentId: codex.id, status: 'ready', model: 'gpt-6-luna' } });
+    await expect(card.getByText('Ready', { exact: true })).toBeVisible();
+    await expect(card.getByRole('alert')).toHaveCount(0);
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await page.mouse.move(0, 0);
+      await card.screenshot({ animations: 'disabled', path: `../.propr/previews/post-login-health-${viewport.name}.png` });
+    }
+  });
+}

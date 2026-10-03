@@ -33,6 +33,20 @@ describe('agent health API', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('marks refreshes for a fresh backend probe and does not reuse a pending initial request', async () => {
+    let finish!: (value: Response) => void;
+    const fetch = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce(response());
+    const initial = checkAgentHealth('codex/primary', 'same-config');
+    const refresh = checkAgentHealth('codex/primary', 'same-config', true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith('/api/agents/codex%2Fprimary/health?fresh=true', expect.any(Object));
+    expect(await refresh).toEqual(result);
+    finish(new Response(JSON.stringify({ agentId: 'codex/primary', status: 'error', error: 'Login expired' })));
+    expect(await initial).toMatchObject({ status: 'error' });
+  });
+
   it('returns provider errors for display and rejects HTTP failures for retry', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       agentId: 'codex/primary', status: 'error', error: 'Login expired',
