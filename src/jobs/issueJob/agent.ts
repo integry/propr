@@ -4,7 +4,7 @@
 
 import {
   TaskStates, AgentRegistry, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
-  resolveAgentTerminationReason, loadRepositoryVisualPreviewSettings, refineWorkflowPreviews, repositoryWorkflowPrompt
+  resolveAgentTerminationReason, repositoryWorkflowPrompt
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import type { ExecutionParams, JobContext } from './types.js';
@@ -61,7 +61,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
 }
 
 export async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
-  const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
+  const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, visualPreviewSettings } = executionParams;
   const { taskId, agentAlias, modelName, stateManager, correlatedLogger, correlationId } = context;
 
   // Get the agent from registry
@@ -85,7 +85,6 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     repoName: issueRef.repoName
   };
   const repositoryWorkflow = context.repositoryWorkflow;
-  const visualPreviewSettingsPromise = loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`);
 
   // Localize remote images in issue body and comments
   const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
@@ -114,7 +113,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       user: currentIssueData.data.user
     },
     baseBranch: issueRef.baseBranch || null,
-    visualPreviewSettings: refineWorkflowPreviews(await visualPreviewSettingsPromise, repositoryWorkflow)
+    visualPreviewSettings
   });
 
   const workflowPrompt = repositoryWorkflowPrompt(repositoryWorkflow);

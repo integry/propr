@@ -88,4 +88,6 @@ export interface ExecutionParams {
   githubToken: GitHubToken;
   currentIssueData: CurrentIssueData;
   issueComments: IssueComment[];
+  /** Effective preview settings for the whole run, shared by the prompt and post-processing. */
+  visualPreviewSettings: import('@propr/core').VisualPreviewSettings;
 }

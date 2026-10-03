@@ -1,11 +1,10 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
-import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
+import type { WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
 import {
     cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
-    loadRepositoryVisualPreviewSettings, prepareVisualPreviewEvidence, pushBranch,
-    TaskStates,
+    prepareVisualPreviewEvidence, pushBranch, TaskStates,
     describeAgentTermination,
     resolveAgentTerminationReason,
     sanitizeAgentReport,
@@ -122,6 +121,7 @@ export interface PostProcessOptions {
     correlatedLogger: Logger;
     taskId?: string;
     stateManager?: WorkerStateManager;
+    visualPreviewSettings: VisualPreviewSettings; // Already restricted by the run's workflow snapshot.
 }
 
 export interface PostProcessResult {
@@ -184,7 +184,7 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
-    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager } = options;
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
@@ -210,7 +210,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         preparedVisualPreview = await prepareVisualPreviewEvidence({
             worktreePath: worktreeInfo.worktreePath,
-            settings: await loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`),
+            settings: visualPreviewSettings,
             taskId: taskId || `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`
         });
 

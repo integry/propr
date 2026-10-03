@@ -2,7 +2,7 @@
  * Worktree operations for GitHub issue job.
  */
 
-import { materializeSubmissionAttachments, createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree } from '@propr/core';
+import { materializeSubmissionAttachments, createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree, loadRepositoryVisualPreviewSettings, refineWorkflowPreviews } from '@propr/core';
 import type { ExecuteWorktreeParams, ExecuteWorktreeResult } from './types.js';
 import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
@@ -29,7 +29,9 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
   await job.updateProgress(80);
 
   const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
-  const claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
+  // Resolve once so the prompt and preview publication share the run's workflow restrictions.
+  const visualPreviewSettings = refineWorkflowPreviews(await loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`), context.repositoryWorkflow);
+  const claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, visualPreviewSettings }, context);
 
   // Check for cancellation after agent execution and before post-processing
   const currentState = await stateManager.getTaskState(taskId);
@@ -38,7 +40,7 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
     throw new Error('Execution aborted by user request');
   }
 
-  const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager });
+  const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager, visualPreviewSettings });
   const commitResult = postProcessResult.commitResult;
   const postProcessingResult = postProcessResult.postProcessingResult;
 

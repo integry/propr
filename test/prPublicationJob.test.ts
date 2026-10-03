@@ -23,6 +23,8 @@ const taskStates = new Map<string, string>();
 let resolvedWorkflow: ResolvedRepositoryWorkflow | undefined;
 let policyLoads = 0;
 let agentError: Error | undefined;
+let agentResult: unknown;
+let postExecutionParams: { visualPreviewSettings?: unknown } | undefined;
 const processingMetadata: Array<Record<string, unknown>> = [];
 const cancellations: Array<Record<string, unknown>> = [];
 const stateManager = {
@@ -61,7 +63,7 @@ await mock.module('@propr/core', { namedExports: {
     getStateManager: () => stateManager, TaskStates: { PROCESSING: 'processing', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled' },
     ensureGitRepository: noOp, createLogFiles: noOp, UsageLimitError: class extends Error {},
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'],
-    loadRepositoryVisualPreviewSettings: noOp,
+    loadRepositoryVisualPreviewSettings: async () => ({ enabled: true, types: ['image'] }),
     refineWorkflowPreviews, repositoryWorkflowPrompt,
     loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError,
@@ -103,14 +105,14 @@ const modules: Record<string, Record<string, unknown>> = {
         applyPendingCommentCommandContext: noOp,
     },
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
-    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; }, resolvePRCommentModelName: async () => 'model' },
+    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
     reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }), selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
     ultrafixOrchestrationService: { retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); } },
     ultrafixJobHelpers: { handleUltrafixContinuation: noOp, markSelectedUltrafixFindings: noOp, restorePendingCommentsIfUltrafixJobSuperseded: async () => false },
     ultrafixReviewExecutionGate: { shouldDeferUltrafixReview: async () => { events.push('check-gate'); return false; } },
     prCommentNoAuthorizedFindings: { handleNoAuthorizedFindings: noOp },
-    prCommentPostExecution: { handlePostExecution: noOp },
+    prCommentPostExecution: { handlePostExecution: async (params: typeof postExecutionParams) => { postExecutionParams = params; throw new Error('post-execution stopped by test'); } },
     prTaskTitleHelpers: Object.fromEntries(['buildDeterministicPrTaskSubtitle', 'buildPrTaskTitle', 'buildPrTaskTitleContext', 'buildPrTaskTitleContextHistoryMetadata', 'getPrTaskWorkflowLabel', 'resolvePrTaskWorkflow'].map(name => [name, noOp])),
     prProcessingLock: {
         acquirePRProcessingLock: async (_redis: unknown, key: string) => { events.push(key); if (key === blockedLock) return false; onLockAcquired?.(); return true; },
@@ -152,7 +154,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined;
+    refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
@@ -365,6 +367,13 @@ test('a follow-up refused on a base without a workflow loads the new base policy
     assert.equal(policyLoads, 2, 'the retargeted base branch policy is loaded');
     assert.equal((processingMetadata.at(-1)?.repositoryWorkflow as { baseBranch?: string } | undefined)?.baseBranch, 'release');
     assert.equal((waiting.data as { repositoryWorkflowBaseBranch?: unknown }).repositoryWorkflowBaseBranch, undefined);
+});
+
+test('PR follow-up publication receives the preview settings restricted by the run workflow', async () => {
+    resolvedWorkflow = { revision: 'base-sha', baseBranch: 'main', fileRevision: 'blob-sha', config: { previews: { types: [] } }, timeoutMs: 1000, maxParallelTasks: 1 };
+    agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+    await assert.rejects(processPullRequestCommentJob(job() as never), /post-execution stopped by test/);
+    assert.deepEqual(postExecutionParams?.visualPreviewSettings, { enabled: false, types: [], instructions: undefined });
 });
 
 test('legacy abort-only PR jobs return the canonical user cancellation reason', async () => {
