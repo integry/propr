@@ -33,20 +33,46 @@ interface ComparedFile { filename: string; status: string; previous_filename?: s
 const EXTENSIONLESS_FILES = 'Dockerfile|Containerfile|Makefile|GNUmakefile|Procfile|Gemfile|Rakefile|Jenkinsfile|Vagrantfile|Brewfile|Justfile|Caddyfile|Pipfile|Podfile|Fastfile|Earthfile|Tiltfile|LICENSE|LICENCE|NOTICE|CODEOWNERS|OWNERS|AUTHORS|VERSION';
 
 /**
+ * One unit of a path segment: an ordinary character, or a bracketed or
+ * parenthesised group as framework routes name directories and files, e.g.
+ * `[slug]`, `[[...rest]]`, `(marketing)`, `@modal` or `+page.svelte`.
+ */
+const SEGMENT_UNIT = String.raw`(?:[\w.@+$~-]|\[\[?[\w.-]+\]\]?|\([\w.-]+\))`;
+/** The same, minus a bare `.`, so a sentence's closing full stop is not taken as part of a path. */
+const SEGMENT_END = String.raw`(?:[\w@+$~-]|\[\[?[\w.-]+\]\]?|\([\w.-]+\))`;
+
+/**
  * Repository-relative path tokens as reviews cite them, e.g. `src/config.ts:10`,
- * `docker/entrypoint`, `.env` or `Dockerfile`. Over-matching prose (`and/or`) is
- * harmless: an unrecognised token is never "removed", so it only keeps a record
- * applied. Under-matching is what would wrongly withhold one.
+ * `src/app/[slug]/page.tsx`, `docker/entrypoint`, `.env` or `Dockerfile`.
+ * Over-matching prose (`and/or`) is harmless: an unrecognised token is never
+ * "removed", so it only keeps a record applied. Under-matching is what would
+ * wrongly withhold one, so `hasUnparsedPath` backs this up.
  */
 const CITED_PATH = new RegExp(String.raw`(?:^|[\s\`'"([])(` + [
-  String.raw`(?:[\w.-]+\/)+[\w.-]*[\w-]`,
-  String.raw`[\w.-]+\.[A-Za-z][A-Za-z0-9]*`,
+  String.raw`(?:${SEGMENT_UNIT}+\/)+${SEGMENT_UNIT}*${SEGMENT_END}`,
+  String.raw`${SEGMENT_UNIT}+\.[A-Za-z][A-Za-z0-9]*`,
   String.raw`\.[\w-](?:[\w.-]*[\w-])?`,
   String.raw`[\w.-]*(?:${EXTENSIONLESS_FILES})`,
 ].join('|') + String.raw`)(?=[:#\s\`'",;)\]]|\.(?:\s|$)|$)`, 'g');
 
 export function citedPaths(text: string): string[] {
   return [...new Set([...text.replace(/\\/g, '/').matchAll(CITED_PATH)].map(match => match[1].replace(/^(?:\.\/)+/, '')))];
+}
+
+/**
+ * True when some slash-separated token in `text` is not fully accounted for by
+ * the extracted `paths`, i.e. it may cite a file the extraction could not read.
+ * A record is only withheld on positive evidence that all its code is gone, so
+ * such a record must be kept rather than judged on the citations that did parse.
+ */
+export function hasUnparsedPath(text: string, paths: string[]): boolean {
+  const longestFirst = [...paths].sort((a, b) => b.length - a.length);
+  return text.replace(/\\/g, '/').split(/[\s`'"]+/).some(token => {
+    if (!token.includes('/')) return false;
+    let residue = token.replace(/(^|[([])(?:\.\/)+/g, '$1');
+    for (const path of longestFirst) residue = residue.split(path).join('');
+    return residue.includes('/');
+  });
 }
 
 async function changedSince(principal: McpPrincipal, repository: string, from: string, to: string): Promise<ComparedFile[] | null> {
@@ -65,10 +91,11 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  * Decide which selected records still apply at the current head, as the worker's
  * `/fix` already does implicitly by fixing against whatever the branch holds.
  *
- * A record is withheld only when it cites files and every one of them was deleted
- * since the review: the code it describes is gone. A rename or edit is not enough,
- * because the fixing agent reads the current tree and can follow moved code; such
- * records are applied and their changed citations reported in `touchedPaths`.
+ * A record is withheld only when it cites files, every one of them was deleted
+ * since the review, and no path-like citation in it went unrecognised: the code
+ * it describes is gone. A rename or edit is not enough, because the fixing agent
+ * reads the current tree and can follow moved code; such records are applied and
+ * their changed citations reported in `touchedPaths`.
  */
 export async function reanchorFixRecords(
   principal: McpPrincipal,
@@ -95,7 +122,7 @@ export async function reanchorFixRecords(
   for (const { id, kind, text } of records) {
     const paths = citedPaths(text);
     const gone = paths.filter(path => removed.has(path));
-    if (paths.length > 0 && gone.length === paths.length) report.skipped.push({ id, kind, reason: 'code_removed', removedPaths: gone });
+    if (paths.length > 0 && gone.length === paths.length && !hasUnparsedPath(text, paths)) report.skipped.push({ id, kind, reason: 'code_removed', removedPaths: gone });
     else report.applied.push({ id, kind, touchedPaths: paths.filter(path => removed.has(path) || touched.has(path)) });
   }
   return report;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import type { McpPrincipal } from '../../mcp/policy.js';
-import { citedPaths, reanchorFixRecords } from '../../mcp/fixReanchor.js';
+import { citedPaths, hasUnparsedPath, reanchorFixRecords } from '../../mcp/fixReanchor.js';
 import { type Args, type WriteFixture, fixtureReviewBody } from './mcpPullRequestWrites.js';
 
 /**
@@ -130,5 +130,29 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     ]);
     assert.deepEqual(report.applied, [{ id: 'F1', kind: 'finding', touchedPaths: ['src/old.ts'] }]);
     assert.deepEqual(report.skipped, [{ id: 'F2', kind: 'finding', reason: 'code_removed', removedPaths: ['src/old.ts'] }]);
+  });
+
+  await t.test('a surviving bracketed route path keeps a record whose other citation was deleted', async () => {
+    assert.deepEqual(citedPaths('src/old.ts and src/app/[slug]/page.tsx: fix both.'), ['src/old.ts', 'src/app/[slug]/page.tsx']);
+    assert.deepEqual(
+      citedPaths('app/[[...rest]]/page.tsx, app/(marketing)/@modal/layout.tsx and routes/+page.svelte.'),
+      ['app/[[...rest]]/page.tsx', 'app/(marketing)/@modal/layout.tsx', 'routes/+page.svelte'],
+    );
+    // A slash-separated token the extraction cannot fully read keeps the record.
+    assert.equal(hasUnparsedPath('src/old.ts and src/{weird}/x.ts', ['src/old.ts']), true);
+    assert.equal(hasUnparsedPath('src/old.ts:4 (see ./src/old.ts) is wrong.', ['src/old.ts']), false);
+
+    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'src/old.ts', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const report = await reanchorFixRecords(principal, target, [
+      { id: 'F1', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:4 and `src/app/[slug]/page.tsx:12` both need it\nFix both' },
+      { id: 'F2', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:9 and src/{weird}/x.ts need it\nFix both' },
+      { id: 'F3', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:9 is wrong\nFix it' },
+    ]);
+    assert.deepEqual(report.applied, [
+      { id: 'F1', kind: 'finding', touchedPaths: ['src/old.ts'] },
+      { id: 'F2', kind: 'finding', touchedPaths: ['src/old.ts'] },
+    ]);
+    assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['src/old.ts'] }]);
   });
 }
