@@ -57,19 +57,24 @@ async function readCurrentTaskIntent(target: IntentTarget): Promise<CurrentTaskI
     return response.data;
 }
 
+/** Deletes one label; an already-absent label counts as removed. */
+async function deleteIssueLabel(client: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, target: IntentTarget, label: string): Promise<void> {
+    try {
+        await client.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number, name: label,
+        });
+    } catch (error) {
+        if ((error as { status?: number }).status !== 404) throw error;
+    }
+}
+
 /** Returns false, without deleting, once `mayRemove` says the label's owner changed. */
 async function removeIntentLabel(target: IntentTarget, label: string, mayRemove?: () => Promise<boolean>): Promise<boolean> {
     const client = await getAuthenticatedOctokit();
     return withRetry(async () => {
         // Checked on every attempt: retry backoff can outlive the withdrawal.
         if (mayRemove && !await mayRemove()) return false;
-        try {
-            await client.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
-                owner: target.repoOwner, repo: target.repoName, issue_number: target.number, name: label,
-            });
-        } catch (error) {
-            if ((error as { status?: number }).status !== 404) throw error;
-        }
+        await deleteIssueLabel(client, target, label);
         return true;
     }, retryConfigs.githubApi, 'remove_intent_label');
 }
@@ -91,14 +96,7 @@ export async function restoreIssueTrigger(target: IntentTarget): Promise<string[
         const restored = await withRetry(async () => {
             const current = await readRestorableIntent();
             if (!current) return false;
-            if (!(current.labels ?? []).some(value => (typeof value === 'string' ? value : value.name) === label)) return true;
-            try {
-                await client.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
-                    owner: target.repoOwner, repo: target.repoName, issue_number: target.number, name: label,
-                });
-            } catch (error) {
-                if ((error as { status?: number }).status !== 404) throw error;
-            }
+            if ((current.labels ?? []).some(value => (typeof value === 'string' ? value : value.name) === label)) await deleteIssueLabel(client, target, label);
             return true;
         }, retryConfigs.githubApi, 'restore_issue_trigger');
         if (!restored) return null;
@@ -136,6 +134,16 @@ function jobIntentTarget(job: { name: string; data: unknown }): IntentTarget | n
     return type ? taskIntentTarget(job.data as Record<string, unknown>, type) : null;
 }
 
+/** Pages through every non-terminal task state; stopping iteration stops the scan. */
+async function* nonTerminalTasks() {
+    let cursor = '0';
+    do {
+        const page = await getStateManager().scanNonTerminalTasks(cursor);
+        yield* page.tasks;
+        cursor = page.nextCursor;
+    } while (cursor !== '0');
+}
+
 function sameResource(a: IntentTarget, b: IntentTarget): boolean {
     return a.kind === b.kind && a.number === b.number
         && a.repoOwner.toLowerCase() === b.repoOwner.toLowerCase()
@@ -157,12 +165,9 @@ async function hasProcessingSibling(target: IntentTarget, taskId?: string): Prom
         if (!state || !['completed', 'cancelled'].includes(state.state) || isBookkeepingCancellation(state)) return true;
     }
     // Scan after the awaited queue reads so newly started siblings are included.
-    let cursor = '0';
-    do {
-        const page = await manager.scanNonTerminalTasks(cursor);
-        if (page.tasks.some(task => task.taskId !== taskId && matches(taskIntentTarget(task.issueRef)))) return true;
-        cursor = page.nextCursor;
-    } while (cursor !== '0');
+    for await (const task of nonTerminalTasks()) {
+        if (task.taskId !== taskId && matches(taskIntentTarget(task.issueRef))) return true;
+    }
     return false;
 }
 
@@ -385,15 +390,10 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
     const queue = await getIssueQueue();
     const candidates = new Map<string, { taskId: string; target: IntentTarget }>();
     const matches = (candidate: IntentTarget | null): candidate is IntentTarget => !!candidate && sameResource(candidate, target);
-    let cursor = '0';
-    do {
-        const page = await manager.scanNonTerminalTasks(cursor);
-        for (const task of page.tasks) {
-            const candidate = taskIntentTarget(task.issueRef);
-            if (matches(candidate)) candidates.set(task.taskId, { taskId: task.taskId, target: candidate });
-        }
-        cursor = page.nextCursor;
-    } while (cursor !== '0');
+    for await (const task of nonTerminalTasks()) {
+        const candidate = taskIntentTarget(task.issueRef);
+        if (matches(candidate)) candidates.set(task.taskId, { taskId: task.taskId, target: candidate });
+    }
     for (const job of await queue.getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
         const candidate = jobIntentTarget(job);
         if (!matches(candidate)) continue;
@@ -451,12 +451,7 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[])
             targets.set(`${target.repoOwner}/${target.repoName}/${target.kind}/${target.number}/${target.triggeringLabel ?? ''}`, target);
         }
     };
-    let cursor = '0';
-    do {
-        const page = await getStateManager().scanNonTerminalTasks(cursor);
-        for (const task of page.tasks) add(taskIntentTarget(task.issueRef, task.issueRef.type));
-        cursor = page.nextCursor;
-    } while (cursor !== '0');
+    for await (const task of nonTerminalTasks()) add(taskIntentTarget(task.issueRef, task.issueRef.type));
     for (const job of await (await getIssueQueue()).getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
         if (['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) add(jobIntentTarget(job));
     }
