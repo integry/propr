@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { useState, type ReactElement } from 'react';
+import { fireEvent, render as renderInDom, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskTableContent } from './StateComponents';
 import type { Task, TaskGroup } from './types';
@@ -21,9 +22,12 @@ const group: TaskGroup = {
   } as Task & { critiqueScore: number | null })),
 };
 
-function Fixture({ onRowClick = vi.fn() }: { onRowClick?: (id: string) => void }) {
+// Titles are links to the task page, so rows render inside a router.
+const render = (ui: ReactElement) => renderInDom(<MemoryRouter>{ui}</MemoryRouter>);
+
+function Fixture({ onRowClick = vi.fn(), selectedTaskId, groups = [group] }: { onRowClick?: (id: string) => void; selectedTaskId?: string | null; groups?: TaskGroup[] }) {
   const [expandedGroups, setExpandedGroups] = useState(new Set<string>());
-  return <TaskTableContent groupedTasks={[group]} expandedGroups={expandedGroups} onRowClick={onRowClick}
+  return <TaskTableContent groupedTasks={groups} expandedGroups={expandedGroups} onRowClick={onRowClick} selectedTaskId={selectedTaskId}
     onToggleGroup={key => setExpandedGroups(current => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key); else next.add(key);
@@ -55,7 +59,7 @@ describe('task ledger rows', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     expect(within(table).getAllByTestId('task-row')).toHaveLength(1);
-    const title = within(table).getByRole('button', { name: 'Stop work when an issue or PR withdraws intent' });
+    const title = within(table).getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
     expect(title).toBeInTheDocument();
     expect(table.textContent).not.toContain('[2659 by');
     expect(table.textContent).not.toContain('Ultrafix PR #2664');
@@ -100,7 +104,7 @@ describe('task ledger rows', () => {
     };
     render(<TaskTableContent groupedTasks={[single]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
     const table = screen.getByRole('table', { name: 'Tasks' });
-    const title = within(table).getByRole('button', { name: 'Support configuration paths' });
+    const title = within(table).getByRole('link', { name: 'Support configuration paths' });
     const titleLine = title.parentElement!;
     // Chip, type, title, previews: all on the title line, and nothing under it.
     expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Implement', 'Support configuration paths', '1 preview']);
@@ -128,7 +132,7 @@ describe('task ledger rows', () => {
     const navigate = vi.fn();
     render(<Fixture onRowClick={navigate} />);
     const table = screen.getByRole('table', { name: 'Tasks' });
-    const title = within(table).getByRole('button', { name: 'Stop work when an issue or PR withdraws intent' });
+    const title = within(table).getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
     const selection = window.getSelection()!;
     const range = document.createRange();
     range.selectNodeContents(title);
@@ -142,5 +146,58 @@ describe('task ledger rows', () => {
     navigate.mockClear();
     fireEvent.click(title.closest('[role="row"]')!);
     expect(navigate).toHaveBeenCalledExactlyOnceWith('task-0');
+  });
+
+  it('links each title to its task page and leaves modified clicks to the browser', () => {
+    const open = vi.fn();
+    render(<Fixture onRowClick={open} />);
+    const title = within(screen.getByRole('table')).getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
+    expect(title).toHaveAttribute('href', '/tasks/task-0');
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
+      expect(fireEvent.click(title, { detail: 1, ...modifier })).toBe(true);
+    }
+    expect(fireEvent.click(title, { detail: 1, button: 1 })).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+    // A plain click is handled in place: the link's navigation is prevented.
+    expect(fireEvent.click(title, { detail: 1 })).toBe(false);
+    expect(open).toHaveBeenCalledExactlyOnceWith('task-0');
+  });
+
+  it('marks the row of the selected task, including when an earlier run is selected', () => {
+    const { rerender } = render(<Fixture selectedTaskId="task-0" />);
+    const row = () => within(screen.getByRole('table')).getAllByTestId('task-row')[0].querySelector('[role="row"]')!;
+    expect(row()).toHaveAttribute('aria-selected', 'true');
+    expect(row().className).toContain('bg-teal-50/60');
+    rerender(<MemoryRouter><Fixture selectedTaskId="task-3" /></MemoryRouter>);
+    expect(row()).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));
+    const runs = within(screen.getByRole('table')).getByRole('list', { name: 'Earlier runs' });
+    expect(within(runs).getByText('Change number 3').closest('button')).toHaveAttribute('aria-current', 'true');
+    rerender(<MemoryRouter><Fixture selectedTaskId="elsewhere" /></MemoryRouter>);
+    expect(row()).toHaveAttribute('aria-selected', 'false');
+  });
+
+  it('ends a legacy title hard-cut at 100 characters with an ellipsis in rows, cards and earlier runs', () => {
+    const hardCut = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
+    expect(hardCut).toHaveLength(100);
+    const runCut = 'Followup: Expose the implementation log and the terminal output through MCP so that a client can rea';
+    expect(runCut).toHaveLength(100);
+    const cut: TaskGroup = {
+      key: 'integry/propr-issue-12', repoOwner: 'integry', repoName: 'propr', prNumber: null,
+      tasks: [
+        { id: 'cut-0', title: hardCut, status: 'completed', createdAt: '2026-09-10T12:09:00Z', issueNumber: 12 },
+        { id: 'cut-1', title: runCut, status: 'completed', createdAt: '2026-09-10T12:08:00Z', issueNumber: 12 },
+      ],
+    };
+    render(<Fixture groups={[cut]} />);
+    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can…';
+    const table = screen.getByRole('table');
+    const title = within(table).getByRole('link', { name: shown });
+    expect(title).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
+    const cards = screen.getAllByTestId('task-card');
+    expect(within(cards[0]).getByRole('link', { name: shown })).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole('button', { name: /1 earlier run/ }));
+    const runs = within(table).getByRole('list', { name: 'Earlier runs' });
+    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can…');
   });
 });

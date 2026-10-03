@@ -43,7 +43,7 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     isLoading={reposLoading}
     variant="default"
     labelLayout="stacked"
-    className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
+    className="flex-1 min-w-0 max-w-[220px] sm:flex-initial sm:min-w-[10rem] sm:w-[320px] sm:max-w-[320px]"
   />
   );
 };
@@ -77,14 +77,15 @@ export const Filters: React.FC<FiltersProps> = ({
         {!hideFilters && (
           <>
             {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
+            {/* Shrinks before the filters do, so the row fits a list pane beside an open task. */}
+            <div className="relative hidden sm:block w-64 min-w-[8rem] shrink">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search tasks..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="pl-9 pr-8 py-2 w-full border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               />
               {searchQuery && (
                 <button

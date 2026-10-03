@@ -12,15 +12,31 @@ const image = (index: number) => ({ type: 'image', title: `Preview ${index}`, ur
 describe('sanitizeTaskTitle', () => {
   it('drops the workflow prefix, the repeated PR number and the model tag', () => {
     expect(sanitizeTaskTitle('Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when an issue or PR withdraws intent'))
-      .toEqual({ type: 'Ultrafix', title: 'Stop work when an issue or PR withdraws intent' });
+      .toMatchObject({ type: 'Ultrafix', title: 'Stop work when an issue or PR withdraws intent' });
     expect(sanitizeTaskTitle('Followup: [870 by Claude Opus 4.6] Update checkout'))
-      .toEqual({ type: 'Follow-up', title: 'Update checkout' });
-    expect(sanitizeTaskTitle('New Issue: Add retries')).toEqual({ type: 'Implement', title: 'Add retries' });
+      .toMatchObject({ type: 'Follow-up', title: 'Update checkout' });
+    expect(sanitizeTaskTitle('New Issue: Add retries')).toMatchObject({ type: 'Implement', title: 'Add retries' });
   });
 
   it('removes bare entity prefixes and model tags that are not at the start', () => {
     expect(sanitizeTaskTitle('PR #2664: Stop work').title).toBe('Stop work');
     expect(sanitizeTaskTitle('Stop work [2659 by GPT-6 Astra] on withdrawal').title).toBe('Stop work on withdrawal');
+  });
+
+  it('marks a legacy title hard-cut mid-word at 100 characters with an ellipsis at a word boundary', () => {
+    const hardCut = 'Followup: Expose task changes, logs and events through the MCP server so that an MCP client can actu';
+    expect(hardCut).toHaveLength(100);
+    const sanitized = sanitizeTaskTitle(hardCut);
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can…');
+    expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu');
+  });
+
+  it('leaves titles of any other length, or ending in punctuation, alone', () => {
+    const short = 'Expose task changes through the MCP server so an MCP client can actu';
+    expect(sanitizeTaskTitle(short).title).toBe(short);
+    const complete = `${'Finish the work. '.repeat(6).slice(0, 99)}.`;
+    expect(complete).toHaveLength(100);
+    expect(sanitizeTaskTitle(complete).title).toBe(complete);
   });
 
   it('keeps ordinary bracketed titles', () => {

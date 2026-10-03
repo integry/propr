@@ -1,4 +1,5 @@
 import { db, getAuthenticatedOctokit } from '@propr/core';
+import { truncateAtWord } from '@propr/shared';
 import type { PullRequestGitTarget, PullRequestHead } from './prGitTarget.js';
 
 export interface ContinuationRecord {
@@ -147,7 +148,7 @@ async function ensurePullRequest(octokit: Octokit, record: ContinuationRecord, p
         await ensureBranch(octokit, record);
         const create = async () => (await octokit.request('POST /repos/{owner}/{repo}/pulls', {
             owner, repo, head: record.branch_name, base: record.base_branch,
-            title: `Continue #${record.source_pr}: ${record.source_title}`.slice(0, 256),
+            title: truncateAtWord(`Continue #${record.source_pr}: ${record.source_title}`, 256),
             body: continuationBody(record, marker),
         })).data;
         try {

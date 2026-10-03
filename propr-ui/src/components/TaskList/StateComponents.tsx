@@ -46,6 +46,8 @@ interface TaskTableContentProps {
   expandedGroups: Set<string>;
   onRowClick: (taskId: string) => void;
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
+  /** The task open beside the list; its row is marked selected. */
+  selectedTaskId?: string | null;
 }
 
 const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
@@ -59,6 +61,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   expandedGroups,
   onRowClick,
   onToggleGroup,
+  selectedTaskId,
 }) => {
   const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
@@ -74,6 +77,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
             expanded={expandedGroups.has(group.key)}
             onRowClick={onRowClick}
             onToggleGroup={onToggleGroup}
+            selectedTaskId={selectedTaskId}
           />
         ))}
       </div>
@@ -96,6 +100,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
               expanded={expandedGroups.has(group.key)}
               onRowClick={onRowClick}
               onToggle={onToggleGroup}
+              selectedTaskId={selectedTaskId}
             />
           ))}
         </div>
