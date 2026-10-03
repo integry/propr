@@ -1,3 +1,4 @@
+import { getAntigravityCompatibilityRoute } from '../agents/impl/antigravityModelIds.js';
 import { CODEX_MODELS, MODEL_INFO_MAP } from './modelDefinitions.js';
 
 export type ContextLevel = number;
@@ -51,6 +52,7 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
     const colonIdx = modelId.indexOf(':');
     agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
     effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
+    effectiveModelId = getAntigravityCompatibilityRoute(effectiveModelId)?.model ?? effectiveModelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
     if (modelInfo?.maxTokens) {
@@ -83,6 +85,7 @@ export function getModelHardLimit(modelId: string | undefined): number {
     const colonIdx = modelId.indexOf(':');
     agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
     effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
+    effectiveModelId = getAntigravityCompatibilityRoute(effectiveModelId)?.model ?? effectiveModelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
     if (modelInfo?.maxTokens) {

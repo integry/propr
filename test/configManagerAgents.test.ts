@@ -368,3 +368,33 @@ test('retired Vibe defaults migrate to Medium even when it was already enabled',
         assert.equal(migrateAgentConfig(agent), false);
     }
 });
+
+
+test('Antigravity migration preserves colliding custom labels and default effort', () => {
+    const low = 'antigravity-gemini-3.8-flash-low';
+    const high = 'antigravity-gemini-3.8-flash-high';
+    const base = 'antigravity-gemini-3.8-flash';
+    const agent = createAgent({ type: 'antigravity', supportedModels: [low, high], defaultModel: high,
+        modelCustomLabels: { [low]: 'quick-work', [high]: 'deep-review' } });
+    assert.equal(migrateAgentConfig(agent), true);
+    assert.equal(agent.defaultModel, base);
+    assert.equal(agent.modelReasoningLevels?.[base], 'high');
+    assert.deepEqual(agent.modelCustomLabels, { [low]: 'quick-work', [high]: 'deep-review' });
+    assert.ok(!agent.supportedModels.includes(low));
+    assert.ok(!agent.supportedModels.includes(high));
+    assert.equal(migrateAgentConfig(agent), false);
+});
+
+test('Antigravity migration retains retired Claude custom routes and existing base overrides', () => {
+    for (const family of ['opus', 'sonnet']) {
+        const old = `antigravity-claude-${family}-4.6-thinking`;
+        const base = `antigravity-claude-${family}-5.5`;
+        const agent = createAgent({ type: 'antigravity', supportedModels: [old], defaultModel: old,
+            modelCustomLabels: { [old]: 'existing-route' }, modelReasoningLevels: { [base]: 'low' } });
+        migrateAgentConfig(agent);
+        assert.equal(agent.defaultModel, base);
+        assert.equal(agent.modelCustomLabels?.[old], 'existing-route');
+        assert.equal(agent.modelReasoningLevels?.[base], 'low');
+        assert.equal(migrateAgentConfig(agent), false);
+    }
+});

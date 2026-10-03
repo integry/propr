@@ -1,3 +1,4 @@
+import { ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../agents/impl/openCodeModelIds.js';
@@ -16,7 +17,7 @@ export { MODEL_SHORT_NAMES };
  */
 export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
-    const modelInfo = MODEL_INFO_MAP[modelId];
+    const modelInfo = MODEL_INFO_MAP[getAntigravityCompatibilityRoute(modelId)?.model ?? modelId];
     if (modelInfo?.shortName) return modelInfo.shortName;
     const normalized = modelId.substring(modelId.lastIndexOf(':') + 1);
     const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
@@ -39,7 +40,7 @@ export function getModelShortName(modelId: string | undefined): string {
  */
 export function getModelName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
-    const modelInfo = MODEL_INFO_MAP[modelId];
+    const modelInfo = MODEL_INFO_MAP[getAntigravityCompatibilityRoute(modelId)?.model ?? modelId];
     return modelInfo?.name || getModelShortName(modelId);
 }
 
@@ -135,7 +136,7 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
  * Uses the openRouterId field from ModelInfo (modelDefinitions.ts).
  */
 function getOpenRouterId(internalModelId: ModelId): string {
-    const modelInfo = MODEL_INFO_MAP[internalModelId];
+    const modelInfo = MODEL_INFO_MAP[getAntigravityCompatibilityRoute(internalModelId)?.model ?? internalModelId];
     if (modelInfo?.openRouterId) return modelInfo.openRouterId;
     // Native opencode-go/* models aren't in the curated catalog; derive their
     // OpenRouter slug so pricing/cost still resolves.
@@ -146,7 +147,8 @@ function getOpenRouterId(internalModelId: ModelId): string {
     // cost uses the model's own published rates instead of falling through to
     // OpenRouter's generic pricing for an ID it does not know.
     if (internalModelId) {
-        const aliasedInfo = MODEL_INFO_MAP[resolveModelAlias(internalModelId)];
+        const alias = resolveModelAlias(internalModelId);
+        const aliasedInfo = MODEL_INFO_MAP[getAntigravityCompatibilityRoute(alias)?.model ?? alias];
         if (aliasedInfo?.openRouterId) return aliasedInfo.openRouterId;
     }
     return internalModelId;
@@ -189,6 +191,8 @@ function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     }
 
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
+    if (ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel]) return ANTIGRAVITY_COMPATIBILITY_ALIASES[lowerCaseModel];
+    if (getAntigravityCompatibilityRoute(lowerCaseModel)) return lowerCaseModel;
 
     // 1. Check static MODEL_ALIASES (backwards compatibility for Claude aliases)
     if (MODEL_ALIASES[lowerCaseModel]) {
@@ -330,6 +334,10 @@ function getAgentTypeFromModel(modelId: string): AgentType {
  */
 function findMatchingModel(shortName: string, config: AgentConfig): string | null {
     const lowerShort = shortName.toLowerCase();
+    if (config.type === 'antigravity') {
+        const compatibility = resolveModelAlias(lowerShort.startsWith('antigravity-') ? lowerShort : `antigravity-${lowerShort}`);
+        if (getAntigravityCompatibilityRoute(compatibility) && antigravitySupportedModel(config, compatibility)) return compatibility;
+    }
 
     // Try exact match against model ID first
     for (const model of config.supportedModels) {

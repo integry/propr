@@ -1,3 +1,4 @@
+import { antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import type { SyntheticAgentConfig, SyntheticModelConfig, SyntheticModelMember } from '@propr/shared';
@@ -255,7 +256,7 @@ export class SyntheticRoutingService {
     const agent = this.getDirectAgent(member.directAgentAlias);
     if (!agent || !agent.config.enabled) return reject('direct agent unavailable or disabled');
     if (!session.isPhysicalAgentEligible(agent)) return reject('physical agent is ineligible for this routing session');
-    if (!agent.config.supportedModels.includes(member.model)) return reject('model is not supported by the direct agent');
+    if (!antigravitySupportedModel(agent.config, member.model)) return reject('model is not supported by the direct agent');
     const hardLimit = getModelHardLimit(`${member.directAgentAlias}:${member.model}`);
     if (session.requiredTokens > hardLimit) return reject(`context window ${hardLimit} is below required ${session.requiredTokens} tokens`);
 

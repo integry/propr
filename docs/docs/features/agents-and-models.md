@@ -161,7 +161,7 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 | Claude Opus 5.5 | `llm-antigravity-opus55` |
 | GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
 
-Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5 and Gemini Flash support low, medium, and high; Gemini 3.1 Pro supports low and high (medium maps to high); GPT-OSS always uses medium.
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5 and Gemini Flash support low, medium, and high; Gemini 3.1 Pro supports low and high (medium maps to low); GPT-OSS always uses medium.
 
 ## OpenCode Models
 

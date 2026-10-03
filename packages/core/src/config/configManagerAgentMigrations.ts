@@ -1,3 +1,4 @@
+import { getAntigravityCompatibilityRoute } from '../agents/impl/antigravityModelIds.js';
 /**
  * Forward migrations applied to saved agent configs on load.
  *
@@ -159,12 +160,31 @@ function updateDefaultCliVersion(agent: AgentConfig): boolean {
     return migrated;
 }
 
+function migrateAntigravityModels(agent: AgentConfig): boolean {
+    let migrated = false;
+    const models = new Set([...agent.supportedModels, ...(agent.defaultModel ? [agent.defaultModel] : []),
+        ...Object.keys(agent.modelReasoningLevels ?? {})]);
+    const ordered = [...models].sort((a, b) => Number(b === agent.defaultModel) - Number(a === agent.defaultModel));
+    for (const oldModel of ordered) {
+        const route = getAntigravityCompatibilityRoute(oldModel);
+        if (!route) continue;
+        agent.modelReasoningLevels ??= {};
+        agent.modelReasoningLevels[route.model] ??= agent.modelReasoningLevels[oldModel] ?? route.effort;
+        delete agent.modelReasoningLevels[oldModel];
+        migrated = true;
+    }
+    // Keep custom-label keys: each old ID carries its own effort and is a durable route.
+    agent.supportedModels = [...new Set(agent.supportedModels.map(id => getAntigravityCompatibilityRoute(id)?.model ?? id))];
+    if (agent.defaultModel) agent.defaultModel = getAntigravityCompatibilityRoute(agent.defaultModel)?.model ?? agent.defaultModel;
+    return migrated;
+}
+
 function updateAntigravityDefaults(agent: AgentConfig): boolean {
     if (agent.type !== 'antigravity') {
         return false;
     }
 
-    let migrated = false;
+    let migrated = migrateAntigravityModels(agent);
 
     if (!agent.configPath) {
         agent.configPath = '~/.gemini';

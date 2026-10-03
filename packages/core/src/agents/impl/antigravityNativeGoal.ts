@@ -1,3 +1,4 @@
+import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GOAL_CONTINUE_INPUT, NATIVE_GOAL_COMMAND_PREFIX, parseGoalCheckpointDeclaration } from '../../goals.js';
@@ -122,6 +123,7 @@ class AntigravityGoalProtocol {
             await segment.waitForActivity(CONTROL_POLL_MS);
             await this.control.heartbeat();
         }
+        if (segment.protocolError) throw new Error(segment.protocolError);
         if (!segment.conversationId) return;
         if (this.conversationId && segment.conversationId !== this.conversationId) {
             throw new Error(`Antigravity resumed conversation "${segment.conversationId}" instead of "${this.conversationId}"`);
@@ -207,9 +209,10 @@ class AntigravityGoalProtocol {
     }
 
     /** The goal is finished, so input queued while it ran can no longer reach it. */
-    private async settleUndeliveredInputs(): Promise<void> {
+    private async settleUndeliveredInputs(segment: AntigravityGoalSegment): Promise<void> {
         const { pendingInputs } = await this.control.load();
         for (const input of pendingInputs) {
+            if (segment.protocolError) throw new Error(segment.protocolError);
             await this.control.markInputUndeliverable(input.id, 'Antigravity native goal completed before this input could be delivered');
         }
     }
@@ -233,8 +236,12 @@ class AntigravityGoalProtocol {
         const turnId = `${this.conversationId ?? 'antigravity'}:${this.turn}`;
         // The CLI reports its conversation only after accepting the prompt.
         if (segment.conversationId) {
-            for (const inputId of message.inputIds) await this.control.markInputDelivered(inputId, turnId);
+            for (const inputId of message.inputIds) {
+                if (segment.protocolError) throw new Error(segment.protocolError);
+                await this.control.markInputDelivered(inputId, turnId);
+            }
         }
+        if (segment.protocolError) throw new Error(segment.protocolError);
         await this.control.setActiveTurn(turnId);
         const observation = await this.observe(segment, launch);
         await this.control.setActiveTurn(null);
@@ -261,12 +268,14 @@ class AntigravityGoalProtocol {
         if (!segment.conversationId) {
             return { status: 'failed', error: segment.errorText || 'Antigravity goal invocation did not report a resumable conversation' };
         }
+        if (segment.protocolError) return { status: 'failed', error: segment.protocolError };
         const feedback = declaration ? await this.publish(declaration, turnId) : undefined;
         const stop = stopRequested ?? await this.requestedStop();
+        if (segment.protocolError) return { status: 'failed', error: segment.protocolError };
         const result = segment.result;
         // A goal that finished keeps its completion unless it was cancelled.
         if (stop !== 'cancelled' && result?.status === 'success' && result.response.includes(ANTIGRAVITY_GOAL_COMPLETE_MARKER)) {
-            await this.settleUndeliveredInputs();
+            await this.settleUndeliveredInputs(segment);
             return { status: 'completed' };
         }
         if (stop) return { status: 'interrupted', error: 'Goal stopped at a provider turn boundary' };
@@ -318,6 +327,7 @@ export interface AntigravityNativeGoalLaunch {
     /** Docker args for one invocation; `launch` keeps slash commands enabled for `/goal`. */
     buildDockerArgs(options: { conversationId?: string; launch: boolean }): string[] | Promise<string[]>;
     model: string;
+    requestedCliModel?: string;
     timeoutMs: number;
 }
 
@@ -351,7 +361,7 @@ export async function executeAntigravityNativeGoal(
         // Print mode reads the prompt from non-TTY stdin, avoiding argv limits.
         child.stdin?.end(message);
         void detectContainer(getDockerRunContainerName(args), options.onContainerId);
-        return new AntigravityGoalStream(child, output);
+        return new AntigravityGoalStream(child, output, launch.requestedCliModel ?? (launch.model !== 'unknown' ? toAntigravityCliModelId(launch.model, options.reasoningLevel) : undefined));
     };
     let run: Awaited<ReturnType<typeof runAntigravityGoalProtocol>> | undefined;
     let failure: string | undefined;
@@ -409,7 +419,7 @@ function goalAttemptResult(
         sessionId: run?.conversationId,
         conversationId: run?.conversationId,
         modelUsed: model,
-        providerModel: model,
+        providerModel: reportedModel ?? requestedModel,
         tokenUsage: segments.reduce<TokenUsage>((total, segment) => addTokenUsage(total, segment.tokenUsage), {
             input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, reasoning_output_tokens: 0,
         }),

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
@@ -205,5 +206,19 @@ test('Antigravity offers one model entry with separate supported reasoning choic
     ] as const) {
         assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
         assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), levels);
+    }
+});
+
+
+test('documented Antigravity model labels agree with the selectable catalog', () => {
+    const text = readFileSync(new URL('../docs/docs/features/agents-and-models.md', import.meta.url), 'utf8');
+    const section = text.split('## Antigravity Models')[1].split('## OpenCode Models')[0];
+    const labels = [...section.matchAll(/`(llm-antigravity-[^`]+)`/g)].map(match => match[1]);
+    assert.deepStrictEqual(labels, ANTIGRAVITY_MODELS.map(model => model.githubLabel));
+    for (const name of ['daemon', 'worker-runtime']) {
+        const examples = readFileSync(new URL(`../docs/docs/architecture/${name}.md`, import.meta.url), 'utf8');
+        for (const match of examples.matchAll(/llm-antigravity-[a-z0-9.-]+/g)) {
+            assert.ok(ANTIGRAVITY_MODELS.some(model => model.githubLabel === match[0]), `${name}: ${match[0]}`);
+        }
     }
 });
