@@ -96,7 +96,7 @@ for (const viewport of [
     const antigravityCard = configuration.locator('.coding-agent-card').filter({
       has: page.getByRole('button', { name: 'Collapse antigravity models' }),
     });
-    await antigravityCard.getByRole('button', { name: /^Show \d+ legacy models$/ }).click();
+    await antigravityCard.getByRole('button', { name: /^Show \d+ legacy models?$/ }).click();
     for (const model of AGENT_MODELS.antigravity) {
       await expect(antigravityCard.getByRole('button', { name: `Copy ${model.shortAlias}`, exact: true })).toHaveCount(1);
     }
