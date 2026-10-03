@@ -102,7 +102,8 @@ interface TaskDetailsProps {
    */
   embedded?: boolean;
   onClose?: () => void;
-  onDeleted?: () => void;
+  /** Called with the deleted task's ID, which may no longer be the task on screen. */
+  onDeleted?: (taskId: string) => void;
 }
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
@@ -119,16 +120,17 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
 
   const handleDeleteTask = useCallback(async () => {
+    const deletedTaskId = taskId;
     const success = await taskData.handleDeleteTask();
-    if (success) {
+    if (success && deletedTaskId) {
       addToast({
         type: 'success',
         message: 'Task deleted successfully',
       });
-      if (embedded) onDeleted?.();
+      if (embedded) onDeleted?.(deletedTaskId);
       else navigate('/tasks');
     }
-  }, [taskData, navigate, addToast, embedded, onDeleted]);
+  }, [taskId, taskData, navigate, addToast, embedded, onDeleted]);
 
   // Set document title with task info
   const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId);

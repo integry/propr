@@ -19,14 +19,25 @@ vi.mock('../components/TaskList/Filters', () => ({
   ),
 }));
 
+// Deletion is held here until a test lets it finish, as a slow request would be.
+const deletion = vi.hoisted(() => ({ hold: false, finish: [] as Array<() => void> }));
+
 // The details view has its own suites; here it only has to say which task it shows and how.
 vi.mock('../components/TaskDetails', () => ({
-  default: ({ taskId, embedded, onDeleted }: { taskId?: string; embedded?: boolean; onDeleted?: () => void }) => (
-    <div data-testid="task-details" data-embedded={String(Boolean(embedded))}>
-      details for {taskId ?? 'route'}
-      {embedded && <button type="button" onClick={onDeleted}>Delete task</button>}
-    </div>
-  ),
+  default: ({ taskId, embedded, onDeleted }: { taskId?: string; embedded?: boolean; onDeleted?: (taskId: string) => void }) => {
+    // Like the real view, a delete reports to the callback it had when it started, even after unmounting.
+    const deleteTask = () => {
+      const finish = () => onDeleted?.(taskId!);
+      if (deletion.hold) deletion.finish.push(finish);
+      else finish();
+    };
+    return (
+      <div data-testid="task-details" data-embedded={String(Boolean(embedded))}>
+        details for {taskId ?? 'route'}
+        {embedded && <button type="button" onClick={deleteTask}>Delete task</button>}
+      </div>
+    );
+  },
 }));
 
 const task = (id: string, prNumber: number, minutes: number) => ({
@@ -69,6 +80,8 @@ describe('TasksPage split workspace', () => {
   });
 
   afterEach(() => {
+    deletion.hold = false;
+    deletion.finish.length = 0;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -146,6 +159,25 @@ describe('TasksPage split workspace', () => {
     });
     expect(location().pathname).toBe('/tasks');
     expect(location().searchParams.has('task')).toBe(false);
+    await waitFor(() => expect(vi.mocked(getTasks).mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('keeps another task open when a delete started earlier finishes after switching to it', async () => {
+    mockViewport(true);
+    deletion.hold = true;
+    renderAt('/tasks?task=a');
+    await screen.findByRole('table', { name: 'Tasks' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete task' }));
+    expect(deletion.finish).toHaveLength(1);
+
+    fireEvent.click(titleLink('Change b'), { detail: 1 });
+    await waitFor(() => expect(screen.getByTestId('task-details')).toHaveTextContent('details for b'));
+    const calls = vi.mocked(getTasks).mock.calls.length;
+
+    await act(async () => { deletion.finish[0](); });
+    expect(location().searchParams.get('task')).toBe('b');
+    expect(within(screen.getByTestId('task-split-details')).getByTestId('task-details')).toHaveTextContent('details for b');
+    // The deleted task still leaves the list.
     await waitFor(() => expect(vi.mocked(getTasks).mock.calls.length).toBeGreaterThan(calls));
   });
 

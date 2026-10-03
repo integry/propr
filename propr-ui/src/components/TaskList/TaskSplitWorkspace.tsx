@@ -11,7 +11,7 @@ interface TaskSplitWorkspaceProps {
   /** The task open beside the list, or null for the full-width list. */
   selectedTaskId: string | null;
   onClose: () => void;
-  onDeleted: () => void;
+  onDeleted: (taskId: string) => void;
 }
 
 /** A dialog (the prompt, the log files, a follow-up) handles its own Escape. */

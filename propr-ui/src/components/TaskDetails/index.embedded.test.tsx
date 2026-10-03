@@ -76,6 +76,7 @@ describe('TaskDetails embedded beside the task list', () => {
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(handleDeleteTask).toHaveBeenCalled();
     expect(onDeleted).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledWith('pane-task');
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks');
   });
 

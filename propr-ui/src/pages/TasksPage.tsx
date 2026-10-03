@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useTaskSelection } from '../hooks/useTaskSelection';
@@ -15,8 +15,14 @@ const TasksPage: React.FC = () => {
   useDocumentTitle(taskId ? undefined : 'Tasks');
 
   const closeTask = useCallback(() => select(null), [select]);
-  const handleDeleted = useCallback(() => {
-    select(null);
+  // A delete can finish after the user has moved on to another task, so the
+  // pane closes only if the deleted task is still the one selected now.
+  const selectedTaskIdRef = useRef(selectedTaskId);
+  useEffect(() => {
+    selectedTaskIdRef.current = selectedTaskId;
+  }, [selectedTaskId]);
+  const handleDeleted = useCallback((deletedTaskId: string) => {
+    if (selectedTaskIdRef.current === deletedTaskId) select(null);
     setListRefreshKey(key => key + 1);
   }, [select]);
 
