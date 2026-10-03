@@ -32,6 +32,8 @@ The delivered capabilities are:
    MCP guide at `mcp/guide`.
 7. **Visual previews** — `list_visual_previews` discovers published evidence
    for one task or pull request and `get_visual_preview` returns a bounded image;
+   `get_comment_attachment` returns a bounded image embedded in any PR/issue
+   comment through the caller's GitHub access, without ProPR managed storage;
    video evidence remains metadata-only and linked back to GitHub.
 8. **Configuration reachability** — trigger access reads/updates distinguish
    persisted and environment-owned values, while `find_setting` explains each

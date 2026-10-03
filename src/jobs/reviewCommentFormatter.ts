@@ -11,8 +11,9 @@
  */
 
 import { getModelName, type AnalysisResult } from '@propr/core';
+import { formatFixCommand } from '@propr/shared';
 import type { ReviewAssignment } from './prReviewRunner.js';
-import { highestReviewRecordNumber, parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
+import { FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -114,6 +115,17 @@ function reviewExecutionMetadata(options: { reviewedHead?: string; taskId?: stri
     return head + task;
 }
 
+/** Read the public IDs after numbering and validation, including reserved ranges. */
+function buildFixCommandCopyBlock(publicResponse: string | null): string {
+    if (!publicResponse) return '';
+    const published = parseStructuredReview(publicResponse);
+    const fixCommand = formatFixCommand({
+        findingIds: published.actionableFindings.map(finding => finding.id),
+        suggestionIds: published.suggestions.map(suggestion => suggestion.id),
+    });
+    return fixCommand ? `\n${FIX_COMMAND_COPY_LABEL}\n\n\`\`\`text\n${fixCommand}\n\`\`\`` : '';
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
@@ -121,7 +133,7 @@ function reviewExecutionMetadata(options: { reviewedHead?: string; taskId?: stri
  *   1. Header with model label.
  *   2. The validated response rendered with public review sections and labels.
  *   3. Review Details metadata block (model, time, tokens).
- *   4. A short instruction telling the user about /fix.
+ *   4. A short instruction and copyable command telling the user about /fix.
  *   5. A hidden HTML marker for machine detection.
  */
 export function buildReviewComment(
@@ -197,8 +209,9 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` to address every F# merge blocker, or name records explicitly, as in \`/fix F3 S5\`.\n`;
-    comment += `> F# and S# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. S# suggestions stay optional: they are implemented only when you name them, and they never relax a merge blocker.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address every F# merge blocker, \`/fix all\` for every pending blocker and suggestion, or name records explicitly, as in \`/fix F3 S5\`.\n`;
+    comment += `> F# and S# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. S# suggestions stay optional: they are implemented only when you name them or request \`/fix all\`, and they never relax a merge blocker.\n`;
+    comment += buildFixCommandCopyBlock(publicResponse);
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

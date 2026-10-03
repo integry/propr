@@ -3,6 +3,7 @@ import { getProcessedReviewCommentsKey } from '@propr/core';
 import { parseStructuredReview } from '../../../src/jobs/reviewOutputParser.js';
 import type { McpPrincipal } from './policy.js';
 import type { ToolDeps } from './tools.js';
+import { parseCommentAttachments } from '../services/commentAttachmentFetch.js';
 
 export interface ReviewComment { id: number; body?: string | null; html_url: string; created_at: string; user: { login: string } | null }
 
@@ -99,8 +100,12 @@ export async function projectDiscussionComment(deps: ToolDeps, comment: ReviewCo
       partial: /\bpartial="true"/.test(metadata), coverage: reviewedHead === null ? 'legacy_head_unknown' : /\bpartial="true"/.test(metadata) ? 'partial' : 'full_diff',
       taskId: taskId ? decodeTaskId(taskId) : null };
   }
+  // Attachments are discovered across the whole body, not just the returned chunk,
+  // so get_comment_attachment can address every image by index or id.
+  const attachments = parseCommentAttachments(body).map(({ index, attachmentId, type, alt }) => ({ index, attachmentId, type, alt, fetchable: type !== 'video' }));
   return { id: comment.id, url: comment.html_url, author: comment.user?.login, createdAt: comment.created_at,
-    body: body.slice(target.bodyOffset, target.bodyOffset + 4096), nextBodyOffset: target.bodyOffset + 4096 < body.length ? target.bodyOffset + 4096 : null, review };
+    body: body.slice(target.bodyOffset, target.bodyOffset + 4096), nextBodyOffset: target.bodyOffset + 4096 < body.length ? target.bodyOffset + 4096 : null,
+    ...(attachments.length ? { attachments } : {}), review };
 }
 
 export async function readDiscussionComment(principal: McpPrincipal, target: { repository: string; commentId: number; pullRequest: number }) {
