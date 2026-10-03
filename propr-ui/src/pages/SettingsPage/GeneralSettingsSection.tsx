@@ -81,50 +81,6 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           </>
         }
       >
-        <SettingsCheckboxField
-          id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
-          label="Automatic Escalation"
-          helperText="When progress stalls, increase reasoning effort, then hand off to the next model. Disabled by default."
-          checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
-        />
-        <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
-          helperText="The current implementation model runs first. Unavailable models are skipped; if none remain, the current model continues. Agent Tank is optional; only usage at 100% blocks a handoff.">
-          <div className="space-y-2">
-            {models.map((model, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <span className="text-sm text-gray-500">{index + 1}.</span>
-                <select id={`ultrafix_escalation_model_${index}`} aria-label={`Escalation model ${index + 1}`}
-                  value={model} className={SETTINGS_CONTROL}
-                  onChange={event => onEscalationModelsChange(models.map((value, i) => i === index ? event.target.value : value))}>
-                  {!modelOptions.some(option => option.value === model) && <option value={model}>{model} (unavailable)</option>}
-                  {modelOptions.map(option => <option key={option.value} value={option.value}>
-                    {option.label}{option.enabled ? '' : ' (disabled)'}
-                  </option>)}
-                </select>
-                <button type="button" aria-label={`Remove escalation model ${index + 1}`}
-                  onClick={() => onEscalationModelsChange(models.filter((_, i) => i !== index))}
-                  className="text-sm text-gray-600 hover:text-gray-900">Remove</button>
-              </div>
-            ))}
-            <select id="ultrafix_escalation_model_add" aria-label="Add escalation model" value="" className={SETTINGS_CONTROL}
-              onChange={event => { if (event.target.value) onEscalationModelsChange([...models, event.target.value]); }}>
-              <option value="">Add escalation model…</option>
-              {modelOptions.map(option => <option key={option.value} value={option.value}>
-                {option.label}{option.enabled ? '' : ' (disabled)'}
-              </option>)}
-            </select>
-          </div>
-        </SettingsField>
-        <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
-          helperText="Stalled reviews before each escalation step. Any new best score resets this counter.">
-          <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
-            value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
-        </SettingsField>
-        <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
-          helperText="Maximum effort increases for each model. Use 0 to hand off directly after patience expires.">
-          <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
-            value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
-        </SettingsField>
         <SettingsField
           label="Rating Goal"
           htmlFor="ultrafix_rating_goal"
@@ -181,6 +137,55 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             className={SETTINGS_CONTROL}
           />
         </SettingsField>
+
+        <SettingsCheckboxField
+          id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
+          label="Automatic Escalation"
+          helperText="When progress stalls, increase reasoning effort, then hand off to the next model. Disabled by default."
+          checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
+        />
+        {settings.ultrafix_escalation_enabled && (
+          <>
+            <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
+              helperText="The current implementation model runs first. Unavailable models are skipped; if none remain, the current model continues. Agent Tank is optional; only usage at 100% blocks a handoff.">
+              <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2">
+                {models.map((model, index) => (
+                  <div key={index} className="contents">
+                    <span className="text-sm text-gray-500">{index + 1}.</span>
+                    <select id={`ultrafix_escalation_model_${index}`} aria-label={`Escalation model ${index + 1}`}
+                      value={model} className={`${SETTINGS_CONTROL} min-w-0`}
+                      onChange={event => onEscalationModelsChange(models.map((value, i) => i === index ? event.target.value : value))}>
+                      {!modelOptions.some(option => option.value === model) && <option value={model}>{model} (unavailable)</option>}
+                      {modelOptions.map(option => <option key={option.value} value={option.value}>
+                        {option.label}{option.enabled ? '' : ' (disabled)'}
+                      </option>)}
+                    </select>
+                    <button type="button" aria-label={`Remove escalation model ${index + 1}`}
+                      onClick={() => onEscalationModelsChange(models.filter((_, i) => i !== index))}
+                      className="text-sm text-gray-600 hover:text-gray-900">Remove</button>
+                  </div>
+                ))}
+                <select id="ultrafix_escalation_model_add" aria-label="Add escalation model" value="" className={`${SETTINGS_CONTROL} col-start-2 min-w-0`}
+                  onChange={event => { if (event.target.value) onEscalationModelsChange([...models, event.target.value]); }}>
+                  <option value="">Add escalation model…</option>
+                  {modelOptions.map(option => <option key={option.value} value={option.value}>
+                    {option.label}{option.enabled ? '' : ' (disabled)'}
+                  </option>)}
+                </select>
+              </div>
+            </SettingsField>
+            <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
+              helperText="Stalled reviews before each escalation step. Any new best score resets this counter.">
+              <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
+                value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+            </SettingsField>
+            <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
+              helperText="Maximum effort increases for each model. Use 0 to hand off directly after patience expires.">
+              <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
+                value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+            </SettingsField>
+          </>
+        )}
       </SettingsSection>
     </div>
   );
