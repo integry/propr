@@ -268,7 +268,7 @@ test('issue withdrawal detected after admission persists readable history and re
   ] as const) {
     liveIssue = { ...liveIssue, state, labels: [...labels] };
     cancellations.length = 0;
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: code });
@@ -288,7 +288,7 @@ for (const [cancellationReason, phase] of [
     executionCancellationReason = cancellationReason;
     exclusions.length = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason: cancellationReason });
@@ -310,7 +310,7 @@ test('a closure found by the worker retains its obligation before recording and 
     exclusionStands = stands;
     obligations.length = 0;
     exclusions.length = 0;
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_issue_closed' });
@@ -330,7 +330,7 @@ test('worker closure cleanup failures keep the obligation through the catch path
   exclusions.length = 0;
   exclusionError = new Error('Service Unavailable');
   try {
-    await assert.rejects(processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    await assert.rejects(processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>), /Service Unavailable/);
     assert.deepEqual(obligations, ['retain', 'record'], 'no failed cleanup releases the obligation');
@@ -353,7 +353,7 @@ for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', '
     terminal.length = 0;
     githubComments.length = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'matrix-child-b', name: 'processGitHubIssue', data: {
+      const result = await processGitHubIssueJob({ id: 'matrix-child-b', updateData: async () => undefined, name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model-b', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason });
@@ -379,7 +379,7 @@ test('user cancellation during state creation still cleans up its processing lab
   initialState = { state: 'cancelled', terminalReason: 'cancelled_by_user' };
   labelCleanups.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_by_user' });
@@ -392,7 +392,7 @@ test('issue preparation persists only intent and display reference fields', asyn
   initialState = { state: 'cancelled', terminalReason: 'cancelled_by_user' };
   storedRefs.length = 0;
   try {
-    await processGitHubIssueJob({ id: 'compact', data: {
+    await processGitHubIssueJob({ id: 'compact', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
       modelName: 'model', agentAlias: 'codex', triggeringLabel: 'AI', correlationId: 'goal-id',
       issuePayload: { body: 'large issue body' }, repoPayload: { description: 'large repo' }, prProcessingLockToken: 'secret',
@@ -409,7 +409,7 @@ test('resuming a handoff retains the task and parent correlation while assigning
   queueAssignments.length = 0;
   transitions.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'retry-queue-job', data: {
+    const result = await processGitHubIssueJob({ id: 'retry-queue-job', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, isRetryFromRateLimit: true,
       modelName: 'model', correlationId: 'parent-goal', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
     }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
@@ -426,7 +426,7 @@ for (const boundary of ['before scheduling', 'after scheduling'] as const) {
     outcome = 'rate-limited';
     scheduled = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'source', data: {
+      const result = await processGitHubIssueJob({ id: 'source', updateData: async () => undefined, data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
         modelName: 'model', correlationId: 'parent-goal', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
@@ -443,7 +443,7 @@ test('worker cancels a retry with a stale failure result when the issue closes a
   cancellations.length = 0;
   terminal.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'retry-queue-job', data: {
+    const result = await processGitHubIssueJob({ id: 'retry-queue-job', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
       modelName: 'model', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
     }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
