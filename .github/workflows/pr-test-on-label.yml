@@ -243,13 +243,28 @@ jobs:
         run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt"
 
       - name: Upload shard output
+        id: shard_upload
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
           path: shard-output/
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+      # A transient artifact-service timeout must not discard a passing
+      # shard's coverage proof. Retry once; if it still fails, fail this shard
+      # so "re-run failed jobs" regenerates its missing output as well.
+      - name: Retry shard output upload
+        if: always() && steps.shard_upload.outcome == 'failure'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+          path: shard-output/
+          # Finalization can fail after creating the first artifact. Replace
+          # any partial artifact rather than conflicting with its name.
+          overwrite: true
+          if-no-files-found: error
 
       - name: Fail Job
         if: steps.tests.outcome == 'failure'
