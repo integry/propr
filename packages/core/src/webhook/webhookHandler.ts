@@ -1,5 +1,5 @@
-import { cancelWithdrawnIntent, restoreIssueTrigger } from '../services/taskIntent.js';
-import { isAuthorizedIssueTriggerActor } from '../daemon/issueTriggerAuthorization.js';
+import { cancelWithdrawnIntent } from '../services/taskIntent.js';
+import { resolveIssueTriggerLabels } from './issueTriggerRestoration.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
@@ -150,10 +150,6 @@ function isStatusEvent(payload: unknown): payload is StatusEventPayload {
     return typeof payload === 'object' && payload !== null && 'sha' in payload && 'state' in payload && !('action' in payload) && !('commits' in payload);
 }
 
-function hasStaleTriggerLabels(labels: string[], trigger: string, triggers: string[]): boolean {
-    return labels.includes(`${trigger}-processing`) || triggers.some(label => labels.includes(`${label}-cancelled`));
-}
-
 async function handleIssuesEvent(
     payload: IssuesEvent,
     correlationId: string
@@ -165,15 +161,9 @@ async function handleIssuesEvent(
     if (isIssuesLabeledEvent(payload) && payload.issue.state !== 'closed') {
         const [owner, repo] = payload.repository.full_name.split('/');
 
-        let labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
-        const triggers = !payload.issue.pull_request && payload.label?.name ? await loadPrimaryProcessingLabels() : [];
-        if (!payload.issue.pull_request && payload.label?.name && triggers.includes(payload.label.name)
-            && hasStaleTriggerLabels(labels, payload.label.name, triggers)) {
-            if (!isAuthorizedIssueTriggerActor(payload.sender?.login)) return { status: 'ignored', reason: 'user_not_allowed' };
-            const restored = await restoreIssueTrigger({ repoOwner: owner, repoName: repo, number: payload.issue.number, kind: 'issue', triggeringLabel: payload.label.name });
-            if (!restored) return { status: 'ignored', reason: 'intent_not_current' };
-            labels = restored;
-        }
+        const resolved = await resolveIssueTriggerLabels(payload, owner, repo);
+        if ('status' in resolved) return resolved;
+        const { labels, triggerReapplied } = resolved;
         const issue: DetectedIssue = {
             id: payload.issue.id,
             number: payload.issue.number,
@@ -190,7 +180,7 @@ async function handleIssuesEvent(
             triggeredBy: payload.sender?.login,
             ...(payload.sender?.id === undefined ? {} : { triggeredById: String(payload.sender.id) }),
             source: 'webhook',
-            ...(payload.label?.name && triggers.includes(payload.label.name) ? { triggerReapplied: true } : {})
+            ...(triggerReapplied ? { triggerReapplied: true } : {})
         };
 
         return normalizeDisposition(await processDetectedIssue(issue, correlationId));

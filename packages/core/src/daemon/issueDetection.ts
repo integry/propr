@@ -79,11 +79,7 @@ function findTriggerEvidenceInEvents(events: TimelineEvent[], normalizedTargetLa
         const name = ev.label.name.toLowerCase();
         if (normalizedTargetLabels.some(label => name === `${label}-cancelled`)) {
             cancelledSinceApplied = true;
-        } else if (
-            normalizedTargetLabels.includes(name) &&
-            ev.actor?.login &&
-            Number.isSafeInteger(ev.actor.id)
-        ) {
+        } else if (normalizedTargetLabels.includes(name) && ev.actor?.login && Number.isSafeInteger(ev.actor.id)) {
             return { actor: { login: ev.actor.login, userId: String(ev.actor.id) }, cancelledSinceApplied };
         }
     }
@@ -198,6 +194,14 @@ function issueSeatConsumed(issue: DetectedIssue): boolean {
     return Boolean(actor && !BOT_LOGIN_PATTERN.test(actor));
 }
 
+function excludeLabelsFor(triggers: string[]): string[] {
+    return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
+}
+
+function hasCancelledMarker(labels: string[], triggers: string[]): boolean {
+    return triggers.some(label => labels.includes(`${label}-cancelled`));
+}
+
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
@@ -208,12 +212,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         primaryProcessingLabels = getPrimaryProcessingLabels();
     }
 
-    const allExcludeLabels: string[] = [];
-    for (const label of primaryProcessingLabels) {
-        allExcludeLabels.push(`${label}-processing`);
-        allExcludeLabels.push(`${label}-done`);
-        allExcludeLabels.push(`${label}-cancelled`);
-    }
+    const allExcludeLabels = excludeLabelsFor(primaryProcessingLabels);
 
     // Check for processing labels BEFORE acquiring dedup lock
     // This ensures invalid events don't block subsequent valid events
@@ -246,11 +245,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Only a trigger reapplication is renewed intent. Unrelated label events
     // fall through to the exclude check, which keeps cancelled issues idle.
-    if (issue.triggerReapplied && primaryProcessingLabels.some(label => issue.labels.includes(`${label}-cancelled`))) {
-        const labels = await restoreIssueTrigger({
-            repoOwner: issue.repoOwner, repoName: issue.repoName, number: issue.number,
-            kind: 'issue', triggeringLabel,
-        });
+    if (issue.triggerReapplied && hasCancelledMarker(issue.labels, primaryProcessingLabels)) {
+        const labels = await restoreIssueTrigger({ repoOwner: issue.repoOwner, repoName: issue.repoName, number: issue.number, kind: 'issue', triggeringLabel });
         if (!labels) return { status: 'ignored', reason: 'intent_not_current' };
         issue = { ...issue, labels };
     }
@@ -386,12 +382,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
     }
 
     const primaryProcessingLabels = getPrimaryProcessingLabels();
-    const allExcludeLabels: string[] = [];
-    for (const label of primaryProcessingLabels) {
-        allExcludeLabels.push(`${label}-processing`);
-        allExcludeLabels.push(`${label}-done`);
-        allExcludeLabels.push(`${label}-cancelled`);
-    }
+    const allExcludeLabels = excludeLabelsFor(primaryProcessingLabels);
 
     const fetchWithRetry = (): Promise<GitHubSearchResponse> => withRetry(
         async (): Promise<GitHubSearchResponse> => {
@@ -425,7 +416,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                 // Cancelled requests need to reach restoration even if an old
                 // processing marker survived cleanup. Done markers still block.
                 const restorable = primaryProcessingLabels.some(label => labelNames.includes(label))
-                    && primaryProcessingLabels.some(label => labelNames.includes(`${label}-cancelled`));
+                    && hasCancelledMarker(labelNames, primaryProcessingLabels);
                 return !allExcludeLabels.some(excludeLabel => labelNames.includes(excludeLabel)
                     && (!restorable || excludeLabel.endsWith('-done')));
             });
@@ -472,12 +463,9 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after the
                 // `<trigger>-cancelled` marker, matching webhook-mode behaviour.
-                const cancelled = primaryProcessingLabels.some(label => labels.includes(`${label}-cancelled`));
+                const cancelled = hasCancelledMarker(labels, primaryProcessingLabels);
                 if (cancelled && (!evidence?.actor || evidence.cancelledSinceApplied)) {
-                    correlatedLogger.debug(
-                        { issueNumber: issue.number, repository: repoFullName },
-                        'Cancelled issue has no trigger reapplication after cancellation — skipping'
-                    );
+                    correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Cancelled issue has no trigger reapplication after cancellation — skipping');
                     return null;
                 }
                 const labelApplier = evidence?.actor ?? null;
