@@ -226,6 +226,19 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 `propr-planned` label. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
+
+`create_goal` accepts the same creation contract as the goal API and web UI;
+`get_goal_capabilities` returns it as `creation` beside the supported agents
+and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
+is an integer from 1 to 32 and defaults to 1 over MCP (the API and UI leave it
+unset when omitted). `checkpointIntervalMinutes` is 5–120 (default 15) and is
+rejected for orchestrated goals. `ultrafix: true` asks the goal agent to run
+Ultrafix before delivery; omitted or `false` keeps it disabled. Ultrafix never
+merges, never expands repository access and does not change the final
+draft-PR delivery; `create_goal` still needs `execute` scope and repository
+access, and merging still requires `merge_pull_request` with merge scope. An
+unsupported agent/model, an invalid strategy/cadence combination or an
+inaccessible repository is rejected before any work starts.
 `/merge` means updating a PR branch; `merge_pull_request` separately requires
 the exact head and satisfied checks/reviews/branch protection.
 
