@@ -43,17 +43,18 @@ const SEGMENT_END = String.raw`(?:[\w@+$~-]|\[\[?[\w.-]+\]\]?|\([\w.-]+\))`;
 
 /**
  * Repository-relative path tokens as reviews cite them, e.g. `src/config.ts:10`,
- * `src/app/[slug]/page.tsx`, `docker/entrypoint`, `.env` or `Dockerfile`.
+ * `src/app/[slug]/page.tsx`, `docker/entrypoint`, `.env` or `Dockerfile`,
+ * including inside Markdown emphasis such as `**Dockerfile**`.
  * Over-matching prose (`and/or`) is harmless: an unrecognised token is never
  * "removed", so it only keeps a record applied. Under-matching is what would
  * wrongly withhold one, so `hasUnparsedPath` backs this up.
  */
-const CITED_PATH = new RegExp(String.raw`(?:^|[\s\`'"([])(` + [
+const CITED_PATH = new RegExp(String.raw`(?:^|[\s\`'"([*])(` + [
   String.raw`(?:${SEGMENT_UNIT}+\/)+${SEGMENT_UNIT}*${SEGMENT_END}`,
   String.raw`${SEGMENT_UNIT}+\.[A-Za-z][A-Za-z0-9]*`,
   String.raw`\.[\w-](?:[\w.-]*[\w-])?`,
   String.raw`[\w.-]*(?:${EXTENSIONLESS_FILES})`,
-].join('|') + String.raw`)(?=[:#\s\`'",;)\]]|\.(?:\s|$)|$)`, 'g');
+].join('|') + String.raw`)(?=[:#\s\`'",;)\]*]|\.(?:\s|$)|$)`, 'g');
 
 export function citedPaths(text: string): string[] {
   return [...new Set([...text.replace(/\\/g, '/').matchAll(CITED_PATH)].map(match => match[1].replace(/^(?:\.\/)+/, '')))];

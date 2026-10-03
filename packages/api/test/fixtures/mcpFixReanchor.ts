@@ -132,6 +132,20 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.deepEqual(report.skipped, [{ id: 'F2', kind: 'finding', reason: 'code_removed', removedPaths: ['src/old.ts'] }]);
   });
 
+  await t.test('a surviving Markdown-emphasised citation keeps a record whose other citation was deleted', async () => {
+    assert.deepEqual(citedPaths('`legacy/package.json` and **Dockerfile** both pin Node 14.'), ['legacy/package.json', 'Dockerfile']);
+    assert.deepEqual(citedPaths('See *src/app/[slug]/page.tsx:12*, ***Makefile*** and **.env**.'), ['src/app/[slug]/page.tsx', 'Makefile', '.env']);
+
+    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'legacy/package.json', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const report = await reanchorFixRecords(principal, target, [
+      { id: 'F1', kind: 'finding', text: 'Drop the unsupported runtime pin\nBuild on a supported runtime.\n`legacy/package.json` and **Dockerfile** both pin Node 14.\nPin a supported runtime.' },
+      { id: 'F2', kind: 'finding', text: 'Drop the unsupported runtime pin\nBuild on a supported runtime.\n**legacy/package.json** pins Node 14.\nPin a supported runtime.' },
+    ]);
+    assert.deepEqual(report.applied, [{ id: 'F1', kind: 'finding', touchedPaths: ['legacy/package.json'] }]);
+    assert.deepEqual(report.skipped, [{ id: 'F2', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/package.json'] }]);
+  });
+
   await t.test('a surviving bracketed route path keeps a record whose other citation was deleted', async () => {
     assert.deepEqual(citedPaths('src/old.ts and src/app/[slug]/page.tsx: fix both.'), ['src/old.ts', 'src/app/[slug]/page.tsx']);
     assert.deepEqual(
