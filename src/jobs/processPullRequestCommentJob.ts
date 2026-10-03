@@ -247,10 +247,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
         if (job.data.ultrafixMeta) {
             originalTaskSpec = await retainOriginalScope(redisClient, {
-                owner: repoOwner,
-                repo: repoName,
-                pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
-                scope: originalTaskSpec,
+                owner: repoOwner, repo: repoName, pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0, scope: originalTaskSpec,
             });
         }
         const localizedOriginalTaskSpec = originalTaskSpec
@@ -336,17 +333,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
 export function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     return deferRepositoryWorkflowJob(job, () => processAdmittedPRCommentJob(job));
-}
-
-async function persistCapacityDeferredComments(job: Job<CommentJobData>, context: PRJobContext & { pickedUpComments: UnprocessedComment[] }, state: ProcessingState): Promise<void> {
-    // This same delayed job retains the claimed comments, command context and resolved policy.
-    // Wait for durable storage before releasing its PR lock or queue ownership.
-    try {
-        await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow, state.repositoryWorkflowBaseBranch) });
-    } catch (persistError) {
-        await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
-        throw persistError;
-    }
 }
 
 async function acquireCurrentPRLock(
@@ -455,7 +441,10 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     } catch (error) {
         if (error instanceof RepositoryWorkflowCapacityError) {
             capacityRefused = true;
-            await persistCapacityDeferredComments(job, context, state);
+            // This same delayed job retains the claimed comments, command context and resolved policy.
+            // Wait for durable storage before releasing its PR lock or queue ownership.
+            await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow, state.repositoryWorkflowBaseBranch) })
+                .catch(async (persistError: unknown) => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); throw persistError; });
             throw error;
         }
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
