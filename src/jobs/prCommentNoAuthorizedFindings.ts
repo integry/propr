@@ -31,7 +31,7 @@ interface NoAuthorizedFindingsParams {
     correlationId: string;
     /** Requested identifiers no current review offers. */
     unresolved?: ReviewFeedbackSelection;
-    /** Selector-shaped tokens that are not valid identifiers, e.g. `S0`. */
+    /** Invalid identifiers or incompatible selector clauses, e.g. `S0` or `ALL S3`. */
     malformedIds?: string[];
 }
 
@@ -75,11 +75,18 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
     // review, otherwise has no way to tell a typo from a stale reference.
     const problems: string[] = [];
     if (malformedIds && malformedIds.length > 0) {
-        problems.push(`These are not valid review identifiers: ${malformedIds.join(', ')}. `
-            + 'Nothing was applied, because a request that is partly not understood is not acted on. '
-            + 'Correct them and run `/fix` again. Unsupported forms include ranges such as `F1-F2`: name each '
-            + 'record separately, as `/fix F1 F2`. If that text was meant as instructions rather than a '
-            + 'selection, put it on a line below the `/fix` line.');
+        if (malformedIds.some(clause => /^ALL[\s,]/i.test(clause))) {
+            problems.push('`all` cannot be combined with `F#` or `S#` selectors on the command line. '
+                + 'Nothing was applied. Use `/fix all` for every pending finding and suggestion, or name '
+                + 'individual records, for example `/fix F3 S3`. To add instructions to `/fix all`, '
+                + 'put them after `;` or on a following line.');
+        } else {
+            problems.push(`These are not valid review identifiers: ${malformedIds.join(', ')}. `
+                + 'Nothing was applied, because a request that is partly not understood is not acted on. '
+                + 'Correct them and run `/fix` again. Unsupported forms include ranges such as `F1-F2`: name each '
+                + 'record separately, as `/fix F1 F2`. If that text was meant as instructions rather than a '
+                + 'selection, put it on a line below the `/fix` line.');
+        }
     }
     if (unresolved && !isEmptyReviewFeedbackSelection(unresolved)) {
         problems.push(`No current review offers ${describeReviewFeedbackSelection(unresolved)}. `
@@ -93,6 +100,7 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
         'No files were changed because this `/fix` command resolved to no review record.',
         ...problems,
         'Name at least one `F#` finding or `S#` suggestion from a current review comment, for example `/fix F20 S3`. '
+            + 'Use `/fix all` to request every pending finding and suggestion. '
             + 'Any text after the identifiers, and every line below the command, is passed through as instructions.',
         `[View Task Execution](${taskUrl})`,
     ].join('\n\n') + `${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;

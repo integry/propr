@@ -31,11 +31,15 @@ export const REVIEW_SUGGESTION_ID_PATTERN = /^S[1-9][0-9]*$/i;
 export const REVIEW_FEEDBACK_TOKEN_SHAPE = /^[FS]-?[0-9]/i;
 
 /**
- * Upper bound on one request. Mirrors the pre-existing `.max(100)` on the MCP
+ * Upper bound on one explicit identifier request. Bare `/fix` and `/fix all`
+ * inherit pending review records without this cap. Mirrors `.max(100)` on the MCP
  * tool's `findingIds`, now applied to the combined selection so the ceiling
  * cannot be doubled by splitting a request across both namespaces.
  */
 export const MAX_REVIEW_FEEDBACK_SELECTION = 100;
+
+/** Human command-line shorthand for every pending finding and suggestion. */
+export const REVIEW_FEEDBACK_SELECT_ALL_KEYWORD = 'all';
 
 export type ReviewFeedbackKind = 'finding' | 'suggestion';
 
@@ -102,6 +106,12 @@ export function canonicalizeReviewFeedbackSelection(
 /** Command-line form: findings first, then suggestions, e.g. `F20 S3 S5`. */
 export const formatReviewFeedbackSelection = (selection: ReviewFeedbackSelection): string =>
     [...selection.findingIds, ...selection.suggestionIds].join(' ');
+
+/** Copyable command for a selection; no command when the review has no records. */
+export function formatFixCommand(selection: ReviewFeedbackSelection): string {
+    const identifiers = formatReviewFeedbackSelection(selection);
+    return identifiers ? `/fix ${identifiers}` : '';
+}
 
 /**
  * Human-facing form for comments and recaps. Deliberately keeps the two kinds

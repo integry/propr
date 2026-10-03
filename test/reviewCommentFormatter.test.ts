@@ -3,8 +3,10 @@ import assert from 'node:assert';
 
 const { buildReviewComment, getNextAuthenticatedReviewRecordNumbers } = await import('../src/jobs/reviewCommentFormatter.js');
 const {
-    getNextActionableFindingNumber, getNextReviewSuggestionNumber, parseStructuredReview,
+    FIX_COMMAND_COPY_LABEL, getNextActionableFindingNumber, getNextReviewSuggestionNumber,
+    parseStructuredReview, renderPublicReview, stripReviewBoilerplate,
 } = await import('../src/jobs/reviewOutputParser.js');
+const { buildReviewCommentWithReservedRecordRanges } = await import('../src/jobs/reviewFindingNumberAllocator.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -12,6 +14,85 @@ after(async () => {
 });
 
 describe('buildReviewComment', () => {
+    const copyReview = [
+        '## Overall Evaluation',
+        'One blocker and two optional follow-ups.',
+        '## Actionable Findings',
+        '### F1: Preserve terminal state',
+        '- **violatedRequirement:** Terminal states cannot be resurrected.',
+        '- **evidence:** src/worker.ts:128 — new bypass accepts the transition.',
+        '- **introducedByPR:** true — the PR added the bypass.',
+        '- **requiredForMerge:** true',
+        '- **minimumCorrection:** Reject transitions from terminal states.',
+        '## Suggestions and Follow-ups',
+        '### S1: Cover the fallback',
+        'Optional integration coverage.',
+        '### S2: Add a benchmark',
+        'Optional performance coverage.',
+        '## Score',
+        'Score: 5/10',
+    ].join('\n');
+    const copyAssignment = { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' };
+    const copyResult = { response: copyReview, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true };
+
+    test('appends exactly the rendered IDs between the tip and attribution, without changing parsing', () => {
+        const options = { firstFindingNumber: 9, firstSuggestionNumber: 4 };
+        const formatted = buildReviewComment(copyAssignment, copyResult, undefined, options);
+        const block = `${FIX_COMMAND_COPY_LABEL}\n\n\`\`\`text\n/fix F9 S4 S5\n\`\`\``;
+        assert.ok(formatted.includes(block));
+        assert.ok(formatted.indexOf('**Next step:**') < formatted.indexOf(block));
+        assert.ok(formatted.indexOf(block) < formatted.indexOf('<sub>'));
+        assert.ok(formatted.indexOf('<sub>') < formatted.indexOf('<!-- propr:ai-review'));
+        assert.ok(formatted.includes('Comment `/fix`'));
+        assert.ok(formatted.includes('`/fix all`'));
+        assert.deepStrictEqual(parseStructuredReview(formatted), parseStructuredReview(renderPublicReview(copyReview, undefined, options)!));
+        const cleaned = stripReviewBoilerplate(formatted);
+        assert.ok(!cleaned.includes(FIX_COMMAND_COPY_LABEL));
+        assert.ok(!cleaned.includes('```text\n/fix'));
+        assert.ok(!cleaned.includes('**Next step:**'));
+        assert.ok(!cleaned.includes('<!-- propr:ai-review'));
+        assert.strictEqual(getNextActionableFindingNumber([formatted]), 10);
+        assert.strictEqual(getNextReviewSuggestionNumber([formatted]), 6);
+    });
+
+    test('copy block follows the final reserved ranges when a provisional comment is re-rendered', async () => {
+        const { reviewCommentBody, findingCount, suggestionCount } = await buildReviewCommentWithReservedRecordRanges(
+            copyAssignment, copyResult, undefined, {
+                redisClient: { eval: async (_script: string, _count: number, key: string) =>
+                    key.startsWith('review-finding-sequence:') ? 20 : 8 } as any,
+                issueRef: { repoOwner: 'o', repoName: 'r', pullRequestNumber: 1 },
+                observedNextFindingNumber: 1, observedNextSuggestionNumber: 1,
+            },
+        );
+        assert.strictEqual(findingCount, 1);
+        assert.strictEqual(suggestionCount, 2);
+        assert.ok(reviewCommentBody.includes('```text\n/fix F20 S8 S9\n```'));
+        assert.ok(!reviewCommentBody.includes('```text\n/fix F1 S1 S2\n```'));
+        const parsed = parseStructuredReview(reviewCommentBody);
+        assert.deepStrictEqual(parsed.actionableFindings.map(finding => finding.id), ['F20']);
+        assert.deepStrictEqual(parsed.suggestions.map(suggestion => suggestion.id), ['S8', 'S9']);
+    });
+
+    test('omits the copy block for a valid review with no records or invalid output', () => {
+        const emptyReview = [
+            '## Overall Evaluation', 'Ready to merge.',
+            '## Actionable Findings', 'No actionable findings.',
+            '## Suggestions and Follow-ups', 'No suggestions.',
+            '## Score', 'Score: 10/10',
+        ].join('\n');
+        for (const response of [emptyReview, 'Invalid review output.']) {
+            const formatted = buildReviewComment(copyAssignment, { ...copyResult, response });
+            assert.ok(!formatted.includes(FIX_COMMAND_COPY_LABEL));
+            assert.ok(!formatted.includes('```text\n/fix'));
+            assert.strictEqual(parseStructuredReview(formatted).status, response === emptyReview ? 'valid_clean' : 'invalid');
+        }
+    });
+
+    test('stripReviewBoilerplate removes the copy block with CRLF line endings', () => {
+        const body = `Review prose.\n${FIX_COMMAND_COPY_LABEL}\n\n\`\`\`text\n/fix F1 S2\n\`\`\`\n`.replace(/\n/g, '\r\n');
+        assert.strictEqual(stripReviewBoilerplate(body), 'Review prose.');
+    });
+
     test('explains that explicit finding IDs are permanent within the PR', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
@@ -59,6 +140,7 @@ describe('buildReviewComment', () => {
         );
         assert.ok(formatted.includes('### S1: 🟢 Add an outbox'));
         assert.ok(formatted.includes('### S2: 🟢 Add a benchmark'));
+        assert.ok(formatted.includes('```text\n/fix S1 S2\n```'));
         assert.ok(formatted.includes('Optional hardening'));
         assert.ok(formatted.includes('Optional performance coverage'));
         assert.ok(!formatted.includes('summary:'));

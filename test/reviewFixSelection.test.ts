@@ -1,14 +1,52 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, describe, test } from 'node:test';
 import { buildCommandMeta, closeConnection, parseSlashCommand } from '@propr/core';
-import { parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
+import { type FixSelection, parseFixCommand, parseFixSelection, resolveReviewFeedback } from '../src/jobs/reviewFindingSelector.js';
 
 after(async () => {
     await closeConnection();
 });
 
 describe('/fix command-line selection', () => {
-    const cases: Array<[string, string, { findingIds: string[]; suggestionIds: string[]; instructions: string; malformedIds: string[] }]> = [
+    test('the command reference documents mixed all/selectors as rejected', () => {
+        const reference = readFileSync(new URL('../docs/docs/features/pr-commands.md', import.meta.url), 'utf8');
+        const paragraph = reference.split(/\n\s*\n/).find(text => text.includes('`/fix all F3`'));
+        assert.ok(paragraph, 'the command reference must explain mixed all/selectors');
+        assert.match(paragraph, /`\/fix all F3` or `\/fix all S3`\s+is rejected and nothing is applied/);
+        assert.match(paragraph, /use `\/fix all` alone, or name the records\s+explicitly/);
+        for (const argumentsText of ['all F3', 'all S3']) {
+            const resolution = resolveReviewFeedback([], parseFixSelection(argumentsText));
+            assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: [] });
+            assert.deepStrictEqual(resolution.malformedIds, [argumentsText.toUpperCase()]);
+        }
+    });
+
+    const cases: Array<[string, string, FixSelection]> = [
+        ['selects all pending feedback', 'all',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['accepts uppercase ALL', 'ALL',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['accepts trailing commas and whitespace after all', '  all , ',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: '', malformedIds: [] }],
+        ['keeps inline instructions after all', 'all; keep it',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'keep it', malformedIds: [] }],
+        ['keeps following lines after all as prose', 'all\nbelow',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'below', malformedIds: [] }],
+        ['combines inline and following instructions after all', 'all , ; keep it\r\n\r\nS3 is prose.\r\nMore.',
+            { selectAll: true, findingIds: [], suggestionIds: [], instructions: 'keep it\n\nS3 is prose.\nMore.', malformedIds: [] }],
+        ['keeps all in ordinary instructions', 'all the failing tests',
+            { findingIds: [], suggestionIds: [], instructions: 'all the failing tests', malformedIds: [] }],
+        ['refuses all combined with a finding selector', 'all F3',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL F3'] }],
+        ['refuses all combined with a suggestion selector', 'all S3',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL S3'] }],
+        ['refuses all combined with a malformed selector', 'all S0',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL S0'] }],
+        ['refuses mixed selectors even with trailing context', 'ALL, f3 s3; keep it small\nMore context.',
+            { findingIds: [], suggestionIds: [], instructions: '', malformedIds: ['ALL, F3 S3'] }],
+        ['does not interpret all below the command as a shorthand', '\nall',
+            { findingIds: [], suggestionIds: [], instructions: 'all', malformedIds: [] }],
         ['mixes both namespaces in any order', 'F20 S3 S5',
             { findingIds: ['F20'], suggestionIds: ['S3', 'S5'], instructions: '', malformedIds: [] }],
         ['accepts suggestions on their own', 'S3',
@@ -83,6 +121,23 @@ describe('/fix intake preserves the command-line boundary', () => {
         const fix = meta as { commandLine?: string; bodyInstructions?: string };
         return parseFixCommand({ commandLine: fix.commandLine, bodyInstructions: fix.bodyInstructions });
     };
+
+    for (const body of ['/fix all\nS3 is prose; keep the API stable.', '/fix all; S3 is prose; keep the API stable.']) {
+        test(`preserves all selection and context through intake: ${JSON.stringify(body)}`, () => {
+            assert.deepStrictEqual(selectionFor(body), {
+                selectAll: true, findingIds: [], suggestionIds: [], malformedIds: [],
+                instructions: 'S3 is prose; keep the API stable.',
+            });
+        });
+    }
+
+    test('all combined with a selector fails closed through intake', () => {
+        const selection = selectionFor('/fix all S3');
+        assert.deepStrictEqual(selection.malformedIds, ['ALL S3']);
+        const resolution = resolveReviewFeedback([], selection);
+        assert.deepStrictEqual(resolution.selected, { findingIds: [], suggestionIds: [] });
+        assert.deepStrictEqual(resolution.malformedIds, ['ALL S3']);
+    });
 
     test('a bare /fix whose instructions begin with an identifier selects nothing', () => {
         const selection = selectionFor('/fix\nS3 is already done; keep the blocker correction localized.');
