@@ -17,6 +17,7 @@ import {
   createIssueCommand,
   createPlanCommand,
   createTaskCommand,
+  createGoalCommand,
   createRepoCommand,
   createAgentCommand,
   createSettingCommand,
@@ -198,7 +199,7 @@ program
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
 Run a local ProPR Docker stack (check / init / start / status / stop) and
-drive the backend (plans, issues, tasks, repos, agents).
+drive the backend (plans, issues, goals, tasks, repos, agents).
 `)
   .addHelpText("after", `
 Quick Start (local stack):
@@ -230,6 +231,8 @@ Examples:
   $ propr issue implement abc123/1 --wait --auto-merge
   $ propr task inspect                 # Active work, including queued tasks
   $ propr task inspect <task-id>       # Current state and full run history
+  $ propr goal create "Add audit logging" --agent codex   # Create and start a goal
+  $ propr goal inspect <goal-id>       # Goal state, progress and pull requests
   $ propr remote-status
 
 Command Groups:
@@ -238,6 +241,7 @@ Command Groups:
   Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
+  Goals:          goal [capabilities|create|list|inspect|input|inputs|pause|resume|cancel|model]
   Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete|pool]
@@ -424,6 +428,7 @@ program.addCommand(createAgentSkillCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
+program.addCommand(createGoalCommand());
 program.addCommand(createRepoCommand());
 program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());

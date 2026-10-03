@@ -41,8 +41,10 @@ import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addDocsTools } from './toolsDocs.js';
 import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
+import { markMergedPullRequests, markMergedListPullRequests } from '../services/pullRequestMergeState.js';
+import { applyGoalLifecycleFilter, inspectGoalDetail } from '../services/goalReadProjection.js';
 import { getAgentActivity } from './agentActivity.js';
-import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
+import { GOAL_DETAIL_COLUMNS, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 import { queryTaskSummaries } from './taskListing.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 
@@ -91,31 +93,7 @@ export interface McpTool {
 export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
-export async function markMergedPullRequests(
-  db: Knex, repository: string, items: Record<string, unknown>[],
-  fields = { number: 'pr_number', state: 'pr_state' },
-): Promise<void> {
-  const numbers = [...new Set(items.map(item => Number(item[fields.number]))
-    .filter(number => Number.isSafeInteger(number) && number > 0))];
-  if (!numbers.length) return;
-  const rows = await db('notification_pull_request_state').where({ repository })
-    .whereIn('pr_number', numbers).whereNotNull('merged_at').select('pr_number');
-  const merged = new Set(rows.map(row => Number(row.pr_number)));
-  for (const item of items) if (merged.has(Number(item[fields.number]))) item[fields.state] = 'merged';
-}
-
-/** Cross-repository list results carry their own repository, so merge state is resolved per repository. */
-export async function markMergedListPullRequests(db: Knex, items: Record<string, unknown>[]): Promise<void> {
-  const groups = new Map<string, Record<string, unknown>[]>();
-  for (const item of items) {
-    const repository = typeof item.repository === 'string' ? item.repository : null;
-    if (!repository) continue;
-    const group = groups.get(repository) ?? [];
-    group.push(item);
-    groups.set(repository, group);
-  }
-  for (const [repository, group] of groups) await markMergedPullRequests(db, repository, group);
-}
+export { markMergedPullRequests, markMergedListPullRequests };
 
 export const listScopeShape = {
   repository: repositorySchema.optional().describe('Exact repository handle. Omit to list across every repository in this grant.'),
@@ -203,8 +181,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
     scopeRepositories(query, 'repository', args.repository, await listScope(principal, args));
-    if (args.state === 'active') query.whereNull('result_state');
-    else if (args.state === 'completed' || args.state === 'failed') query.where('result_state', args.state);
+    applyGoalLifecycleFilter(query, args.state);
     const rows = await query
       .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state', 'current_task_id',
         'agent_alias', 'requested_model', 'effective_model', 'final_pr_number', 'artifact_refs', 'failure_reason',
@@ -222,8 +199,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     const response = await callWorkflow(goals.get, principal, { params: { goalId: args.goalId } });
     const row = await loadGoalRow(principal, args);
     if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
-    const detail = await goalDetail({ db, redisClient }, row,
-      (repository, items, fields) => markMergedPullRequests(db, repository, items, fields));
+    const detail = await inspectGoalDetail({ db, redisClient }, row);
     return { status: response.status, data: { ...response.data as Record<string, unknown>, ...detail } };
   } });
   tools.push({ name: 'list_goal_inputs', description: 'Read the bounded, newest-first history of operator inputs already sent to a goal, so an existing correction is not sent twice. Delivery state is persisted; delivered does not prove the agent acted on it.', scope: 'read', readOnly: true, schema: z.object({ ...goalShape, ...pageShape }).strict(), target: goalTarget, run: async ({ principal, args }) => {

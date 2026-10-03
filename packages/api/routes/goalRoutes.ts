@@ -36,6 +36,14 @@ import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
 import {
+  GOAL_LIST_STATES,
+  applyGoalLifecycleFilter,
+  inspectGoalDetail,
+  isGoalListState,
+  type GoalListState,
+} from '../services/goalReadProjection.js';
+import { goalInputPage } from '../mcp/goalTaskDetail.js';
+import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
   deleteGoalAttachments,
@@ -199,6 +207,41 @@ async function findExistingGoalCreation(options: {
   return existing ?? null;
 }
 
+function queryValue(query: Record<string, unknown>, name: string): string | undefined {
+  const value = query[name];
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parsePage(
+  query: Record<string, unknown>,
+  bounds: { defaultLimit: number; maxLimit: number },
+): { offset: number; limit: number } | { error: string } {
+  const rawOffset = queryValue(query, 'offset');
+  const rawLimit = queryValue(query, 'limit');
+  const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+  const limit = rawLimit === undefined ? bounds.defaultLimit : Number(rawLimit);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) return { error: 'offset must be an integer from 0 to 100000' };
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > bounds.maxLimit) return { error: `limit must be an integer from 1 to ${bounds.maxLimit}` };
+  return { offset, limit };
+}
+
+const GOAL_LIST_MAX_LIMIT = 200;
+const GOAL_LIST_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function parseGoalListQuery(query: Record<string, unknown>): {
+  repository?: string; state?: GoalListState; offset: number; limit: number; paginated: boolean;
+} | { error: string } {
+  const repository = queryValue(query, 'repository');
+  if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) return { error: 'repository must be in owner/repo format' };
+  const state = queryValue(query, 'state');
+  if (state !== undefined && !isGoalListState(state)) return { error: `state must be one of ${GOAL_LIST_STATES.join(', ')}` };
+  const page = parsePage(query, { defaultLimit: GOAL_LIST_MAX_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
+  if ('error' in page) return page;
+  const paginated = queryValue(query, 'offset') !== undefined || queryValue(query, 'limit') !== undefined;
+  return { repository, state: state === 'all' ? undefined : state, ...page, paginated };
+}
+
 type AgentSelection = { agent: Agent } | { error: string; status: number };
 
 async function resolveCreationAgent(
@@ -321,21 +364,50 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const list = async (req: Request, res: Response) => {
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
-    const rows = await timeApiStage('sql.goals.list', () =>
-      deps.db<GoalRow>('goals').where({ owner_id: ownerId }).orderBy('updated_at', 'desc').limit(200)
-    );
+    const listQuery = parseGoalListQuery(req.query ?? {});
+    if ('error' in listQuery) return void res.status(400).json({ error: listQuery.error });
+    const { repository, state, offset, limit, paginated } = listQuery;
+    const rows = await timeApiStage('sql.goals.list', () => {
+      const query = deps.db<GoalRow>('goals').where({ owner_id: ownerId });
+      if (repository) query.where('repository', repository);
+      applyGoalLifecycleFilter(query, state);
+      // Explicit pages use the immutable creation order so a goal updated mid-walk is neither
+      // skipped nor repeated; the unpaginated dashboard read keeps its recency order.
+      if (paginated) query.orderBy('created_at', 'desc').orderBy('goal_id', 'desc');
+      else query.orderBy('updated_at', 'desc');
+      return query.offset(offset).limit(limit);
+    });
     const goals = await timeApiStage('goals.projection', () =>
       Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row, { includeInputs: false })))
     );
     const media = await (deps.previewReader ?? previewMediaReader).project(rows.map(goalPreviewSource), 3);
     res.json({ goals: goals.map((goal, index) => ({ ...goal,
       ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
-    })) });
+    })), offset, limit, nextOffset: rows.length === limit ? offset + limit : null });
   };
 
   const get = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (row) res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+  };
+
+  /** The goal projection plus the shared narration/progress/checkpoint/pending-input detail MCP `get_goal` reads. */
+  const detail = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    res.json({
+      goal: await serializeGoal(deps.db, deps.redisClient, row),
+      detail: await inspectGoalDetail({ db: deps.db, redisClient: deps.redisClient }, row),
+    });
+  };
+
+  /** Bounded, newest-first operator input history with persisted delivery state. */
+  const inputs = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
+    if ('error' in page) return void res.status(400).json({ error: page.error });
+    res.json({ ...await goalInputPage(deps.db, row, page), offset: page.offset, limit: page.limit });
   };
 
   const previews = async (req: Request, res: Response) => {
@@ -1027,7 +1099,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, get, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
+    capabilities, list, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
     requireGoalTaskOwnership,
   };
 }
