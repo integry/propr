@@ -117,7 +117,9 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   const result = JSON.parse(row.result) as ExecutionResult & Record<string, unknown>;
   if (['create_task', 'retry_task_submission'].includes(row.tool) && !result.continuation?.taskId) return;
   if (result.error) return;
-  const fanOut = row.tool === 'review_pull_request' && postedReviews(result).length > 1;
+  // Follow every model review, including a list that ended with a single posted
+  // review because the head moved or a later comment could not be posted.
+  const fanOut = row.tool === 'review_pull_request' && Array.isArray(result.reviews) && result.reviews.length > 1 && postedReviews(result).length > 0;
   const task = row.tool === 'index_repository' || fanOut ? undefined : await findExecutionTask(deps, row, result);
   if (result.executionResolved && terminalStates.includes(row.state)) {
     restoreResolvedTarget(receipt, result, task);

@@ -70,6 +70,8 @@ function reviewFanOutArtifacts(result: Record<string, unknown>, target: Record<s
   const reviews = Array.isArray(result.reviews) ? result.reviews.map(record).filter((value): value is Record<string, unknown> => !!value) : [];
   const commentIds = reviews.flatMap(review => positiveInteger(review.commentId) ?? []);
   if (commentIds.length > 1) artifacts.commentIds = commentIds;
+  // A list that ended with one posted review carries no flat commentId.
+  else if (commentIds.length === 1 && !positiveInteger(result.commentId)) artifacts.commentId = commentIds[0];
   const taskIds = Array.isArray(target.taskIds) ? target.taskIds.filter((value): value is string => typeof value === 'string' && value.length > 0) : [];
   if (taskIds.length) artifacts.taskIds = taskIds;
   return artifacts;

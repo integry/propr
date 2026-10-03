@@ -503,6 +503,51 @@ test('a multi-model review follows each model comment and completes when every r
   assert.deepEqual(finishedReviews.map(review => review.taskState ?? null), ['completed', 'failed', null]);
 });
 
+test('a model list that posted only one review still tracks that review and its comment', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'fan-out-single-posted' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+    { model: 'claude-opus-5', commentId: 901, state: 'posted' },
+    { model: 'claude-sonnet-5', state: 'not_posted', error: { code: 'STALE_HEAD' } },
+    { model: 'gpt-5.6', state: 'not_posted', error: { code: 'STALE_HEAD' } },
+  ] } }));
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const poll = async () => {
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    return operations.project(await operations.get(principal, String(receipt.operationId)));
+  };
+
+  const waiting = await poll();
+  assert.equal((waiting.lifecycle as { artifacts: Record<string, unknown> }).artifacts.commentId, 901);
+  assert.deepEqual((waiting.result as { reviews: Array<Record<string, unknown>> }).reviews.map(review => review.taskState ?? null),
+    ['pending', null, null]);
+
+  await db('tasks').insert({ task_id: 'only-review', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+    created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: 901, commandCommentType: 'issue', commandMode: 'review' }) });
+  await db('task_history').insert({ task_id: 'only-review', state: 'processing', timestamp: new Date(), metadata: '{}' });
+  const running = await poll();
+  assert.equal((running.lifecycle as { state: string }).state, 'running');
+  assert.deepEqual((running.result as { reviews: Array<Record<string, unknown>> }).reviews.map(review => [review.taskId ?? null, review.taskState ?? null]),
+    [['only-review', 'processing'], [null, null], [null, null]]);
+
+  await db('task_history').insert({ task_id: 'only-review', state: 'completed', timestamp: new Date(), metadata: '{}' });
+  const finished = await poll();
+  assert.equal((finished.lifecycle as { state: string }).state, 'completed');
+  const artifacts = (finished.lifecycle as { artifacts: Record<string, unknown> }).artifacts;
+  assert.equal(artifacts.commentId, 901);
+  assert.deepEqual(artifacts.taskIds, ['only-review']);
+});
+
 test('a multi-model review fails only when every model review failed', async t => {
   const db = await fixture(t);
   const principal = {

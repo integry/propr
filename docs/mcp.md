@@ -583,10 +583,15 @@ same head: the first one uses the head check above, and each later one reads
 the PR again and must find it still open at that head. If a push or close
 happens part-way, the models already posted stay posted. The rest are reported
 with `state: "not_posted"` and an `error` (for example `STALE_HEAD` with
-`expectedHead`/`currentHead`), and nothing is posted for them. The operation
-receipt then follows each posted comment separately. Each `reviews` entry gains
-the `taskId` and `taskState` of the task that picked it up, and the lifecycle
-artifacts list `commentIds` and `taskIds`. The operation completes once every
+`expectedHead`/`currentHead`), and nothing is posted for them. If a later
+comment fails to post, that model is reported as `rejected` when GitHub refused
+it (nothing was posted) or `unknown` when it may have posted. Check the PR for an
+`unknown` model before you request it again; it is never retried for you. Every
+model after it is `not_posted`, and the reviews already posted are still
+returned. The operation receipt then follows each posted comment separately,
+even when only one was posted. Each `reviews` entry gains the `taskId` and
+`taskState` of the task that picked it up. The lifecycle artifacts list
+`commentIds` (or `commentId` when only one comment was posted) and `taskIds`. The operation completes once every
 posted review has finished. It fails with `REVIEW_FAILED` only when all of
 them failed, and it becomes `unknown` if a review is never picked up.
 Account-level limits, such as a model the provider account cannot run, show up

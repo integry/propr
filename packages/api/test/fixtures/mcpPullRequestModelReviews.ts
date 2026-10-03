@@ -1,5 +1,22 @@
 import assert from 'node:assert/strict';
+import type { McpPrincipal } from '../../mcp/policy.js';
 import { type Args, type WriteFixture, interceptRest } from './mcpPullRequestWrites.js';
+
+type GitHubRequest = (route: string, args: Args) => Promise<unknown>;
+
+/** Let the first comment POST through, fail the second with `error`, and pass every later request. */
+function failSecondCommentPost(principal: McpPrincipal, error: Error): void {
+  const github = principal.github as unknown as { request: GitHubRequest };
+  const next = github.request;
+  let posts = 0;
+  github.request = async (route, args) => {
+    if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments' && ++posts === 2) {
+      github.request = next;
+      throw error;
+    }
+    return next(route, args);
+  };
+}
 
 /**
  * `review_pull_request` with an explicit reviewing model: one alias, a fan-out
@@ -109,5 +126,37 @@ export async function verifyModelReviews({ t, call, mutate, principal, findPullR
       assert.deepEqual(review.error.details, { expectedHead: head, currentHead: 'b'.repeat(40) });
     }
     assert.equal(comments.length - posted, 1);
+  });
+
+  await t.test('a model fan-out keeps posted receipts when GitHub rejects a later review', async () => {
+    const posted = comments.length;
+    const limited = Object.assign(new Error('API rate limit exceeded'), { status: 403, response: { headers: { 'x-ratelimit-remaining': '0' }, data: { message: 'API rate limit exceeded' } } });
+    failSecondCommentPost(principal, limited);
+    const fanOut = await mutate('review_pull_request', { repository: 'acme/repo', pullRequest: 42, model: ['claude-opus-5', 'claude-sonnet-5', 'gpt-5.6'] });
+    assert.equal(fanOut.state, 'posted', JSON.stringify(fanOut));
+    const [first, failed, rest] = fanOut.result.reviews;
+    assert.equal(first.state, 'posted');
+    assert.ok(comments.some(comment => comment.id === first.commentId));
+    assert.equal(failed.state, 'rejected');
+    assert.equal(failed.commentId, undefined);
+    assert.equal(failed.error.code, 'GITHUB_RATE_LIMITED');
+    assert.equal(rest.state, 'not_posted');
+    assert.equal(rest.error.code, 'PREVIOUS_REVIEW_NOT_POSTED');
+    assert.equal(comments.length - posted, 1, 'nothing is posted after the failed review');
+  });
+
+  await t.test('a model fan-out reports an uncertain later post as unknown without retrying it', async () => {
+    const posted = comments.length;
+    const postsBefore = restCalls.filter(item => item.route.startsWith('POST ')).length;
+    failSecondCommentPost(principal, Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+    const fanOut = await mutate('review_pull_request', { repository: 'acme/repo', pullRequest: 42, model: ['claude-opus-5', 'gpt-5.6'] });
+    assert.equal(fanOut.state, 'posted', JSON.stringify(fanOut));
+    const [first, uncertain] = fanOut.result.reviews;
+    assert.equal(first.state, 'posted');
+    assert.equal(uncertain.state, 'unknown');
+    assert.equal(uncertain.error.code, 'OUTCOME_UNKNOWN');
+    assert.equal(uncertain.error.cause.code, 'UPSTREAM_UNREACHABLE');
+    assert.equal(comments.length - posted, 1);
+    assert.equal(restCalls.filter(item => item.route.startsWith('POST ')).length - postsBefore, 1, 'the uncertain post is not retried');
   });
 }

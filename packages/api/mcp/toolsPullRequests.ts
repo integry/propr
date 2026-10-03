@@ -13,7 +13,7 @@ import {
   reviewFeedbackSelectionSize,
 } from '@propr/shared';
 import { McpError } from './config.js';
-import { beforeSideEffects } from './errorEnvelope.js';
+import { beforeSideEffects, classifyError } from './errorEnvelope.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { callWorkflow } from './adapter.js';
 import { type Args, type McpTool, type ToolDeps, repositorySchema, idSchema, mutationShape, ok, textSchema } from './tools.js';
@@ -216,7 +216,9 @@ async function resolveReviewModels(requested: string[]): Promise<ReviewModelChoi
  * review run, exactly as separate hand-typed comments would be. Every review after
  * the first re-reads the pull request and must still find it open at the head the
  * first one was pinned to; once that guard fails, the remaining models are reported
- * as not posted instead of reviewing a head the caller has not seen. No label is
+ * as not posted instead of reviewing a head the caller has not seen. A comment that
+ * fails to post after an earlier one succeeded is reported as rejected or unknown,
+ * and the rest as not posted, so the confirmed receipts are returned. No label is
  * read or written, so the pull request's model routing is left untouched.
  */
 async function postModelReviews(
@@ -245,7 +247,22 @@ async function postModelReviews(
       continue;
     }
     const body = `/review ${choice.requested}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
-    const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+    let data: { id: number; html_url: string };
+    try {
+      ({ data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body }));
+    } catch (error) {
+      // With nothing posted yet the failure is the whole call's outcome. Once a
+      // review is posted its receipt must survive, so the failed model is recorded
+      // instead: a GitHub rejection definitely posted nothing, any other failure may
+      // have, and is never retried here. The remaining models are not attempted.
+      if (!reviews.some(review => review.state === 'posted')) throw error;
+      const known = classifyError(error, { sideEffectsPossible: false });
+      const rejected = known.stage === 'github' && known.status >= 400 && known.status < 500;
+      reviews.push({ ...receipt, resolvedHead, headSource, state: rejected ? 'rejected' : 'unknown',
+        error: rejected ? known : classifyError(error, { sideEffectsPossible: true }) });
+      blocked = { code: 'PREVIOUS_REVIEW_NOT_POSTED', message: `The review for “${choice.requested}” could not be confirmed as posted, so no further review was requested.` };
+      continue;
+    }
     reviews.push({ ...receipt, commentId: data.id, url: data.html_url, resolvedHead, headSource, state: 'posted' });
   }
   return reviews;
@@ -307,7 +324,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         ? ` Omit model to review with the model the pull request is routed to. Supply model as one alias, or as a list of up to ${MAX_REVIEW_MODELS} aliases to fan out one independent review per model, the same as posting one /review <model> comment per model.`
           + ' Every alias is checked against the enabled models list_models reports before anything is posted; an unknown, disabled or duplicate alias rejects the whole call with a per-model error in details.rejectedModels instead of being dropped or replaced.'
           + ' A model review never changes the pull request\'s model labels, so later default reviews keep their routing; use set_pull_request_model for that.'
-          + ' With model, the receipt lists one entry per model in reviews (model, agentAlias, resolvedModel, commentId, url, resolvedHead, state); every review is pinned to the same head, and if the pull request moves or closes part-way the remaining models are reported as not_posted.'
+          + ' With model, the receipt lists one entry per model in reviews (model, agentAlias, resolvedModel, commentId, url, resolvedHead, state); every review is pinned to the same head, and if the pull request moves or closes part-way the remaining models are reported as not_posted. If a later comment cannot be posted, that model is reported as rejected (GitHub refused it, nothing posted) or unknown (it may have posted; inspect the pull request rather than retrying), the rest as not_posted, and the reviews already posted are still returned and tracked.'
         : ''), scope,
       // `findingIds` is widened from a required `.min(1)` array to an optional
       // one so existing clients that send only findings stay byte-compatible,
