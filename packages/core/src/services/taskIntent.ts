@@ -10,6 +10,7 @@ import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
 import { WITHDRAWAL_CLEANUP_KEY, markerAppliedSinceTrigger, releaseWithdrawalCleanup, retainWithdrawalCleanup, triggerAppliedSinceClosure, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
+export { releaseWithdrawalCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
 import { staleTriggerMarkers } from '../daemon/triggerApplicationEvidence.js';
 
@@ -347,6 +348,24 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     return true;
 }
 
+/** Retains a closure obligation in the Redis instance shared by webhooks, polling and queue pickup. */
+export function retainClosureCleanup(target: IntentTarget, reason: string | undefined): Promise<RetainedCleanup | undefined> {
+    return retainWithdrawalCleanup(getUltrafixStateRedis(), target, reason ?? '');
+}
+
+/**
+ * Publishes a withdrawal's exclusion while a closure obligation keeps the issue
+ * out of discovery; the obligation is released only once the exclusion stands.
+ * Pass `cleanup` when it was retained before recording the cancellation.
+ */
+export async function excludeWithdrawnIssue(target: IntentTarget, reason: TaskTerminalReason | undefined, taskId?: string,
+    cleanup?: RetainedCleanup): Promise<boolean> {
+    const retained = cleanup ?? await retainClosureCleanup(target, reason);
+    const excluded = await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason, taskId);
+    if (excluded) await releaseWithdrawalCleanup(retained);
+    return excluded;
+}
+
 export function intentJobTaskId(job: { id?: string; data: Record<string, unknown> }): string {
     const data = job.data;
     if (data.isChildJob && typeof data.agentAlias === 'string' && typeof data.modelName === 'string' && typeof data.correlationId === 'string') {
@@ -464,14 +483,16 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
     const manager = getStateManager();
     const existing = await manager.getTaskState(taskId);
     if (existing?.state === 'cancelled' && !isBookkeepingCancellation(existing)) {
-        await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), existing.terminalReason, taskId);
+        // A retry of a late worker cancellation whose cleanup failed: the
+        // request is no longer scanned, so its obligation must outlive this attempt.
+        await excludeWithdrawnIssue(target, existing.terminalReason, taskId);
         return existing.terminalReason ?? 'cancelled_by_user';
     }
     const reason = await checkCurrentTaskIntent(target);
     if (!reason || reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await manager.getTaskState(taskId))) return null;
     await manager.createTaskStateIfAbsent(taskId, taskIntentIssueRef(data, target), typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
     // Queue pickup shares the webhook/polling Redis instance.
-    const cleanup = await retainWithdrawalCleanup(getUltrafixStateRedis(), target, reason);
+    const cleanup = await retainClosureCleanup(target, reason);
     // This job is the failed attempt's live retry, so its withdrawal is recorded.
     const cancelled = await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason, withdrawnQueuedRetry: true });
     if (cancelled && cancelled.state !== 'cancelled') {
@@ -483,6 +504,6 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
         return null;
     }
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
-    if (await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason)) await releaseWithdrawalCleanup(cleanup);
+    await excludeWithdrawnIssue(target, reason, undefined, cleanup);
     return reason;
 }

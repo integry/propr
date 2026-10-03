@@ -1313,6 +1313,36 @@ test('queue pickup of a closed issue retains its exclusion when the marker fails
     assert.equal(jobs.length, 0);
 });
 
+test('already cancelled admission of a late worker closure retains its exclusion when the marker fails', async () => {
+    // The worker recorded the closure; its own cleanup failed and left no obligation.
+    addRunning('late', target, 'cancelled');
+    states.get('late').terminalReason = 'cancelled_issue_closed';
+    const job = addJob('late', target, 'active');
+    tracker = { state: 'closed', labels: ['AI'] };
+    timeline.push({ event: 'closed' });
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ')) throw Object.assign(new Error('Service Unavailable'), { status: 403 });
+    };
+    await assert.rejects(preventWithdrawnJob(job), /Service Unavailable/);
+    onRequest = undefined;
+    assert.equal(retainedCleanups().length, 1, 'the retry keeps an obligation after the request leaves every scan');
+    jobs.length = 0;
+    reopen();
+    assert.deepEqual(await pollRestoredIssues(), [{ status: 'ignored', reason: 'intent_not_current' }]);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+    assert.equal(jobs.length, 0);
+});
+
+test('already cancelled admission releases its obligation once the exclusion stands', async () => {
+    addRunning('late', target, 'cancelled');
+    states.get('late').terminalReason = 'cancelled_issue_closed';
+    tracker = { state: 'closed', labels: ['AI'] };
+    assert.equal(await preventWithdrawnJob(addJob('late', target, 'active')), 'cancelled_issue_closed');
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+});
+
 test('a closure that stops nothing releases its retained exclusion', async () => {
     tracker = { state: 'closed', labels: ['AI'] };
     addJob('protected', target);

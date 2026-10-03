@@ -17,6 +17,11 @@ let scheduled = 0;
 let initialState: { state: string; terminalReason?: string; history?: unknown[] } | undefined;
 let executionCancellationReason: string | undefined = 'cancelled_label_removed';
 const labelCleanups: unknown[][] = [];
+// Closure obligation lifecycle: retained, passed to exclusion, released.
+const obligations: string[] = [];
+const exclusions: unknown[][] = [];
+let exclusionStands = true;
+let exclusionError: Error | undefined;
 const taskLinks: string[] = [];
 const githubComments: string[] = [];
 const storedRefs: unknown[] = [];
@@ -24,7 +29,7 @@ const queueAssignments: unknown[] = [];
 const transitions: unknown[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const stateManager = {
-  markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { cancellations.push(metadata); },
+  markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { obligations.push('record'); cancellations.push(metadata); },
   createTaskStateIfAbsent: async (_id: string, ref: unknown) => { storedRefs.push(ref); return initialState; },
   getTaskState: async () => handoffState ?? (withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : null),
   updateTaskState: async (...args: unknown[]) => { transitions.push(args); },
@@ -36,6 +41,21 @@ await mock.module('@propr/core', { namedExports: {
   db: () => ({ where: (where: unknown) => ({ update: async (fields: unknown) => { queueAssignments.push({ where, fields }); } }) }),
   preventWithdrawnJob: async () => null,
   updateWithdrawnIssueLabels: async (...args: unknown[]) => { labelCleanups.push(args); },
+  retainClosureCleanup: async (_target: unknown, reason: string) => {
+    if (reason !== 'cancelled_issue_closed') return undefined;
+    obligations.push('retain');
+    return { member: 'obligation' };
+  },
+  releaseWithdrawalCleanup: async (cleanup: unknown) => { if (cleanup) obligations.push('release'); },
+  excludeWithdrawnIssue: async (...args: unknown[]) => {
+    exclusions.push(args);
+    if (exclusionError) {
+      // The cancellation is recorded, so the processor's catch path sees it.
+      handoffState = { state: 'cancelled', terminalReason: args[1] };
+      throw exclusionError;
+    }
+    return exclusionStands;
+  },
   loadPrimaryProcessingLabels: async () => ['AI', 'build'],
   associateSubmissionTask: async (_database: unknown, _id: string, taskId: string) => { taskLinks.push(taskId); },
   findIssueSubmission: async () => submitted ? { id: 'submission' } : undefined,
@@ -132,16 +152,15 @@ for (const [cancellationReason, phase] of [
     liveIssue = { ...liveIssue, state: 'open', labels: [{ name: phase === 'after admission' ? 'build' : 'AI' }] };
     outcome = 'withdrawn';
     executionCancellationReason = cancellationReason;
-    labelCleanups.length = 0;
+    exclusions.length = 0;
     try {
       const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason: cancellationReason });
-      assert.equal(labelCleanups.length, 1);
-      const [target, triggers, reason] = labelCleanups[0] as [Record<string, unknown>, string[], string];
+      assert.equal(exclusions.length, 1);
+      const [target, reason] = exclusions[0] as [Record<string, unknown>, string];
       assert.equal(target.triggeringLabel, 'AI');
-      assert.deepEqual(triggers, ['AI', 'build']);
       assert.equal(reason, cancellationReason);
     } finally {
       withdrawnDuringExecution = false;
@@ -150,6 +169,45 @@ for (const [cancellationReason, phase] of [
     }
   });
 }
+
+test('a closure found by the worker retains its obligation before recording and keeps it when exclusion fails', async () => {
+  liveIssue = { ...liveIssue, state: 'closed', labels: [{ name: 'AI' }] };
+  for (const stands of [false, true]) {
+    exclusionStands = stands;
+    obligations.length = 0;
+    exclusions.length = 0;
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
+    } } as unknown as Job<IssueJobData>);
+    assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_issue_closed' });
+    // The worker leaves release to the exclusion, which drops it only once the marker stands.
+    assert.deepEqual(obligations, ['retain', 'record']);
+    assert.equal(exclusions.length, 1);
+    assert.equal(exclusions[0][1], 'cancelled_issue_closed');
+    assert.deepEqual(exclusions[0][3], { member: 'obligation' }, 'the pre-recording obligation is handed to the exclusion');
+  }
+  exclusionStands = true;
+  liveIssue = { ...liveIssue, state: 'open' };
+});
+
+test('worker closure cleanup failures keep the obligation through the catch path', async () => {
+  liveIssue = { ...liveIssue, state: 'closed', labels: [{ name: 'AI' }] };
+  obligations.length = 0;
+  exclusions.length = 0;
+  exclusionError = new Error('Service Unavailable');
+  try {
+    await assert.rejects(processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
+    } } as unknown as Job<IssueJobData>), /Service Unavailable/);
+    assert.deepEqual(obligations, ['retain', 'record'], 'no failed cleanup releases the obligation');
+    assert.equal(exclusions.length, 2, 'the catch path retries the exclusion');
+    assert.equal(exclusions[1][1], 'cancelled_issue_closed');
+  } finally {
+    exclusionError = undefined;
+    handoffState = undefined;
+    liveIssue = { ...liveIssue, state: 'open' };
+  }
+});
 
 for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', 'pr_merged', undefined]) {
   test(`matrix child cancellation (${reason ?? 'missing reason'}) does not request issue-wide label cleanup`, async () => {

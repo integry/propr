@@ -7,7 +7,7 @@ import { formatTaskTerminalReason } from '@propr/shared';
 import { Job } from 'bullmq';
 import { postCancellationNotice } from './errorHandlers.js';
 import {
-  isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, loadPrimaryProcessingLabels, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
+  isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
@@ -97,9 +97,15 @@ async function checkIssueCancellation(
   const reason = withdrawnIntentReason(target, currentIssueData.data, [AI_PRIMARY_TAG]);
   if (reason) {
     if (reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await stateManager.getTaskState(taskId))) return null;
+    // Retained before recording: once cancelled, this request leaves the
+    // reconciliation scans, and only the obligation keeps a reopen idle.
+    const cleanup = await retainClosureCleanup(target, reason);
     const cancelled = await stateManager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
-    if (cancelled && cancelled.state !== TaskStates.CANCELLED) return null;
-    await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
+    if (cancelled && cancelled.state !== TaskStates.CANCELLED) {
+      await releaseWithdrawalCleanup(cleanup);
+      return null;
+    }
+    await excludeWithdrawnIssue(target, reason, undefined, cleanup);
     return { status: 'cancelled', reason };
   }
   const latest = await stateManager.getTaskState(taskId);
@@ -210,11 +216,8 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
       }
       if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
-        await updateWithdrawnIssueLabels(
-          { ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG },
-          await loadPrimaryProcessingLabels(),
-          latest.terminalReason,
-        );
+        // Another cleanup failure keeps a closure obligation for reconciliation.
+        await excludeWithdrawnIssue({ ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG }, latest.terminalReason);
       }
       return { status: 'cancelled', reason: latest.terminalReason };
     }
