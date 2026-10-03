@@ -76,7 +76,7 @@ A goal that is waiting on you shows a **Needs you** panel in the goal console, a
 Only explicit signals count:
 
 - **Paused** — the goal confirmed a pause and no resume is queued. Resume it, or send input.
-- **Question** — the provider sent a structured question. Send goal input to answer; ProPR delivers it as the reply. The question clears when the provider confirms it, not when you send.
+- **Question** — the provider sent a structured question. Send goal input to answer; ProPR delivers it as the reply. While several questions wait, a goal input cannot name the one it answers, so none is offered a direct answer until only one remains. The question clears when the provider confirms it, not when you send.
 - **Approval** — the provider sent a structured approval request. ProPR never approves for you; pause or cancel the goal to hand it off.
 
 Silence, slow work, rate limits, infrastructure failures, the agent's narration and corrections you have queued never raise one. Blockers are tied to the execution attempt that raised them: if the worker recovers the goal onto a new session, or the goal finishes, they are closed and cannot reappear.

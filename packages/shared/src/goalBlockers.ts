@@ -50,7 +50,7 @@ export const GOAL_BLOCKER_PROVIDER_SUPPORT: Readonly<Record<string, GoalBlockerP
     question: 'supported',
     approval: 'handoff',
     paused: 'supported',
-    notes: 'Codex App Server `item/tool/requestUserInput` server requests asking one question are answered with the next goal input; '
+    notes: 'Codex App Server `item/tool/requestUserInput` server requests asking one question are answered with the next goal input while no other answerable question waits; '
       + 'multi-question and secret requests are handed off; '
       + 'command, file-change and permission approval requests are reported but never approved by ProPR. '
       + '`serverRequest/resolved` or the end of the turn resolves them.',
@@ -248,6 +248,9 @@ const RESPONSE_HINTS: Record<GoalBlockerCategory, (actions: GoalBlockerAction[])
   approval: () => 'ProPR never approves provider requests. Pause or cancel the goal; the request is withdrawn at the provider turn boundary.',
 };
 
+const SEVERAL_QUESTIONS_HINT = 'Several questions are waiting, and a goal input cannot name the one it answers. '
+  + 'Answer once only one remains, or pause or cancel the goal to hand them off.';
+
 /** A confirmed pause with no queued resume. A queued resume is no longer waiting for a pause response. */
 export function isGoalPausedAwaitingOperator(goal: Pick<GoalBlockerGoalState,
   'result_state' | 'desired_state' | 'pause_confirmed_at' | 'resume_requested'>): boolean {
@@ -346,6 +349,15 @@ export function projectGoalAttention(goal: GoalBlockerGoalState, rows: readonly 
     if (seen.has(row.blocker_id) || !isCurrentGoalBlocker(goal, row)) continue;
     seen.add(row.blocker_id);
     blockers.push(providerBlocker(goal, row));
+  }
+  // A goal input names no question, so it can answer one only while no other is waiting.
+  const answerable = blockers.filter(blocker => blocker.category === 'question' && blocker.responseActions.includes('send_input'));
+  if (answerable.length > 1) {
+    for (const blocker of answerable) {
+      blocker.responseActions = blocker.responseActions.filter(action => action !== 'send_input');
+      blocker.actionable = blocker.responseActions.length > 0;
+      blocker.responseHint = SEVERAL_QUESTIONS_HINT;
+    }
   }
   blockers.sort((a, b) => (Date.parse(a.firstObservedAt ?? '') || 0) - (Date.parse(b.firstObservedAt ?? '') || 0)
     || a.id.localeCompare(b.id));

@@ -79,7 +79,7 @@ function userInputBlocker(params: Params): CodexServerRequestBlocker | null {
                     .map(option => safe((option as Params | null)?.label, GOAL_BLOCKER_OPTION_LIMIT)).filter(Boolean)
                 : [];
             return [{
-                id: id.slice(0, GOAL_BLOCKER_HEADER_LIMIT),
+                id,
                 header: safe(record.header, GOAL_BLOCKER_HEADER_LIMIT) || null,
                 question,
                 options,
@@ -100,7 +100,8 @@ function userInputBlocker(params: Params): CodexServerRequestBlocker | null {
             category: 'question',
             source: `codex_app_server:${CODEX_USER_INPUT_REQUEST}`,
             summary,
-            questions,
+            // The id is bounded for display only; the reply keeps the provider's own id.
+            questions: questions.map(question => ({ ...question, id: question.id.slice(0, GOAL_BLOCKER_HEADER_LIMIT) })),
             responseActions: answerable ? ['send_input', 'pause', 'cancel'] : ['pause', 'cancel'],
             ...(text(params.turnId) ? { turnId: String(params.turnId) } : {}),
         },
@@ -233,13 +234,16 @@ export class CodexProviderRequests {
     }
 
     /**
-     * Deliver an operator input as the reply to the oldest unanswered question, if one is waiting.
+     * Deliver an operator input as the reply to the unanswered question, if exactly one is waiting.
+     * A goal input names no question, so while several wait it answers none of them and is
+     * delivered as an ordinary correction instead.
      * Resolutions received while the caller awaited are applied first, with no await before the
      * response, so an input is never spent on a question the server already reported resolved.
      */
     async answer(input: { id: string; message: string }, turnId: string): Promise<boolean> {
         const work = this.absorb();
-        const question = [...this.open.values()].find(request => !request.answered && request.answerQuestionIds.length);
+        const waiting = [...this.open.values()].filter(request => !request.answered && request.answerQuestionIds.length);
+        const question = waiting.length === 1 ? waiting[0] : undefined;
         if (question) {
             this.connection.respond(question.id, codexUserInputResponse(question.answerQuestionIds, input.message));
             question.answered = true;

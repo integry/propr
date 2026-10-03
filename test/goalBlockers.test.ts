@@ -92,6 +92,16 @@ describe('Codex App Server provider event fixtures', () => {
     assert.equal(codexServerRequestBlocker({ ...fixtures.userInput, id: 99 })!.report.requestKey, blocker.report.requestKey);
   });
 
+  test('a long question id is bounded for display but answered under the provider\'s own id', () => {
+    const id = `q-${'x'.repeat(240)}`;
+    const params = fixtures.userInput.params;
+    const blocker = codexServerRequestBlocker({ ...fixtures.userInput,
+      params: { ...params, questions: [{ ...params.questions[0], id }] } })!;
+    assert.equal(blocker.report.questions?.[0].id, id.slice(0, 200));
+    assert.deepEqual(blocker.answerQuestionIds, [id]);
+    assert.deepEqual(codexUserInputResponse(blocker.answerQuestionIds, 'Postgres'), { answers: { [id]: { answers: ['Postgres'] } } });
+  });
+
   test('a secret question is reported but handed off rather than answered through persisted input', () => {
     const blocker = codexServerRequestBlocker(fixtures.secretInput)!;
     assert.deepEqual(blocker.report.responseActions, ['pause', 'cancel']);
@@ -205,6 +215,21 @@ describe('Codex provider requests', () => {
     assert.ok(!harness.calls.includes('delivered:input-1'));
   });
 
+  test('an input is not guessed onto one of several waiting questions', async () => {
+    const harness = providerRequestHarness();
+    const second = { ...fixtures.userInput, id: 10, params: { ...fixtures.userInput.params, itemId: 'item-13',
+      questions: [{ ...fixtures.userInput.params.questions[0], id: 'region', question: 'Which region?' }] } };
+    harness.queued.requests.push(fixtures.userInput, second);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'eu-west-1' }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, [], 'neither question receives an answer meant for one of them');
+    assert.ok(!harness.calls.includes('delivered:input-1'));
+    // Once the provider resolves one, the remaining question is unambiguous again.
+    harness.queued.resolved.push(0);
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'eu-west-1' }, 'turn-1'), true);
+    assert.deepEqual(harness.responses, [{ id: 10, result: { answers: { region: { answers: ['eu-west-1'] } } } }]);
+  });
+
   test('a multi-question request never consumes an input', async () => {
     const harness = providerRequestHarness();
     harness.queued.requests.push(fixtures.multiQuestionInput);
@@ -268,6 +293,21 @@ describe('shared goal attention projection', () => {
     assert.equal(projectGoalAttention({ ...paused, resume_requested: true }).waitingForOperator, false);
     assert.equal(projectGoalAttention({ ...paused, pause_confirmed_at: null }).waitingForOperator, false,
       'a pause that is still pending is not yet waiting on anyone');
+  });
+
+  test('several answerable questions are offered no direct answer until only one remains', () => {
+    const second = row({ blocker_id: 'blocker-2', summary: 'Which region?', first_observed_at: '2026-10-03 10:01:00',
+      questions: JSON.stringify([{ id: 'region', header: null, question: 'Which region?', options: [], confidential: false }]) });
+    const attention = projectGoalAttention(runningGoal, [row(), second]);
+    for (const blocker of attention.blockers) {
+      assert.deepEqual(blocker.responseActions, ['pause', 'cancel']);
+      assert.equal(blocker.actionable, true);
+      assert.match(blocker.responseHint, /Several questions are waiting/);
+    }
+    assert.deepEqual(projectGoalAttention(runningGoal, [second]).blockers[0].responseActions, ['send_input', 'pause', 'cancel']);
+    const approval = row({ blocker_id: 'blocker-3', category: 'approval', response_actions: JSON.stringify(['pause', 'cancel']) });
+    assert.deepEqual(projectGoalAttention(runningGoal, [row(), approval]).blockers[0].responseActions, ['send_input', 'pause', 'cancel'],
+      'an approval alongside one question leaves that question answerable');
   });
 
   test('silence produces no blocker and stored provider text is re-bounded', () => {

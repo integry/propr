@@ -532,7 +532,7 @@ with a `responseHint`:
 | Category | Raised by | Response actions |
 | --- | --- | --- |
 | `paused` | A confirmed pause with no queued resume | `resume_goal`, `send_goal_input`, `cancel_goal` |
-| `question` | An explicit structured provider question | `send_goal_input` (the next input is delivered as the answer), `pause_goal`, `cancel_goal` |
+| `question` | An explicit structured provider question | `send_goal_input` (the next input is delivered as the answer; not offered while several questions wait), `pause_goal`, `cancel_goal` |
 | `approval` | An explicit structured provider approval request | `pause_goal`, `cancel_goal` — ProPR never approves on your behalf |
 
 Only explicit signals create a blocker. Silence, slow work, rate limits and
