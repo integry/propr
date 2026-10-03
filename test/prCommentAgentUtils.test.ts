@@ -326,7 +326,7 @@ describe('PR follow-up repository validation reports', () => {
                     authorsText: '@example',
                 }, { success: true, summary: 'Checked the requested follow-up.', repositoryValidation } as never);
                 assert.ok(comment.length < 65_536, `completion comment has ${comment.length} characters`);
-                assert.match(comment, new RegExp(`- \\[1\\] : #a+…: ${status.replace(/[()]/g, '\\$&')}`));
+                assert.match(comment, new RegExp(`- \\[1\\] : #a+…: ${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
                 assert.match(comment, /- \[2\] npm test: Passed/);
             }
         }
