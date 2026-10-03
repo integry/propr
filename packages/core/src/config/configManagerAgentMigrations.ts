@@ -166,30 +166,37 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
-    // Preserve the model family and reasoning intent of retired Thinking models.
+    // Collapse effort variants into a model plus its existing reasoning override.
     const replacements: Record<string, string> = {
-        'antigravity-claude-sonnet-4.6-thinking': 'antigravity-claude-sonnet-5.5-high',
-        'antigravity-claude-opus-4.6-thinking': 'antigravity-claude-opus-5.5-high'
+        'antigravity-claude-sonnet-4.6-thinking': 'antigravity-claude-sonnet-5.5',
+        'antigravity-claude-opus-4.6-thinking': 'antigravity-claude-opus-5.5'
     };
-    const replaceModel = (model: string) => replacements[model] ?? model;
-    if (agent.supportedModels.some(model => replacements[model])) {
-        agent.supportedModels = [...new Set(agent.supportedModels.map(replaceModel))];
-        migrated = true;
-    }
-    if (agent.defaultModel && replacements[agent.defaultModel]) {
-        agent.defaultModel = replaceModel(agent.defaultModel);
-        migrated = true;
-    }
-    for (const key of ['modelCustomLabels', 'modelReasoningLevels'] as const) {
-        const overrides = agent[key];
-        if (!overrides) continue;
-        for (const [oldModel, newModel] of Object.entries(replacements)) {
-            if (overrides[oldModel] === undefined) continue;
-            overrides[newModel] ??= overrides[oldModel];
-            delete overrides[oldModel];
-            migrated = true;
+    const models = new Set([
+        ...agent.supportedModels, ...(agent.defaultModel ? [agent.defaultModel] : []),
+        ...Object.keys(agent.modelCustomLabels ?? {}), ...Object.keys(agent.modelReasoningLevels ?? {})
+    ]);
+    for (const model of models) {
+        if (/^antigravity-.*-(low|medium|high)$/.test(model) && MODEL_INFO_MAP[model.replace(/-(low|medium|high)$/, '')]) {
+            replacements[model] = model.replace(/-(low|medium|high)$/, '');
         }
     }
+    // Prefer the old default's effort if several enabled variants collapse together.
+    const orderedModels = [...models].sort((a, b) => Number(b === agent.defaultModel) - Number(a === agent.defaultModel));
+    for (const oldModel of orderedModels) {
+        const newModel = replacements[oldModel];
+        if (!newModel) continue;
+        const effort = oldModel.match(/-(low|medium|high)$/)?.[1] ?? 'high';
+        agent.modelReasoningLevels ??= {};
+        agent.modelReasoningLevels[newModel] ??= agent.modelReasoningLevels[oldModel] ?? (effort as 'low' | 'medium' | 'high');
+        delete agent.modelReasoningLevels[oldModel];
+        if (agent.modelCustomLabels?.[oldModel] !== undefined) {
+            agent.modelCustomLabels[newModel] ??= agent.modelCustomLabels[oldModel];
+            delete agent.modelCustomLabels[oldModel];
+        }
+        migrated = true;
+    }
+    agent.supportedModels = [...new Set(agent.supportedModels.map(model => replacements[model] ?? model))];
+    if (agent.defaultModel) agent.defaultModel = replacements[agent.defaultModel] ?? agent.defaultModel;
 
     if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
         agent.configPath = '~/.gemini';

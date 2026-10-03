@@ -1,3 +1,5 @@
+import { ANTIGRAVITY_MODELS, getReasoningLevelsForAgentType, type ModelReasoningLevel } from '@propr/shared';
+
 export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
     'antigravity-gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
     'antigravity-gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
@@ -40,11 +42,22 @@ const ANTIGRAVITY_CANONICAL_MODEL_IDS: Record<string, string> = {
     'antigravity-gemini-3.7-flash-low': 'gemini-3.7-flash-low',
 };
 
-export function toAntigravityCliModelId(modelName: string): string {
+export function toAntigravityCliModelId(modelName: string, reasoningLevel?: ModelReasoningLevel): string {
     // Strip an optional `antigravity:` route prefix (agent:model format).
     const withoutRoutePrefix = modelName.startsWith('antigravity:')
         ? modelName.slice('antigravity:'.length)
         : modelName;
+
+    const baseModel = ANTIGRAVITY_MODELS.find(model => model.id === withoutRoutePrefix);
+    if (baseModel) {
+        const levels = getReasoningLevelsForAgentType('antigravity', baseModel.id);
+        // Medium is the neutral fallback; higher system levels map to High.
+        // Pro has no Medium, so ties prefer the more capable level.
+        const preferred = reasoningLevel === 'low' ? 'low'
+            : !reasoningLevel || reasoningLevel === 'auto' || reasoningLevel === 'medium' ? 'medium' : 'high';
+        const level = levels.includes(preferred) ? preferred : levels.includes('high') ? 'high' : levels[0];
+        return toAntigravityCliModelId(`${baseModel.id}-${level}`);
+    }
 
     const canonicalModelId = ANTIGRAVITY_CANONICAL_MODEL_IDS[withoutRoutePrefix];
     if (canonicalModelId) return canonicalModelId;
@@ -61,6 +74,12 @@ export function toAntigravityCliModelId(modelName: string): string {
 }
 
 export function antigravityModelIdsMatch(requestedModel: string, reportedModel: string): boolean {
+    const baseModel = requestedModel.replace(/^antigravity:/, '');
+    if (ANTIGRAVITY_MODELS.some(model => model.id === baseModel)) {
+        return getReasoningLevelsForAgentType('antigravity', baseModel).some(level =>
+            reportedModel === `${baseModel}-${level}` || reportedModel === toAntigravityCliModelId(baseModel, level)
+        ) || reportedModel === baseModel;
+    }
     return reportedModel === requestedModel
         || reportedModel === toAntigravityCliModelId(requestedModel);
 }

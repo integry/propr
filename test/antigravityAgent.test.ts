@@ -209,3 +209,28 @@ describe('AntigravityAgent token estimation', () => {
         assert.ok(usage.output_tokens! > 0);
     });
 });
+
+test('Antigravity maps model reasoning choices to supported CLI efforts', () => {
+    const flash = 'antigravity-gemini-3.8-flash';
+    assert.equal(toAntigravityCliModelId(flash, 'low'), 'gemini-3.8-flash-low');
+    assert.equal(toAntigravityCliModelId(flash, 'medium'), 'gemini-3.8-flash-medium');
+    for (const level of ['high', 'xhigh', 'max', 'ultra', 'ultracode'] as const) {
+        assert.equal(toAntigravityCliModelId(flash, level), 'gemini-3.8-flash-high');
+    }
+    assert.equal(toAntigravityCliModelId(flash, ''), 'gemini-3.8-flash-medium');
+    assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (High)');
+    assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'low'), 'GPT-OSS 120B (Medium)');
+    assert.equal(toAntigravityCliModelId('antigravity:antigravity-claude-opus-5.5', 'high'), 'Claude Opus 5.5 (High)');
+});
+
+test('Antigravity reasoning resolves task choices before model overrides', async () => {
+    const model = 'antigravity-gemini-3.8-flash';
+    const agent = new AntigravityAgent({
+        id: 'reasoning-test', type: 'antigravity', alias: 'antigravity', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '~/.gemini', supportedModels: [model],
+        modelReasoningLevels: { [model]: 'low' }
+    });
+    const resolver = agent as unknown as { resolveReasoningLevel(level: 'high' | undefined, model: string): Promise<string> };
+    assert.equal(await resolver.resolveReasoningLevel('high', model), 'high');
+    assert.equal(await resolver.resolveReasoningLevel(undefined, `antigravity:${model}`), 'low');
+});

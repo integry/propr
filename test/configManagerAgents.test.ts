@@ -321,7 +321,7 @@ describe('agent config migration', () => {
     test('migrates retired Antigravity Claude models and preserves overrides', () => {
         for (const family of ['opus', 'sonnet']) {
             const oldModel = `antigravity-claude-${family}-4.6-thinking`;
-            const newModel = `antigravity-claude-${family}-5.5-high`;
+            const newModel = `antigravity-claude-${family}-5.5`;
             const agent = createAgent({
                 type: 'antigravity',
                 supportedModels: [oldModel],
@@ -340,7 +340,21 @@ describe('agent config migration', () => {
         }
     });
 
-    test('adds Gemini 3.8 tiers without changing an existing Antigravity default', () => {
+    test('collapses Antigravity efforts while preserving the default effort and label', () => {
+        const model = 'antigravity-gemini-3.8-flash';
+        const agent = createAgent({
+            type: 'antigravity', supportedModels: [`${model}-low`, `${model}-medium`, `${model}-high`],
+            defaultModel: `${model}-high`, modelCustomLabels: { [`${model}-high`]: 'fast-review' }
+        });
+        migrateAgentConfig(agent);
+        assert.equal(agent.defaultModel, model);
+        assert.equal(agent.supportedModels.filter(id => id.startsWith(model)).length, 1);
+        assert.equal(agent.modelReasoningLevels?.[model], 'high');
+        assert.equal(agent.modelCustomLabels?.[model], 'fast-review');
+        assert.equal(migrateAgentConfig(agent), false);
+    });
+
+    test('adds Gemini 3.8 and migrates an existing Antigravity default', () => {
         const existingDefault = 'antigravity-gemini-3.6-flash-medium';
         const agent = createAgent({
             type: 'antigravity',
@@ -351,10 +365,9 @@ describe('agent config migration', () => {
         });
 
         assert.strictEqual(migrateAgentConfig(agent), true);
-        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash-high'));
-        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash-medium'));
-        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash-low'));
-        assert.strictEqual(agent.defaultModel, existingDefault);
+        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash'));
+        assert.strictEqual(agent.defaultModel, 'antigravity-gemini-3.6-flash');
+        assert.strictEqual(agent.modelReasoningLevels?.['antigravity-gemini-3.6-flash'], 'medium');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.antigravity);
     });
 

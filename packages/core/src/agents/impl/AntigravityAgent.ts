@@ -10,7 +10,8 @@ import {
     setWorktreeOwnership,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveConfigPath } from '../../config/configManager.js';
+import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
+import type { ModelReasoningLevel } from '@propr/shared';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -118,7 +119,7 @@ export class AntigravityAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel: await this.resolveReasoningLevel(options.reasoningLevel, effectiveModel), issueNumber: issueRef.number, environment, taskId, transcriptPath });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -156,7 +157,7 @@ export class AntigravityAgent implements Agent {
                 buildDockerArgs: async ({ conversationId, launch }) => {
                     const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
                     return this.buildDockerArgs({
-                        worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number, environment, taskId,
+                        worktreePath, githubToken, gitMountArgs, modelName: model, reasoningLevel: await this.resolveReasoningLevel(options.reasoningLevel, model), issueNumber: issueRef.number, environment, taskId,
                         executionMode: 'goal', resumeConversationId: conversationId, nativeGoalLaunch: launch,
                     });
                 },
@@ -376,12 +377,12 @@ export class AntigravityAgent implements Agent {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
-        const effectiveModel = model || 'antigravity-gemini-3.5-flash-medium';
+        const effectiveModel = model || 'antigravity-gemini-3.5-flash';
         const effectiveTimeoutMs = timeoutMs ?? DEFAULT_ANTIGRAVITY_ANALYSIS_TIMEOUT_MS;
         const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, reasoningLevel: await this.resolveReasoningLevel(options?.reasoningLevel, effectiveModel), issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -451,7 +452,11 @@ export class AntigravityAgent implements Agent {
         return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
+    private async resolveReasoningLevel(level: ModelReasoningLevel | undefined, model: string | undefined): Promise<ModelReasoningLevel> {
+        return level ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) ?? await loadModelReasoningLevel();
+    }
+
+    private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, nativeGoalLaunch = false, printTimeoutMs = this.timeoutMs } = params;
         const configPath = this.getHostConfigPath();
         const runtimeName = this.getRuntimeName();
@@ -480,7 +485,7 @@ export class AntigravityAgent implements Agent {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
             // to the Antigravity CLI's native model name. Passing the prefixed id
             // makes `agy` fall back to its default model.
-            const cleanModelName = toAntigravityCliModelId(modelName);
+            const cleanModelName = toAntigravityCliModelId(modelName, params.reasoningLevel);
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }

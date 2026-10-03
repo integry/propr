@@ -221,3 +221,16 @@ describe('AgentConfigModal', () => {
     })).toHaveDisplayValue('Ultracode (unsupported for Codex) — GitHub: level-ultracode');
   });
 });
+
+ it('offers one Antigravity entry per model with model-specific reasoning choices', () => {
+    render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Antigravity$/ }));
+    const flash = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.8 Flash');
+    expect(flash).toHaveValue('');
+    expect(Array.from(flash.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    const pro = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro');
+    expect(Array.from(pro.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'high']);
+    const oss = screen.getByLabelText('Reasoning level for Antigravity GPT-OSS 120B');
+    expect(Array.from(oss.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'medium']);
+    expect(screen.queryByText('Antigravity Claude Opus 5.5 High')).not.toBeInTheDocument();
+ });

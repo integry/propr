@@ -31,8 +31,8 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
-        supportedModels: ['antigravity-gemini-3.7-flash-medium', 'antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-5.5-high'],
-        defaultModel: 'antigravity-gemini-3.5-flash-medium',
+        supportedModels: ['antigravity-gemini-3.7-flash', 'antigravity-gemini-3.5-flash', 'antigravity-claude-opus-5.5'],
+        defaultModel: 'antigravity-gemini-3.5-flash',
         ...overrides
     };
 }
@@ -97,24 +97,19 @@ test('Antigravity is the canonical selectable agent type', () => {
 });
 
 test('Antigravity metadata includes non-Google model families', () => {
-    const opusModel = MODEL_INFO_MAP['antigravity-claude-opus-5.5-high'];
-    assert.equal(opusModel.name, 'Antigravity Claude Opus 5.5 High');
+    const opusModel = MODEL_INFO_MAP['antigravity-claude-opus-5.5'];
+    assert.equal(opusModel.name, 'Antigravity Claude Opus 5.5');
     assert.equal(opusModel.openRouterId, 'anthropic/claude-opus-5.5');
-    assert.equal(getModelHardLimit('antigravity-claude-opus-5.5-high'), 980000);
+    assert.equal(getModelHardLimit('antigravity-claude-opus-5.5'), 980000);
 });
 
-test('Claude 5.5 effort labels resolve without colliding with Claude Code models', () => {
+test('Antigravity model aliases identify families independently of reasoning', () => {
     for (const family of ['opus', 'sonnet']) {
-        for (const tier of ['low', 'medium', 'high']) {
-            const id = `antigravity-claude-${family}-5.5-${tier}`;
-            assert.equal(resolveModelAlias(`antigravity-${family}55-${tier}`), id);
-            assert.equal(getModelHardLimit(id), 980000);
-        }
+        const id = `antigravity-claude-${family}-5.5`;
+        assert.equal(resolveModelAlias(`antigravity-${family}55`), id);
+        assert.equal(getModelHardLimit(id), 980000);
     }
-});
-
-test('Gemini 3.8 Flash uses the Antigravity 1M model limit', () => {
-    assert.equal(getModelHardLimit('antigravity-gemini-3.8-flash-high'), 980000);
+    assert.equal(getModelHardLimit('antigravity-gemini-3.8-flash'), 980000);
 });
 
 test('AgentRegistry creates AntigravityAgent for antigravity configs', () => {
@@ -911,37 +906,37 @@ test('Antigravity labels resolve to Antigravity models', async (t) => {
     registry.agents = new Map([[config.id, fakeAgent]]);
     registry.agentsByAlias = new Map([[config.alias, fakeAgent]]);
 
-    const resolution = await resolveLlmLabel('antigravity-flash-medium');
+    const resolution = await resolveLlmLabel('antigravity-flash');
     assert.deepEqual(resolution, {
         agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash-medium'
+        model: 'antigravity-gemini-3.5-flash'
     });
 
-    assert.equal(resolveModelAlias('antigravity-flash-medium'), 'antigravity-gemini-3.5-flash-medium');
+    assert.equal(resolveModelAlias('antigravity-flash'), 'antigravity-gemini-3.5-flash');
 
-    const flash37Resolution = await resolveLlmLabel('antigravity-flash37-medium');
+    const flash37Resolution = await resolveLlmLabel('antigravity-flash37');
     assert.deepEqual(flash37Resolution, {
         agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.7-flash-medium'
+        model: 'antigravity-gemini-3.7-flash'
     });
-    assert.equal(resolveModelAlias('antigravity-flash37-medium'), 'antigravity-gemini-3.7-flash-medium');
+    assert.equal(resolveModelAlias('antigravity-flash37'), 'antigravity-gemini-3.7-flash');
 
-    const flash38Resolution = await resolveLlmLabel('antigravity-flash38-medium');
+    const flash38Resolution = await resolveLlmLabel('antigravity-flash38');
     assert.deepEqual(flash38Resolution, {
         agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.8-flash-medium'
+        model: 'antigravity-gemini-3.8-flash'
     });
-    assert.equal(resolveModelAlias('antigravity-flash38-medium'), 'antigravity-gemini-3.8-flash-medium');
+    assert.equal(resolveModelAlias('antigravity-flash38'), 'antigravity-gemini-3.8-flash');
 
-    const prefixedResolution = await resolveLlmLabel('llm-antigravity-flash-medium'.replace(/^llm-/, ''));
+    const prefixedResolution = await resolveLlmLabel('llm-antigravity-flash'.replace(/^llm-/, ''));
     assert.deepEqual(prefixedResolution, {
         agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash-medium'
+        model: 'antigravity-gemini-3.5-flash'
     });
 
-    const scopedResolution = await resolveLlmLabel('antigravity:antigravity-gemini-3.5-flash-medium');
+    const scopedResolution = await resolveLlmLabel('antigravity:antigravity-gemini-3.5-flash');
     assert.deepEqual(scopedResolution, {
         agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash-medium'
+        model: 'antigravity-gemini-3.5-flash'
     });
 });

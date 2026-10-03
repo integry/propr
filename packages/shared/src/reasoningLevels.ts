@@ -87,9 +87,14 @@ export function parseReasoningLevelFromLabels(labels: readonly ReasoningLevelLab
   return REASONING_LEVEL_LABEL_PRIORITY.find(level => matchedLevels.has(level));
 }
 
-export function getReasoningLevelsForAgentType(agentType: AgentType): readonly ReasoningLevel[] {
+export function getReasoningLevelsForAgentType(agentType: AgentType, model?: string): readonly ReasoningLevel[] {
   if (agentType === 'codex') return CODEX_REASONING_LEVELS;
   if (agentType === 'claude') return CLAUDE_REASONING_LEVELS;
+  if (agentType === 'antigravity') {
+    if (model?.includes('gpt-oss-120b')) return ['medium'];
+    if (model?.includes('gemini-3.1-pro')) return ['low', 'high'];
+    return ['low', 'medium', 'high'];
+  }
   return [];
 }
 
