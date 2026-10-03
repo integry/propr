@@ -44,7 +44,7 @@ export function buildConflictResolutionPrompt(options: {
     repoOwner: string;
     repoName: string;
 }): string {
-    const { pullRequestNumber, baseBranch, headBranch, conflictedFiles, worktreeInfo, repoOwner, repoName } = options;
+    const { pullRequestNumber, baseBranch, headBranch, conflictedFiles, repoOwner, repoName } = options;
 
     const hasKnownConflicts = conflictedFiles && conflictedFiles.length > 0;
     const fileList = hasKnownConflicts ? conflictedFiles.map(f => `- \`${f}\``).join('\n') : '';
@@ -68,7 +68,7 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
    - Why you chose this resolution approach
 
 **CRITICAL INSTRUCTIONS:**
-- You are in directory: ${worktreeInfo.worktreePath}
+- Work in /home/node/workspace, the writable repository mount inside your container. Use this directory for all file edits and verification commands.
 - DO NOT commit your changes - the system will handle the commit for you.
 - Do not inspect or repair .git permissions. In your final response, do not mention that changes are uncommitted or that you did not create a commit; ProPR creates and reports the commit after you finish.
 - DO NOT create a new pull request.

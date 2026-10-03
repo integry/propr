@@ -37,6 +37,63 @@ after(async () => {
 });
 
 describe('notification lifecycle projection', { concurrency: false }, () => {
+  test('does not notify for pending or deferred reviews, including recovered completions', async () => {
+    const completions = [
+      { deferred: true, recoveryReason: 'ultrafix_waiting_for_exact_head_checks' },
+      { deferred: true },
+      { recoveryReason: 'ultrafix_waiting_for_exact_head_checks' },
+      { finalizedBy: 'bullmq_completed', jobResultStatus: 'skipped',
+        jobResultReason: 'ultrafix_waiting_for_exact_head_checks' },
+    ];
+    for (const [index, metadata] of completions.entries()) {
+      const taskId = `deferred-review-${index}`;
+      await database('tasks').insert({
+        task_id: taskId, repository: 'integry/propr', pr_number: 42,
+        task_type: index === 1 ? 'review' : 'pr-comment',
+        initial_job_data: JSON.stringify({ commandMode: 'review', pullRequestNumber: 42 }),
+      });
+      await database('task_history').insert({
+        task_id: taskId, state: 'completed', timestamp: iso(2_000),
+        metadata: JSON.stringify({ ...metadata,
+          notificationRecap: 'Review deferred until the continuation pull request passes its exact-head checks.' }),
+      });
+      for (const [offset, state] of ['queued', 'processing', 'completed'].entries()) {
+        await projection.projectTaskUpdate({
+          eventType: TASK_UPDATE, taskId, state, timestamp: iso(offset * 1_000),
+        });
+      }
+    }
+
+    assert.equal(await countNotificationEvents(database), 0);
+    assert.equal(await database('notification_user_states').count('* as count').first()
+      .then(row => Number(row?.count)), 0);
+    const activities = await database('notification_source_activity').select('status');
+    assert.equal(activities.length, completions.length);
+    assert.ok(activities.every(activity => activity.status === 'completed'));
+    clock += 20_000;
+    await projection.detectStalledActivities();
+    assert.equal(await countNotificationEvents(database), 0);
+  });
+
+  test('classifies a completed review using the initial command mode when history omits it', async () => {
+    await database('tasks').insert({
+      task_id: 'completed-review', repository: 'integry/propr', pr_number: 42,
+      task_type: 'pr-comment',
+      initial_job_data: JSON.stringify({ commandMode: 'review', pullRequestNumber: 42 }),
+    });
+    await database('task_history').insert({
+      task_id: 'completed-review', state: 'completed', timestamp: iso(),
+      metadata: JSON.stringify({ notificationRecap: 'Score 9/10 · 0 issues found' }),
+    });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'completed-review', state: 'completed', timestamp: iso(),
+    });
+    const events = await database('notification_events').select('kind', 'title', 'body');
+    assert.deepEqual(events, [{
+      kind: 'review', title: 'Review completed for PR #42', body: 'Score 9/10 · 0 issues found',
+    }]);
+  });
+
   test('stores the goal destination for completed, failed, and stalled goal tasks', async () => {
     for (const state of ['completed', 'failed', 'processing']) {
       await database('tasks').insert({
@@ -790,3 +847,45 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     assert.deepEqual(warnings, ['[NotificationProjection] Failed to project draft publication']);
   });
 });
+
+for (const [reason, explanation] of [
+  ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],
+  ['cancelled_label_removed', 'Cancelled because the processing trigger label was removed.'],
+  ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.'],
+  ['cancelled_by_user', 'Cancelled by a user.'],
+  ['timed_out', 'The task exceeded its time limit.'],
+  ['pr_merged', 'The pull request was merged.'],
+]) {
+  test(`Inbox explains ${reason} in human-readable text`, async () => {
+    await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'withdrawn', state: reason === 'timed_out' ? 'failed' : 'cancelled', timestamp: iso(),
+      metadata: { terminalReason: reason },
+    });
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].body, explanation);
+    assert.equal(notifications[0].severity, reason === 'timed_out' ? 'error' : 'info');
+    if (reason !== 'timed_out') assert.ok(!notifications[0].actions.includes('retry' as never));
+  });
+}
+
+for (const terminalReason of [undefined, '', 'unknown_internal_code', 'cancelled_collision_attempt_recovery', 'timed_out']) {
+  test(`Inbox ignores bookkeeping cancellation with terminal reason ${terminalReason}`, async () => {
+    await database('tasks').insert({ task_id: 'rescheduled', repository: 'integry/propr', pr_number: 42, task_type: 'pr-comment' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'processing', timestamp: iso(),
+    });
+    for (const offset of [1000, 2000]) {
+      await projection.projectTaskUpdate({
+        eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'cancelled', timestamp: iso(offset),
+        metadata: terminalReason === undefined ? {} : { terminalReason },
+      });
+    }
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 0);
+    // Filtering the notification must still resolve activity tracking.
+    const activity = await database('notification_source_activity').where({ activity_type: 'task', activity_key: 'rescheduled' }).first();
+    assert.equal(activity.status, 'cancelled');
+  });
+}

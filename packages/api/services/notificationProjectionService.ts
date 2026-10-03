@@ -7,6 +7,7 @@ import {
   type NotificationRecipient,
 } from '@propr/core';
 import {
+  formatTaskTerminalReason,
   normalizeISO8601Timestamp,
   NOTIFICATION_UPDATE,
   type DraftUpdatePayload,
@@ -18,9 +19,26 @@ import {
   type TaskUpdatePayload,
 } from '@propr/shared';
 
+function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
+  const terminalReason = payload.metadata?.terminalReason;
+  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? formatTaskTerminalReason(terminalReason) : undefined]
+    .filter(Boolean).join(' · ') || undefined;
+}
+
 const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
+const CANCELLATION_REASONS = new Set([
+  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
+]);
+
+function isNotifiableCancellation(payload: TaskUpdatePayload): boolean {
+  const terminalReason = payload.metadata?.terminalReason;
+  return payload.state === 'cancelled'
+    && typeof terminalReason === 'string'
+    && CANCELLATION_REASONS.has(terminalReason);
+}
+
 const TERMINAL_ACTIVITY_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 // Repository settings change rarely while lifecycle projections are frequent;
 // a short TTL removes almost all reads yet applies an operator's change quickly.
@@ -91,6 +109,7 @@ interface TaskContext {
   recap?: string;
   commandMode?: string;
   isReview: boolean;
+  reviewDeferred: boolean;
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
   pullRequestFollowupEligible: boolean;
@@ -238,6 +257,32 @@ function resolveCommandMode(
 ): string | undefined {
   if (typeof historyMetadata.commandMode === 'string') return historyMetadata.commandMode;
   return typeof initial.commandMode === 'string' ? initial.commandMode : undefined;
+}
+
+function resolvePullRequestNumber(
+  task: Record<string, unknown>,
+  initial: Record<string, unknown>,
+  historyMetadata: Record<string, unknown>,
+  taskId: string,
+): number | undefined {
+  const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
+    ? historyMetadata.prResult as Record<string, unknown>
+    : {};
+  const isPullRequestTask = task.task_type === 'review'
+    || task.task_type === 'pr-comment'
+    || taskId.startsWith('pr-comments-batch-')
+    || positiveInteger(initial.pullRequestNumber) !== undefined;
+  return positiveInteger(task.pr_number)
+    ?? positiveInteger(initial.pullRequestNumber)
+    ?? positiveInteger(initial.prNumber)
+    ?? positiveInteger(prResult.prNumber)
+    ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
+}
+
+function isReviewDeferred(metadata: Record<string, unknown>): boolean {
+  return metadata.deferred === true
+    || metadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
+    || metadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
 }
 
 function notificationRecap(metadata: Record<string, unknown>): string | undefined {
@@ -613,13 +658,16 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
-    if (payload.state === 'failed') {
+    if (payload.state === 'failed' || isNotifiableCancellation(payload)) {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
       });
       return;
     }
     if (payload.state !== 'completed') return;
+    // A worker can finish after deferring a review without running it. Keep
+    // its activity terminal, but do not advertise a result in Inbox or push.
+    if (context.reviewDeferred) return;
 
     if (context.isReview && context.prNumber !== undefined) {
       await this.projectCompletedReview(
@@ -898,25 +946,26 @@ export class NotificationProjectionService {
 
   private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {
     const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    const terminalReason = typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined;
     return this.createPullRequestAwareEvent({
       deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
       kind: 'task',
-      severity: 'error',
+      severity: payload.state === 'cancelled' ? 'info' : 'error',
       target: {
         type: 'task', repository: context.repository, taskId: payload.taskId,
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
       title: context.subjectTitle ?? (context.prNumber !== undefined
-        ? `Task failed for PR #${context.prNumber}`
+        ? `Task ${payload.state} for PR #${context.prNumber}`
         : context.issueNumber !== undefined
-          ? `Task failed for issue #${context.issueNumber}`
-          : 'Task failed'),
-      body: context.description
+          ? `Task ${payload.state} for issue #${context.issueNumber}`
+          : `Task ${payload.state}`),
+      body: terminalReason ? formatTaskTerminalReason(terminalReason) : (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
-        : `Work for ${context.repository} did not complete.`,
+        : `Work for ${context.repository} did not complete.`),
       actions: taskActions({
-        followup: context.followupEligible,
+        followup: payload.state !== 'cancelled' && context.followupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
@@ -1031,25 +1080,15 @@ export class NotificationProjectionService {
     if (!task) return undefined;
     const initial = parseJsonObject(task.initial_job_data);
     const historyMetadata = await this.loadCompletedHistoryMetadata(payload);
-    const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
-      ? historyMetadata.prResult as Record<string, unknown>
-      : {};
     const repository = typeof task.repository === 'string'
       ? task.repository
       : payload.repository;
     if (typeof repository !== 'string') return undefined;
     const taskType = typeof task.task_type === 'string' ? task.task_type : '';
-    const isPullRequestTask = taskType === 'review'
-      || taskType === 'pr-comment'
-      || payload.taskId.startsWith('pr-comments-batch-')
-      || positiveInteger(initial.pullRequestNumber) !== undefined;
-    const prNumber = positiveInteger(task.pr_number)
-      ?? positiveInteger(initial.pullRequestNumber)
-      ?? positiveInteger(initial.prNumber)
-      ?? positiveInteger(prResult.prNumber)
-      ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
-    const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
+    const prNumber = resolvePullRequestNumber(task, initial, historyMetadata, payload.taskId);
     const commandMode = resolveCommandMode(historyMetadata, initial);
+    const isReview = taskType === 'review' || commandMode === 'review';
+    const reviewDeferred = isReviewDeferred(historyMetadata);
     const storedIssueNumber = positiveInteger(task.issue_number);
     const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
@@ -1060,9 +1099,10 @@ export class NotificationProjectionService {
       prNumber,
       description: taskDescription(initial),
       subjectTitle: subjectTitle(initial),
-      recap: notificationRecap(historyMetadata),
+      recap: taskNotificationRecap(historyMetadata, payload),
       commandMode,
       isReview,
+      reviewDeferred,
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
       pullRequestFollowupEligible: supportsPullRequestFollowup(task, prNumber),

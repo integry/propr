@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
+  db,
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
   getPlanIssue,
@@ -34,6 +35,7 @@ import {
   type UpdateIssueRequestBody,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
+import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
@@ -285,7 +287,7 @@ function sendImplementIssueError(res: Response, error: unknown): void {
     res.status(409).json({ error: error.message });
     return;
   }
-  if (error instanceof ImplementationRequestError) {
+  if (error instanceof ImplementationRequestError || error instanceof EpicQueueRequestError) {
     res.status(error.status).json({ error: error.message });
     return;
   }
@@ -320,14 +322,23 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
     }
   };
 }
-export function createImplementIssueHandler(deps: PlanIssueDeps) {
+export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics = true }: { enqueueEpics?: boolean } = {}) {
   return async function implementIssue(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseIssueNumberParam(req, res);
     if (issueNumber === null) return;
     try {
       const target = await loadImplementationTarget({ deps, req, draftId, issueNumber });
-      const result = await implementLoadedIssue({ ...target, draftId, issueNumber });
+      const { useEpic, autoMerge } = resolveImplementationSettings(target.implementationSettings, target.contextConfig);
+      const implement = () => implementLoadedIssue({ ...target, draftId, issueNumber });
+      const selectedHead = target.models?.[0] ?? buildEffectivePlanIssue(target.planIssue, target.body);
+      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig,
+        headSelection: selectedHead.agent_alias && selectedHead.model_name
+          ? { agent_alias: selectedHead.agent_alias, model_name: selectedHead.model_name } : undefined, implement };
+      let result: unknown;
+      if (enqueueEpics && useEpic) result = await enqueueEpicImplementation({ ...queued, autoMerge });
+      else if (enqueueEpics && autoMerge) result = await enqueueAutoMergeImplementation(queued);
+      else result = await implement();
       res.json(result);
     } catch (error) {
       sendImplementIssueError(res, error);
@@ -342,7 +353,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      const body = req.body as UpdateIssueRequestBody;
+      const body = req.body as UpdateIssueRequestBody & { syncEpicLabels?: boolean };
       const requestValidationError = validateUpdateIssueRequest(body);
       if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
@@ -355,6 +366,16 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);
       if (shouldUpdateConfig) {
         await updateIssueConfigWithRollback({ draftId, issueNumber, repository, currentIssue, updates: configUpdates });
+        if (body.syncEpicLabels === true) {
+          const { getEpicExecutionQueue } = await import('@propr/core');
+          const queue = await getEpicExecutionQueue(draftId);
+          if (!queue || queue.status !== 'active' || !queue.issues.includes(issueNumber)) throw new Error('Active epic queue is missing for selected issue');
+          const draft = await db('task_drafts').where({ draft_id: draftId }).first('context_config');
+          const context = parseContextConfig(draft?.context_config);
+          if (typeof context?.epicLabel !== 'string') throw new Error('Epic branch selector is missing for queued issue');
+          await syncQueuedEpicIssueSelectors({ draftId, repository, issueNumber, epicLabel: context.epicLabel,
+            autoMerge: queue.autoMerge, selection: buildUpdatedConfigState(currentIssue, configUpdates) });
+        }
       }
       let updated: PlanIssue | null;
       try {

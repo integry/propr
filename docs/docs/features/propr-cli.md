@@ -4,9 +4,7 @@ sidebar_position: 12
 
 # ProPR CLI
 
-The ProPR CLI (`propr`, npm package [`propr-cli`](https://www.npmjs.com/package/propr-cli)) is both the **control plane for a local ProPR stack** (scaffold, verify, start, stop — no hand-written `docker run`) and a **client for a running backend** (plans, issue implementation, tasks, repositories, agents, to-dos, settings, logs). Backend commands talk to the same API as the Web UI, so everything shows up in the dashboard and follows the normal review path.
-
-[Goals](./goals.md) have no CLI commands; launch and steer them from the Web UI or [MCP](./mcp.md).
+The ProPR CLI (`propr`, npm package [`propr-cli`](https://www.npmjs.com/package/propr-cli)) is both the **control plane for a local ProPR stack** (scaffold, verify, start, stop — no hand-written `docker run`) and a **client for a running backend** (plans, issue implementation, goals, tasks, repositories, agents, to-dos, settings, logs). Backend commands talk to the same API as the Web UI, so everything shows up in the dashboard and follows the normal review path.
 
 This page documents the end-user CLI. For developing or operating ProPR itself from a source checkout (compose stacks, image builds), see [CLI Workflows](./cli-workflows.md).
 
@@ -27,7 +25,7 @@ Bring up a complete ProPR stack from the terminal:
 ```bash
 propr setup              # guided one-time bootstrap: scaffold, verify, configure, start (re-runnable)
 propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
-propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
+propr check              # verify Docker, images, agents, and GitHub auth mode (--verify probes App access and smoke-tests agents)
 propr images pull        # pull missing or stale images without starting the stack
 propr start              # pull images and start the stack with a live dashboard
 propr status             # local stack status (--json for scripts)
@@ -57,7 +55,7 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
 
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
-- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
+- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
 
@@ -96,6 +94,50 @@ propr relay revoke <id>  # revoke a token
 ```
 
 `propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
+
+## Own GitHub App
+
+```bash
+propr github-app create --public-url https://propr.example.com --root /srv/propr
+propr github-app create --public-url https://propr.example.com --org my-org --no-browser
+propr github-app manifest --public-url https://propr.example.com --root /srv/propr
+```
+
+`create` registers a private GitHub App through GitHub's manifest flow, opens the
+installation page, verifies the installation, writes a `0600` private key and
+updates the stack `.env`. It configures direct webhooks and GitHub login through
+the same App, removes relay settings, and checks permissions, events, and token
+creation. Restart with `propr start --restart` afterward.
+
+`manifest` writes `github-app-manifest.json` and `github-app.env.example` for
+manual/offline preparation, without changing the stack `.env` or calling GitHub.
+Both commands use the same manifest builder.
+
+| Option | Meaning |
+|---|---|
+| `--public-url <url>` | Required public stack URL; webhook defaults to `/webhook` |
+| `--root <dir>` | Stack root; otherwise uses `PROPR_ROOT`, saved root, or cwd |
+| `--org <login>` | Register the App under this organization |
+| `--name <name>` | Override the sanitized `ProPR-<host>` default (maximum 34 characters); choose another in GitHub's form if taken |
+| `--webhook-url <url>` | Override the webhook endpoint |
+| `--webhook-secret <secret>` | `create`: update GitHub and `.env` with this secret after conversion |
+| `--allow-workflow-changes` | Request Workflows write; otherwise pushes editing `.github/workflows/*` fail |
+| `--no-browser` | `create`: portable HTML form and pasted redirect URLs for SSH |
+| `--force` | Replace existing credentials (with an env backup), or manual output files |
+| `--json` | Output field names and file paths only; progress remains on stderr |
+
+Over SSH, copy the printed HTML form to your browser's machine and open it, then
+paste each GitHub redirect URL back into the terminal. An unreachable loopback
+page is expected on a remote machine; GitHub redirects the browser there rather
+than calling localhost from its servers, so copy the URL from the address bar.
+Webhook POSTs use the public `--webhook-url` instead. See
+[Create your own App](../operations/github-auth.md#create-your-own-app) for the
+permission/event tables, callback constraints, and interrupted-setup recovery.
+
+`propr setup` offers **Custom GitHub App → Create it for me** or **I already have
+one**. ProPR Connect remains the default. `propr check` verifies installed
+permissions and events and explicitly warns about Actions read-only and absent
+Workflows write access.
 
 ## Hosted UI Tunnel
 
@@ -204,6 +246,60 @@ The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number
 | `-w, --wait` | Block until the task completes |
 | `--epic` | Create an Epic PR that collects the related PRs |
 | `--auto-merge` | Enable auto-merge once CI checks pass |
+
+## Goals
+
+[Goals](./goals.md) can be run end to end from the terminal. The commands use the same owner-scoped goal API as the Web UI, so goals created here appear on the **Goals** page and vice versa; no MCP connection is needed.
+
+```bash
+propr goal capabilities                       # Goal-capable agents, their models, and why others are unavailable (--recheck)
+propr goal create -p owner/repo -a codex -m <model> "Add audit logging"   # Create AND start a goal (or --file / --stdin)
+propr goal list --state active                # Your goals (--project, --state, --limit, --offset)
+propr goal inspect <goal-id>                  # State, narration, progress, checkpoints, pending input, model, failures, PRs
+propr goal input <goal-id> "Also cover the admin endpoints"   # Correction or question (or --file / --stdin / --canned done|left)
+propr goal inputs <goal-id>                   # Input delivery history, newest first (--limit, --offset)
+propr goal pause <goal-id>
+propr goal resume <goal-id>
+propr goal model <goal-id> <model>            # Request a model change at the next provider boundary
+propr goal cancel <goal-id>
+```
+
+**Creating a goal starts work immediately.** `goal create` options:
+
+| Option | Description |
+|--------|-------------|
+| `-p, --project` | Repository (`owner/repo`); defaults to the configured project |
+| `-a, --agent` | Agent ID or alias; defaults to the only goal-capable agent |
+| `-m, --model` | Model; defaults to the agent's default model |
+| `-s, --strategy` | `direct` (default) or `orchestrate` |
+| `-b, --base-branch` | Base branch for the goal's pull request |
+| `--max-parallel-tasks` | Parallel-task limit (1–32) |
+| `--checkpoint-interval` | Checkpoint target cadence in minutes, direct strategy only (5–120, default 15) |
+| `--ultrafix` | Run Ultrafix before the goal declares completion |
+| `--idempotency-key` | Key for safe retries and recovery (see below) |
+
+Agent, model and option validation is the same as goal creation in the Web UI: an unsupported model or a non-goal-capable agent is rejected with the server's reason.
+
+### Requests versus confirmed state
+
+Pause, resume, cancel, model changes and inputs are *requests*. They are accepted immediately and applied at the next provider boundary, so acceptance is not provider acknowledgement or completed execution. Output keeps the two apart:
+
+- `lifecycle.requestedState` is what was asked for (`running`, `paused`, `cancelled`); `lifecycle.observedState` is what has been confirmed (`starting`, `running`, `resuming`, `pausing`, `paused`, `cancelling`, `completed`, `failed`, `cancelled`). Control results also carry `requested` and `confirmed`.
+- `model.requested` and `model.effective` differ until the provider runs with the new model; `model.confirmed` is `true` only once they agree.
+- An input is `pending` (queued) until it is `delivered` to the provider. Delivery does not prove the agent acted on it, so `actedOn` is always `null`.
+- `lifecycle.goalCompleted` reflects the goal's result. `currentTask.taskCompleted` only reflects the current provider task: a completed task is not a completed goal.
+
+### Idempotency and recovery
+
+Every mutation sends an `Idempotency-Key`. Without `--idempotency-key` the CLI generates one per invocation and prints it. Transient failures (network errors, timeouts, 502/503/504) are retried automatically with the same key, so a retry never starts a second goal or queues a second input. Reusing a key with a different payload is rejected with `idempotency_conflict`.
+
+If the outcome still cannot be confirmed, the command exits 1 with `outcome_uncertain` and the key. This also applies when a retry after a lost response is refused with 401 or 403 (for example, because the login expired): the refusal does not prove that the earlier attempt failed, so the error keeps `outcome_uncertain` and the key, and adds `refusal` (`unauthorized` or `forbidden`). Run `propr login` or restore access first, then retry with the key. Re-run the same command with `--idempotency-key <key>`: if the goal was created, it is returned (`outcome: "replayed"`) instead of starting another one. A `saved_queue_pending` outcome means the goal was saved and the server's recovery will start it; do not create it again.
+
+### JSON output
+
+Every goal command accepts `--json` and prints a versioned document: `{ "version": 1, "kind": ... }` with kinds `goal-capabilities`, `goal-create`, `goal-list`, `goal-detail`, `goal-input`, `goal-inputs` and `goal-control`. Goal, task, session and input identifiers are preserved. Lists return `offset`, `limit` and `nextOffset` (`null` on the last page).
+
+Failures exit 1. With `--json` they print a `goal-error` document to stdout whose `error.code` is one of `invalid_arguments`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `idempotency_conflict`, `agent_not_goal_capable`, `state_conflict`, `outcome_uncertain`, `server_error`, `network_error` or `request_failed`, plus the server message, HTTP status, idempotency key and recovery hint where relevant. Another user's goal reads as `not_found`.
 
 ## Tasks
 

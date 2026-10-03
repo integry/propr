@@ -1,16 +1,15 @@
 import type { Logger } from 'pino';
 import {
+    getEpicExecutionQueue,
     findIssueSubmission,
     findPlanIssueByRepoAndNumber,
     generateCompletionComment,
     getAuthenticatedOctokit,
-    getPrimaryProcessingLabels,
     linkPRToPlanIssue,
     processCommentEvent,
     safeUpdateLabels,
     updatePlanIssueStatus,
     PlanIssueStatus,
-    getPlanIssuesByDraft,
     db,
     type CommentEventConfig,
     type ClaudeCodeResponse,
@@ -229,7 +228,11 @@ export async function triggerSystemUltrafix(options: {
     correlatedLogger.info({ prNumber, goal: sanitizedGoal, maxCycles: sanitizedMaxCycles }, 'Triggered system ultrafix for PR');
 }
 
-async function triggerNextPlanIssueIfNeeded(
+/**
+ * Records a no-change auto-merge completion. The status write notifies the plan's
+ * execution queue, which alone selects and starts any successor.
+ */
+async function markNoChangePlanIssueMerged(
     issueRef: IssueJobData,
     currentIssueData: { data: { labels: Array<{ name: string }> } },
     log: Logger,
@@ -238,60 +241,22 @@ async function triggerNextPlanIssueIfNeeded(
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
         if (!planIssue || !planIssue.draft_id) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping next issue trigger');
+            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping plan status update');
             return;
         }
 
         const labels = currentIssueData.data.labels.map((label) => label.name);
-        if (!labels.includes('auto-merge')) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping next issue trigger');
+        const queue = await getEpicExecutionQueue(planIssue.draft_id);
+        const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
+        if (!labels.includes('auto-merge') && !queued) {
+            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
             return;
         }
 
         await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
         log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
-
-        const planIssues = await getPlanIssuesByDraft(planIssue.draft_id);
-        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
-        const inProgressIssues = planIssues.filter(
-            (issue) => inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number,
-        );
-        if (inProgressIssues.length > 0) {
-            log.debug({
-                draftId: planIssue.draft_id,
-                inProgressIssues: inProgressIssues.map((issue) => ({
-                    number: issue.issue_number,
-                    status: issue.status,
-                })),
-            }, 'Skipping next issue trigger - there are issues still in progress');
-            return;
-        }
-
-        const nextPending = planIssues.find((issue) => issue.status === 'pending');
-        if (!nextPending) {
-            log.debug({ draftId: planIssue.draft_id }, 'No more pending issues in plan');
-            return;
-        }
-
-        const epicLabel = labels.find((label) => label.startsWith('base-'));
-        const labelsToAdd = [getPrimaryProcessingLabels()[0] || 'AI', 'auto-merge'];
-        if (epicLabel) labelsToAdd.push(epicLabel);
-
-        log.info({
-            draftId: planIssue.draft_id,
-            nextIssueNumber: nextPending.issue_number,
-            labels: labelsToAdd,
-        }, 'Triggering next pending issue in plan (no-changes case)');
-
-        const octokit = await getAuthenticatedOctokit();
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: nextPending.issue_number,
-            labels: labelsToAdd,
-        });
     } catch (error) {
-        log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to trigger next pending issue');
+        log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to mark no-change plan issue as merged');
     }
 }
 
@@ -333,7 +298,7 @@ export async function handleNoCodeChanges(options: {
         body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
     });
 
-    await triggerNextPlanIssueIfNeeded(issueRef, currentIssueData, correlatedLogger);
+    await markNoChangePlanIssueMerged(issueRef, currentIssueData, correlatedLogger);
     return { success: true, pr: null, updatedLabels: [AI_DONE_TAG] };
 }
 

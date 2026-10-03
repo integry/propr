@@ -23,7 +23,7 @@ import TodoList from '../components/TaskDetails/TodoList';
 import ExecutionEventLog from '../components/TaskDetails/ExecutionEventLog';
 import ThinkingLog from '../components/TaskDetails/ThinkingLog';
 import { useThinkingLog } from '../components/TaskDetails/useThinkingLog';
-import { trustedPreviewMedia } from '@propr/shared';
+import { isValidGoalParallelTasks, MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_PARALLEL_TASKS, trustedPreviewMedia } from '@propr/shared';
 import VisualPreviewGallery from '../components/VisualPreviewGallery';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
@@ -92,10 +92,7 @@ const readGoalFormSettings = (): GoalFormSettings => {
       agentId: typeof stored.agentId === 'string' ? stored.agentId : '',
       model: typeof stored.model === 'string' ? stored.model : '',
       launchStrategy: stored.launchStrategy === 'orchestrate' ? 'orchestrate' : 'direct',
-      maxParallelTasks: typeof stored.maxParallelTasks === 'number'
-        && Number.isInteger(stored.maxParallelTasks)
-        && stored.maxParallelTasks >= 1
-        && stored.maxParallelTasks <= 32
+      maxParallelTasks: isValidGoalParallelTasks(stored.maxParallelTasks)
         ? stored.maxParallelTasks
         : null,
       ultrafix: typeof stored.ultrafix === 'boolean' ? stored.ultrafix : false,
@@ -431,7 +428,7 @@ function CreateGoalForm({ onCancel, onCreated, onDirtyChange, onSubmittingChange
         </label>
         <label className="text-sm font-medium text-slate-700 sm:col-span-2">Maximum parallel tasks (optional)
           <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-2">
-          <input aria-label="Maximum parallel tasks" aria-describedby="goal-parallelism-help" type="number" min="1" max="32" value={parallelism} onChange={event => { markDirty(); setParallelism(event.target.value); }} className="w-32 rounded-md border border-slate-300 p-2" />
+          <input aria-label="Maximum parallel tasks" aria-describedby="goal-parallelism-help" type="number" min={MIN_GOAL_PARALLEL_TASKS} max={MAX_GOAL_PARALLEL_TASKS} value={parallelism} onChange={event => { markDirty(); setParallelism(event.target.value); }} className="w-32 rounded-md border border-slate-300 p-2" />
           <span id="goal-parallelism-help" className="text-xs font-normal text-slate-500">Leave blank to use default concurrency.</span>
           </span>
         </label>

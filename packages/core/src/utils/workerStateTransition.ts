@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import type {
+    TaskTerminalReason,
     TaskState,
     TaskStateData,
     TaskStateExpectation,
@@ -58,6 +59,16 @@ export function buildTaskStateMutation(
     return state;
 }
 
+function resolveTerminalReason(newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
+    // Jobs queued before the rename still report the legacy `user_cancelled`.
+    const rawReason = metadata.historyMetadata?.cancellationReason;
+    const cancellationReason = rawReason === 'user_cancelled' ? 'cancelled_by_user' : rawReason;
+    const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
+    return metadata.terminalReason
+        ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
+        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined);
+}
+
 export function buildTaskStateTransition(
     current: TaskStateData,
     newState: TaskState,
@@ -67,6 +78,7 @@ export function buildTaskStateTransition(
     const reason = metadata.reason ?? `State changed from ${previousState}`;
     const state = buildTaskStateMutation(current, (next, timestamp) => {
         next.state = newState;
+        next.terminalReason = resolveTerminalReason(newState, metadata);
         next.attempts = metadata.isRetry ? next.attempts + 1 : next.attempts;
 
         if (metadata.error) {
@@ -83,7 +95,7 @@ export function buildTaskStateTransition(
             state: newState,
             timestamp,
             reason,
-            metadata: metadata.historyMetadata ?? {},
+            metadata: { ...metadata.historyMetadata, ...(next.terminalReason ? { terminalReason: next.terminalReason } : {}) },
         });
     });
     return { state, previousState, reason };
@@ -164,6 +176,7 @@ export async function publishTaskStateTransition(
             reason,
             metadata: JSON.stringify({
                 ...(metadata.historyMetadata ?? {}),
+                ...(state.terminalReason ? { terminalReason: state.terminalReason } : {}),
                 previousState,
                 attempts: state.attempts,
                 error: metadata.error,
@@ -193,7 +206,7 @@ export async function publishTaskStateTransition(
             issueNumber: state.issueRef.number,
             timestamp: state.updatedAt,
             version: state.version,
-            metadata: { attempts: state.attempts, reason: metadata.reason },
+            metadata: { attempts: state.attempts, reason: metadata.reason, ...(state.terminalReason ? { terminalReason: state.terminalReason } : {}) },
         });
         if (!publication.eventPublished) publication.errors.push('event: publisher returned false');
     } catch (error) {

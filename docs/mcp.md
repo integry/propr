@@ -226,8 +226,65 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 `propr-planned` label. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
+
+`create_goal` accepts the same creation contract as the goal API and web UI;
+`get_goal_capabilities` returns it as `creation` beside the supported agents
+and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
+is an integer from 1 to 32 and defaults to 1 over MCP (the API and UI leave it
+unset when omitted). `checkpointIntervalMinutes` is 5–120 (default 15) and is
+rejected for orchestrated goals. `ultrafix: true` asks the goal agent to run
+Ultrafix before delivery; omitted or `false` keeps it disabled. Ultrafix never
+merges, never expands repository access and does not change the final
+draft-PR delivery; `create_goal` still needs `execute` scope and repository
+access, and merging still requires `merge_pull_request` with merge scope. An
+unsupported agent/model, an invalid strategy/cadence combination or an
+inaccessible repository is rejected before any work starts.
 `/merge` means updating a PR branch; `merge_pull_request` separately requires
 the exact head and satisfied checks/reviews/branch protection.
+
+With `implement_plan` and `useEpic: true`, `epicExecution` defaults to
+`"sequential"`. Exactly the selected issue numbers run in publication order
+(`plan_issues.id`), regardless of their order in the request. The first issue
+starts immediately; the rest are durably queued. Sequential epics accept one
+model per issue. `epicExecution: "parallel"` restores the previous fan-out,
+including comparisons with up to four models. A parallel epic still records a
+queue that starts nothing; once all of its issues are merged or closed, it
+labels the epic PR for completion, like a sequential epic. A parallel epic is
+rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
+ignore these epic execution options.
+
+`epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
+successor. A closed head (including a failed task reconciled to closed) leaves
+the queue active and records a human-readable `blockedReason`. If the head was
+closed because its PR was closed without merging, reopening, fixing and merging
+that PR releases the queue. A source issue you closed by hand stays closed. Choose
+`epicAdvanceOn: "terminal"` to advance on any core terminal issue status
+(currently merged or closed). Issues already in an eligible terminal state
+are skipped. `pause_plan` holds the next issue, and `resume_plan` starts the
+held head. Periodic recovery repairs missed advances and retries a head still
+pending fifteen minutes after dispatch. Unselected pending issues never
+start through this queue.
+
+The web UI, CLI and REST API feed the same queue. **Implement Epic** queues
+every remaining pending issue; a non-epic implementation with auto-merge
+queues the remaining pending issues behind the one it starts. Both advance
+like `epicAdvanceOn: "terminal"`, so a failed or closed issue does not stop
+the plan. A finished non-epic queue never labels an epic PR, even if the plan
+ran as an epic earlier.
+Non-epic MCP calls start only their selected issues. No other path advances a
+plan: a plan already running when you upgrade has no queue, so once its
+current issue finishes, start the next pending issue again (with **Implement
+Epic** for an epic).
+
+The implementation result includes `executionMode`, `advanceOn`, `started`
+and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
+expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
+(null when no queue exists). A parallel epic's queue also reports
+`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
+queue is completed; dispatching the first issue or opening its PR does not
+complete the operation. Queue status is `active`, `completed` or `cancelled`.
+Both new arguments are optional, so omitting them preserves existing
+idempotency receipt hashes.
 
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
 across retries of the same action, and repeat the same arguments exactly.
@@ -283,6 +340,8 @@ Stable codes introduced by the observable operator surface are:
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
 | `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
+| `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
 | `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |
 | `PUBLISH_PARTIAL` | Some publication effect may exist; inspect the saved publication state and resume explicitly. |
 | `PULL_REQUEST_ALREADY_MERGED`, `PULL_REQUEST_CLOSED`, `PULL_REQUEST_DRAFT` | The pull-request lifecycle does not permit the requested action. |
@@ -525,6 +584,64 @@ suggestion does not change how merge blockers are treated. Its stale-review
 check always compares the referenced review against the current resolved head.
 Retries must preserve whether `expectedHead` was omitted or supplied; changing
 that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
+
+`review_pull_request` takes an optional `model`. Omit it to review with the
+model the PR is already routed to. Pass one alias (any name `list_models`
+accepts, such as `gpt-6-fable`) to request that model's review, or a list of
+up to 8 aliases to fan out one independent review per model in a single call.
+That is the same as posting one `/review <model>` comment per model on GitHub,
+which `instructions` cannot do because it rejects slash commands:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "model": ["gpt-6-fable", "gpt-6-astra"],
+  "idempotencyKey": "pr-42-review-fable-astra-1" }
+```
+
+Every alias is resolved against the enabled agent models before anything is
+posted. If any alias is unknown or disabled the whole call fails with
+`UNKNOWN_MODEL`. If two aliases resolve to the same agent model it fails with
+`DUPLICATE_MODEL`. In both cases no review is posted, and
+`details.rejectedModels` lists each rejected alias with its own `code` and
+`message`. A rejected model is never dropped or swapped for a fallback. A model
+review never touches the PR's `llm-*` labels, so it neither re-routes the PR
+nor changes which model later default reviews use. Use
+`set_pull_request_model` for that.
+
+With `model`, the receipt carries a `reviews` array, one entry per requested
+model in request order:
+
+```json
+{ "state": "posted", "resolvedHead": "6f1c…f607", "headSource": "caller",
+  "reviews": [
+    { "model": "gpt-6-fable", "agentAlias": "codex", "resolvedModel": "gpt-6-fable",
+      "commentId": 9001, "url": "https://github.com/acme/web/pull/42#issuecomment-9001",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" },
+    { "model": "gpt-6-astra", "agentAlias": "codex", "resolvedModel": "gpt-6-astra",
+      "commentId": 9002, "url": "https://github.com/acme/web/pull/42#issuecomment-9002",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" } ] }
+```
+
+A single model also returns the usual flat `commentId`, `url`, `model`,
+`agentAlias` and `resolvedModel`. Every review in a fan-out is pinned to the
+same head: the first one uses the head check above, and each later one reads
+the PR again and must find it still open at that head. If a push or close
+happens part-way, the models already posted stay posted. The rest are reported
+with `state: "not_posted"` and an `error` (for example `STALE_HEAD` with
+`expectedHead`/`currentHead`), and nothing is posted for them. If a later
+comment fails to post, that model is reported as `rejected` when GitHub refused
+it (nothing was posted) or `unknown` when it may have posted. Check the PR for an
+`unknown` model before you request it again; it is never retried for you. Every
+model after it is `not_posted`, and the reviews already posted are still
+returned. The operation receipt then follows each posted comment separately,
+even when only one was posted. Each `reviews` entry gains the `taskId` and
+`taskState` of the task that picked it up. The lifecycle artifacts list
+`commentIds` (or `commentId` when only one comment was posted) and `taskIds`. The operation completes once every
+posted review has finished. It fails with `REVIEW_FAILED` only when all of
+them failed, and it becomes `unknown` if a review is never picked up.
+Account-level limits, such as a model the provider account cannot run, show up
+as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
 `stop_ultrafix`, `set_pull_request_model` and `revert_pull_request_commit`

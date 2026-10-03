@@ -245,7 +245,7 @@ export function createPersistedTaskStateStore(
                 repository: candidate.repository,
                 issueNumber: candidate.issueNumber ?? undefined,
                 timestamp,
-                metadata: { reason: transition.reason, reconciled: true },
+                metadata: { reason: transition.reason, reconciled: true, ...(transition.metadata.terminalReason ? { terminalReason: transition.metadata.terminalReason } : {}) },
             });
             return { stateChanged: true, eventPublished };
         },

@@ -284,6 +284,12 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     assert.equal(failedTask.changesSummary, null, 'unpersisted file changes never read as zero changes');
     assert.equal(failedTask.pullRequest, null);
 
+    await db('task_history').where({ task_id: 'goal-child-failed', state: 'failed' })
+      .update({ metadata: JSON.stringify({ terminalReason: 'timed_out' }) });
+    const timedOutTask = await call('get_task', { repository, taskId: 'goal-child-failed' });
+    assert.equal(timedOutTask.terminalReason, 'timed_out');
+    assert.equal(timedOutTask.latestEvents[0].terminalReason, 'timed_out');
+
     fileChanges.set('task:file-changes:goal-child-failed', JSON.stringify({
       taskId: 'goal-child-failed', lastUpdated: '2026-09-01T12:02:20.000Z', files: [],
     }));

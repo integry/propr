@@ -67,6 +67,8 @@ export interface PinnedPublicIdentityDirectory {
 }
 
 class IdentityBusyError extends Error {}
+/** A concurrent creator advanced a link-then-unlink publication we observed mid-way. */
+class IdentitySettlingError extends Error {}
 
 function errno(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException).code;
@@ -120,7 +122,12 @@ export function publicIdentityFilePermissionsAllowed(
 
 function validateFileStat(stat: Stats, directoryOwnerUid: number, allowedLinks = 1): void {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== allowedLinks) {
-    if (stat.isFile() && stat.nlink === 2) throw new IdentityBusyError();
+    if (stat.isFile() && !stat.isSymbolicLink()) {
+      // Peers publish by link-then-unlink, so transient link counts are expected.
+      // A persistent extra link still fails once the bounded creation loop ends.
+      if (stat.nlink === 0 || allowedLinks === 2) throw new IdentitySettlingError();
+      throw new IdentityBusyError();
+    }
     throw new Error("public instance identity file is not a private single-link regular file");
   }
   if (stat.size <= 0 || stat.size > PUBLIC_IDENTITY_MAX_BYTES) {
@@ -167,7 +174,7 @@ async function readIdentity(
       || namedAfter.kind !== "file"
       || !sameIdentity(afterIdentity, namedAfter)
     ) {
-      throw new Error("public instance identity changed while it was read");
+      throw new IdentitySettlingError("public instance identity changed while it was read");
     }
     const value = JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)),
@@ -249,7 +256,7 @@ async function recoverPublishedLinkRemnant(
       || namedRecovery.kind !== "file"
       || !sameIdentity(finalAfterIdentity, namedFinal)
       || !sameIdentity(recoveryAfterIdentity, namedRecovery)
-    ) throw new Error("public identity hardlink state changed during recovery");
+    ) throw new IdentitySettlingError("public identity hardlink state changed during recovery");
     directory.unlink(READY_NAME);
     syncDirectory(directory.fd);
     await options.onBoundary?.("directory-synced");
@@ -328,7 +335,7 @@ async function recoverTemporaryLinkRemnant(
       || namedTemporary.kind !== "file"
       || !sameIdentity(readyIdentity, namedReady)
       || !sameIdentity(readyIdentity, namedTemporary)
-    ) throw new Error("public identity hardlink state changed during recovery");
+    ) throw new IdentitySettlingError("public identity hardlink state changed during recovery");
 
     directory.unlink(temporaryName);
     syncDirectory(directory.fd);
@@ -364,12 +371,17 @@ async function publishRecovery(
     recovered = await readIdentity(directory, READY_NAME, { onBoundary });
   } catch (error) {
     if (errno(error) === "ENOENT") return undefined;
-    if (error instanceof IdentityBusyError) return undefined;
+    if (error instanceof IdentityBusyError || error instanceof IdentitySettlingError) return undefined;
     // Only the fixed, fully-written recovery slot is eligible for cleanup.
     // An unsafe owner/type/link is deliberately left untouched and rejected.
     let recoveryFd: number | undefined;
     try {
-      recoveryFd = directory.open(READY_NAME, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        recoveryFd = directory.open(READY_NAME, constants.O_RDONLY | constants.O_NOFOLLOW);
+      } catch (openError) {
+        if (errno(openError) === "ENOENT") return undefined;
+        throw openError;
+      }
       const stat = fstatSync(recoveryFd);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw error;
       if (!publicIdentityFilePermissionsAllowed(stat, directory.ownerUid)) throw error;
@@ -404,6 +416,14 @@ async function publishRecovery(
   }
 }
 
+function isConcurrentSettling(error: unknown): boolean {
+  return error instanceof IdentitySettlingError || errno(error) === "ENOENT";
+}
+
+async function settle(attempt: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 5 * (attempt + 1)));
+}
+
 /** Central CLI/API creation algorithm operating only through a held data-directory handle. */
 export async function getOrCreatePublicInstanceIdentityPinned(
   directory: PinnedPublicIdentityDirectory,
@@ -417,22 +437,41 @@ export async function getOrCreatePublicInstanceIdentityPinned(
       // otherwise a hostile stale entry could remain outside the policy.
       await readIdentityIfPresent(directory, READY_NAME, options);
     } catch (error) {
+      if (error instanceof IdentitySettlingError) {
+        await settle(attempt);
+        continue;
+      }
       if (!(error instanceof IdentityBusyError)) throw error;
       recoveryEntryBusy = true;
     }
     try {
       const existing = await readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
       if (existing) {
-        if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
-        return existing;
+        // A peer may have been between linking READY to the final name and
+        // unlinking READY. Re-check; a persistent extra link never settles.
+        if (!recoveryEntryBusy) return existing;
+        await settle(attempt);
+        continue;
       }
     } catch (error) {
       if (!(error instanceof IdentityBusyError)) throw error;
-      const repaired = await recoverPublishedLinkRemnant(directory, options);
-      if (repaired) return repaired;
+      try {
+        const repaired = await recoverPublishedLinkRemnant(directory, options);
+        if (repaired) return repaired;
+      } catch (recoveryError) {
+        if (!isConcurrentSettling(recoveryError)) throw recoveryError;
+        await settle(attempt);
+        continue;
+      }
     }
     if (recoveryEntryBusy) {
-      await recoverTemporaryLinkRemnant(directory, options);
+      try {
+        await recoverTemporaryLinkRemnant(directory, options);
+      } catch (recoveryError) {
+        if (!isConcurrentSettling(recoveryError)) throw recoveryError;
+        await settle(attempt);
+        continue;
+      }
     }
 
     const recovered = await publishRecovery(directory, options.onBoundary);
@@ -476,7 +515,8 @@ export async function getOrCreatePublicInstanceIdentityPinned(
         temporaryPresent = false;
         await options.onBoundary?.("recovery-published");
       } catch (error) {
-        if (errno(error) !== "EEXIST") throw error;
+        // ENOENT: a concurrent recovery already removed our linked source name.
+        if (errno(error) !== "EEXIST" && errno(error) !== "ENOENT") throw error;
       }
     } finally {
       if (temporaryFd !== undefined) closeSync(temporaryFd);

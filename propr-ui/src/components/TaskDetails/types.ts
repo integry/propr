@@ -22,6 +22,7 @@ export interface UsageMetrics {
 }
 
 export interface HistoryItemMetadata {
+  terminalReason?: string;
   model?: string;
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
@@ -119,6 +120,7 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
 
     const allDetectedIssues: DetectedIssue[] = [];
     const repos = getRepos();
+    await reconcileTaskIntentsSafely(redisClient, repos);
 
     for (const repoFullName of repos) {
         correlatedLogger.debug({ repository: repoFullName }, 'Polling repository');
@@ -203,6 +205,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     });
 
     const repos = getRepos();
+    await reconcileTaskIntentsSafely(redisClient, repos);
 
     if (repos.length === 0) {
         logger.warn('No repositories configured yet. The daemon will stay active and reload repositories added through setup or Settings.');

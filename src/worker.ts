@@ -1,9 +1,10 @@
+import { preventWithdrawnJob } from '@propr/core';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { logger } from '@propr/core';
+import { logger, reconcileEpicExecutionQueues } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
@@ -386,6 +387,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processMergeConflictJob,
             processGoalJob,
         },
+        beforeProcess: async job => {
+            const reason = await preventWithdrawnJob(job);
+            return reason ? { status: 'cancelled', reason } : null;
+        },
         beforeRun: configuredWorker => {
             taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
         },
@@ -398,6 +403,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         reconcileCiSuspensions: async () => ({
             ...await reconcileFollowupCiSuspensions(),
             closedPullRequests: await cancelClosedPullRequestValidation(),
+            epicQueues: await reconcileEpicExecutionQueues(),
         }),
     });
 

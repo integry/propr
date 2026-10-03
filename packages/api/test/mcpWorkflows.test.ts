@@ -14,7 +14,7 @@ import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextp
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { McpPrincipal } from '../mcp/policy.js';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import type { CommentJobData, StopTaskExecutionOptions, UnprocessedComment } from '@propr/core';
 import type { ToolDeps } from '../mcp/tools.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
@@ -29,12 +29,24 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
   const queueStates = new Map<string, string>();
   const issueQueue = { getJobs: async () => [], getJob: async (id: string) => queueStates.has(id) ? { getState: async () => queueStates.get(id) } : undefined, add: async (name: string, data: Record<string, unknown>, options?: { jobId?: string }) => { if (queueFailure) throw new Error('Queue connection lost after write'); issueJobs.push({ name, data }); if (options?.jobId) queueStates.set(options.jobId, 'waiting'); return { id: options?.jobId || String(issueJobs.length) }; } };
   const cacheReads: string[] = [];
+  const cancellationRequests = new Map<string, { requestedBy: string; reason: unknown }>();
   let githubBoundary: unknown;
-  // Only outbound GitHub, Git transport and queue boundaries are fixtures. Catalog, handlers,
-  // label orchestration, authorization and persistence remain the real code.
+  // Only outbound GitHub, Git transport, queue and Redis boundaries are fixtures. Catalog, handlers,
+  // label orchestration, authorization and SQLite persistence remain the real code.
   const boundary = await mock.module('@propr/core', { namedExports: { ...core,
     getAuthenticatedOctokit: async () => githubBoundary,
     getIssueQueue: async () => issueQueue, getIndexingQueue: async () => issueQueue, issueQueue,
+    stopTaskExecution: (taskId: string, options: StopTaskExecutionOptions) => core.stopTaskExecution(taskId, {
+      ...options,
+      // The shared helper imports these dependencies internally, bypassing the barrel mock.
+      getQueue: async () => issueQueue,
+      markCancelled: async (id, requestedBy, metadata) => {
+        cancellationRequests.set(id, { requestedBy, reason: metadata.historyMetadata?.cancellationReason });
+        // Exercise the abort-signal fallback. The cancellation fixture supplies the
+        // worker's eventual terminal outcome, including completion/failure races.
+        throw new Error('Fixture cancellation state store unavailable');
+      },
+    }),
     ensureRepoCloned: async () => root, fetchLatestChanges: async () => ({ success: true }), publishIndexingStatus: async () => {},
     getStoredFileChanges: async (taskId: string) => { cacheReads.push(taskId); return { taskId, lastUpdated: new Date().toISOString(), files: [{ path: 'src/retry.ts', linesAdded: 1, linesRemoved: 0, status: 'modified', diff: '+Handle transient failures\n' }] }; },
   } });
@@ -121,14 +133,14 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     const { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } = await import('../../../src/jobs/prPendingComments.js');
     const { updateTaskTitleForPR } = await import('../../../src/jobs/prCommentJobHelpers.js');
     const correlatedLogger = core.logger.withCorrelation('mcp-pending-regression');
-    const stateManager = { updateIssueRef: async () => {} } as unknown as InstanceType<typeof core.WorkerStateManager>;
+    const stateManager = { updateIssueRef: async () => {}, getTaskState: async () => null } as unknown as InstanceType<typeof core.WorkerStateManager>;
     const deps: ToolDeps = { db, policy, taskQueue: { add: async (_name: string, data: Record<string, unknown>) => { jobs.push(data); return { id: String(jobs.length) }; }, getJobs: async () => [] } as never,
-      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async () => 'OK', eval: evalRedis } as never, runtimeBuildQueue: {} as never,
+      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async (key: string, value: string) => { redisValues.set(key, value); return 'OK'; }, eval: evalRedis } as never, runtimeBuildQueue: {} as never,
       goalServices: { generateTitle: async () => 'Fixture goal', loadVisualPreviewSettings: async () => ({ enabled: false, types: ['image'] }), getOctokit: async () => github as never,
         stopExecution: async () => ({ success: true, containerStopped: stopGoalImmediately, removedQueuedJobs: stopGoalImmediately ? 1 : 0 }) as never,
         getCapabilities: async () => [{ agentId: agent.config.id, agentAlias: 'claude', agentType: 'claude', goalCapable: true, lifecycle: { launch: 'goal-prompt', resume: 'whole-session', runningInput: 'safe-boundary-resume' }, controls: { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true } }] } };
     // Exercise the worker's Redis pickup, command normalization and durable title update.
-    // Only Redis/queue transport and the Redis issue-ref update are fixtures.
+    // Only Redis/queue transport and the Redis state-manager calls are fixtures.
     const persistCommentTask = async (taskId: string, jobData: CommentJobData, pending: UnprocessedComment[] = []) => {
       const key = core.getPendingPrCommentsKey(jobData.repoOwner, jobData.repoName, jobData.pullRequestNumber);
       pendingComments.set(key, pending.map(comment => JSON.stringify(comment)));
@@ -264,9 +276,17 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const resume = await call('resume_goal', { repository, goalId }, true); assert.equal(resume.state, 'completed', JSON.stringify(resume));
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'running');
         await verifyCancellation({ call, client, principal, deps, agentId: agent.config.id, modern, root, taskId, issueNumber, redisValues, plannerSignals, setStopGoalImmediately: value => { stopGoalImmediately = value; } });
+        assert.equal(cancellationRequests.size, modern ? 3 : 6, 'each task stop attempts to record cancellation');
+        for (const [id, request] of cancellationRequests) {
+          assert.deepEqual(request, { requestedBy: 'fixture-user', reason: 'cancelled_by_user' });
+          const abort = JSON.parse(redisValues.get(`worker:abort:${id}`)!);
+          assert.equal(abort.requestedBy, request.requestedBy);
+          assert.equal(abort.reason, request.reason);
+        }
         const cancel = await call('cancel_goal', { repository, goalId }, true); assert.equal(cancel.state, 'accepted');
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'cancelled');
         assert.equal((await call('get_operation', { operationId: cancel.operationId })).result.cancellation, 'confirmed');
+        await verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId: agent.config.id, modern });
 
         const category = await call('create_todo_category', { repository, name: 'Reliability' }, true); assert.equal(category.state, 'completed', JSON.stringify(category));
         const todo = await call('create_todo', { repository, content: 'Handle transient errors' }, true); assert.equal(todo.state, 'completed', JSON.stringify(todo));
@@ -415,3 +435,54 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     await core.closeConnection(); await core.closeEventPublisher(); await rm(root, { recursive: true, force: true });
   }
 });
+
+type GoalOptionsFixture = {
+  client: { callTool: (request: { name: string; arguments: Record<string, unknown> }) => Promise<unknown> };
+  call: (name: string, args: Record<string, unknown>, mutation?: boolean) => Promise<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  db: import('knex').Knex; jobs: Array<Record<string, unknown>>; repository: string; agentId: string; modern: boolean;
+};
+
+/** MCP goal creation honors the shared API contract and persists the requested options. */
+async function verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId, modern }: GoalOptionsFixture): Promise<void> {
+  const goalArgs = { repository, objective: `Ship with Ultrafix ${modern}`, agentId, model: 'fixture-model', launchStrategy: 'direct' };
+  const raw = async (args: Record<string, unknown>, idempotencyKey: string) => client.callTool({ name: 'create_goal', arguments: { ...goalArgs, ...args, idempotencyKey } }) as Promise<{ isError?: boolean; structuredContent?: { data?: Record<string, any> } }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (const maxParallelTasks of [0, 33]) {
+    const before = await db('goals').count({ count: '*' }).first();
+    const rejected = await raw({ maxParallelTasks }, `goal-parallel-${modern}-${maxParallelTasks}`);
+    assert.equal(rejected.isError, true, `maxParallelTasks ${maxParallelTasks}`);
+    assert.deepEqual(await db('goals').count({ count: '*' }).first(), before);
+  }
+  const orchestratedCadence = await raw({ launchStrategy: 'orchestrate', checkpointIntervalMinutes: 15 }, `goal-cadence-${modern}`);
+  assert.equal(orchestratedCadence.isError, true);
+
+  const enabledKey = `goal-ultrafix-${modern}`;
+  const enabled = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.notEqual(enabled.isError, true, JSON.stringify(enabled));
+  const enabledData = enabled.structuredContent!.data!;
+  assert.equal(enabledData.state, 'accepted');
+  const enabledGoal = await db('goals').where({ goal_id: enabledData.result.continuation.goalId }).first();
+  assert.equal(Boolean(enabledGoal.ultrafix), true);
+  assert.equal(enabledGoal.max_parallel_tasks, 32);
+  const context = await db('goal_inputs').where({ goal_id: enabledGoal.goal_id, kind: 'context' }).first();
+  assert.match(context.message, /Ultrafix policy: Enabled/);
+  assert.match(context.message, /Finish with validated implementation files; ProPR publishes and validates the final checkpoint on its draft PR/);
+  const jobCount = jobs.filter(job => job.goalId === enabledGoal.goal_id).length;
+  assert.equal(jobCount, 1);
+  const retry = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(retry.structuredContent!.data!.operationId, enabledData.operationId);
+  const changed = await raw({ ultrafix: false, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(changed.isError, true);
+  assert.match(JSON.stringify(changed), /IDEMPOTENCY_CONFLICT/);
+  assert.equal(jobs.filter(job => job.goalId === enabledGoal.goal_id).length, 1);
+  assert.equal(await db('goals').where({ repository, objective: goalArgs.objective }).count({ count: '*' }).first().then(row => Number(row?.count)), 1);
+
+  const disabled = await call('create_goal', { ...goalArgs, objective: 'Ship without Ultrafix', maxParallelTasks: 9 }, true);
+  const disabledGoal = await db('goals').where({ goal_id: disabled.result.continuation.goalId }).first();
+  assert.equal(Boolean(disabledGoal.ultrafix), false);
+  assert.equal(disabledGoal.max_parallel_tasks, 9);
+  assert.match((await db('goal_inputs').where({ goal_id: disabledGoal.goal_id, kind: 'context' }).first()).message, /Ultrafix policy: Disabled/);
+  const capabilities = await call('get_goal_capabilities', {});
+  assert.deepEqual(capabilities.creation.maxParallelTasks, { min: 1, max: 32 });
+  assert.equal(capabilities.creation.ultrafix.grantsMerge, false);
+  for (const goal of [enabledGoal, disabledGoal]) await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'cancelled', result_state: 'cancelled' });
+}
