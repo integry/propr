@@ -9,10 +9,9 @@ import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
-import { WITHDRAWAL_CLEANUP_KEY, markerAppliedSinceTrigger, releaseWithdrawalCleanup, retainWithdrawalCleanup, triggerAppliedSinceClosure, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
+import { WITHDRAWAL_CLEANUP_KEY, openIssueCleanupStep, releaseWithdrawalCleanup, retainWithdrawalCleanup, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
 export { releaseWithdrawalCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
-import { staleTriggerMarkers } from '../daemon/triggerApplicationEvidence.js';
 
 export type IntentCancellationReason = 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed';
 export interface IntentTarget {
@@ -242,45 +241,41 @@ async function publishCancelledMarker(target: IntentTarget, triggers: string[], 
 /** Returns true while the obligation's issue must stay out of discovery. */
 async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentTarget): Promise<boolean> {
     const triggers = await loadPrimaryProcessingLabels();
-    const current = await readCurrentTaskIntent(target);
-    if (withdrawnIntentReason(target, current, triggers) === 'cancelled_issue_closed') {
+    const octokit = await getAuthenticatedOctokit();
+    const readStep = async () => {
+        const current = await readCurrentTaskIntent(target);
+        if (withdrawnIntentReason(target, current, triggers) === 'cancelled_issue_closed') return 'closed' as const;
+        return openIssueCleanupStep(target, triggers, (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? ''));
+    };
+    // Reopened without reapplying the trigger: publish the exclusion the
+    // cancellation could not. Re-adding an applied label records no timeline
+    // event, so a stale marker is removed first; the retained obligation keeps
+    // discovery idle meanwhile. State and trigger evidence are reread before
+    // every removal and publication, including after retry backoff: a trigger
+    // reapplied meanwhile is renewed intent and retires the obligation without
+    // a marker. Only a reapplication between that read and the request is an
+    // unavoidable API race; it fails closed and needs another reapplication.
+    const step = await withRetry(async () => {
+        let step = await readStep();
+        if (step !== 'closed' && 'marker' in step && step.applied) {
+            await deleteIssueLabel(octokit, target, step.marker);
+            step = await readStep();
+        }
+        if (step === 'closed' || !('marker' in step)) return step;
+        // Still applied after removal: keep the obligation for the next poll.
+        if (step.applied) return null;
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number, labels: [step.marker],
+        });
+        return { idle: true };
+    }, retryConfigs.githubApi, 'add_cancelled_label');
+    if (step === 'closed') {
         // Still closed: retry the original cleanup.
         if (await updateWithdrawnIssueLabels(target, triggers, 'cancelled_issue_closed')) await releaseWithdrawalCleanup(cleanup);
         return true;
     }
-    const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
-    const present = triggers.filter(trigger => labels.includes(trigger));
-    // Without a trigger, only applying one renews intent. Restoration never
-    // clears `-done`, so a completion marker keeps discovery idle on its own.
-    if (!present.length || triggers.some(trigger => labels.includes(`${trigger}-done`))) {
-        await releaseWithdrawalCleanup(cleanup);
-        return true;
-    }
-    if (await triggerAppliedSinceClosure(target, present)) {
-        await releaseWithdrawalCleanup(cleanup);
-        return false;
-    }
-    // `-processing`/`-cancelled` exclude only when applied after the trigger's
-    // latest application; an earlier one (e.g. a running sibling's marker that
-    // a pre-closure reapplication supersedes) lets restoration readmit the issue.
-    const markers = [...new Set(present.flatMap(trigger => staleTriggerMarkers(trigger, triggers)))].filter(label => labels.includes(label));
-    if (markers.length && await markerAppliedSinceTrigger(target, present, markers)) {
-        await releaseWithdrawalCleanup(cleanup);
-        return true;
-    }
-    // Reopened without reapplying the trigger: publish the exclusion the
-    // cancellation could not. Re-adding an applied label records no timeline
-    // event, so a stale marker is removed first; the retained obligation keeps
-    // discovery idle meanwhile. A reapplication racing these requests is an
-    // unavoidable API race; it fails closed and needs another reapplication.
-    const marker = `${target.triggeringLabel ?? present[0]}-cancelled`;
-    if (labels.includes(marker) && !await removeIntentLabel(target, marker)) return true;
-    const octokit = await getAuthenticatedOctokit();
-    await withRetry(() => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner: target.repoOwner, repo: target.repoName, issue_number: target.number, labels: [marker],
-    }), retryConfigs.githubApi, 'add_cancelled_label');
-    await releaseWithdrawalCleanup(cleanup);
-    return true;
+    if (step) await releaseWithdrawalCleanup(cleanup);
+    return step?.idle ?? true;
 }
 
 /**

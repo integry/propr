@@ -62,6 +62,10 @@ export interface DetectedIssue {
     // Set only when the producer saw the trigger applied after any stale
     // `-cancelled`/`<trigger>-processing` marker. Without it, the issue stays excluded.
     triggerReapplied?: boolean;
+    // The trigger whose verified application produced this detection. Admission
+    // records it instead of the first configured trigger present, so removing
+    // it withdraws the work it requested.
+    renewedTrigger?: string;
 }
 
 export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void | DeliveryDisposition>;
@@ -163,7 +167,7 @@ async function handleIssuesEvent(
 
         const resolved = await resolveIssueTriggerLabels(payload, owner, repo);
         if ('status' in resolved) return resolved;
-        const { labels, triggerReapplied } = resolved;
+        const { labels, triggerReapplied, renewedTrigger } = resolved;
         const issue: DetectedIssue = {
             id: payload.issue.id,
             number: payload.issue.number,
@@ -180,7 +184,8 @@ async function handleIssuesEvent(
             triggeredBy: payload.sender?.login,
             ...(payload.sender?.id === undefined ? {} : { triggeredById: String(payload.sender.id) }),
             source: 'webhook',
-            ...(triggerReapplied ? { triggerReapplied: true } : {})
+            ...(triggerReapplied ? { triggerReapplied: true } : {}),
+            ...(renewedTrigger ? { renewedTrigger } : {})
         };
 
         return normalizeDisposition(await processDetectedIssue(issue, correlationId));

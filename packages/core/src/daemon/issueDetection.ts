@@ -114,7 +114,11 @@ function provesTriggerReapplied(evidence: TriggerEvidence | null): boolean {
 }
 
 // The trigger admission selects; restoration evidence must be for this trigger.
-function admissionTrigger(labels: string[], triggers: string[]): string | undefined {
+// A producer's verified renewed trigger wins while it is still configured and
+// present, so the job records the trigger that requested it; otherwise the
+// first configured trigger present is used.
+function admissionTrigger(labels: string[], triggers: string[], renewed?: string): string | undefined {
+    if (renewed && triggers.includes(renewed) && labels.includes(renewed)) return renewed;
     return triggers.find(label => labels.includes(label));
 }
 
@@ -144,7 +148,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Check for processing labels BEFORE acquiring dedup lock
     // This ensures invalid events don't block subsequent valid events
-    const triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels);
+    const triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels, issue.renewedTrigger);
 
     if (!triggeringLabel) {
         correlatedLogger.info({
@@ -387,18 +391,31 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
             const results = await Promise.all(batch.map(async (issue) => {
                 const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
-                const trigger = admissionTrigger(labels, primaryProcessingLabels);
+                const present = primaryProcessingLabels.filter(label => labels.includes(label));
+                let trigger = present[0];
                 const stale = !!trigger && hasStaleTriggerLabels(labels, trigger, primaryProcessingLabels);
                 // Restoration needs an application of the trigger admission
                 // will use; another trigger's newer (possibly removed)
                 // application is not renewed intent for it.
-                const evidence = await resolveLabelApplierCached({
+                const readEvidence = (candidate: string) => resolveLabelApplierCached({
                     octokit, owner, repo, issueNumber: issue.number, updatedAt: issue.updated_at,
-                    targetLabels: stale ? [trigger] : primaryProcessingLabels,
-                    staleMarkers: stale ? staleTriggerMarkers(trigger, primaryProcessingLabels) : [],
+                    targetLabels: stale ? [candidate] : primaryProcessingLabels,
+                    staleMarkers: stale ? staleTriggerMarkers(candidate, primaryProcessingLabels) : [],
                     appliedMarkers: stale ? labels : [],
                     log: correlatedLogger
                 });
+                let evidence = await readEvidence(trigger);
+                // Another present trigger applied after the stale markers is a
+                // new request of its own. Admission is told which trigger was
+                // renewed, so the evidence and the recorded trigger stay aligned.
+                for (const other of stale && !provesTriggerReapplied(evidence) ? present.slice(1) : []) {
+                    if (!hasStaleTriggerLabels(labels, other, primaryProcessingLabels)) continue;
+                    const otherEvidence = await readEvidence(other);
+                    if (!provesTriggerReapplied(otherEvidence)) continue;
+                    trigger = other;
+                    evidence = otherEvidence;
+                    break;
+                }
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after its stale
                 // `-processing`/`-cancelled` marker, matching webhook-mode behaviour.
@@ -437,7 +454,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     ...(labelApplier ? { triggeredById: labelApplier.userId } : {}),
                     source: 'polling' as const,
                     // The stale-marker gate above already required newer trigger evidence.
-                    ...(stale ? { triggerReapplied: true } : {})
+                    ...(stale ? { triggerReapplied: true, renewedTrigger: trigger } : {})
                 };
             }));
             for (const r of results) {

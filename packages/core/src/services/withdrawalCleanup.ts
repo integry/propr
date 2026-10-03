@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { lastPageFromLinkHeader } from '../daemon/triggerApplicationEvidence.js';
+import { lastPageFromLinkHeader, staleTriggerMarkers } from '../daemon/triggerApplicationEvidence.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 
 /** Issue coordinates the obligation is retained for. */
@@ -64,4 +64,23 @@ export function triggerAppliedSinceClosure(target: CleanupTarget, triggers: stri
  */
 export function markerAppliedSinceTrigger(target: CleanupTarget, triggers: string[], markers: string[]): Promise<boolean> {
     return scanRecentTimeline(target, event => labeledAny(event, markers) || (labeledAny(event, triggers) ? false : undefined));
+}
+
+/** `idle` retires the obligation with that discovery verdict; `marker` is the exclusion still owed. */
+export type CleanupStep = { idle: boolean } | { marker: string; applied: boolean };
+
+/** What a retained closure obligation requires of an open issue with `labels`, from fresh timeline evidence. */
+export async function openIssueCleanupStep(target: CleanupTarget, triggers: string[], labels: string[]): Promise<CleanupStep> {
+    const present = triggers.filter(trigger => labels.includes(trigger));
+    // Without a trigger, only applying one renews intent. Restoration never
+    // clears `-done`, so a completion marker keeps discovery idle on its own.
+    if (!present.length || triggers.some(trigger => labels.includes(`${trigger}-done`))) return { idle: true };
+    if (await triggerAppliedSinceClosure(target, present)) return { idle: false };
+    // `-processing`/`-cancelled` exclude only when applied after the trigger's
+    // latest application; an earlier one (e.g. a running sibling's marker that
+    // a pre-closure reapplication supersedes) lets restoration readmit the issue.
+    const markers = [...new Set(present.flatMap(trigger => staleTriggerMarkers(trigger, triggers)))].filter(label => labels.includes(label));
+    if (markers.length && await markerAppliedSinceTrigger(target, present, markers)) return { idle: true };
+    const marker = `${target.triggeringLabel ?? present[0]}-cancelled`;
+    return { marker, applied: labels.includes(marker) };
 }

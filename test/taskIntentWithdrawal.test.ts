@@ -1431,3 +1431,149 @@ test('a cancelled marker applied after the trigger releases a retained exclusion
     assert.deepEqual(requests.filter(r => /^(POST|DELETE) /.test(r.endpoint)), []);
     assert.deepEqual(retainedCleanups(), []);
 });
+
+for (const failing of ['POST', 'DELETE']) {
+    test(`a trigger reapplied during settlement ${failing} retry backoff retires the cleanup without a cancellation marker`, async () => {
+        if (failing === 'POST') {
+            await closeQueuedIssueWithFailedMarker(503);
+            reopen();
+        } else {
+            // A stale marker precedes the trigger, so settlement removes it before republishing.
+            tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+            recordLabeled('AI-cancelled', 'AI');
+            timeline.push({ event: 'closed' }, { event: 'reopened' });
+            timelineRevision++;
+            redisSets.set('intent:withdrawal-cleanup', new Set([JSON.stringify({ repoOwner: 'acme', repoName: 'widgets', number: 42, triggeringLabel: 'AI', id: 'x' })]));
+        }
+        requests.length = 0;
+        let failures = 0;
+        onRequest = endpoint => {
+            if (!endpoint.startsWith(`${failing} `) || failures++ > 0) return;
+            // The user removes and reapplies the trigger while the retry backs off.
+            timeline.push({ event: 'unlabeled', label: { name: 'AI' } });
+            recordLabeled('AI');
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        };
+        await reconcileTaskIntents(redis as never, ['acme/widgets']);
+        onRequest = undefined;
+        assert.equal(failures, 1, 'the failed request is not repeated once intent is renewed');
+        assert.equal(requests.filter(r => r.endpoint.startsWith('POST ')).length, failing === 'POST' ? 1 : 0);
+        assert.deepEqual(retainedCleanups(), []);
+        assert.equal(timeline.at(-1).label.name, 'AI', 'no cancellation marker is ordered after the renewed trigger');
+        assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+        assert.equal(jobs.length, 1);
+        assert.ok(!tracker.labels.includes('AI-cancelled'));
+    });
+}
+
+test('discovery admits a trigger reapplied while a settlement publication retries', async () => {
+    await closeQueuedIssueWithFailedMarker(503);
+    reopen();
+    let failures = 0;
+    onRequest = endpoint => {
+        if (!endpoint.startsWith('POST ') || failures++ > 0) return;
+        timeline.push({ event: 'unlabeled', label: { name: 'AI' } });
+        recordLabeled('AI');
+        throw Object.assign(new Error('temporary'), { status: 503 });
+    };
+    assert.deepEqual(await pollRestoredIssues(), [{ status: 'accepted', billing: { seatConsumed: false } }]);
+    assert.ok(!tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+    assert.equal(jobs.length, 1);
+});
+
+test('settlement that finds the issue closed again after retry backoff resumes the closure cleanup', async () => {
+    await closeQueuedIssueWithFailedMarker(503);
+    reopen();
+    let failures = 0;
+    onRequest = endpoint => {
+        if (!endpoint.startsWith('POST ') || failures++ > 0) return;
+        tracker = { ...tracker, state: 'closed' };
+        timeline.push({ event: 'closed' });
+        throw Object.assign(new Error('temporary'), { status: 503 });
+    };
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+});
+
+// F32: the job records the trigger whose application requested it, so
+// removing that trigger cancels the work even while another trigger remains.
+async function withAdmittingWebhook(run: (deliver: (applied: string) => Promise<any>) => Promise<void>) {
+    const deliver = (applied: string) => processWebhookEvent({
+        repository: { full_name: 'acme/widgets' }, action: 'labeled', label: { name: applied },
+        sender: { login: 'propr-dev[bot]', id: 1 },
+        issue: { id: 42, number: 42, state: 'open', labels: tracker.labels.map((name: string) => ({ name })) },
+    }, 'issues', `labeled-${applied}`);
+    await initializeWebhookHandler({
+        issueProcessor: (issue, correlationId) => admitDetectedIssue(issue, correlationId, redis as never), commentProcessor: async () => {},
+        commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: redis as never,
+    });
+    try {
+        await run(deliver);
+    } finally {
+        await initializeWebhookHandler({
+            issueProcessor: async issue => { discovered.push(issue); }, commentProcessor: async () => {},
+            commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: redis as never,
+        });
+    }
+}
+async function closeAndReopenRetainingAI() {
+    addRunning('old');
+    tracker = { state: 'closed', labels: ['AI', 'AI-processing'] };
+    timeline.push({ event: 'closed' });
+    await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+    assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+    reopen();
+}
+async function assertBuildRemovalCancels() {
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].data.triggeringLabel, 'build', 'the job records the trigger that renewed intent');
+    tracker = { ...tracker, labels: tracker.labels.filter((name: string) => name !== 'build') };
+    await removeTrigger('build', tracker.labels);
+    assert.equal(jobs.length, 0, 'removing the renewing trigger cancels its work');
+    assert.equal([...states.values()].at(-1).terminalReason, 'cancelled_label_removed');
+}
+
+test('webhook: a second trigger applied to a reopened cancelled issue owns the new job, and removing it cancels', async () => {
+    await closeAndReopenRetainingAI();
+    tracker = { ...tracker, labels: [...tracker.labels, 'build'] };
+    recordLabeled('build');
+    await withAdmittingWebhook(async deliver => {
+        assert.equal((await deliver('build')).status, 'accepted');
+        assert.deepEqual(tracker.labels, ['AI', 'build']);
+    });
+    await assertBuildRemovalCancels();
+});
+
+test('polling: a second trigger applied to a reopened cancelled issue owns the new job, and removing it cancels', async () => {
+    await closeAndReopenRetainingAI();
+    assert.deepEqual(await pollRestoredIssues(), [], 'reopening alone stays idle');
+    tracker = { ...tracker, labels: [...tracker.labels, 'build'] };
+    recordLabeled('build');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.deepEqual(tracker.labels, ['AI', 'build']);
+    await assertBuildRemovalCancels();
+});
+
+test('webhook: a second trigger that releases a retained closure exclusion owns the new job', async () => {
+    await closeQueuedIssueWithFailedMarker();
+    reopen();
+    tracker = { ...tracker, labels: [...tracker.labels, 'build'] };
+    recordLabeled('build');
+    await withAdmittingWebhook(async deliver => {
+        assert.equal((await deliver('build')).status, 'accepted');
+    });
+    assert.deepEqual(retainedCleanups(), []);
+    await assertBuildRemovalCancels();
+});
+
+test('admission ignores a renewed trigger that is no longer present or configured', async () => {
+    const issue = { id: 42, number: 42, title: 't', url: 'u', repoOwner: 'acme', repoName: 'widgets', createdAt: '', updatedAt: '', triggeredBy: 'propr-dev[bot]' };
+    assert.equal((await admitDetectedIssue({ ...issue, labels: ['AI'], renewedTrigger: 'build' }, 'c1', redis as never)).status, 'accepted');
+    assert.equal(jobs.at(-1).data.triggeringLabel, 'AI');
+    jobs.length = 0;
+    redisValues.clear();
+    assert.equal((await admitDetectedIssue({ ...issue, labels: ['AI', 'bug'], renewedTrigger: 'bug' }, 'c2', redis as never)).status, 'accepted');
+    assert.equal(jobs.at(-1).data.triggeringLabel, 'AI');
+});

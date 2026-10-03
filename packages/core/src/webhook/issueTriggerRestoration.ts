@@ -27,7 +27,7 @@ export async function resolveIssueTriggerLabels(
     payload: IssuesLabeledEvent,
     owner: string,
     repo: string,
-): Promise<{ labels: string[]; triggerReapplied: boolean } | DeliveryDisposition> {
+): Promise<{ labels: string[]; triggerReapplied: boolean; renewedTrigger?: string } | DeliveryDisposition> {
     const labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
     const labelName = payload.label?.name;
     if (payload.issue.pull_request) return { labels, triggerReapplied: false };
@@ -41,11 +41,14 @@ export async function resolveIssueTriggerLabels(
         return { labels: current.labels, triggerReapplied: false };
     }
     const current = await readCurrentTriggerEvidence({ owner, repo, issueNumber: payload.issue.number }, labelName, triggers);
-    if (!current.evidence && !hasStaleTriggerLabels(labels, labelName, triggers)) return { labels, triggerReapplied: true };
+    // The applied trigger is the one this request stands on: admission records
+    // it, so removing it later cancels the work even when another configured
+    // trigger is also present.
+    if (!current.evidence && !hasStaleTriggerLabels(labels, labelName, triggers)) return { labels, triggerReapplied: true, renewedTrigger: labelName };
     if (!isAuthorizedIssueTriggerActor(payload.sender?.login)) return { status: 'ignored', reason: 'user_not_allowed' };
     if (!current.labels.includes(labelName) || current.evidence && !isRenewedApplication(current.evidence, payload.issue.updated_at)) {
         return { status: 'ignored', reason: 'intent_not_current' };
     }
     const restored = await restoreIssueTrigger({ repoOwner: owner, repoName: repo, number: payload.issue.number, kind: 'issue', triggeringLabel: labelName });
-    return restored ? { labels: restored, triggerReapplied: true } : { status: 'ignored', reason: 'intent_not_current' };
+    return restored ? { labels: restored, triggerReapplied: true, renewedTrigger: labelName } : { status: 'ignored', reason: 'intent_not_current' };
 }
