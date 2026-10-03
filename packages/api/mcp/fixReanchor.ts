@@ -62,14 +62,14 @@ export function citedPaths(text: string): string[] {
 
 /**
  * A backticked or Markdown-emphasised span holding one bare name, e.g. `gradlew`,
- * **gradlew**, _configure_ or `gradlew:12`: it may name a root-level file no
+ * **gradlew**, _configure_, `gradlew:12` or `配置`: it may name a root-level file no
  * extraction rule recognises.
  */
-const MARKED_NAME = /(`|(?<![\w*])\*{1,3}|(?<![\w*])_{1,3})(?:\.\/)*([\w.@+~-]+?)(?::\d+(?:-\d+)?)?\1(?![\w*])/g;
+const MARKED_NAME = /(`|(?<![\p{L}\p{N}_*])\*{1,3}|(?<![\p{L}\p{N}_*])_{1,3})(?:\.\/)*([\p{L}\p{M}\p{N}_.@+~-]+?)(?::\d+(?:-\d+)?)?\1(?![\p{L}\p{N}_*])/gu;
 
 /** Code identifiers in lowerCamelCase (`citedPaths`) and spans without a letter (`409`) are not file names. */
 function isBareFileName(name: string): boolean {
-  return /[A-Za-z]/.test(name) && !/^[a-z][a-z0-9]*[A-Z]\w*$/.test(name);
+  return /\p{L}/u.test(name) && !/^[a-z][a-z0-9]*[A-Z]\w*$/.test(name);
 }
 
 /**
@@ -94,15 +94,29 @@ export function hasUnparsedPath(text: string, paths: string[]): boolean {
   });
 }
 
+/** A character that continues a file name, in any script; a lone `.` is handled separately. */
+const NAME_CHAR = /[\p{L}\p{M}\p{N}_@+~$-]/u;
+
 /**
- * Words of `text` left once the extracted `paths` are taken out, e.g. `gradlew`
- * in "legacy/bootstrap.sh and gradlew run unverified code". Plain prose can name
- * a file no extraction rule recognises, so these are checked against the tree.
+ * True when `text`, once the extracted `paths` are taken out, names an entry of
+ * `present` as a complete citation, e.g. `gradlew` in "legacy/bootstrap.sh and
+ * gradlew run unverified code", `build wrapper` or `配置`. Each tree entry is
+ * looked up whole, so a name with spaces or non-ASCII letters counts just like
+ * an ASCII word; a trailing full stop ends a name rather than continuing it.
  */
-function bareWords(text: string, paths: string[]): string[] {
+function citesPresentFile(text: string, paths: string[], present: Set<string>): boolean {
   let residue = text.replace(/\\/g, '/');
   for (const path of [...paths].sort((a, b) => b.length - a.length)) residue = residue.split(path).join(' ');
-  return [...residue.matchAll(/[\w.@+~-]+/g)].map(([word]) => word.replace(/\.+$/, '')).filter(Boolean);
+  const continues = (index: number) => NAME_CHAR.test(residue[index] ?? '');
+  const isWhole = (start: number, end: number) =>
+    !continues(start - 1) && residue[start - 1] !== '.'
+    && !continues(end) && !(residue[end] === '.' && (continues(end + 1) || residue[end + 1] === '.'));
+  for (const name of present) {
+    for (let at = residue.indexOf(name); at !== -1; at = residue.indexOf(name, at + 1)) {
+      if (isWhole(at, at + name.length)) return true;
+    }
+  }
+  return false;
 }
 
 /** Paths and file names of everything at `ref`, or null when the tree cannot be read in full. */
@@ -141,8 +155,9 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  *
  * A record is withheld only when it cites files, every one of them was deleted
  * since the review, no path-like, backticked or emphasised file-name citation in
- * it went unrecognised, and none of its other words names a file still present at
- * the current head: the code it describes is gone. When that tree cannot be read
+ * it went unrecognised, and none of its remaining text names a file still present
+ * at the current head, matched whole so names with spaces or non-ASCII letters
+ * count: the code it describes is gone. When that tree cannot be read
  * in full, applicability is uncertain and the record is applied. A rename or edit is not enough,
  * because the fixing agent reads the current tree and can follow moved code; such
  * records are applied and their changed citations reported in `touchedPaths`.
@@ -176,7 +191,7 @@ export async function reanchorFixRecords(
   const present = cited.some(allRemoved) ? await filesAt(principal, target.repository, target.head) : null;
   for (const record of cited) {
     const { id, kind, text, paths } = record;
-    if (allRemoved(record) && present && !bareWords(text, paths).some(word => present.has(word))) {
+    if (allRemoved(record) && present && !citesPresentFile(text, paths, present)) {
       report.skipped.push({ id, kind, reason: 'code_removed', removedPaths: paths });
     } else report.applied.push({ id, kind, touchedPaths: paths.filter(path => removed.has(path) || touched.has(path)) });
   }

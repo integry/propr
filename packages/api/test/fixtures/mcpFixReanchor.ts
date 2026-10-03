@@ -245,6 +245,34 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.deepEqual(unread.skipped, []);
   });
 
+  await t.test('a surviving file name with spaces or non-ASCII letters keeps a record whose other citation was deleted', async () => {
+    const spaced = 'legacy/bootstrap.sh and `build wrapper` execute unverified code.';
+    assert.deepEqual(citedPaths(spaced), ['legacy/bootstrap.sh']);
+    assert.equal(hasUnparsedPath(spaced, ['legacy/bootstrap.sh']), false);
+    // A marked bare name in any script is an unread citation, like `gradlew`.
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh` and `配置` run unverified code.', ['legacy/bootstrap.sh']), true);
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh` and **créer** run unverified code.', ['legacy/bootstrap.sh']), true);
+
+    const records = [
+      { id: 'F1', kind: 'finding' as const, text: `Verify downloads\nRequirement\n${spaced}\nFix both` },
+      { id: 'F2', kind: 'finding' as const, text: 'Verify downloads\nRequirement\nlegacy/bootstrap.sh and 配置 execute unverified code.\nFix both' },
+      { id: 'F3', kind: 'finding' as const, text: 'Verify downloads\nRequirement\nlegacy/bootstrap.sh calls the build wrappers.\nFix it' },
+    ];
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const removed = [{ filename: 'legacy/bootstrap.sh', status: 'removed' }];
+    const report = await reanchorFixRecords(reanchorPrincipal(removed, ['build wrapper', '配置', 'src/fetch.ts']), target, records);
+    assert.deepEqual(report.applied, [
+      { id: 'F1', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+      { id: 'F2', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+    ]);
+    // A name is only matched whole: "build wrappers" does not cite `build wrapper`.
+    assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+
+    // Once those files are gone too, the records are withheld like any other.
+    const gone = await reanchorFixRecords(reanchorPrincipal(removed, ['src/fetch.ts']), target, records.slice(0, 2));
+    assert.deepEqual(gone.skipped.map(record => record.id), ['F1', 'F2']);
+  });
+
   await t.test('fix_review_findings posts a plain-prose or emphasised surviving citation alone or mixed', async () => {
     const head = 'a'.repeat(40);
     const reviewedHead = 'c'.repeat(40);
@@ -292,6 +320,50 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
     assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F50 F51');
     assert.deepEqual(mixed.result.skipped, [{ id: 'F52', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+    comparisons.delete(`${reviewedHead}...${head}`);
+    trees.delete(head);
+  });
+
+  await t.test('fix_review_findings posts a surviving citation whose file name has a space, alone or mixed', async () => {
+    const head = 'a'.repeat(40);
+    const reviewedHead = 'c'.repeat(40);
+    const pull = { repository: 'acme/repo', pullRequest: 42 };
+    const reviewCommentId = 973;
+    comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]', createdAt: new Date().toISOString(), body: [
+      '## 🔍 AI Code Review — Fixture',
+      '',
+      '## Overall Evaluation',
+      'Two blockers.',
+      '## Merge blockers',
+      'Every finding below was introduced by this PR and must be resolved before merging.',
+      '',
+      '### F60: 🔴 Verify the build wrapper',
+      '- **Required behavior:** Downloaded shell code must be verified before it runs.',
+      '- **Evidence:** legacy/bootstrap.sh and `build wrapper` execute unverified code.',
+      '- **Minimum fix:** Check a pinned checksum.',
+      '',
+      '### F61: 🔴 Drop the legacy fetch',
+      '- **Required behavior:** Downloaded shell code must be verified before it runs.',
+      '- **Evidence:** legacy/bootstrap.sh:9 skips the check.',
+      '- **Minimum fix:** Check a pinned checksum.',
+      '## Suggestions',
+      'These are optional follow-ups and are not sent to `/fix`.',
+      'No suggestions.',
+      '## Score',
+      'Score: 4/10',
+      `<!-- propr:ai-review model="fixture" head="${reviewedHead}" -->`,
+    ].join('\n') });
+    comparisons.set(`${reviewedHead}...${head}`, [{ filename: 'legacy/bootstrap.sh', status: 'removed' }]);
+    trees.set(head, ['build wrapper', 'src/fetch.ts']);
+
+    const alone = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F60'] });
+    assert.equal(alone.state, 'posted', JSON.stringify(alone));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F60');
+    assert.deepEqual(alone.result.skipped, []);
+    const mixed = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F60', 'F61'] });
+    assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F60');
+    assert.deepEqual(mixed.result.skipped, [{ id: 'F61', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
     comparisons.delete(`${reviewedHead}...${head}`);
     trees.delete(head);
   });
