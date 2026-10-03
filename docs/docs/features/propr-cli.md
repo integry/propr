@@ -25,7 +25,7 @@ Bring up a complete ProPR stack from the terminal:
 ```bash
 propr setup              # guided one-time bootstrap: scaffold, verify, configure, start (re-runnable)
 propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
-propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
+propr check              # verify Docker, images, agents, and GitHub auth mode (--verify probes App access and smoke-tests agents)
 propr images pull        # pull missing or stale images without starting the stack
 propr start              # pull images and start the stack with a live dashboard
 propr status             # local stack status (--json for scripts)
@@ -55,7 +55,7 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
 
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
-- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
+- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
 
@@ -94,6 +94,50 @@ propr relay revoke <id>  # revoke a token
 ```
 
 `propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
+
+## Own GitHub App
+
+```bash
+propr github-app create --public-url https://propr.example.com --root /srv/propr
+propr github-app create --public-url https://propr.example.com --org my-org --no-browser
+propr github-app manifest --public-url https://propr.example.com --root /srv/propr
+```
+
+`create` registers a private GitHub App through GitHub's manifest flow, opens the
+installation page, verifies the installation, writes a `0600` private key and
+updates the stack `.env`. It configures direct webhooks and GitHub login through
+the same App, removes relay settings, and checks permissions, events, and token
+creation. Restart with `propr start --restart` afterward.
+
+`manifest` writes `github-app-manifest.json` and `github-app.env.example` for
+manual/offline preparation, without changing the stack `.env` or calling GitHub.
+Both commands use the same manifest builder.
+
+| Option | Meaning |
+|---|---|
+| `--public-url <url>` | Required public stack URL; webhook defaults to `/webhook` |
+| `--root <dir>` | Stack root; otherwise uses `PROPR_ROOT`, saved root, or cwd |
+| `--org <login>` | Register the App under this organization |
+| `--name <name>` | Override the sanitized `ProPR-<host>` default (maximum 34 characters); choose another in GitHub's form if taken |
+| `--webhook-url <url>` | Override the webhook endpoint |
+| `--webhook-secret <secret>` | `create`: update GitHub and `.env` with this secret after conversion |
+| `--allow-workflow-changes` | Request Workflows write; otherwise pushes editing `.github/workflows/*` fail |
+| `--no-browser` | `create`: portable HTML form and pasted redirect URLs for SSH |
+| `--force` | Replace existing credentials (with an env backup), or manual output files |
+| `--json` | Output field names and file paths only; progress remains on stderr |
+
+Over SSH, copy the printed HTML form to your browser's machine and open it, then
+paste each GitHub redirect URL back into the terminal. An unreachable loopback
+page is expected on a remote machine; GitHub redirects the browser there rather
+than calling localhost from its servers, so copy the URL from the address bar.
+Webhook POSTs use the public `--webhook-url` instead. See
+[Create your own App](../operations/github-auth.md#create-your-own-app) for the
+permission/event tables, callback constraints, and interrupted-setup recovery.
+
+`propr setup` offers **Custom GitHub App → Create it for me** or **I already have
+one**. ProPR Connect remains the default. `propr check` verifies installed
+permissions and events and explicitly warns about Actions read-only and absent
+Workflows write access.
 
 ## Hosted UI Tunnel
 

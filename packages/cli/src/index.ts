@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createGithubAppCommand } from './commands/githubAppCommands.js';
 
 import { Command } from "commander";
 import { config } from "dotenv";
@@ -408,6 +409,7 @@ program
 
 // Control-plane commands (local Docker stack)
 program.addCommand(createCheckCommand());
+program.addCommand(createGithubAppCommand());
 program.addCommand(createImagesCommand());
 program.addCommand(createStartCommand());
 program.addCommand(createStackStatusCommand());

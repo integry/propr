@@ -213,7 +213,7 @@ export interface SetupPrompts {
   /** Pick which agents to enable. Default: the agents detected on this host. */
   selectAgents?(ctx: { available: string[]; detected: string[] }): Promise<string[]>;
   /** Configure GitHub auth. Default: keep whatever `.env` already has. */
-  configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
+  configureGithubAuth?(ctx: { current: GithubAuthModeResult; rootDir?: string }): Promise<GithubAuthDecision>;
   /**
    * Choose which access-scoped installation to submit for relay enrollment.
    * This is the legacy CLI/TUI hook and is called only when discovery has at
@@ -1093,7 +1093,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   try {
     const currentAuth = actions.detectGithubAuthMode(rootDir);
     let authDecision: GithubAuthDecision | undefined;
-    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth, rootDir });
     if (authDecision?.enrollRelay) {
       const outcome = await enrollRelayForSetup(authDecision.enrollRelay.relayUrl);
       relayNote = outcome.note;
