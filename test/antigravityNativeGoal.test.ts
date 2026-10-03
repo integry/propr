@@ -436,6 +436,22 @@ describe('Antigravity goal stream adapter', () => {
         event: 'step_update', step_update: { conversation_id: 'agy', step_index: index, state, step_type: 'agent_response', ...extra },
     });
 
+    test('custom model identity permits goal progress and rejects a different provider model', async () => {
+        for (const reported of ['custom-preview-model', 'other-preview-model']) {
+            const child = fakeChild();
+            child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };
+            const stream = new AntigravityGoalStream(child as unknown as ChildProcess, { append: () => undefined } as never, 'custom-preview-model');
+            child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: reported } }));
+            child.stdout.write(step(1, 'DONE', { text_delta: CHECKPOINT }));
+            child.stdout.write(line({ event: 'result', result: { status: 'SUCCESS', response: ANTIGRAVITY_GOAL_COMPLETE_MARKER } }));
+            child.emit('close', reported === 'custom-preview-model' ? 0 : 1);
+            await stream.waitForExit();
+            assert.equal(stream.conversationId, reported === 'custom-preview-model' ? 'agy' : undefined);
+            assert.equal(stream.stepCompleted, reported === 'custom-preview-model');
+            assert.equal(stream.result?.status, reported === 'custom-preview-model' ? 'success' : 'error');
+        }
+    });
+
     test('effort mismatch cannot confirm identity or release queued input', async () => {
         const child = fakeChild();
         child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };

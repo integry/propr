@@ -86,7 +86,12 @@ export class AntigravityAgent implements Agent {
         const configPath = isManagedAgentConfigPath(this.config.configPath)
             ? this.config.configPath
             : process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath;
-        return resolveConfigPath(configPath);
+        const resolved = resolveConfigPath(configPath);
+        if (!isManagedAgentConfigPath(this.config.configPath) && path.basename(resolved) === '.antigravity') {
+            const sibling = path.join(path.dirname(resolved), '.gemini');
+            if (fs.existsSync(sibling) && fs.statSync(sibling).isDirectory()) return sibling;
+        }
+        return resolved;
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {

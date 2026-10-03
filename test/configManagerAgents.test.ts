@@ -1,6 +1,7 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import { buildAgentConfig } from '../propr-ui/src/pages/SettingsPage/agentCredentialSetupUtils.js';
 import { AGENT_DEFAULTS, getManagedAgentConfigPath } from '@propr/shared';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.js';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
@@ -383,6 +384,11 @@ test('Antigravity migration preserves colliding custom labels and default effort
     assert.ok(!agent.supportedModels.includes(low));
     assert.ok(!agent.supportedModels.includes(high));
     assert.equal(migrateAgentConfig(agent), false);
+    const saved = buildAgentConfig({ ...agent, alias: 'edited-agent' });
+    assert.deepEqual(saved.modelCustomLabels, { [low]: 'quick-work', [high]: 'deep-review' });
+    assert.equal(migrateAgentConfig(saved), false);
+    const removed = buildAgentConfig({ ...saved, supportedModels: ['antigravity-gemini-3.7-flash'] });
+    assert.equal(removed.modelCustomLabels, undefined);
 });
 
 test('Antigravity migration retains retired Claude custom routes and existing base overrides', () => {
@@ -395,6 +401,21 @@ test('Antigravity migration retains retired Claude custom routes and existing ba
         assert.equal(agent.defaultModel, base);
         assert.equal(agent.modelCustomLabels?.[old], 'existing-route');
         assert.equal(agent.modelReasoningLevels?.[base], 'low');
+        assert.equal(migrateAgentConfig(agent), false);
+    }
+});
+
+test('Antigravity migration rewrites legacy credential paths only', () => {
+    for (const [configPath, expected] of [
+        ['~/.antigravity', '~/.gemini'],
+        ['/home/user/.antigravity', '/home/user/.gemini'],
+        ['/home/user/.antigravity/', '/home/user/.gemini'],
+        ['/srv/custom-antigravity', '/srv/custom-antigravity'],
+        [getManagedAgentConfigPath('agent-1', 'antigravity'), getManagedAgentConfigPath('agent-1', 'antigravity')],
+    ]) {
+        const agent = createAgent({ type: 'antigravity', configPath });
+        migrateAgentConfig(agent);
+        assert.equal(agent.configPath, expected);
         assert.equal(migrateAgentConfig(agent), false);
     }
 });

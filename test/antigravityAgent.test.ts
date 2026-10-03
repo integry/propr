@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.js';
-import { toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
+import { antigravityModelIdsMatch, toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
+import { getManagedAgentConfigPath } from '@propr/shared';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
 process.env.NODE_ENV = 'test';
@@ -29,6 +30,30 @@ function createAgent(configPath: string): AntigravityAgent {
 }
 
 describe('AntigravityAgent Docker args', () => {
+    test('legacy paths and environment overrides fall back to sibling credentials while managed paths win', () => {
+        const previous = process.env.ANTIGRAVITY_CONFIG_PATH;
+        const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-legacy-'));
+        const legacy = path.join(tempHome, '.antigravity');
+        const sibling = path.join(tempHome, '.gemini');
+        const hostPath = (configPath: string) => (createAgent(configPath) as unknown as { getHostConfigPath(): string }).getHostConfigPath();
+        try {
+            delete process.env.ANTIGRAVITY_CONFIG_PATH;
+            assert.equal(hostPath(legacy), legacy);
+            fs.mkdirSync(sibling);
+            assert.equal(hostPath(legacy), sibling);
+            process.env.ANTIGRAVITY_CONFIG_PATH = legacy;
+            assert.equal(hostPath('/srv/stored'), sibling);
+            const managed = getManagedAgentConfigPath('antigravity-test', 'antigravity');
+            assert.equal(hostPath(managed), path.join(os.homedir(), managed.replace(/^~\//, '')));
+            process.env.ANTIGRAVITY_CONFIG_PATH = '/srv/override';
+            assert.equal(hostPath(legacy), '/srv/override');
+        } finally {
+            if (previous === undefined) delete process.env.ANTIGRAVITY_CONFIG_PATH;
+            else process.env.ANTIGRAVITY_CONFIG_PATH = previous;
+            fs.rmSync(tempHome, { recursive: true, force: true });
+        }
+    });
+
     test('mounts the configured Gemini credentials directory', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-home-'));
         const geminiPath = path.join(tempHome, '.gemini');
@@ -125,6 +150,15 @@ describe('AntigravityAgent Docker args', () => {
 });
 
 describe('toAntigravityCliModelId', () => {
+    test('passes through custom IDs and accepts only their exact converted provider identity', () => {
+        for (const id of ['antigravity-custom-preview-model', 'antigravity:antigravity-custom-preview-model', 'custom-preview-model']) {
+            assert.equal(toAntigravityCliModelId(id, 'high'), 'custom-preview-model');
+            assert.equal(antigravityModelIdsMatch(id, 'custom-preview-model'), true);
+            assert.equal(antigravityModelIdsMatch(id, 'custom-preview-model-high'), false);
+            assert.equal(antigravityModelIdsMatch(id, 'other-preview-model'), false);
+        }
+    });
+
     test('converts base models and separate efforts to exact CLI arguments', () => {
         for (const version of ['3.8', '3.7']) {
             for (const effort of ['low', 'medium', 'high'] as const) {

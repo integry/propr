@@ -186,8 +186,10 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
 
     let migrated = migrateAntigravityModels(agent);
 
-    if (!agent.configPath) {
-        agent.configPath = '~/.gemini';
+    if (!agent.configPath || /(?:^|\/)\.antigravity\/?$/.test(agent.configPath)) {
+        agent.configPath = agent.configPath
+            ? agent.configPath.replace(/\.antigravity\/?$/, '.gemini')
+            : '~/.gemini';
         migrated = true;
     }
 

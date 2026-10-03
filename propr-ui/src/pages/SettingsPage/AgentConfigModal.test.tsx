@@ -20,6 +20,25 @@ vi.mock('../../api/proprApi', () => ({
 }));
 
 describe('AgentConfigModal', () => {
+  it('preserves distinct migrated effort labels when editing and saving an Antigravity agent', () => {
+    const onSave = vi.fn();
+    const labels = {
+      'antigravity-gemini-3.8-flash-low': 'quick-work',
+      'antigravity-gemini-3.8-flash-high': 'deep-review',
+      'antigravity-claude-opus-4.6-thinking': 'old-opus',
+    };
+    render(<AgentConfigModal
+      agent={{ id: 'migrated', type: 'antigravity', alias: 'antigravity', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '~/.gemini',
+        supportedModels: ['antigravity-gemini-3.8-flash', 'antigravity-claude-opus-5.5'],
+        defaultModel: 'antigravity-gemini-3.8-flash', modelCustomLabels: labels }}
+      existingAliases={[]} onClose={vi.fn()} onSave={onSave}
+    />);
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'edited-antigravity' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(onSave.mock.calls[0][0].modelCustomLabels).toEqual(labels);
+  });
+
   it('adds a loginable agent with an isolated managed credential path and requests login', () => {
     const onSave = vi.fn();
 

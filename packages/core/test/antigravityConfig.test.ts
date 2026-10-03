@@ -616,6 +616,43 @@ test('Antigravity agent accepts a base model reported with its exact CLI effort 
     assert.equal(persistedModel, 'antigravity-gemini-3.8-flash');
 });
 
+test('Antigravity agent accepts a configured custom model reported with its exact CLI identity', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-custom', init: { model: 'custom-preview-model', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-custom', status: 'SUCCESS', response: 'custom model response' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig({ supportedModels: ['antigravity-custom-preview-model'], defaultModel: 'antigravity-custom-preview-model' }));
+    const internals = agent as unknown as {
+        persistImplementationLog(options: { resolvedModel: string }): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; modelUsed?: string }>;
+    };
+    let persistedModel: string | undefined;
+    internals.persistImplementationLog = async options => { persistedModel = options.resolvedModel; };
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-custom-preview-model',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.error, undefined);
+    assert.equal(result.modelUsed, 'antigravity-custom-preview-model');
+    assert.equal(persistedModel, 'antigravity-custom-preview-model');
+});
+
 test('Antigravity agent rejects a stream result before its initiating conversation', async () => {
     const stdout = JSON.stringify({
         event: 'result',
