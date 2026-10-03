@@ -146,11 +146,34 @@ describe('toAntigravityCliModelId', () => {
         }
     });
 
-    test('selects the closest supported effort for Pro and GPT-OSS', () => {
+    test('selects the closest supported effort going down for Pro and GPT-OSS', () => {
         assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'low'), 'Gemini 3.1 Pro (Low)');
-        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (High)');
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (Low)');
         assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'GPT-OSS 120B (Medium)');
         assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash'), 'gemini-3.8-flash-medium');
+        for (const effort of [undefined, '', 'auto'] as const) {
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', effort), 'Gemini 3.1 Pro (Low)');
+        }
+        for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode', 'auto', '', undefined] as const) {
+            assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', effort), 'GPT-OSS 120B (Medium)');
+        }
+    });
+
+    test('lowers unsupported higher efforts to high across Antigravity model families', () => {
+        for (const [id, expected] of [
+            ['antigravity-claude-opus-5.5', 'Claude Opus 5.5 (High)'],
+            ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5 (High)'],
+            ['antigravity-gemini-3.8-flash', 'gemini-3.8-flash-high'],
+            ['antigravity-gemini-3.7-flash', 'gemini-3.7-flash-high'],
+            ['antigravity-gemini-3.6-flash', 'Gemini 3.6 Flash (High)'],
+            ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash (High)'],
+            ['antigravity-gemini-3.1-pro', 'Gemini 3.1 Pro (High)'],
+        ]) {
+            for (const effort of ['high', 'xhigh', 'max', 'ultra', 'ultracode'] as const) {
+                assert.equal(toAntigravityCliModelId(id, effort), expected);
+                assert.equal(toAntigravityCliModelId(`antigravity:${id}`, effort), expected);
+            }
+        }
     });
 });
 
@@ -203,7 +226,7 @@ test('Antigravity maps model reasoning choices to supported CLI efforts', () => 
         assert.equal(toAntigravityCliModelId(flash, level), 'gemini-3.8-flash-high');
     }
     assert.equal(toAntigravityCliModelId(flash, ''), 'gemini-3.8-flash-medium');
-    assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (High)');
+    assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (Low)');
     assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'low'), 'GPT-OSS 120B (Medium)');
     assert.equal(toAntigravityCliModelId('antigravity:antigravity-claude-opus-5.5', 'high'), 'Claude Opus 5.5 (High)');
 });

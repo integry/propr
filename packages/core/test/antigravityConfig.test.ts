@@ -138,7 +138,7 @@ test('Antigravity execution lets agy read the prompt from non-TTY stdin', () => 
         assert.ok(!args.includes('--yolo'));
         assert.ok(!args.includes('--skip-trust'));
         assert.ok(args.includes('--model'));
-        assert.equal(args[args.indexOf('--model') + 1], 'Gemini 3.1 Pro (High)');
+        assert.equal(args[args.indexOf('--model') + 1], 'Gemini 3.1 Pro (Low)');
     });
 });
 

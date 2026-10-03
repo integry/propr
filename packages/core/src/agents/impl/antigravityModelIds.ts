@@ -1,4 +1,4 @@
-import { ANTIGRAVITY_MODELS, getReasoningLevelsForAgentType, type ModelReasoningLevel } from '@propr/shared';
+import { ANTIGRAVITY_MODELS, REASONING_LEVELS, getReasoningLevelsForAgentType, type ModelReasoningLevel } from '@propr/shared';
 
 export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = Object.fromEntries(
     ANTIGRAVITY_MODELS.map(model => [model.id, model.shortName])
@@ -10,10 +10,13 @@ export function toAntigravityCliModelId(modelName: string, reasoningLevel?: Mode
     if (!model) throw new Error(`Unsupported Antigravity model: ${modelName}`);
 
     const levels = getReasoningLevelsForAgentType('antigravity', model.id);
-    // Medium is the neutral fallback. Pro has no Medium, so ties prefer High.
-    const preferred = reasoningLevel === 'low' ? 'low'
-        : !reasoningLevel || reasoningLevel === 'auto' || reasoningLevel === 'medium' ? 'medium' : 'high';
-    const level = levels.includes(preferred) ? preferred : levels.includes('high') ? 'high' : levels[0];
+    // Start at the requested effort and go down to the closest supported level.
+    const preferred = !reasoningLevel || reasoningLevel === 'auto' ? 'medium' : reasoningLevel;
+    const preferredIndex = REASONING_LEVELS.indexOf(preferred);
+    // Use the lowest supported effort when none is at or below the request (GPT-OSS).
+    const level = [...levels].reverse().find(candidate =>
+        REASONING_LEVELS.indexOf(candidate) <= preferredIndex
+    ) ?? levels[0];
     // The CLI encodes effort in its argument; configuration always stores a base ID.
     if (model.shortAlias === 'flash38' || model.shortAlias === 'flash37') {
         return `${model.id.slice('antigravity-'.length)}-${level}`;
