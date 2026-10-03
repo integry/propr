@@ -1,26 +1,54 @@
 import type { Redis } from 'ioredis';
 import { getReasoningLevelsForAgentType, type ReasoningLevel } from '@propr/shared';
 import {
-    AgentRegistry, loadUltrafixEscalationSettings, loadModelReasoningLevel,
+    AgentRegistry, logger, loadUltrafixEscalationSettings, loadModelReasoningLevel,
     resolveAgentModelReasoningLevel, resolveConfiguredModel, resolveLlmLabel, resolveRuntimeModelReasoningLevel,
 } from '@propr/core';
 import { loadState, saveUltrafixStateIfCurrent, type UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import { advanceEscalation, type EscalationModel } from './ultrafixEscalationPolicy.js';
 
-async function resolveModel(model: string | null | undefined, checkUsage: boolean, overrideEffort?: ReasoningLevel): Promise<EscalationModel | null> {
+type CandidateSkip = {
+    candidate: string;
+    reason: 'agent_unavailable' | 'agent_disabled' | 'model_unsupported' | 'usage_limit' | 'model_resolution_failed';
+    resolvedModel?: string;
+    sessionPercent?: number;
+    weeklyPercent?: number;
+};
+
+function availabilitySkipReason(
+    agent: ReturnType<ReturnType<typeof AgentRegistry.getInstance>['getAgentByAlias']>, id: string,
+): CandidateSkip['reason'] | undefined {
+    if (!agent) return 'agent_unavailable';
+    if (!agent.config.enabled) return 'agent_disabled';
+    if (!agent.config.supportedModels.includes(id)) return 'model_unsupported';
+    return undefined;
+}
+
+async function resolveModel(
+    model: string | null | undefined, checkUsage: boolean, overrideEffort?: ReasoningLevel,
+    onSkip?: (details: Omit<CandidateSkip, 'candidate'>) => void,
+): Promise<EscalationModel | null> {
     const configuredModel = await resolveConfiguredModel(model);
     const { agentAlias: alias, model: id } = await resolveLlmLabel(configuredModel);
     const resolved = `${alias}:${id}`;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const agent = registry.getAgentByAlias(alias);
-    if (!agent?.config.enabled || !agent.config.supportedModels.includes(id)) return null;
+    const skipReason = availabilitySkipReason(agent, id);
+    if (skipReason) {
+        onSkip?.({ resolvedModel: resolved, reason: skipReason });
+        return null;
+    }
+    if (!agent) return null;
     if (checkUsage) {
         // Missing, stale, disabled, or failed usage monitoring never blocks a handoff.
         try {
             const { AliasSpecificAgentTankSnapshotProvider } = await import('../../packages/core/src/services/syntheticUsageSnapshotProvider.js');
             const usage = await new AliasSpecificAgentTankSnapshotProvider().getSnapshot(alias);
-            if (usage && Math.max(usage.sessionPercent ?? 0, usage.weeklyPercent ?? 0) >= 90) return null;
+            if (usage && Math.max(usage.sessionPercent ?? 0, usage.weeklyPercent ?? 0) >= 90) {
+                onSkip?.({ resolvedModel: resolved, reason: 'usage_limit', sessionPercent: usage.sessionPercent, weeklyPercent: usage.weeklyPercent });
+                return null;
+            }
         } catch { /* Escalation remains available without a usage signal. */ }
     }
     let levels: readonly ReasoningLevel[] = getReasoningLevelsForAgentType(agent.config.type, id).filter(level => level !== 'auto');
@@ -76,8 +104,25 @@ export async function recordUltrafixEscalationReview(
         current.escalationBestScore = Math.max(current.escalationBestScore ?? score, score);
         return await persist(redis, current) ? current : null;
     }
-    await advanceEscalation(current.escalation, score, async model => {
-        try { return await resolveModel(model, true); } catch { return null; }
+    const before = { ...current.escalation.current, modelIndex: current.escalation.modelIndex, climbs: current.escalation.climbs };
+    const skipped: CandidateSkip[] = [];
+    await advanceEscalation(current.escalation, score, async candidate => {
+        try {
+            return await resolveModel(candidate, true, undefined, details => skipped.push({ candidate, ...details }));
+        } catch {
+            skipped.push({ candidate, reason: 'model_resolution_failed' });
+            return null;
+        }
     });
-    return await persist(redis, current) ? current : null;
+    // Report only decisions accepted by the epoch-guarded save, after all awaits.
+    if (!await persist(redis, current)) return null;
+    const context = { owner: current.owner, repo: current.repo, pr: current.pr, workEpoch: current.workEpoch, score, bestScore: current.escalation.bestScore };
+    for (const skip of skipped) logger.info({ ...context, ...skip }, 'Ultrafix escalation: candidate skipped');
+    const next = current.escalation;
+    if (next.climbs > before.climbs && next.modelIndex === before.modelIndex) {
+        logger.info({ ...context, fromModel: before.model, toModel: next.current.model, fromEffort: before.effort ?? 'auto', toEffort: next.current.effort, climbs: next.climbs, reason: 'plateau' }, 'Ultrafix escalation: reasoning increased');
+    } else if (next.modelIndex !== before.modelIndex && !next.exhausted) {
+        logger.info({ ...context, fromModel: before.model, toModel: next.current.model, fromEffort: before.effort ?? 'auto', toEffort: next.current.effort ?? 'auto', modelIndex: next.modelIndex, reason: 'reasoning_limit_reached' }, 'Ultrafix escalation: model handoff');
+    }
+    return current;
 }
