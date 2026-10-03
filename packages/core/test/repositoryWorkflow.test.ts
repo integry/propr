@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { mkdtemp, writeFile, readFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from '../src/workflow/workflowExecution.js';
 import { generateCompletionComment } from '../src/utils/github/logFiles.js';
+import { closeConnection } from '../src/db/connection.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../src/agents/impl/utils/boundedProviderOutput.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
 
@@ -19,6 +20,11 @@ function observeStderr(stderr: string, chunks = [stderr]): void {
     for (const chunk of chunks.slice(0, -1)) capture.append(chunk);
     capture.finish(chunks.at(-1)!);
 }
+
+// logFiles loads the SQLite connection, which otherwise keeps the test process alive.
+after(async () => {
+    await closeConnection();
+});
 
 const policy = (source = '{}'): ResolvedRepositoryWorkflow => ({
     revision: 'base-commit', fileRevision: 'blob', baseBranch: 'release', config: parseRepositoryWorkflow(source),
