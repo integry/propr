@@ -146,8 +146,9 @@ export async function startGithubAppListener(state: string, ttlMs = 60 * 60_000)
     fromPaste(raw: string, kind: 'created' | 'installed'): string | undefined {
       // HTTP and paste-back feed one result. Only authorize a callback when no
       // successful HTTP delivery is queued; consuming it never resets replay protection.
-      if (typeof queued.get(kind) !== 'string' && raw.trim()) receive(raw.trim(), kind);
-      const value = queued.get(kind);
+      // receive() hands the value to a pending wait() instead of the queue, so use its
+      // return value rather than reading the queue back.
+      const value = typeof queued.get(kind) !== 'string' && raw.trim() ? receive(raw.trim(), kind) : queued.get(kind);
       queued.delete(kind);
       if (value instanceof Error) throw value;
       return value;
@@ -270,12 +271,16 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
       // A local browser normally reaches the loopback listener directly. Keep
       // paste-back active in parallel so browser isolation, forwarding mistakes,
       // or a remote browser never make listener delivery a hard dependency.
-      const stopPaste = new AbortController();
-      const pasteSignal = timeoutSignal(timeout, dependencies.signal
-        ? AbortSignal.any([dependencies.signal, stopPaste.signal])
-        : stopPaste.signal);
-      const received = listener.wait(kind, timeout, dependencies.signal)
+      // One per-operation controller stops both the prompt and the listener wait on
+      // every exit, so an abandoned wait never keeps its deadline timer (and the
+      // process) alive after the flow has completed or failed.
+      const stop = new AbortController();
+      const operationSignal = dependencies.signal ? AbortSignal.any([dependencies.signal, stop.signal]) : stop.signal;
+      const pasteSignal = timeoutSignal(timeout, operationSignal);
+      const received = listener.wait(kind, timeout, operationSignal)
         .then(value => ({ source: 'listener' as const, value }));
+      // Stopping an abandoned wait rejects it; paths that still need it await it directly.
+      received.catch(() => undefined);
       const pasted = io.ask(prompt, pasteSignal).then(
         raw => ({ source: 'paste' as const, value: listener.fromPaste(raw, kind) }),
         error => ({ source: 'paste-error' as const, error }),
@@ -288,7 +293,7 @@ export async function createGithubApp(options: GithubAppOptions, dependencies: G
         if (['AbortError', 'TimeoutError'].includes((first.error as Error).name)) return (await received).value;
         throw first.error;
       } finally {
-        stopPaste.abort();
+        stop.abort();
       }
     };
     const timeout = dependencies.callbackTimeoutMs ?? 55 * 60_000;

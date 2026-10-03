@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync, statSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { parse } from 'dotenv';
 import { buildGithubAppManifest, GITHUB_APP_PERMISSIONS, SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
@@ -157,6 +159,95 @@ test('browser flow falls back to pasted user redirects without loopback delivery
   assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
   assert.equal(h.getManifest().hook_attributes.url, `${publicUrl}/webhook`, 'GitHub server webhooks remain public');
   assert.match(h.lines.join('\n'), /Opening GitHub/);
+  assert.ok(!h.requests.some(request => request.path === '/app/installations'), 'the pasted installation ID is used without discovery');
+});
+
+test('browser flow uses a pasted installation redirect when discovery would be ambiguous', async t => {
+  const root = sandbox(t);
+  const h = harness(root, { browserCannotReachLoopback: true });
+  let discoveries = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    if (new URL(String(input)).pathname !== '/app/installations') return h.fetcher(input, init);
+    discoveries += 1;
+    return Response.json([installation, { ...installation, id: 790 }]);
+  };
+  const result = await createGithubApp({ root, publicUrl }, { ...h, fetcher });
+  assert.equal(parse(readFileSync(result.envPath)).GH_INSTALLATION_ID, '789');
+  assert.equal(discoveries, 0);
+  assert.ok(h.requests.some(request => request.path === '/app/installations/789'), 'the pasted ID is still verified');
+});
+
+test('a paste delivered to a pending listener wait returns the pasted value to both consumers', async () => {
+  const listener = await startGithubAppListener('state');
+  const controller = new AbortController();
+  try {
+    for (const kind of ['created', 'installed'] as const) {
+      const callback = `${listener.base}/${kind}?state=state&${kind === 'created' ? 'code=x' : 'installation_id=42'}`;
+      const waiting = listener.wait(kind, 60_000, controller.signal);
+      assert.equal(listener.fromPaste(callback, kind), kind === 'created' ? 'x' : '42');
+      assert.equal(await waiting, kind === 'created' ? 'x' : '42');
+      assert.throws(() => listener.fromPaste(callback, kind), /already been used/);
+    }
+  } finally { controller.abort(); listener.close(); }
+});
+
+// Runs the real flow with production callback deadlines (55 and 5 minutes) in a
+// child process: an abandoned listener wait must not keep the CLI alive.
+const exitFixture = `
+const { generateKeyPairSync } = await import('node:crypto');
+const { mkdtempSync, rmSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+const { createGithubApp } = await import(process.env.GITHUB_APP_MODULE);
+const { privateKey: pem } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+const installation = JSON.parse(process.env.GITHUB_APP_INSTALLATION);
+const root = mkdtempSync(join(tmpdir(), 'propr-github-app-exit-'));
+let registration;
+const io = {
+  log() {},
+  async open(url) { if (url.includes('/register/')) registration = new URL(url); },
+  async ask(message) {
+    if (!message.includes('Waiting for GitHub')) return '';
+    if (process.env.GITHUB_APP_SCENARIO === 'invalid-paste') return 'not a redirect url';
+    return registration.origin + '/created?code=one-time-code&state=' + registration.pathname.split('/').pop();
+  },
+};
+const fetcher = async input => {
+  const path = new URL(String(input)).pathname;
+  if (path.startsWith('/app-manifests/')) return Response.json({ id: installation.app_id, slug: 'propr-test', pem, webhook_secret: 'w', client_id: 'c', client_secret: 's' }, { status: 201 });
+  if (path.endsWith('/access_tokens')) return Response.json({ token: 't' });
+  return Response.json(path === '/app/installations' ? [installation] : installation);
+};
+try {
+  await createGithubApp({ root, publicUrl: 'https://propr.example.com' }, { io, fetcher });
+  console.log('completed');
+} catch (error) { console.log('rejected: ' + error.message); }
+finally { rmSync(root, { recursive: true, force: true }); }
+`;
+function runExitFixture(scenario: string): Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  return new Promise((accept, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', exitFixture], {
+      cwd: dirname(fileURLToPath(import.meta.url)),
+      env: { ...process.env, NODE_ENV: 'test', GITHUB_APP_SCENARIO: scenario, GITHUB_APP_INSTALLATION: JSON.stringify(installation), GITHUB_APP_MODULE: new URL('./githubAppCommands.ts', import.meta.url).href },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    // Far below the five-minute installation deadline, generous for a cold tsx start.
+    const hung = setTimeout(() => child.kill('SIGKILL'), 60_000);
+    child.once('error', reject);
+    child.once('close', (status, signal) => { clearTimeout(hung); accept({ status, signal, stdout, stderr }); });
+  });
+}
+for (const [scenario, outcome] of [
+  ['enter-to-discover', /^completed\n$/],
+  ['invalid-paste', /^rejected: Paste the complete GitHub redirect URL\.\n$/],
+] as const) test(`the process exits promptly after ${scenario} without waiting for callback deadlines`, { timeout: 90_000 }, async () => {
+  const result = await runExitFixture(scenario);
+  assert.equal(result.signal, null, `the child was still alive after the flow settled: ${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, outcome);
 });
 
 test('refuses existing credentials before opening browser or changing files', async t => {
