@@ -40,6 +40,7 @@ export interface StructuredReviewResult {
 
 export const MERGE_BLOCKERS_INTRODUCTION = 'Every finding below was introduced by this PR and must be resolved before merging.';
 export const SUGGESTIONS_INTRODUCTION = 'These are optional follow-ups and are not sent to `/fix`.';
+export const FIX_COMMAND_COPY_LABEL = '**Copy and edit to choose records from this review:**';
 
 const MACHINE_SECTION_HEADINGS = [
     'Overall Evaluation',
@@ -476,11 +477,16 @@ export function renderPublicReview(
 }
 
 /**
- * Strip machine-readable markers and the /fix instruction tip from a review
+ * Strip machine-readable markers, the /fix tip and copyable command from a review
  * comment body before validating its review sections.
  */
 export function stripReviewBoilerplate(body: string): string {
     let cleaned = body.replace(/\n?<!-- propr:ai-review [^>]* -->/g, '');
     cleaned = cleaned.replace(/\n?---\n> 💡 \*\*(?:Tip|Next step):\*\* Comment `\/fix`[^\n]*(?:\n>[^\n]*)*/g, '');
+    cleaned = cleaned.replace(new RegExp(
+        `^${escapeRegExp(FIX_COMMAND_COPY_LABEL)}\\r?\\n\\r?\\n` +
+        '```text\\r?\\n/fix[^\\r\\n]*\\r?\\n```[ \\t]*(?:\\r?\\n|$)',
+        'gm',
+    ), '');
     return cleaned.trimEnd();
 }

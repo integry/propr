@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review fix selection**: `/fix all` requests every pending merge blocker and
+  optional suggestion. Review comments include a copyable `/fix F# S#` command
+  containing their published records for editing an explicit selection.
 - **Analytics timeframe**: one selector in the Analytics header scopes the
   activity, task status, repository and model sections to the last 24 hours,
   7 days, 30 days (default), 90 days, 12 months or all time. The choice is kept

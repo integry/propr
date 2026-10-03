@@ -162,6 +162,23 @@ Post:
 /fix
 ```
 
+To address every pending merge blocker **and** every optional suggestion across
+all current review comments, post:
+
+```text
+/fix all
+```
+
+`all` is case-insensitive and must stand alone on the command line, apart from
+trailing commas or whitespace. Use `;` for inline instructions, as in
+`/fix all; keep the API stable`, or put instructions on following lines.
+`/fix all the failing tests` keeps the bare `/fix` meaning: blockers only, with
+`all the failing tests` passed as instructions. `/fix all F3` or `/fix all S3`
+is rejected and nothing is applied: use `/fix all` alone, or name the records
+explicitly. `/fix all` with context on following lines still selects every
+pending finding and suggestion.
+Like bare `/fix`, `/fix all` is not subject to the explicit identifier count cap.
+
 Or name exactly what to address. A review publishes merge-blocking findings as
 `F1`, `F2`, … and non-blocking follow-ups as `S1`, `S2`, …; list them in any
 order, mixed freely:
@@ -170,6 +187,11 @@ order, mixed freely:
 /fix F20 S3 S5
 Keep the public helper signature unchanged.
 ```
+
+Every valid review comment with records includes a fenced, copyable `/fix` line
+listing exactly its published findings first and suggestions second, for example
+`/fix F20 S3 S5`. Copy it into a new PR comment, delete any IDs you do not want,
+and post it to use explicit selection. The line uses the permanent PR-wide IDs.
 
 - Both sequences continue across every review on the pull request and are never
   reused: a second review that finds two suggestions after `S5` publishes them as
@@ -205,7 +227,11 @@ blocker, no suggestions — and any text you add becomes extra instructions:
 Only address the critical findings.
 ```
 
-`/fix` applies a `/review`'s pending feedback: it collects the unprocessed AI review comments on the PR (identified by their `propr:ai-review` marker), narrows them to what you selected, applies them in one implementation pass, and then marks exactly those records processed. Unselected findings stay pending for a later `/fix`, and a suggestion is only ever included when you name it. Comments that reported an error (`error="true"`) are excluded. User-authored comments are ignored by `/fix`; ProPR processes those directly as natural follow-ups.
+`/fix` applies a `/review`'s pending feedback: it collects the unprocessed AI review comments on the PR (identified by their `propr:ai-review` marker), narrows them to what you selected, applies them in one implementation pass, and then marks exactly those records processed. Unselected findings stay pending for a later `/fix`, and a suggestion is only ever included when you name it or request `/fix all`. Comments that reported an error (`error="true"`) are excluded. User-authored comments are ignored by `/fix`; ProPR processes those directly as natural follow-ups.
+
+The MCP `fix_review_findings` tool continues to accept explicit IDs only; it
+already supplies `currentFindingIds` and `currentSuggestionIds` for callers to
+select. An MCP `all` option is a possible follow-up.
 
 Two separate time windows govern which comments `/fix` touches:
 

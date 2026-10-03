@@ -136,7 +136,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
         )}
       </div>
       {/* Title */}
-      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words">
+      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words line-clamp-2" title={taskInfo?.title}>
         {taskInfo?.title || 'Loading...'}
       </h2>
       {/* Subtitle - smaller on mobile */}

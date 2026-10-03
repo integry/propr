@@ -133,6 +133,29 @@ export function submissionIssueBody(row: TaskSubmission, payload: SubmissionPayl
   return `${payload.instruction}\n\n---\nSubmitted by @${payload.username} through ProPR.${attachments}\n${submissionMarker(row.id)}`;
 }
 
+// Preserve the instruction's first line up to the issue-title limit used by
+// the planner. Longer instructions need an explicit ellipsis, not a cut word.
+export function submissionIssueTitle(instruction: string): string {
+  const title = instruction.trim().split('\n')[0].trim();
+  if (!title) return 'New task';
+  if (title.length <= 256) return title;
+  const words = title.match(/\S+/g) ?? [];
+  let shortened = '';
+  for (const word of words) {
+    const next = shortened ? `${shortened} ${word}` : word;
+    if (next.length > 253) break;
+    shortened = next;
+  }
+  if (!shortened) {
+    // A single long word still needs to fit without splitting a surrogate pair.
+    for (const character of title) {
+      if (shortened.length + character.length > 253) break;
+      shortened += character;
+    }
+  }
+  return `${shortened}...`;
+}
+
 function submissionServices(octokit: SubmissionOctokit, enqueue = enqueueIssueImplementationJob, images?: SubmissionImageUploadServices) {
   const coordinates = (row: TaskSubmission) => { const [owner, repo] = row.repository.split('/'); return { owner, repo }; };
   return {
@@ -141,7 +164,7 @@ function submissionServices(octokit: SubmissionOctokit, enqueue = enqueueIssueIm
       const files = JSON.parse(row.attachments) as SubmissionAttachment[];
       const body = submissionIssueBody(row, payload, files, await uploadSubmissionImages(octokit, coordinates(row), files, images));
       const { data } = await octokit.request('POST /repos/{owner}/{repo}/issues', {
-        ...coordinates(row), title: payload.instruction.trim().split('\n')[0].slice(0, 100) || 'New task', body,
+        ...coordinates(row), title: submissionIssueTitle(payload.instruction), body,
         // No trigger label until the durable association and all routing are ready.
         labels: [],
       });

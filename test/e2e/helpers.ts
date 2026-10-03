@@ -23,6 +23,7 @@ import {
 import { findUnclaimedModelTask } from "./taskMatching.js";
 import { parseModelTaskTimeoutMs } from "./modelTaskTimeout.js";
 import { isProviderUsageLimitFailure } from "./providerUsageLimit.js";
+import { isProviderAuthenticationFailure } from "./providerAuthentication.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -291,8 +292,9 @@ function describeModelTask(result: ModelTestResult): string {
 
 /**
  * Requires every model task to complete. Tasks that failed only because the
- * provider account ran out of credits are reported but tolerated, as long as
- * at least one model completed so the run still validated a live model.
+ * provider account ran out of credits or explicitly rejected an invalidated
+ * OAuth token are reported but tolerated, as long as at least one model
+ * completed so the run still validated a live model.
  */
 export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
   const unsuccessful = results.filter((result) => result.finalState !== "completed");
@@ -300,12 +302,22 @@ export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
 
   const usageLimited = unsuccessful.filter((result) =>
     isProviderUsageLimitFailure(result.finalState, result.failureReason));
-  const unexpected = unsuccessful.filter((result) => !usageLimited.includes(result));
+  const authenticationFailed = unsuccessful.filter((result) =>
+    isProviderAuthenticationFailure(result.finalState, result.failureReason));
+  const unexpected = unsuccessful.filter((result) =>
+    !usageLimited.includes(result) && !authenticationFailed.includes(result));
 
-  if (unexpected.length === 0 && usageLimited.length < results.length) {
-    console.log(
-      `    WARNING: ${usageLimited.length}/${results.length} model task(s) hit provider usage limits: ${usageLimited.map(describeModelTask).join("; ")}`,
-    );
+  if (unexpected.length === 0 && results.some((result) => result.finalState === "completed")) {
+    if (usageLimited.length > 0) {
+      console.log(
+        `    WARNING: ${usageLimited.length}/${results.length} model task(s) hit provider usage limits: ${usageLimited.map(describeModelTask).join("; ")}`,
+      );
+    }
+    if (authenticationFailed.length > 0) {
+      console.log(
+        `    WARNING: ${authenticationFailed.length}/${results.length} model task(s) hit provider authentication failures; reauthenticate the affected provider account: ${authenticationFailed.map(describeModelTask).join("; ")}`,
+      );
+    }
     return;
   }
 

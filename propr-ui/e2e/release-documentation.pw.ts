@@ -40,7 +40,11 @@ test('captures the work navigation and a real dashboard image in task previews',
   await page.route('**/api/preview-media/pulls/example/workspace/42/dashboard', route => route.fulfill({ contentType: 'image/png', body: dashboard }));
   await page.goto('/tasks/docs-preview');
   await expect(page.getByAltText('Dashboard and work navigation')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Dashboard.tsx +18 -7', exact: true })).toBeVisible();
+  const changedFile = page.getByRole('button', { name: 'View diff for src/Dashboard.tsx', exact: true });
+  await expect(changedFile).toBeVisible();
+  await expect(changedFile).toContainText('Dashboard.tsx');
+  await expect(changedFile).toContainText('+18');
+  await expect(changedFile).toContainText('-7');
   await capture(page, 'release-previews');
 });
 

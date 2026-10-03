@@ -258,7 +258,7 @@ interface AgentRowProps {
   onToggle: () => void;
 }
 
-const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
+export const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
   const metrics = getAllMetrics(agent);
   const primaryMetric = getPrimaryMetric(agent);
   // Every provider with usage data is the same kind of node — an accordion

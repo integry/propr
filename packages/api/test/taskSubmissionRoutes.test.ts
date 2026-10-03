@@ -8,7 +8,7 @@ import type { Request, Response } from 'express';
 import { closeConnection, insertTaskSubmission } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as identityMigration } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
-import { createTaskSubmissionRoutes, authorizeTaskSubmissionRepository, uploadSubmissionImages } from '../routes/taskSubmissionRoutes.js';
+import { createTaskSubmissionRoutes, authorizeTaskSubmissionRepository, uploadSubmissionImages, submissionIssueTitle } from '../routes/taskSubmissionRoutes.js';
 import { configureDemoMode } from '../demoMode.js';
 
 after(closeConnection);
@@ -26,6 +26,19 @@ async function fixture() {
   await identityMigration(db);
   return db;
 }
+
+test('submission titles preserve long first lines and only shorten at the issue-title limit', () => {
+  const title = 'When starting a new task it should remember the last used settings (repo and agent) and preselect them for the next task';
+  assert.equal(submissionIssueTitle(`  ${title}\n\nAdditional details`), title);
+  const longTitle = 'Remember the selected repository and agent settings '.repeat(8);
+  const shortened = submissionIssueTitle(longTitle);
+  assert.ok(shortened.length <= 256);
+  assert.ok(shortened.endsWith('...'));
+  assert.ok(longTitle.startsWith(`${shortened.slice(0, -3)} `));
+  assert.equal(submissionIssueTitle('a'.repeat(300)), `${'a'.repeat(253)}...`);
+  assert.equal(submissionIssueTitle('😀'.repeat(150)), `${'😀'.repeat(126)}...`);
+  assert.equal(submissionIssueTitle('  '), 'New task');
+});
 
 test('route preserves instructions, validates before creation, publishes routing before trigger, and retries the same issue', async () => {
   configureDemoMode(false);
