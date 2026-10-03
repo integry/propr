@@ -90,8 +90,10 @@ export function parseReasoningLevelFromLabels(labels: readonly ReasoningLevelLab
 export function getReasoningLevelsForAgentType(agentType: AgentType, model?: string): readonly ReasoningLevel[] {
   if (model?.includes('gpt-oss')) return ['medium'];
   if (agentType === 'antigravity') {
-    if (model?.match(/gemini-.*-pro-(low|high)$/)) return ['low', 'high'];
-    if (model?.match(/gemini-.*-flash-(low|medium|high)$/)) return ['low', 'medium', 'high'];
+    // Anchor at the last Gemini prefix to avoid retrying the pattern at every occurrence.
+    const geminiModel = model?.slice(model.lastIndexOf('gemini-'));
+    if (geminiModel?.match(/^gemini-.*-pro-(low|high)$/)) return ['low', 'high'];
+    if (geminiModel?.match(/^gemini-.*-flash-(low|medium|high)$/)) return ['low', 'medium', 'high'];
     return [];
   }
   if (agentType === 'codex') return CODEX_REASONING_LEVELS;
