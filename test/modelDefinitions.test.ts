@@ -177,6 +177,21 @@ test('Antigravity offers one model entry with separate supported reasoning choic
         assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(model.id));
         assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', model.id), ['low', 'medium', 'high']);
     }
+    const expected = [
+        ['antigravity-gemini-3.8-flash', 'flash38'],
+        ['antigravity-gemini-3.7-flash', 'flash37'],
+        ['antigravity-gemini-3.6-flash', 'flash36'],
+        ['antigravity-gemini-3.5-flash', 'flash'],
+        ['antigravity-gemini-3.1-pro', 'pro'],
+        ['antigravity-claude-sonnet-5.5', 'sonnet55'],
+        ['antigravity-claude-opus-5.5', 'opus55'],
+        ['antigravity-gpt-oss-120b', 'gpt-oss-120b'],
+    ];
+    assert.deepStrictEqual(ANTIGRAVITY_MODELS.map(model => [model.id, model.shortAlias]), expected);
+    assert.deepStrictEqual(AGENT_DEFAULTS.antigravity.defaultModels, expected.map(([id]) => id));
+    for (const model of ANTIGRAVITY_MODELS) {
+        assert.equal(model.githubLabel, `llm-antigravity-${model.shortAlias}`);
+    }
     assert.ok(!ANTIGRAVITY_MODELS.some(model => model.id.includes('4.6-thinking')));
     assert.ok(!ANTIGRAVITY_MODELS.some(model => /-(low|medium|high)$/.test(model.id)));
     for (const version of ['3.8', '3.7', '3.6', '3.5']) {

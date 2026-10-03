@@ -159,55 +159,14 @@ function updateDefaultCliVersion(agent: AgentConfig): boolean {
     return migrated;
 }
 
-function getAntigravityModelReplacements(models: Set<string>): Record<string, string> {
-    const replacements: Record<string, string> = {
-        'antigravity-claude-sonnet-4.6-thinking': 'antigravity-claude-sonnet-5.5',
-        'antigravity-claude-opus-4.6-thinking': 'antigravity-claude-opus-5.5'
-    };
-    for (const model of models) {
-        if (/^antigravity-.*-(low|medium|high)$/.test(model) && MODEL_INFO_MAP[model.replace(/-(low|medium|high)$/, '')]) {
-            replacements[model] = model.replace(/-(low|medium|high)$/, '');
-        }
-    }
-    return replacements;
-}
-
-function migrateAntigravityModels(agent: AgentConfig): boolean {
-    let migrated = false;
-    // Collapse effort variants into a model plus its existing reasoning override.
-    const models = new Set([
-        ...agent.supportedModels, ...(agent.defaultModel ? [agent.defaultModel] : []),
-        ...Object.keys(agent.modelCustomLabels ?? {}), ...Object.keys(agent.modelReasoningLevels ?? {})
-    ]);
-    const replacements = getAntigravityModelReplacements(models);
-    // Prefer the old default's effort if several enabled variants collapse together.
-    const orderedModels = [...models].sort((a, b) => Number(b === agent.defaultModel) - Number(a === agent.defaultModel));
-    for (const oldModel of orderedModels) {
-        const newModel = replacements[oldModel];
-        if (!newModel) continue;
-        const effort = oldModel.match(/-(low|medium|high)$/)?.[1] ?? 'high';
-        agent.modelReasoningLevels ??= {};
-        agent.modelReasoningLevels[newModel] ??= agent.modelReasoningLevels[oldModel] ?? (effort as 'low' | 'medium' | 'high');
-        delete agent.modelReasoningLevels[oldModel];
-        if (agent.modelCustomLabels?.[oldModel] !== undefined) {
-            agent.modelCustomLabels[newModel] ??= agent.modelCustomLabels[oldModel];
-            delete agent.modelCustomLabels[oldModel];
-        }
-        migrated = true;
-    }
-    agent.supportedModels = [...new Set(agent.supportedModels.map(model => replacements[model] ?? model))];
-    if (agent.defaultModel) agent.defaultModel = replacements[agent.defaultModel] ?? agent.defaultModel;
-    return migrated;
-}
-
 function updateAntigravityDefaults(agent: AgentConfig): boolean {
     if (agent.type !== 'antigravity') {
         return false;
     }
 
-    let migrated = migrateAntigravityModels(agent);
+    let migrated = false;
 
-    if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
+    if (!agent.configPath) {
         agent.configPath = '~/.gemini';
         migrated = true;
     }

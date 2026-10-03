@@ -152,16 +152,16 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
-| Gemini 3.8 Flash Low / Medium / High | `llm-antigravity-flash38-low` / `-flash38-medium` / `-flash38-high` |
-| Gemini 3.7 Flash Low / Medium / High | `llm-antigravity-flash37-low` / `-flash37-medium` / `-flash37-high` |
-| Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
-| Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
-| Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
-| Claude Sonnet 5.5 Low / Medium / High | `llm-antigravity-sonnet55-low` / `-sonnet55-medium` / `-sonnet55-high` |
-| Claude Opus 5.5 Low / Medium / High | `llm-antigravity-opus55-low` / `-opus55-medium` / `-opus55-high` |
-| GPT-OSS 120B Medium | `llm-antigravity-gpt-oss-120b` |
+| Gemini 3.8 Flash | `llm-antigravity-flash38` |
+| Gemini 3.7 Flash | `llm-antigravity-flash37` |
+| Gemini 3.6 Flash | `llm-antigravity-flash36` |
+| Gemini 3.5 Flash | `llm-antigravity-flash` |
+| Gemini 3.1 Pro | `llm-antigravity-pro` |
+| Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
+| Claude Opus 5.5 | `llm-antigravity-opus55` |
+| GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
 
-Reasoning effort is part of each Antigravity model selection. Claude 5.5 and Gemini Flash offer low, medium, and high; Gemini 3.1 Pro offers low and high; GPT-OSS uses medium. Saved Claude 4.6 Thinking selections migrate to the matching Claude 5.5 High model, preserving custom labels.
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5 and Gemini Flash support low, medium, and high; Gemini 3.1 Pro supports low and high (medium maps to high); GPT-OSS always uses medium.
 
 ## OpenCode Models
 

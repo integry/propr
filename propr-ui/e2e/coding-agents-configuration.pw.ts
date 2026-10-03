@@ -93,6 +93,14 @@ for (const viewport of [
     }
 
     await configuration.getByRole('button', { name: 'Expand antigravity models' }).click();
+    const antigravityCard = configuration.locator('.coding-agent-card').filter({
+      has: page.getByRole('button', { name: 'Collapse antigravity models' }),
+    });
+    await antigravityCard.getByRole('button', { name: /^Show \d+ legacy models$/ }).click();
+    for (const model of AGENT_MODELS.antigravity) {
+      await expect(antigravityCard.getByRole('button', { name: `Copy ${model.shortAlias}`, exact: true })).toHaveCount(1);
+    }
+    await expect(antigravityCard.getByRole('button', { name: /^Copy / })).toHaveCount(AGENT_MODELS.antigravity.length);
     await expect(configuration.getByRole('button', { name: 'Copy flash38', exact: true })).toBeVisible();
     await configuration.getByRole('button', { name: 'Collapse claude models' }).click();
     await expect(opusAlias).toBeHidden();

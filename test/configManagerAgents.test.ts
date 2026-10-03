@@ -306,56 +306,8 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.defaultModel, 'opencode-big-pickle');
     });
 
-    test('migrates legacy Antigravity config paths to Gemini credentials', () => {
-        const agent = createAgent({
-            type: 'antigravity',
-            dockerImage: 'propr/agent:latest',
-            configPath: '~/.antigravity',
-            supportedModels: ['gemini-3-pro']
-        });
-
-        assert.strictEqual(migrateAgentConfig(agent), true);
-        assert.strictEqual(agent.configPath, '~/.gemini');
-    });
-
-    test('migrates retired Antigravity Claude models and preserves overrides', () => {
-        for (const family of ['opus', 'sonnet']) {
-            const oldModel = `antigravity-claude-${family}-4.6-thinking`;
-            const newModel = `antigravity-claude-${family}-5.5`;
-            const agent = createAgent({
-                type: 'antigravity',
-                supportedModels: [oldModel],
-                defaultModel: oldModel,
-                modelCustomLabels: { [oldModel]: 'review-model' },
-                modelReasoningLevels: { [oldModel]: 'high' }
-            });
-            assert.strictEqual(migrateAgentConfig(agent), true);
-            assert.strictEqual(agent.defaultModel, newModel);
-            assert.ok(agent.supportedModels.includes(newModel));
-            assert.ok(!agent.supportedModels.includes(oldModel));
-            assert.strictEqual(new Set(agent.supportedModels).size, agent.supportedModels.length);
-            assert.deepStrictEqual(agent.modelCustomLabels, { [newModel]: 'review-model' });
-            assert.deepStrictEqual(agent.modelReasoningLevels, { [newModel]: 'high' });
-            assert.strictEqual(migrateAgentConfig(agent), false);
-        }
-    });
-
-    test('collapses Antigravity efforts while preserving the default effort and label', () => {
-        const model = 'antigravity-gemini-3.8-flash';
-        const agent = createAgent({
-            type: 'antigravity', supportedModels: [`${model}-low`, `${model}-medium`, `${model}-high`],
-            defaultModel: `${model}-high`, modelCustomLabels: { [`${model}-high`]: 'fast-review' }
-        });
-        migrateAgentConfig(agent);
-        assert.equal(agent.defaultModel, model);
-        assert.equal(agent.supportedModels.filter(id => id.startsWith(model)).length, 1);
-        assert.equal(agent.modelReasoningLevels?.[model], 'high');
-        assert.equal(agent.modelCustomLabels?.[model], 'fast-review');
-        assert.equal(migrateAgentConfig(agent), false);
-    });
-
-    test('adds Gemini 3.8 and migrates an existing Antigravity default', () => {
-        const existingDefault = 'antigravity-gemini-3.6-flash-medium';
+    test('adds current Antigravity base models and preserves the selected default', () => {
+        const existingDefault = 'antigravity-gemini-3.6-flash';
         const agent = createAgent({
             type: 'antigravity',
             supportedModels: [existingDefault],
@@ -367,7 +319,6 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash'));
         assert.strictEqual(agent.defaultModel, 'antigravity-gemini-3.6-flash');
-        assert.strictEqual(agent.modelReasoningLevels?.['antigravity-gemini-3.6-flash'], 'medium');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.antigravity);
     });
 

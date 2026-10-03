@@ -120,7 +120,7 @@ Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
 - `llm-claude-fable51` — Claude Fable 5.1
 - `llm-codex-astra` — Codex GPT-6 Astra
 - `llm-opencode-big-pickle` — OpenCode Big Pickle
-- `llm-antigravity-flash38-high` — Antigravity Gemini 3.8 Flash High
+- `llm-antigravity-flash38` — Antigravity Gemini 3.8 Flash
 - `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
 
 Multiple model labels on one issue create one independent job (and branch) per model. Add a `base-<branch>` label to target a non-default branch.

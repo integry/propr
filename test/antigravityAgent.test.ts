@@ -22,22 +22,20 @@ function createAgent(configPath: string): AntigravityAgent {
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath,
-        supportedModels: ['antigravity-gemini-3.5-flash-high'],
-        defaultModel: 'antigravity-gemini-3.5-flash-high'
+        supportedModels: ['antigravity-gemini-3.5-flash'],
+        defaultModel: 'antigravity-gemini-3.5-flash'
     };
     return new AntigravityAgent(config);
 }
 
 describe('AntigravityAgent Docker args', () => {
-    test('mounts sibling .gemini auth directory when legacy .antigravity config is configured', () => {
+    test('mounts the configured Gemini credentials directory', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-home-'));
-        const legacyPath = path.join(tempHome, '.antigravity');
         const geminiPath = path.join(tempHome, '.gemini');
-        fs.mkdirSync(legacyPath, { recursive: true });
         fs.mkdirSync(geminiPath, { recursive: true });
 
         try {
-            const agent = createAgent(legacyPath);
+            const agent = createAgent(geminiPath);
             const args = (agent as unknown as {
                 buildDockerArgs(params: {
                     worktreePath: string;
@@ -48,12 +46,11 @@ describe('AntigravityAgent Docker args', () => {
             }).buildDockerArgs({
                 worktreePath: '/tmp/worktree',
                 githubToken: '',
-                modelName: 'antigravity-gemini-3.5-flash-high',
+                modelName: 'antigravity-gemini-3.5-flash',
                 issueNumber: 42
             });
 
             assert.ok(args.includes(`${geminiPath}:/home/node/.gemini-source:rw`));
-            assert.ok(!args.includes(`${legacyPath}:/home/node/.gemini-source:rw`));
             assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
             assert.ok(args.includes('PROPR_ANTIGRAVITY_SOURCE_CONFIG=/home/node/.gemini-source'));
         } finally {
@@ -74,11 +71,13 @@ describe('AntigravityAgent Docker args', () => {
                     modelName?: string;
                     issueNumber: number;
                     printTimeoutMs?: number;
+                    reasoningLevel?: 'high';
                 }): string[];
             }).buildDockerArgs({
                 worktreePath: '/tmp/worktree',
                 githubToken: '',
-                modelName: 'antigravity-gemini-3.8-flash-high',
+                modelName: 'antigravity-gemini-3.8-flash',
+                reasoningLevel: 'high',
                 issueNumber: 0,
                 printTimeoutMs: 1_800_000
             });
@@ -96,7 +95,7 @@ describe('AntigravityAgent Docker args', () => {
             const modelIdx = args.indexOf('--model');
             assert.ok(modelIdx >= 0, '--model flag should be present');
             assert.strictEqual(args[modelIdx + 1], 'gemini-3.8-flash-high');
-            assert.ok(!args.includes('antigravity-gemini-3.8-flash-high'), 'prefixed id must not be passed to the CLI');
+            assert.ok(!args.includes('antigravity-gemini-3.8-flash'), 'prefixed id must not be passed to the CLI');
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }
@@ -126,46 +125,32 @@ describe('AntigravityAgent Docker args', () => {
 });
 
 describe('toAntigravityCliModelId', () => {
-    test('maps Gemini 3.8 ProPR ids to exact canonical external IDs', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.8-flash-medium'), 'gemini-3.8-flash-medium');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.8-flash-low'), 'gemini-3.8-flash-low');
-    });
-
-    test('maps Gemini 3.7 ProPR ids to exact canonical external IDs', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-medium'), 'gemini-3.7-flash-medium');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-high'), 'gemini-3.7-flash-high');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-low'), 'gemini-3.7-flash-low');
-    });
-
-    test('passes every Claude 5.5 reasoning tier to the CLI', () => {
-        for (const family of ['opus', 'sonnet']) {
-            for (const tier of ['low', 'medium', 'high']) {
-                const id = `antigravity-claude-${family}-5.5-${tier}`;
-                const displayName = `Claude ${family === 'opus' ? 'Opus' : 'Sonnet'} 5.5 (${tier[0].toUpperCase()}${tier.slice(1)})`;
-                assert.strictEqual(toAntigravityCliModelId(id), displayName);
-                assert.strictEqual(toAntigravityCliModelId(`antigravity:${id}`), displayName);
+    test('converts base models and separate efforts to exact CLI arguments', () => {
+        for (const version of ['3.8', '3.7']) {
+            for (const effort of ['low', 'medium', 'high'] as const) {
+                const id = `antigravity-gemini-${version}-flash`;
+                assert.equal(toAntigravityCliModelId(id, effort), `gemini-${version}-flash-${effort}`);
+            }
+        }
+        for (const [id, name] of [
+            ['antigravity-claude-opus-5.5', 'Claude Opus 5.5'],
+            ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5'],
+            ['antigravity-gemini-3.6-flash', 'Gemini 3.6 Flash'],
+            ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash'],
+        ]) {
+            for (const effort of ['low', 'medium', 'high'] as const) {
+                const expected = `${name} (${effort[0].toUpperCase()}${effort.slice(1)})`;
+                assert.equal(toAntigravityCliModelId(id, effort), expected);
+                assert.equal(toAntigravityCliModelId(`antigravity:${id}`, effort), expected);
             }
         }
     });
 
-    test('maps older ProPR ids to the CLI display names accepted by --model', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.6-flash-high'), 'Gemini 3.6 Flash (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'Gemini 3.5 Flash (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-high'), 'Gemini 3.1 Pro (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-5.5-high'), 'Claude Sonnet 5.5 (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-5.5-high'), 'Claude Opus 5.5 (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'GPT-OSS 120B (Medium)');
-    });
-
-    test('strips an optional antigravity: route prefix before mapping', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.8-flash-low'), 'gemini-3.8-flash-low');
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'Gemini 3.1 Pro (Low)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-5.5-high'), 'Claude Sonnet 5.5 (High)');
-    });
-
-    test('leaves an already-native model name unchanged', () => {
-        assert.strictEqual(toAntigravityCliModelId('gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
+    test('selects the closest supported effort for Pro and GPT-OSS', () => {
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'low'), 'Gemini 3.1 Pro (Low)');
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.1-pro', 'medium'), 'Gemini 3.1 Pro (High)');
+        assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'GPT-OSS 120B (Medium)');
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash'), 'gemini-3.8-flash-medium');
     });
 });
 

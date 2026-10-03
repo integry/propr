@@ -276,7 +276,7 @@ Visual previews are also per-repository and **off by default**. `--preview-types
 ```bash
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
-propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
+propr agent add test -t antigravity -m antigravity-gemini-3.1-pro --disabled
 propr agent add opencode -t opencode -m opencode-big-pickle \
   -d opencode-big-pickle --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)

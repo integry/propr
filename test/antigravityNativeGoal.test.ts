@@ -108,7 +108,7 @@ interface Harness {
 
 function harness(outcome: GoalCheckpointOutcome = { accepted: true, commitSha: 'abc1234' }): Harness {
     const state: Harness = {
-        snapshot: { desiredState: 'running', requestedModel: 'antigravity-gemini-3.8-flash-medium', pendingInputs: [], controlGeneration: 1 },
+        snapshot: { desiredState: 'running', requestedModel: 'antigravity-gemini-3.8-flash', pendingInputs: [], controlGeneration: 1 },
         delivered: [], published: [], rejected: [], undeliverable: [], sessions: [],
         control: undefined as never,
     };

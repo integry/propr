@@ -1,6 +1,6 @@
 import type { TokenUsage } from '../../types.js';
 import logger from '../../../utils/logger.js';
-import { ANTIGRAVITY_MODEL_LABELS, toAntigravityCliModelId } from '../antigravityModelIds.js';
+import { ANTIGRAVITY_MODEL_LABELS, antigravityModelIdsMatch } from '../antigravityModelIds.js';
 
 export { ANTIGRAVITY_MODEL_LABELS };
 
@@ -82,7 +82,8 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 function isFiniteNonNegativeNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
 
 /** Converts CLI canonical IDs and display names back to ProPR's namespaced model ID. */
-export function normalizeAntigravityModelId(modelId: string): string { const unscoped = modelId.startsWith('antigravity:') ? modelId.slice('antigravity:'.length) : modelId; return Object.entries(ANTIGRAVITY_MODEL_LABELS).find(([proprId, displayName]) => unscoped === proprId || unscoped === displayName || unscoped === toAntigravityCliModelId(proprId))?.[0] ?? unscoped; }
+export function normalizeAntigravityModelId(modelId: string): string {
+    return Object.keys(ANTIGRAVITY_MODEL_LABELS).find(id => antigravityModelIdsMatch(id, modelId)) ?? modelId; }
 
 function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];

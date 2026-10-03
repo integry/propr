@@ -92,14 +92,7 @@ export class AntigravityAgent implements Agent {
         const configPath = isManagedAgentConfigPath(this.config.configPath)
             ? this.config.configPath
             : process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath;
-        const configuredPath = resolveConfigPath(configPath);
-        if (configuredPath.endsWith(`${path.sep}.antigravity`)) {
-            const geminiPath = path.join(path.dirname(configuredPath), '.gemini');
-            if (fs.existsSync(geminiPath)) {
-                return geminiPath;
-            }
-        }
-        return configuredPath;
+        return resolveConfigPath(configPath);
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
@@ -482,7 +475,7 @@ export class AntigravityAgent implements Agent {
         // skills must not consume instead of the conversation.
         if (executionMode === 'goal' && !nativeGoalLaunch) dockerArgs.push('--disable-slash-commands');
         if (modelName) {
-            // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
+            // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b')
             // to the Antigravity CLI's native model name. Passing the prefixed id
             // makes `agy` fall back to its default model.
             const cleanModelName = toAntigravityCliModelId(modelName, params.reasoningLevel);
