@@ -24,6 +24,10 @@ export interface EpicExecutionQueue {
   useEpic: boolean;
   /** Parallel epics dispatch every child up front; the row only owes epic finalization. */
   parallel: boolean;
+  /** Durable initial dispatch intent; plan_issues retains the old model for label removal. */
+  headSelection: { agent_alias: string; model_name: string } | null;
+  /** Outstanding epic completion labeling, independent of the current children's branch. */
+  owesEpicFinalization: boolean;
   ready: boolean;
   headStartedAt: number | null;
   createdAt: number;
@@ -36,6 +40,7 @@ type QueueRow = {
   draft_id: string; execution_id: string; repository: string; issues: string; cursor: number;
   status: EpicQueueStatus; advance_on: EpicAdvancePolicy; blocked_reason: string | null;
   auto_merge: boolean | number; use_epic: boolean | number; parallel: boolean | number; ready: boolean | number; head_started_at: number | null;
+  head_selection: string | null; owes_epic_finalization: boolean | number;
   created_at: number; updated_at: number; finalized_at: number | null; finalization_started_at: number | null;
 };
 
@@ -54,6 +59,8 @@ function fromRow(row: QueueRow): EpicExecutionQueue {
     draftId: row.draft_id, executionId: row.execution_id, repository: row.repository, issues: JSON.parse(row.issues),
     cursor: row.cursor, status: row.status, advanceOn: row.advance_on,
     blockedReason: row.blocked_reason, autoMerge: Boolean(row.auto_merge), useEpic: Boolean(row.use_epic), parallel: Boolean(row.parallel), ready: Boolean(row.ready),
+    headSelection: row.head_selection ? JSON.parse(row.head_selection) : null,
+    owesEpicFinalization: Boolean(row.owes_epic_finalization),
     headStartedAt: row.head_started_at, createdAt: row.created_at, updatedAt: row.updated_at,
     finalizedAt: row.finalized_at, finalizationStartedAt: row.finalization_started_at,
   };
@@ -74,6 +81,7 @@ export function summarizeEpicQueue(queue: EpicExecutionQueue | null) {
 /** The insert/update is atomic even when called inside the MCP claim transaction. */
 export async function createEpicExecutionQueue(input: {
   draftId: string; repository: string; issues: number[]; advanceOn?: EpicAdvancePolicy;
+  headSelection?: { agent_alias: string; model_name: string };
   autoMerge?: boolean; useEpic?: boolean; parallel?: boolean; ready?: boolean; headStartedAt?: number;
 }, { database = db, now = Date.now }: EpicQueueDependencies = {}): Promise<EpicExecutionQueue> {
   if (!input.issues.length || new Set(input.issues).size !== input.issues.length) {
@@ -82,6 +90,8 @@ export async function createEpicExecutionQueue(input: {
   const timestamp = now();
   const row = {
     draft_id: input.draftId, execution_id: randomUUID(), repository: input.repository, issues: JSON.stringify(input.issues),
+    head_selection: input.headSelection ? JSON.stringify(input.headSelection) : null,
+    owes_epic_finalization: input.useEpic ?? true,
     cursor: 0, status: 'active', advance_on: input.advanceOn ?? 'merged', blocked_reason: input.ready === false ? 'Preparing queued issue model and epic branch labels.' : null,
     auto_merge: input.autoMerge ?? false, use_epic: input.useEpic ?? true, parallel: input.parallel ?? false, ready: input.ready ?? true,
     head_started_at: input.headStartedAt ?? null, finalized_at: null, finalization_started_at: null, created_at: timestamp, updated_at: timestamp,
@@ -89,7 +99,11 @@ export async function createEpicExecutionQueue(input: {
   const inserted = await database('epic_execution_queues').insert(row).onConflict('draft_id').ignore().returning('draft_id');
   if (!inserted.length) {
     const replaced = await database('epic_execution_queues').where({ draft_id: input.draftId })
-      .whereIn('status', ['completed', 'cancelled']).update(row);
+      .whereIn('status', ['completed', 'cancelled']).update({ ...row,
+        // Transfer the unresolved obligation atomically with revoking the old execution.
+        owes_epic_finalization: database.raw('CASE WHEN owes_epic_finalization = ? AND finalized_at IS NULL THEN ? ELSE ? END',
+          [true, true, row.owes_epic_finalization]),
+      });
     if (!replaced) throw new Error('An active epic execution queue already exists for this plan.');
   }
   return (await getEpicExecutionQueue(input.draftId, { database }))!;
@@ -201,8 +215,8 @@ export async function finalizeCompletedEpicQueue(draftId: string, deps: EpicQueu
   // A crash between GitHub accepting the label and persisting success can still require a retry.
   const finalize = deps.finalize ?? ((id, guard) => finalizeEpicPlanIfComplete(id, guard));
   try {
-    // A non-epic execution owes no epic PR activation, even if the draft names an older epic.
-    const finalized = queue.useEpic ? await finalize(draftId, canFinalize) : true;
+    // Branch selection is independent of an explicitly inherited finalization obligation.
+    const finalized = queue.owesEpicFinalization ? await finalize(draftId, canFinalize) : true;
     await owned().update({ finalized_at: finalized ? (deps.now ?? Date.now)() : null,
       finalization_started_at: null, updated_at: (deps.now ?? Date.now)() });
   } catch (error) {
@@ -272,12 +286,17 @@ async function repairQueueSetup(queue: EpicExecutionQueue): Promise<boolean> {
   const head = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
     owner, repo, issue_number: queue.issues[0],
   });
-  const selection = await db('plan_issues').where({ draft_id: queue.draftId, issue_number: queue.issues[0] }).first('agent_alias', 'model_name');
+  const selection = queue.headSelection ?? await db('plan_issues').where({ draft_id: queue.draftId, issue_number: queue.issues[0] }).first('agent_alias', 'model_name');
   if (!selection?.agent_alias || !selection?.model_name) return false;
   const labels = head.data.labels.map(label => typeof label === 'string' ? label : label.name);
   const selectors = await verifiedQueueHeadSelectors(queue, selection, labels);
   if (!selectors) return false;
   const { epicLabel, modelLabel } = selectors;
+  const restored = await db('plan_issues').where({ draft_id: queue.draftId, issue_number: queue.issues[0] })
+    .whereExists(db('epic_execution_queues').select('draft_id').where({ draft_id: queue.draftId,
+      execution_id: queue.executionId, status: 'active', ready: false }))
+    .update({ agent_alias: selection.agent_alias, model_name: selection.model_name });
+  if (!restored) return false;
   for (const issueNumber of queue.issues.slice(1)) {
     const issue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
     const existing = issue.data.labels.map(label => typeof label === 'string' ? label : label.name)

@@ -13,6 +13,7 @@ export async function enqueueEpicImplementation(params: {
   repository: string;
   autoMerge: boolean;
   contextConfig: Record<string, unknown> | null;
+  headSelection?: { agent_alias: string; model_name: string };
   implement: () => Promise<unknown>;
 }): Promise<unknown> {
   const {
@@ -39,7 +40,7 @@ export async function enqueueEpicImplementation(params: {
   try {
     // Like the retired UI chain, a closed or failed issue does not hold the remaining epic.
     queue = await createEpicExecutionQueue({ draftId, repository, issues: pending.map(issue => issue.issue_number),
-      advanceOn: 'terminal', autoMerge, ready: false, headStartedAt: Date.now() });
+      advanceOn: 'terminal', autoMerge, headSelection: params.headSelection, ready: false, headStartedAt: Date.now() });
   } catch (error) {
     if ((error as Error).message.includes('active epic execution queue')) throw new EpicQueueRequestError((error as Error).message);
     throw error;
@@ -72,6 +73,7 @@ export async function enqueueAutoMergeImplementation(params: {
   issueNumber: number;
   repository: string;
   contextConfig: Record<string, unknown> | null;
+  headSelection?: { agent_alias: string; model_name: string };
   implement: () => Promise<unknown>;
 }): Promise<unknown> {
   const { createEpicExecutionQueue, getEpicExecutionQueue, getPlanIssuesByDraft, PlanIssueStatus } = core;
@@ -86,7 +88,7 @@ export async function enqueueAutoMergeImplementation(params: {
   let queue: core.EpicExecutionQueue;
   try {
     queue = await createEpicExecutionQueue({ draftId, repository, issues: [issueNumber, ...successors.map(issue => issue.issue_number)],
-      advanceOn: 'terminal', autoMerge: true, useEpic: false, ready: false, headStartedAt: Date.now() });
+      advanceOn: 'terminal', autoMerge: true, useEpic: false, headSelection: params.headSelection, ready: false, headStartedAt: Date.now() });
   } catch (error) {
     if (!(error as Error).message.includes('active epic execution queue')) throw error;
     return params.implement();

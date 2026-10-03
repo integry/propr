@@ -613,7 +613,7 @@ export function addPlanImplementationTool(
         if (dispatch.mode === 'sequential') {
           const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
-            autoMerge: args.autoMerge, ready: false, headStartedAt: Date.now() }, { database: tx });
+            autoMerge: args.autoMerge, headSelection: args.models[0], ready: false, headStartedAt: Date.now() }, { database: tx });
           await tx('mcp_records').where({ kind: 'issue_execution' })
             .whereIn('id', args.issues.map((number: number) => `${args.planId}:${number}`))
             .update({ value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id, executionId: queue.executionId }) });
@@ -621,9 +621,9 @@ export function addPlanImplementationTool(
         }
         if (args.useEpic) {
           // An active epic execution's finalization stays owed until the whole plan is done, so it also
-          // covers these children. A non-epic execution owes no epic finalization and cannot cover them.
+          // covers these children, including a non-epic queue that inherited that obligation.
           const active = await getEpicExecutionQueue(args.planId, { database: tx });
-          if (active?.status === 'active' && !active.useEpic) throw new McpError('PRECONDITION_FAILED', 'A non-epic execution queue is running for this plan. Wait for it to finish before starting a parallel epic.', 409);
+          if (active?.status === 'active' && !active.owesEpicFinalization) throw new McpError('PRECONDITION_FAILED', 'A non-epic execution queue is running for this plan. Wait for it to finish before starting a parallel epic.', 409);
           if (active?.status !== 'active') {
             const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository, issues: dispatch.dispatchNow,
               advanceOn: dispatch.advanceOn, autoMerge: args.autoMerge, parallel: true }, { database: tx });
@@ -642,21 +642,31 @@ export function addPlanImplementationTool(
           catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
         }
       };
-      let dispatchAttempted = false;
+      const attempted = new Set<number>();
       try {
         for (const number of dispatch.dispatchNow) {
           await prepareIssue(number);
           // Once entered, a failed workflow may still have started external work.
-          dispatchAttempted = true;
+          attempted.add(number);
           results.push((await callWorkflow(planner.implementIssue, principal, { params: { id: args.planId, issueNumber: String(number) }, body: { repository: args.repository, models: args.models, useEpic: args.useEpic, autoMerge: args.autoMerge } })).data);
         }
       } catch (error) {
+        if (dispatch.mode === 'parallel') {
+          // Handler entry makes the outcome uncertain. Preparation alone does not dispatch.
+          for (const number of dispatch.dispatchNow.filter(number => !attempted.has(number))) {
+            const id = `${args.planId}:${number}`;
+            const record = await db('mcp_records').where({ kind: 'issue_execution', id }).first();
+            if (record && policy.oauth.store.unseal<{ operationId?: string }>(record.value).operationId === operationId) {
+              await db('mcp_records').where({ kind: 'issue_execution', id, value: record.value }).delete();
+            }
+          }
+        }
         const ownedExecutionId = executionId ?? claimed.parallelExecutionId;
         if (ownedExecutionId) {
           const failed = await getEpicExecutionQueue(args.planId);
           if (failed?.executionId === ownedExecutionId && executionId) {
             await cancelUnstartedEpicExecutionQueue(failed).catch(() => false);
-          } else if (!dispatchAttempted) await cancelEpicExecutionQueue(args.planId, ownedExecutionId);
+          } else if (!attempted.size) await cancelEpicExecutionQueue(args.planId, ownedExecutionId);
         }
         throw error;
       }

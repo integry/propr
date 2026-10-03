@@ -331,7 +331,10 @@ export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics 
       const target = await loadImplementationTarget({ deps, req, draftId, issueNumber });
       const { useEpic, autoMerge } = resolveImplementationSettings(target.implementationSettings, target.contextConfig);
       const implement = () => implementLoadedIssue({ ...target, draftId, issueNumber });
-      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig, implement };
+      const selectedHead = target.models?.[0] ?? buildEffectivePlanIssue(target.planIssue, target.body);
+      const queued = { draftId, issueNumber, repository: `${target.owner}/${target.repo}`, contextConfig: target.contextConfig,
+        headSelection: selectedHead.agent_alias && selectedHead.model_name
+          ? { agent_alias: selectedHead.agent_alias, model_name: selectedHead.model_name } : undefined, implement };
       let result: unknown;
       if (enqueueEpics && useEpic) result = await enqueueEpicImplementation({ ...queued, autoMerge });
       else if (enqueueEpics && autoMerge) result = await enqueueAutoMergeImplementation(queued);

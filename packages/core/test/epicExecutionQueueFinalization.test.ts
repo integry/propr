@@ -1,3 +1,4 @@
+import { up as epicQueueRecovery, down as removeEpicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -47,6 +48,7 @@ await up(database);
 await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
+await epicQueueRecovery(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('epic_execution_queues').delete();
@@ -128,4 +130,44 @@ test('parallel migration keeps existing queues sequential and rolls back', async
   } finally {
     await oldDatabase.destroy();
   }
+});
+
+test('replacement transfers only unresolved epic finalization, independent of child branch selectors', async () => {
+  await createEpicExecutionQueue({ ...parallel, issues: [10] });
+  await finish(10, 'merged');
+  assert.equal((await getEpicExecutionQueue('draft'))?.finalizedAt, null);
+  await createEpicExecutionQueue({ ...parallel, issues: [20, 30], useEpic: false });
+  assert.equal((await getEpicExecutionQueue('draft'))?.owesEpicFinalization, true);
+  await finish(20, 'merged');
+  await finish(30, 'merged');
+  assert.deepEqual(finalizations, ['draft']);
+  await createEpicExecutionQueue({ ...parallel, useEpic: false });
+  await startEpicQueueHead('draft');
+  assert.equal((await getEpicExecutionQueue('draft'))?.owesEpicFinalization, false);
+  assert.deepEqual(finalizations, ['draft']);
+});
+
+test('recovery migration backfills unresolved epic obligations and rolls back', async () => {
+  const oldDatabase = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await oldDatabase.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); });
+    await up(oldDatabase);
+    await epicQueueFinalization(oldDatabase);
+    await epicQueueUseEpic(oldDatabase);
+    await epicQueueParallel(oldDatabase);
+    for (const [id, useEpic, finalizedAt] of [['owed', true, null], ['historical', true, 100], ['non-epic', false, null]] as const) {
+      await oldDatabase('task_drafts').insert({ draft_id: id });
+      await oldDatabase('epic_execution_queues').insert({ draft_id: id, execution_id: id,
+        repository: 'acme/repo', issues: '[10]', cursor: 1, status: 'completed', use_epic: useEpic,
+        finalized_at: finalizedAt, created_at: 100, updated_at: 100 });
+    }
+    await epicQueueRecovery(oldDatabase);
+    assert.equal((await getEpicExecutionQueue('owed', { database: oldDatabase }))?.owesEpicFinalization, true);
+    assert.equal((await getEpicExecutionQueue('historical', { database: oldDatabase }))?.owesEpicFinalization, false);
+    assert.equal((await getEpicExecutionQueue('non-epic', { database: oldDatabase }))?.owesEpicFinalization, false);
+    await removeEpicQueueRecovery(oldDatabase);
+    const row = await oldDatabase('epic_execution_queues').first();
+    assert.equal(Object.hasOwn(row, 'head_selection'), false);
+    assert.equal(Object.hasOwn(row, 'owes_epic_finalization'), false);
+  } finally { await oldDatabase.destroy(); }
 });

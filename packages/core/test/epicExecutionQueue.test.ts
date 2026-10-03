@@ -1,3 +1,4 @@
+import { up as epicQueueRecovery } from '../src/db/migrations/20261003040000_add_epic_queue_recovery_intent.js';
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
@@ -49,6 +50,7 @@ await up(database);
 await epicQueueFinalization(database);
 await epicQueueUseEpic(database);
 await epicQueueParallel(database);
+await epicQueueRecovery(database);
 after(async () => database.destroy());
 beforeEach(async () => {
   await database('task_drafts').delete();
