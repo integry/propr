@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { AGENT_DEFAULTS, AGENT_MODELS, ALL_MODELS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
 import { getReasoningLevelsForAgentType } from '../packages/shared/src/reasoningLevels.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
@@ -206,6 +207,27 @@ test('Antigravity offers one model entry with separate supported reasoning choic
     }
 });
 
+
+test('retained Flash metadata remains available outside the selectable catalog', () => {
+    for (const version of ['3.6', '3.7']) {
+        const base = `antigravity-gemini-${version}-flash`;
+        for (const models of [ANTIGRAVITY_MODELS, AGENT_MODELS.antigravity, ALL_MODELS]) {
+            assert.ok(!models.some(model => model.id === base));
+        }
+        assert.ok(!AGENT_DEFAULTS.antigravity.defaultModels.includes(base));
+        assert.equal(MODEL_INFO_MAP[base], undefined);
+        const info = getModelInfoWithAntigravityCompatibility(base);
+        assert.ok(info);
+        assert.equal(info.openRouterId, `google/gemini-${version}-flash`);
+        assert.equal(info.maxTokens, 1000000);
+        assert.equal(info.contextWindow, '1M');
+        assert.equal(info.minAgentVersion, version === '3.7' ? '1.1.12' : undefined);
+        for (const effort of ['low', 'medium', 'high']) {
+            assert.equal(getModelInfoWithAntigravityCompatibility(`${base}-${effort}`), info);
+        }
+    }
+    assert.equal(getModelInfoWithAntigravityCompatibility('antigravity-gemini-3.5-flash'), undefined);
+});
 
 test('documented Antigravity model labels agree with the selectable catalog', () => {
     const text = readFileSync(new URL('../docs/docs/features/agents-and-models.md', import.meta.url), 'utf8');

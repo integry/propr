@@ -1,6 +1,7 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { antigravityModelIdsMatch, toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
+import { getOpenRouterId } from '../packages/core/src/config/modelAliases.js';
 import fs from 'node:fs';
 import { buildAgentConfig } from '../propr-ui/src/pages/SettingsPage/agentCredentialSetupUtils.js';
 import { AGENT_DEFAULTS, getManagedAgentConfigPath } from '@propr/shared';
@@ -434,6 +435,9 @@ test('Antigravity migration retains older Flash defaults and their effort', () =
             assert.ok(agent.supportedModels.includes(base));
             assert.equal(agent.modelReasoningLevels?.[base], effort);
             assert.equal(agent.modelCustomLabels?.[saved], 'retained-flash');
+            assert.equal(getOpenRouterId(saved), `google/gemini-${version}-flash`);
+            assert.equal(getOpenRouterId(agent.defaultModel!), `google/gemini-${version}-flash`);
+            assert.equal(getOpenRouterId(agent.supportedModels.find(model => model === base)!), `google/gemini-${version}-flash`);
             const cli = toAntigravityCliModelId(agent.defaultModel!, agent.modelReasoningLevels?.[base]);
             assert.equal(antigravityModelIdsMatch(cli, `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`), true);
             assert.equal(migrateAgentConfig(agent), false);

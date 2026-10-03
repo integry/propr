@@ -1,4 +1,4 @@
-import { ANTIGRAVITY_MODELS } from './modelDefinitions.js';
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_RETAINED_MODELS, MODEL_INFO_MAP, type ModelInfo } from './modelDefinitions.js';
 import { getReasoningLevelsForAgentType, type ModelReasoningLevel } from './reasoningLevels.js';
 
 // Compatibility routes are deliberately absent from the selectable catalog.
@@ -12,12 +12,11 @@ for (const model of ANTIGRAVITY_MODELS) {
     }
 }
 // Retained saved Flash selections need routes even though they are no longer selectable.
-for (const version of ['3.6', '3.7']) {
-    for (const effort of getReasoningLevelsForAgentType('antigravity')) {
-        const model = `antigravity-gemini-${version}-flash`;
-        const id = `${model}-${effort}`;
-        ANTIGRAVITY_COMPATIBILITY_ROUTES[id] = { model, effort };
-        ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-flash${version.replace('.', '')}-${effort}`] = id;
+for (const model of ANTIGRAVITY_RETAINED_MODELS) {
+    for (const effort of getReasoningLevelsForAgentType('antigravity', model.id)) {
+        const id = `${model.id}-${effort}`;
+        ANTIGRAVITY_COMPATIBILITY_ROUTES[id] = { model: model.id, effort };
+        ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-${model.shortAlias}-${effort}`] = id;
     }
 }
 for (const family of ['opus', 'sonnet']) {
@@ -31,3 +30,8 @@ export function getAntigravityCompatibilityRoute(id: string) {
     return ANTIGRAVITY_COMPATIBILITY_ROUTES[clean];
 }
 
+/** Resolve metadata for current models and saved Antigravity execution routes. */
+export function getModelInfoWithAntigravityCompatibility(id: string): ModelInfo | undefined {
+    const model = getAntigravityCompatibilityRoute(id)?.model ?? id;
+    return MODEL_INFO_MAP[model] ?? ANTIGRAVITY_RETAINED_MODELS.find(candidate => candidate.id === model);
+}

@@ -1,4 +1,4 @@
-import { resolveCustomLabel, resolveReviewModels, getModelShortName, getOpenRouterId } from '../src/config/modelAliases.js';
+import { resolveCustomLabel, resolveReviewModels, getModelName, getModelShortName, getOpenRouterId } from '../src/config/modelAliases.js';
 import { validatePrReviewModelValue } from '../src/config/prReviewModelValidator.js';
 import { toAntigravityCliModelId } from '../src/agents/impl/antigravityModelIds.js';
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import {
     MODEL_INFO_MAP,
     ANTIGRAVITY_MODELS
 } from '../src/config/modelDefinitions.js';
-import { getModelHardLimit } from '../src/config/modelLimits.js';
+import { getEffectiveTokenLimit, getModelHardLimit } from '../src/config/modelLimits.js';
 import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
@@ -1101,6 +1101,29 @@ test('Antigravity analysis inherits reasoning only when enabled', async t => {
     }
 });
 
+
+test('retained Flash saved routes and migrated bases preserve pricing and metadata', () => {
+    for (const version of ['3.6', '3.7']) {
+        const base = `antigravity-gemini-${version}-flash`;
+        const pricingId = `google/gemini-${version}-flash`;
+        assert.equal(getOpenRouterId(base), pricingId);
+        assert.equal(getModelName(base), `Antigravity Gemini ${version} Flash`);
+        assert.equal(getModelShortName(base), `Gemini ${version} Flash`);
+        assert.equal(getModelHardLimit(base), 980000);
+        assert.equal(getEffectiveTokenLimit(base, 50), 490000);
+        for (const effort of ['low', 'medium', 'high']) {
+            const saved = `${base}-${effort}`;
+            const alias = `antigravity-flash${version.replace('.', '')}-${effort}`;
+            assert.equal(getOpenRouterId(saved), pricingId);
+            assert.equal(getOpenRouterId(`antigravity:${saved}`), pricingId);
+            assert.equal(getOpenRouterId(alias), pricingId);
+            assert.equal(getModelName(saved), getModelName(base));
+            assert.equal(getModelShortName(saved), getModelShortName(base));
+            assert.equal(getModelHardLimit(saved), 980000);
+            assert.equal(getEffectiveTokenLimit(saved, 50), 490000);
+        }
+    }
+});
 
 test('retained Flash defaults execute against provider display identities', async () => {
     for (const version of ['3.6', '3.7']) {
