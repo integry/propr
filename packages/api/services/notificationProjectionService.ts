@@ -91,6 +91,7 @@ interface TaskContext {
   recap?: string;
   commandMode?: string;
   isReview: boolean;
+  reviewDeferred: boolean;
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
   pullRequestFollowupEligible: boolean;
@@ -620,6 +621,9 @@ export class NotificationProjectionService {
       return;
     }
     if (payload.state !== 'completed') return;
+    // A worker can finish after deferring a review without running it. Keep
+    // its activity terminal, but do not advertise a result in Inbox or push.
+    if (context.reviewDeferred) return;
 
     if (context.isReview && context.prNumber !== undefined) {
       await this.projectCompletedReview(
@@ -1048,8 +1052,11 @@ export class NotificationProjectionService {
       ?? positiveInteger(initial.prNumber)
       ?? positiveInteger(prResult.prNumber)
       ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
-    const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
     const commandMode = resolveCommandMode(historyMetadata, initial);
+    const isReview = taskType === 'review' || commandMode === 'review';
+    const reviewDeferred = historyMetadata.deferred === true
+      || historyMetadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
+      || historyMetadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
     const storedIssueNumber = positiveInteger(task.issue_number);
     const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
@@ -1063,6 +1070,7 @@ export class NotificationProjectionService {
       recap: notificationRecap(historyMetadata),
       commandMode,
       isReview,
+      reviewDeferred,
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
       pullRequestFollowupEligible: supportsPullRequestFollowup(task, prNumber),
