@@ -1322,3 +1322,82 @@ test('a closure that stops nothing releases its retained exclusion', async () =>
     assert.equal(states.get('protected').state, 'pending');
     assert.deepEqual(retainedCleanups(), []);
 });
+
+for (const publish of ['succeeds', 'fails'] as const) {
+    test(`a removed queued job whose cancellation is not recorded keeps its closure exclusion when the marker ${publish}`, async () => {
+        addJob('queued', target);
+        tracker = { state: 'closed', labels: ['AI'] };
+        timeline.push({ event: 'closed' });
+        timelineRevision++;
+        const markTaskCancelled = manager.markTaskCancelled;
+        manager.markTaskCancelled = async () => { throw new Error('Redis unavailable'); };
+        onRequest = endpoint => {
+            if (publish === 'fails' && endpoint.startsWith('POST ')) throw Object.assign(new Error('Service Unavailable'), { status: 403 });
+        };
+        try {
+            await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never));
+        } finally {
+            manager.markTaskCancelled = markTaskCancelled;
+            onRequest = undefined;
+        }
+        assert.equal(jobs.length, 0, 'the queued job was removed');
+        assert.notEqual(states.get('queued')?.state, 'cancelled', 'the cancellation was not recorded');
+        if (publish === 'succeeds') assert.ok(tracker.labels.includes('AI-cancelled'));
+        else assert.equal(retainedCleanups().length, 1);
+        reopen();
+        assert.ok(!(await pollRestoredIssues()).some(result => result.status === 'accepted'));
+        assert.equal(jobs.length, 0, 'reopening alone does not restart work');
+        assert.ok(tracker.labels.includes('AI-cancelled'));
+    });
+}
+
+test('a processing marker superseded by a pre-closure trigger reapplication does not release a closure exclusion', async () => {
+    addRunning('old');
+    tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+    recordLabeled('AI-processing');
+    // The user removes and reapplies the trigger while the task still owns `-processing`.
+    timeline.push({ event: 'unlabeled', label: { name: 'AI' } });
+    recordLabeled('AI');
+    tracker = { state: 'closed', labels: ['AI', 'AI-processing'] };
+    timeline.push({ event: 'closed' });
+    timelineRevision++;
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ')) throw Object.assign(new Error('Service Unavailable'), { status: 403 });
+    };
+    await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never), /Service Unavailable/);
+    onRequest = undefined;
+    assert.equal(states.get('old').terminalReason, 'cancelled_issue_closed');
+    assert.deepEqual(tracker.labels, ['AI', 'AI-processing']);
+    assert.equal(retainedCleanups().length, 1);
+    reopen();
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.ok(tracker.labels.includes('AI-cancelled'), 'settlement publishes an exclusion ordered after the trigger');
+    assert.deepEqual(retainedCleanups(), []);
+    assert.ok(!(await pollRestoredIssues()).some(result => result.status === 'accepted'));
+    assert.equal(jobs.length, 0, 'reopening alone does not restart work');
+});
+
+test('a stale cancelled marker is republished so it is ordered after the trigger', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    recordLabeled('AI-cancelled', 'AI');
+    timeline.push({ event: 'closed' }, { event: 'reopened' });
+    timelineRevision++;
+    redisSets.set('intent:withdrawal-cleanup', new Set([JSON.stringify({ repoOwner: 'acme', repoName: 'widgets', number: 42, triggeringLabel: 'AI', id: 'x' })]));
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.deepEqual(requests.filter(r => /^(POST|DELETE) /.test(r.endpoint)).map(r => [r.endpoint.split(' ')[0], r.params.name ?? r.params.labels[0]]),
+        [['DELETE', 'AI-cancelled'], ['POST', 'AI-cancelled']]);
+    assert.deepEqual(retainedCleanups(), []);
+    assert.ok(!(await pollRestoredIssues()).some(result => result.status === 'accepted'));
+    assert.equal(jobs.length, 0);
+});
+
+test('a cancelled marker applied after the trigger releases a retained exclusion without republishing', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    recordLabeled('AI-cancelled');
+    timeline.push({ event: 'closed' }, { event: 'reopened' });
+    timelineRevision++;
+    redisSets.set('intent:withdrawal-cleanup', new Set([JSON.stringify({ repoOwner: 'acme', repoName: 'widgets', number: 42, triggeringLabel: 'AI', id: 'x' })]));
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.deepEqual(requests.filter(r => /^(POST|DELETE) /.test(r.endpoint)), []);
+    assert.deepEqual(retainedCleanups(), []);
+});

@@ -9,8 +9,9 @@ import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
-import { WITHDRAWAL_CLEANUP_KEY, releaseWithdrawalCleanup, retainWithdrawalCleanup, triggerAppliedSinceClosure, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
+import { WITHDRAWAL_CLEANUP_KEY, markerAppliedSinceTrigger, releaseWithdrawalCleanup, retainWithdrawalCleanup, triggerAppliedSinceClosure, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
+import { staleTriggerMarkers } from '../daemon/triggerApplicationEvidence.js';
 
 export type IntentCancellationReason = 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed';
 export interface IntentTarget {
@@ -243,10 +244,9 @@ async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentT
     }
     const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
     const present = triggers.filter(trigger => labels.includes(trigger));
-    const excluded = triggers.some(trigger => ['processing', 'done', 'cancelled'].some(status => labels.includes(`${trigger}-${status}`)));
-    // Without a trigger, only applying one renews intent; an existing exclusion
-    // already makes discovery wait for a reapplication ordered after it.
-    if (!present.length || excluded) {
+    // Without a trigger, only applying one renews intent. Restoration never
+    // clears `-done`, so a completion marker keeps discovery idle on its own.
+    if (!present.length || triggers.some(trigger => labels.includes(`${trigger}-done`))) {
         await releaseWithdrawalCleanup(cleanup);
         return true;
     }
@@ -254,13 +254,24 @@ async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentT
         await releaseWithdrawalCleanup(cleanup);
         return false;
     }
+    // `-processing`/`-cancelled` exclude only when applied after the trigger's
+    // latest application; an earlier one (e.g. a running sibling's marker that
+    // a pre-closure reapplication supersedes) lets restoration readmit the issue.
+    const markers = [...new Set(present.flatMap(trigger => staleTriggerMarkers(trigger, triggers)))].filter(label => labels.includes(label));
+    if (markers.length && await markerAppliedSinceTrigger(target, present, markers)) {
+        await releaseWithdrawalCleanup(cleanup);
+        return true;
+    }
     // Reopened without reapplying the trigger: publish the exclusion the
-    // cancellation could not. A reapplication racing this POST is an
+    // cancellation could not. Re-adding an applied label records no timeline
+    // event, so a stale marker is removed first; the retained obligation keeps
+    // discovery idle meanwhile. A reapplication racing these requests is an
     // unavoidable API race; it fails closed and needs another reapplication.
+    const marker = `${target.triggeringLabel ?? present[0]}-cancelled`;
+    if (labels.includes(marker) && !await removeIntentLabel(target, marker)) return true;
     const octokit = await getAuthenticatedOctokit();
     await withRetry(() => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
-        labels: [`${target.triggeringLabel ?? present[0]}-cancelled`],
+        owner: target.repoOwner, repo: target.repoName, issue_number: target.number, labels: [marker],
     }), retryConfigs.githubApi, 'add_cancelled_label');
     await releaseWithdrawalCleanup(cleanup);
     return true;
@@ -381,6 +392,9 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
     // Retained before any stop, so a crash or failed publish leaves it for retry.
     const cleanup = await retainWithdrawalCleanup(redis, target, reason);
     let stopped = false;
+    // Work withdrawn (a removed queue job or abort signal) whose cancellation
+    // could not be recorded: discovery has nothing else to exclude it by.
+    let unrecorded = false;
     const results = await Promise.allSettled([...candidates].map(async ([id, candidate]) => {
         if (reason === 'cancelled_label_removed'
             && (candidate.target.triggeringLabel && candidate.target.triggeringLabel !== target.triggeringLabel
@@ -392,12 +406,15 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
             cancellationReason: reason, ensureCancelled: true,
         });
         stopped ||= !!result.cancellationRecorded;
+        unrecorded ||= !result.cancellationRecorded && (result.removedQueuedJobs > 0 || !!result.abortSignalled);
         return result;
     }));
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
     // A failed publish throws and a reopen returns false; both keep the obligation.
-    const excluded = stopped && await updateWithdrawnIssueLabels(target, triggers, reason);
-    if (excluded || !stopped) await releaseWithdrawalCleanup(cleanup);
+    const excluded = (stopped || unrecorded) && await updateWithdrawnIssueLabels(target, triggers, reason);
+    // A rejected stop may have removed its job before failing, so it keeps the obligation too.
+    const unresolved = unrecorded || results.some(result => result.status === 'rejected');
+    if (excluded || !stopped && !unresolved) await releaseWithdrawalCleanup(cleanup);
     const failures = results.filter(result => result.status === 'rejected' || result.value && !result.value.cancellationRecorded && !result.value.notRunning);
     if (failures.length) throw new Error(`Could not record ${failures.length} intent cancellation(s)`);
 }
