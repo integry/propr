@@ -11,41 +11,22 @@ import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 import { restoreIssueTrigger } from '../services/taskIntent.js';
+import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 export type { DetectedIssue };
 
 // Cache resolved label-applier per issue to avoid N+1 timeline API calls on
-// every poll cycle. Keyed by "owner/repo#number:updatedAt" so the entry is
-// invalidated whenever the issue changes.
-interface TriggerActor {
-    login: string;
-    userId: string;
-}
-
-// Trigger evidence from the issue timeline. `cancelledSinceApplied` is true
-// when a `<trigger>-cancelled` marker was applied after the most recent trigger
-// application, i.e. the trigger has not been reapplied since cancellation.
-interface TriggerEvidence {
-    actor: TriggerActor | null;
-    cancelledSinceApplied: boolean;
-}
-
-const labelApplierCache = new Map<string, TriggerEvidence>();
+// every poll cycle. Keyed by "owner/repo#number:updatedAt:labels" so the entry
+// is invalidated whenever the issue changes.
+const labelApplierCache = new Map<string, { evidence: TriggerEvidence; expiresAt: number }>();
 const LABEL_APPLIER_CACHE_MAX = 500;
-const LABEL_APPLIER_TIMELINE_PAGE_SIZE = 100;
-const LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT = 5;
+// Stale evidence (no reapplication after the stale marker) may only reflect
+// timeline lag behind the issue's updatedAt, so it is rechecked periodically.
+const STALE_EVIDENCE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-// Page budget for the recent-timeline scan. Operators with very long-lived
-// issues can raise LABEL_APPLIER_TIMELINE_MAX_PAGES to widen the window in
-// which the trigger label event can be found (at the cost of more API calls).
-function labelApplierTimelineMaxPages(): number {
-    const raw = Number.parseInt(process.env.LABEL_APPLIER_TIMELINE_MAX_PAGES ?? '', 10);
-    return Number.isInteger(raw) && raw > 0 ? raw : LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT;
-}
-
-function getLabelApplierCacheKey(owner: string, repo: string, issueNumber: number, updatedAt: string): string {
-    return `${owner}/${repo}#${issueNumber}:${updatedAt}`;
+function getLabelApplierCacheKey(opts: { owner: string; repo: string; issueNumber: number; updatedAt: string; targetLabels: string[] }): string {
+    return `${opts.owner}/${opts.repo}#${opts.issueNumber}:${opts.updatedAt}:${opts.targetLabels.join(',')}`;
 }
 
 interface GitHubIssue {
@@ -66,87 +47,6 @@ interface GitHubSearchResponse {
     };
 }
 
-interface TimelineEvent {
-    event: string;
-    actor?: { id: number; login: string } | null;
-    label?: { name: string };
-}
-
-function findTriggerEvidenceInEvents(events: TimelineEvent[], normalizedTargetLabels: string[], cancelledSinceApplied: boolean): TriggerEvidence {
-    for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i];
-        if (ev.event !== 'labeled' || !ev.label?.name) continue;
-        const name = ev.label.name.toLowerCase();
-        if (normalizedTargetLabels.some(label => name === `${label}-cancelled`)) {
-            cancelledSinceApplied = true;
-        } else if (normalizedTargetLabels.includes(name) && ev.actor?.login && Number.isSafeInteger(ev.actor.id)) {
-            return { actor: { login: ev.actor.login, userId: String(ev.actor.id) }, cancelledSinceApplied };
-        }
-    }
-    return { actor: null, cancelledSinceApplied };
-}
-
-function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
-    if (!linkHeader) return null;
-    const lastLink = linkHeader.split(',').find(part => part.includes('rel="last"'));
-    const page = lastLink?.match(/[?&]page=(\d+)/)?.[1];
-    return page ? Number.parseInt(page, 10) : null;
-}
-
-/**
- * Look up who most recently applied one of the given labels by walking the
- * issue timeline backwards. Returns the actor's login and stable GitHub ID,
- * or `null` when the labeler cannot be determined (API error, event pruned,
- * legacy response without an ID, etc.).
- *
- * Callers MUST treat `null` as "actor unknown" and fail closed when the
- * actor is required for whitelist authorization. Without a whitelist, the
- * issue may still be processed, but must not receive stable user ownership.
- *
- * Trade-off: because we use the *most recent* labeled event, a
- * non-whitelisted user who toggles the label after a whitelisted user
- * will block processing (fail-closed). This is safe but means an
- * adversary can suppress processing by repeatedly toggling the label.
- * The mitigation is branch-protection rules on who can apply labels.
- */
-async function resolveLabelApplier(opts: {
-    octokit: PaginatedOctokitInstance;
-    owner: string;
-    repo: string;
-    issueNumber: number;
-    targetLabels: string[];
-    log?: Logger;
-}): Promise<TriggerEvidence> {
-    const { octokit, owner, repo, issueNumber, targetLabels } = opts;
-    const normalizedTargetLabels = targetLabels.map(l => l.toLowerCase());
-    // Let API errors propagate — the caller (resolveLabelApplierCached) decides
-    // whether to cache the result. Errors must NOT be cached because the cache key
-    // only rotates when the issue's updatedAt changes, which would stall the issue
-    // indefinitely after a transient failure (rate limit, network blip).
-    const firstPage = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
-        owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page: 1
-    });
-    const lastPage = lastPageFromLinkHeader(firstPage.headers.link) ?? 1;
-    if (lastPage === 1) {
-        return findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels, false);
-    }
-
-    let cancelledSinceApplied = false;
-    const firstRecentPage = Math.max(2, lastPage - labelApplierTimelineMaxPages() + 1);
-    for (let page = lastPage; page >= firstRecentPage; page--) {
-        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
-            owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
-        });
-        const evidence = findTriggerEvidenceInEvents(response.data as TimelineEvent[], normalizedTargetLabels, cancelledSinceApplied);
-        if (evidence.actor) return evidence;
-        cancelledSinceApplied = evidence.cancelledSinceApplied;
-    }
-    // The recent-page window starts at page 2, but page 1 is already in hand —
-    // search it too so a label event near the start of a short multi-page
-    // timeline (e.g. 2–5 pages) is still found.
-    return findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels, cancelledSinceApplied);
-}
-
 async function resolveLabelApplierCached(opts: {
     octokit: PaginatedOctokitInstance;
     owner: string;
@@ -154,25 +54,33 @@ async function resolveLabelApplierCached(opts: {
     issueNumber: number;
     updatedAt: string;
     targetLabels: string[];
+    staleMarkers: string[];
     log?: Logger;
 }): Promise<TriggerEvidence | null> {
-    const cacheKey = getLabelApplierCacheKey(opts.owner, opts.repo, opts.issueNumber, opts.updatedAt);
+    const cacheKey = getLabelApplierCacheKey(opts);
     const cached = labelApplierCache.get(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.evidence;
 
     try {
-        const result = await resolveLabelApplier(opts);
+        // Let API errors propagate to here. Errors must NOT be cached because
+        // the cache key only rotates when the issue's updatedAt changes, which
+        // would stall the issue indefinitely after a transient failure.
+        const result = await readTriggerApplicationEvidence(opts);
         // Only cache resolved actors. A missing actor from a successful timeline
         // lookup means the labeled event isn't visible yet (GitHub timeline
         // eventual consistency). Caching it would stall the issue until
         // updatedAt changes, since that's the only thing that rotates the cache key.
         if (result.actor !== null) {
             // FIFO eviction — oldest-inserted key is dropped (not LRU).
+            labelApplierCache.delete(cacheKey);
             if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
                 const first = labelApplierCache.keys().next().value;
                 if (first !== undefined) labelApplierCache.delete(first);
             }
-            labelApplierCache.set(cacheKey, result);
+            labelApplierCache.set(cacheKey, {
+                evidence: result,
+                expiresAt: result.staleSinceApplied ? Date.now() + STALE_EVIDENCE_CACHE_TTL_MS : Infinity,
+            });
         }
         return result;
     } catch (err) {
@@ -198,8 +106,9 @@ function excludeLabelsFor(triggers: string[]): string[] {
     return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
 }
 
-function hasCancelledMarker(labels: string[], triggers: string[]): boolean {
-    return triggers.some(label => labels.includes(`${label}-cancelled`));
+// The trigger admission selects; restoration evidence must be for this trigger.
+function admissionTrigger(labels: string[], triggers: string[]): string | undefined {
+    return triggers.find(label => labels.includes(label));
 }
 
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
@@ -216,7 +125,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Check for processing labels BEFORE acquiring dedup lock
     // This ensures invalid events don't block subsequent valid events
-    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
+    const triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels);
 
     if (!triggeringLabel) {
         correlatedLogger.info({
@@ -245,7 +154,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Only a trigger reapplication is renewed intent. Unrelated label events
     // fall through to the exclude check, which keeps cancelled issues idle.
-    if (issue.triggerReapplied && hasCancelledMarker(issue.labels, primaryProcessingLabels)) {
+    if (issue.triggerReapplied && hasStaleTriggerLabels(issue.labels, triggeringLabel, primaryProcessingLabels)) {
         const labels = await restoreIssueTrigger({ repoOwner: issue.repoOwner, repoName: issue.repoName, number: issue.number, kind: 'issue', triggeringLabel });
         if (!labels) return { status: 'ignored', reason: 'intent_not_current' };
         issue = { ...issue, labels };
@@ -413,10 +322,11 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     typeof label === 'string' ? label : label.name
                 );
 
-                // Cancelled requests need to reach restoration even if an old
-                // processing marker survived cleanup. Done markers still block.
-                const restorable = primaryProcessingLabels.some(label => labelNames.includes(label))
-                    && hasCancelledMarker(labelNames, primaryProcessingLabels);
+                // Cancelled requests, and requests whose processing marker
+                // survived failed cleanup, need to reach timeline evidence and
+                // restoration. Done markers still block.
+                const trigger = admissionTrigger(labelNames, primaryProcessingLabels);
+                const restorable = !!trigger && hasStaleTriggerLabels(labelNames, trigger, primaryProcessingLabels);
                 return !allExcludeLabels.some(excludeLabel => labelNames.includes(excludeLabel)
                     && (!restorable || excludeLabel.endsWith('-done')));
             });
@@ -456,16 +366,22 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
             const results = await Promise.all(batch.map(async (issue) => {
                 const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+                const trigger = admissionTrigger(labels, primaryProcessingLabels);
+                const stale = !!trigger && hasStaleTriggerLabels(labels, trigger, primaryProcessingLabels);
+                // Restoration needs an application of the trigger admission
+                // will use; another trigger's newer (possibly removed)
+                // application is not renewed intent for it.
                 const evidence = await resolveLabelApplierCached({
-                    octokit, owner, repo, issueNumber: issue.number,
-                    updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                    octokit, owner, repo, issueNumber: issue.number, updatedAt: issue.updated_at,
+                    targetLabels: stale ? [trigger] : primaryProcessingLabels,
+                    staleMarkers: stale ? staleTriggerMarkers(trigger, primaryProcessingLabels) : [],
+                    log: correlatedLogger
                 });
                 // Reopening a cancelled issue is not renewed intent: restoration
-                // requires the trigger to have been reapplied after the
-                // `<trigger>-cancelled` marker, matching webhook-mode behaviour.
-                const cancelled = hasCancelledMarker(labels, primaryProcessingLabels);
-                if (cancelled && (!evidence?.actor || evidence.cancelledSinceApplied)) {
-                    correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Cancelled issue has no trigger reapplication after cancellation — skipping');
+                // requires the trigger to have been reapplied after its stale
+                // `-processing`/`-cancelled` marker, matching webhook-mode behaviour.
+                if (stale && (!evidence?.actor || evidence.staleSinceApplied)) {
+                    correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Stale issue has no trigger reapplication after its stale marker — skipping');
                     return null;
                 }
                 const labelApplier = evidence?.actor ?? null;
@@ -496,8 +412,8 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     ...(triggeredBy ? { triggeredBy } : {}),
                     ...(labelApplier ? { triggeredById: labelApplier.userId } : {}),
                     source: 'polling' as const,
-                    // The cancelled-marker gate above already required newer trigger evidence.
-                    ...(cancelled ? { triggerReapplied: true } : {})
+                    // The stale-marker gate above already required newer trigger evidence.
+                    ...(stale ? { triggerReapplied: true } : {})
                 };
             }));
             for (const r of results) {

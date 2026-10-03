@@ -65,7 +65,7 @@ export interface StopTaskExecutionOptions {
   /** Override the BullMQ queue lookup (used by tests). Defaults to getIssueQueue(). */
   getQueue?: () => Promise<StopTaskQueue>;
   /** Override marking the task cancelled (used by tests). Defaults to the shared state manager. */
-  markCancelled?: (taskId: string, cancelledBy: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) => Promise<unknown>;
+  markCancelled?: (taskId: string, cancelledBy: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown>; withdrawnQueuedRetry?: boolean }) => Promise<unknown>;
   /** Override task state creation for queued jobs that never started (used by tests). */
   createTaskState?: (taskId: string, issueRef: IssueRef) => Promise<unknown>;
   /** Override the container stop (used by tests). Defaults to stopDockerContainer(). */
@@ -234,13 +234,14 @@ async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<strin
 }
 
 /** Marks the task cancelled. Returns true when the cancellation was recorded. */
-async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<string, unknown>, options: StopTaskExecutionOptions): Promise<boolean> {
+async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<string, unknown>, options: StopTaskExecutionOptions, withdrawnQueuedRetry = false): Promise<boolean> {
   try {
     const mark = options.markCancelled
-      ?? ((id: string, by: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) =>
+      ?? ((id: string, by: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown>; withdrawnQueuedRetry?: boolean }) =>
         getStateManager().markTaskCancelled(id, by, metadata));
     const recorded = await mark(taskId, options.requestedBy ?? 'user', {
       ...(options.reason ? { reason: options.reason } : {}),
+      ...(withdrawnQueuedRetry ? { withdrawnQueuedRetry } : {}),
       historyMetadata: {
         // Without an explicit reason, markTaskCancelled attributes only
         // non-system stops to a user; system stops stay unattributed.
@@ -273,7 +274,8 @@ async function stopTaskWithoutRunningWorker(
   const { redisClient } = options;
   const stopMessage = options.reason ?? 'Stop requested by user. Terminating execution...';
   const currentState = state?.history[state.history.length - 1]?.state;
-  const markCancelled = (metadata: Record<string, unknown>): Promise<boolean> => markTaskCancelledSafely(taskId, metadata, options);
+  const markCancelled = (metadata: Record<string, unknown>, withdrawnQueuedRetry = false): Promise<boolean> =>
+    markTaskCancelledSafely(taskId, metadata, options, withdrawnQueuedRetry);
   // No live container — the task may still have queued or delayed jobs that
   // have not started yet. Remove those before they begin executing.
   const { removed: removedQueuedJobs, jobData } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
@@ -286,7 +288,9 @@ async function stopTaskWithoutRunningWorker(
     const stateAvailable = state
       ? true
       : (await ensureTaskStateForQueuedJob(taskId, jobData, options)) === 'created';
-    const cancellationRecorded = stateAvailable && await markCancelled({ removedQueuedJobs });
+    // A removed job is a live retry: record its withdrawal even when the
+    // previous attempt is already terminal as failed.
+    const cancellationRecorded = stateAvailable && await markCancelled({ removedQueuedJobs }, true);
     return {
       success: true,
       taskId,

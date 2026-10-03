@@ -51,16 +51,16 @@ export interface DetectedIssue {
     // sender (label applier). For polling with a whitelist: the label applier
     // resolved from the issue timeline. For polling without a whitelist: the
     // issue author (informational only). When the actor cannot be determined
-    // the issue is skipped (fail closed) — see resolveLabelApplier in
-    // issueDetection.ts.
+    // the issue is skipped (fail closed) — see readTriggerApplicationEvidence in
+    // triggerApplicationEvidence.ts.
     triggeredBy?: string;
     // Stable GitHub ID for the verified trigger actor. Jobs omit ownership when
     // this cannot be established, so user-scoped queue views fail closed.
     triggeredById?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
     source?: 'webhook' | 'polling';
-    // Set only when the producer saw the trigger applied after any
-    // `<trigger>-cancelled` marker. Without it, a cancelled issue stays excluded.
+    // Set only when the producer saw the trigger applied after any stale
+    // `-cancelled`/`<trigger>-processing` marker. Without it, the issue stays excluded.
     triggerReapplied?: boolean;
 }
 
@@ -175,8 +175,8 @@ async function handleIssuesEvent(
             createdAt: payload.issue.created_at,
             updatedAt: payload.issue.updated_at,
             // Fail closed: use only the webhook sender (the label applier).
-            // Do NOT fall back to the issue author — see resolveLabelApplier
-            // doc comment in issueDetection.ts for the threat model.
+            // Do NOT fall back to the issue author — see readTriggerApplicationEvidence
+            // doc comment in triggerApplicationEvidence.ts for the threat model.
             triggeredBy: payload.sender?.login,
             ...(payload.sender?.id === undefined ? {} : { triggeredById: String(payload.sender.id) }),
             source: 'webhook',

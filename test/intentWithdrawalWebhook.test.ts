@@ -7,7 +7,7 @@ let cancellationWait: Promise<void> | undefined;
 let cancellationFinished = false;
 const restore = mock.fn(async () => ['AI']);
 const handlers: string[] = [];
-beforeEach(() => { cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
+beforeEach(() => { currentLabels = ['AI']; timeline = []; cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
     restoreIssueTrigger: restore,
@@ -25,6 +25,17 @@ await mock.module('../packages/core/src/webhook/closedPullRequestCi.js', { named
 await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', { namedExports: {
     handlePullRequestConflictDetection: async () => {}, handlePushConflictDetection: async () => {},
 } });
+// Fresh tracker state read by trigger webhooks; delayed payloads can be stale.
+let currentLabels: string[] = ['AI'];
+let timeline: any[] = [];
+await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
+    getGitHubInstallationToken: async () => { throw new Error('GitHub auth not configured'); },
+    getAuthenticatedOctokit: async () => ({ request: async (endpoint: string) => {
+        if (endpoint.endsWith('/timeline')) return { headers: {}, data: timeline };
+        if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { state: 'open', labels: currentLabels.map(name => ({ name })) } };
+        throw new Error('GitHub auth not configured');
+    } }),
+} });
 const { initializeWebhookHandler, processWebhookEvent } = await import('../packages/core/src/webhook/webhookHandler.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 after(closeConnection);
@@ -36,6 +47,9 @@ await initializeWebhookHandler({
     repositoryFilter: repo => repo === 'acme/widgets',
 });
 const repository = { full_name: 'acme/widgets', name: 'widgets', owner: { login: 'acme' } };
+function labeled(name: string, login: string, createdAt = '2026-10-01T00:00:00Z') {
+    return { event: 'labeled', label: { name }, actor: { id: login.length, login }, created_at: createdAt };
+}
 
 test('a single issue closed or trigger unlabeled event cancels work; model removal never does', async () => {
     await processWebhookEvent({ repository, action: 'closed', issue: { number: 42 } }, 'issues', 'close');
@@ -119,6 +133,8 @@ for (const actor of ['alice', 'mallory', undefined, 'propr-dev[bot]']) {
             const oldTriggers = process.env.PRIMARY_PROCESSING_LABELS;
             process.env.GITHUB_USER_WHITELIST = 'alice';
             process.env.PRIMARY_PROCESSING_LABELS = 'AI,build';
+            currentLabels = ['AI', stale];
+            timeline = [labeled(stale, 'propr-dev[bot]'), labeled('AI', 'alice')];
             try {
                 const result = await processWebhookEvent({ repository, action: 'labeled', label: { name: 'AI' },
                     sender: actor ? { login: actor } : undefined,
@@ -137,3 +153,63 @@ for (const actor of ['alice', 'mallory', undefined, 'propr-dev[bot]']) {
         });
     }
 }
+
+async function withTriggers<T>(run: () => Promise<T>): Promise<T> {
+    const oldWhitelist = process.env.GITHUB_USER_WHITELIST;
+    const oldTriggers = process.env.PRIMARY_PROCESSING_LABELS;
+    process.env.GITHUB_USER_WHITELIST = 'alice';
+    process.env.PRIMARY_PROCESSING_LABELS = 'AI,build';
+    try { return await run(); } finally {
+        if (oldWhitelist === undefined) delete process.env.GITHUB_USER_WHITELIST;
+        else process.env.GITHUB_USER_WHITELIST = oldWhitelist;
+        if (oldTriggers === undefined) delete process.env.PRIMARY_PROCESSING_LABELS;
+        else process.env.PRIMARY_PROCESSING_LABELS = oldTriggers;
+    }
+}
+
+const deliverAI = (updatedAt: string, labels = ['AI']) => processWebhookEvent({ repository, action: 'labeled', label: { name: 'AI' },
+    sender: { login: 'alice' }, issue: { number: 42, state: 'open', labels, updated_at: updatedAt },
+}, 'issues', 'delayed-label');
+
+test('a delayed original trigger delivery cannot restart an issue cancelled after it', () => withTriggers(async () => {
+    // Polling started the original application; the issue was then closed,
+    // cancelled and reopened with AI still present.
+    currentLabels = ['AI', 'AI-cancelled'];
+    timeline = [labeled('AI', 'alice', '2026-10-01T00:00:00Z'), labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z')];
+    const result = await deliverAI('2026-10-01T00:00:00Z');
+    assert.deepEqual(result, { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 0);
+    assert.equal(processed.length, 0);
+}));
+
+test('a delayed delivery cannot restart work whose processing marker postdates it', () => withTriggers(async () => {
+    currentLabels = ['AI', 'AI-processing'];
+    timeline = [labeled('AI', 'alice', '2026-10-01T00:00:00Z'), labeled('AI-processing', 'propr-dev[bot]', '2026-10-01T00:01:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T00:00:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 0);
+}));
+
+test('a reapplication newer than the cancellation restores even before the timeline shows it', () => withTriggers(async () => {
+    currentLabels = ['AI', 'AI-cancelled'];
+    timeline = [labeled('AI', 'alice', '2026-10-01T00:00:00Z'), labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z')];
+    await deliverAI('2026-10-01T02:00:00Z', ['AI', 'AI-cancelled']);
+    assert.equal(restore.mock.callCount(), 1);
+    assert.equal(processed.length, 1);
+}));
+
+test('a stale delivery is admitted when the timeline shows an authorized reapplication', () => withTriggers(async () => {
+    currentLabels = ['AI', 'AI-cancelled'];
+    timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')];
+    await deliverAI('2026-10-01T00:00:00Z');
+    assert.equal(restore.mock.callCount(), 1);
+    timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'mallory', '2026-10-01T02:00:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T00:00:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 1);
+}));
+
+test('a trigger removed again before delivery is not restored', () => withTriggers(async () => {
+    currentLabels = ['AI-cancelled'];
+    timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T02:00:00Z', ['AI', 'AI-cancelled']), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 0);
+}));

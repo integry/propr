@@ -182,7 +182,8 @@ test('fetchIssuesForRepo excludes pull requests and -processing/-done labels', a
     const items: MockIssue[] = [
         // A pull request surfaced by the issues endpoint — must be dropped.
         { ...base, id: 1, number: 1, title: 'PR', html_url: 'u/1', labels: [{ name: 'AI' }], pull_request: {} },
-        // Already being processed — excluded by the AI-processing label.
+        // Already being processed — excluded by the AI-processing label, which
+        // was applied after the trigger (no reapplication since work started).
         { ...base, id: 2, number: 2, title: 'In progress', html_url: 'u/2', labels: [{ name: 'AI' }, { name: 'AI-processing' }] },
         // Already done — excluded by the AI-done label.
         { ...base, id: 3, number: 3, title: 'Done', html_url: 'u/3', labels: [{ name: 'AI' }, { name: 'AI-done' }] },
@@ -191,12 +192,16 @@ test('fetchIssuesForRepo excludes pull requests and -processing/-done labels', a
     ];
     const octokit = makeOctokit(
         async () => items,
-        async () => ({
+        async (_route: string, params: Record<string, unknown>) => ({
             data: [{
                 event: 'labeled',
                 label: { name: 'AI' },
                 actor: { id: 991188, login: 'label-applier' },
-            }],
+            }, ...(params.issue_number === 2 ? [{
+                event: 'labeled',
+                label: { name: 'AI-processing' },
+                actor: { id: 1, login: 'propr-dev[bot]' },
+            }] : [])],
             headers: {},
         }),
     );

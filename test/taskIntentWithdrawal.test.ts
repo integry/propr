@@ -45,7 +45,7 @@ const manager = {
     markTaskCancelled: async (id: string, by: string, metadata: any) => {
         const state = states.get(id);
         if (!state) throw new Error('missing state');
-        if (state.state === 'failed') return state;
+        if (state.state === 'failed' && !metadata.withdrawnQueuedRetry) return state;
         state.state = 'cancelled';
         state.terminalReason = metadata.terminalReason ?? metadata.historyMetadata.cancellationReason;
         state.history.push({ state: 'cancelled', metadata });
@@ -81,6 +81,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { g
     requests.push({ endpoint, params });
     onRequest?.(endpoint);
     if (trackerError) throw trackerError;
+    if (endpoint.endsWith('/timeline')) return { headers: {}, data: [...timeline] };
     if (endpoint.startsWith('DELETE ')) tracker = { ...tracker, labels: (tracker.labels ?? []).filter((label: any) => (typeof label === 'string' ? label : label.name) !== params.name) };
     if (endpoint.startsWith('POST ')) {
         tracker = { ...tracker, labels: [...(tracker.labels ?? []), ...params.labels] };
@@ -592,6 +593,7 @@ test('merged PR state revokes an earlier unmerged closure event', async () => {
 });
 
 async function reapplyTrigger(label = 'AI') {
+    recordLabeled(label);
     return processWebhookEvent({ repository: { full_name: 'acme/widgets' }, action: 'labeled', label: { name: label },
         issue: { number: 42, state: 'open', labels: ['AI', 'AI-processing', 'AI-cancelled', 'build-processing'].map(name => ({ name })) },
     }, 'issues', 'restore');
@@ -875,8 +877,8 @@ for (const path of ['admission', 'webhook', 'polling'] as const) {
         if (path === 'admission') assert.equal(await preventWithdrawnJob(job), 'cancelled_issue_closed');
         else if (path === 'polling') await reconcileTaskIntents(redis as never, ['acme/widgets']);
         else await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
-        if (path === 'admission') assert.equal(states.get(id).state, 'failed');
-        else assert.equal(states.get(id).terminalReason, 'cancelled_issue_closed');
+        // The live retry's withdrawal is recorded on every path.
+        assert.equal(states.get(id).terminalReason, 'cancelled_issue_closed');
     });
 }
 
@@ -965,6 +967,7 @@ for (const label of ['bug', 'llm-codex-astra']) {
             // Reapplying the trigger is renewed intent and still restarts work.
             tracker = { ...tracker, labels: tracker.labels.filter((name: string) => name !== 'AI') };
             tracker = { ...tracker, labels: [...tracker.labels, 'AI'] };
+            recordLabeled('AI');
             assert.equal((await deliver('AI')).status, 'accepted');
             assert.ok(!tracker.labels.includes('AI-cancelled'));
             assert.equal(jobs.length, 1);
@@ -1005,5 +1008,70 @@ for (const sibling of ['same-trigger PR', 'other-trigger PR', 'no PR'] as const)
         const kept = sibling === 'same-trigger PR';
         assert.equal(tracker.labels.includes('AI-done'), kept);
         assert.equal(tracker.labels.includes('AI-cancelled'), !kept);
+    });
+}
+
+test('polling ignores a newer, since-removed application of another trigger on a reopened cancelled issue', async () => {
+    addRunning('old');
+    tracker = { state: 'closed', labels: ['AI', 'AI-processing'] };
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    tracker = { ...tracker, state: 'open' };
+    // `build` is applied and removed before the poll; AI was never reapplied.
+    recordLabeled('build');
+    timelineRevision++;
+    requests.length = 0;
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+    assert.equal(jobs.length, 0);
+});
+
+test('polling keeps a processing-only issue idle without a newer trigger application', async () => {
+    recordLabeled('AI-processing');
+    tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+    assert.equal(jobs.length, 0);
+});
+
+test('polling restores a processing-only issue whose cleanup failed once the trigger is reapplied', async () => {
+    addRunning('old');
+    recordLabeled('AI-processing');
+    tracker = { state: 'open', labels: ['AI-processing'] };
+    onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) throw new Error('cleanup unavailable'); };
+    await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_label_removed', redis as never), /cleanup unavailable/);
+    onRequest = undefined;
+    assert.ok(!tracker.labels.includes('AI-cancelled'));
+    assert.equal(jobs.length, 0);
+    // The reapplication webhook is missed; polling supplies recovery.
+    tracker = { ...tracker, labels: ['AI', 'AI-processing'] };
+    recordLabeled('AI');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.deepEqual(tracker.labels, ['AI']);
+    assert.equal(jobs.length, 1);
+    assert.equal(states.get('old').terminalReason, 'cancelled_label_removed');
+});
+
+test('polling processing-only restoration preserves live sibling work', async () => {
+    addRunning('sibling');
+    recordLabeled('AI-processing', 'AI');
+    tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+    assert.equal((await pollRestoredIssues())[0]?.status, 'ignored');
+    assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+    assert.ok(tracker.labels.includes('AI-processing'));
+});
+
+for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as const) {
+    test(`${reason} records withdrawal of a failed attempt's delayed retry and cleans its labels`, async () => {
+        const data = { ...target, isChildJob: true, agentAlias: 'codex', modelName: 'model', correlationId: 'original-request' };
+        const id = intentJobTaskId(addJob('retry', data, 'delayed'));
+        addRunning(id, data, 'failed');
+        tracker = { state: reason === 'cancelled_issue_closed' ? 'closed' : 'open', labels: ['AI-processing', 'AI-waiting'] };
+        await cancelWithdrawnIntent(target, reason, redis as never);
+        assert.equal(jobs.length, 0);
+        assert.equal(states.get(id).state, 'cancelled');
+        assert.equal(states.get(id).terminalReason, reason);
+        assert.deepEqual(tracker.labels, ['AI-cancelled']);
     });
 }

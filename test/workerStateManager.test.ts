@@ -3175,3 +3175,30 @@ for (const prResult of [{ status: 'failed', prCreated: false }, { status: 'faile
         } finally { await manager.close(); }
     });
 }
+
+test('a failed task records withdrawal only when its live queued retry was removed', async () => {
+    const failed: TaskStateData = {
+        taskId: 'failed-with-retry', issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        correlationId: 'original-request', state: TaskStates.FAILED,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:01:00Z', version: 2, attempts: 1, history: [],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(failed));
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+    const manager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    try {
+        const kept = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed' });
+        assert.equal(kept.state, TaskStates.FAILED);
+        assert.equal(kept.terminalReason, undefined);
+        const withdrawn = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+        assert.equal(withdrawn.state, TaskStates.CANCELLED);
+        assert.equal(withdrawn.terminalReason, 'cancelled_issue_closed');
+        for (const state of [TaskStates.COMPLETED, TaskStates.CANCELLED]) {
+            mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...failed, state, terminalReason: state === TaskStates.CANCELLED ? 'cancelled_by_user' : undefined }));
+            const protectedState = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+            assert.equal(protectedState.state, state);
+        }
+        mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify({ ...failed, prResult: { prNumber: 87 } }));
+        const withPR = await manager.markTaskCancelled(failed.taskId, 'system', { terminalReason: 'cancelled_issue_closed', withdrawnQueuedRetry: true });
+        assert.equal(withPR.state, TaskStates.FAILED);
+    } finally { await manager.close(); }
+});

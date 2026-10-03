@@ -363,9 +363,10 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
     const reason = await checkCurrentTaskIntent(target);
     if (!reason || reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await manager.getTaskState(taskId))) return null;
     await manager.createTaskStateIfAbsent(taskId, taskIntentIssueRef(data, target), typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
-    const cancelled = await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason });
+    // This job is the failed attempt's live retry, so its withdrawal is recorded.
+    const cancelled = await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason, withdrawnQueuedRetry: true });
     if (cancelled && cancelled.state !== 'cancelled') {
-        // A failed attempt remains terminal, but its queued retry must still be
+        // If the state guard keeps the failure, the retry must still be
         // rejected. Only actual PR evidence exempts it from issue closure.
         if (cancelled.state === 'failed'
             && (reason !== 'cancelled_issue_closed' || !await isIssueClosureProtected(target, cancelled))) return reason;

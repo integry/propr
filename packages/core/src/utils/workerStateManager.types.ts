@@ -100,6 +100,8 @@ export interface CancellationMetadata {
 export interface UpdateMetadata {
     terminalReason?: TaskTerminalReason;
     isRetry?: boolean;
+    /** The failed attempt's queued retry was removed, so its withdrawal must be recorded. */
+    withdrawnQueuedRetry?: boolean;
     error?: {
         message: string;
         category?: string;
