@@ -115,11 +115,11 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   const mobileConfiguration = page.getByTestId('ai-agents-mobile-configuration-scroll');
   await expect(page.getByText('Production Codex Agent').first()).toBeVisible();
   await expect(page.getByText('/home/node/.config/propr/agents/production-codex-account').first()).toBeVisible();
-  const latestModel = mobileConfiguration.getByText('gpt-6.1-sol', { exact: true });
+  const latestModel = mobileConfiguration.getByRole('button', { name: 'Copy gpt61-sol', exact: true });
   await latestModel.scrollIntoViewIfNeeded();
   await expect(latestModel).toBeVisible();
-  await expect(mobileConfiguration.getByText('gpt-6-sol', { exact: true })).toBeVisible();
-  await expect(mobileConfiguration.getByText('gpt-6-luna', { exact: true })).toBeVisible();
+  await expect(mobileConfiguration.getByRole('button', { name: 'Copy gpt6-sol', exact: true })).toBeVisible();
+  await expect(mobileConfiguration.getByRole('button', { name: 'Copy gpt6-luna', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Show 2 legacy models' })).toBeVisible();
   await expectNoPageOverflow(page);
 

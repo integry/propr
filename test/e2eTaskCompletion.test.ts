@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { describe, test } from "node:test";
+import { isProviderAuthenticationFailure } from "./e2e/providerAuthentication.js";
 import {
   assertModelTasksSucceeded,
   newModelResult,
@@ -14,6 +15,65 @@ function result(alias: string, model: string, finalState: string, failureReason:
 }
 
 describe("E2E model task completion", () => {
+  const invalidatedToken = "Task failed: Encountered invalidated oauth token for user, failing request";
+
+  test("reports invalidated provider credentials when another model completed", (t) => {
+    const warnings: string[] = [];
+    t.mock.method(console, "log", (message: string) => warnings.push(message));
+    assert.doesNotThrow(() => assertModelTasksSucceeded([
+      result("codex", "gpt-6.1-sol", "completed"),
+      result("opencode", "opencode-openai/gpt-5.6-luna", "failed", invalidatedToken),
+    ]));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /reauthenticate the affected provider account/);
+    assert.match(warnings[0], /opencode\/opencode-openai\/gpt-5\.6-luna: failed/);
+  });
+
+  test("tolerates a mix of provider quota and credential failures with live success", () => {
+    assert.doesNotThrow(() => assertModelTasksSucceeded([
+      result("claude", "claude-opus-5-5", "completed"),
+      result("codex", "gpt-6.1-sol", "failed", "usage limit"),
+      result("opencode", "opencode-openai/gpt-5.6-luna", "failed", invalidatedToken),
+    ]));
+  });
+
+  test("fails when no model completed despite recognized provider failures", () => {
+    for (const results of [
+      [result("opencode", "opencode-openai/gpt-5.6-luna", "failed", invalidatedToken)],
+      [
+        result("opencode", "opencode-openai/gpt-5.6-luna", "failed", invalidatedToken),
+        result("codex", "gpt-6.1-sol", "failed", "usage limit"),
+      ],
+    ]) {
+      assert.throws(() => assertModelTasksSucceeded(results), /did not complete successfully/);
+    }
+  });
+
+  test("credential rejection does not hide unexpected failures", () => {
+    for (const reason of ["GitHub API authentication failed (401)", "HTTP 401 Unauthorized", "Agent authentication failed", "agy not found"]) {
+      assert.throws(() => assertModelTasksSucceeded([
+        result("claude", "claude-opus-5-5", "completed"),
+        result("opencode", "opencode-openai/gpt-5.6-luna", "failed", invalidatedToken),
+        result("codex", "gpt-6.1-sol", "failed", reason),
+      ]), /2\/3 model task\(s\) did not complete successfully/);
+    }
+  });
+
+  test("classifies only explicit credential rejections on failed tasks", () => {
+    assert.equal(isProviderAuthenticationFailure("failed", invalidatedToken), true);
+    assert.equal(isProviderAuthenticationFailure("failed", invalidatedToken.toUpperCase()), true);
+    for (const state of [null, "completed", "cancelled", "claude_execution"]) {
+      assert.equal(isProviderAuthenticationFailure(state, invalidatedToken), false);
+    }
+    for (const reason of [null, "", "oauth token", "HTTP 401 Unauthorized", "GitHub API authentication failed (401)"]) {
+      assert.equal(isProviderAuthenticationFailure("failed", reason), false);
+    }
+    assert.throws(() => assertModelTasksSucceeded([
+      result("claude", "claude-opus-5-5", "completed"),
+      result("opencode", "opencode-openai/gpt-5.6-luna", "cancelled", invalidatedToken),
+    ]), /cancelled/);
+  });
+
   test("accepts only completed model tasks", () => {
     assert.doesNotThrow(() => assertModelTasksSucceeded([
       result("codex", "gpt-5.6-sol", "completed"),

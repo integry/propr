@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 import type { CommentJobData } from '@propr/core';
 import {
     MAX_REVIEW_FEEDBACK_SELECTION,
+    REVIEW_FEEDBACK_SELECT_ALL_KEYWORD,
     type ReviewFeedbackSelection,
     emptyReviewFeedbackSelection,
     isEmptyReviewFeedbackSelection,
@@ -20,9 +21,11 @@ import { formatRecordFields } from './reviewRecordFields.js';
  * and which tokens looked like identifiers but were not.
  */
 export interface FixSelection extends ReviewFeedbackSelection {
+    /** A human explicitly requested every pending finding and suggestion. */
+    selectAll?: true;
     /** Command-line remainder plus every following line, verbatim and trimmed. */
     instructions: string;
-    /** Selector-shaped tokens that are not valid identifiers, e.g. `S0`. */
+    /** Invalid identifiers or incompatible selector clauses, e.g. `S0` or `ALL S3`. */
     malformedIds: string[];
 }
 
@@ -49,6 +52,9 @@ export interface FixCommandText {
  * because a join cannot be undone: `/fix` with no arguments and prose below it
  * produces text whose first line is prose, and no amount of newline handling
  * here could tell that apart from a selector line.
+ * The `all` shorthand must stand alone, apart from commas/whitespace or a `;`
+ * introducing instructions. `all the tests` remains ordinary instruction prose.
+ * Combining `all` with selector-shaped tokens fails the whole request closed.
  *
  * Parsing stops at the first non-selector token on the command line; that token
  * and the rest of the line join the instructions. A `;` still closes the
@@ -70,6 +76,22 @@ export function parseFixCommand(command: FixCommandText): FixSelection {
         ...extraCommandLines,
         ...(command.bodyInstructions ? command.bodyInstructions.replace(/\r\n?/g, '\n').split('\n') : []),
     ];
+    const allMatch = new RegExp(`^${REVIEW_FEEDBACK_SELECT_ALL_KEYWORD}[,\\s]*(?:;(.*))?$`, 'i').exec(commandLine.trim());
+    if (allMatch) {
+        return {
+            ...selection,
+            selectAll: true,
+            instructions: [allMatch[1] ?? '', ...following].join('\n').trim(),
+        };
+    }
+    // Inspect only the selector clause. IDs after `;` or on following lines
+    // are instructions, while `all S3` must never fall back to bare `/fix`.
+    const selectorClause = commandLine.split(';', 1)[0].trim();
+    const selectorTokens = selectorClause.split(/[,\s]+/);
+    if (selectorTokens[0]?.toLowerCase() === REVIEW_FEEDBACK_SELECT_ALL_KEYWORD
+        && selectorTokens.slice(1).some(token => normalizeReviewFeedbackId(token) || isMalformedReviewFeedbackToken(token))) {
+        return { ...selection, malformedIds: [selectorClause.toUpperCase()] };
+    }
     const tokens = [...commandLine.matchAll(/[^,\s]+/g)].map(match => ({ value: match[0], start: match.index }));
     const seen = new Set<string>();
     /** Offset on the command line where instruction text begins, if any. */
@@ -156,8 +178,8 @@ function sortNewestFirst(comments: AIReviewComment[]): AIReviewComment[] {
  *
  * A selection that names nothing keeps the pre-existing meaning: every
  * unprocessed actionable finding, and no suggestions. Suggestions are opt-in by
- * construction — that is the whole point of the blocker/suggestion boundary, and
- * this default is what preserves it for every caller that does not name one.
+ * construction: only a human naming suggestions or requesting `all` opts in.
+ * The `all` shorthand selects every pending record without an explicit-ID cap.
  *
  * A requested identifier that appears in more than one review resolves against
  * the newest of them, which is how legacy reviews that reused `F1` stay
@@ -178,6 +200,15 @@ export function resolveReviewFeedback(
             selected: emptyReviewFeedbackSelection(),
             unresolved: emptyReviewFeedbackSelection(),
             malformedIds: selection.malformedIds,
+        };
+    }
+    if (selection.selectAll) {
+        const all = comments.filter(comment => comment.actionableFindings.length > 0 || comment.suggestions.length > 0);
+        return {
+            comments: all,
+            selected: selectedReviewFeedbackIds(all),
+            unresolved: emptyReviewFeedbackSelection(),
+            malformedIds: [],
         };
     }
     if (isEmptyReviewFeedbackSelection(selection)) {
@@ -315,7 +346,7 @@ export async function prepareFixReviewFeedback(params: {
         repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
     });
     // Automated Ultrafix always selects all F# blockers and never suggestions:
-    // optional work is acted on solely because a human named it.
+    // optional work is acted on solely because a human requested it.
     const commandMeta = job.data.commandMeta;
     const fixSelection = job.data.ultrafixMeta
         ? { ...emptySelection, instructions: job.data.commandInstructions || '' }
@@ -326,8 +357,8 @@ export async function prepareFixReviewFeedback(params: {
         : commandMeta?.mode === 'fix' && typeof commandMeta.commandLine === 'string'
             ? parseFixCommand({ commandLine: commandMeta.commandLine, bodyInstructions: commandMeta.bodyInstructions })
             : parseFixSelection(job.data.commandInstructions);
-    // Cap explicit requests only. A bare `/fix` inherits whatever blockers the
-    // reviews published, and rejecting that would be a regression.
+    // Cap explicit IDs only. Bare `/fix` and `/fix all` inherit the pending
+    // records without a cap.
     if (!isEmptyReviewFeedbackSelection(fixSelection) && reviewFeedbackSelectionSize(fixSelection) > MAX_REVIEW_FEEDBACK_SELECTION) {
         throw new Error(`A single /fix run addresses at most ${MAX_REVIEW_FEEDBACK_SELECTION} review items.`);
     }
