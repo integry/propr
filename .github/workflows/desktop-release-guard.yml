@@ -416,6 +416,7 @@ jobs:
           done
 
       - name: Capture packaged Linux x64 visual and accessibility acceptance evidence
+        id: desktop-acceptance
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
         shell: bash
         env:
@@ -447,7 +448,7 @@ jobs:
           ' bash "$keyring_root"
 
       - name: Publish mandatory packaged desktop acceptance evidence
-        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
+        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64' && (steps.desktop-acceptance.outcome == 'success' || steps.desktop-acceptance.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-desktop-acceptance-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
@@ -968,6 +969,7 @@ jobs:
           ' bash "$keyring_root"
 
       - name: Capture signed packaged Linux x64 visual and accessibility acceptance evidence
+        id: desktop-acceptance
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
         shell: bash
         env:
@@ -983,7 +985,7 @@ jobs:
           npm run desktop:acceptance:verify
 
       - name: Publish mandatory signed packaged desktop acceptance evidence
-        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
+        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64' && (steps.desktop-acceptance.outcome == 'success' || steps.desktop-acceptance.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-desktop-acceptance-signed-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
