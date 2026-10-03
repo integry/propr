@@ -1,12 +1,11 @@
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
-import { isManagedAgentConfigPath } from '@propr/shared';
+import { isManagedAgentConfigPath, type ModelReasoningLevel } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions, type TokenUsage } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
-import type { ModelReasoningLevel } from '@propr/shared';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -59,10 +58,6 @@ function resolveAntigravityEvidenceConflict(stdoutModel: string | undefined, tra
         if (stdout.model !== transcript.model || (stdout.effort && transcript.effort && stdout.effort !== transcript.effort)) return `Conflicting Antigravity model identities: stdout reported "${stdoutModel}" but transcript reported "${transcriptModel}"`;
     }
     return undefined;
-}
-
-function getAntigravityTranscriptRoot(): string {
-    return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
 }
 
 function formatAnalysisFailure(protocolError: string | undefined, stderr: string): string {
@@ -242,13 +237,13 @@ export class AntigravityAgent implements Agent {
     private createTransientTranscriptPath(taskId?: string): string {
         const suffix = `${Date.now().toString(36)}-${randomBytes(8).toString('hex')}`;
         const safeTaskId = taskId?.slice(-80).replace(/[^a-zA-Z0-9_.-]/g, '-') || 'run';
-        const transcriptRoot = getAntigravityTranscriptRoot();
+        const transcriptRoot = process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
         fs.mkdirSync(transcriptRoot, { recursive: true });
         return path.join(transcriptRoot, `${safeTaskId}-${suffix}.jsonl`);
     }
 
     private cleanupTransientTranscript(transcriptPath: string | undefined): void {
-        const transcriptRoot = path.resolve(getAntigravityTranscriptRoot());
+        const transcriptRoot = path.resolve(process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT);
         if (!transcriptPath || !path.resolve(transcriptPath).startsWith(`${transcriptRoot}${path.sep}`)) return;
         try { fs.rmSync(transcriptPath, { force: true }); }
         catch { /* best-effort cleanup */ }
@@ -279,10 +274,7 @@ export class AntigravityAgent implements Agent {
         }
     }
 
-    private mergeTokenUsage(
-        primary: TokenUsage,
-        fallback?: TokenUsage
-    ): TokenUsage {
+    private mergeTokenUsage(primary: TokenUsage, fallback?: TokenUsage): TokenUsage {
         return {
             input_tokens: primary.input_tokens ?? fallback?.input_tokens,
             output_tokens: primary.output_tokens ?? fallback?.output_tokens,
