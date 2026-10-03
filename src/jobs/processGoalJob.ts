@@ -34,6 +34,7 @@ import {
 import { createContainerIdCallback } from './issueJobCallbacks.js';
 import {
     claimGoalAttempt,
+    closeAttemptBlockers,
     createGoalExecutionControl,
     fencedGoal,
     fencedGoalUpdate,
@@ -330,7 +331,7 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     };
 }
 
-export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
     const { goal, agent, githubToken, worktree, pendingInput, checkpointFeedback } = prepared;
     const freshSession = !goal.session_id;
     // Native goal providers (Codex, Claude) steer the durable delivery context
@@ -403,6 +404,16 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
         }),
         goalAttemptLabel(data.generation, data.claimId),
     );
+}
+
+export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+    try {
+        return await runPreparedGoal(data, prepared);
+    } finally {
+        // The provider process is gone, so no question or approval it raised is still waiting.
+        await closeAttemptBlockers(data).catch(error => logger.warn(
+            { goalId: data.goalId, error: (error as Error).message }, 'Could not close goal attempt blockers'));
+    }
 }
 
 async function acknowledgeWholeSessionInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {

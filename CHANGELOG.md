@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Goal blockers**: goals that need you — a confirmed pause, or an explicit
+  provider question or approval — now appear as durable, evidence-backed
+  blockers in the goal console, the goal list, the dashboard's attention list,
+  `get_goal` (`goal.attention`), the new MCP `list_goal_attention`,
+  `get_current_activity` and `propr goal attention`. Each names its prompt or
+  reason, when it was observed and the supported action that resolves it.
+  Codex App Server questions are answered with the next goal input; approvals
+  are reported but never approved by ProPR. Claude and Antigravity expose no
+  structured question or approval signal, so only pauses are reported for them.
+  `pendingInput.waitingForOperator` is now true for any open blocker, with
+  `reason` set to `provider_question` or `provider_approval` alongside the
+  existing `paused_awaiting_resume_or_input`.
+
 - **Sequential MCP epics**: `implement_plan` now queues exactly the selected
   issues in publication order for `useEpic: true`, starts one model on the head,
   and advances durably after merge. Optional `epicAdvanceOn: "terminal"` also

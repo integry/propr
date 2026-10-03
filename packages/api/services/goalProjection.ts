@@ -13,6 +13,7 @@ import {
   publicGoalAttachments,
   stripGoalAttachmentSection,
 } from './goalAttachmentService.js';
+import { goalAttention } from './goalAttention.js';
 
 export interface GoalProjectionRow {
   goal_id: string;
@@ -238,6 +239,7 @@ export async function serializeGoal(
       .whereIn('state', ['pending', 'processing']).first('checkpoint_id')
     : null;
   const timing = goalTiming(row);
+  const attention = await goalAttention(db, row.owner_id, row);
   const optionalInputs: { inputs?: GoalInputProjection[] } = includeInputs ? { inputs } : {};
   const projection = {
     id: row.goal_id,
@@ -284,5 +286,7 @@ export async function serializeGoal(
   // Preview redaction rewrites runtime paths inside arbitrary strings, so it runs before the
   // already-sanitized operator bodies are attached: the timeline must show what was sent verbatim.
   const redacted = redactVisualPreviewValue(projection) as typeof projection;
-  return { ...redacted, ...optionalInputs };
+  // Attention is the shared projection every surface reads; it is attached as projected so the
+  // console, MCP and the attention listing show the same blocker text.
+  return { ...redacted, attention, ...optionalInputs };
 }

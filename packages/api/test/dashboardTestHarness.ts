@@ -3,6 +3,7 @@ import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import type { LiveDetailsSnapshot } from '../routes/dashboardLiveActivity.js';
+import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
 
 export const NOW = new Date('2026-09-23T12:00:00.000Z');
 export const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -20,9 +21,16 @@ export async function createDashboardTestDatabase(): Promise<Knex> {
     table.text('objective');
     table.string('desired_state');
     table.string('result_state');
+    table.string('agent_type');
+    table.timestamp('pause_confirmed_at');
+    table.boolean('resume_requested');
+    table.integer('run_generation');
+    table.string('run_claim');
+    table.string('session_id');
     table.timestamp('created_at');
     table.timestamp('updated_at');
   });
+  await createGoalBlockers(database);
   await database.schema.createTable('tasks', table => {
     table.string('task_id').primary();
     table.string('repository').notNullable();

@@ -541,3 +541,4 @@ export * from './analyticsTimeframe.js';
 // Browser-safe checkpoint parsing shared by goal workers and readable timelines.
 export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
+export * from './goalBlockers.js';

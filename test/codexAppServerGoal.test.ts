@@ -69,10 +69,18 @@ class FakeConnection {
     throw new Error(`Unexpected request ${method}`);
   }
 
+  serverRequests: Array<Record<string, unknown>> = [];
+  resolvedServerRequests: Array<number | string> = [];
+  responses: Array<{ id: number | string; result: Record<string, unknown> }> = [];
   notify(): void {}
+  takeServerRequests(): Array<Record<string, unknown>> { return this.serverRequests.splice(0); }
+  takeResolvedServerRequests(): Array<number | string> { return this.resolvedServerRequests.splice(0); }
+  respond(id: number | string, result: Record<string, unknown>): void { this.responses.push({ id, result }); }
   get agentMessageCursor(): number { return this.summarySequence; }
   agentMessagesAfter(cursor: number): string[] { return cursor < this.summarySequence ? this.summaryParts.slice(-1) : []; }
   completeGoal(): void { this.goalStatus = 'complete'; }
+  get observingTurn(): boolean { return Boolean(this.turnResolver); }
+  finishTurn(): void { this.turnResolver?.({ params: { turn: { status: 'completed' } } }); }
   declareCheckpoint(value: Record<string, unknown>): void { this.nextAgentMessage = JSON.stringify(value); }
   takeStartedTurn(): string | null { return this.started.shift() ?? null; }
   discardStartedTurn(): void {}
@@ -359,4 +367,54 @@ test('app server child is cleaned up even when final output publication fails', 
     output: { close: async () => { assert.equal(ended, true); throw failure; } },
   } as unknown as AppServerConnection;
   await assert.rejects(AppServerConnection.prototype.close.call(connection), error => error === failure);
+});
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+
+test('Codex provider requests become blockers, inputs answer questions, and only provider evidence resolves them', async () => {
+  const connection = new FakeConnection(false, 'before', false, 'active', true);
+  const { control } = controls();
+  const reports: Array<Record<string, unknown>> = [];
+  const resolutions: string[] = [];
+  const delivered: string[] = [];
+  let pending: Array<{ id: string; message: string }> = [];
+  control.load = async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: pending, controlGeneration: 0 });
+  control.markInputDelivered = async id => { delivered.push(id); pending = pending.filter(input => input.id !== id); };
+  control.reportBlocker = async report => { reports.push(report as unknown as Record<string, unknown>); };
+  control.resolveBlocker = async (key, resolution) => { resolutions.push(`${key}=${resolution}`); };
+  const run = runGoalProtocol(connection as never, options(control), 'gpt-5.6');
+  await waitFor(() => connection.observingTurn, 'the native turn');
+
+  connection.serverRequests.push(
+    { id: 0, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', turnId: 'turn-native', itemId: 'item-1',
+      isBlocking: true, questions: [{ id: 'db', header: 'Database', question: 'Which database?', isOther: false, isSecret: false, options: null }] } },
+    { id: 1, method: 'item/commandExecution/requestApproval', params: { kind: 'command', threadId: 'thread-1',
+      turnId: 'turn-native', itemId: 'item-2', startedAtMs: 1, environmentId: null, command: 'npm publish', reason: null } },
+  );
+  await waitFor(() => reports.length === 2, 'both blockers to be reported');
+  assert.deepEqual(reports.map(report => report.category), ['question', 'approval']);
+  assert.deepEqual(connection.responses, [], 'nothing is answered or approved on the operator\'s behalf');
+
+  pending = [{ id: 'input-1', message: 'Postgres' }];
+  await waitFor(() => delivered.includes('input-1'), 'the answer to be delivered');
+  assert.deepEqual(connection.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
+  assert.equal(connection.requests.some(request => request.method === 'turn/steer'
+    && request.params.clientUserMessageId === 'input-1'), false, 'the answer is the reply, not a second steer');
+  assert.deepEqual(resolutions, [], 'sending an answer alone resolves nothing');
+
+  connection.resolvedServerRequests.push(0);
+  await waitFor(() => resolutions.length === 1, 'the provider to resolve the question');
+  assert.deepEqual(resolutions, ['codex:thread-1:turn-native:item-1:user-input=provider_resolved']);
+
+  connection.finishTurn();
+  await run;
+  assert.deepEqual(resolutions.slice(1),
+    ['codex:thread-1:turn-native:item-2:item/commandExecution/requestApproval=turn_ended']);
+  assert.equal(connection.responses.length, 1, 'the approval was never answered by ProPR');
 });

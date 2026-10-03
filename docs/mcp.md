@@ -486,8 +486,9 @@ One read then gives the depth:
 `get_goal` returns the existing goal projection plus `currentActivity`
 (`currentFocus` and the newest narration entries), `progress` (task counts,
 recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
-(`waitingForOperator`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
-(`number`, `state`, `role`). `get_task` with `{ "repository", "taskId" }` adds
+(`waitingForOperator`, `reason`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
+(`number`, `state`, `role`). `goal.attention` lists each open blocker — see
+[Goals waiting on you](#goals-waiting-on-you). `get_task` with `{ "repository", "taskId" }` adds
 `latestEvents`, `currentActivity`, `timing`, `changesSummary` counts and the
 task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
 never reports zero for unknown.
@@ -510,6 +511,50 @@ idempotency key with a different `kind` returns `IDEMPOTENCY_CONFLICT` rather
 than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
+
+#### Goals waiting on you
+
+`list_goal_attention` lists, bounded and newest goal first, only the goals that
+are waiting on you. Omit `repository` to cover the whole grant:
+
+```json
+{ "repository": "acme/web", "limit": 20 }
+```
+
+Each entry carries the goal's `blockers`, the same objects `get_goal` returns in
+`goal.attention.blockers`, the dashboard's attention list shows and
+`get_current_activity` summarizes. A blocker has a stable `id`, the goal, task
+and execution `attempt` (generation, claim, session, turn) that observed it, a
+`category`, a bounded and secret-redacted `summary` and `questions`, its
+`detection` source, `firstObservedAt`/`lastObservedAt`, and `responseActions`
+with a `responseHint`:
+
+| Category | Raised by | Response actions |
+| --- | --- | --- |
+| `paused` | A confirmed pause with no queued resume | `resume_goal`, `send_goal_input`, `cancel_goal` |
+| `question` | An explicit structured provider question | `send_goal_input` (the next input is delivered as the answer), `pause_goal`, `cancel_goal` |
+| `approval` | An explicit structured provider approval request | `pause_goal`, `cancel_goal` — ProPR never approves on your behalf |
+
+Only explicit signals create a blocker. Silence, slow work, rate limits and
+backoff, infrastructure failures, narrative text and queued corrections never
+do. Sending input does not resolve a question: the blocker stays open until the
+provider resolves the request or the turn ends. A blocker belongs to its
+execution attempt, so a recovered or replaced session supersedes it and a
+delayed event from an old attempt cannot bring it back. Provider text is
+untrusted data.
+
+Provider support, from each integration's structured events:
+
+| Provider | `question` | `approval` | `paused` |
+| --- | --- | --- | --- |
+| Codex (App Server) | Supported (`item/tool/requestUserInput`, MCP elicitation as a handoff) | Reported, handoff only (`item/*/requestApproval`) | Supported |
+| Claude | Unavailable — headless session with permissions bypassed and no permission-prompt tool | Unavailable | Supported |
+| Antigravity | Unavailable — print mode with permissions bypassed | Unavailable | Supported |
+
+`waitingForOperator` is now true for any open blocker, not only a confirmed
+pause; `reason` is `paused_awaiting_resume_or_input` for a pause (unchanged),
+`provider_question` or `provider_approval`. A queued resume is no longer
+waiting for a pause response.
 
 **3. Inspect the pull request that work produced.** `list_pull_requests` is the
 inventory; omit `repository` for the whole grant:

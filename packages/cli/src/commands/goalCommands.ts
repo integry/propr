@@ -21,6 +21,7 @@ import {
   createGoal,
   getGoalCapabilities,
   getGoalDetail,
+  listGoalAttention,
   listGoalInputs,
   listGoals,
   pauseGoal,
@@ -30,6 +31,7 @@ import {
   setGoalModel,
   type CreateGoalRequest,
   type Goal,
+  type GoalAttentionEntry,
   type GoalCapabilityAgent,
   type GoalDetail,
   type GoalInput,
@@ -37,6 +39,7 @@ import {
   type GoalListState,
   type GoalMutationResult,
 } from "../api/goals.js";
+import type { GoalBlocker, GoalBlockerAction } from "@propr/shared";
 import { resolveTextInput } from "./taskCommands.js";
 
 /** Version of every `propr goal ... --json` document. Bump only on breaking shape changes. */
@@ -153,6 +156,7 @@ function goalDetailJson(goal: Goal, detail: GoalDetail): Record<string, unknown>
       elapsedSeconds: detail.progress?.elapsedSeconds ?? null,
     },
     pendingInput: detail.pendingInput,
+    attention: goal.attention ?? null,
     failure: goal.failureReason || transitions.some((transition) => transition.state === "failed")
       ? {
         reason: goal.failureReason,
@@ -162,6 +166,30 @@ function goalDetailJson(goal: Goal, detail: GoalDetail): Record<string, unknown>
     checkpoint: goal.checkpoint ?? detail.progress?.checkpoint ?? null,
     pullRequests: detail.pullRequests ?? [],
   };
+}
+
+const BLOCKER_LABELS: Record<GoalBlocker["category"], string> = {
+  question: "asked a question",
+  approval: "waiting for an approval",
+  paused: "paused and waiting for you",
+};
+
+/** The CLI command that performs each supported response action. */
+function blockerActionCommand(goalId: string, action: GoalBlockerAction): string {
+  return action === "send_input" ? `propr goal input ${goalId} "<answer>"` : `propr goal ${action} ${goalId}`;
+}
+
+/** Provider text is untrusted data: printed on its own line, never interpreted. */
+function printBlockers(goalId: string, blockers: GoalBlocker[], indent = "  "): void {
+  for (const blocker of blockers) {
+    console.log(`${indent}- ${BLOCKER_LABELS[blocker.category]}${blocker.firstObservedAt ? ` (since ${formatDate(blocker.firstObservedAt)})` : ""}`);
+    if (blocker.category !== "paused") console.log(`${indent}  ${blocker.summary}`);
+    for (const question of blocker.questions.length > 1 ? blocker.questions : []) {
+      console.log(`${indent}  * ${question.question}${question.options.length ? ` [${question.options.join(" | ")}]` : ""}`);
+    }
+    console.log(`${indent}  ${blocker.responseHint}`);
+    for (const action of blocker.responseActions) console.log(`${indent}  > ${blockerActionCommand(goalId, action)}`);
+  }
 }
 
 function inputJson(input: GoalInput): Record<string, unknown> {
@@ -261,7 +289,13 @@ function printGoalDetail(goal: Goal, detail: GoalDetail): void {
 
   const pending = detail.pendingInput;
   if (pending) {
-    if (pending.waitingForOperator) console.log("Waiting:     paused and waiting for you (resume or send input)");
+    const blockers = goal.attention?.blockers ?? [];
+    if (blockers.length > 0) {
+      console.log("Waiting:     the goal needs you");
+      printBlockers(goal.id, blockers, "             ");
+    } else if (pending.waitingForOperator) {
+      console.log("Waiting:     paused and waiting for you (resume or send input)");
+    }
     if (pending.undeliveredInputs > 0) console.log(`Inputs:      ${pending.undeliveredInputs} queued, not yet delivered`);
   }
 
@@ -794,6 +828,51 @@ next --offset (JSON: "nextOffset"; null on the last page).
         if (page.nextOffset !== null) console.log(`More goals: --offset ${page.nextOffset}`);
       } catch (error) {
         fail(error, { command: "list", json: options.json });
+      }
+    });
+
+  goal
+    .command("attention")
+    .description("List goals waiting on you: confirmed pauses and explicit provider questions or approvals")
+    .option("-p, --project <project>", "Filter by repository (owner/repo)")
+    .option("-l, --limit <limit>", "Page size (1-100)", "20")
+    .option("--offset <offset>", "Number of goals to skip", "0")
+    .option("-j, --json", "Output the version 1 goal-attention JSON document")
+    .addHelpText("after", `
+Only explicit signals are listed: a confirmed pause, or a structured provider
+question or approval. Silence, slow work and queued corrections never are.
+Each blocker names the supported command that resolves it. Sending input queues
+an answer; the blocker clears only when the provider confirms it.
+`)
+    .action(async (options: { project?: string; limit: string; offset: string; json?: boolean }) => {
+      try {
+        const repository = resolveOptionalProject(options);
+        const limit = parseBoundedInteger(options.limit, "--limit", 1, 100);
+        const offset = parseNonNegativeInteger(options.offset, "--offset");
+        const page = await listGoalAttention({ repository, offset, limit });
+        if (options.json) {
+          printJson({
+            kind: "goal-attention",
+            filters: { repository: repository ?? null },
+            offset: page.offset,
+            limit: page.limit,
+            nextOffset: page.nextOffset,
+            goals: page.goals,
+          });
+          return;
+        }
+        if (page.goals.length === 0) {
+          console.log("No goals are waiting on you.");
+          return;
+        }
+        for (const entry of page.goals as GoalAttentionEntry[]) {
+          console.log(`${entry.goalId}  ${entry.repository}  ${truncate(entry.title ?? "", 48)}`);
+          printBlockers(entry.goalId, entry.blockers);
+        }
+        console.log("");
+        if (page.nextOffset !== null) console.log(`More goals: --offset ${page.nextOffset}`);
+      } catch (error) {
+        fail(error, { command: "attention", json: options.json });
       }
     });
 

@@ -30,6 +30,18 @@ test('goal recovery repairs pause crashes and failed-before-claim jobs while pre
     table.text('failure_reason'); table.timestamp('completed_at'); table.timestamp('updated_at');
     table.timestamp('task_reconciled_at');
   });
+  await database.schema.createTable('goal_blockers', table => {
+    table.string('blocker_id'); table.string('goal_id'); table.string('owner_id'); table.string('repository');
+    table.string('task_id'); table.integer('run_generation'); table.string('run_claim'); table.string('provider');
+    table.string('category'); table.string('source'); table.string('request_key'); table.text('summary');
+    table.text('response_actions'); table.string('status'); table.string('resolution'); table.timestamp('resolved_at');
+  });
+  const blocker = (goalId: string, claim: string) => ({
+    blocker_id: `blocker-${goalId}`, goal_id: goalId, owner_id: 'owner', repository: 'acme/web', task_id: `goal-${goalId}`,
+    run_generation: 0, run_claim: claim, provider: 'codex', category: 'question', source: 'codex_app_server:item/tool/requestUserInput',
+    request_key: `codex:${goalId}`, summary: 'Which database?', response_actions: '["send_input"]', status: 'open',
+  });
+  await database('goal_blockers').insert([blocker('resumable', 'claim-3'), blocker('unsafe', 'unsafe-claim'), blocker('live', 'live-claim')]);
   const old = new Date(Date.now() - 10_000).toISOString();
   const common = {
     repository: 'acme/web', started_at: old, desired_state: 'running', result_state: null,
@@ -89,6 +101,12 @@ test('goal recovery repairs pause crashes and failed-before-claim jobs while pre
 
   assert.deepEqual(await recoverNonterminalGoals(options), { recovered: 3, failedClosed: 1, skippedLive: 1 });
   assert.deepEqual(await recoverNonterminalGoals(options), { recovered: 0, failedClosed: 0, skippedLive: 1 });
+  // A replaced or failed session cannot leave its blockers waiting; a live attempt keeps its own.
+  const blockers = Object.fromEntries((await database('goal_blockers').select('goal_id', 'status', 'resolution'))
+    .map(row => [row.goal_id, `${row.status}:${row.resolution ?? ''}`]));
+  assert.deepEqual(blockers, {
+    resumable: 'superseded:superseded_by_attempt', unsafe: 'superseded:goal_terminal', live: 'open:',
+  });
   assert.equal(calls.length, 2);
   const resumed = calls.find(call => call.data.taskId === 'goal-resumable')!;
   assert.equal(resumed.id, 'goal-resumable-4');

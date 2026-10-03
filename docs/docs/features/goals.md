@@ -51,6 +51,7 @@ Goals are launched and managed from the Web UI, the [ProPR CLI](./propr-cli.md#g
 | Progress, current activity, checkpoints, pending input, PRs | `propr goal inspect <id>` | `get_goal` |
 | Send a correction or question | `propr goal input <id>` | `send_goal_input` |
 | Earlier inputs and their delivery state | `propr goal inputs <id>` | `list_goal_inputs` |
+| Goals waiting on you, and what resolves each | `propr goal attention` | `list_goal_attention` |
 | Pause, resume, cancel | `propr goal pause\|resume\|cancel <id>` | `pause_goal`, `resume_goal`, `cancel_goal` |
 | Change the model | `propr goal model <id> <model>` | `set_goal_model` |
 
@@ -67,6 +68,26 @@ propr goal inspect <goal-id> --json   # final PR in goal.finalPr and goal.pullRe
 ```
 
 Mutations accept an idempotency key, so retrying a create or input never starts a second goal or queues a duplicate correction.
+
+## When a goal needs you
+
+A goal that is waiting on you shows a **Needs you** panel in the goal console, a badge in the goal list, an item in the dashboard's *Needs attention* list, and an entry in `propr goal attention` and MCP `list_goal_attention`. All of them read one shared projection, so they agree on what is needed, why, and which action resolves it.
+
+Only explicit signals count:
+
+- **Paused** — the goal confirmed a pause and no resume is queued. Resume it, or send input.
+- **Question** — the provider sent a structured question. Send goal input to answer; ProPR delivers it as the reply. The question clears when the provider confirms it, not when you send.
+- **Approval** — the provider sent a structured approval request. ProPR never approves for you; pause or cancel the goal to hand it off.
+
+Silence, slow work, rate limits, infrastructure failures, the agent's narration and corrections you have queued never raise one. Blockers are tied to the execution attempt that raised them: if the worker recovers the goal onto a new session, or the goal finishes, they are closed and cannot reappear.
+
+| Provider | Questions | Approvals |
+| --- | --- | --- |
+| Codex | Supported | Reported; pause or cancel to hand off |
+| Claude | Not available (headless, permissions bypassed) | Not available |
+| Antigravity | Not available (print mode, permissions bypassed) | Not available |
+
+Confirmed pauses are reported for every provider.
 
 ## Antigravity goals
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import type { GoalJobData } from '@propr/core';
 import {
+    closeGoalBlockers,
     db,
     getEventPublisher,
     executeDockerCommand,
@@ -107,6 +108,17 @@ async function enqueue(options: {
     }, { jobId: goalJobId(goal.goal_id, generation), attempts: 1 });
 }
 
+/** Blockers are already fenced out by the projection; a failed close must not stall recovery. */
+async function supersedeBlockers(
+    database: Knex,
+    goalId: string,
+    scope: Parameters<typeof closeGoalBlockers>[2],
+    resolution: Parameters<typeof closeGoalBlockers>[3],
+): Promise<void> {
+    await closeGoalBlockers(database, goalId, scope, resolution).catch(error => logger.warn(
+        { goalId, error: (error as Error).message }, 'Could not close goal blockers during recovery'));
+}
+
 async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): Promise<boolean> {
     const changed = await database('goals').where({
         goal_id: goal.goal_id,
@@ -122,6 +134,7 @@ async function failIdentityLessAttempt(database: Knex, goal: RecoverableGoal): P
     // Recovery is the only writer that knows this attempt is unrecoverable, so
     // it owns announcing the failure a console would otherwise poll to find.
     if (changed === 1) {
+        await supersedeBlockers(database, goal.goal_id, {}, 'goal_terminal');
         await publishGoalTransition({ previous: goal, next: { ...goal, result_state: 'failed' } });
     }
     return changed === 1;
@@ -156,6 +169,8 @@ async function recoverClaimedAttempt(
         updated_at: database.fn.now(),
     });
     if (changed !== 1) return false;
+    // The recovered attempt replaces the lost session; its blockers cannot be answered any more.
+    await supersedeBlockers(database, goal.goal_id, { exceptClaim: claimId }, 'superseded_by_attempt');
     // A paused goal that recovery resumes is a state change no other writer
     // reports: the operator asked for it, but only this sweep knows it landed.
     await publishGoalTransition({
