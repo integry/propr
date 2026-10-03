@@ -1,8 +1,23 @@
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
-import { checkAndUpdateDraftStatus } from '../services/taskPlanningService.js';
 import { resolvePlanIssueDefaultSelection } from './planIssueDefaults.js';
+// Load the planning facade lazily: it also exports the epic queue, which depends on this module.
+async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
+    const planning = await import('../services/taskPlanningService.js');
+    await planning.checkAndUpdateDraftStatus(draftId);
+}
+
+async function notifyEpicQueue(draftId: string, issueNumber: number, status: PlanIssueStatus): Promise<void> {
+    try {
+        const { isTerminalStatus } = await import('../webhook/statusMachine.js');
+        if (!isTerminalStatus(status)) return;
+        const { onPlanIssueStatusChanged } = await import('../services/taskPlanning/epicExecutionQueue.js');
+        await onPlanIssueStatusChanged(draftId, issueNumber, status);
+    } catch (error) {
+        logger.warn?.({ draftId, issueNumber, status, error: (error as Error).message }, 'Failed to notify epic queue');
+    }
+}
 
 /**
  * Status enum for plan issues.
@@ -222,15 +237,10 @@ export async function updatePlanIssue(
             updated_at: db.fn.now()
         };
 
-        if (updates.pr_number !== undefined) updateData.pr_number = updates.pr_number;
-        if (updates.status !== undefined) updateData.status = updates.status;
-        if (updates.agent_alias !== undefined) updateData.agent_alias = updates.agent_alias;
-        if (updates.model_name !== undefined) updateData.model_name = updates.model_name;
-        if (updates.followup_count !== undefined) updateData.followup_count = updates.followup_count;
-        if (updates.task_id !== undefined) updateData.task_id = updates.task_id;
-        if (updates.run_ultrafix !== undefined) updateData.run_ultrafix = updates.run_ultrafix;
-        if (updates.ultrafix_goal !== undefined) updateData.ultrafix_goal = updates.ultrafix_goal;
-        if (updates.ultrafix_max_cycles !== undefined) updateData.ultrafix_max_cycles = updates.ultrafix_max_cycles;
+        for (const field of ['pr_number', 'status', 'agent_alias', 'model_name', 'followup_count',
+            'task_id', 'run_ultrafix', 'ultrafix_goal', 'ultrafix_max_cycles'] as const) {
+            if (updates[field] !== undefined) updateData[field] = updates[field];
+        }
 
         await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
@@ -239,6 +249,8 @@ export async function updatePlanIssue(
         const issue = await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
             .first();
+
+        if (issue && updates.status !== undefined) await notifyEpicQueue(draftId, issueNumber, updates.status);
 
         logger.info({ draftId, issueNumber, updates }, 'Updated plan issue');
 
@@ -329,7 +341,8 @@ export async function updatePlanIssueStatus(
         // Fetch the plan issue to get the draft_id for status sync
         const planIssue = await db('plan_issues')
             .where({ repository, issue_number: issueNumber })
-            .select('draft_id')
+            .select('draft_id', 'issue_number')
+            .orderBy('id', 'desc')
             .first();
 
         await db('plan_issues')
@@ -338,6 +351,8 @@ export async function updatePlanIssueStatus(
                 status,
                 updated_at: db.fn.now()
             });
+
+        if (planIssue) await notifyEpicQueue(planIssue.draft_id, issueNumber, status);
 
         logger.info({ repository, issueNumber, status }, 'Updated plan issue status');
 
@@ -413,7 +428,8 @@ export async function updatePlanIssueByPR(
         const planIssue = updates.status !== undefined
             ? await db('plan_issues')
                 .where({ repository, pr_number: prNumber })
-                .select('draft_id')
+                .select('draft_id', 'issue_number')
+                .orderBy('id', 'desc')
                 .first()
             : null;
 
@@ -427,6 +443,8 @@ export async function updatePlanIssueByPR(
         await db('plan_issues')
             .where({ repository, pr_number: prNumber })
             .update(updateData);
+
+        if (planIssue && updates.status !== undefined) await notifyEpicQueue(planIssue.draft_id, planIssue.issue_number, updates.status);
 
         logger.info({ repository, prNumber, updates }, 'Updated plan issue by PR');
 

@@ -287,19 +287,21 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
   const documentedTokens = new Set([...guide.matchAll(/`([a-z_]+)`/g)].map(match => match[1]));
   const nonToolTokens = new Set([
     'accepted', 'active', 'activity', 'all', 'approved', 'artifacts', 'auth', 'authorization', 'blockers',
-    'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'cycle',
-    'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'draft', 'error', 'execute', 'executed',
-    'executing', 'failed', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
-    'instructions', 'internal', 'iss', 'issue_created', 'items', 'kind', 'labels', 'limit', 'manage',
+    'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'creation', 'cursor',
+    'cycle', 'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
+    'executed', 'executing', 'failed', 'false', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
+    'instructions', 'internal', 'iss', 'issue_created', 'issues', 'items', 'kind', 'labels', 'limit', 'manage',
     'mcp_access_log', 'mcp_operations', 'mcp_records', 'merge', 'merged', 'message', 'model', 'models',
-    'name', 'node', 'none', 'notifications', 'null', 'number', 'offset', 'outcome', 'page', 'path', 'plan', 'plan_issues',
+    'name', 'node', 'none', 'notifications', 'null', 'number', 'offset', 'orchestrate', 'outcome', 'page', 'path', 'plan', 'plan_issues',
     'posted', 'pr_created', 'precondition', 'private_key_jwt', 'progress', 'prompt', 'propr', 'publish',
     'queue', 'queued', 'read', 'refining', 'repositories', 'repository', 'resource', 'retryable', 'review',
-    'role', 'running', 'section', 'since', 'stage', 'state', 'status', 'stopped', 'submitted', 'success', 'true',
+    'role', 'running', 'section', 'since', 'stage', 'started', 'state', 'status', 'stopped', 'submitted', 'success', 'true',
     'timing', 'token_endpoint_auth_methods_supported', 'tool', 'transport', 'truncated', 'tunnel_id',
     'ultrafix', 'unknown', 'until', 'validation', 'workflow',
     // Comment attachment fields and selectors returned by get_pull_request_discussion.
     'alt', 'attachments', 'fetchable', 'image', 'index', 'issue', 'type', 'video',
+    // Per-model review receipt fields returned by review_pull_request with model.
+    'reviews', 'not_posted', 'rejected', 'url',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',

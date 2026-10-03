@@ -15,7 +15,12 @@ The delivered capabilities are:
    messaging for a running goal.
 3. **Pull request surface** — PR inventory with ProPR task/goal correlation,
    newest-first discussion, ordinary follow-up comments, model routing by
-   managed label, and starting and stopping ultrafix.
+   managed label, and starting and stopping ultrafix. `review_pull_request`
+   accepts an explicit reviewing `model`, or a list of models that fans out one
+   independent review per model at the same head. Its receipt has one entry
+   per model (`commentId`, `url`, `resolvedHead`, `state`), and it never
+   changes the PR's model routing. An invalid alias rejects the call with a
+   per-model error in `details.rejectedModels`.
 4. **Access observability** — a durable MCP access log, its admin read and
    stats API behind `instance.manage_settings`, and per-app last-used activity
    on the connected-apps page. The web UI reads the log on the **MCP Log** page

@@ -49,7 +49,8 @@ describe('buildConflictResolutionPrompt', () => {
         assert.ok(prompt.includes('`feature-branch`'));
         assert.ok(prompt.includes('`src/index.ts`'));
         assert.ok(prompt.includes('`src/utils.ts`'));
-        assert.ok(prompt.includes('/tmp/worktree/test'));
+        assert.ok(prompt.includes('/home/node/workspace'));
+        assert.ok(!prompt.includes('/tmp/worktree/test'));
         assert.ok(prompt.includes('test-owner/test-repo'));
         assert.ok(prompt.includes('DO NOT commit'));
         assert.ok(prompt.includes('Do not inspect or repair .git permissions'));

@@ -32,11 +32,8 @@ sudo chown -R "$USER" /srv/propr
 cd /srv/propr
 ```
 
-If you run your own GitHub App (the advanced auth path — the default hosted ProPR App needs no key), place its private key there and restrict it:
-
-```bash
-chmod 600 your-app-private-key.pem
-```
+For the own-App path, `propr github-app create` writes the private key into this
+runtime directory with mode `0600`. The default ProPR Connect path needs no key.
 
 ## Public URLs
 
@@ -62,14 +59,19 @@ Set `GITHUB_EVENT_INTAKE_MODE=polling` to have ProPR pull labeled issues from th
 
 ### Advanced: Your Own GitHub App Webhook
 
-If you run your own GitHub App and want GitHub to deliver events directly to a public endpoint, set:
+Create and install a correctly configured App:
 
 ```bash
-GITHUB_EVENT_INTAKE_MODE=direct_webhook
-GH_WEBHOOK_SECRET=generate-a-strong-webhook-secret
+propr github-app create --root /srv/propr --public-url https://propr.example.com
+# Over SSH, add --no-browser and follow the portable form / paste-back instructions.
+propr start --root /srv/propr --restart
 ```
 
-`GH_WEBHOOK_SECRET` is mandatory **for this mode only**: the API refuses to start in `direct_webhook` mode without a secret, because unsigned webhook traffic would be rejected anyway. (It is ignored by the default routing mode.)
+The command configures the webhook, secret, private key, installation, GitHub
+login, and `GITHUB_EVENT_INTAKE_MODE=direct_webhook`. Add `--org your-org` for
+organization ownership or `--allow-workflow-changes` to let agents edit CI files.
+See [Create your own App](../operations/github-auth.md#create-your-own-app) for
+permissions, SSH instructions, and manual registration.
 
 The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx. Use an exact-match `location = /webhook` so the proxy does not also forward prefix siblings such as `/webhookadmin` or `/webhook-test` to the API:
 
@@ -79,7 +81,7 @@ location = /webhook {
 }
 ```
 
-In your GitHub App settings, set the webhook URL to `https://propr.example.com/webhook` and the webhook secret to the same `GH_WEBHOOK_SECRET` value.
+`propr github-app create` sets the webhook URL to `https://propr.example.com/webhook` and saves GitHub's matching signing secret automatically.
 
 ## Start The Stack
 
@@ -90,7 +92,7 @@ sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/
 propr setup --root /srv/propr  # guided, re-runnable bootstrap
 ```
 
-Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **ProPR Connect (default ProPR GitHub App)** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. Setup is safe to re-run after editing public URLs or switching intake mode: it skips already-satisfied steps and never overwrites `.env` or deletes data.
+Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **ProPR Connect (default ProPR GitHub App)** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. For your own App, choose **Custom GitHub App → Create it for me**, or **I already have one** to enter existing credentials. Setup is safe to re-run after editing public URLs or switching intake mode: it skips already-satisfied steps and never overwrites `.env` or deletes data.
 
 ### Manual / Advanced Flow
 
@@ -104,7 +106,7 @@ propr check
 propr start --no-tui
 ```
 
-Configure GitHub auth in `.env` before `propr check`: by default the shared, hosted App via `propr relay enroll` (no private key), with your own App (`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) as the advanced option. See [GitHub Authentication](../operations/github-auth.md) for the full walkthrough.
+Configure GitHub auth in `.env` before `propr check`: by default the shared, hosted App via `propr relay enroll` (no private key), or run `propr github-app create --public-url https://propr.example.com` for your own App. See [GitHub Authentication](../operations/github-auth.md) for the full walkthrough.
 
 `propr status`, `propr stop`, and `propr start --restart` manage the running stack. Prefer a container-only host? Use the launcher below instead.
 

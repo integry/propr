@@ -25,6 +25,7 @@
 # This compose file is intended for development environments.
 services:
   redis:
+    restart: unless-stopped
     image: redis:alpine
     ports:
       # Expose Redis for PR preview environments to share sessions
@@ -39,6 +40,7 @@ services:
       - propr-net
 
   daemon:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -68,6 +70,7 @@ services:
       - propr-net
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -120,6 +123,7 @@ services:
       - propr-net
 
   indexing-worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -163,6 +167,7 @@ services:
       - propr-net
 
   web-ui:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: propr-ui/Dockerfile
@@ -176,6 +181,7 @@ services:
       - propr-net
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node

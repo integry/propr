@@ -9,9 +9,6 @@ import {
   getEventPublisher,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  GOAL_LAUNCH_STRATEGIES,
-  MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   buildNativeGoalCommand,
   buildNativeGoalContext,
   hasNativeGoalControl,
@@ -34,9 +31,18 @@ import {
   type MulterFile,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import { GOAL_CREATION_CONTRACT, validateGoalCreationOptions } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
+import {
+  GOAL_LIST_STATES,
+  applyGoalLifecycleFilter,
+  inspectGoalDetail,
+  isGoalListState,
+  type GoalListState,
+} from '../services/goalReadProjection.js';
+import { goalInputPage } from '../mcp/goalTaskDetail.js';
 import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
@@ -64,7 +70,6 @@ interface GoalRoutesDeps {
   getOctokit?: typeof getAuthenticatedOctokit;
 }
 
-const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const cannedInputs = {
   done: "What's done?",
   left: "What's left?",
@@ -161,29 +166,6 @@ async function findOwnedGoal(db: Knex, req: Request, res: Response): Promise<Goa
   return row ?? null;
 }
 
-function validateCreateBody(body: Record<string, unknown>): string | null {
-  if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
-  if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
-  if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
-  if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
-  if (typeof body.model !== 'string' || !body.model) return 'model is required';
-  if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
-  if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
-  if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
-  return validateCreateCheckpointInterval(body);
-}
-
-function validateCreateCheckpointInterval(body: Record<string, unknown>): string | null {
-  if (body.checkpointIntervalMinutes == null) return null;
-  if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
-  if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
-    || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
-    || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
-    return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
-  }
-  return null;
-}
-
 function buildCreateIdentity(
   body: Record<string, unknown>,
   attachmentIdentity: readonly Record<string, unknown>[] = [],
@@ -223,6 +205,41 @@ async function findExistingGoalCreation(options: {
     throw new IdempotencyConflictError('Idempotency-Key was already used for a different operation or payload');
   }
   return existing ?? null;
+}
+
+function queryValue(query: Record<string, unknown>, name: string): string | undefined {
+  const value = query[name];
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parsePage(
+  query: Record<string, unknown>,
+  bounds: { defaultLimit: number; maxLimit: number },
+): { offset: number; limit: number } | { error: string } {
+  const rawOffset = queryValue(query, 'offset');
+  const rawLimit = queryValue(query, 'limit');
+  const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+  const limit = rawLimit === undefined ? bounds.defaultLimit : Number(rawLimit);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) return { error: 'offset must be an integer from 0 to 100000' };
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > bounds.maxLimit) return { error: `limit must be an integer from 1 to ${bounds.maxLimit}` };
+  return { offset, limit };
+}
+
+const GOAL_LIST_MAX_LIMIT = 200;
+const GOAL_LIST_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function parseGoalListQuery(query: Record<string, unknown>): {
+  repository?: string; state?: GoalListState; offset: number; limit: number; paginated: boolean;
+} | { error: string } {
+  const repository = queryValue(query, 'repository');
+  if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) return { error: 'repository must be in owner/repo format' };
+  const state = queryValue(query, 'state');
+  if (state !== undefined && !isGoalListState(state)) return { error: `state must be one of ${GOAL_LIST_STATES.join(', ')}` };
+  const page = parsePage(query, { defaultLimit: GOAL_LIST_MAX_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
+  if ('error' in page) return page;
+  const paginated = queryValue(query, 'offset') !== undefined || queryValue(query, 'limit') !== undefined;
+  return { repository, state: state === 'all' ? undefined : state, ...page, paginated };
 }
 
 type AgentSelection = { agent: Agent } | { error: string; status: number };
@@ -341,27 +358,56 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         objectiveMaxCharacters: capability.goalCapable ? nativeGoalObjectiveMaxLength(capability.agentType) : null,
       };
     });
-    res.json({ agents });
+    res.json({ agents, creation: GOAL_CREATION_CONTRACT });
   };
 
   const list = async (req: Request, res: Response) => {
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
-    const rows = await timeApiStage('sql.goals.list', () =>
-      deps.db<GoalRow>('goals').where({ owner_id: ownerId }).orderBy('updated_at', 'desc').limit(200)
-    );
+    const listQuery = parseGoalListQuery(req.query ?? {});
+    if ('error' in listQuery) return void res.status(400).json({ error: listQuery.error });
+    const { repository, state, offset, limit, paginated } = listQuery;
+    const rows = await timeApiStage('sql.goals.list', () => {
+      const query = deps.db<GoalRow>('goals').where({ owner_id: ownerId });
+      if (repository) query.where('repository', repository);
+      applyGoalLifecycleFilter(query, state);
+      // Explicit pages use the immutable creation order so a goal updated mid-walk is neither
+      // skipped nor repeated; the unpaginated dashboard read keeps its recency order.
+      if (paginated) query.orderBy('created_at', 'desc').orderBy('goal_id', 'desc');
+      else query.orderBy('updated_at', 'desc');
+      return query.offset(offset).limit(limit);
+    });
     const goals = await timeApiStage('goals.projection', () =>
       Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row, { includeInputs: false })))
     );
     const media = await (deps.previewReader ?? previewMediaReader).project(rows.map(goalPreviewSource), 3);
     res.json({ goals: goals.map((goal, index) => ({ ...goal,
       ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
-    })) });
+    })), offset, limit, nextOffset: rows.length === limit ? offset + limit : null });
   };
 
   const get = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (row) res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+  };
+
+  /** The goal projection plus the shared narration/progress/checkpoint/pending-input detail MCP `get_goal` reads. */
+  const detail = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    res.json({
+      goal: await serializeGoal(deps.db, deps.redisClient, row),
+      detail: await inspectGoalDetail({ db: deps.db, redisClient: deps.redisClient }, row),
+    });
+  };
+
+  /** Bounded, newest-first operator input history with persisted delivery state. */
+  const inputs = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
+    if ('error' in page) return void res.status(400).json({ error: page.error });
+    res.json({ ...await goalInputPage(deps.db, row, page), offset: page.offset, limit: page.limit });
   };
 
   const previews = async (req: Request, res: Response) => {
@@ -392,7 +438,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     try { body = requestBody(req); } catch (error) {
       return void res.status(400).json({ error: (error as Error).message });
     }
-    const validationError = validateCreateBody(body);
+    const validationError = validateGoalCreationOptions(body);
     if (validationError) return void res.status(400).json({ error: validationError });
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
@@ -1053,7 +1099,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, get, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
+    capabilities, list, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
     requireGoalTaskOwnership,
   };
 }

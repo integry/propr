@@ -18,6 +18,7 @@ const processCommentEvent = mock.fn(async () => undefined);
 
 await mock.module('@propr/core', {
     namedExports: {
+        getEpicExecutionQueue: mock.fn(async () => null),
         findIssueSubmission,
         findPlanIssueByRepoAndNumber: mock.fn(async () => undefined),
         generateCompletionComment: mock.fn(async () => 'Completed.'),

@@ -13,7 +13,6 @@ import {
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
-import { handleMergedPRNextIssueTrigger } from './planIssueTrigger.js';
 import { notificationService } from '../services/notificationService.js';
 import type {
     IssuesEvent,
@@ -201,14 +200,8 @@ async function handleEpicPROpened(
     }
 }
 
-/**
- * Handles triggering the next pending issue after a PR is merged.
- * Checks if epic PR has pending checks and defers if necessary.
- */
 // Re-export from statusMachine for backwards compatibility
 export { determinePRStatusUpdate } from './statusMachine.js';
-// Re-export from planIssueTrigger for backwards compatibility
-export { triggerNextPendingIssue } from './planIssueTrigger.js';
 
 /**
  * Checks for repository renames by inspecting the PR body for issue references
@@ -278,25 +271,77 @@ export async function handlePlanPRUpdate(
         const planIssue = await findOrLinkPlanIssue(payload, repository, prNumber, log);
         if (!planIssue) return;
 
-        const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
+        const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status)
+            ?? await recoverPRClosedPlanIssue(payload, repository, planIssue, log);
 
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
             log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
         }
-
-        // When a PR is merged, trigger the next pending issue in the same plan
-        // Check both newStatus and current status to handle race conditions
-        const isMerged = newStatus === PlanIssueStatus.MERGED
-            || (action === 'closed' && payload.pull_request.merged === true && planIssue.status === PlanIssueStatus.MERGED);
-        if (isMerged && planIssue.draft_id) {
-            await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
-        } else if (isMerged) {
-            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
-        }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
     }
+}
+
+/**
+ * A closed, unmerged PR records its plan issue as closed while the source issue
+ * stays open. Reopening or merging that same PR may recover the issue; a manual
+ * source-issue close stays closed. GitHub's current PR state is the evidence, so
+ * a delayed reopened event cannot revive a PR that has been closed again.
+ */
+async function recoverPRClosedPlanIssue(
+    payload: PullRequestEvent,
+    repository: string,
+    planIssue: NonNullable<Awaited<ReturnType<typeof findPlanIssueByRepoAndPR>>>,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<PlanIssueStatus | null> {
+    const recoverable = payload.action === 'reopened' || (payload.action === 'closed' && payload.pull_request.merged === true);
+    if (!recoverable || planIssue.status !== PlanIssueStatus.CLOSED || planIssue.pr_number !== payload.pull_request.number) return null;
+    try {
+        const [owner, repo] = repository.split('/');
+        const octokit = await getAuthenticatedOctokit();
+        const [{ data: pr }, { data: issue }] = await Promise.all([
+            octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: planIssue.pr_number }),
+            octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: planIssue.issue_number }),
+        ]);
+        const mergedAt = pr.merged_at ? Date.parse(pr.merged_at) : null;
+        if (issue.state === 'closed') {
+            if (mergedAt === null || !pr.merge_commit_sha) return null;
+            if (!await sourceIssueClosedByMerge(octokit, { owner, repo, issueNumber: planIssue.issue_number, mergeCommitSha: pr.merge_commit_sha })) return null;
+        }
+        const recovered = mergedAt !== null ? PlanIssueStatus.MERGED : pr.state === 'open' ? PlanIssueStatus.UNDER_REVIEW : null;
+        if (recovered) log.info({ repository, prNumber: planIssue.pr_number, issueNumber: planIssue.issue_number, recovered }, 'Recovered plan issue closed by its unmerged PR');
+        return recovered;
+    } catch (error) {
+        log.warn({ repository, prNumber: planIssue.pr_number, error: (error as Error).message }, 'Could not verify closed plan issue recovery');
+        return null;
+    }
+}
+
+/** Verify the cause of the current closure, rather than its ordering relative to a merge. */
+async function sourceIssueClosedByMerge(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    params: { owner: string; repo: string; issueNumber: number; mergeCommitSha: string }
+): Promise<boolean> {
+    const { owner, repo, issueNumber, mergeCommitSha } = params;
+    // GitHub records the closing commit on the issue's closed event.
+    let lastStateEvent: { event: string; commit_id: string | null; created_at: string } | undefined;
+    for (let page = 1; ; page++) {
+        const { data: events } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/events', {
+            owner, repo, issue_number: issueNumber, per_page: 100, page,
+        });
+        for (const event of events) {
+            if (event.event === 'closed' || event.event === 'reopened') lastStateEvent = event;
+        }
+        if (events.length < 100) break;
+    }
+    if (lastStateEvent?.event !== 'closed' || lastStateEvent.commit_id !== mergeCommitSha) return false;
+    // Re-read after the event lookup: the evidence must still describe the current
+    // closure before releasing the merged-only queue obligation.
+    const { data: currentIssue } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+        owner, repo, issue_number: issueNumber,
+    });
+    return currentIssue.state === 'closed' && currentIssue.closed_at === lastStateEvent.created_at;
 }
 
 /**
