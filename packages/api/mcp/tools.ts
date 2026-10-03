@@ -7,7 +7,7 @@ import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import type { InstancePermission } from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
-import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue } from '@propr/core';
+import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue, UNSTARTED_EPIC_REASON } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
@@ -588,6 +588,16 @@ export function addPlanImplementationTool(
         useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
       const queued = new Set(dispatch.queued);
       const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallelExecutionId?: string }> => {
+        const previous = await getEpicExecutionQueue(args.planId, { database: tx });
+        if (previous?.status === 'cancelled' && previous.blockedReason === UNSTARTED_EPIC_REASON) {
+          const records = await tx('mcp_records').where({ kind: 'issue_execution' })
+            .whereIn('id', previous.issues.map(number => `${args.planId}:${number}`));
+          for (const record of records) {
+            const claim = policy.oauth.store.unseal<{ executionId?: string }>(record.value);
+            if (claim.executionId === previous.executionId) await tx('mcp_records')
+              .where({ kind: 'issue_execution', id: record.id, value: record.value }).delete();
+          }
+        }
         for (const number of args.issues) {
           const id = `${args.planId}:${number}`;
           const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
@@ -604,6 +614,9 @@ export function addPlanImplementationTool(
           const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,
             autoMerge: args.autoMerge, ready: false, headStartedAt: Date.now() }, { database: tx });
+          await tx('mcp_records').where({ kind: 'issue_execution' })
+            .whereIn('id', args.issues.map((number: number) => `${args.planId}:${number}`))
+            .update({ value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id, executionId: queue.executionId }) });
           return { executionId: queue.executionId };
         }
         if (args.useEpic) {
@@ -639,7 +652,12 @@ export function addPlanImplementationTool(
         }
       } catch (error) {
         const ownedExecutionId = executionId ?? claimed.parallelExecutionId;
-        if (ownedExecutionId && !dispatchAttempted) await cancelEpicExecutionQueue(args.planId, ownedExecutionId);
+        if (ownedExecutionId) {
+          const failed = await getEpicExecutionQueue(args.planId);
+          if (failed?.executionId === ownedExecutionId && executionId) {
+            await cancelUnstartedEpicExecutionQueue(failed).catch(() => false);
+          } else if (!dispatchAttempted) await cancelEpicExecutionQueue(args.planId, ownedExecutionId);
+        }
         throw error;
       }
       if (dispatch.mode === 'sequential') {
@@ -648,7 +666,7 @@ export function addPlanImplementationTool(
           await callWorkflow(planner.updateIssue, principal, { params: { id: args.planId, issueNumber: String(number) },
             body: { agent_alias: args.models[0].agent_alias, model_name: args.models[0].model_name, syncEpicLabels: true } });
         }
-        await readyEpicExecutionQueue(args.planId);
+        await readyEpicExecutionQueue(args.planId, executionId);
       }
       return { status: 202, data: { planId: args.planId, issues: args.issues, executionMode: dispatch.mode,
         ...(executionId ? { executionId } : {}),

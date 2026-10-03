@@ -19,13 +19,22 @@ let epicPR: { number: number; labels: string[] } | null = null;
 let epicLookups = 0;
 let epicLabelFailure = false;
 let queuedLabelFailure = false;
+let initialEpicFailure = false;
+let beforeAuth: (() => Promise<void>) | undefined;
+let afterIssueRead: (() => Promise<void>) | undefined;
+let afterIssueLoad: (() => Promise<void>) | undefined;
 let afterEpicLookup: (() => Promise<void>) | undefined;
 const auth = await import('../../core/src/auth/githubAuth.js');
 await mock.module('../../core/src/auth/githubAuth.js', { namedExports: { ...auth,
   getAuthenticatedOctokit: async () => {
+    const hook = beforeAuth; beforeAuth = undefined; await hook?.();
     return { request: async (route: string, input: Record<string, unknown>) => {
       const number = Number(input.issue_number);
-      if (route.startsWith('GET') && route.includes('/issues/')) return { data: { labels: issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'] } };
+      if (route.startsWith('GET') && route.includes('/issues/')) {
+        const labels = issueLabels.get(number) ?? ['llm-old', 'base-old', 'auto-merge'];
+        const hook = afterIssueRead; afterIssueRead = undefined; await hook?.();
+        return { data: { labels } };
+      }
       if (route.startsWith('POST') && route.includes('/labels')) {
         if (number === 20 && queuedLabelFailure) throw new Error('Queued selector update unavailable');
         if (number === 999 && epicLabelFailure) throw new Error('Epic labeling unavailable');
@@ -54,9 +63,20 @@ await mock.module('../../core/src/utils/eventPublisher.js', { namedExports: { ..
 } });
 const core = await import('@propr/core');
 await mock.module('@propr/core', { namedExports: { ...core,
+  generateCompletionComment: async () => 'Completed.',
   loadAgents: async () => [{ enabled: true, alias: 'test', supportedModels: ['model'] }],
   loadSyntheticAgents: async () => [],
-  ensureEpicPR: async () => ({ success: true, labelName: 'base-epic', prNumber: 999 }),
+  ensureEpicPR: async () => {
+    if (initialEpicFailure) throw new Error('GitHub unavailable');
+    return { success: true, labelName: 'base-epic', prNumber: 999 };
+  },
+  getPlanIssuesByDraft: async (id: string) => {
+    const snapshot = await core.getPlanIssuesByDraft(id);
+    const hook = afterIssueLoad;
+    afterIssueLoad = undefined;
+    await hook?.();
+    return snapshot;
+  },
   getIssueQueue: async () => ({ add: async (_name: string, job: { number: number }) => { dispatches.push(job.number); } }),
 } });
 const registry = core.AgentRegistry.getInstance();
@@ -100,7 +120,7 @@ const deps = { db: database, policy: { repository: async () => {
   if (dispatches.length === 0 && prepareFailureNumber === 0) throw new Error('prepare failed');
   if (prepareFailureNumber !== undefined && dispatches.at(-1) === prepareFailureNumber) throw new Error('prepare failed');
 }, requireScope: () => {},
-  oauth: { store: { seal: (value: unknown) => JSON.stringify(value) } },
+  oauth: { store: { seal: (value: unknown) => JSON.stringify(value), unseal: (value: string) => JSON.parse(value) } },
 } as unknown as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } satisfies ToolDeps;
 const planner = {
   implementIssue: async (req: Request, res: Response) => {
@@ -135,6 +155,7 @@ beforeEach(async () => {
   await database('plan_issues').insert([10, 20, 30, 40].map(issue_number => ({ draft_id: planId, repository, issue_number, status: 'pending' })));
   dispatches.length = 0; headSelections.length = 0; updates.length = 0; githubCalls.length = 0; labelCalls.length = 0; issueLabels.clear();
   for (const number of [10, 20, 30, 40]) issueLabels.set(number, ['llm-old', 'base-old', 'auto-merge']);
+  initialEpicFailure = false; afterIssueLoad = undefined; beforeAuth = undefined; afterIssueRead = undefined;
   dispatchFailure = false; configFailure = false; dispatchFailureNumber = undefined; prepareFailureNumber = undefined;
   epicPR = null; epicLookups = 0; epicLabelFailure = false; queuedLabelFailure = false; afterEpicLookup = undefined;
 });
@@ -243,12 +264,13 @@ test('multiple models fail before any claim, queue or GitHub call', async () => 
   assert.equal((await database('mcp_records')).length, 0);
 });
 
-test('head dispatch failure retains the unready queue for uncertain outcome recovery', async () => {
+test('head rejection before labels cancels the queue and permits a fresh MCP claim', async () => {
   dispatchFailure = true;
   await assert.rejects(run(), /dispatch failed/);
-  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
-  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, false);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
   assert.deepEqual(updates, []);
+  dispatchFailure = false;
+  assert.equal((await run({ idempotencyKey: 'epic-request-retry' })).status, 202);
 });
 
 test('selector failure keeps the durable queue unready for recovery', async () => {
@@ -694,7 +716,7 @@ for (const useEpic of [true, false]) {
         throw new Error('uncertain dispatch');
       } }), /uncertain dispatch/);
     assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
-    assert.equal((await core.getEpicExecutionQueue(planId))?.ready, !useEpic);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.ready, false);
   });
 }
 
@@ -706,4 +728,129 @@ test('preparation failure under an existing epic cannot cancel its finalization 
   const queue = await core.getEpicExecutionQueue(planId);
   assert.equal(queue?.executionId, original?.executionId);
   assert.equal(queue?.status, 'active');
+});
+
+
+test('UI epic rejected before publishing labels can be retried', async () => {
+  await database('task_drafts').where({ draft_id: planId }).update({ context_config: JSON.stringify({ useEpic: true }) });
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  initialEpicFailure = true;
+  assert.equal((await startFromUI(10)).status, 500);
+  initialEpicFailure = false;
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+  assert.equal((await startFromUI(10)).status, 200);
+});
+
+test('reconciliation cancels a never-started MCP queue and releases its claims for retry', async () => {
+  configFailure = true;
+  await assert.rejects(run(), /selector sync failed/);
+  await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'pending', agent_alias: null, model_name: null });
+  issueLabels.set(10, []);
+  await database('epic_execution_queues').where({ draft_id: planId }).update({ created_at: 0 });
+  await core.reconcileEpicExecutionQueues();
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+  configFailure = false;
+  assert.equal((await run({ idempotencyKey: 'epic-request-retry' })).status, 202);
+});
+
+test('a competing auto-merge request loses its claim before any successor configuration', async () => {
+  const { enqueueAutoMergeImplementation } = await import('../routes/planIssueEpicQueue.js');
+  afterIssueLoad = async () => { await run({ issues: [10, 20], autoMerge: false }); };
+  await enqueueAutoMergeImplementation({ draftId: planId, issueNumber: 30, repository, contextConfig: null, implement: async () => undefined });
+  assert.deepEqual(issueLabels.get(20)?.sort(), ['base-epic', 'llm-model']);
+  assert.deepEqual((await core.getEpicExecutionQueue(planId))?.issues, [10, 20]);
+  // A stale label added out of band must still be removed by dispatch authority.
+  issueLabels.set(20, [...issueLabels.get(20)!, 'auto-merge']);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  assert.equal(issueLabels.get(20)?.includes('auto-merge'), false);
+});
+
+for (const partial of [{ agent_alias: null, model_name: null }, { agent_alias: 'test', model_name: null }, { agent_alias: null, model_name: 'model' }, { agent_alias: null, model_name: 'other' }]) {
+  test(`setup recovery resolves successor defaults independently of the head: ${JSON.stringify(partial)}`, async () => {
+    const defaultAgent = mock.method(registry, 'getDefaultAgent', () => registry.getAgentByAlias('test'));
+    try {
+      await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ agent_alias: 'test', model_name: 'other', status: 'processing' });
+      await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).update(partial);
+      issueLabels.set(10, ['base-epic', 'llm-test~other', 'AI']);
+      await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10, 20], ready: false }, { now: () => 0 });
+      await core.reconcileEpicExecutionQueues();
+      const successor = await database('plan_issues').where({ draft_id: planId, issue_number: 20 }).first();
+      assert.equal(successor.agent_alias, 'test');
+      assert.equal(successor.model_name, partial.model_name ?? 'model');
+      assert.equal((await core.getEpicExecutionQueue(planId))?.ready, true);
+      assert.equal(issueLabels.get(20)?.includes(`llm-test~${partial.model_name ?? 'model'}`), true);
+    } finally { defaultAgent.mock.restore(); }
+  });
+}
+
+test('successful no-change head releases its successor with auto-merge disabled', async () => {
+  await mock.module('../../../src/jobs/issueJob/config.js', { namedExports: { redisClient: {} } });
+  await mock.module('../../../src/github/autoMergeOperations.js', { namedExports: { enableAutoMerge: async () => ({ success: true }) } });
+  const { handleNoCodeChanges } = await import('../../../src/jobs/issueJobPostProcessingHelpers.js');
+  await run({ issues: [10, 20], autoMerge: false });
+  await handleNoCodeChanges({ octokit: { request: async () => ({ data: {} }) } as never,
+    issueRef: { repoOwner: 'acme', repoName: 'repo', number: 10 } as never,
+    claudeResult: { success: true } as never, currentIssueData: { data: { labels: [{ name: 'AI' }] } },
+    AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', correlatedLogger: core.logger });
+  assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).first()).status, 'merged');
+  assert.equal((await core.getEpicExecutionQueue(planId))?.cursor, 1);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [20]);
+  assert.equal(issueLabels.get(20)?.includes('auto-merge'), false);
+});
+
+
+test('non-epic queue owns successors and holds advancement across configuration awaits', async () => {
+  const { enqueueAutoMergeImplementation } = await import('../routes/planIssueEpicQueue.js');
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  beforeAuth = async () => {
+    const queue = await core.getEpicExecutionQueue(planId);
+    assert.equal(queue?.ready, false);
+    await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.cursor, 0);
+    assert.equal(labelCalls.some(call => call.labels.includes('AI')), false);
+  };
+  await enqueueAutoMergeImplementation({ draftId: planId, issueNumber: 10, repository, contextConfig: null,
+    implement: async () => { await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'processing' }); } });
+  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, true);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.cursor, 1);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [20]);
+});
+
+for (const evidence of ['processing-label', 'status-changed-during-read', 'replacement'] as const) {
+  test(`never-started cancellation preserves durable work with ${evidence}`, async () => {
+    const queue = await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10, 20], ready: false });
+    if (evidence === 'processing-label') issueLabels.set(10, ['AI']);
+    if (evidence === 'status-changed-during-read') afterIssueRead = async () => {
+      await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'processing' });
+    };
+    if (evidence === 'replacement') afterIssueRead = async () => {
+      await core.cancelEpicExecutionQueue(planId, queue.executionId);
+      await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10, 20], ready: false });
+    };
+    assert.equal(await core.cancelUnstartedEpicExecutionQueue(queue), false);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
+  });
+}
+
+test('retry only releases MCP claims belonging to the cancelled execution', async () => {
+  const queue = await core.createEpicExecutionQueue({ draftId: planId, repository, issues: [10, 20], ready: false });
+  await core.cancelUnstartedEpicExecutionQueue(queue);
+  await database('mcp_records').insert({ kind: 'issue_execution', id: `${planId}:20`, owner_id: 'user',
+    value: JSON.stringify({ operationId: 'other', executionId: 'other-execution' }), expires_at: null });
+  await assert.rejects(run({ issues: [10, 20] }), error => error instanceof McpError && error.code === 'IMPLEMENTATION_ALREADY_REQUESTED');
+  assert.equal((await database('mcp_records').where({ kind: 'issue_execution', id: `${planId}:20` }).first()).value,
+    JSON.stringify({ operationId: 'other', executionId: 'other-execution' }));
+});
+
+test('non-epic configuration failure is recovered without restoring the draft epic branch', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  queuedLabelFailure = true;
+  assert.equal((await startFromUI(10, true, false)).status, 500);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, false);
+  queuedLabelFailure = false;
+  await database('epic_execution_queues').where({ draft_id: planId }).update({ created_at: 0 });
+  await core.reconcileEpicExecutionQueues();
+  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, true);
+  assert.equal(issueLabels.get(20)?.some(label => label.startsWith('base-')), false);
+  assert.equal(issueLabels.get(20)?.includes('auto-merge'), true);
 });

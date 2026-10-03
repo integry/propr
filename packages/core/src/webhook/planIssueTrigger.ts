@@ -179,6 +179,16 @@ export async function labelPlanIssueForProcessing({
 
     const octokit = await getAuthenticatedOctokit();
 
+    if (!autoMerge) {
+        try {
+            await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
+                owner, repo, issue_number: issueNumber, name: 'auto-merge'
+            });
+        } catch (error) {
+            if ((error as { status?: number }).status !== 404) throw error;
+        }
+    }
+
     // Add the processing labels to trigger the issue
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
         owner,

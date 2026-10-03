@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import {
+    getEpicExecutionQueue,
     findIssueSubmission,
     findPlanIssueByRepoAndNumber,
     generateCompletionComment,
@@ -245,7 +246,9 @@ async function markNoChangePlanIssueMerged(
         }
 
         const labels = currentIssueData.data.labels.map((label) => label.name);
-        if (!labels.includes('auto-merge')) {
+        const queue = await getEpicExecutionQueue(planIssue.draft_id);
+        const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
+        if (!labels.includes('auto-merge') && !queued) {
             log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
             return;
         }

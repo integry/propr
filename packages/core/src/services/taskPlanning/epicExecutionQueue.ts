@@ -101,9 +101,10 @@ export function decideEpicAdvance(policy: EpicAdvancePolicy, status: PlanIssueSt
 }
 
 /** Marks initial selector synchronization complete before progression is allowed. */
-export async function readyEpicExecutionQueue(draftId: string): Promise<void> {
-  await db('epic_execution_queues').where({ draft_id: draftId, status: 'active' })
-    .update({ ready: true, blocked_reason: null, updated_at: Date.now() });
+export async function readyEpicExecutionQueue(draftId: string, executionId?: string): Promise<void> {
+  const owned = db('epic_execution_queues').where({ draft_id: draftId, status: 'active' });
+  if (executionId) owned.where({ execution_id: executionId });
+  await owned.update({ ready: true, blocked_reason: null, updated_at: Date.now() });
   await startEpicQueueHead(draftId);
 }
 
@@ -111,6 +112,29 @@ export async function cancelEpicExecutionQueue(draftId: string, executionId?: st
   const query = db('epic_execution_queues').where({ draft_id: draftId, status: 'active' });
   if (executionId) query.where({ execution_id: executionId });
   await query.update({ status: 'cancelled', updated_at: Date.now() });
+}
+
+/** Fresh external evidence plus a guarded pending status prove that setup never dispatched. */
+export const UNSTARTED_EPIC_REASON = 'Initial queue head never started; implementation may be requested again.';
+export async function cancelUnstartedEpicExecutionQueue(queue: EpicExecutionQueue,
+  { database = db, now = Date.now }: EpicQueueDependencies = {}): Promise<boolean> {
+  if (queue.parallel || queue.ready || queue.cursor !== 0 || queue.status !== 'active') return false;
+  const issueNumber = queue.issues[0];
+  const issue = await database('plan_issues').where({ draft_id: queue.draftId, issue_number: issueNumber }).first('status');
+  if (issue?.status !== PlanIssueStatus.PENDING) return false;
+  const { getPrimaryProcessingLabels } = await import('../../daemon/configLoader.js');
+  const configuredLabels = getPrimaryProcessingLabels();
+  const processingLabels = configuredLabels.length ? configuredLabels : ['AI'];
+  const octokit = await getAuthenticatedOctokit();
+  const [owner, repo] = queue.repository.split('/');
+  const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
+  const labels = response.data.labels.map(label => typeof label === 'string' ? label : label.name);
+  if (processingLabels.some(label => labels.includes(label))) return false;
+  // Recheck persisted evidence and execution authority after the GitHub await.
+  return Boolean(await database('epic_execution_queues')
+    .where({ draft_id: queue.draftId, execution_id: queue.executionId, status: 'active', ready: false, cursor: 0 })
+    .whereExists(database('plan_issues').select('id').where({ draft_id: queue.draftId, issue_number: issueNumber, status: 'pending' }))
+    .update({ status: 'cancelled', blocked_reason: UNSTARTED_EPIC_REASON, updated_at: now() }));
 }
 
 /** Only a matching head may move the cursor. Other observers reload the winning state. */
@@ -260,32 +284,36 @@ async function repairQueueSetup(queue: EpicExecutionQueue): Promise<boolean> {
       .filter((label): label is string => !!label);
     const configured = await db('plan_issues').where({ draft_id: queue.draftId, issue_number: issueNumber }).first('agent_alias', 'model_name');
     // UI queues retain each issue's selection. MCP persists its shared selection when claiming issues.
-    const issueSelection = configured?.agent_alias && configured?.model_name ? configured : selection;
+    const { resolvePlanIssueDefaultSelection } = await import('../../config/planIssueDefaults.js');
+    const issueSelection = configured?.agent_alias && configured?.model_name ? configured : await resolvePlanIssueDefaultSelection(configured);
+    if (!issueSelection.agent_alias || !issueSelection.model_name) return false;
     const issueModelLabel = issueSelection.agent_alias === selection.agent_alias && issueSelection.model_name === selection.model_name
       ? modelLabel : await queuedModelLabel(issueSelection);
     if (!issueModelLabel) return false;
     const remove = existing.filter(label => (label.startsWith('base-') && label !== epicLabel)
       || (label.startsWith('llm-') && label !== issueModelLabel) || (!queue.autoMerge && label === 'auto-merge'));
+    const { updatePlanIssue } = await import('../../config/planIssueManager.js');
+    const current = await getEpicExecutionQueue(queue.draftId);
+    if (current?.executionId !== queue.executionId || current.status !== 'active' || current.ready) return false;
+    await updatePlanIssue(queue.draftId, issueNumber, issueSelection);
     const result = await safeUpdateLabels({ octokit, owner, repo, issueNumber,
       logger: logger.withCorrelation(`epic-setup-repair-${queue.draftId}`) }, remove,
-    [epicLabel, issueModelLabel, ...(queue.autoMerge ? ['auto-merge'] : [])]);
+    [...(epicLabel ? [epicLabel] : []), issueModelLabel, ...(queue.autoMerge ? ['auto-merge'] : [])]);
     if (!result.success) throw new Error(result.errors.join('; '));
-    const { updatePlanIssue } = await import('../../config/planIssueManager.js');
-    await updatePlanIssue(queue.draftId, issueNumber, issueSelection);
   }
   return true;
 }
 
 async function verifiedQueueHeadSelectors(queue: EpicExecutionQueue,
   selection: { agent_alias: string; model_name: string }, labels: (string | undefined)[]
-): Promise<{ epicLabel: string; modelLabel: string } | null> {
+): Promise<{ epicLabel?: string; modelLabel: string } | null> {
   const draft = await db('task_drafts').where({ draft_id: queue.draftId }).first('context_config');
   const context = typeof draft?.context_config === 'string' ? JSON.parse(draft.context_config || '{}') : draft?.context_config;
-  const epicLabel = typeof context?.epicLabel === 'string' ? context.epicLabel : labels.find(label => label?.startsWith('base-'));
+  const epicLabel = queue.useEpic ? (typeof context?.epicLabel === 'string' ? context.epicLabel : labels.find(label => label?.startsWith('base-'))) : undefined;
   const modelLabel = await queuedModelLabel(selection);
   // If dispatch never established selectors, its external outcome is uncertain.
   // Do not silently create an epic or choose a default model during recovery.
-  if (!epicLabel || !modelLabel || !labels.includes(epicLabel) || !labels.includes(modelLabel)) return null;
+  if (!modelLabel || !labels.includes(modelLabel) || (queue.useEpic && (!epicLabel || !labels.includes(epicLabel)))) return null;
   return { epicLabel, modelLabel };
 }
 
@@ -330,6 +358,7 @@ export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies =
         const current = await getEpicExecutionQueue(queue.draft_id, deps);
         if (current && !current.ready && (deps.now ?? Date.now)() - current.createdAt >= RETRY_PENDING_AFTER_MS) {
           const repaired = await (deps.repairSetup ?? repairQueueSetup)(current);
+          if (!repaired && await cancelUnstartedEpicExecutionQueue(current, deps)) { reconciled++; continue; }
           await database('epic_execution_queues').where({ draft_id: queue.draft_id, execution_id: current.executionId, status: 'active', ready: false })
             .update({ ready: repaired, blocked_reason: repaired ? null : 'Initial epic dispatch did not establish model and branch labels; inspect the implementation operation before recovery.', updated_at: (deps.now ?? Date.now)() });
         }

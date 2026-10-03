@@ -22,6 +22,7 @@ const octokit = {
 
 await mock.module('@propr/core', {
     namedExports: {
+        getEpicExecutionQueue: mock.fn(async () => null),
         findIssueSubmission: mock.fn(async () => undefined),
         findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
         generateCompletionComment: mock.fn(async () => 'Completed.'),
