@@ -4,26 +4,14 @@ import { isManagedAgentConfigPath } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions, type TokenUsage } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
-import {
-    verifyWorktreeStructure,
-    verifyWorktreePostExecution,
-    setWorktreeOwnership,
-    UsageLimitError
-} from '../../claude/claudeHelpers.js';
+import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
 import type { ModelReasoningLevel } from '@propr/shared';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
-import {
-    aggregateDeltaMessages,
-    convertEventToClaudeFormat,
-    parseAntigravityJsonl,
-    filterAntigravityAnalysisEvents,
-    normalizeAntigravityModelId,
-    type AntigravityOutputEvent
-} from './utils/antigravityOutputParser.js';
+import { aggregateDeltaMessages, convertEventToClaudeFormat, parseAntigravityJsonl, filterAntigravityAnalysisEvents, normalizeAntigravityModelId, type AntigravityOutputEvent } from './utils/antigravityOutputParser.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { antigravityModelIdsMatch, antigravityReportedIdentity, getAntigravityCompatibilityRoute, toAntigravityCliModelId } from './antigravityModelIds.js';
 import { resolveAntigravityProtocolError } from './utils/antigravityProtocol.js';
@@ -33,9 +21,7 @@ import path from 'path';
 import { randomBytes } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildAntigravityDockerArgs } from './utils/antigravityDockerArgsBuilder.js';
-import {
-    readBoundedProviderOutputFile,
-} from './utils/boundedProviderOutput.js';
+import { readBoundedProviderOutputFile } from './utils/boundedProviderOutput.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -93,14 +79,6 @@ export class AntigravityAgent implements Agent {
         this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
-    private getRuntimeName(): 'antigravity' {
-        return 'antigravity';
-    }
-
-    private getCliCommand(): string {
-        return 'agy';
-    }
-
     private getHostConfigPath(): string {
         // Provider-wide environment overrides remain the compatibility path for
         // existing host credentials. ProPR-managed paths are per-agent and must
@@ -133,7 +111,7 @@ export class AntigravityAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
-                this.getRuntimeName(),
+                'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
                     taskId, streamToRedis: true, preserveOutputOnTimeout: true
@@ -388,6 +366,11 @@ export class AntigravityAgent implements Agent {
         };
     }
 
+    private logAnalysisCompletion(params: { analysisText: string; resolvedModel: string; executionTimeMs: number; antigravityTokenUsage?: TokenUsage; tokenUsage: TokenUsage; usageMetrics?: UsageTrackingMetrics | null }): void {
+        const { analysisText, resolvedModel, executionTimeMs, antigravityTokenUsage, tokenUsage, usageMetrics } = params;
+        logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: resolvedModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
+    }
+
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
@@ -404,7 +387,7 @@ export class AntigravityAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, reasoningLevel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
-                this.getRuntimeName(),
+                'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
                 this.config.alias
@@ -422,7 +405,7 @@ export class AntigravityAgent implements Agent {
                 // still report (estimated) token counts and cost, matching the
                 // executeTask path. Reported counts win when present.
                 const antigravityTokenUsage = this.resolveTokenUsage(tokenUsage, fullPrompt, analysisText, []);
-                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: resolvedModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
+                this.logAnalysisCompletion({ analysisText, resolvedModel, executionTimeMs, antigravityTokenUsage, tokenUsage, usageMetrics });
 
                 if (!suppressLlmLog) {
                     const usage = formatUsageMetrics(usageMetrics);
@@ -468,7 +451,7 @@ export class AntigravityAgent implements Agent {
         const safetyArgs = repositoryInspection
             ? '--sandbox --disable-slash-commands'
             : '--dangerously-skip-permissions';
-        return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} "$@"`].join('\n');
+        return ['set -e', `exec agy ${safetyArgs} "$@"`].join('\n');
     }
 
     private async resolveReasoningLevel(level: ModelReasoningLevel | undefined, model: string | undefined): Promise<ModelReasoningLevel> {
@@ -478,7 +461,7 @@ export class AntigravityAgent implements Agent {
     private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, nativeGoalLaunch = false, printTimeoutMs = this.timeoutMs } = params;
         const configPath = this.getHostConfigPath();
-        const runtimeName = this.getRuntimeName();
+        const runtimeName = 'antigravity';
         const dockerArgs = buildAntigravityDockerArgs({
             worktreePath, githubToken, gitMountArgs: params.gitMountArgs, modelName, issueNumber, environment,
             configEnvironment: this.config.envVars, taskId, executionType, transcriptPath,

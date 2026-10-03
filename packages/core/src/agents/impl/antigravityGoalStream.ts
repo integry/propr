@@ -135,8 +135,7 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
         if (this.identityError) return;
         if (envelope.event === 'init' && typeof envelope.conversation_id === 'string') {
             const reported = envelope.init?.model;
-            const conflict = this.model && reported && JSON.stringify(antigravityReportedIdentity(this.model)) !== JSON.stringify(antigravityReportedIdentity(reported));
-            if (conflict || (this.requestedCliModel && (!reported || !antigravityModelIdsMatch(this.requestedCliModel, reported)))) {
+            if (this.hasModelIdentityConflict(reported)) {
                 this.identityError = `Antigravity reported model "${reported}" but "${this.requestedCliModel ?? this.model}" was requested`;
                 this.result = { status: 'error', response: '' };
                 this.interrupt();
@@ -154,6 +153,11 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
             };
         }
         this.notify();
+    }
+
+    private hasModelIdentityConflict(reported: string | undefined): boolean {
+        const conflict = this.model && reported && JSON.stringify(antigravityReportedIdentity(this.model)) !== JSON.stringify(antigravityReportedIdentity(reported));
+        return Boolean(conflict || (this.requestedCliModel && (!reported || !antigravityModelIdsMatch(this.requestedCliModel, reported))));
     }
 
     private onStep(step: NonNullable<StreamEnvelope['step_update']>): void {

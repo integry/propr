@@ -19,17 +19,10 @@ export interface AntigravityLegacyUsage {
 
 // Antigravity CLI 1.1.12+ --output-format stream-json envelope types.
 export interface AntigravityStreamUsage {
-    input_tokens?: number;
-    output_tokens?: number;
-    thinking_tokens?: number;
-    cache_read_tokens?: number;
-    total_tokens?: number;
+    input_tokens?: number; output_tokens?: number; total_tokens?: number;
+    thinking_tokens?: number; cache_read_tokens?: number;
 }
-export interface AntigravityStreamInitEvent {
-    event: 'init';
-    conversation_id: string;
-    init: { model: string; cwd?: string; tools?: unknown[] };
-}
+export interface AntigravityStreamInitEvent { event: 'init'; conversation_id: string; init: { model: string; cwd?: string; tools?: unknown[] } }
 export interface AntigravityStreamStepUpdateEvent {
     event: 'step_update';
     step_update: {
@@ -47,8 +40,7 @@ export interface AntigravityStreamResultEvent {
         conversation_id: string;
         status: 'SUCCESS' | 'ERROR' | 'success' | 'error';
         response?: string;
-        duration_seconds?: number;
-        num_turns?: number;
+        duration_seconds?: number; num_turns?: number;
         usage?: AntigravityStreamUsage;
     };
 }
@@ -59,10 +51,8 @@ export type AntigravityOutputEvent = AntigravityEvent | AntigravityStreamEvent |
 export type AntigravityTerminalStatus = 'success' | 'error';
 
 export interface AntigravityParsedOutput {
-    sessionId: string | undefined;
-    conversationId: string | undefined;
-    modelUsed: string | undefined;
-    reportedModel: string | undefined;
+    sessionId: string | undefined; conversationId: string | undefined;
+    modelUsed: string | undefined; reportedModel: string | undefined;
     summary: string | undefined;
     conversationLog: AntigravityOutputEvent[];
     tokenUsage: TokenUsage;

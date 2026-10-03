@@ -260,6 +260,11 @@ class AntigravityGoalProtocol {
         return message;
     }
 
+    private isGoalComplete(segment: AntigravityGoalSegment, stop: StopState | null): boolean {
+        const result = segment.result;
+        return stop !== 'cancelled' && result?.status === 'success' && result.response.includes(ANTIGRAVITY_GOAL_COMPLETE_MARKER);
+    }
+
     /** Decide what an invocation's end means: completion, stop, failure, or the next message. */
     private async settle(
         { segment, stopRequested, interrupted, declaration, turnId }: SegmentObservation & { turnId: string },
@@ -274,7 +279,7 @@ class AntigravityGoalProtocol {
         if (segment.protocolError) return { status: 'failed', error: segment.protocolError };
         const result = segment.result;
         // A goal that finished keeps its completion unless it was cancelled.
-        if (stop !== 'cancelled' && result?.status === 'success' && result.response.includes(ANTIGRAVITY_GOAL_COMPLETE_MARKER)) {
+        if (this.isGoalComplete(segment, stop)) {
             await this.settleUndeliveredInputs(segment);
             return { status: 'completed' };
         }
