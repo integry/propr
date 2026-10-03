@@ -86,6 +86,8 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
 
   const graphqlCalls: Args[] = [];
   const restCalls: Array<{ route: string; args: Args }> = [];
+  /** Files changed between two heads, keyed by `from...to`; an unknown range is a 404 as for an unreachable commit. */
+  const comparisons = new Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>();
   const denied = new Set(['acme/forbidden']);
   const findPullRequest = (repository: string, number: number) => {
     const pull = pullRequests.find(item => item.repository === repository && item.number === number);
@@ -168,6 +170,11 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         const comment = { id: 900 + comments.length, repository, pullRequest: Number(args.issue_number), body: String(args.body), createdAt: new Date().toISOString(), author: 'fixture-user' };
         comments.push(comment);
         return { data: { id: comment.id, html_url: `https://github.com/${repository}/pull/${comment.pullRequest}#issuecomment-${comment.id}` } };
+      }
+      if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
+        const files = comparisons.get(String(args.basehead));
+        if (!files) throw Object.assign(new Error('Not Found'), { status: 404 });
+        return { data: { files } };
       }
       if (route === 'GET /repos/{owner}/{repo}/labels') {
         const all = repositoryLabels.get(repository) ?? [];
@@ -377,7 +384,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
-    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, redis: deps.redisClient as never };
+    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, redis: deps.redisClient as never };
     await verifyPullRequestWrites(writeFixture);
     await verifyModelReviews(writeFixture);
 

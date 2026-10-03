@@ -25,6 +25,7 @@ import {
   assertPullRequestOpen,
   mergeRejectedError,
 } from './pullRequestPreconditions.js';
+import { type FixReanchorReport, type FixRecord, appliedSelection, reanchorFixRecords } from './fixReanchor.js';
 import { MAX_REVIEW_MODELS, postModelReviews, resolveReviewModels, reviewModelSchema } from './reviewModels.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
@@ -138,10 +139,15 @@ async function withModelLabelLease<T>(redis: RedisClientType, repository: string
  * canonical identifiers for the posted command body. Kept out of the tool's `run`
  * so the command-agnostic posting path stays one readable sequence; every
  * rejection here names the identifiers it rejected instead of dropping them.
+ *
+ * A review of an older head is re-anchored onto `head`, as a hand-typed `/fix`
+ * is: records whose cited code was deleted since the review are reported as
+ * skipped, and the rest are posted. Only when nothing still applies is the call
+ * refused, because then there is no `/fix` left to post.
  */
 async function resolveFixSelection(
   deps: ToolDeps, principal: Parameters<McpTool['run']>[0]['principal'], args: Args, head: string,
-): Promise<ReviewFeedbackSelection> {
+): Promise<{ selection: ReviewFeedbackSelection; report: FixReanchorReport }> {
   const canonical = canonicalizeReviewFeedbackSelection({ findingIds: args.findingIds, suggestionIds: args.suggestionIds });
   // Fails closed: the schema should have caught these, but a namespace
   // mismatch (a finding id under suggestionIds) only shows up here.
@@ -151,24 +157,48 @@ async function resolveFixSelection(
   if (size > MAX_REVIEW_FEEDBACK_SELECTION) throw new McpError('INVALID_INPUT', `Select at most ${MAX_REVIEW_FEEDBACK_SELECTION} review items in one fix request.`);
   const comment = await readDiscussionComment(principal, { repository: args.repository, commentId: args.reviewCommentId, pullRequest: args.pullRequest });
   const projected = await projectDiscussionComment(deps, comment, { repository: args.repository, pullRequest: args.pullRequest, head, bodyOffset: 0 });
-  const review = projected.review as { currentFindingIds: string[]; currentSuggestionIds?: string[]; matchesCurrentHead: boolean | null } | undefined;
+  const review = projected.review as ProjectedFixReview | undefined;
   if (!review) throw new McpError('STALE_FINDINGS', 'That comment is not a parseable ProPR review, so it offers no findings or suggestions to select.', 409);
-  if (review.matchesCurrentHead === false) throw new McpError('STALE_FINDINGS', 'That review was produced for an older head. Review the current head before fixing against it.', 409);
   // Reported per identifier and per namespace. One generic message left a
   // caller unable to tell a typo from an already-consumed item, which is
   // the silent-drop behaviour this tool must not have.
-  const offeredSuggestions = review.currentSuggestionIds ?? [];
-  const unknownFindings = canonical.findingIds.filter(id => !review.currentFindingIds.includes(id));
+  const offeredFindings = review.selectableFindingIds;
+  const offeredSuggestions = review.selectableSuggestionIds;
+  const unknownFindings = canonical.findingIds.filter(id => !offeredFindings.includes(id));
   const unknownSuggestions = canonical.suggestionIds.filter(id => !offeredSuggestions.includes(id));
   if (unknownFindings.length || unknownSuggestions.length) {
     throw new McpError('STALE_FINDINGS', [
       unknownFindings.length ? `Findings not available in that review: ${unknownFindings.join(', ')}.` : '',
       unknownSuggestions.length ? `Suggestions not available in that review: ${unknownSuggestions.join(', ')}.` : '',
-      `It currently offers findings ${review.currentFindingIds.join(', ') || '(none)'} and suggestions ${offeredSuggestions.join(', ') || '(none)'}.`,
-      'They may have been addressed already, or they belong to a review of an older head.',
+      `It currently offers findings ${offeredFindings.join(', ') || '(none)'} and suggestions ${offeredSuggestions.join(', ') || '(none)'}.`,
+      'They may have been addressed already, or the review is older than the seven days /fix reads back.',
     ].filter(Boolean).join(' '), 409);
   }
-  return canonical;
+  const records: FixRecord[] = [
+    ...canonical.findingIds.map(id => {
+      const finding = review.actionableFindings.find(item => item.id === id)!;
+      return { id, kind: 'finding' as const, text: [finding.title, finding.evidence, finding.minimumCorrection].join('\n') };
+    }),
+    ...canonical.suggestionIds.map(id => {
+      const suggestion = review.suggestions.find(item => item.id === id)!;
+      return { id, kind: 'suggestion' as const, text: [suggestion.title, suggestion.description].join('\n') };
+    }),
+  ];
+  const report = await reanchorFixRecords(principal, { repository: args.repository, reviewedHead: review.reviewedHead, head }, records);
+  if (report.applied.length === 0) {
+    throw new McpError('STALE_FINDINGS', `None of the selected records still apply at head ${head}: the code they cite was removed after the review of ${review.reviewedHead}. Review the current head for fresh findings.`, 409, {
+      stage: 'precondition', details: { reviewedHead: review.reviewedHead, currentHead: head, skipped: report.skipped },
+    });
+  }
+  return { selection: appliedSelection(report), report };
+}
+
+interface ProjectedFixReview {
+  reviewedHead: string | null;
+  selectableFindingIds: string[];
+  selectableSuggestionIds: string[];
+  actionableFindings: Array<{ id: string; title: string; evidence: string; minimumCorrection: string }>;
+  suggestions: Array<{ id: string; title: string; description: string }>;
 }
 
 export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
@@ -222,6 +252,9 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         ? ' Name merge-blocking findings in findingIds and non-blocking suggestions in suggestionIds; at least one identifier is required and they may be mixed freely.'
           + ' Selecting a suggestion does not change how blockers are treated: blockers stay required, suggestions are acted on only because you asked for them.'
           + ' Unknown or mismatched identifiers are rejected rather than dropped.'
+          + ' Like a hand-typed /fix, a review of an older head is not refused: the fix is re-anchored onto the current head (returned as resolvedHead, with reviewedHead and reanchored=true).'
+          + ' Records whose cited files were all deleted since the review are reported in skipped with reason code_removed and left out of the posted command; the rest are posted and listed in applied, with touchedPaths naming cited files that changed since the review.'
+          + ' comparison=unavailable means the changes since the review could not be read, so every record was posted. The call is refused with STALE_FINDINGS only when no selected record still applies; pass expectedHead to refuse a moved head outright.'
         : '')
       + (command === 'review'
         ? ` Omit model to review with the model the pull request is routed to. Supply model as one alias, or as a list of up to ${MAX_REVIEW_MODELS} aliases to fan out one independent review per model, the same as posting one /review <model> comment per model.`
@@ -258,16 +291,16 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         // Canonical selection for the posted command body. Empty for the two
         // commands that take no identifiers, so the body composition below stays
         // a single expression.
-        const selection: ReviewFeedbackSelection = command === 'fix'
-          ? await resolveFixSelection(deps, principal, args, resolvedHead)
-          : emptyReviewFeedbackSelection();
+        const fix = command === 'fix' ? await resolveFixSelection(deps, principal, args, resolvedHead) : null;
+        const selection: ReviewFeedbackSelection = fix?.selection ?? emptyReviewFeedbackSelection();
         // Canonical upper-case identifiers on one line, instructions below it:
         // exactly the shape the worker's command parser documents, so the MCP
         // path and a hand-typed comment produce an identical fix run.
         const body = `/${command}${command === 'fix' ? ` ${formatReviewFeedbackSelection(selection)}` : ''}${command === 'ultrafix' ? ` goal=${args.goal} max=${args.maxCycles}` : ''}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
         const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
         return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, resolvedHead, headSource, state: 'posted',
-          ...(command === 'fix' ? { findingIds: selection.findingIds, suggestionIds: selection.suggestionIds } : {}),
+          ...(fix ? { findingIds: selection.findingIds, suggestionIds: selection.suggestionIds, reviewedHead: fix.report.reviewedHead, reanchored: fix.report.reanchored,
+            comparison: fix.report.comparison, applied: fix.report.applied, skipped: fix.report.skipped } : {}),
           ...(command === 'ultrafix' ? { goal: args.goal, maxCycles: args.maxCycles } : {}) } };
       } });
   }
