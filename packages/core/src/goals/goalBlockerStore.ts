@@ -6,7 +6,7 @@ import {
     normalizeGoalBlockerQuestions,
 } from '@propr/shared';
 import type { GoalBlockerReport } from '../agents/types.js';
-import { redactSecrets } from '../utils/github/logFiles.js';
+import { redactSecrets } from '../utils/github/secretRedaction.js';
 
 /**
  * Lifecycle of persisted provider blockers (`goal_blockers`).

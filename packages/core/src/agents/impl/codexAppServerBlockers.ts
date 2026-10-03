@@ -6,7 +6,7 @@ import {
     GOAL_BLOCKER_OPTION_LIMIT,
     GOAL_BLOCKER_QUESTION_LIMIT,
 } from '@propr/shared';
-import { redactSecrets } from '../../utils/github/logFiles.js';
+import { redactSecrets } from '../../utils/github/secretRedaction.js';
 import type { AgentTaskOptions, GoalBlockerReport } from '../types.js';
 import type { AppServerConnection } from './codexAppServerConnection.js';
 
