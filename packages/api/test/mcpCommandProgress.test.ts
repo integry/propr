@@ -454,6 +454,165 @@ test('an unpicked PR command becomes unknown after the pickup deadline with a re
   assert.equal(((recovered.lifecycle as { artifacts: Record<string, unknown> }).artifacts).taskId, 'late-review');
 });
 
+test('a multi-model review follows each model comment and completes when every review has finished', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'fan-out-review' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+    { model: 'claude-opus-5', commentId: 701, state: 'posted' },
+    { model: 'gpt-5.6', commentId: 702, state: 'posted' },
+    { model: 'claude-sonnet-5', state: 'not_posted', error: { code: 'STALE_HEAD' } },
+  ] } }));
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const poll = async () => {
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    return operations.project(await operations.get(principal, String(receipt.operationId)));
+  };
+  const pickUp = async (taskId: string, commentId: number, state: string, metadata: unknown = {}) => {
+    await db('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: commentId, commandCommentType: 'issue', commandMode: 'review' }) });
+    await db('task_history').insert({ task_id: taskId, state, timestamp: new Date(), metadata: JSON.stringify(metadata) });
+  };
+
+  // One model picked up and running, the other not yet: the operation runs.
+  await pickUp('opus-review', 701, 'processing');
+  const running = await poll();
+  assert.equal((running.lifecycle as { state: string }).state, 'running');
+  const runningReviews = (running.result as { reviews: Array<Record<string, unknown>> }).reviews;
+  assert.deepEqual(runningReviews.map(review => [review.model, review.taskId ?? null, review.taskState ?? null]),
+    [['claude-opus-5', 'opus-review', 'processing'], ['gpt-5.6', null, 'pending'], ['claude-sonnet-5', null, null]]);
+  assert.deepEqual((running.lifecycle as { artifacts: Record<string, unknown> }).artifacts.commentIds, [701, 702]);
+
+  // Both finish; one of them reports a failed review: the fan-out still completed.
+  await db('task_history').insert({ task_id: 'opus-review', state: 'completed', timestamp: new Date(), metadata: '{}' });
+  await pickUp('gpt-review', 702, 'completed', { reviewResults: [{ success: false, error: 'Model unavailable' }] });
+  const finished = await poll();
+  assert.equal((finished.lifecycle as { state: string }).state, 'completed');
+  const artifacts = (finished.lifecycle as { artifacts: Record<string, unknown> }).artifacts;
+  assert.deepEqual(artifacts.taskIds, ['opus-review', 'gpt-review']);
+  const finishedReviews = (finished.result as { reviews: Array<Record<string, unknown>> }).reviews;
+  assert.deepEqual(finishedReviews.map(review => review.taskState ?? null), ['completed', 'failed', null]);
+});
+
+test('a model list that posted only one review still tracks that review and its comment', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'fan-out-single-posted' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+    { model: 'claude-opus-5', commentId: 901, state: 'posted' },
+    { model: 'claude-sonnet-5', state: 'not_posted', error: { code: 'STALE_HEAD' } },
+    { model: 'gpt-5.6', state: 'not_posted', error: { code: 'STALE_HEAD' } },
+  ] } }));
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const poll = async () => {
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    return operations.project(await operations.get(principal, String(receipt.operationId)));
+  };
+
+  const waiting = await poll();
+  assert.equal((waiting.lifecycle as { artifacts: Record<string, unknown> }).artifacts.commentId, 901);
+  assert.deepEqual((waiting.result as { reviews: Array<Record<string, unknown>> }).reviews.map(review => review.taskState ?? null),
+    ['pending', null, null]);
+
+  await db('tasks').insert({ task_id: 'only-review', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+    created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: 901, commandCommentType: 'issue', commandMode: 'review' }) });
+  await db('task_history').insert({ task_id: 'only-review', state: 'processing', timestamp: new Date(), metadata: '{}' });
+  const running = await poll();
+  assert.equal((running.lifecycle as { state: string }).state, 'running');
+  assert.deepEqual((running.result as { reviews: Array<Record<string, unknown>> }).reviews.map(review => [review.taskId ?? null, review.taskState ?? null]),
+    [['only-review', 'processing'], [null, null], [null, null]]);
+
+  await db('task_history').insert({ task_id: 'only-review', state: 'completed', timestamp: new Date(), metadata: '{}' });
+  const finished = await poll();
+  assert.equal((finished.lifecycle as { state: string }).state, 'completed');
+  const artifacts = (finished.lifecycle as { artifacts: Record<string, unknown> }).artifacts;
+  assert.equal(artifacts.commentId, 901);
+  assert.deepEqual(artifacts.taskIds, ['only-review']);
+});
+
+test('a multi-model review fails only when every model review failed', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: 'fan-out-failed' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+    { model: 'claude-opus-5', commentId: 801, state: 'posted' }, { model: 'gpt-5.6', commentId: 802, state: 'posted' },
+  ] } }));
+  for (const [taskId, commentId] of [['failed-a', 801], ['failed-b', 802]] as const) {
+    await db('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: commentId, commandCommentType: 'issue', commandMode: 'review' }) });
+    await db('task_history').insert({ task_id: taskId, state: 'failed', timestamp: new Date(), metadata: '{}' });
+  }
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const projected = operations.project(row);
+  await trackExecution(deps, row, principal, projected);
+  await syncLifecycle(operations, row, projected);
+  const final = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.equal((final.lifecycle as { state: string }).state, 'failed');
+  assert.equal((final.lifecycle as { failure: { code: string } }).failure.code, 'REVIEW_FAILED');
+});
+
+test('a multi-model review stays unknown while a review may have posted without confirmation', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  for (const [key, commentId, taskState] of [['fan-out-uncertain-done', 1001, 'completed'], ['fan-out-uncertain-failed', 1002, 'failed']] as const) {
+    const receipt = await operations.run(principal, {
+      tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: key },
+    }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+      { model: 'claude-opus-5', commentId, state: 'posted' },
+      { model: 'gpt-5.6', state: 'unknown', error: { code: 'OUTCOME_UNKNOWN', cause: { code: 'UPSTREAM_UNREACHABLE' } } },
+    ] } }));
+    const taskId = `${key}-task`;
+    await db('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: commentId, commandCommentType: 'issue', commandMode: 'review' }) });
+    await db('task_history').insert({ task_id: taskId, state: taskState, timestamp: new Date(), metadata: '{}' });
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    const final = operations.project(await operations.get(principal, String(receipt.operationId)));
+    // The confirmed review settled, but the uncertain one may still be queued.
+    assert.equal(final.state, 'unknown', key);
+    assert.equal((final.lifecycle as { state: string }).state, 'unknown', key);
+    const failure = (final.lifecycle as { failure: { code: string; details: Record<string, unknown> } }).failure;
+    assert.equal(failure.code, 'OUTCOME_UNKNOWN', key);
+    assert.deepEqual(failure.details.uncertainModels, ['gpt-5.6'], key);
+    const reviews = (final.result as { reviews: Array<Record<string, unknown>> }).reviews;
+    assert.deepEqual(reviews.map(review => [review.state, review.taskState ?? null]), [['posted', taskState], ['unknown', null]], key);
+    assert.notEqual((final.result as { executionResolved?: boolean }).executionResolved, true, key);
+  }
+});
+
 test('terminal recovery replaces an obsolete pickup failure with the execution failure', async t => {
   const db = await fixture(t);
   const principal = {

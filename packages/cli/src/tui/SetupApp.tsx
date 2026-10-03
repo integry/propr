@@ -1,3 +1,4 @@
+import { createGithubApp, hasGithubAppCredentials, openGithubAppBrowser } from "../commands/githubAppCommands.js";
 /**
  * Interactive Ink view for `propr setup`.
  *
@@ -22,7 +23,7 @@
 
 import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, githubAppPublicUrl, type GithubAuthMode } from "@propr/shared";
 import type { AuthorizedInstallation } from "../api/relay.js";
 import type {
   SetupPrompts,
@@ -97,6 +98,7 @@ export class SetupBridge {
   private resolvers = new Map<number, (value: unknown) => void>();
   private rejecters = new Map<number, (error: unknown) => void>();
   private cancelled = false;
+  readonly abortController = new AbortController();
 
   private push(event: SetupUiEvent): void {
     this.history.push(event);
@@ -129,14 +131,24 @@ export class SetupBridge {
 
   // --- engine prompt primitives (return a promise the UI resolves) -------
 
-  private request<T>(make: (id: number) => SetupPrompt): Promise<T> {
+  private request<T>(make: (id: number) => SetupPrompt, signal?: AbortSignal): Promise<T> {
     // After cancellation every further prompt rejects immediately so the engine
     // unwinds instead of blocking on a view that is already gone.
     if (this.cancelled) return Promise.reject(new SetupCancelledError());
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.resolvers.set(id, resolve as (value: unknown) => void);
-      this.rejecters.set(id, reject);
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        this.resolvers.delete(id);
+        this.rejecters.delete(id);
+        cleanup();
+        this.push({ type: "prompt-done", id });
+        reject(signal!.reason);
+      };
+      this.resolvers.set(id, value => { cleanup(); resolve(value as T); });
+      this.rejecters.set(id, error => { cleanup(); reject(error); });
+      signal?.addEventListener("abort", abort, { once: true });
       this.push({ type: "prompt", prompt: make(id) });
     });
   }
@@ -151,7 +163,7 @@ export class SetupBridge {
     }));
   }
 
-  input(req: { title: string; detail?: string; defaultValue?: string; placeholder?: string; mask?: boolean }): Promise<string> {
+  input(req: { title: string; detail?: string; defaultValue?: string; placeholder?: string; mask?: boolean }, signal?: AbortSignal): Promise<string> {
     return this.request<string>((id) => ({
       id,
       kind: "input",
@@ -160,7 +172,7 @@ export class SetupBridge {
       defaultValue: req.defaultValue ?? "",
       placeholder: req.placeholder,
       mask: req.mask,
-    }));
+    }), signal);
   }
 
   select(req: { title: string; detail?: string; options: SetupPromptOption[]; defaultIndex?: number }): Promise<string> {
@@ -200,6 +212,7 @@ export class SetupBridge {
   /** Reject any in-flight prompt; further prompts reject immediately. */
   cancel(): void {
     this.cancelled = true;
+    this.abortController.abort();
     const pending = [...this.rejecters.entries()];
     this.resolvers.clear();
     this.rejecters.clear();
@@ -212,7 +225,7 @@ export class SetupBridge {
  * keeps the engine's safe-default contract: a blank input or a "keep" choice
  * leaves existing configuration untouched.
  */
-export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
+export function buildSetupPrompts(bridge: SetupBridge, createApp = createGithubApp): SetupPrompts {
   return {
     async resolveStackRoot({ currentRoot, init }): Promise<RootDecision> {
       const entered = await bridge.input({
@@ -250,7 +263,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       });
     },
 
-    async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+    async configureGithubAuth({ current, rootDir }): Promise<GithubAuthDecision> {
       // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
@@ -283,6 +296,32 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
+      }
+      const method = await bridge.select({
+        title: "Configure your own GitHub App",
+        options: [{ label: "Create it for me", value: "create" }, { label: "I already have one", value: "manual" }],
+        defaultIndex: 0,
+      });
+      if (method === "create") {
+        const force = current.mode !== "none" || hasGithubAppCredentials(rootDir);
+        if (force && !await bridge.confirm({
+          title: "Replace the current GitHub authentication?",
+          detail: "A timestamped .env backup will be created before saving the new App credentials.",
+          defaultValue: false,
+        })) return { keep: true };
+        let publicUrl: string;
+        for (;;) {
+          publicUrl = (await bridge.input({ title: "Public ProPR URL", defaultValue: "https://" })).trim();
+          try { githubAppPublicUrl(publicUrl); break; }
+          catch (error) { bridge.emitLog((error as Error).message); }
+        }
+        const org = await bridge.input({ title: "App owner organization (blank for your account)", defaultValue: "" });
+        await createApp({ root: rootDir, publicUrl, ...(force ? { force: true } : {}), org: org.trim() || undefined, browser: !process.env.SSH_CONNECTION }, { signal: bridge.abortController.signal, io: {
+          log: message => bridge.emitLog(message),
+          ask: (message, signal) => bridge.input({ title: message, mask: true }, signal),
+          open: openGithubAppBrowser,
+        } });
+        return { keep: true };
       }
       const appId = await bridge.input({ title: "GitHub App ID", defaultValue: "" });
       // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY

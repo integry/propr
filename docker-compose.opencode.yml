@@ -18,6 +18,9 @@ services:
       - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
 
   api:
+    environment:
+      # Identity must use the persistent mount, not packages/api/data.
+      - DATA_DIR=/usr/src/app/data
     # API-side mounts are read-only: the API reads saved config/auth metadata for
     # validation and image/version operations. Auth refresh happens in spawned
     # worker OpenCode agent containers, which mount the data dir read-write.

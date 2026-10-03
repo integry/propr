@@ -6,6 +6,7 @@
  * are present. It is also what bare `propr` runs.
  */
 
+import { checkGithubApp, githubAppCheckFailure } from "./githubAppApi.js";
 import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
@@ -413,7 +414,28 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
+  const githubAuth = resolveGithubAuthForCheck(fileEnv);
+  const githubAuthChecks = checkGithubAuth(fileEnv, cfg, githubAuth);
+  for (const r of githubAuthChecks) emit(r);
+  if (options.verify && githubAuth.mode === "app") {
+    if (!cfg.hostGhPrivateKey) {
+      emit({
+        name: "GitHub App API",
+        status: "warn",
+        detail: "verification skipped — no host-readable private key path is configured",
+        group: "GitHub",
+        fix: "Set HOST_GH_PRIVATE_KEY to the host path of the App's .pem file; GH_PRIVATE_KEY_PATH is resolved inside the app containers.",
+      });
+    } else if (!githubAuthChecks.some(r => r.status === "fail")) {
+      try {
+        const checks = await checkGithubApp(process.env.GH_APP_ID ?? fileEnv.GH_APP_ID,
+          process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID, readFileSync(cfg.hostGhPrivateKey, "utf8"));
+        for (const r of checks) emit({ ...r, group: "GitHub" });
+      } catch (error) {
+        emit({ ...githubAppCheckFailure(error), group: "GitHub" });
+      }
+    }
+  }
 
   // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
   // needs the right credentials before the daemon/API can serve it).
@@ -523,6 +545,19 @@ function isPlaceholder(value: string | undefined): boolean {
 const RELAY_URL_KEY = "PROPR_GH_RELAY_URL";
 const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 
+function resolveGithubAuthForCheck(env: Record<string, string>): ReturnType<typeof resolveGithubAuthMode> {
+  const val = (key: string): string | undefined => process.env[key] ?? env[key];
+  return resolveGithubAuthMode({
+    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+    ghAuthMode: val("GH_AUTH_MODE"),
+    relayUrl: val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL,
+    relayToken: val(RELAY_TOKEN_KEY),
+    appId: val("GH_APP_ID"),
+    privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
+    installationId: val("GH_INSTALLATION_ID"),
+  });
+}
+
 /**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
@@ -531,7 +566,11 @@ const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
  * The mode itself comes from @propr/shared's resolveGithubAuthMode — the same
  * function the backend uses — so this check cannot drift from boot behavior.
  */
-function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
+function checkGithubAuth(
+  env: Record<string, string>,
+  cfg: OrchestratorConfig,
+  resolved: ReturnType<typeof resolveGithubAuthMode>,
+): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -540,15 +579,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   // mode here, so `propr check` cannot drift from boot behavior.
   const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
   const relayToken = val(RELAY_TOKEN_KEY);
-  const { mode, warnings } = resolveGithubAuthMode({
-    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
-    ghAuthMode: val("GH_AUTH_MODE"),
-    relayUrl,
-    relayToken,
-    appId: val("GH_APP_ID"),
-    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
-    installationId: val("GH_INSTALLATION_ID"),
-  });
+  const { mode, warnings } = resolved;
   for (const warning of warnings) {
     out.push({ name: "GitHub auth", status: "warn", detail: warning, group: "GitHub" });
   }
@@ -679,7 +710,7 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
       relayUrl,
       relayToken: val(RELAY_TOKEN_KEY),
       appId: val("GH_APP_ID"),
-      privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+      privateKeyPath: val("HOST_GH_PRIVATE_KEY") || val("GH_PRIVATE_KEY_PATH"),
       installationId: val("GH_INSTALLATION_ID"),
     }));
   } catch (error) {
@@ -1403,7 +1434,7 @@ export function createCheckCommand(
     .description("Verify the host is ready to run a local ProPR stack")
     .argument("[mode]", "what to check: system (default) | agents | all", "system")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
-    .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
+    .option("--verify", "Also verify GitHub App access and run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: configured stack agents)")
     .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")

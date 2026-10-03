@@ -534,7 +534,10 @@ export {
 
 export * from './usageTips.js';
 export * from './notificationLinks.js';
+
+export * from './githubAppManifest.js';
 export * from './analyticsTimeframe.js';
 
 // Browser-safe checkpoint parsing shared by goal workers and readable timelines.
 export * from './goalCheckpoints.js';
+export * from './goalCreation.js';

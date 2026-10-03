@@ -22,16 +22,14 @@ import type {
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
+import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
+export { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
+
 // Share the merged-PR canceller's delivery budget. The cancellation promise
 // remains observed after timeout so durable recording and container stops finish.
 const configuredCancellationWait = Number.parseInt(process.env.MERGED_PR_CANCELLATION_WAIT_MS ?? '', 10);
 export const INTENT_WITHDRAWAL_CANCELLATION_WAIT_MS = Number.isFinite(configuredCancellationWait) && configuredCancellationWait > 0
     ? configuredCancellationWait : 8_000;
-
-/** Runtime-accessible list of supported webhook event types — single source of truth. */
-export const SUPPORTED_WEBHOOK_EVENTS = [
-  'issues', 'issue_comment', 'pull_request_review_comment', 'pull_request', 'check_run', 'push', 'status',
-] as const;
 
 /** Derived union type — always in sync with the runtime array. */
 export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];

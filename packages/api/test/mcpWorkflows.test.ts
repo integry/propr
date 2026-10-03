@@ -286,6 +286,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const cancel = await call('cancel_goal', { repository, goalId }, true); assert.equal(cancel.state, 'accepted');
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'cancelled');
         assert.equal((await call('get_operation', { operationId: cancel.operationId })).result.cancellation, 'confirmed');
+        await verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId: agent.config.id, modern });
 
         const category = await call('create_todo_category', { repository, name: 'Reliability' }, true); assert.equal(category.state, 'completed', JSON.stringify(category));
         const todo = await call('create_todo', { repository, content: 'Handle transient errors' }, true); assert.equal(todo.state, 'completed', JSON.stringify(todo));
@@ -434,3 +435,54 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     await core.closeConnection(); await core.closeEventPublisher(); await rm(root, { recursive: true, force: true });
   }
 });
+
+type GoalOptionsFixture = {
+  client: { callTool: (request: { name: string; arguments: Record<string, unknown> }) => Promise<unknown> };
+  call: (name: string, args: Record<string, unknown>, mutation?: boolean) => Promise<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  db: import('knex').Knex; jobs: Array<Record<string, unknown>>; repository: string; agentId: string; modern: boolean;
+};
+
+/** MCP goal creation honors the shared API contract and persists the requested options. */
+async function verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId, modern }: GoalOptionsFixture): Promise<void> {
+  const goalArgs = { repository, objective: `Ship with Ultrafix ${modern}`, agentId, model: 'fixture-model', launchStrategy: 'direct' };
+  const raw = async (args: Record<string, unknown>, idempotencyKey: string) => client.callTool({ name: 'create_goal', arguments: { ...goalArgs, ...args, idempotencyKey } }) as Promise<{ isError?: boolean; structuredContent?: { data?: Record<string, any> } }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (const maxParallelTasks of [0, 33]) {
+    const before = await db('goals').count({ count: '*' }).first();
+    const rejected = await raw({ maxParallelTasks }, `goal-parallel-${modern}-${maxParallelTasks}`);
+    assert.equal(rejected.isError, true, `maxParallelTasks ${maxParallelTasks}`);
+    assert.deepEqual(await db('goals').count({ count: '*' }).first(), before);
+  }
+  const orchestratedCadence = await raw({ launchStrategy: 'orchestrate', checkpointIntervalMinutes: 15 }, `goal-cadence-${modern}`);
+  assert.equal(orchestratedCadence.isError, true);
+
+  const enabledKey = `goal-ultrafix-${modern}`;
+  const enabled = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.notEqual(enabled.isError, true, JSON.stringify(enabled));
+  const enabledData = enabled.structuredContent!.data!;
+  assert.equal(enabledData.state, 'accepted');
+  const enabledGoal = await db('goals').where({ goal_id: enabledData.result.continuation.goalId }).first();
+  assert.equal(Boolean(enabledGoal.ultrafix), true);
+  assert.equal(enabledGoal.max_parallel_tasks, 32);
+  const context = await db('goal_inputs').where({ goal_id: enabledGoal.goal_id, kind: 'context' }).first();
+  assert.match(context.message, /Ultrafix policy: Enabled/);
+  assert.match(context.message, /Finish with validated implementation files; ProPR publishes and validates the final checkpoint on its draft PR/);
+  const jobCount = jobs.filter(job => job.goalId === enabledGoal.goal_id).length;
+  assert.equal(jobCount, 1);
+  const retry = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(retry.structuredContent!.data!.operationId, enabledData.operationId);
+  const changed = await raw({ ultrafix: false, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(changed.isError, true);
+  assert.match(JSON.stringify(changed), /IDEMPOTENCY_CONFLICT/);
+  assert.equal(jobs.filter(job => job.goalId === enabledGoal.goal_id).length, 1);
+  assert.equal(await db('goals').where({ repository, objective: goalArgs.objective }).count({ count: '*' }).first().then(row => Number(row?.count)), 1);
+
+  const disabled = await call('create_goal', { ...goalArgs, objective: 'Ship without Ultrafix', maxParallelTasks: 9 }, true);
+  const disabledGoal = await db('goals').where({ goal_id: disabled.result.continuation.goalId }).first();
+  assert.equal(Boolean(disabledGoal.ultrafix), false);
+  assert.equal(disabledGoal.max_parallel_tasks, 9);
+  assert.match((await db('goal_inputs').where({ goal_id: disabledGoal.goal_id, kind: 'context' }).first()).message, /Ultrafix policy: Disabled/);
+  const capabilities = await call('get_goal_capabilities', {});
+  assert.deepEqual(capabilities.creation.maxParallelTasks, { min: 1, max: 32 });
+  assert.equal(capabilities.creation.ultrafix.grantsMerge, false);
+  for (const goal of [enabledGoal, disabledGoal]) await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'cancelled', result_state: 'cancelled' });
+}

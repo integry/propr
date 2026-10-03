@@ -7,7 +7,6 @@ import {
   db,
   findPlanIssueByRepoAndNumber,
   PlanIssueStatus,
-  triggerNextPendingIssue,
   updatePlanIssueStatus,
   resolveAgentTerminationReason,
   ErrorCategories
@@ -116,8 +115,8 @@ async function persistTaskUpdateFields(
   }
 }
 
-async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskCompletionParams): Promise<void> {
-  const { issueRef, currentIssueLabels, claudeResult, postProcessingResult, correlatedLogger } = taskCompletionParams;
+async function closeFailedPlanIssue(taskCompletionParams: TaskCompletionParams): Promise<void> {
+  const { issueRef, claudeResult, postProcessingResult, correlatedLogger } = taskCompletionParams;
   if (claudeResult?.success || postProcessingResult?.pr) return;
 
   const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -130,12 +129,6 @@ async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskComplet
     issueNumber: issueRef.number,
     draftId: planIssue.draft_id
   }, 'Marked plan issue closed after terminal task without PR');
-
-  const hasAutoMerge = currentIssueLabels.includes('auto-merge');
-  const epicLabel = currentIssueLabels.find((label) => label.startsWith('base-'));
-  if (!hasAutoMerge && !epicLabel) return;
-
-  await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, correlatedLogger);
 }
 
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
@@ -145,7 +138,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
-    await closeFailedPlanIssueAndContinue(taskCompletionParams);
+    await closeFailedPlanIssue(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');
   }

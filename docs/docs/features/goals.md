@@ -33,7 +33,7 @@ The detail console brings together context, current activity, progress, artifact
 
 **Orchestrate through ProPR.** The agent decides how to break the objective down, creates GitHub issues, and starts and monitors their implementation through ProPR, optionally building an epic PR from the resulting PRs. It must track every issue and PR it creates and finish with a validated draft PR containing the final implementation.
 
-In both strategies, **max parallel tasks** is a limit the agent enforces itself; ProPR does not schedule a plan graph for goals. With **Ultrafix** enabled, the agent runs Ultrafix as part of delivery before declaring the goal complete; with it disabled, the agent runs Ultrafix only if a later correction asks for it.
+In both strategies, **max parallel tasks** is a limit the agent enforces itself; ProPR does not schedule a plan graph for goals. With **Ultrafix** enabled, the agent runs Ultrafix as part of delivery before declaring the goal complete; with it disabled, the agent runs Ultrafix only if a later correction asks for it. Ultrafix does not merge: the goal still ends with a draft pull request. The web UI, API and MCP's `create_goal` share the same limits: 1–32 parallel tasks, and a checkpoint cadence of 5–120 minutes for direct goals only.
 
 ## Corrections, pause and cancel
 
@@ -41,7 +41,32 @@ Send a correction from the goal console or through MCP's `send_goal_input` to st
 
 **Pause**, **Resume** and **Cancel** also follow provider boundaries. A pending pause or cancellation can take time to acknowledge; watch the displayed state. Model changes apply at a boundary. Terminal goals no longer accept corrections.
 
-Goals are launched and managed from the Web UI or [MCP](./mcp.md): `create_goal`, `get_goal` for progress and current activity, `send_goal_input` for corrections, and `list_goal_inputs` to inspect earlier inputs. The `propr` CLI has no goal commands.
+Goals are launched and managed from the Web UI, the [ProPR CLI](./propr-cli.md#goals) or [MCP](./mcp.md). All three use the same owner-scoped controls and status projection:
+
+| Action | CLI | MCP |
+| --- | --- | --- |
+| Check which agents can run goals | `propr goal capabilities` | `get_goal_capabilities` |
+| Create and start a goal | `propr goal create` | `create_goal` |
+| List goals | `propr goal list` | `list_goals` |
+| Progress, current activity, checkpoints, pending input, PRs | `propr goal inspect <id>` | `get_goal` |
+| Send a correction or question | `propr goal input <id>` | `send_goal_input` |
+| Earlier inputs and their delivery state | `propr goal inputs <id>` | `list_goal_inputs` |
+| Pause, resume, cancel | `propr goal pause\|resume\|cancel <id>` | `pause_goal`, `resume_goal`, `cancel_goal` |
+| Change the model | `propr goal model <id> <model>` | `set_goal_model` |
+
+A typical terminal session:
+
+```bash
+propr goal create -p owner/repo -a codex -m <model> --file objective.md   # starts work; prints the goal ID
+propr goal inspect <goal-id>
+propr goal input <goal-id> "Keep the public API unchanged"
+propr goal pause <goal-id>
+propr goal resume <goal-id>
+propr goal model <goal-id> <model>
+propr goal inspect <goal-id> --json   # final PR in goal.finalPr and goal.pullRequests
+```
+
+Mutations accept an idempotency key, so retrying a create or input never starts a second goal or queues a duplicate correction.
 
 ## Antigravity goals
 
