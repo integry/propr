@@ -60,14 +60,31 @@ export function citedPaths(text: string): string[] {
 }
 
 /**
- * True when some slash-separated token in `text` is not fully accounted for by
- * the extracted `paths`, i.e. it may cite a file the extraction could not read.
- * A record is only withheld on positive evidence that all its code is gone, so
- * such a record must be kept rather than judged on the citations that did parse.
+ * A backticked span holding one bare name, e.g. `gradlew`, `configure` or
+ * `gradlew:12`: it may name a root-level file no extraction rule recognises.
+ */
+const BACKTICKED_NAME = /`(?:\.\/)*([\w.@+~-]+?)(?::\d+(?:-\d+)?)?`/g;
+
+/** Code identifiers in lowerCamelCase (`citedPaths`) and spans without a letter (`409`) are not file names. */
+function isBareFileName(name: string): boolean {
+  return /[A-Za-z]/.test(name) && !/^[a-z][a-z0-9]*[A-Z]\w*$/.test(name);
+}
+
+/**
+ * True when `text` may cite a file the extracted `paths` do not account for:
+ * a slash-separated token with an unread remainder, or a backticked bare name
+ * such as `gradlew` that is not itself an extracted path. A record is only
+ * withheld on positive evidence that all its code is gone, so such a record
+ * must be kept rather than judged on the citations that did parse.
  */
 export function hasUnparsedPath(text: string, paths: string[]): boolean {
+  const normalized = text.replace(/\\/g, '/');
+  const known = new Set(paths);
+  for (const [, name] of normalized.matchAll(BACKTICKED_NAME)) {
+    if (!known.has(name) && isBareFileName(name)) return true;
+  }
   const longestFirst = [...paths].sort((a, b) => b.length - a.length);
-  return text.replace(/\\/g, '/').split(/[\s`'"]+/).some(token => {
+  return normalized.split(/[\s`'"]+/).some(token => {
     if (!token.includes('/')) return false;
     let residue = token.replace(/(^|[([])(?:\.\/)+/g, '$1');
     for (const path of longestFirst) residue = residue.split(path).join('');
@@ -92,10 +109,10 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  * `/fix` already does implicitly by fixing against whatever the branch holds.
  *
  * A record is withheld only when it cites files, every one of them was deleted
- * since the review, and no path-like citation in it went unrecognised: the code
- * it describes is gone. A rename or edit is not enough, because the fixing agent
- * reads the current tree and can follow moved code; such records are applied and
- * their changed citations reported in `touchedPaths`.
+ * since the review, and no path-like or backticked file-name citation in it went
+ * unrecognised: the code it describes is gone. A rename or edit is not enough,
+ * because the fixing agent reads the current tree and can follow moved code; such
+ * records are applied and their changed citations reported in `touchedPaths`.
  */
 export async function reanchorFixRecords(
   principal: McpPrincipal,

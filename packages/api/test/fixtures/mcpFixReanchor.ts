@@ -155,4 +155,26 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     ]);
     assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['src/old.ts'] }]);
   });
+
+  await t.test('a surviving root-level file no extraction rule recognises keeps a record whose other citation was deleted', async () => {
+    // `gradlew` has no slash, no extension and is not a known extensionless name.
+    assert.deepEqual(citedPaths('`legacy/bootstrap.sh` and `gradlew` run unverified code.'), ['legacy/bootstrap.sh']);
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh` and `gradlew` run unverified code.', ['legacy/bootstrap.sh']), true);
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh:4` and `./configure:12` too.', ['legacy/bootstrap.sh']), true);
+    // Recognised names and code identifiers are not unread file citations.
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh`, `Dockerfile` and `.env` in `citedPaths` (HTTP `409`).', ['legacy/bootstrap.sh', 'Dockerfile', '.env']), false);
+
+    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'legacy/bootstrap.sh', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const report = await reanchorFixRecords(principal, target, [
+      { id: 'F1', kind: 'finding', text: 'Verify downloads\nRequirement\n`legacy/bootstrap.sh` and `gradlew` execute downloaded shell code without verifying its checksum.\nFix both' },
+      { id: 'F2', kind: 'finding', text: 'Verify downloads\nRequirement\n`legacy/bootstrap.sh:9` and `configure` skip the check.\nFix both' },
+      { id: 'F3', kind: 'finding', text: 'Verify downloads\nRequirement\n`legacy/bootstrap.sh:9` skips the check in `fetchScript`.\nFix it' },
+    ]);
+    assert.deepEqual(report.applied, [
+      { id: 'F1', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+      { id: 'F2', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+    ]);
+    assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+  });
 }
