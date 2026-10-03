@@ -346,7 +346,7 @@ function sameChoice(left: ModelChoice, right: ModelChoice): boolean {
   return left.agentAlias.toLowerCase() === right.agentAlias.toLowerCase() && left.model.toLowerCase() === right.model.toLowerCase();
 }
 
-function describeChoices(choices: ModelChoice[]): string {
+export function describeChoices(choices: ModelChoice[]): string {
   const listed = choices.slice(0, MODEL_CHOICES_IN_ERROR).map(choice => `${choice.agentAlias}:${choice.model}`).join(', ');
   return choices.length > MODEL_CHOICES_IN_ERROR ? `${listed}, … (${choices.length} total; read list_models)` : listed || 'none (no agent is enabled)';
 }
@@ -357,10 +357,15 @@ function describeChoices(choices: ModelChoice[]): string {
  */
 export async function resolveEnabledModel(requested: string): Promise<ModelChoice> {
   const choices = await enabledModelChoices();
-  const resolution = await resolveLlmLabel(requested.replace(/^llm-/i, ''));
-  const match = choices.find(choice => sameChoice(choice, resolution));
+  const match = await matchEnabledModel(requested, choices);
   if (!match) throw new McpError('UNKNOWN_MODEL', `Model “${requested}” does not resolve to an enabled agent model. Valid choices: ${describeChoices(choices)}.`, 400);
   return match;
+}
+
+/** The enabled choice a requested model resolves to, or null when it resolves to none. */
+export async function matchEnabledModel(requested: string, choices: ModelChoice[]): Promise<ModelChoice | null> {
+  const resolution = await resolveLlmLabel(requested.replace(/^llm-/i, ''));
+  return choices.find(choice => sameChoice(choice, resolution)) ?? null;
 }
 
 export interface RepositoryLabels { labels: string[]; complete: boolean }

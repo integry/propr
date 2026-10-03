@@ -300,6 +300,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'ultrafix', 'unknown', 'until', 'validation', 'workflow',
     // Comment attachment fields and selectors returned by get_pull_request_discussion.
     'alt', 'attachments', 'fetchable', 'image', 'index', 'issue', 'type', 'video',
+    // Per-model review receipt fields returned by review_pull_request with model.
+    'reviews', 'not_posted', 'rejected', 'url',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',

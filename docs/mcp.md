@@ -583,6 +583,64 @@ check always compares the referenced review against the current resolved head.
 Retries must preserve whether `expectedHead` was omitted or supplied; changing
 that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
 
+`review_pull_request` takes an optional `model`. Omit it to review with the
+model the PR is already routed to. Pass one alias (any name `list_models`
+accepts, such as `gpt-6-fable`) to request that model's review, or a list of
+up to 8 aliases to fan out one independent review per model in a single call.
+That is the same as posting one `/review <model>` comment per model on GitHub,
+which `instructions` cannot do because it rejects slash commands:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "model": ["gpt-6-fable", "gpt-6-astra"],
+  "idempotencyKey": "pr-42-review-fable-astra-1" }
+```
+
+Every alias is resolved against the enabled agent models before anything is
+posted. If any alias is unknown or disabled the whole call fails with
+`UNKNOWN_MODEL`. If two aliases resolve to the same agent model it fails with
+`DUPLICATE_MODEL`. In both cases no review is posted, and
+`details.rejectedModels` lists each rejected alias with its own `code` and
+`message`. A rejected model is never dropped or swapped for a fallback. A model
+review never touches the PR's `llm-*` labels, so it neither re-routes the PR
+nor changes which model later default reviews use. Use
+`set_pull_request_model` for that.
+
+With `model`, the receipt carries a `reviews` array, one entry per requested
+model in request order:
+
+```json
+{ "state": "posted", "resolvedHead": "6f1c…f607", "headSource": "caller",
+  "reviews": [
+    { "model": "gpt-6-fable", "agentAlias": "codex", "resolvedModel": "gpt-6-fable",
+      "commentId": 9001, "url": "https://github.com/acme/web/pull/42#issuecomment-9001",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" },
+    { "model": "gpt-6-astra", "agentAlias": "codex", "resolvedModel": "gpt-6-astra",
+      "commentId": 9002, "url": "https://github.com/acme/web/pull/42#issuecomment-9002",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" } ] }
+```
+
+A single model also returns the usual flat `commentId`, `url`, `model`,
+`agentAlias` and `resolvedModel`. Every review in a fan-out is pinned to the
+same head: the first one uses the head check above, and each later one reads
+the PR again and must find it still open at that head. If a push or close
+happens part-way, the models already posted stay posted. The rest are reported
+with `state: "not_posted"` and an `error` (for example `STALE_HEAD` with
+`expectedHead`/`currentHead`), and nothing is posted for them. If a later
+comment fails to post, that model is reported as `rejected` when GitHub refused
+it (nothing was posted) or `unknown` when it may have posted. Check the PR for an
+`unknown` model before you request it again; it is never retried for you. Every
+model after it is `not_posted`, and the reviews already posted are still
+returned. The operation receipt then follows each posted comment separately,
+even when only one was posted. Each `reviews` entry gains the `taskId` and
+`taskState` of the task that picked it up. The lifecycle artifacts list
+`commentIds` (or `commentId` when only one comment was posted) and `taskIds`. The operation completes once every
+posted review has finished. It fails with `REVIEW_FAILED` only when all of
+them failed, and it becomes `unknown` if a review is never picked up.
+Account-level limits, such as a model the provider account cannot run, show up
+as that model's failed review rather than as a rejection at call time.
+
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
 `stop_ultrafix`, `set_pull_request_model` and `revert_pull_request_commit`
 tools still require `expectedHead`. The pin prevents them from acting on unseen
