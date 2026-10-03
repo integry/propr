@@ -253,12 +253,13 @@ function parsePage(
 }
 
 const GOAL_LIST_MAX_LIMIT = 200;
+const GOAL_LIST_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function parseGoalListQuery(query: Record<string, unknown>): {
   repository?: string; state?: GoalListState; offset: number; limit: number; paginated: boolean;
 } | { error: string } {
   const repository = queryValue(query, 'repository');
-  if (repository !== undefined && !repositoryPattern.test(repository)) return { error: 'repository must be in owner/repo format' };
+  if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) return { error: 'repository must be in owner/repo format' };
   const state = queryValue(query, 'state');
   if (state !== undefined && !isGoalListState(state)) return { error: `state must be one of ${GOAL_LIST_STATES.join(', ')}` };
   const page = parsePage(query, { defaultLimit: GOAL_LIST_MAX_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
