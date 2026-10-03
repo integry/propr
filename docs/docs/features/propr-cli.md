@@ -240,7 +240,7 @@ Agent, model and option validation is the same as goal creation in the Web UI: a
 
 Pause, resume, cancel, model changes and inputs are *requests*. They are accepted immediately and applied at the next provider boundary, so acceptance is not provider acknowledgement or completed execution. Output keeps the two apart:
 
-- `lifecycle.requestedState` is what was asked for (`running`, `paused`, `cancelled`); `lifecycle.observedState` is what has been confirmed (`starting`, `running`, `pausing`, `paused`, `cancelling`, `completed`, `failed`, `cancelled`). Control results also carry `requested` and `confirmed`.
+- `lifecycle.requestedState` is what was asked for (`running`, `paused`, `cancelled`); `lifecycle.observedState` is what has been confirmed (`starting`, `running`, `resuming`, `pausing`, `paused`, `cancelling`, `completed`, `failed`, `cancelled`). Control results also carry `requested` and `confirmed`.
 - `model.requested` and `model.effective` differ until the provider runs with the new model; `model.confirmed` is `true` only once they agree.
 - An input is `pending` (queued) until it is `delivered` to the provider. Delivery does not prove the agent acted on it, so `actedOn` is always `null`.
 - `lifecycle.goalCompleted` reflects the goal's result. `currentTask.taskCompleted` only reflects the current provider task: a completed task is not a completed goal.

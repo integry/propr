@@ -124,6 +124,78 @@ test("observed state separates the requested lifecycle from what the provider co
   assert.equal(observedGoalState({ ...base, desiredState: "paused" }), "paused");
   assert.equal(observedGoalState({ ...base, desiredState: "cancelled" }), "cancelling");
   assert.equal(observedGoalState({ ...base, desiredState: "cancelled", resultState: "cancelled" }), "cancelled");
+  const pendingControl = { requestGeneration: 3, acknowledgedGeneration: 2, pending: true };
+  assert.equal(observedGoalState({ ...base, startedAt: "now", control: pendingControl }), "resuming");
+  assert.equal(observedGoalState({ ...base, control: pendingControl }), "starting");
+});
+
+test("a resumed goal that ran before stays resuming until the provider acknowledges the control", async () => {
+  const awaitingAck = goalFixture({
+    pausedAt: null,
+    pausedMs: 120_000,
+    control: { requestGeneration: 3, acknowledgedGeneration: 2, pending: true },
+  });
+  const resume = await run(["resume", "goal-1", "--json"], () => ({ body: { goal: awaitingAck } }));
+  const resumed = JSON.parse(resume.stdout);
+  assert.equal(resumed.confirmed, false);
+  assert.equal(resumed.goal.lifecycle.requestedState, "running");
+  assert.equal(resumed.goal.lifecycle.observedState, "resuming");
+  assert.equal(resumed.goal.lifecycle.controlPending, true);
+
+  const human = await run(["resume", "goal-1"], () => ({ body: { goal: awaitingAck } }));
+  assert.match(human.stdout, /Resume requested/);
+  assert.match(human.stdout, /State:\s+resuming \(requested: running\)/);
+  assert.doesNotMatch(human.stdout, /State:\s+running/);
+
+  const inspect = await run(["inspect", "goal-1", "--json"], () => ({
+    body: { goal: awaitingAck, detail: { currentActivity: null, progress: null, pendingInput: null, pullRequests: [] } },
+  }));
+  assert.equal(JSON.parse(inspect.stdout).goal.lifecycle.observedState, "resuming");
+
+  const acknowledged = await run(["resume", "goal-1", "--json"], () => ({
+    body: { goal: goalFixture({ control: { requestGeneration: 3, acknowledgedGeneration: 3, pending: false } }) },
+  }));
+  const confirmed = JSON.parse(acknowledged.stdout);
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(confirmed.goal.lifecycle.observedState, "running");
+});
+
+test("parser failures with --json print a versioned invalid_arguments goal-error document", async () => {
+  for (const [args, command, pattern] of [
+    [["inspect", "--json"], "inspect", /missing required argument 'goal-id'/],
+    [["model", "goal-1", "--json"], "model", /missing required argument 'model'/],
+    [["list", "--json", "--limit"], "list", /option '-l, --limit <limit>' argument missing/],
+    [["input", "goal-1", "-j", "--canned"], "input", /option '--canned <request>' argument missing/],
+    [["cancel", "goal-1", "--bogus", "--json"], "cancel", /unknown option '--bogus'/],
+    [["inputs", "-j", "goal-1", "extra"], "inputs", /too many arguments/],
+    [["bogus", "--json"], "goal", /unknown command 'bogus'/],
+  ] as Array<[string[], string, RegExp]>) {
+    const result = await run(args, () => ({ status: 500 }));
+    assert.equal(result.exitCode, 1, args.join(" "));
+    assert.equal(result.requests.length, 0);
+    assert.equal(result.stderr, "", args.join(" "));
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.version, 1);
+    assert.equal(output.kind, "goal-error");
+    assert.equal(output.command, command);
+    assert.equal(output.error.code, "invalid_arguments");
+    assert.match(output.error.message, pattern);
+    assert.doesNotMatch(output.error.message, /^error:/);
+  }
+});
+
+test("parser failures without --json keep Commander's plain error output", async () => {
+  const stderr: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    const result = await run(["inspect"], () => ({ status: 500 }));
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stdout, "");
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.match(stderr.join(""), /^error: missing required argument 'goal-id'/);
 });
 
 test("goal create reads the objective from stdin, maps options and says that work started", async () => {

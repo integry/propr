@@ -8,7 +8,7 @@
  * queue a second input.
  */
 
-import { Command } from "commander";
+import { Command, type ErrorOptions, type ParseOptionsResult } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { parsePositiveInteger, resolveOptionalProject, resolveProject, ProjectResolutionError } from "../utils/index.js";
 import { classifyApiError, LOGIN_REQUIRED_ERROR } from "../utils/apiErrorPresentation.js";
@@ -66,6 +66,7 @@ class GoalUsageError extends Error {}
 export type GoalObservedState =
   | "starting"
   | "running"
+  | "resuming"
   | "pausing"
   | "paused"
   | "cancelling"
@@ -73,11 +74,15 @@ export type GoalObservedState =
   | "failed"
   | "cancelled";
 
-export function observedGoalState(goal: Pick<Goal, "resultState" | "desiredState" | "pausePending" | "startedAt">): GoalObservedState {
+export function observedGoalState(
+  goal: Pick<Goal, "resultState" | "desiredState" | "pausePending" | "startedAt"> & { control?: Pick<Goal["control"], "pending"> | null },
+): GoalObservedState {
   if (goal.resultState) return goal.resultState;
   if (goal.desiredState === "cancelled") return "cancelling";
   if (goal.desiredState === "paused") return goal.pausePending ? "pausing" : "paused";
-  return goal.startedAt ? "running" : "starting";
+  if (!goal.startedAt) return "starting";
+  // A continuation (resume, or a model change's restart) is only running once the provider acknowledges it.
+  return goal.control?.pending ? "resuming" : "running";
 }
 
 /** Requested controls vs confirmed state, and goal completion vs task completion, kept explicitly apart. */
@@ -377,6 +382,53 @@ function fail(error: unknown, context: FailureContext): never {
   process.exit(1);
 }
 
+/**
+ * Command whose parser failures (missing arguments or option values, unknown
+ * options, excess arguments) honour the `--json` error contract. Commander
+ * rejects these before any action runs, so `fail` never sees them.
+ */
+class GoalCommand extends Command {
+  private parsedArgv: string[] = [];
+
+  override createCommand(name?: string): Command {
+    return new GoalCommand(name);
+  }
+
+  override parseOptions(argv: string[]): ParseOptionsResult {
+    this.parsedArgv = argv;
+    return super.parseOptions(argv);
+  }
+
+  private jsonRequested(): boolean {
+    const end = this.parsedArgv.indexOf("--");
+    const tokens = end === -1 ? this.parsedArgv : this.parsedArgv.slice(0, end);
+    return Boolean(this.opts().json) || tokens.some((token) => token === "--json" || token === "-j");
+  }
+
+  override error(message: string, errorOptions?: ErrorOptions): never {
+    if (!this.jsonRequested()) return super.error(message, errorOptions);
+    const usage = this.parent ? `propr goal ${this.name()} --help` : "propr goal --help";
+    printJson({
+      kind: "goal-error",
+      command: this.name(),
+      error: {
+        code: "invalid_arguments" satisfies GoalFailureCode,
+        message: message.replace(/^error:\s*/i, ""),
+        status: null,
+        recovery: `Run '${usage}' for usage.`,
+      },
+    });
+    // Keep Commander's exit code and exitOverride handling; only replace its plain-text message.
+    const output = { ...this.configureOutput() };
+    this.configureOutput({ ...output, outputError: () => {} });
+    try {
+      return super.error(message, errorOptions);
+    } finally {
+      this.configureOutput(output);
+    }
+  }
+}
+
 function parseNonNegativeInteger(value: string, name: string): number {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
     throw new GoalUsageError(`${name} must be a non-negative integer.`);
@@ -458,7 +510,7 @@ const CONTROL_SPECS: ControlSpec[] = [
     action: "resume",
     run: (goalId, key) => resumeGoal(goalId, key),
     requested: { desiredState: "running" },
-    confirmed: (goal) => goal.desiredState === "running" && !goal.control?.pending,
+    confirmed: (goal) => observedGoalState(goal) === "running",
     pendingMessage: "Resume requested; the goal continues once the provider picks it up.",
     confirmedMessage: "Goal is running.",
   },
@@ -516,7 +568,7 @@ The JSON result separates the request from confirmation:
  * Creates the `goal` command group.
  */
 export function createGoalCommand(): Command {
-  const goal = new Command("goal")
+  const goal = new GoalCommand("goal")
     .description("Create, inspect, steer, pause, resume, cancel and re-model long-running goals")
     .addHelpText("after", `
 A goal is an objective that an agent pursues autonomously until it opens a
