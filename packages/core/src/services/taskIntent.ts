@@ -54,10 +54,12 @@ async function readCurrentTaskIntent(target: IntentTarget): Promise<CurrentTaskI
     return response.data;
 }
 
-async function removeIntentLabel(target: IntentTarget, label: string, stoppedTaskId?: string): Promise<void> {
+/** Returns false, without deleting, once `mayRemove` says the label's owner changed. */
+async function removeIntentLabel(target: IntentTarget, label: string, mayRemove?: () => Promise<boolean>): Promise<boolean> {
     const client = await getAuthenticatedOctokit();
-    await withRetry(async () => {
-        if (stoppedTaskId && await hasProcessingSibling(target, stoppedTaskId)) return;
+    return withRetry(async () => {
+        // Checked on every attempt: retry backoff can outlive the withdrawal.
+        if (mayRemove && !await mayRemove()) return false;
         try {
             await client.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
                 owner: target.repoOwner, repo: target.repoName, issue_number: target.number, name: label,
@@ -65,6 +67,7 @@ async function removeIntentLabel(target: IntentTarget, label: string, stoppedTas
         } catch (error) {
             if ((error as { status?: number }).status !== 404) throw error;
         }
+        return true;
     }, retryConfigs.githubApi, 'remove_intent_label');
 }
 
@@ -180,7 +183,7 @@ function redisAdapter(redis: Redis): StopTaskRedisClient {
 async function clearUserStoppedProcessingLabel(target: IntentTarget, taskId?: string): Promise<void> {
     // User stops own only the processing label, and only after sibling work ends.
     if (!taskId || !target.triggeringLabel) return;
-    await removeIntentLabel(target, `${target.triggeringLabel}-processing`, taskId);
+    await removeIntentLabel(target, `${target.triggeringLabel}-processing`, async () => !await hasProcessingSibling(target, taskId));
 }
 
 /** Completed attempts for this issue/trigger whose PR still stands on its own. */
@@ -206,6 +209,26 @@ function hasProcessingTrigger(current: CurrentTaskIntent, triggers: string[]): b
     return (current.labels ?? []).some(label => triggers.includes(typeof label === 'string' ? label : label.name ?? ''));
 }
 
+/** Returns false when renewed intent now owns the issue's status labels. */
+async function publishCancelledMarker(target: IntentTarget, triggers: string[], reason: IntentCancellationReason, revokingDone: string[]): Promise<boolean> {
+    const octokit = await getAuthenticatedOctokit();
+    return withRetry(async () => {
+        // Check immediately before every publish attempt, including after retry
+        // backoff. A reopen/restored trigger or sibling completion revokes it.
+        const current = await readCurrentTaskIntent(target);
+        if (withdrawnIntentReason(target, current, triggers) !== reason) return false;
+        // Another trigger's new request or a sibling completion skips only the marker.
+        if (reason === 'cancelled_label_removed' && hasProcessingTrigger(current, triggers)) return true;
+        const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
+        if (revokingDone.some(label => labels.includes(label))) return true;
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
+            labels: [`${target.triggeringLabel ?? triggers[0] ?? 'AI'}-cancelled`],
+        });
+        return true;
+    }, retryConfigs.githubApi, 'add_cancelled_label');
+}
+
 export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason, taskId?: string): Promise<void> {
     if (target.kind !== 'issue') return;
     if (reason === 'cancelled_by_user') {
@@ -214,43 +237,33 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     }
     // Stopping one attempt does not withdraw the issue's intent or its siblings' status.
     if (reason !== 'cancelled_issue_closed' && reason !== 'cancelled_label_removed') return;
-    const octokit = await getAuthenticatedOctokit();
-    let labelsToClear = [...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])];
-    let markCancelled = true;
-    let currentLabels: string[] = [];
-    if (reason === 'cancelled_label_removed' || reason === 'cancelled_issue_closed') {
-        // Stops may await Redis, the queue and containers. Refresh label authority
-        // before cleanup so another trigger's live work keeps its status labels.
-        const current = await readCurrentTaskIntent(target);
-        currentLabels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
-        if (withdrawnIntentReason(target, current, triggers) !== reason) return;
-        if (reason === 'cancelled_label_removed') labelsToClear = target.triggeringLabel ? [target.triggeringLabel] : triggers;
-        // Discovery excludes every *-cancelled label, even for another trigger.
-        markCancelled = reason === 'cancelled_issue_closed' || !hasProcessingTrigger(current, triggers);
+    // Stops may await Redis, the queue and containers. Refresh label authority
+    // before cleanup so another trigger's live work keeps its status labels.
+    const current = await readCurrentTaskIntent(target);
+    const currentLabels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
+    if (withdrawnIntentReason(target, current, triggers) !== reason) return;
+    const labelsToClear = reason === 'cancelled_label_removed'
+        ? (target.triggeringLabel ? [target.triggeringLabel] : triggers)
+        : [...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])];
+    // Discovery excludes every *-cancelled label, even for another trigger.
+    const markCancelled = reason === 'cancelled_issue_closed' || !hasProcessingTrigger(current, triggers);
+    // Stale completion markers are decided now, from the same refreshed read.
+    // A sibling's opened PR stays independent, and so does its completion marker.
+    const staleDone: string[] = [];
+    for (const trigger of reason === 'cancelled_issue_closed' ? [] : new Set(labelsToClear)) {
+        if (currentLabels.includes(`${trigger}-done`) && !await hasSiblingPullRequest(target, trigger)) staleDone.push(`${trigger}-done`);
     }
-    for (const trigger of new Set(labelsToClear)) {
-        await removeIntentLabel(target, `${trigger}-processing`);
-        await removeIntentLabel(target, `${trigger}-waiting`);
-        // A sibling's opened PR stays independent, and so does its completion marker.
-        if (reason !== 'cancelled_issue_closed' && currentLabels.includes(`${trigger}-done`)
-            && !await hasSiblingPullRequest(target, trigger)) {
-            await removeIntentLabel(target, `${trigger}-done`);
-        }
+    const revokingDone = labelsToClear.map(trigger => `${trigger}-done`).filter(label => !staleDone.includes(label));
+    // Publish before deleting: `-processing` keeps the issue out of discovery
+    // until the marker exists, so a failed publish cannot readmit it on reopen.
+    if (markCancelled && !await publishCancelledMarker(target, triggers, reason, revokingDone)) return;
+    // Renewed intent owns these labels; stop before any later deletion or retry.
+    // A reopen landing between this read and the DELETE is an unavoidable API race.
+    const stillWithdrawn = async () => withdrawnIntentReason(target, await readCurrentTaskIntent(target), triggers) !== null;
+    const labels = [...new Set(labelsToClear)].flatMap(trigger => [`${trigger}-processing`, `${trigger}-waiting`, ...staleDone.filter(label => label === `${trigger}-done`)]);
+    for (const label of labels) {
+        if (!await removeIntentLabel(target, label, stillWithdrawn)) return;
     }
-    if (!markCancelled) return;
-    await withRetry(async () => {
-        // Check immediately before every publish attempt, including after retry
-        // backoff. A reopen/restored trigger or sibling completion revokes it.
-        const current = await readCurrentTaskIntent(target);
-        if (withdrawnIntentReason(target, current, triggers) !== reason) return;
-        if (reason === 'cancelled_label_removed' && hasProcessingTrigger(current, triggers)) return;
-        if (labelsToClear.some(trigger =>
-            (current.labels ?? []).some(label => (typeof label === 'string' ? label : label.name) === `${trigger}-done`))) return;
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
-            labels: [`${target.triggeringLabel ?? triggers[0] ?? 'AI'}-cancelled`],
-        });
-    }, retryConfigs.githubApi, 'add_cancelled_label');
 }
 
 export function intentJobTaskId(job: { id?: string; data: Record<string, unknown> }): string {

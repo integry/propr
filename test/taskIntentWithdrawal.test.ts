@@ -404,13 +404,18 @@ test('label cleanup refreshes intent after an awaited stop', async () => {
 
 test('a trigger restored during label cleanup prevents a discovery-blocking cancellation label', async () => {
     addRunning('build', { ...target, triggeringLabel: 'build' });
-    tracker = { state: 'open', labels: [] };
+    tracker = { state: 'open', labels: ['build-processing'] };
+    let posts = 0;
     onRequest = endpoint => {
-        if (endpoint.startsWith('DELETE ')) tracker = { state: 'open', labels: ['AI'] };
+        if (endpoint.startsWith('POST ') && posts++ === 0) {
+            tracker = { state: 'open', labels: ['AI', 'build-processing'] };
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        }
     };
     await cancelWithdrawnIntent({ ...target, triggeringLabel: 'build' }, 'cancelled_label_removed', redis as never);
+    assert.equal(posts, 1);
     assert.ok(requests.some(r => r.params.name === 'build-processing'));
-    assert.ok(requests.every(r => !r.params.labels));
+    assert.deepEqual(tracker.labels, ['AI']);
 });
 
 test('unlabel webhook respects a task trigger still present in the payload', async () => {
@@ -436,11 +441,17 @@ for (const labels of [['AI-done'], ['build-done']]) {
 
 test('closure checks for completion after awaited label cleanup', async () => {
     tracker = { state: 'closed', labels: [] };
+    let posts = 0;
     onRequest = endpoint => {
-        if (endpoint.startsWith('DELETE ')) tracker = { state: 'closed', labels: ['AI-done'] };
+        if (endpoint.startsWith('POST ') && posts++ === 0) {
+            tracker = { state: 'closed', labels: ['AI-done'] };
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        }
     };
     await updateWithdrawnIssueLabels(target, ['AI'], 'cancelled_issue_closed');
-    assert.ok(requests.every(r => !r.params.labels && r.params.name !== 'AI-done'));
+    assert.equal(posts, 1);
+    assert.ok(!tracker.labels.includes('AI-cancelled'));
+    assert.ok(requests.every(r => r.params.name !== 'AI-done'));
 });
 
 for (const phase of ['none', 'running', 'waiting', 'delayed', 'active', 'prioritized', 'other-trigger', 'other-repo', 'terminal'] as const) {
@@ -576,11 +587,42 @@ test('withdrawal refresh happens after awaited resource scans', async () => {
 
 test('reopening during cleanup prevents publishing a cancelled marker', async () => {
     tracker = { state: 'closed', labels: ['AI-processing'] };
-    onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) tracker = { state: 'open', labels: ['AI'] }; };
+    let posts = 0;
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ') && posts++ === 0) {
+            tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        }
+    };
     await updateWithdrawnIssueLabels(target, ['AI'], 'cancelled_issue_closed');
-    assert.ok(requests.some(r => r.endpoint.startsWith('DELETE ')));
-    assert.ok(requests.every(r => !r.params.labels));
+    assert.equal(posts, 1);
+    // The renewed request owns the processing label now.
+    assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+    assert.deepEqual(tracker.labels, ['AI', 'AI-processing']);
 });
+
+for (const [label, reason, withdrawn] of [
+    ['AI-processing', 'cancelled_issue_closed', { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] }],
+    ['AI-waiting', 'cancelled_issue_closed', { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] }],
+    ['AI-done', 'cancelled_label_removed', { state: 'open', labels: ['AI-processing', 'AI-waiting', 'AI-done'] }],
+] as const) {
+    test(`${reason} cleanup stops retrying ${label} removal once intent is restored`, async () => {
+        tracker = { ...withdrawn, labels: [...withdrawn.labels] };
+        let failed = false;
+        onRequest = endpoint => {
+            if (!endpoint.startsWith('DELETE ') || requests.at(-1)?.params.name !== label || failed) return;
+            failed = true;
+            // Restoration admits renewed work during the retry backoff.
+            tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
+            throw Object.assign(new Error('temporary'), { status: 503 });
+        };
+        await updateWithdrawnIssueLabels(target, ['AI'], reason);
+        assert.ok(failed);
+        assert.equal(requests.filter(r => r.endpoint.startsWith('DELETE ') && r.params.name === label).length, 1);
+        assert.equal(requests.filter(r => r.endpoint.startsWith('DELETE ')).at(-1)?.params.name, label);
+        assert.deepEqual(tracker.labels, ['AI', 'AI-processing']);
+    });
+}
 
 test('merged PR state revokes an earlier unmerged closure event', async () => {
     const pr = { ...target, kind: 'pr' as const };
@@ -1027,6 +1069,25 @@ test('polling ignores a newer, since-removed application of another trigger on a
     assert.equal(jobs.length, 0);
 });
 
+test('a failed cancellation marker keeps the exclusion labels so reopening cannot restart work', async () => {
+    addRunning('old');
+    recordLabeled('AI-processing');
+    tracker = { state: 'closed', labels: ['AI', 'AI-processing', 'AI-waiting'] };
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ')) throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+    };
+    await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never), /not accessible/);
+    assert.equal(states.get('old').terminalReason, 'cancelled_issue_closed');
+    assert.ok(requests.every(r => !r.endpoint.startsWith('DELETE ')));
+    assert.deepEqual(tracker.labels, ['AI', 'AI-processing', 'AI-waiting']);
+    // Reopened with its original trigger and no reapplication: discovery stays idle.
+    onRequest = undefined;
+    requests.length = 0;
+    tracker = { ...tracker, state: 'open' };
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.equal(jobs.length, 0);
+});
+
 test('polling keeps a processing-only issue idle without a newer trigger application', async () => {
     recordLabeled('AI-processing');
     tracker = { state: 'open', labels: ['AI', 'AI-processing'] };
@@ -1039,10 +1100,11 @@ test('polling restores a processing-only issue whose cleanup failed once the tri
     addRunning('old');
     recordLabeled('AI-processing');
     tracker = { state: 'open', labels: ['AI-processing'] };
-    onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) throw new Error('cleanup unavailable'); };
+    onRequest = endpoint => { if (endpoint.startsWith('POST ')) throw new Error('cleanup unavailable'); };
     await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_label_removed', redis as never), /cleanup unavailable/);
     onRequest = undefined;
     assert.ok(!tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(tracker.labels, ['AI-processing']);
     assert.equal(jobs.length, 0);
     // The reapplication webhook is missed; polling supplies recovery.
     tracker = { ...tracker, labels: ['AI', 'AI-processing'] };
