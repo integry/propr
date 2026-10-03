@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Filter, Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
+import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -25,6 +26,26 @@ const normalizeFilterValue = (filter: string): string => {
     default:
       return filter;
   }
+};
+
+const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | 'availableRepos' | 'reposLoading'>> = ({
+  repoFilter,
+  setRepoFilter,
+  availableRepos,
+  reposLoading
+}) => {
+  const repos = useDecoratedRepoOptions(availableRepos);
+  return (
+  <RepositorySelector
+    repos={repos}
+    selectedRepo={repoFilter}
+    onRepoChange={setRepoFilter}
+    isLoading={reposLoading}
+    variant="default"
+    labelLayout="stacked"
+    className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
+  />
+  );
 };
 
 export const Filters: React.FC<FiltersProps> = ({
@@ -93,15 +114,7 @@ export const Filters: React.FC<FiltersProps> = ({
 
               {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
               {(reposLoading || availableRepos.length > 1) && (
-                <RepositorySelector
-                  repos={availableRepos}
-                  selectedRepo={repoFilter}
-                  onRepoChange={setRepoFilter}
-                  isLoading={reposLoading}
-                  variant="default"
-                  labelLayout="stacked"
-                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
-                />
+                <RepoFilter repoFilter={repoFilter} setRepoFilter={setRepoFilter} availableRepos={availableRepos} reposLoading={reposLoading} />
               )}
             </div>
           </>
