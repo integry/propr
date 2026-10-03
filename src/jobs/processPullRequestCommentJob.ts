@@ -1,4 +1,5 @@
-import { prepareRepositoryWorkflow, withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
+import { prepareRepositoryWorkflow, resolveRepositoryWorkflow, repositoryWorkflowDeferralData, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
+    withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -173,13 +174,13 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
-    const repositoryWorkflow = await prepareRepositoryWorkflow({
-        octokit: state.octokit, repoOwner, repoName, baseBranch: prData!.data.base.ref, taskId, stateManager,
-    });
-    const octokit = state.octokit;
+    const octokit = state.octokit, baseBranch = prData!.data.base.ref;
+    const repositoryWorkflow = state.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, baseBranch, () => prepareRepositoryWorkflow({ octokit, repoOwner, repoName, baseBranch }));
     return withRepositoryWorkflowAdmission({
         workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
     }, async (): Promise<JobResult> => {
+        // Admission ends the wait; ordinary retries reload the base branch policy.
+        if (job.data.repositoryWorkflowDeferrals) await job.updateData({ ...job.data, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
         const publication = state.publication ??= new PullRequestPublication(octokit, context, prData!.data);
         const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
         state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
@@ -230,7 +231,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
             reason: 'Checking PR publication destination',
-            historyMetadata: { commandMode: job.data.commandMode || 'default' }
+            historyMetadata: { commandMode: job.data.commandMode || 'default', ...repositoryWorkflowHistoryMetadata(repositoryWorkflow) }
         });
         await ensureGitRepository(correlatedLogger);
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
@@ -341,11 +342,11 @@ export function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<
     return deferRepositoryWorkflowJob(job, () => processAdmittedPRCommentJob(job));
 }
 
-async function persistCapacityDeferredComments(job: Job<CommentJobData>, context: PRJobContext & { pickedUpComments: UnprocessedComment[] }): Promise<void> {
-    // This same delayed job retains the claimed comments and command context.
+async function persistCapacityDeferredComments(job: Job<CommentJobData>, context: PRJobContext & { pickedUpComments: UnprocessedComment[] }, state: ProcessingState): Promise<void> {
+    // This same delayed job retains the claimed comments, command context and resolved policy.
     // Wait for durable storage before releasing its PR lock or queue ownership.
     try {
-        await job.updateData({ ...job.data, comments: context.commentsToProcess });
+        await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow) });
     } catch (persistError) {
         await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
         throw persistError;
@@ -448,7 +449,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     } catch (error) {
         if (error instanceof RepositoryWorkflowCapacityError) {
             capacityRefused = true;
-            await persistCapacityDeferredComments(job, context);
+            await persistCapacityDeferredComments(job, context, state);
             throw error;
         }
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });

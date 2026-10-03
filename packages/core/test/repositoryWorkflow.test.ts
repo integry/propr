@@ -7,8 +7,17 @@ import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
-import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../src/workflow/workflowExecution.js';
+import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers } from '../src/workflow/workflowExecution.js';
+import { MAX_PROVIDER_OUTPUT_BYTES } from '../src/agents/impl/utils/boundedProviderOutput.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
+
+/** Feed raw transport stderr through the same capture the Docker executor uses. */
+function observeStderr(stderr: string, chunks = [stderr]): void {
+    const context = repositoryWorkflowExecution.getStore()!;
+    const capture = captureWorkflowMarkers([context.marker])!;
+    for (const chunk of chunks.slice(0, -1)) capture.append(chunk);
+    capture.finish(chunks.at(-1)!);
+}
 
 const policy = (source = '{}'): ResolvedRepositoryWorkflow => ({
     revision: 'base-commit', fileRevision: 'blob', baseBranch: 'release', config: parseRepositoryWorkflow(source),
@@ -166,7 +175,7 @@ test('execution context isolates concurrent policies, wraps every agent and adds
                 const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', type);
                 assert.match(args[args.indexOf('image') + 2], /run_command/);
             }
-            context.stderr = `\n${context.marker}:validation:0:0\n${context.marker}:validation:1:124`;
+            observeStderr(`\n${context.marker}:validation:0:0\n${context.marker}:validation:1:124`);
             return makeResult('');
         });
         assert.match(result.repositoryValidation!, /npm test: Passed/);
@@ -190,7 +199,7 @@ test('cleanup timeouts are logged without failing the attempt', async () => {
 test('a fatal hook cannot become a publishable partial agent timeout', async () => {
     const result = await executeWithRepositoryWorkflow(policy('hooks: { before_run: "sleep 10" }'), async () => {
         const context = repositoryWorkflowExecution.getStore()!;
-        context.stderr = `\n${context.marker}:hook:before_run:124`;
+        observeStderr(`\n${context.marker}:hook:before_run:124`);
         return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1, terminationReason: 'timeout' };
     });
     assert.equal(result.success, false);
@@ -276,9 +285,56 @@ test('decoded logs, raw stdout and a truncated stderr line are never validation 
     const result = await executeWithRepositoryWorkflow(policy('validation: ["npm test"]'), async () => {
         const marker = repositoryWorkflowExecution.getStore()!.marker;
         // A bounded diagnostic tail may cut off an untrusted line's prefix.
-        repositoryWorkflowExecution.getStore()!.stderr = `${marker}:validation:0:0\n`;
+        observeStderr(`${marker}:validation:0:0\n`);
         return { success: true, logs: `${marker}:validation:0:0`, rawOutput: `${marker}:validation:0:0`,
             modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
     });
     assert.match(result.repositoryValidation!, /Not run/);
+});
+
+test('completed validation and fatal hook results survive later output larger than the diagnostic tail', async () => {
+    const workflow = policy('validation: ["exit 3", "big-output"]\nhooks: { before_run: "exit 2", after_run: "big-output", before_remove: "big-output" }');
+    const flood = `ProPR command output: ${'x'.repeat(1024)}\n`.repeat(Math.ceil(MAX_PROVIDER_OUTPUT_BYTES / 1024) + 64);
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const raw = [`\n${marker}:hook:before_run:2\n`, `\n${marker}:validation:0:3\n`, flood, `\n${marker}:validation:1:0\n`, flood, flood].join('');
+        // Arbitrary chunk boundaries, including splits inside the reports.
+        const chunks: string[] = [];
+        for (let offset = 0; offset < raw.length; offset += 4093) chunks.push(raw.slice(offset, offset + 4093));
+        observeStderr(raw, chunks);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /exit 3: Failed \(exit 3\)/);
+    assert.match(result.repositoryValidation!, /big-output: Passed/);
+    assert.equal(result.success, false);
+    assert.match(result.error!, /before_run failed with exit code 2/);
+});
+
+test('reports split across chunks keep the line-boundary and prefix checks', async () => {
+    const workflow = policy('validation: ["a", "b", "c", "d"]');
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        // Index 0: genuine, split mid-marker. Index 1: CR-terminated. Index 2: a prefixed
+        // line whose overlong head is followed by the marker. Index 3: stream start, no LF.
+        observeStderr('', [`${marker}:validation:3:0\nnoise\n${marker.slice(0, 9)}`, `${marker.slice(9)}:validation:0:0\n`,
+            `${marker}:validation:1:0\r\n`, `ProPR command output: ${'y'.repeat(200)}`, `${marker}:validation:2:0\n`, '']);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /- a: Passed/);
+    assert.match(result.repositoryValidation!, /- b: Not run/);
+    assert.match(result.repositoryValidation!, /- c: Not run/);
+    assert.match(result.repositoryValidation!, /- d: Not run/);
+});
+
+test('a real wrapper keeps the first validation result after a later command floods stderr', async () => {
+    const workflow = policy(`validation: ["exit 5", "head -c ${MAX_PROVIDER_OUTPUT_BYTES * 2} /dev/zero | tr '\\\\0' x | fold -w 1000"]`);
+    workflow.timeoutMs = 4000;
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const execution = await runWrapper(workflow, 'cat', undefined, marker);
+        assert.doesNotMatch(execution.stderr, new RegExp(`${marker}:validation:0`));
+        return { success: true, logs: execution.stderr, modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /exit 5: Failed \(exit 5\)/);
+    assert.match(result.repositoryValidation!, /: Passed/);
 });

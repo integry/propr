@@ -17,22 +17,16 @@ import {
   initializeJobContext, getAuthenticatedClient, checkLabelConditions,
   ensureProcessingLabel, executeWorktreeOperations, markTaskComplete
 } from './issueJob/index.js';
-import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
+import type { GitHubToken, CurrentIssueData, JobContext } from './issueJob/index.js';
 
-import { prepareRepositoryWorkflow, withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
+import {
+  prepareRepositoryWorkflow, resolveRepositoryWorkflow, repositoryWorkflowDeferralData, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
+  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError,
+} from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 
 export function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
-  return deferRepositoryWorkflowJob(job, async () => {
-    try {
-      return await processAdmittedIssueJob(job);
-    } catch (error) {
-      if (error instanceof RepositoryWorkflowCapacityError) {
-        await job.updateData({ ...job.data, repositoryWorkflowDeferred: true });
-      }
-      throw error;
-    }
-  });
+  return deferRepositoryWorkflowJob(job, () => processAdmittedIssueJob(job));
 }
 
 async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
@@ -44,7 +38,7 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
   }
 
   const context = await initializeJobContext(job);
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG } = context;
 
   // Keep the task identity stable when this same BullMQ job is delayed for capacity.
   if (!job.data.correlationId || !job.data.agentAlias || !job.data.modelName) {
@@ -83,24 +77,35 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
   const octokit = await getAuthenticatedClient(context);
 
   try {
-    context.repositoryWorkflow = await prepareRepositoryWorkflow({
-      octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
-      baseBranch: issueRef.baseBranch, taskId, stateManager,
-    });
+    context.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, issueRef.baseBranch, () => prepareRepositoryWorkflow({
+      octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch: issueRef.baseBranch,
+    }));
   } catch (error) {
     await handleGenericError(error as Error, job, issueRef, {
       octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
     });
     throw error;
   }
+  try {
+    return await processIssueWithAdmission(job, context, octokit);
+  } catch (error) {
+    if (error instanceof RepositoryWorkflowCapacityError) {
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: true, ...repositoryWorkflowDeferralData(job.data, context.repositoryWorkflow) });
+    }
+    throw error;
+  }
+}
+
+function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>): Promise<JobResult> {
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
   return withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
     redisClient, taskId, stateManager, correlatedLogger,
   }, async (): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
-    // retain the existing ordinary retry behavior.
+    // retain the existing ordinary retry behavior and reload the base policy.
     if (job.data.repositoryWorkflowDeferred) {
-      await job.updateData({ ...job.data, repositoryWorkflowDeferred: false });
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: false, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
     }
     // Handle retry from rate limit - swap AI-waiting back to AI-processing
     if (job.data.isRetryFromRateLimit) {
@@ -126,7 +131,9 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
     let commitResult: CommitResult | null = null;
 
     try {
-      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
+      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
+      });
 
       const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
         await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {

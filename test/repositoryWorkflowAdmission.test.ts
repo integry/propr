@@ -8,16 +8,16 @@ import { setImmediate } from 'node:timers/promises';
 import { Queue, Worker, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
 import { ACQUIRE_WORKFLOW_SLOT, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError } from '../packages/core/src/workflow/workflowConcurrency.js';
-import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { runWithExecutionAbortSignal } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
 
 await mock.module('@propr/core', { namedExports: {
-    withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES,
+    withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, loadSettings: async () => ({}),
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
 } });
-const { deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow } = await import('../src/jobs/repositoryWorkflow.js');
+const { deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow } = await import('../src/jobs/repositoryWorkflow.js');
 const log = { error() {} };
 
 test('capacity deferral waits for cleanup and passes the current BullMQ lock token', async () => {
@@ -36,6 +36,33 @@ test('capacity deferral waits for cleanup and passes the current BullMQ lock tok
     assert.equal(events.length, 2);
     await assert.rejects(deferRepositoryWorkflowJob({ ...job, moveToDelayed: async () => { throw new Error('lock lost'); } } as never,
         async () => { throw new RepositoryWorkflowCapacityError(); }), /lock lost/);
+});
+
+test('capacity deferrals back off exponentially with jitter up to a ceiling', async () => {
+    assert.deepEqual([1, 2, 3, 4].map(n => repositoryWorkflowDeferralDelayMs(n, () => 1)), [10_000, 20_000, 40_000, 80_000]);
+    assert.deepEqual([1, 2].map(n => repositoryWorkflowDeferralDelayMs(n, () => 0)), [5_000, 10_000]);
+    assert.equal(repositoryWorkflowDeferralDelayMs(50, () => 1), 300_000);
+    const deadlines: number[] = [];
+    for (const deferrals of [1, 6]) {
+        await assert.rejects(deferRepositoryWorkflowJob({ token: 't', data: { repositoryWorkflowDeferrals: deferrals },
+            moveToDelayed: async (deadline: number) => { deadlines.push(deadline - Date.now()); } } as never,
+        async () => { throw new RepositoryWorkflowCapacityError(); }), DelayedError);
+    }
+    assert.ok(deadlines[0] <= 10_000 && deadlines[1] >= 150_000 - 50);
+});
+
+test('deferred re-entry reuses the resolved policy, including no policy, unless the base branch changed', async () => {
+    const cached = { revision: 'sha', baseBranch: 'main' } as never;
+    let loads = 0;
+    const prepare = async () => { loads++; return undefined; };
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, 'main', prepare), cached);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, undefined, prepare), cached);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowDeferrals: 1 }, 'main', prepare), undefined);
+    assert.equal(loads, 0);
+    await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, 'release', prepare);
+    await resolveRepositoryWorkflow({ repositoryWorkflow: cached }, 'main', prepare);
+    await resolveRepositoryWorkflow({}, 'main', prepare);
+    assert.equal(loads, 3);
 });
 
 test('cancelled re-entry and cancellation during admission never delay or execute', async () => {

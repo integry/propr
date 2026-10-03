@@ -14,11 +14,26 @@ const events: string[] = [];
 let outcome: 'completed' | 'failed' | 'cancelled' = 'completed';
 const taskLinks: string[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
+const processingHistory: Array<{ state: string; metadata: Record<string, unknown> }> = [];
+// When set, preparation uses the real policy loader against this fake GitHub API.
+let githubRequests: string[] | undefined;
+const workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
+const fakeGitHubRequest = async (route: string, params: { path?: string }) => {
+  githubRequests!.push(route);
+  if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: 'main' } };
+  if (route === 'GET /repos/{owner}/{repo}/commits/{ref}') return { data: { sha: 'base-sha' } };
+  if (route === 'GET /repos/{owner}/{repo}/contents/{path}' && params.path === '.propr/workflow.yml') {
+    return { data: { type: 'file', encoding: 'base64', size: workflowYaml.length, sha: 'blob-sha', content: Buffer.from(workflowYaml).toString('base64') } };
+  }
+  throw new Error(`unexpected GitHub request ${route}`);
+};
 const stateManager = {
   createTaskStateIfAbsent: async () => { events.push('create-if-absent'); },
   createTaskState: async () => { taskState = 'pending'; events.push('create'); },
   getTaskState: async () => ({ state: taskState }),
-  updateTaskState: async () => undefined,
+  updateTaskState: async (_taskId: string, state: string, metadata: { historyMetadata?: Record<string, unknown> }) => {
+    processingHistory.push({ state, metadata: metadata.historyMetadata ?? {} });
+  },
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
 };
@@ -31,6 +46,7 @@ await mock.module('@propr/core', { namedExports: {
   updatePlanIssueTaskId: async () => undefined,
   ensureRepoCloned: async () => { events.push('clone'); return '/tmp/repository'; },
   ensureGitRepository: async () => undefined,
+  loadSettings: async () => ({ worker_concurrency: 4 }),
 } });
 const { markTaskTerminalState } = await import('../src/jobs/issueJob/completion.js');
 await mock.module('../src/jobs/issueJobDispatcher.js', { namedExports: { handleDispatch: async () => ({ status: 'dispatched' }) } });
@@ -48,7 +64,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
     jobId: job.id, issueRef: job.data, correlationId: 'correlation', correlatedLogger: log,
     stateManager, agentAlias: 'issue-agent', modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done',
   }),
-  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }) }),
+  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: fakeGitHubRequest }),
   checkLabelConditions: () => ({ skip: false }),
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {
@@ -63,7 +79,10 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: {
   ...workflowJobs,
-  prepareRepositoryWorkflow: async () => { if (workflowError) throw workflowError; return undefined; },
+  prepareRepositoryWorkflow: async (options: Parameters<typeof workflowJobs.prepareRepositoryWorkflow>[0]) => {
+    if (workflowError) throw workflowError;
+    return githubRequests ? workflowJobs.prepareRepositoryWorkflow(options) : undefined;
+  },
 } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
   redisClient: { eval: async () => capacityFull ? 0 : 1 },
@@ -142,4 +161,52 @@ test('ordinary failed issue retries retain their existing task initialization be
     assert.ok(events.includes('create'));
     assert.ok(events.includes('clone'));
   } finally { taskState = 'pending'; }
+});
+
+const issueJobData = (): IssueJobData => ({
+  repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation',
+  issuePayload: { title: 'Fix dates', body: '', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' },
+} as IssueJobData);
+
+test('the PROCESSING timeline entry records the workflow path and base revision that governed the issue', async () => {
+  githubRequests = []; processingHistory.length = 0; outcome = 'completed';
+  try {
+    const result = await processGitHubIssueJob({
+      id: 'workflow-job', name: 'processGitHubIssue', data: issueJobData(),
+      updateData: async () => undefined, updateProgress: async () => undefined,
+    } as never);
+    assert.equal(result.status, 'processed');
+    const processing = processingHistory.filter(entry => entry.state === core.TaskStates.PROCESSING);
+    assert.equal(processing.length, 1);
+    assert.deepEqual(processing[0].metadata.repositoryWorkflow, {
+      path: '.propr/workflow.yml', baseBranch: 'main', revision: 'base-sha', fileRevision: 'blob-sha', maxParallelTasks: 1, timeoutMs: 600_000,
+    });
+  } finally { githubRequests = undefined; }
+});
+
+test('capacity re-entries reuse the resolved policy, back off, and reload it after admission', async () => {
+  githubRequests = []; processingHistory.length = 0; outcome = 'completed'; capacityFull = true;
+  const delays: number[] = [];
+  const job = {
+    id: 'waiting-job', name: 'processGitHubIssue', token: 'lock-token', data: issueJobData(),
+    updateData: async (data: IssueJobData) => { job.data = JSON.parse(JSON.stringify(data)); },
+    updateProgress: async () => undefined,
+    moveToDelayed: async (deadline: number) => { delays.push(deadline - Date.now()); },
+  };
+  try {
+    for (let refusal = 0; refusal < 3; refusal++) await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.equal(githubRequests.filter(route => route.includes('/contents/')).length, 1, 'policy is fetched once across refusals');
+    assert.equal(githubRequests.length, 3);
+    assert.equal(job.data.repositoryWorkflowDeferrals, 3);
+    assert.equal(job.data.repositoryWorkflow?.revision, 'base-sha');
+    // Jittered exponential backoff: each ceiling doubles from 10 s.
+    delays.forEach((delay, index) => assert.ok(delay >= 5_000 * 2 ** index - 50 && delay <= 10_000 * 2 ** index + 50, `delay ${index}: ${delay}`));
+    capacityFull = false;
+    assert.equal((await processGitHubIssueJob(job as never)).status, 'processed');
+    assert.equal(githubRequests.length, 3, 'admitted re-entry reuses the policy that was waiting');
+    assert.equal((processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata.repositoryWorkflow as { revision: string }).revision, 'base-sha');
+    assert.equal(job.data.repositoryWorkflowDeferred, false);
+    assert.equal(job.data.repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
+    assert.equal(job.data.repositoryWorkflowDeferrals, undefined);
+  } finally { githubRequests = undefined; capacityFull = false; }
 });

@@ -4,8 +4,73 @@ import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOw
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 
+export interface WorkflowObservation { hooks: Map<string, string>; validation: Map<number, string> }
+
+/**
+ * Collects genuine wrapper reports from raw transport stderr as it streams, so
+ * repository output cannot evict them from a bounded diagnostic tail. A report
+ * counts only as a whole line preceded by a literal LF and ended by LF or EOF;
+ * JS multiline anchors would also accept CR, and chunks can split any line.
+ */
+export class WorkflowMarkerCollector {
+    private line = '';
+    private afterLineFeed = false;
+    private overflow = false;
+    private readonly observation: WorkflowObservation = { hooks: new Map(), validation: new Map() };
+    private readonly pattern: RegExp;
+    private readonly maxLineLength: number;
+
+    constructor(marker: string, private readonly validationCount: number) {
+        this.pattern = new RegExp(`^${marker}:(?:hook:(after_create|before_run|after_run|before_remove|setup)|validation:([0-9]+)):([0-9]+)$`);
+        this.maxLineLength = marker.length + 64;
+    }
+
+    append(chunk: string): void {
+        let start = 0;
+        for (let end = chunk.indexOf('\n'); end !== -1; end = chunk.indexOf('\n', start)) {
+            this.take(chunk.slice(start, end));
+            this.finishLine();
+            start = end + 1;
+        }
+        this.take(chunk.slice(start));
+    }
+
+    end(): WorkflowObservation {
+        this.finishLine();
+        return this.observation;
+    }
+
+    private take(fragment: string): void {
+        if (this.overflow || !fragment) return;
+        this.line += fragment;
+        // No genuine report is this long; stop buffering untrusted output until LF.
+        if (this.line.length > this.maxLineLength) { this.overflow = true; this.line = ''; }
+    }
+
+    private finishLine(): void {
+        const match = this.afterLineFeed && !this.overflow ? this.pattern.exec(this.line) : null;
+        if (match?.[1]) this.observation.hooks.set(match[1], match[3]);
+        else if (match && Number(match[2]) < this.validationCount) this.observation.validation.set(Number(match[2]), match[3]);
+        this.line = '';
+        this.overflow = false;
+        this.afterLineFeed = true;
+    }
+}
+
 /** Scoped to one execution, including synthetic-provider retries; never process-global policy. */
-export const repositoryWorkflowExecution = new AsyncLocalStorage<{ workflow: ResolvedRepositoryWorkflow; marker: string; stderr?: string }>();
+export interface RepositoryWorkflowExecutionContext { workflow: ResolvedRepositoryWorkflow; marker: string; observed?: WorkflowObservation }
+export const repositoryWorkflowExecution = new AsyncLocalStorage<RepositoryWorkflowExecutionContext>();
+
+/** Collect reports only for the transport running this execution's wrapper. */
+export function captureWorkflowMarkers(args: string[]): { append(chunk: string): void; finish(chunk: string): void } | undefined {
+    const context = repositoryWorkflowExecution.getStore();
+    if (!context || !args.some(arg => arg.includes(context.marker))) return undefined;
+    const collector = new WorkflowMarkerCollector(context.marker, context.workflow.config.validation?.length ?? 0);
+    return {
+        append: chunk => collector.append(chunk),
+        finish: chunk => { collector.append(chunk); context.observed = collector.end(); },
+    };
+}
 
 export async function executeWithRepositoryWorkflow(
     workflow: ResolvedRepositoryWorkflow | undefined,
@@ -14,24 +79,21 @@ export async function executeWithRepositoryWorkflow(
     getExecutionOwnershipContext()?.signal.throwIfAborted();
     if (!workflow) return execute();
     const marker = `PROPR_WORKFLOW_${randomUUID()}`;
-    const context = { workflow, marker, stderr: '' };
+    const context: RepositoryWorkflowExecutionContext = { workflow, marker };
     const result = await repositoryWorkflowExecution.run(context, execute);
-    // Only the transport's raw stderr is authoritative. Agent result logs may
-    // include decoded JSON strings that bypass filtering of literal markers.
-    const logs = context.stderr;
-    // Require a literal LF before reports: the bounded transport tail can start
-    // midway through an untrusted line, and JS multiline anchors also accept CR.
-    const failure = logs.match(new RegExp(`\\n${marker}:hook:(after_create|before_run):([1-9][0-9]*)(?=\\n|$)`));
-    if (failure) {
+    // Only reports collected from the transport's raw stderr are authoritative.
+    // Agent result logs may include decoded JSON strings that bypass filtering.
+    const observed = context.observed ?? { hooks: new Map<string, string>(), validation: new Map<number, string>() };
+    const fatalHook = (['after_create', 'before_run'] as const).find(name => /^[1-9][0-9]*$/.test(observed.hooks.get(name) ?? ''));
+    if (fatalHook) {
         result.success = false;
         result.terminationReason = undefined;
-        result.error = `Repository workflow ${failure[1]} failed with exit code ${failure[2]}`;
+        result.error = `Repository workflow ${fatalHook} failed with exit code ${observed.hooks.get(fatalHook)}`;
     }
     const validation = workflow.config.validation ?? [];
     if (validation.length) {
         const reports = validation.map((command, index) => {
-            const matches = [...logs.matchAll(new RegExp(`\\n${marker}:validation:${index}:([0-9]+)(?=\\n|$)`, 'g'))];
-            const code = matches.at(-1)?.[1];
+            const code = observed.validation.get(index);
             const status = code === undefined ? 'Not run (execution ended before validation)' : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})`;
             return `- ${command.replace(/\n/g, ' ')}: ${status}`;
         });

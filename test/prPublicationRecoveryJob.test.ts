@@ -233,6 +233,8 @@ const modules: Record<string, Record<string, unknown>> = {
         withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
         deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
         RepositoryWorkflowCapacityError: class extends Error {},
+        resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
+        repositoryWorkflowDeferralData: () => ({}), repositoryWorkflowHistoryMetadata: () => ({}), CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: {},
     },
     // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },

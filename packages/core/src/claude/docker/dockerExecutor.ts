@@ -1,4 +1,4 @@
-import { repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
+import { captureWorkflowMarkers } from '../../workflow/workflowExecution.js';
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
@@ -225,7 +225,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
         let sessionLineBuffer = '';
-        const stderrTail = new BoundedDiagnosticTail();
+        const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);
         // Built on read only (it costs the whole bounded output), never per chunk.
         const stdoutBuffer = new BoundedProviderRecordBuffer();
         const readStdout = (): string => stdoutBuffer.output;
@@ -331,6 +331,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.stderr?.on('data', (data: Buffer) => {
             const chunk = stderrDecoder.write(data);
             stderrTail.append(chunk);
+            workflowMarkers?.append(chunk);
             liveOutput?.stderr(chunk);
         });
 
@@ -341,10 +342,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             const finalStderr = stderrDecoder.end();
             stderrTail.append(finalStderr);
             const stderr = stderrTail.value;
-            const workflow = repositoryWorkflowExecution.getStore();
-            if (workflow && args.some(arg => arg.includes(workflow.marker))) {
-                workflow.stderr = stderr;
-            }
+            workflowMarkers?.finish(finalStderr);
             liveOutput?.stdout(finalStdout);
             liveOutput?.stderr(finalStderr);
             inspectSessionLines(finalStdout, new Date().toISOString(), true);

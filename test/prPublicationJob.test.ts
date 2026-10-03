@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
+import { withRepositoryWorkflowSlot } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { beforeEach, mock, test } from 'node:test';
 
 let events: string[] = [];
@@ -17,11 +20,17 @@ let onPrepare: (() => void) | undefined;
 let onTaskStateRead: ((taskId: string) => void) | undefined;
 const log = { info() {}, warn() {}, error() {}, debug() {} };
 const taskStates = new Map<string, string>();
+let resolvedWorkflow: ResolvedRepositoryWorkflow | undefined;
+let policyLoads = 0;
+let agentError: Error | undefined;
+const processingMetadata: Array<Record<string, unknown>> = [];
 const stateManager = {
-    updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean }) => {
+    updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean; historyMetadata?: Record<string, unknown> }) => {
+        if (state === 'processing') processingMetadata.push(metadata?.historyMetadata ?? {});
         taskStates.set(taskId, state);
         events.push(`state:${taskId}:${state}${metadata?.isRetry ? ':retry' : ''}`);
     },
+    updateHistoryMetadata: async () => undefined,
     getTaskState: async (taskId: string) => {
         const current = taskStates.has(taskId) ? { state: taskStates.get(taskId) } : null;
         onTaskStateRead?.(taskId);
@@ -51,11 +60,16 @@ await mock.module('@propr/core', { namedExports: {
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'],
     loadRepositoryVisualPreviewSettings: noOp,
     refineWorkflowPreviews, repositoryWorkflowPrompt,
+    loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError,
 } });
+// Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
+const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 const modules: Record<string, Record<string, unknown>> = {
-    // Publication fixtures have no repository workflow policy.
+    // Publication fixtures have no repository workflow policy unless a test resolves one.
     repositoryWorkflow: {
-        prepareRepositoryWorkflow: noOp,
+        ...workflowJobs,
+        prepareRepositoryWorkflow: async () => { policyLoads++; return resolvedWorkflow; },
         withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => { if (refuseCapacity) throw new RepositoryWorkflowCapacityError(); return execute(); },
         deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
         RepositoryWorkflowCapacityError,
@@ -86,7 +100,7 @@ const modules: Record<string, Record<string, unknown>> = {
         applyPendingCommentCommandContext: noOp,
     },
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
-    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); }, resolvePRCommentModelName: async () => 'model' },
+    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
     reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }), selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
     ultrafixOrchestrationService: { retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); } },
@@ -135,7 +149,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; persistError = undefined;
+    refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
@@ -302,4 +316,27 @@ test('capacity deferral cleans a worktree retained by publication recovery befor
     assert.ok(events.indexOf('persist-comments') < events.indexOf('cleanup-worktree'));
     assert.ok(events.indexOf('cleanup-worktree') < events.indexOf('release:lock:pr:upstream:project:42'));
     assert.ok(!events.includes('agent'));
+});
+
+test('PR follow-ups record the workflow revision on PROCESSING and reuse it across capacity refusals', async () => {
+    resolvedWorkflow = { revision: 'base-sha', baseBranch: 'main', fileRevision: 'blob-sha', config: {}, timeoutMs: 1000, maxParallelTasks: 1 };
+    const waiting = job();
+    const persisted: Array<Record<string, unknown>> = [];
+    waiting.updateData = async (data: Record<string, unknown>) => { persisted.push(data); waiting.data = JSON.parse(JSON.stringify(data)); };
+    refuseCapacity = true;
+    for (let refusal = 0; refusal < 3; refusal++) await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.equal(policyLoads, 1, 'policy is fetched once across refusals');
+    assert.equal((waiting.data as { repositoryWorkflowDeferrals?: number }).repositoryWorkflowDeferrals, 3);
+    resolvedWorkflow = undefined;
+    refuseCapacity = false;
+    // Stop at the agent: the timeline and deferral state are settled before it starts.
+    agentError = new Error('agent stopped by test');
+    await assert.rejects(processPullRequestCommentJob(waiting as never), /agent stopped by test/);
+    assert.ok(events.includes('agent'));
+    assert.equal(policyLoads, 1, 'the admitted run uses the policy it waited with');
+    assert.deepEqual(processingMetadata.at(-1)?.repositoryWorkflow, {
+        path: '.propr/workflow.yml', baseBranch: 'main', revision: 'base-sha', fileRevision: 'blob-sha', maxParallelTasks: 1, timeoutMs: 1000,
+    });
+    assert.equal((waiting.data as { repositoryWorkflow?: unknown }).repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
+    assert.equal((waiting.data as { repositoryWorkflowDeferrals?: unknown }).repositoryWorkflowDeferrals, undefined);
 });
