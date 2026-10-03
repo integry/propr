@@ -7,7 +7,17 @@ import { type Args, type WriteFixture, fixtureReviewBody } from './mcpPullReques
  * `fix_review_findings` against a review of an older head: like a hand-typed /fix,
  * it runs on the current head and only drops records whose cited code is gone.
  */
-export async function verifyFixReanchor({ t, call, mutate, comments, comparisons }: WriteFixture): Promise<void> {
+/** A principal whose comparison reports `files` and whose head tree holds `tree`; a null tree is unreadable. */
+function reanchorPrincipal(files: Array<{ filename: string; status: string }>, tree: string[] | null): McpPrincipal {
+  const request = async (route: string) => {
+    if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { files } };
+    if (tree) return { data: { truncated: false, tree: tree.map(path => ({ path, type: 'blob' })) } };
+    throw Object.assign(new Error('Not Found'), { status: 404 });
+  };
+  return { github: { request } } as unknown as McpPrincipal;
+}
+
+export async function verifyFixReanchor({ t, call, mutate, comments, comparisons, trees }: WriteFixture): Promise<void> {
   await t.test('fix_review_findings re-anchors a review of an older head instead of refusing it', async () => {
     const head = 'a'.repeat(40);
     const reviewedHead = 'e'.repeat(40);
@@ -16,6 +26,7 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]',
       createdAt: new Date().toISOString(), body: fixtureReviewBody(reviewedHead) });
     const posted = () => comments.filter(comment => comment.body.startsWith('/fix')).length;
+    trees.set(head, ['src/config.ts', 'README.md', 'package.json']);
 
     // The discussion still says the review is not for the current head, but its
     // records remain selectable, as they are for a hand-typed /fix.
@@ -66,12 +77,21 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.equal(pinned.result.error.code, 'STALE_HEAD');
     assert.equal(posted(), before, 'a refused selection may not reach GitHub');
 
+    // Without the current tree, withholding F21 rests on incomplete evidence, so it is kept.
+    trees.delete(head);
+    const uncertain = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F21'] });
+    assert.equal(uncertain.state, 'posted', JSON.stringify(uncertain));
+    assert.deepEqual(uncertain.result.findingIds, ['F21']);
+    assert.deepEqual(uncertain.result.skipped, []);
+    trees.set(head, ['src/config.ts', 'README.md', 'package.json']);
+
     // An unreadable comparison (e.g. a force-pushed review head) does not block the fix.
     comparisons.delete(`${reviewedHead}...${head}`);
     const unverified = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F21'] });
     assert.equal(unverified.state, 'posted', JSON.stringify(unverified));
     assert.equal(unverified.result.comparison, 'unavailable');
     assert.deepEqual(unverified.result.findingIds, ['F21']);
+    trees.delete(head);
   });
 
   await t.test('fix_review_findings keeps a record whose surviving citation is extensionless or outside the evidence', async () => {
@@ -122,7 +142,7 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.deepEqual(citedPaths('docker/entrypoint:3, `.env` and ./scripts/run.sh; see src/config.ts.'), ['docker/entrypoint', '.env', 'scripts/run.sh', 'src/config.ts']);
 
     // A surviving file cited only in the introduced-by-PR explanation still keeps the record.
-    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'src/old.ts', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const principal = reanchorPrincipal([{ filename: 'src/old.ts', status: 'removed' }], ['src/config.ts', 'Makefile']);
     const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
     const report = await reanchorFixRecords(principal, target, [
       { id: 'F1', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:4 is wrong\nThis PR added Makefile targets that call it.\nFix it' },
@@ -136,7 +156,7 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.deepEqual(citedPaths('`legacy/package.json` and **Dockerfile** both pin Node 14.'), ['legacy/package.json', 'Dockerfile']);
     assert.deepEqual(citedPaths('See *src/app/[slug]/page.tsx:12*, ***Makefile*** and **.env**.'), ['src/app/[slug]/page.tsx', 'Makefile', '.env']);
 
-    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'legacy/package.json', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const principal = reanchorPrincipal([{ filename: 'legacy/package.json', status: 'removed' }], ['Dockerfile', 'package.json']);
     const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
     const report = await reanchorFixRecords(principal, target, [
       { id: 'F1', kind: 'finding', text: 'Drop the unsupported runtime pin\nBuild on a supported runtime.\n`legacy/package.json` and **Dockerfile** both pin Node 14.\nPin a supported runtime.' },
@@ -156,7 +176,7 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.equal(hasUnparsedPath('src/old.ts and src/{weird}/x.ts', ['src/old.ts']), true);
     assert.equal(hasUnparsedPath('src/old.ts:4 (see ./src/old.ts) is wrong.', ['src/old.ts']), false);
 
-    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'src/old.ts', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const principal = reanchorPrincipal([{ filename: 'src/old.ts', status: 'removed' }], ['src/config.ts', 'Makefile']);
     const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
     const report = await reanchorFixRecords(principal, target, [
       { id: 'F1', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:4 and `src/app/[slug]/page.tsx:12` both need it\nFix both' },
@@ -178,7 +198,7 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     // Recognised names and code identifiers are not unread file citations.
     assert.equal(hasUnparsedPath('`legacy/bootstrap.sh`, `Dockerfile` and `.env` in `citedPaths` (HTTP `409`).', ['legacy/bootstrap.sh', 'Dockerfile', '.env']), false);
 
-    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'legacy/bootstrap.sh', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const principal = reanchorPrincipal([{ filename: 'legacy/bootstrap.sh', status: 'removed' }], ['gradlew', 'configure', 'src/fetch.ts']);
     const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
     const report = await reanchorFixRecords(principal, target, [
       { id: 'F1', kind: 'finding', text: 'Verify downloads\nRequirement\n`legacy/bootstrap.sh` and `gradlew` execute downloaded shell code without verifying its checksum.\nFix both' },
@@ -190,5 +210,89 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
       { id: 'F2', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
     ]);
     assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+  });
+
+  await t.test('a surviving file named in plain prose or emphasis keeps a record whose other citation was deleted', async () => {
+    // Neither form is extracted, and plain prose cannot be told apart from ordinary words.
+    const plain = 'legacy/bootstrap.sh and gradlew execute downloaded shell code without verification.';
+    const emphasised = '`legacy/bootstrap.sh` and **gradlew** execute downloaded shell code without verifying its checksum.';
+    assert.deepEqual(citedPaths(plain), ['legacy/bootstrap.sh']);
+    assert.deepEqual(citedPaths(emphasised), ['legacy/bootstrap.sh']);
+    assert.equal(hasUnparsedPath(emphasised, ['legacy/bootstrap.sh']), true);
+    assert.equal(hasUnparsedPath('`legacy/bootstrap.sh` and _configure_ or ***gradlew:12***.', ['legacy/bootstrap.sh']), true);
+    assert.equal(hasUnparsedPath('**legacy/bootstrap.sh** and **Dockerfile** in `citedPaths`.', ['legacy/bootstrap.sh', 'Dockerfile']), false);
+
+    const records = [
+      { id: 'F1', kind: 'finding' as const, text: `Verify downloads\nRequirement\n${plain}\nFix both` },
+      { id: 'F2', kind: 'finding' as const, text: `Verify downloads\nRequirement\n${emphasised}\nFix both` },
+      { id: 'F3', kind: 'finding' as const, text: 'Verify downloads\nRequirement\nlegacy/bootstrap.sh:9 skips the check.\nFix it' },
+    ];
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const removed = [{ filename: 'legacy/bootstrap.sh', status: 'removed' }];
+    const report = await reanchorFixRecords(reanchorPrincipal(removed, ['gradlew', 'src/fetch.ts']), target, records);
+    assert.deepEqual(report.applied, [
+      { id: 'F1', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+      { id: 'F2', kind: 'finding', touchedPaths: ['legacy/bootstrap.sh'] },
+    ]);
+    assert.deepEqual(report.skipped, [{ id: 'F3', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+
+    // Once gradlew is gone too, the plain-prose record is withheld like any other.
+    const both = await reanchorFixRecords(reanchorPrincipal(removed, ['src/fetch.ts']), target, records.slice(0, 1));
+    assert.deepEqual(both.skipped.map(record => record.id), ['F1']);
+    // An unreadable tree leaves applicability uncertain, so nothing is withheld.
+    const unread = await reanchorFixRecords(reanchorPrincipal(removed, null), target, records);
+    assert.deepEqual(unread.applied.map(record => record.id), ['F1', 'F2', 'F3']);
+    assert.deepEqual(unread.skipped, []);
+  });
+
+  await t.test('fix_review_findings posts a plain-prose or emphasised surviving citation alone or mixed', async () => {
+    const head = 'a'.repeat(40);
+    const reviewedHead = 'c'.repeat(40);
+    const pull = { repository: 'acme/repo', pullRequest: 42 };
+    const reviewCommentId = 972;
+    comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]', createdAt: new Date().toISOString(), body: [
+      '## 🔍 AI Code Review — Fixture',
+      '',
+      '## Overall Evaluation',
+      'Three blockers.',
+      '## Merge blockers',
+      'Every finding below was introduced by this PR and must be resolved before merging.',
+      '',
+      '### F50: 🔴 Verify downloaded scripts',
+      '- **Required behavior:** Downloaded shell code must be verified before it runs.',
+      '- **Evidence:** legacy/bootstrap.sh and gradlew execute downloaded shell code without verification.',
+      '- **Minimum fix:** Check a pinned checksum.',
+      '',
+      '### F51: 🔴 Verify the wrapper checksum',
+      '- **Required behavior:** Downloaded shell code must be verified before it runs.',
+      '- **Evidence:** `legacy/bootstrap.sh` and **gradlew** execute downloaded shell code without verifying its checksum.',
+      '- **Minimum fix:** Check a pinned checksum.',
+      '',
+      '### F52: 🔴 Drop the legacy fetch',
+      '- **Required behavior:** Downloaded shell code must be verified before it runs.',
+      '- **Evidence:** legacy/bootstrap.sh:9 skips the check.',
+      '- **Minimum fix:** Check a pinned checksum.',
+      '## Suggestions',
+      'These are optional follow-ups and are not sent to `/fix`.',
+      'No suggestions.',
+      '## Score',
+      'Score: 4/10',
+      `<!-- propr:ai-review model="fixture" head="${reviewedHead}" -->`,
+    ].join('\n') });
+    comparisons.set(`${reviewedHead}...${head}`, [{ filename: 'legacy/bootstrap.sh', status: 'removed' }]);
+    trees.set(head, ['gradlew', 'src/fetch.ts']);
+
+    for (const id of ['F50', 'F51']) {
+      const alone = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: [id] });
+      assert.equal(alone.state, 'posted', JSON.stringify(alone));
+      assert.equal(comments.at(-1)!.body.split('\n')[0], `/fix ${id}`);
+      assert.deepEqual(alone.result.skipped, []);
+    }
+    const mixed = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F50', 'F51', 'F52'] });
+    assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F50 F51');
+    assert.deepEqual(mixed.result.skipped, [{ id: 'F52', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+    comparisons.delete(`${reviewedHead}...${head}`);
+    trees.delete(head);
   });
 }

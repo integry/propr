@@ -89,6 +89,19 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
   const restCalls: Array<{ route: string; args: Args }> = [];
   /** Files changed between two heads, keyed by `from...to`; an unknown range is a 404 as for an unreachable commit. */
   const comparisons = new Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>();
+  /** Every file path at a commit, keyed by its SHA; an unknown commit is a 404. */
+  const trees = new Map<string, string[]>();
+  /** The compare and recursive tree endpoints `fix_review_findings` reads to re-anchor a review. */
+  const gitHistory = (route: string, args: Args) => {
+    if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
+      const files = comparisons.get(String(args.basehead));
+      if (!files) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { files } };
+    }
+    const paths = trees.get(String(args.tree_sha));
+    if (!paths) throw Object.assign(new Error('Not Found'), { status: 404 });
+    return { data: { truncated: false, tree: paths.map(path => ({ path, type: 'blob' })) } };
+  };
   const denied = new Set(['acme/forbidden']);
   const findPullRequest = (repository: string, number: number) => {
     const pull = pullRequests.find(item => item.repository === repository && item.number === number);
@@ -172,11 +185,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         comments.push(comment);
         return { data: { id: comment.id, html_url: `https://github.com/${repository}/pull/${comment.pullRequest}#issuecomment-${comment.id}` } };
       }
-      if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
-        const files = comparisons.get(String(args.basehead));
-        if (!files) throw Object.assign(new Error('Not Found'), { status: 404 });
-        return { data: { files } };
-      }
+      if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}' || route === 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}') return gitHistory(route, args);
       if (route === 'GET /repos/{owner}/{repo}/labels') {
         const all = repositoryLabels.get(repository) ?? [];
         const perPage = Number(args.per_page ?? 30);
@@ -385,7 +394,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
-    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, redis: deps.redisClient as never };
+    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, trees, redis: deps.redisClient as never };
     await verifyPullRequestWrites(writeFixture);
     await verifyFixReanchor(writeFixture);
     await verifyModelReviews(writeFixture);

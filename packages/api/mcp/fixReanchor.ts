@@ -61,10 +61,11 @@ export function citedPaths(text: string): string[] {
 }
 
 /**
- * A backticked span holding one bare name, e.g. `gradlew`, `configure` or
- * `gradlew:12`: it may name a root-level file no extraction rule recognises.
+ * A backticked or Markdown-emphasised span holding one bare name, e.g. `gradlew`,
+ * **gradlew**, _configure_ or `gradlew:12`: it may name a root-level file no
+ * extraction rule recognises.
  */
-const BACKTICKED_NAME = /`(?:\.\/)*([\w.@+~-]+?)(?::\d+(?:-\d+)?)?`/g;
+const MARKED_NAME = /(`|(?<![\w*])\*{1,3}|(?<![\w*])_{1,3})(?:\.\/)*([\w.@+~-]+?)(?::\d+(?:-\d+)?)?\1(?![\w*])/g;
 
 /** Code identifiers in lowerCamelCase (`citedPaths`) and spans without a letter (`409`) are not file names. */
 function isBareFileName(name: string): boolean {
@@ -73,15 +74,15 @@ function isBareFileName(name: string): boolean {
 
 /**
  * True when `text` may cite a file the extracted `paths` do not account for:
- * a slash-separated token with an unread remainder, or a backticked bare name
- * such as `gradlew` that is not itself an extracted path. A record is only
+ * a slash-separated token with an unread remainder, or a backticked or
+ * emphasised bare name such as `gradlew` that is not itself an extracted path. A record is only
  * withheld on positive evidence that all its code is gone, so such a record
  * must be kept rather than judged on the citations that did parse.
  */
 export function hasUnparsedPath(text: string, paths: string[]): boolean {
   const normalized = text.replace(/\\/g, '/');
   const known = new Set(paths);
-  for (const [, name] of normalized.matchAll(BACKTICKED_NAME)) {
+  for (const [, , name] of normalized.matchAll(MARKED_NAME)) {
     if (!known.has(name) && isBareFileName(name)) return true;
   }
   const longestFirst = [...paths].sort((a, b) => b.length - a.length);
@@ -91,6 +92,35 @@ export function hasUnparsedPath(text: string, paths: string[]): boolean {
     for (const path of longestFirst) residue = residue.split(path).join('');
     return residue.includes('/');
   });
+}
+
+/**
+ * Words of `text` left once the extracted `paths` are taken out, e.g. `gradlew`
+ * in "legacy/bootstrap.sh and gradlew run unverified code". Plain prose can name
+ * a file no extraction rule recognises, so these are checked against the tree.
+ */
+function bareWords(text: string, paths: string[]): string[] {
+  let residue = text.replace(/\\/g, '/');
+  for (const path of [...paths].sort((a, b) => b.length - a.length)) residue = residue.split(path).join(' ');
+  return [...residue.matchAll(/[\w.@+~-]+/g)].map(([word]) => word.replace(/\.+$/, '')).filter(Boolean);
+}
+
+/** Paths and file names of everything at `ref`, or null when the tree cannot be read in full. */
+async function filesAt(principal: McpPrincipal, repository: string, ref: string): Promise<Set<string> | null> {
+  const [owner, repo] = repository.split('/');
+  try {
+    const { data } = await principal.github.request('GET /repos/{owner}/{repo}/git/trees/{tree_sha}', { owner, repo, tree_sha: ref, recursive: '1' });
+    if (!Array.isArray(data?.tree) || data.truncated) return null;
+    const names = new Set<string>();
+    for (const entry of data.tree as Array<{ path: string; type: string }>) {
+      if (entry.type === 'tree') continue;
+      names.add(entry.path);
+      names.add(entry.path.slice(entry.path.lastIndexOf('/') + 1));
+    }
+    return names;
+  } catch {
+    return null;
+  }
 }
 
 async function changedSince(principal: McpPrincipal, repository: string, from: string, to: string): Promise<ComparedFile[] | null> {
@@ -110,8 +140,10 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  * `/fix` already does implicitly by fixing against whatever the branch holds.
  *
  * A record is withheld only when it cites files, every one of them was deleted
- * since the review, and no path-like or backticked file-name citation in it went
- * unrecognised: the code it describes is gone. A rename or edit is not enough,
+ * since the review, no path-like, backticked or emphasised file-name citation in
+ * it went unrecognised, and none of its other words names a file still present at
+ * the current head: the code it describes is gone. When that tree cannot be read
+ * in full, applicability is uncertain and the record is applied. A rename or edit is not enough,
  * because the fixing agent reads the current tree and can follow moved code; such
  * records are applied and their changed citations reported in `touchedPaths`.
  */
@@ -137,11 +169,16 @@ export async function reanchorFixRecords(
     if (file.previous_filename) touched.add(file.previous_filename);
   }
   const report: FixReanchorReport = { ...base, reanchored: true, comparison: 'compared', applied: [], skipped: [] };
-  for (const { id, kind, text } of records) {
-    const paths = citedPaths(text);
-    const gone = paths.filter(path => removed.has(path));
-    if (paths.length > 0 && gone.length === paths.length && !hasUnparsedPath(text, paths)) report.skipped.push({ id, kind, reason: 'code_removed', removedPaths: gone });
-    else report.applied.push({ id, kind, touchedPaths: paths.filter(path => removed.has(path) || touched.has(path)) });
+  const cited = records.map(record => ({ ...record, paths: citedPaths(record.text) }));
+  const allRemoved = ({ text, paths }: { text: string; paths: string[] }) =>
+    paths.length > 0 && paths.every(path => removed.has(path)) && !hasUnparsedPath(text, paths);
+  // Only a record about to be withheld needs the current tree, so it is read lazily.
+  const present = cited.some(allRemoved) ? await filesAt(principal, target.repository, target.head) : null;
+  for (const record of cited) {
+    const { id, kind, text, paths } = record;
+    if (allRemoved(record) && present && !bareWords(text, paths).some(word => present.has(word))) {
+      report.skipped.push({ id, kind, reason: 'code_removed', removedPaths: paths });
+    } else report.applied.push({ id, kind, touchedPaths: paths.filter(path => removed.has(path) || touched.has(path)) });
   }
   return report;
 }

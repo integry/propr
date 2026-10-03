@@ -61,6 +61,8 @@ export interface WriteFixture {
   comments: CommentFixture[];
   /** Files changed between two heads, keyed by `from...to`, as GitHub's compare endpoint reports them. */
   comparisons: Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>;
+  /** Every file path at a commit, keyed by its SHA, as GitHub's recursive tree endpoint reports them. */
+  trees: Map<string, string[]>;
   redis: LeaseRedis;
 }
 
