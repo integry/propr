@@ -98,7 +98,7 @@ function evidenceFromScan(scan: TimelineScan, orderingUnverified: boolean): Trig
     };
 }
 
-function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
+export function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
     if (!linkHeader) return null;
     const lastLink = linkHeader.split(',').find(part => part.includes('rel="last"'));
     const page = lastLink?.match(/[?&]page=(\d+)/)?.[1];

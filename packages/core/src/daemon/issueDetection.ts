@@ -10,7 +10,7 @@ import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } fro
 import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
-import { restoreIssueTrigger } from '../services/taskIntent.js';
+import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskIntent.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
@@ -118,6 +118,18 @@ function admissionTrigger(labels: string[], triggers: string[]): string | undefi
     return triggers.find(label => labels.includes(label));
 }
 
+// A closure whose `-cancelled` marker failed to publish still withdraws intent:
+// reopening alone must not admit the issue. Settlement failures fail closed.
+async function heldByWithdrawalCleanup(issue: DetectedIssue, redisClient: Redis, log: Logger): Promise<boolean> {
+    try {
+        return await settleWithdrawalCleanups(redisClient, target => target.number === issue.number
+            && `${target.repoOwner}/${target.repoName}`.toLowerCase() === `${issue.repoOwner}/${issue.repoName}`.toLowerCase());
+    } catch (error) {
+        log.warn({ issueNumber: issue.number, error: (error as Error).message }, 'Could not settle retained cancellation exclusion; skipping issue');
+        return true;
+    }
+}
+
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
@@ -171,6 +183,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Issue has exclude labels, skipping');
         return { status: 'ignored', reason: 'issue_has_terminal_label' };
     }
+
+    if (await heldByWithdrawalCleanup(issue, redisClient, correlatedLogger)) return { status: 'ignored', reason: 'intent_not_current' };
 
     // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
     // Use Redis SET NX with TTL to ensure only one job is queued per issue within the window

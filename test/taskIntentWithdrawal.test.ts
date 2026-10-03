@@ -5,6 +5,7 @@ import { isBookkeepingCancellation } from '../packages/core/src/utils/workerStat
 const states = new Map<string, any>();
 const conversations = new Map<string, any[]>();
 const redisValues = new Map<string, string>();
+const redisSets = new Map<string, Set<string>>();
 const jobs: any[] = [];
 const requests: Array<{ endpoint: string; params: any }> = [];
 const containers: string[] = [];
@@ -34,6 +35,9 @@ const redis = {
         return messages.length;
     },
     del: async (key: string) => { redisValues.delete(key); return 1; },
+    sadd: async (key: string, member: string) => { const set = redisSets.get(key) ?? new Set(); redisSets.set(key, set.add(member)); return 1; },
+    srem: async (key: string, member: string) => Number(redisSets.get(key)?.delete(member) ?? 0),
+    smembers: async (key: string) => [...redisSets.get(key) ?? []],
 };
 const manager = {
     getTaskState: async (id: string) => states.get(id) ?? null,
@@ -131,7 +135,7 @@ async function removeTrigger(label: string, labels: string[]) {
 }
 const target = { repoOwner: 'acme', repoName: 'widgets', number: 42, kind: 'issue' as const, type: 'issue', triggeringLabel: 'AI' };
 
-beforeEach(() => { completedTaskRows.length = 0; stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; timeline.length = 0; recordLabeled('AI'); });
+beforeEach(() => { completedTaskRows.length = 0; stopContainerWait = undefined; onContainerStop = undefined; discovered.length = 0; states.clear(); redisValues.clear(); redisSets.clear(); conversations.clear(); jobs.length = 0; requests.length = 0; containers.length = 0; clearedLoops.length = 0; tracker = { state: 'open', labels: [{ name: 'AI' }] }; trackerError = undefined; onRequest = undefined; closingPR = undefined; onClosingPR = undefined; timeline.length = 0; recordLabeled('AI'); });
 function addJob(id: string, data: any, status = 'waiting', name = 'processGitHubIssue') {
     const job = { id, data, status, name, getState: async () => job.status, remove: async () => { jobs.splice(jobs.indexOf(job), 1); } };
     jobs.push(job);
@@ -1213,4 +1217,108 @@ test('closure cleanup stops when a reopen swaps triggers between deletions', asy
     await updateWithdrawnIssueLabels(target, ['AI', 'build'], 'cancelled_issue_closed');
     assert.deepEqual(requests.filter(r => r.endpoint.startsWith('DELETE ')).map(r => r.params.name), ['AI-processing']);
     assert.deepEqual(tracker.labels, ['build', 'build-processing']);
+});
+
+// A queued request has no `-processing` label, so a failed `-cancelled` publish
+// leaves nothing on GitHub to keep a reopened issue out of discovery.
+const retainedCleanups = () => [...redisSets.get('intent:withdrawal-cleanup') ?? []];
+async function closeQueuedIssueWithFailedMarker(status = 403) {
+    addJob('queued', target);
+    tracker = { state: 'closed', labels: ['AI'] };
+    timeline.push({ event: 'closed' });
+    timelineRevision++;
+    let publishes = 0;
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ')) {
+            publishes++;
+            throw Object.assign(new Error('Service Unavailable'), { status });
+        }
+    };
+    await assert.rejects(cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never), /Service Unavailable/);
+    onRequest = undefined;
+    assert.equal(jobs.length, 0);
+    assert.equal(states.get('queued').terminalReason, 'cancelled_issue_closed');
+    assert.deepEqual(tracker.labels, ['AI'], 'no exclusion marker reached GitHub');
+    assert.equal(retainedCleanups().length, 1);
+    return publishes;
+}
+function reopen() {
+    tracker = { ...tracker, state: 'open' };
+    timeline.push({ event: 'reopened' });
+    timelineRevision++;
+}
+
+test('a queued closure whose marker exhausts retries is not restarted by reopening without reapplying the trigger', async () => {
+    assert.equal(await closeQueuedIssueWithFailedMarker(503), 3, 'every publish retry failed');
+    reopen();
+    assert.deepEqual(await pollRestoredIssues(), [{ status: 'ignored', reason: 'intent_not_current' }]);
+    assert.equal(jobs.length, 0);
+    assert.ok(tracker.labels.includes('AI-cancelled'), 'discovery publishes the retained exclusion');
+    assert.deepEqual(retainedCleanups(), []);
+    assert.deepEqual(await pollRestoredIssues(), []);
+    // Reapplying the trigger is still renewed intent.
+    tracker = { ...tracker, labels: [...tracker.labels.filter((label: string) => label !== 'AI'), 'AI'] };
+    recordLabeled('AI');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.equal(jobs.length, 1);
+    assert.equal(states.get('queued').terminalReason, 'cancelled_issue_closed');
+});
+
+test('reconciliation retries a retained closure exclusion after the request left every scan', async () => {
+    await closeQueuedIssueWithFailedMarker();
+    await reconcileTaskIntents(redis as never, ['other/repo']);
+    assert.equal(retainedCleanups().length, 1, 'only monitored repositories are settled');
+    await reconcileTaskIntents(redis as never, ['acme/widgets']);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+    reopen();
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.equal(jobs.length, 0);
+});
+
+test('a trigger reapplied after the closure releases a retained exclusion without a marker', async () => {
+    await closeQueuedIssueWithFailedMarker();
+    reopen();
+    tracker = { ...tracker, labels: [] };
+    tracker = { ...tracker, labels: ['AI'] };
+    recordLabeled('AI');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.ok(!tracker.labels.includes('AI-cancelled'));
+    assert.deepEqual(retainedCleanups(), []);
+});
+
+test('discovery fails closed while a retained exclusion cannot be settled', async () => {
+    await closeQueuedIssueWithFailedMarker();
+    reopen();
+    trackerError = Object.assign(new Error('Bad credentials'), { status: 401 });
+    assert.deepEqual(await pollRestoredIssues(), [{ status: 'ignored', reason: 'intent_not_current' }]);
+    assert.equal(jobs.length, 0);
+    assert.equal(retainedCleanups().length, 1);
+});
+
+test('queue pickup of a closed issue retains its exclusion when the marker fails', async () => {
+    const job = addJob('pickup', target, 'active');
+    tracker = { state: 'closed', labels: ['AI'] };
+    timeline.push({ event: 'closed' });
+    onRequest = endpoint => {
+        if (endpoint.startsWith('POST ')) throw Object.assign(new Error('Service Unavailable'), { status: 403 });
+    };
+    await assert.rejects(preventWithdrawnJob(job), /Service Unavailable/);
+    onRequest = undefined;
+    assert.equal(states.get('pickup').terminalReason, 'cancelled_issue_closed');
+    jobs.length = 0;
+    reopen();
+    assert.deepEqual(await pollRestoredIssues(), [{ status: 'ignored', reason: 'intent_not_current' }]);
+    assert.ok(tracker.labels.includes('AI-cancelled'));
+    assert.equal(jobs.length, 0);
+});
+
+test('a closure that stops nothing releases its retained exclusion', async () => {
+    tracker = { state: 'closed', labels: ['AI'] };
+    addJob('protected', target);
+    closingPR = undefined;
+    states.set('protected', { taskId: 'protected', issueRef: target, state: 'pending', prResult: { prNumber: 9 }, history: [] });
+    await cancelWithdrawnIntent(target, 'cancelled_issue_closed', redis as never);
+    assert.equal(states.get('protected').state, 'pending');
+    assert.deepEqual(retainedCleanups(), []);
 });

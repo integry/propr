@@ -8,7 +8,8 @@ import { isBookkeepingCancellation, type IssueRef, type TaskStateData, type Task
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { clearUltrafixLoopState } from '../webhook/checkRunHelpers.js';
+import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
+import { WITHDRAWAL_CLEANUP_KEY, releaseWithdrawalCleanup, retainWithdrawalCleanup, triggerAppliedSinceClosure, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
 
 export type IntentCancellationReason = 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed';
@@ -231,19 +232,83 @@ async function publishCancelledMarker(target: IntentTarget, triggers: string[], 
     }, retryConfigs.githubApi, 'add_cancelled_label');
 }
 
-export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason, taskId?: string): Promise<void> {
-    if (target.kind !== 'issue') return;
+/** Returns true while the obligation's issue must stay out of discovery. */
+async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentTarget): Promise<boolean> {
+    const triggers = await loadPrimaryProcessingLabels();
+    const current = await readCurrentTaskIntent(target);
+    if (withdrawnIntentReason(target, current, triggers) === 'cancelled_issue_closed') {
+        // Still closed: retry the original cleanup.
+        if (await updateWithdrawnIssueLabels(target, triggers, 'cancelled_issue_closed')) await releaseWithdrawalCleanup(cleanup);
+        return true;
+    }
+    const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
+    const present = triggers.filter(trigger => labels.includes(trigger));
+    const excluded = triggers.some(trigger => ['processing', 'done', 'cancelled'].some(status => labels.includes(`${trigger}-${status}`)));
+    // Without a trigger, only applying one renews intent; an existing exclusion
+    // already makes discovery wait for a reapplication ordered after it.
+    if (!present.length || excluded) {
+        await releaseWithdrawalCleanup(cleanup);
+        return true;
+    }
+    if (await triggerAppliedSinceClosure(target, present)) {
+        await releaseWithdrawalCleanup(cleanup);
+        return false;
+    }
+    // Reopened without reapplying the trigger: publish the exclusion the
+    // cancellation could not. A reapplication racing this POST is an
+    // unavoidable API race; it fails closed and needs another reapplication.
+    const octokit = await getAuthenticatedOctokit();
+    await withRetry(() => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+        owner: target.repoOwner, repo: target.repoName, issue_number: target.number,
+        labels: [`${target.triggeringLabel ?? present[0]}-cancelled`],
+    }), retryConfigs.githubApi, 'add_cancelled_label');
+    await releaseWithdrawalCleanup(cleanup);
+    return true;
+}
+
+/**
+ * Retries retained closure exclusions for matching issues. Returns true when a
+ * matching issue must stay idle. Without `onError`, failures propagate so
+ * admission fails closed.
+ */
+export async function settleWithdrawalCleanups(redis: CleanupRedis, matches: (target: IntentTarget) => boolean,
+    onError?: (target: IntentTarget, error: unknown) => void): Promise<boolean> {
+    let idle = false;
+    for (const member of await redis.smembers(WITHDRAWAL_CLEANUP_KEY)) {
+        let target: IntentTarget;
+        try {
+            const data = JSON.parse(member) as Record<string, unknown>;
+            const parsed = taskIntentTarget(data, 'issue');
+            if (!parsed) continue;
+            target = parsed;
+        } catch {
+            continue;
+        }
+        if (!matches(target)) continue;
+        try {
+            idle = await settleWithdrawalCleanup({ redis, member }, target) || idle;
+        } catch (error) {
+            if (!onError) throw error;
+            onError(target, error);
+        }
+    }
+    return idle;
+}
+
+/** Returns true once a withdrawal's exclusion stands, even if later status-label deletion stops early. */
+export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers: string[], reason?: TaskTerminalReason, taskId?: string): Promise<boolean> {
+    if (target.kind !== 'issue') return false;
     if (reason === 'cancelled_by_user') {
         await clearUserStoppedProcessingLabel(target, taskId);
-        return;
+        return false;
     }
     // Stopping one attempt does not withdraw the issue's intent or its siblings' status.
-    if (reason !== 'cancelled_issue_closed' && reason !== 'cancelled_label_removed') return;
+    if (reason !== 'cancelled_issue_closed' && reason !== 'cancelled_label_removed') return false;
     // Stops may await Redis, the queue and containers. Refresh label authority
     // before cleanup so another trigger's live work keeps its status labels.
     const current = await readCurrentTaskIntent(target);
     const currentLabels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
-    if (withdrawnIntentReason(target, current, triggers) !== reason) return;
+    if (withdrawnIntentReason(target, current, triggers) !== reason) return false;
     const labelsToClear = reason === 'cancelled_label_removed'
         ? (target.triggeringLabel ? [target.triggeringLabel] : triggers)
         : [...triggers, ...(target.triggeringLabel ? [target.triggeringLabel] : [])];
@@ -258,7 +323,7 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     const revokingDone = labelsToClear.map(trigger => `${trigger}-done`).filter(label => !staleDone.includes(label));
     // Publish before deleting: `-processing` keeps the issue out of discovery
     // until the marker exists, so a failed publish cannot readmit it on reopen.
-    if (markCancelled && !await publishCancelledMarker(target, triggers, reason, revokingDone)) return;
+    if (markCancelled && !await publishCancelledMarker(target, triggers, reason, revokingDone)) return false;
     // Renewed intent owns these labels; stop before any later deletion or retry.
     // The label scope was chosen for `reason`: a different withdrawal (e.g. a
     // reopen that swaps triggers after closure) may leave another trigger live.
@@ -266,8 +331,9 @@ export async function updateWithdrawnIssueLabels(target: IntentTarget, triggers:
     const stillWithdrawn = async () => withdrawnIntentReason(target, await readCurrentTaskIntent(target), triggers) === reason;
     const labels = [...new Set(labelsToClear)].flatMap(trigger => [`${trigger}-processing`, `${trigger}-waiting`, ...staleDone.filter(label => label === `${trigger}-done`)]);
     for (const label of labels) {
-        if (!await removeIntentLabel(target, label, stillWithdrawn)) return;
+        if (!await removeIntentLabel(target, label, stillWithdrawn)) return true;
     }
+    return true;
 }
 
 export function intentJobTaskId(job: { id?: string; data: Record<string, unknown> }): string {
@@ -312,6 +378,8 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
     const triggers = await loadPrimaryProcessingLabels();
     const current = await readCurrentTaskIntent(target);
     if (withdrawnIntentReason(target, current, triggers) !== reason) return;
+    // Retained before any stop, so a crash or failed publish leaves it for retry.
+    const cleanup = await retainWithdrawalCleanup(redis, target, reason);
     let stopped = false;
     const results = await Promise.allSettled([...candidates].map(async ([id, candidate]) => {
         if (reason === 'cancelled_label_removed'
@@ -327,7 +395,9 @@ export async function cancelWithdrawnIntent(target: IntentTarget, reason: Intent
         return result;
     }));
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
-    if (stopped) await updateWithdrawnIssueLabels(target, triggers, reason);
+    // A failed publish throws and a reopen returns false; both keep the obligation.
+    const excluded = stopped && await updateWithdrawnIssueLabels(target, triggers, reason);
+    if (excluded || !stopped) await releaseWithdrawalCleanup(cleanup);
     const failures = results.filter(result => result.status === 'rejected' || result.value && !result.value.cancellationRecorded && !result.value.notRunning);
     if (failures.length) throw new Error(`Could not record ${failures.length} intent cancellation(s)`);
 }
@@ -362,6 +432,9 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[])
             logger.warn({ target, error }, 'Failed to reconcile task intent; will retry next poll');
         }
     }
+    // Cancelled requests leave the scans above, so failed exclusions are retried here.
+    await settleWithdrawalCleanups(redis, target => repositories.some(repo => repo.toLowerCase() === `${target.repoOwner}/${target.repoName}`.toLowerCase()),
+        (target, error) => logger.warn({ target, error }, 'Failed to publish retained cancellation exclusion; will retry next poll'));
 }
 
 /** Runs before any dispatcher, review, worktree or agent side effects. API errors fail closed. */
@@ -380,9 +453,12 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
     const reason = await checkCurrentTaskIntent(target);
     if (!reason || reason === 'cancelled_issue_closed' && await isIssueClosureProtected(target, await manager.getTaskState(taskId))) return null;
     await manager.createTaskStateIfAbsent(taskId, taskIntentIssueRef(data, target), typeof data.correlationId === 'string' ? data.correlationId : null, job.id ?? null);
+    // Queue pickup shares the webhook/polling Redis instance.
+    const cleanup = await retainWithdrawalCleanup(getUltrafixStateRedis(), target, reason);
     // This job is the failed attempt's live retry, so its withdrawal is recorded.
     const cancelled = await manager.markTaskCancelled(taskId, 'system', { reason: formatTaskTerminalReason(reason), terminalReason: reason, withdrawnQueuedRetry: true });
     if (cancelled && cancelled.state !== 'cancelled') {
+        await releaseWithdrawalCleanup(cleanup);
         // If the state guard keeps the failure, the retry must still be
         // rejected. Only actual PR evidence exempts it from issue closure.
         if (cancelled.state === 'failed'
@@ -390,6 +466,6 @@ export async function preventWithdrawnJob(job: { id?: string; name: string; data
         return null;
     }
     if (target.kind === 'pr') await clearUltrafixLoopState(target.repoOwner, target.repoName, target.number);
-    await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason);
+    if (await updateWithdrawnIssueLabels(target, await loadPrimaryProcessingLabels(), reason)) await releaseWithdrawalCleanup(cleanup);
     return reason;
 }
