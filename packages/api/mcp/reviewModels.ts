@@ -10,7 +10,12 @@ export const MAX_REVIEW_MODELS = 8;
 /** One model token on the `/review` command line, exactly as a hand-typed comment carries it. */
 export const reviewModelSchema = z.string().min(1).max(255).regex(/^[A-Za-z0-9][\w.:~/@+-]*$/, 'A model alias is a single token without spaces.');
 
-interface ReviewModelChoice extends ModelChoice { requested: string }
+/**
+ * `requested` is the caller's token, kept for the receipt; `command` is the token the
+ * `/review` comment carries, with the managed `llm-` prefix removed the same
+ * case-insensitive way validation removed it, so the review runs the validated model.
+ */
+interface ReviewModelChoice extends ModelChoice { requested: string; command: string }
 
 /**
  * Resolve every requested reviewing model against the enabled agents `list_models`
@@ -36,7 +41,7 @@ export async function resolveReviewModels(requested: string[]): Promise<ReviewMo
       continue;
     }
     claimed.set(key, alias);
-    resolved.push({ requested: alias, ...match });
+    resolved.push({ requested: alias, command: alias.replace(/^llm-/i, ''), ...match });
   }
   if (rejected.length) {
     throw new McpError(rejected.some(entry => entry.code === 'UNKNOWN_MODEL') ? 'UNKNOWN_MODEL' : 'DUPLICATE_MODEL',
@@ -81,7 +86,7 @@ export async function postModelReviews(
       reviews.push({ ...receipt, resolvedHead, headSource, state: 'not_posted', error: blocked });
       continue;
     }
-    const body = `/review ${choice.requested}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
+    const body = `/review ${choice.command}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
     let data: { id: number; html_url: string };
     try {
       ({ data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body }));

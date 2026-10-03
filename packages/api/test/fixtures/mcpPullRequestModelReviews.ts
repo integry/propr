@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import * as core from '@propr/core';
 import type { McpPrincipal } from '../../mcp/policy.js';
 import { type Args, type WriteFixture, interceptRest } from './mcpPullRequestWrites.js';
 
@@ -45,6 +46,22 @@ export async function verifyModelReviews({ t, call, mutate, principal, findPullR
     // The PR stays routed to its own model: no label is read or written.
     assert.deepEqual(live.labels, labelsBefore);
     assert.equal(labelWrites(), writesBefore);
+  });
+
+  await t.test('review_pull_request posts a prefixed model as the validated model the worker resolves', async () => {
+    const head = 'a'.repeat(40);
+    const review = await mutate('review_pull_request', { repository: 'acme/repo', pullRequest: 42, expectedHead: head, model: 'LLM-gpt-5.6' });
+    assert.equal(review.state, 'posted', JSON.stringify(review));
+    // The receipt keeps the caller's token next to the model it resolved to.
+    assert.equal(review.result.model, 'LLM-gpt-5.6');
+    assert.equal(review.result.resolvedModel, 'gpt-5.6');
+    const stored = comments.find(comment => comment.id === review.result.commentId)!;
+    assert.equal(stored.body.split('\n')[0], '/review gpt-5.6');
+    // The webhook parses the posted comment and resolves the same assignment validation did.
+    const meta = core.buildCommandMeta(core.parseSlashCommand(stored.body)!);
+    assert.equal(meta.mode, 'review');
+    const assignments = await core.resolveReviewModels((meta as core.ReviewCommandMeta).models);
+    assert.deepEqual(assignments.map(assignment => [assignment.agentAlias, assignment.model]), [[review.result.agentAlias, review.result.resolvedModel]]);
   });
 
   await t.test('review_pull_request fans out one independent review per listed model', async () => {
