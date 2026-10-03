@@ -87,7 +87,7 @@ GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
 
 Adjust agent defaults and routing in the Web UI. Environment variables are mainly for install-time paths, secrets, and service wiring. Retry behavior is hard-coded and has no environment variables.
 
-Use `ANTIGRAVITY_TIMEOUT_MS` for Antigravity runs and configure Antigravity model labels such as `llm-antigravity-pro`, `llm-antigravity-flash`, and `llm-antigravity-opus55` in AI Agents.
+Use `ANTIGRAVITY_TIMEOUT_MS` for Antigravity runs and configure Antigravity model labels such as `llm-antigravity-pro`, `llm-antigravity-flash38`, and `llm-antigravity-opus55` in AI Agents.
 
 Antigravity uses one catalog entry and base label per model. Configure reasoning effort separately through a per-model override in AI Agents, a `level-low` / `level-medium` / `level-high` issue label, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; without either, the closest supported effort to the system preference is used. Flash and Claude support low / medium / high, Pro supports low / high, and GPT-OSS uses medium.
 

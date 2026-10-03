@@ -85,13 +85,13 @@ describe("E2E model task completion", () => {
     assert.throws(
       () => assertModelTasksSucceeded([
         result("codex", "gpt-5.6-sol", "completed"),
-        result("antigravity", "antigravity-gemini-3.5-flash", "failed", "agy not found\ninside image"),
+        result("antigravity", "antigravity-gemini-3.8-flash", "failed", "agy not found\ninside image"),
         result("claude", "claude-sonnet-4-6", "cancelled"),
       ]),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /2\/3 model task\(s\) did not complete successfully/);
-        assert.match(error.message, /antigravity\/antigravity-gemini-3\.5-flash: failed — agy not found inside image/);
+        assert.match(error.message, /antigravity\/antigravity-gemini-3\.8-flash: failed — agy not found inside image/);
         assert.match(error.message, /claude\/claude-sonnet-4-6: cancelled/);
         return true;
       },

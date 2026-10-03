@@ -52,7 +52,7 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
               antigravity: { name: 'antigravity', usage: { models: [
                 { model: 'antigravity-gemini-3.8-flash', percentUsed: 8, resetsIn: '1h' },
                 { model: 'antigravity-gemini-3.8-flash', percentUsed: 17, resetsIn: '1h' },
-                { model: 'antigravity-gemini-3.5-flash', percentUsed: 31, resetsIn: '1h' },
+                { model: 'antigravity-gemini-3.8-flash', percentUsed: 31, resetsIn: '1h' },
                 { model: 'antigravity-gemini-3.1-pro', percentUsed: 52, resetsIn: '1h' },
                 { model: 'antigravity-claude-sonnet-5.5', percentUsed: 68, resetsIn: '1h' },
                 { model: 'antigravity-claude-opus-5.5', percentUsed: 84, resetsIn: '1h' },

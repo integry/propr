@@ -13,7 +13,7 @@ describe('summary miner batch limits', () => {
 
   test('does not cap other Antigravity models by agent namespace alone', () => {
     assert.equal(
-      getSummarizationBatchLimitOverride('antigravity-gemini-3.5-flash'),
+      getSummarizationBatchLimitOverride('antigravity-gemini-3.8-flash'),
       undefined
     );
   });

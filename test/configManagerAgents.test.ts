@@ -308,7 +308,7 @@ describe('agent config migration', () => {
     });
 
     test('adds current Antigravity base models and preserves the selected default', () => {
-        const existingDefault = 'antigravity-gemini-3.5-flash';
+        const existingDefault = 'antigravity-gemini-3.1-pro';
         const agent = createAgent({
             type: 'antigravity',
             supportedModels: [existingDefault],
@@ -319,7 +319,7 @@ describe('agent config migration', () => {
 
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.ok(agent.supportedModels.includes('antigravity-gemini-3.8-flash'));
-        assert.strictEqual(agent.defaultModel, 'antigravity-gemini-3.5-flash');
+        assert.strictEqual(agent.defaultModel, existingDefault);
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.antigravity);
     });
 
@@ -387,7 +387,7 @@ test('Antigravity migration preserves colliding custom labels and default effort
     const saved = buildAgentConfig({ ...agent, alias: 'edited-agent' });
     assert.deepEqual(saved.modelCustomLabels, { [low]: 'quick-work', [high]: 'deep-review' });
     assert.equal(migrateAgentConfig(saved), false);
-    const removed = buildAgentConfig({ ...saved, supportedModels: ['antigravity-gemini-3.5-flash'] });
+    const removed = buildAgentConfig({ ...saved, supportedModels: ['antigravity-gemini-3.1-pro'] });
     assert.equal(removed.modelCustomLabels, undefined);
 });
 

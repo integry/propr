@@ -35,8 +35,8 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
-        supportedModels: ['antigravity-gemini-3.8-flash', 'antigravity-gemini-3.5-flash', 'antigravity-claude-opus-5.5'],
-        defaultModel: 'antigravity-gemini-3.5-flash',
+        supportedModels: ['antigravity-gemini-3.8-flash', 'antigravity-gemini-3.1-pro', 'antigravity-claude-opus-5.5'],
+        defaultModel: 'antigravity-gemini-3.1-pro',
         ...overrides
     };
 }
@@ -404,13 +404,13 @@ test('Antigravity output parser handles uppercase ERROR terminal results', () =>
 test('Antigravity output parser rejects a changed-model second initialization', () => {
     const parsed = parseAntigravityJsonl([
         JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-high' } }),
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.5-flash-low' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.1-pro-low' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
     ].join('\n'));
 
     assert.equal(parsed.modelUsed, 'antigravity-gemini-3.8-flash');
     assert.equal(parsed.terminalStatus, 'success');
-    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: gemini-3.8-flash-high then gemini-3.5-flash-low');
+    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: gemini-3.8-flash-high then gemini-3.1-pro-low');
     assert.equal(parsed.summary, 'first');
     assert.equal(parsed.conversationLog.length, 2);
 });
@@ -567,14 +567,14 @@ test('Antigravity agent rejects and persists a reported model that differs from 
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.5-flash',
+        effectiveModel: 'antigravity-gemini-3.1-pro',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.error, 'Antigravity reported model "antigravity-gemini-3.8-flash" but "antigravity-gemini-3.5-flash" was requested');
+    assert.equal(result.error, 'Antigravity reported model "antigravity-gemini-3.8-flash" but "antigravity-gemini-3.1-pro" was requested');
     assert.equal(result.modelUsed, 'antigravity-gemini-3.8-flash');
     assert.equal(persistedModel, 'antigravity-gemini-3.8-flash');
 });
@@ -947,32 +947,18 @@ test('Antigravity labels resolve to Antigravity models', async (t) => {
     registry.agents = new Map([[config.id, fakeAgent]]);
     registry.agentsByAlias = new Map([[config.alias, fakeAgent]]);
 
-    const resolution = await resolveLlmLabel('antigravity-flash');
+    const resolution = await resolveLlmLabel('antigravity-flash38');
     assert.deepEqual(resolution, {
-        agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash'
-    });
-
-    assert.equal(resolveModelAlias('antigravity-flash'), 'antigravity-gemini-3.5-flash');
-
-    const flash38Resolution = await resolveLlmLabel('antigravity-flash38');
-    assert.deepEqual(flash38Resolution, {
         agentAlias: 'antigravity',
         model: 'antigravity-gemini-3.8-flash'
     });
     assert.equal(resolveModelAlias('antigravity-flash38'), 'antigravity-gemini-3.8-flash');
 
-    const prefixedResolution = await resolveLlmLabel('llm-antigravity-flash'.replace(/^llm-/, ''));
-    assert.deepEqual(prefixedResolution, {
-        agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash'
-    });
+    const prefixedResolution = await resolveLlmLabel('llm-antigravity-flash38'.replace(/^llm-/, ''));
+    assert.deepEqual(prefixedResolution, resolution);
 
-    const scopedResolution = await resolveLlmLabel('antigravity:antigravity-gemini-3.5-flash');
-    assert.deepEqual(scopedResolution, {
-        agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.5-flash'
-    });
+    const scopedResolution = await resolveLlmLabel('antigravity:antigravity-gemini-3.8-flash');
+    assert.deepEqual(scopedResolution, resolution);
 });
 
 

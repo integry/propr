@@ -384,7 +384,7 @@ export class AntigravityAgent implements Agent {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
-        const effectiveModel = model || 'antigravity-gemini-3.5-flash';
+        const effectiveModel = model || 'antigravity-gemini-3.8-flash';
         const effectiveTimeoutMs = timeoutMs ?? DEFAULT_ANTIGRAVITY_ANALYSIS_TIMEOUT_MS;
         const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;

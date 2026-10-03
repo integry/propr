@@ -15,8 +15,8 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     enabled: true,
     dockerImage: 'propr/agent:latest',
     configPath: '~/.gemini',
-    supportedModels: ['antigravity-gemini-3.5-flash'],
-    defaultModel: 'antigravity-gemini-3.5-flash',
+    supportedModels: ['antigravity-gemini-3.8-flash'],
+    defaultModel: 'antigravity-gemini-3.8-flash',
     ...overrides
   };
 }

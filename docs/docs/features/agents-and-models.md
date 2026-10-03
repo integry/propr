@@ -153,7 +153,6 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 | Model | Label |
 |-------|-------|
 | Gemini 3.8 Flash | `llm-antigravity-flash38` |
-| Gemini 3.5 Flash | `llm-antigravity-flash` |
 | Gemini 3.1 Pro | `llm-antigravity-pro` |
 | Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
 | Claude Opus 5.5 | `llm-antigravity-opus55` |

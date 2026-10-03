@@ -23,8 +23,8 @@ function createAgent(configPath: string): AntigravityAgent {
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath,
-        supportedModels: ['antigravity-gemini-3.5-flash'],
-        defaultModel: 'antigravity-gemini-3.5-flash'
+        supportedModels: ['antigravity-gemini-3.8-flash'],
+        defaultModel: 'antigravity-gemini-3.8-flash'
     };
     return new AntigravityAgent(config);
 }
@@ -71,7 +71,7 @@ describe('AntigravityAgent Docker args', () => {
             }).buildDockerArgs({
                 worktreePath: '/tmp/worktree',
                 githubToken: '',
-                modelName: 'antigravity-gemini-3.5-flash',
+                modelName: 'antigravity-gemini-3.8-flash',
                 issueNumber: 42
             });
 
@@ -166,7 +166,6 @@ describe('toAntigravityCliModelId', () => {
         for (const [id, name] of [
             ['antigravity-claude-opus-5.5', 'Claude Opus 5.5'],
             ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5'],
-            ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash'],
         ]) {
             for (const effort of ['low', 'medium', 'high'] as const) {
                 const expected = `${name} (${effort[0].toUpperCase()}${effort.slice(1)})`;
@@ -194,7 +193,6 @@ describe('toAntigravityCliModelId', () => {
             ['antigravity-claude-opus-5.5', 'Claude Opus 5.5 (High)'],
             ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5 (High)'],
             ['antigravity-gemini-3.8-flash', 'gemini-3.8-flash-high'],
-            ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash (High)'],
             ['antigravity-gemini-3.1-pro', 'Gemini 3.1 Pro (High)'],
         ]) {
             for (const effort of ['high', 'xhigh', 'max', 'ultra', 'ultracode'] as const) {

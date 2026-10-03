@@ -252,7 +252,7 @@ echo "▸ configuring agents"
 ANTIGRAVITY_CFG="${HOME}/.gemini"
 VIBE_CFG="${HOME}/.vibe"
 VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5}"
-ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.8-flash,antigravity-gemini-3.5-flash,antigravity-gemini-3.1-pro,antigravity-claude-sonnet-5.5,antigravity-claude-opus-5.5,antigravity-gpt-oss-120b}"
+ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.8-flash,antigravity-gemini-3.1-pro,antigravity-claude-sonnet-5.5,antigravity-claude-opus-5.5,antigravity-gpt-oss-120b}"
 OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-big-pickle,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
 json_array_from_csv() {
   local csv="$1"
