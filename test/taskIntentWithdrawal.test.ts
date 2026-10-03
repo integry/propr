@@ -650,6 +650,7 @@ test('trigger reapplication repairs failed cleanup after the task and queue are 
     assert.equal(jobs.length, 0);
     onRequest = undefined;
     tracker = { state: 'open', labels: ['AI', 'AI-processing', 'AI-cancelled', 'build-processing'] };
+    recordLabeled('AI-processing', 'AI-cancelled', 'build-processing');
     requests.length = 0;
     await reapplyTrigger();
     assert.deepEqual(requests.filter(r => r.endpoint.startsWith('DELETE ')).map(r => r.params.name), ['AI-processing', 'AI-cancelled']);
@@ -744,6 +745,7 @@ test('cancelled-label publish retries revalidate closure after backoff', async (
 
 test('trigger reapplication retries cleanup and model labels do not clear status', async () => {
     tracker = { state: 'open', labels: ['AI', 'AI-processing', 'AI-cancelled'] };
+    recordLabeled('AI-processing', 'AI-cancelled');
     let deletes = 0;
     onRequest = endpoint => {
         if (endpoint.startsWith('DELETE ') && deletes++ === 0) throw Object.assign(new Error('temporary'), { status: 503 });
@@ -822,7 +824,7 @@ for (const reason of ['cancelled_issue_closed', 'cancelled_label_removed'] as co
             assert.ok(tracker.labels.includes('AI-cancelled'));
             const oldStates = JSON.stringify([...states]);
             tracker = { state: 'open', labels: [restoredTrigger, ...tracker.labels, `${restoredTrigger}-processing`] };
-            recordLabeled(restoredTrigger);
+            recordLabeled(`${restoredTrigger}-processing`, restoredTrigger);
             await reconcileTaskIntents(redis as never, ['acme/widgets']);
             assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
             assert.deepEqual(tracker.labels, [restoredTrigger]);
@@ -863,6 +865,26 @@ test('polling skips a cancelled issue when the timeline cannot show trigger reap
     assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
 });
 
+test('polling skips a cancelled issue whose applied cancellation marker is not yet in the timeline', async () => {
+    // The timeline shows only the original application; the issue already has
+    // AI-cancelled, so its ordering against the trigger is unknown.
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+    assert.equal(jobs.length, 0);
+    assert.deepEqual(requests.filter(r => !r.endpoint.startsWith('GET ')), []);
+});
+
+test('polling skips a cancelled issue whose timeline last shows the applied marker removed', async () => {
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    recordLabeled('AI-cancelled', 'AI');
+    timeline.push({ event: 'unlabeled', label: { name: 'AI-cancelled' }, actor: { id: 1, login: 'propr-dev[bot]' } });
+    timelineRevision++;
+    assert.deepEqual(await pollRestoredIssues(), []);
+    assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+    assert.equal(jobs.length, 0);
+});
+
 test('polling skips a cancelled issue whose trigger is found only across an unscanned timeline gap', async () => {
     const bot = { id: 1, login: 'propr-dev[bot]' };
     tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
@@ -882,6 +904,7 @@ test('polling skips a cancelled issue whose trigger is found only across an unsc
 for (const phase of ['running', 'waiting', 'delayed', 'active', 'prioritized'] as const) {
     test(`restoration preserves ${phase} sibling work and its processing label`, async () => {
         tracker = { state: 'open', labels: ['AI', 'AI-processing', 'build-cancelled'] };
+        recordLabeled('AI-processing', 'build-cancelled', 'AI');
         if (phase === 'running') addRunning('sibling');
         else addJob('sibling', target, phase);
         assert.equal(await restoreIssueTrigger(target), null);
@@ -925,6 +948,7 @@ test('restoration reads intent after awaited sibling scans', async () => {
 
 test('restoration does not admit completion published during cleanup', async () => {
     tracker = { state: 'open', labels: ['AI', 'build-cancelled'] };
+    recordLabeled('build-cancelled', 'AI');
     onRequest = endpoint => { if (endpoint.startsWith('DELETE ')) tracker.labels.push('AI-done'); };
     assert.equal((await pollRestoredIssues())[0]?.status, 'ignored');
     assert.equal(jobs.length, 0);

@@ -15,11 +15,16 @@ export interface TriggerActor {
 // is true when the application was found only after skipping unscanned
 // timeline pages, so a marker between it and the scanned window may be
 // missed; the actor is still usable, but it is not proof of renewed intent.
+// `appliedMarkerUnseen` is true when a stale marker the caller reports as
+// currently applied has no visible application in the scanned timeline (not
+// yet visible, or only visible before a later removal), so the timeline cannot
+// order the trigger application after it.
 export interface TriggerEvidence {
     actor: TriggerActor | null;
     staleSinceApplied: boolean;
     staleMarkedAt?: string;
     orderingUnverified?: boolean;
+    appliedMarkerUnseen?: boolean;
 }
 
 interface TimelineEvent {
@@ -49,20 +54,48 @@ export function hasStaleTriggerLabels(labels: string[], trigger: string, trigger
     return staleTriggerMarkers(trigger, triggers).some(label => labels.includes(label));
 }
 
-function findTriggerEvidenceInEvents(events: TimelineEvent[], targetLabels: string[], staleMarkers: string[], acc: Omit<TriggerEvidence, 'actor'>): TriggerEvidence {
-    let { staleSinceApplied, staleMarkedAt } = acc;
+interface TimelineScan {
+    actor: TriggerActor | null;
+    staleSinceApplied: boolean;
+    staleMarkedAt?: string;
+    // Currently applied stale markers whose latest timeline event is not yet seen.
+    pendingMarkers: Set<string>;
+    appliedMarkerUnseen: boolean;
+}
+
+// Walks one page backwards. Returns true once the application and the latest
+// event of every currently applied marker are known.
+function scanTimelineEvents(events: TimelineEvent[], targetLabels: string[], staleMarkers: string[], scan: TimelineScan): boolean {
     for (let i = events.length - 1; i >= 0; i--) {
         const ev = events[i];
-        if (ev.event !== 'labeled' || !ev.label?.name) continue;
+        if ((ev.event !== 'labeled' && ev.event !== 'unlabeled') || !ev.label?.name) continue;
         const name = ev.label.name.toLowerCase();
-        if (staleMarkers.includes(name)) {
-            staleSinceApplied = true;
-            staleMarkedAt ??= ev.created_at;
-        } else if (targetLabels.includes(name) && ev.actor?.login && Number.isSafeInteger(ev.actor.id)) {
-            return { actor: { login: ev.actor.login, userId: String(ev.actor.id) }, staleSinceApplied, staleMarkedAt };
+        if (scan.pendingMarkers.delete(name) && ev.event === 'unlabeled') {
+            // The timeline ends with this marker removed, but the issue has
+            // it applied: its current application is not visible yet.
+            scan.appliedMarkerUnseen = true;
         }
+        if (scan.actor || ev.event !== 'labeled') continue;
+        if (staleMarkers.includes(name)) {
+            scan.staleSinceApplied = true;
+            scan.staleMarkedAt ??= ev.created_at;
+        } else if (targetLabels.includes(name) && ev.actor?.login && Number.isSafeInteger(ev.actor.id)) {
+            scan.actor = { login: ev.actor.login, userId: String(ev.actor.id) };
+        }
+        if (scan.actor && scan.pendingMarkers.size === 0) return true;
     }
-    return { actor: null, staleSinceApplied, staleMarkedAt };
+    return Boolean(scan.actor) && scan.pendingMarkers.size === 0;
+}
+
+function evidenceFromScan(scan: TimelineScan, orderingUnverified: boolean): TriggerEvidence {
+    const appliedMarkerUnseen = scan.appliedMarkerUnseen || scan.pendingMarkers.size > 0;
+    return {
+        actor: scan.actor,
+        staleSinceApplied: scan.staleSinceApplied,
+        ...(scan.staleMarkedAt ? { staleMarkedAt: scan.staleMarkedAt } : {}),
+        ...(scan.actor && orderingUnverified ? { orderingUnverified: true } : {}),
+        ...(appliedMarkerUnseen ? { appliedMarkerUnseen: true } : {}),
+    };
 }
 
 function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
@@ -94,17 +127,25 @@ export async function readTriggerApplicationEvidence(opts: {
     issueNumber: number;
     targetLabels: string[];
     staleMarkers: string[];
+    /** Stale markers the current issue has applied; each must be visibly ordered before the application. */
+    appliedMarkers?: string[];
 }): Promise<TriggerEvidence> {
     const { octokit, owner, repo, issueNumber } = opts;
     const targetLabels = opts.targetLabels.map(l => l.toLowerCase());
     const staleMarkers = opts.staleMarkers.map(l => l.toLowerCase());
+    const scan: TimelineScan = {
+        actor: null,
+        staleSinceApplied: false,
+        pendingMarkers: new Set((opts.appliedMarkers ?? []).map(l => l.toLowerCase()).filter(l => staleMarkers.includes(l))),
+        appliedMarkerUnseen: false,
+    };
     const firstPage = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
         owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page: 1
     });
     const lastPage = lastPageFromLinkHeader(firstPage.headers.link) ?? 1;
-    let acc: Omit<TriggerEvidence, 'actor'> = { staleSinceApplied: false };
     if (lastPage === 1) {
-        return findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, acc);
+        scanTimelineEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, scan);
+        return evidenceFromScan(scan, false);
     }
 
     const firstRecentPage = Math.max(2, lastPage - labelApplierTimelineMaxPages() + 1);
@@ -112,17 +153,20 @@ export async function readTriggerApplicationEvidence(opts: {
         const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
             owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
         });
-        const evidence = findTriggerEvidenceInEvents(response.data as TimelineEvent[], targetLabels, staleMarkers, acc);
-        if (evidence.actor) return evidence;
-        acc = evidence;
+        if (scanTimelineEvents(response.data as TimelineEvent[], targetLabels, staleMarkers, scan)) return evidenceFromScan(scan, false);
     }
     // The recent-page window starts at page 2, but page 1 is already in hand —
     // search it too so a label event near the start of a short multi-page
     // timeline (e.g. 2–5 pages) is still found. When pages between 1 and the
     // window were skipped, a stale marker may lie in that gap, so an
-    // application found on page 1 cannot establish ordering after it.
-    const evidence = findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, acc);
-    return evidence.actor && firstRecentPage > 2 ? { ...evidence, orderingUnverified: true } : evidence;
+    // application found on page 1 cannot establish ordering after it, and a
+    // marker event found on page 1 may have been superseded inside the gap.
+    const gap = firstRecentPage > 2;
+    const foundInWindow = scan.actor !== null;
+    const pendingBeforeGap = scan.pendingMarkers.size;
+    scanTimelineEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, scan);
+    if (gap && pendingBeforeGap > 0) scan.appliedMarkerUnseen = true;
+    return evidenceFromScan(scan, gap && !foundInWindow);
 }
 
 type IssueRef = { owner: string; repo: string; issueNumber: number };
@@ -158,6 +202,7 @@ export async function readCurrentTriggerEvidence(
     if (!hasStaleTriggerLabels(labels, trigger, triggers)) return { labels, evidence: null };
     const evidence = await withRetry(() => readTriggerApplicationEvidence({
         octokit, owner, repo, issueNumber, targetLabels: [trigger], staleMarkers: staleTriggerMarkers(trigger, triggers),
+        appliedMarkers: labels,
     }), retryConfigs.githubApi, 'read_trigger_timeline');
     return { labels, evidence };
 }

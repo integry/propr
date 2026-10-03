@@ -10,9 +10,12 @@ import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js'
  * work. Either the timeline shows an authorized application after the latest
  * stale marker, or this delivery's own event postdates that marker (the new
  * labeled event may not be visible in the timeline yet). An application found
- * only across an unscanned timeline gap does not establish that ordering.
+ * only across an unscanned timeline gap does not establish that ordering, and
+ * neither timeline nor delivery time can be ordered against a currently
+ * applied marker whose application the timeline does not show yet.
  */
 function isRenewedApplication(evidence: TriggerEvidence, deliveredAt: string | undefined): boolean {
+    if (evidence.appliedMarkerUnseen) return false;
     if (evidence.actor && !evidence.staleSinceApplied && !evidence.orderingUnverified) return isAuthorizedIssueTriggerActor(evidence.actor.login);
     const delivered = deliveredAt ? Date.parse(deliveredAt) : NaN;
     const marked = evidence.staleMarkedAt ? Date.parse(evidence.staleMarkedAt) : NaN;

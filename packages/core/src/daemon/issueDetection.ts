@@ -25,8 +25,8 @@ const LABEL_APPLIER_CACHE_MAX = 500;
 // timeline lag behind the issue's updatedAt, so it is rechecked periodically.
 const STALE_EVIDENCE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-function getLabelApplierCacheKey(opts: { owner: string; repo: string; issueNumber: number; updatedAt: string; targetLabels: string[] }): string {
-    return `${opts.owner}/${opts.repo}#${opts.issueNumber}:${opts.updatedAt}:${opts.targetLabels.join(',')}`;
+function getLabelApplierCacheKey(opts: { owner: string; repo: string; issueNumber: number; updatedAt: string; targetLabels: string[]; appliedMarkers?: string[] }): string {
+    return `${opts.owner}/${opts.repo}#${opts.issueNumber}:${opts.updatedAt}:${opts.targetLabels.join(',')}:${(opts.appliedMarkers ?? []).join(',')}`;
 }
 
 interface GitHubIssue {
@@ -55,6 +55,7 @@ async function resolveLabelApplierCached(opts: {
     updatedAt: string;
     targetLabels: string[];
     staleMarkers: string[];
+    appliedMarkers?: string[];
     log?: Logger;
 }): Promise<TriggerEvidence | null> {
     const cacheKey = getLabelApplierCacheKey(opts);
@@ -79,7 +80,7 @@ async function resolveLabelApplierCached(opts: {
             }
             labelApplierCache.set(cacheKey, {
                 evidence: result,
-                expiresAt: result.staleSinceApplied || result.orderingUnverified ? Date.now() + STALE_EVIDENCE_CACHE_TTL_MS : Infinity,
+                expiresAt: result.staleSinceApplied || result.orderingUnverified || result.appliedMarkerUnseen ? Date.now() + STALE_EVIDENCE_CACHE_TTL_MS : Infinity,
             });
         }
         return result;
@@ -104,6 +105,12 @@ function issueSeatConsumed(issue: DetectedIssue): boolean {
 
 function excludeLabelsFor(triggers: string[]): string[] {
     return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
+}
+
+// Restoration evidence must show an application ordered after every stale
+// marker, including each currently applied one.
+function provesTriggerReapplied(evidence: TriggerEvidence | null): boolean {
+    return Boolean(evidence?.actor) && !evidence?.staleSinceApplied && !evidence?.orderingUnverified && !evidence?.appliedMarkerUnseen;
 }
 
 // The trigger admission selects; restoration evidence must be for this trigger.
@@ -375,12 +382,15 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     octokit, owner, repo, issueNumber: issue.number, updatedAt: issue.updated_at,
                     targetLabels: stale ? [trigger] : primaryProcessingLabels,
                     staleMarkers: stale ? staleTriggerMarkers(trigger, primaryProcessingLabels) : [],
+                    appliedMarkers: stale ? labels : [],
                     log: correlatedLogger
                 });
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after its stale
                 // `-processing`/`-cancelled` marker, matching webhook-mode behaviour.
-                if (stale && (!evidence?.actor || evidence.staleSinceApplied || evidence.orderingUnverified)) {
+                // A marker still applied but not yet visible in the timeline
+                // leaves that ordering unproven, so restoration waits.
+                if (stale && !provesTriggerReapplied(evidence)) {
                     correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Stale issue has no trigger reapplication after its stale marker — skipping');
                     return null;
                 }

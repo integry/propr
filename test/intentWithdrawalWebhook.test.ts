@@ -215,6 +215,28 @@ test('a stale delivery is admitted when the timeline shows an authorized reappli
     assert.equal(restore.mock.callCount(), 1);
 }));
 
+test('a delayed original delivery cannot restart work whose applied cancellation is not yet in the timeline', () => withTriggers(async () => {
+    // The current issue has AI-cancelled, but the timeline lags and shows only
+    // the original authorized application.
+    currentLabels = ['AI', 'AI-cancelled'];
+    timeline = [labeled('AI', 'alice', '2026-10-01T00:00:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T00:00:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    // A visible older marker does not stand in for the unseen applied one.
+    timeline = [labeled('AI', 'alice', '2026-10-01T00:00:00Z'), labeled('AI-processing', 'propr-dev[bot]', '2026-10-01T00:01:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T00:30:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 0);
+    assert.equal(processed.length, 0);
+}));
+
+test('a delayed delivery cannot restart work when the timeline last shows the applied marker removed', () => withTriggers(async () => {
+    // Restored once, then cancelled again; the new AI-cancelled is not visible yet.
+    currentLabels = ['AI', 'AI-cancelled'];
+    timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z'),
+        { event: 'unlabeled', label: { name: 'AI-cancelled' }, actor: { id: 1, login: 'propr-dev[bot]' }, created_at: '2026-10-01T02:01:00Z' }];
+    assert.deepEqual(await deliverAI('2026-10-01T02:00:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(restore.mock.callCount(), 0);
+}));
+
 test('a trigger removed again before delivery is not restored', () => withTriggers(async () => {
     currentLabels = ['AI-cancelled'];
     timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')];
