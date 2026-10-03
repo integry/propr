@@ -11,6 +11,7 @@ import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskIntent.js';
+import type { CleanupVerdict } from '../services/withdrawalCleanup.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
@@ -122,15 +123,49 @@ function admissionTrigger(labels: string[], triggers: string[], renewed?: string
     return triggers.find(label => labels.includes(label));
 }
 
+type PollingEvidenceReader = (targetLabels: string[], staleFor?: string) => Promise<TriggerEvidence | null>;
+
+/**
+ * Timeline evidence for a polled issue and the trigger whose application
+ * requested it, so admission records that trigger rather than the first
+ * configured one present. `stale` without a `renewedTrigger` is not restorable.
+ */
+async function pollingTriggerEvidence(labels: string[], triggers: string[], read: PollingEvidenceReader): Promise<{ stale: boolean; evidence: TriggerEvidence | null; renewedTrigger?: string }> {
+    const present = triggers.filter(label => labels.includes(label));
+    const stale = !!present[0] && hasStaleTriggerLabels(labels, present[0], triggers);
+    if (!stale) {
+        const evidence = await read(triggers);
+        if (present.length < 2) return { stale, evidence };
+        // Several triggers without a stale marker (e.g. a closure obligation
+        // settled without publishing one): the request is the latest
+        // application of a present trigger. The latest application of any
+        // trigger may be of one since removed, so present ones are reread.
+        const appliedPresent = (found: TriggerEvidence | null) => present.find(label => label.toLowerCase() === found?.appliedLabel);
+        return { stale, evidence, renewedTrigger: appliedPresent(evidence) ?? appliedPresent(await read(present)) };
+    }
+    // Restoration needs an application of the trigger admission will use;
+    // another trigger's newer (possibly removed) application is not renewed
+    // intent for it. Another present trigger applied after the stale markers
+    // is a new request of its own.
+    const evidence = await read([present[0]], present[0]);
+    if (provesTriggerReapplied(evidence)) return { stale, evidence, renewedTrigger: present[0] };
+    for (const other of present.slice(1)) {
+        if (!hasStaleTriggerLabels(labels, other, triggers)) continue;
+        const otherEvidence = await read([other], other);
+        if (provesTriggerReapplied(otherEvidence)) return { stale, evidence: otherEvidence, renewedTrigger: other };
+    }
+    return { stale, evidence };
+}
+
 // A closure whose `-cancelled` marker failed to publish still withdraws intent:
 // reopening alone must not admit the issue. Settlement failures fail closed.
-async function heldByWithdrawalCleanup(issue: DetectedIssue, redisClient: Redis, log: Logger): Promise<boolean> {
+async function settleIssueWithdrawalCleanup(issue: DetectedIssue, redisClient: Redis, log: Logger): Promise<CleanupVerdict> {
     try {
         return await settleWithdrawalCleanups(redisClient, target => target.number === issue.number
             && `${target.repoOwner}/${target.repoName}`.toLowerCase() === `${issue.repoOwner}/${issue.repoName}`.toLowerCase());
     } catch (error) {
         log.warn({ issueNumber: issue.number, error: (error as Error).message }, 'Could not settle retained cancellation exclusion; skipping issue');
-        return true;
+        return { idle: true };
     }
 }
 
@@ -148,7 +183,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Check for processing labels BEFORE acquiring dedup lock
     // This ensures invalid events don't block subsequent valid events
-    const triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels, issue.renewedTrigger);
+    let triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels, issue.renewedTrigger);
 
     if (!triggeringLabel) {
         correlatedLogger.info({
@@ -188,7 +223,12 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         return { status: 'ignored', reason: 'issue_has_terminal_label' };
     }
 
-    if (await heldByWithdrawalCleanup(issue, redisClient, correlatedLogger)) return { status: 'ignored', reason: 'intent_not_current' };
+    const cleanup = await settleIssueWithdrawalCleanup(issue, redisClient, correlatedLogger);
+    if (cleanup.idle) return { status: 'ignored', reason: 'intent_not_current' };
+    // Settlement released the closure obligation on fresh evidence of a trigger
+    // applied after the closure. That trigger requested this job unless the
+    // producer verified an application of its own.
+    triggeringLabel = admissionTrigger(issue.labels, primaryProcessingLabels, issue.renewedTrigger ?? cleanup.renewedTrigger) ?? triggeringLabel;
 
     // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
     // Use Redis SET NX with TTL to ensure only one job is queued per issue within the window
@@ -391,37 +431,19 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
             const results = await Promise.all(batch.map(async (issue) => {
                 const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
-                const present = primaryProcessingLabels.filter(label => labels.includes(label));
-                let trigger = present[0];
-                const stale = !!trigger && hasStaleTriggerLabels(labels, trigger, primaryProcessingLabels);
-                // Restoration needs an application of the trigger admission
-                // will use; another trigger's newer (possibly removed)
-                // application is not renewed intent for it.
-                const readEvidence = (candidate: string) => resolveLabelApplierCached({
+                const { stale, evidence, renewedTrigger } = await pollingTriggerEvidence(labels, primaryProcessingLabels, (targetLabels, staleFor) => resolveLabelApplierCached({
                     octokit, owner, repo, issueNumber: issue.number, updatedAt: issue.updated_at,
-                    targetLabels: stale ? [candidate] : primaryProcessingLabels,
-                    staleMarkers: stale ? staleTriggerMarkers(candidate, primaryProcessingLabels) : [],
-                    appliedMarkers: stale ? labels : [],
+                    targetLabels,
+                    staleMarkers: staleFor ? staleTriggerMarkers(staleFor, primaryProcessingLabels) : [],
+                    appliedMarkers: staleFor ? labels : [],
                     log: correlatedLogger
-                });
-                let evidence = await readEvidence(trigger);
-                // Another present trigger applied after the stale markers is a
-                // new request of its own. Admission is told which trigger was
-                // renewed, so the evidence and the recorded trigger stay aligned.
-                for (const other of stale && !provesTriggerReapplied(evidence) ? present.slice(1) : []) {
-                    if (!hasStaleTriggerLabels(labels, other, primaryProcessingLabels)) continue;
-                    const otherEvidence = await readEvidence(other);
-                    if (!provesTriggerReapplied(otherEvidence)) continue;
-                    trigger = other;
-                    evidence = otherEvidence;
-                    break;
-                }
+                }));
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after its stale
                 // `-processing`/`-cancelled` marker, matching webhook-mode behaviour.
                 // A marker still applied but not yet visible in the timeline
                 // leaves that ordering unproven, so restoration waits.
-                if (stale && !provesTriggerReapplied(evidence)) {
+                if (stale && !renewedTrigger) {
                     correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Stale issue has no trigger reapplication after its stale marker — skipping');
                     return null;
                 }
@@ -454,7 +476,8 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     ...(labelApplier ? { triggeredById: labelApplier.userId } : {}),
                     source: 'polling' as const,
                     // The stale-marker gate above already required newer trigger evidence.
-                    ...(stale ? { triggerReapplied: true, renewedTrigger: trigger } : {})
+                    ...(stale ? { triggerReapplied: true } : {}),
+                    ...(renewedTrigger ? { renewedTrigger } : {})
                 };
             }));
             for (const r of results) {

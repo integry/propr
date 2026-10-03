@@ -11,7 +11,7 @@ beforeEach(() => { currentLabels = ['AI']; currentState = 'open'; timeline = [];
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
     restoreIssueTrigger: restore,
-    settleWithdrawalCleanups: async () => false,
+    settleWithdrawalCleanups: async () => ({ idle: false }),
     cancelWithdrawnIntent: async (target: any, reason: string) => { cancellations.push({ target, reason }); await cancellationWait; cancellationFinished = true; if (cancellationError) throw cancellationError; },
 } });
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {

@@ -1568,6 +1568,51 @@ test('webhook: a second trigger that releases a retained closure exclusion owns 
     await assertBuildRemovalCancels();
 });
 
+// F34: settlement releases the obligation without a marker, so polling finds
+// no stale label; the trigger applied after the closure must still own the job.
+async function reopenRetainedClosureApplyingBuild() {
+    await closeQueuedIssueWithFailedMarker();
+    reopen();
+    tracker = { ...tracker, labels: [...tracker.labels, 'build'] };
+    recordLabeled('build');
+}
+for (const settledBy of ['reconciliation', 'admission']) {
+    test(`polling: a second trigger whose retained closure exclusion ${settledBy} releases owns the new job`, async () => {
+        await reopenRetainedClosureApplyingBuild();
+        if (settledBy === 'reconciliation') {
+            await reconcileTaskIntents(redis as never, ['acme/widgets']);
+            assert.deepEqual(retainedCleanups(), [], 'the trigger applied after the closure releases the obligation');
+        }
+        assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+        assert.deepEqual(tracker.labels, ['AI', 'build'], 'no marker was published');
+        assert.deepEqual(retainedCleanups(), []);
+        await assertBuildRemovalCancels();
+    });
+}
+
+test('admission records the trigger settlement found applied after the closure when the producer named none', async () => {
+    await reopenRetainedClosureApplyingBuild();
+    const issue = { id: 42, number: 42, title: 't', url: 'u', repoOwner: 'acme', repoName: 'widgets', createdAt: '', updatedAt: '', triggeredBy: 'propr-dev[bot]' };
+    assert.equal((await admitDetectedIssue({ ...issue, labels: ['AI', 'build'] }, 'lagging', redis as never)).status, 'accepted');
+    assert.deepEqual(retainedCleanups(), []);
+    await assertBuildRemovalCancels();
+});
+
+test('polling: the latest application among several present triggers owns the job', async () => {
+    tracker = { state: 'open', labels: ['AI', 'build'] };
+    recordLabeled('build');
+    timeline.push({ event: 'unlabeled', label: { name: 'AI' } });
+    recordLabeled('AI');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.equal(jobs[0].data.triggeringLabel, 'AI');
+    jobs.length = 0;
+    redisValues.clear();
+    timeline.push({ event: 'unlabeled', label: { name: 'build' } });
+    recordLabeled('build');
+    assert.equal((await pollRestoredIssues())[0]?.status, 'accepted');
+    assert.equal(jobs[0].data.triggeringLabel, 'build');
+});
+
 test('admission ignores a renewed trigger that is no longer present or configured', async () => {
     const issue = { id: 42, number: 42, title: 't', url: 'u', repoOwner: 'acme', repoName: 'widgets', createdAt: '', updatedAt: '', triggeredBy: 'propr-dev[bot]' };
     assert.equal((await admitDetectedIssue({ ...issue, labels: ['AI'], renewedTrigger: 'build' }, 'c1', redis as never)).status, 'accepted');

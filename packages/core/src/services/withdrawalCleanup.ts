@@ -52,9 +52,15 @@ async function scanRecentTimeline(target: CleanupTarget, decide: (event: Timelin
 const labeledAny = (event: TimelineEvent, labels: string[]) => event.event === 'labeled'
     && labels.some(label => label.toLowerCase() === event.label?.name?.toLowerCase());
 
-/** Whether a trigger was applied after the issue's latest closure in the recent timeline. */
-export function triggerAppliedSinceClosure(target: CleanupTarget, triggers: string[]): Promise<boolean> {
-    return scanRecentTimeline(target, event => event.event === 'closed' ? false : labeledAny(event, triggers) || undefined);
+/** The trigger most recently applied after the issue's latest closure in the recent timeline, if any. */
+export async function triggerAppliedSinceClosure(target: CleanupTarget, triggers: string[]): Promise<string | undefined> {
+    let applied: string | undefined;
+    await scanRecentTimeline(target, event => {
+        if (event.event === 'closed') return false;
+        applied = triggers.find(trigger => labeledAny(event, [trigger]));
+        return applied ? true : undefined;
+    });
+    return applied;
 }
 
 /**
@@ -66,8 +72,13 @@ export function markerAppliedSinceTrigger(target: CleanupTarget, triggers: strin
     return scanRecentTimeline(target, event => labeledAny(event, markers) || (labeledAny(event, triggers) ? false : undefined));
 }
 
-/** `idle` retires the obligation with that discovery verdict; `marker` is the exclusion still owed. */
-export type CleanupStep = { idle: boolean } | { marker: string; applied: boolean };
+/**
+ * Discovery verdict of a settled obligation. `renewedTrigger` is the trigger
+ * whose application after the closure renewed intent; the new job records it.
+ */
+export type CleanupVerdict = { idle: boolean; renewedTrigger?: string };
+/** A verdict retires the obligation; `marker` is the exclusion still owed. */
+export type CleanupStep = CleanupVerdict | { marker: string; applied: boolean };
 
 /** What a retained closure obligation requires of an open issue with `labels`, from fresh timeline evidence. */
 export async function openIssueCleanupStep(target: CleanupTarget, triggers: string[], labels: string[]): Promise<CleanupStep> {
@@ -75,7 +86,8 @@ export async function openIssueCleanupStep(target: CleanupTarget, triggers: stri
     // Without a trigger, only applying one renews intent. Restoration never
     // clears `-done`, so a completion marker keeps discovery idle on its own.
     if (!present.length || triggers.some(trigger => labels.includes(`${trigger}-done`))) return { idle: true };
-    if (await triggerAppliedSinceClosure(target, present)) return { idle: false };
+    const renewedTrigger = await triggerAppliedSinceClosure(target, present);
+    if (renewedTrigger) return { idle: false, renewedTrigger };
     // `-processing`/`-cancelled` exclude only when applied after the trigger's
     // latest application; an earlier one (e.g. a running sibling's marker that
     // a pre-closure reapplication supersedes) lets restoration readmit the issue.

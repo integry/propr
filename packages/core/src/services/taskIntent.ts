@@ -9,7 +9,7 @@ import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
-import { WITHDRAWAL_CLEANUP_KEY, openIssueCleanupStep, releaseWithdrawalCleanup, retainWithdrawalCleanup, type CleanupRedis, type RetainedCleanup } from './withdrawalCleanup.js';
+import { WITHDRAWAL_CLEANUP_KEY, openIssueCleanupStep, releaseWithdrawalCleanup, retainWithdrawalCleanup, type CleanupRedis, type CleanupVerdict, type RetainedCleanup } from './withdrawalCleanup.js';
 export { releaseWithdrawalCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
 
@@ -238,8 +238,8 @@ async function publishCancelledMarker(target: IntentTarget, triggers: string[], 
     }, retryConfigs.githubApi, 'add_cancelled_label');
 }
 
-/** Returns true while the obligation's issue must stay out of discovery. */
-async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentTarget): Promise<boolean> {
+/** `idle` while the obligation's issue must stay out of discovery; otherwise names the trigger that renewed intent. */
+async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentTarget): Promise<CleanupVerdict> {
     const triggers = await loadPrimaryProcessingLabels();
     const octokit = await getAuthenticatedOctokit();
     const readStep = async () => {
@@ -272,20 +272,21 @@ async function settleWithdrawalCleanup(cleanup: RetainedCleanup, target: IntentT
     if (step === 'closed') {
         // Still closed: retry the original cleanup.
         if (await updateWithdrawnIssueLabels(target, triggers, 'cancelled_issue_closed')) await releaseWithdrawalCleanup(cleanup);
-        return true;
+        return { idle: true };
     }
     if (step) await releaseWithdrawalCleanup(cleanup);
-    return step?.idle ?? true;
+    return step ?? { idle: true };
 }
 
 /**
- * Retries retained closure exclusions for matching issues. Returns true when a
- * matching issue must stay idle. Without `onError`, failures propagate so
+ * Retries retained closure exclusions for matching issues. `idle` when a
+ * matching issue must stay idle; `renewedTrigger` when a release found a
+ * trigger applied after the closure. Without `onError`, failures propagate so
  * admission fails closed.
  */
 export async function settleWithdrawalCleanups(redis: CleanupRedis, matches: (target: IntentTarget) => boolean,
-    onError?: (target: IntentTarget, error: unknown) => void): Promise<boolean> {
-    let idle = false;
+    onError?: (target: IntentTarget, error: unknown) => void): Promise<CleanupVerdict> {
+    const verdict: CleanupVerdict = { idle: false };
     for (const member of await redis.smembers(WITHDRAWAL_CLEANUP_KEY)) {
         let target: IntentTarget;
         try {
@@ -298,13 +299,15 @@ export async function settleWithdrawalCleanups(redis: CleanupRedis, matches: (ta
         }
         if (!matches(target)) continue;
         try {
-            idle = await settleWithdrawalCleanup({ redis, member }, target) || idle;
+            const settled = await settleWithdrawalCleanup({ redis, member }, target);
+            verdict.idle ||= settled.idle;
+            verdict.renewedTrigger ??= settled.renewedTrigger;
         } catch (error) {
             if (!onError) throw error;
             onError(target, error);
         }
     }
-    return idle;
+    return verdict;
 }
 
 /** Returns true once a withdrawal's exclusion stands, even if later status-label deletion stops early. */

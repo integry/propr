@@ -18,9 +18,11 @@ export interface TriggerActor {
 // `appliedMarkerUnseen` is true when a stale marker the caller reports as
 // currently applied has no visible application in the scanned timeline (not
 // yet visible, or only visible before a later removal), so the timeline cannot
-// order the trigger application after it.
+// order the trigger application after it. `appliedLabel` is the lowercased
+// target label of the application the actor was read from.
 export interface TriggerEvidence {
     actor: TriggerActor | null;
+    appliedLabel?: string;
     staleSinceApplied: boolean;
     staleMarkedAt?: string;
     orderingUnverified?: boolean;
@@ -56,6 +58,7 @@ export function hasStaleTriggerLabels(labels: string[], trigger: string, trigger
 
 interface TimelineScan {
     actor: TriggerActor | null;
+    appliedLabel?: string;
     staleSinceApplied: boolean;
     staleMarkedAt?: string;
     // Currently applied stale markers whose latest timeline event is not yet seen.
@@ -81,6 +84,7 @@ function scanTimelineEvents(events: TimelineEvent[], targetLabels: string[], sta
             scan.staleMarkedAt ??= ev.created_at;
         } else if (targetLabels.includes(name) && ev.actor?.login && Number.isSafeInteger(ev.actor.id)) {
             scan.actor = { login: ev.actor.login, userId: String(ev.actor.id) };
+            scan.appliedLabel = name;
         }
         if (scan.actor && scan.pendingMarkers.size === 0) return true;
     }
@@ -91,6 +95,7 @@ function evidenceFromScan(scan: TimelineScan, orderingUnverified: boolean): Trig
     const appliedMarkerUnseen = scan.appliedMarkerUnseen || scan.pendingMarkers.size > 0;
     return {
         actor: scan.actor,
+        ...(scan.appliedLabel ? { appliedLabel: scan.appliedLabel } : {}),
         staleSinceApplied: scan.staleSinceApplied,
         ...(scan.staleMarkedAt ? { staleMarkedAt: scan.staleMarkedAt } : {}),
         ...(scan.actor && orderingUnverified ? { orderingUnverified: true } : {}),
