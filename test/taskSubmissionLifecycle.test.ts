@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import type { IssueJobData } from '@propr/core';
 
 process.env.PROPR_DEMO_MODE = 'true';
 const core = await import('@propr/core');
 const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
+let capacityFull = false;
+let workflowError: Error | undefined;
+let taskState = 'pending';
+const events: string[] = [];
 let liveIssue = { state: 'open', title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] };
 const cancellations: Array<Record<string, unknown>> = [];
 let outcome: 'completed' | 'failed' | 'cancelled' | 'withdrawn' | 'rate-limited' = 'completed';
@@ -28,11 +32,30 @@ const storedRefs: unknown[] = [];
 const queueAssignments: unknown[] = [];
 const transitions: unknown[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
+const processingHistory: Array<{ state: string; metadata: Record<string, unknown> }> = [];
+// When set, preparation uses the real policy loader against this fake GitHub API.
+let githubRequests: string[] | undefined;
+const workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
+const fakeGitHubRequest = async (route: string, params: { path?: string; body?: string }) => {
+  if (route.endsWith('/comments')) { githubComments.push(params.body!); return { data: liveIssue }; }
+  if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: liveIssue };
+  githubRequests!.push(route);
+  if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: 'main' } };
+  if (route === 'GET /repos/{owner}/{repo}/commits/{ref}') return { data: { sha: 'base-sha' } };
+  if (route === 'GET /repos/{owner}/{repo}/contents/{path}' && params.path === '.propr/workflow.yml') {
+    return { data: { type: 'file', encoding: 'base64', size: workflowYaml.length, sha: 'blob-sha', content: Buffer.from(workflowYaml).toString('base64') } };
+  }
+  throw new Error(`unexpected GitHub request ${route}`);
+};
 const stateManager = {
   markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { obligations.push('record'); cancellations.push(metadata); },
-  createTaskStateIfAbsent: async (_id: string, ref: unknown) => { storedRefs.push(ref); return initialState; },
-  getTaskState: async () => handoffState ?? (withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : null),
-  updateTaskState: async (...args: unknown[]) => { transitions.push(args); },
+  createTaskStateIfAbsent: async (_id: string, ref: unknown) => { events.push('create-if-absent'); storedRefs.push(ref); return initialState; },
+  getTaskState: async () => handoffState ?? (withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : taskState === 'pending' ? null : { state: taskState }),
+  updateTaskState: async (...args: unknown[]) => {
+    transitions.push(args);
+    const [, state, metadata] = args as [string, string, { historyMetadata?: Record<string, unknown> } | undefined];
+    processingHistory.push({ state, metadata: metadata?.historyMetadata ?? {} });
+  },
   markTaskCompleted: async (taskId: string, result: Record<string, unknown>) => { terminal.push({ taskId, result }); },
   markTaskFailed: async (taskId: string, error: Error) => { terminal.push({ taskId, result: { status: 'failed', error: error.message } }); },
 };
@@ -62,8 +85,9 @@ await mock.module('@propr/core', { namedExports: {
   logger: { ...log, withCorrelation: () => log },
   addModelSpecificDelay: async () => undefined,
   updatePlanIssueTaskId: async () => undefined,
-  ensureRepoCloned: async () => '/tmp/repository',
+  ensureRepoCloned: async () => { events.push('clone'); return '/tmp/repository'; },
   ensureGitRepository: async () => undefined,
+  loadSettings: async () => ({ worker_concurrency: 4 }),
 } });
 const { markTaskTerminalState } = await import('../src/jobs/issueJob/completion.js');
 await mock.module('../src/jobs/issueJobDispatcher.js', { namedExports: { handleDispatch: async () => ({ status: 'dispatched' }) } });
@@ -79,9 +103,9 @@ await mock.module('../src/jobs/issueJobPostProcessing.js', { namedExports: { per
 await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   initializeJobContext: async (job: Job<IssueJobData>) => ({
     jobId: job.id, issueRef: job.data, correlationId: 'correlation', correlatedLogger: log,
-    stateManager, modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', AI_PRIMARY_TAG: 'AI',
+    stateManager, agentAlias: 'issue-agent', modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', AI_PRIMARY_TAG: 'AI',
   }),
-  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: async (endpoint: string, params: any) => { if (endpoint.endsWith('/comments')) githubComments.push(params.body); return { data: liveIssue }; } }),
+  getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: fakeGitHubRequest }),
   checkLabelConditions: () => ({ skip: false }),
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {
@@ -101,6 +125,18 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
   },
   markTaskComplete: markTaskTerminalState,
 } });
+const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
+await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: {
+  ...workflowJobs,
+  prepareRepositoryWorkflow: async (options: Parameters<typeof workflowJobs.prepareRepositoryWorkflow>[0]) => {
+    if (workflowError) throw workflowError;
+    return githubRequests ? workflowJobs.prepareRepositoryWorkflow(options) : undefined;
+  },
+} });
+await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
+  redisClient: { eval: async () => capacityFull ? 0 : 1 },
+  DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
+} });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
 after(core.closeConnection);
 
@@ -113,7 +149,7 @@ test('UI issue tasks use the same worker completion, cancellation, failure and P
       const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, userId: 'alice', isChildJob: true, agentAlias: 'issue-agent', modelName: 'model',
         issuePayload: { title: 'Fix dates', body: 'Fix invoice dates', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' },
-      }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
+      }, updateData: async () => undefined, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       const contract = { result, terminal: structuredClone(terminal) };
       if (!submitted) externalResults.push(contract);
       else assert.deepEqual(contract, externalResults[['completed', 'failed', 'cancelled'].indexOf(state)]);
@@ -127,6 +163,104 @@ test('UI issue tasks use the same worker completion, cancellation, failure and P
   assert.deepEqual(taskLinks, ['ordinary-task', 'ordinary-task', 'ordinary-task']);
 });
 
+
+test('issue capacity refusal delays before cloning, preserves task identity, and checks cancellation on re-entry', async () => {
+  capacityFull = true; submitted = false; events.length = 0; terminal.length = 0;
+  const job = {
+    id: 'capacity-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true } as IssueJobData,
+    updateData: async (data: IssueJobData) => { job.data = data; events.push(data.repositoryWorkflowDeferred ? 'persist-deferral' : 'persist-identity'); },
+    moveToDelayed: async (_deadline: number, token?: string) => { assert.equal(token, 'lock-token'); events.push('delay'); },
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.deepEqual(events, ['persist-identity', 'create-if-absent', 'persist-deferral', 'delay']);
+    assert.equal(job.data.correlationId, 'correlation');
+    assert.equal(terminal.length, 0, 'capacity refusal is not a task failure');
+    taskState = 'cancelled'; events.length = 0;
+    await assert.rejects(processGitHubIssueJob(job as never), /Task ended/);
+    assert.deepEqual(events, ['create-if-absent']);
+    assert.equal(terminal.length, 0, 're-entry does not overwrite cancellation');
+  } finally { capacityFull = false; taskState = 'pending'; }
+});
+
+test('workflow preparation failures retain normal issue error reporting', async () => {
+  workflowError = new Error('Invalid .propr/workflow.yml: expanded wrapper exceeds limit');
+  terminal.length = 0;
+  try {
+    await assert.rejects(processGitHubIssueJob({
+      id: 'invalid-workflow', name: 'processGitHubIssue',
+      data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation' },
+    } as never), /expanded wrapper/);
+    assert.equal(terminal[0].result.status, 'failed');
+  } finally { workflowError = undefined; }
+});
+
+
+test('ordinary failed issue retries resume their existing task', async () => {
+  initialState = { state: 'failed' }; outcome = 'completed'; events.length = 0; transitions.length = 0;
+  try {
+    const result = await processGitHubIssueJob({
+      id: 'retry-job', name: 'processGitHubIssue',
+      data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation',
+        issuePayload: { title: 'Fix dates', body: '', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' } },
+      updateProgress: async () => undefined,
+    } as never);
+    assert.equal(result.status, 'processed');
+    assert.ok(events.includes('create-if-absent'));
+    assert.deepEqual(transitions[0], ['ordinary-task', 'processing', { isRetry: true, reason: 'Resuming issue task' }]);
+    assert.ok(events.includes('clone'));
+  } finally { initialState = undefined; }
+});
+
+const issueJobData = (): IssueJobData => ({
+  repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation',
+  issuePayload: { title: 'Fix dates', body: '', labels: [{ name: 'AI' }] }, repoPayload: { defaultBranch: 'main' },
+} as IssueJobData);
+
+test('the PROCESSING timeline entry records the workflow path and base revision that governed the issue', async () => {
+  githubRequests = []; processingHistory.length = 0; outcome = 'completed';
+  try {
+    const result = await processGitHubIssueJob({
+      id: 'workflow-job', name: 'processGitHubIssue', data: issueJobData(),
+      updateData: async () => undefined, updateProgress: async () => undefined,
+    } as never);
+    assert.equal(result.status, 'processed');
+    const processing = processingHistory.filter(entry => entry.state === core.TaskStates.PROCESSING);
+    assert.equal(processing.length, 1);
+    assert.deepEqual(processing[0].metadata.repositoryWorkflow, {
+      path: '.propr/workflow.yml', baseBranch: 'main', revision: 'base-sha', fileRevision: 'blob-sha', maxParallelTasks: 1, timeoutMs: 600_000,
+    });
+  } finally { githubRequests = undefined; }
+});
+
+test('capacity re-entries reuse the resolved policy, back off, and reload it after admission', async () => {
+  githubRequests = []; processingHistory.length = 0; outcome = 'completed'; capacityFull = true;
+  const delays: number[] = [];
+  const job = {
+    id: 'waiting-job', name: 'processGitHubIssue', token: 'lock-token', data: issueJobData(),
+    updateData: async (data: IssueJobData) => { job.data = JSON.parse(JSON.stringify(data)); },
+    updateProgress: async () => undefined,
+    moveToDelayed: async (deadline: number) => { delays.push(deadline - Date.now()); },
+  };
+  try {
+    for (let refusal = 0; refusal < 3; refusal++) await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.equal(githubRequests.filter(route => route.includes('/contents/')).length, 1, 'policy is fetched once across refusals');
+    assert.equal(githubRequests.length, 3);
+    assert.equal(job.data.repositoryWorkflowDeferrals, 3);
+    assert.equal(job.data.repositoryWorkflow?.revision, 'base-sha');
+    // Jittered exponential backoff: each ceiling doubles from 10 s.
+    delays.forEach((delay, index) => assert.ok(delay >= 5_000 * 2 ** index - 50 && delay <= 10_000 * 2 ** index + 50, `delay ${index}: ${delay}`));
+    capacityFull = false;
+    assert.equal((await processGitHubIssueJob(job as never)).status, 'processed');
+    assert.equal(githubRequests.length, 3, 'admitted re-entry reuses the policy that was waiting');
+    assert.equal((processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata.repositoryWorkflow as { revision: string }).revision, 'base-sha');
+    assert.equal(job.data.repositoryWorkflowDeferred, false);
+    assert.equal(job.data.repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
+    assert.equal(job.data.repositoryWorkflowDeferrals, undefined);
+  } finally { githubRequests = undefined; capacityFull = false; }
+});
+
 test('issue withdrawal detected after admission persists readable history and retains its result code', async () => {
   for (const [state, labels, code, explanation] of [
     ['closed', [{ name: 'AI' }], 'cancelled_issue_closed', 'Cancelled because the issue was closed.'],
@@ -134,7 +268,7 @@ test('issue withdrawal detected after admission persists readable history and re
   ] as const) {
     liveIssue = { ...liveIssue, state, labels: [...labels] };
     cancellations.length = 0;
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: code });
@@ -154,7 +288,7 @@ for (const [cancellationReason, phase] of [
     executionCancellationReason = cancellationReason;
     exclusions.length = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+      const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason: cancellationReason });
@@ -176,7 +310,7 @@ test('a closure found by the worker retains its obligation before recording and 
     exclusionStands = stands;
     obligations.length = 0;
     exclusions.length = 0;
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_issue_closed' });
@@ -196,7 +330,7 @@ test('worker closure cleanup failures keep the obligation through the catch path
   exclusions.length = 0;
   exclusionError = new Error('Service Unavailable');
   try {
-    await assert.rejects(processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    await assert.rejects(processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>), /Service Unavailable/);
     assert.deepEqual(obligations, ['retain', 'record'], 'no failed cleanup releases the obligation');
@@ -219,7 +353,7 @@ for (const reason of ['cancelled_by_user', 'timed_out', 'cancelled_pr_closed', '
     terminal.length = 0;
     githubComments.length = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'matrix-child-b', name: 'processGitHubIssue', data: {
+      const result = await processGitHubIssueJob({ id: 'matrix-child-b', updateData: async () => undefined, name: 'processGitHubIssue', data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model-b', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
       assert.deepEqual(result, { status: 'cancelled', reason });
@@ -245,7 +379,7 @@ test('user cancellation during state creation still cleans up its processing lab
   initialState = { state: 'cancelled', terminalReason: 'cancelled_by_user' };
   labelCleanups.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'ordinary-job', name: 'processGitHubIssue', data: {
+    const result = await processGitHubIssueJob({ id: 'ordinary-job', updateData: async () => undefined, name: 'processGitHubIssue', data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, modelName: 'model',
     } } as unknown as Job<IssueJobData>);
     assert.deepEqual(result, { status: 'cancelled', reason: 'cancelled_by_user' });
@@ -258,7 +392,7 @@ test('issue preparation persists only intent and display reference fields', asyn
   initialState = { state: 'cancelled', terminalReason: 'cancelled_by_user' };
   storedRefs.length = 0;
   try {
-    await processGitHubIssueJob({ id: 'compact', data: {
+    await processGitHubIssueJob({ id: 'compact', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
       modelName: 'model', agentAlias: 'codex', triggeringLabel: 'AI', correlationId: 'goal-id',
       issuePayload: { body: 'large issue body' }, repoPayload: { description: 'large repo' }, prProcessingLockToken: 'secret',
@@ -275,7 +409,7 @@ test('resuming a handoff retains the task and parent correlation while assigning
   queueAssignments.length = 0;
   transitions.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'retry-queue-job', data: {
+    const result = await processGitHubIssueJob({ id: 'retry-queue-job', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, isRetryFromRateLimit: true,
       modelName: 'model', correlationId: 'parent-goal', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
     }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
@@ -292,7 +426,7 @@ for (const boundary of ['before scheduling', 'after scheduling'] as const) {
     outcome = 'rate-limited';
     scheduled = 0;
     try {
-      const result = await processGitHubIssueJob({ id: 'source', data: {
+      const result = await processGitHubIssueJob({ id: 'source', updateData: async () => undefined, data: {
         repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
         modelName: 'model', correlationId: 'parent-goal', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
       }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);
@@ -309,7 +443,7 @@ test('worker cancels a retry with a stale failure result when the issue closes a
   cancellations.length = 0;
   terminal.length = 0;
   try {
-    const result = await processGitHubIssueJob({ id: 'retry-queue-job', data: {
+    const result = await processGitHubIssueJob({ id: 'retry-queue-job', updateData: async () => undefined, data: {
       repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true,
       modelName: 'model', triggeringLabel: 'AI', repoPayload: { defaultBranch: 'main' },
     }, updateProgress: async () => undefined } as unknown as Job<IssueJobData>);

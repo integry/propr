@@ -19,6 +19,7 @@ import {
 import type {
     ClaudeCodeResponse,
     CommentJobData,
+    VisualPreviewSettings,
     UnprocessedComment,
     WorkerStateManager,
     WorktreeInfo,
@@ -90,6 +91,8 @@ interface PostExecutionParams {
     redisClient: Redis;
     prProcessingLockKey: string;
     prProcessingLockToken: string;
+    /** The run's effective preview settings, already restricted by its workflow snapshot. */
+    visualPreviewSettings?: VisualPreviewSettings;
 }
 
 interface UndoContextParams {
@@ -252,11 +255,11 @@ function requirePartialExecutionChanges(
     }
 }
 
-async function preparePostExecutionPreviews(state: ReadyPostExecutionState, repository: string, taskId: string) {
+async function preparePostExecutionPreviews(state: ReadyPostExecutionState, repository: string, taskId: string, settings?: VisualPreviewSettings) {
     if (!state.worktreeInfo) return;
     return prepareVisualPreviewEvidence({
         worktreePath: state.worktreeInfo.worktreePath,
-        settings: await loadRepositoryVisualPreviewSettings(repository),
+        settings: settings ?? await loadRepositoryVisualPreviewSettings(repository),
         taskId,
     });
 }
@@ -312,7 +315,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
     try {
-        preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId);
+        preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId, params.visualPreviewSettings);
         const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, context, llm, {
             taskId, instructionCommentIds: state.unprocessedComments.map(comment => comment.id),
             jobData: job.data, claudeResult: state.claudeResult, authorsText: state.authorsText,

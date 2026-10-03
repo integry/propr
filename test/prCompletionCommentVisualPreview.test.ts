@@ -159,3 +159,22 @@ test('omits the addressed line when a run addressed no review record', async () 
 
     assert.doesNotMatch(comment, /> Addressed/);
 });
+
+test('repository validation survives conversation-summary selection and no-change completion comments', async () => {
+    const { generateCompletionComment } = await import('@propr/core');
+    const result: ClaudeCodeResponse = {
+        success: true, executionTime: 1000, output: null, logs: '', modifiedFiles: [], commitMessage: null,
+        summary: 'Implemented the change.',
+        conversationLog: [{ type: 'assistant', message: { content: [{ type: 'text', text: '## Summary of Changes\n\nA preferred conversation summary.' }] } }] as ClaudeCodeResponse['conversationLog'],
+        repositoryValidation: '### Repository validation\n\n- npm test: Passed\n- npm run lint: Failed (exit 1)',
+    };
+    const context = { changesSummary: 'Implemented the change.', commitMessage: 'Fix behavior', llm: 'test', authorsText: '@example' };
+    const committed = await buildCompletionComment({ commitHash: 'abcdef1234567', filesChanged: 1, message: 'Fix behavior' } as never, [], context, result);
+    const unchanged = await buildCompletionComment(null, [], context, result);
+    const issue = await generateCompletionComment(result, { number: 2660, repoOwner: 'example', repoName: 'workflow' });
+    assert.match(committed, /preferred conversation summary/);
+    for (const comment of [committed, unchanged, issue]) {
+        assert.match(comment, /npm test: Passed/);
+        assert.match(comment, /npm run lint: Failed \(exit 1\)/);
+    }
+});

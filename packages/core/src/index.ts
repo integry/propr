@@ -499,6 +499,9 @@ export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingCheck
 
 export * from './services/usageTips/index.js';
 
+export * from './workflow/repositoryWorkflow.js';
+export { executeWithRepositoryWorkflow, buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from './workflow/workflowExecution.js';
+export { withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError } from './workflow/workflowConcurrency.js';
 export * from './services/taskCancellation.js';
 export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';

@@ -4,8 +4,20 @@ import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js'
 import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptionUsage.js';
 import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
 import type { ReasoningLevel } from '@propr/shared';
+import type { ResolvedRepositoryWorkflow } from '../workflow/repositoryWorkflow.js';
 
-export interface IssueJobData {
+/** Retained only while the same job waits for repository capacity; cleared on admission. */
+export interface RepositoryWorkflowDeferralData {
+    /** Policy resolved before the first refusal; `null` when the base has no workflow file. */
+    repositoryWorkflow?: ResolvedRepositoryWorkflow | null;
+    /** Base branch the policy was resolved for (`null` when unknown), so a retargeted task reloads it. */
+    repositoryWorkflowBaseBranch?: string | null;
+    repositoryWorkflowDeferrals?: number;
+}
+
+export interface IssueJobData extends RepositoryWorkflowDeferralData {
+    /** Same task waiting for repository capacity, rather than a failed execution retry. */
+    repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
     repoOwner: string;
@@ -40,7 +52,7 @@ export interface AutoResolveContext {
     triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
 }
 
-export interface CommentJobData {
+export interface CommentJobData extends RepositoryWorkflowDeferralData {
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
     pullRequestNumber: number;

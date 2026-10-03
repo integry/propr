@@ -87,6 +87,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/repository-knowledge',
         'features/branch-config',
+        'features/repository-workflow',
       ],
     },
     {

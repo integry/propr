@@ -11,6 +11,7 @@ writeFileSync(privateKeyPath, '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVA
 process.env.GH_PRIVATE_KEY_PATH ||= privateKeyPath;
 process.env.DEFAULT_CLAUDE_MODEL ||= 'haiku';
 const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
+const { buildCompletionComment } = await import('../src/jobs/prCompletionComment.js');
 const { AgentRegistry } = await import('@propr/core');
 const { db } = await import('@propr/core');
 
@@ -237,7 +238,7 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             stateManager: stateManager as never,
             correlatedLogger: logger as never,
             githubToken: 'token',
-            redisClient: { set: async () => undefined } as never,
+            redisClient: { set: async () => undefined, eval: async () => 1 } as never,
             reasoningLevel: 'ultracode',
         });
 
@@ -250,4 +251,114 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             repoName: 'propr',
         });
     });
+});
+
+describe('PR follow-up repository validation reports', () => {
+    for (const repositoryValidation of [
+        '### Repository validation\n\n- npm test: Passed\n- npm run lint: Failed (exit 1)\n- npm run build: Timed out\n- npm run check: Not run (execution ended before validation)',
+        undefined,
+    ]) {
+        test(`preserves ${repositoryValidation ? 'observed validation results' : 'absent validation'} through execution and both completion branches`, async (t) => {
+            const registry = AgentRegistry.getInstance();
+            const agent = {
+                config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+                executeTask: async () => ({
+                    success: true,
+                    modelUsed: 'claude-sonnet-test',
+                    executionTimeMs: 12,
+                    summary: 'Checked the requested follow-up.',
+                    conversationLog: [],
+                    repositoryValidation,
+                }),
+            };
+            t.mock.method(registry, 'ensureInitialized', async () => undefined);
+            t.mock.method(registry, 'getDefaultAgent', () => agent);
+            t.mock.method(registry, 'getAgentByAlias', () => agent);
+
+            const { claudeResult } = await resolveAndExecuteAgent({
+                llm: null,
+                worktreePath: '/tmp/worktree',
+                branchName: 'feature',
+                prompt: 'Fix the PR',
+                pullRequestNumber: 2663,
+                repoOwner: 'integry',
+                repoName: 'propr',
+                taskId: 'task-pr-validation',
+                stateManager: {
+                    updateTaskState: async () => undefined,
+                    updateHistoryMetadata: async () => undefined,
+                    getTaskState: async () => null,
+                } as never,
+                correlatedLogger: logger as never,
+                githubToken: 'token',
+                redisClient: { set: async () => undefined, eval: async () => 1 } as never,
+            });
+
+            assert.strictEqual(claudeResult.repositoryValidation, repositoryValidation);
+            for (const commitResult of [{ commitHash: 'abcdef1234567' }, null]) {
+                const comment = await buildCompletionComment(commitResult, [], {
+                    changesSummary: claudeResult.summary!,
+                    commitMessage: 'Fix requested behavior',
+                    llm: 'claude-sonnet-test',
+                    authorsText: '@example',
+                }, claudeResult);
+                if (repositoryValidation) {
+                    assert.ok(comment.includes(repositoryValidation));
+                    assert.strictEqual(comment.split('### Repository validation').length - 1, 1);
+                } else {
+                    assert.doesNotMatch(comment, /Repository validation/);
+                }
+            }
+        });
+    }
+
+    test('bounds a report for a long accepted command in both completion branches', async () => {
+        const { buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } = await import('@propr/core');
+        const command = ': #' + 'a'.repeat(75_000);
+        for (const status of ['Passed', 'Failed (exit 1)', 'Not run (execution ended before validation)']) {
+            const repositoryValidation = buildRepositoryValidationReport([{ command, status }, { command: 'npm test', status: 'Passed' }]);
+            assert.ok(repositoryValidation.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
+            for (const commitResult of [{ commitHash: 'abcdef1234567' }, null]) {
+                const comment = await buildCompletionComment(commitResult, [], {
+                    changesSummary: 'Checked the requested follow-up.',
+                    commitMessage: 'Fix requested behavior',
+                    llm: 'claude-sonnet-test',
+                    authorsText: '@example',
+                }, { success: true, summary: 'Checked the requested follow-up.', repositoryValidation } as never);
+                assert.ok(comment.length < 65_536, `completion comment has ${comment.length} characters`);
+                assert.match(comment, new RegExp(`- \\[1\\] : #a+…: ${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+                assert.match(comment, /- \[2\] npm test: Passed/);
+            }
+        }
+    });
+});
+
+
+test('out-of-scope executions with terminal task IDs bypass workflow admission and cancellation', async (t) => {
+    const registry = AgentRegistry.getInstance();
+    let executions = 0;
+    const agent = {
+        config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+        executeTask: async () => {
+            executions++;
+            return { success: true, modelUsed: 'test', executionTimeMs: 1, summary: 'done', conversationLog: [] };
+        },
+    };
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getDefaultAgent', () => agent);
+    t.mock.method(registry, 'getAgentByAlias', () => agent);
+    for (const state of ['completed', 'failed', 'cancelled']) {
+        let stateReads = 0;
+        const params = {
+            llm: null, worktreePath: '/tmp/worktree', branchName: 'feature', prompt: 'Resolve conflicts',
+            pullRequestNumber: 2663, repoOwner: 'integry', repoName: 'propr', taskId: `original-${state}`,
+            stateManager: { getTaskState: async () => { stateReads++; return { state }; } } as never,
+            correlatedLogger: logger as never, githubToken: 'token',
+            redisClient: { eval: async () => assert.fail('out-of-scope caller entered repository slot') } as never,
+        };
+        assert.equal((await resolveAndExecuteAgent(params)).claudeResult.success, true);
+        assert.equal(stateReads, 0);
+        await assert.rejects(resolveAndExecuteAgent({ ...params, applyRepositoryWorkflow: true }), /Task ended/);
+    }
+    assert.equal(executions, 3);
 });

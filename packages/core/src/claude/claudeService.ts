@@ -58,6 +58,8 @@ export interface ExecuteClaudeCodeOptions {
 }
 
 export interface ClaudeCodeResponse {
+    /** Container-observed workflow validation report, independent of agent prose. */
+    repositoryValidation?: string;
     success: boolean;
     executionTime: number;
     output: ClaudeOutput | null;

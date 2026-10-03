@@ -22,6 +22,7 @@ export interface UsageMetrics {
 }
 
 export interface HistoryItemMetadata {
+  repositoryWorkflow?: { path: string; baseBranch: string; revision: string; fileRevision: string; maxParallelTasks: number; timeoutMs: number };
   terminalReason?: string;
   model?: string;
   pr?: { url?: string; number?: number };

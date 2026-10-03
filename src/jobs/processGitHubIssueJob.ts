@@ -19,7 +19,13 @@ import {
   initializeJobContext, getAuthenticatedClient, checkLabelConditions,
   ensureProcessingLabel, executeWorktreeOperations, markTaskComplete
 } from './issueJob/index.js';
-import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
+import type { GitHubToken, CurrentIssueData, JobContext } from './issueJob/index.js';
+
+import {
+  prepareRepositoryWorkflow, resolveRepositoryWorkflow, repositoryWorkflowDeferralData, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
+  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError,
+} from './repositoryWorkflow.js';
+import { redisClient } from './issueJob/config.js';
 
 function isStoppedTask(task: TaskStateData | null): task is TaskStateData & { state: 'cancelled' } {
   return !!task && task.state === TaskStates.CANCELLED && !isBookkeepingCancellation(task);
@@ -28,8 +34,12 @@ function isStoppedTask(task: TaskStateData | null): task is TaskStateData & { st
 async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnType<typeof initializeJobContext>>): Promise<
   { cancelled: JobResult } | { octokit: Awaited<ReturnType<typeof getAuthenticatedClient>> }
 > {
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId } = context;
 
+  // Keep the task identity stable when this same BullMQ job is delayed for capacity.
+  if (!job.data.correlationId || !job.data.agentAlias || !job.data.modelName) {
+    await job.updateData({ ...job.data, correlationId, agentAlias, modelName });
+  }
   await addModelSpecificDelay(modelName);
 
   try {
@@ -67,24 +77,6 @@ async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnTy
   correlatedLogger.info({ jobId, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
 
   const octokit = await getAuthenticatedClient(context);
-
-  // Handle retry from rate limit - swap AI-waiting back to AI-processing
-  if (job.data.isRetryFromRateLimit) {
-    correlatedLogger.info({ jobId, issueNumber: issueRef.number }, 'Resuming from rate limit retry - swapping labels');
-    try {
-      await safeRemoveLabel(
-        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-        AI_WAITING_TAG
-      );
-      await safeAddLabel(
-        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
-        AI_PROCESSING_TAG
-      );
-    } catch (labelError) {
-      correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to swap labels on rate limit retry');
-    }
-  }
-
   return { octokit };
 }
 
@@ -130,7 +122,11 @@ async function cleanupUserStoppedIssue(
   }
 }
 
-export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
+export function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
+  return deferRepositoryWorkflowJob(job, () => processAdmittedIssueJob(job));
+}
+
+async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
 
   if (!job.data.isChildJob) {
@@ -139,7 +135,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   }
 
   const context = await initializeJobContext(job);
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  const { issueRef, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = context;
 
   const prepared = await prepareIssueJob(job, context);
   if ('cancelled' in prepared) {
@@ -148,98 +144,149 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   }
   const { octokit } = prepared;
 
-  let localRepoPath: string | undefined;
-  let worktreeInfo: WorktreeInfo | undefined;
-  let claudeResult: ClaudeCodeResponse | null = null;
-  let postProcessingResult: PostProcessingResult | null = null;
-  let commitResult: CommitResult | null = null;
-
   try {
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
-
-    const currentIssueData: CurrentIssueData =
-      await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-        owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-        mediaType: { format: 'full' }
-      }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
-
-    const cancellation = await checkIssueCancellation(context, currentIssueData);
-    if (cancellation) return cancellation;
-    const currentLabels = currentIssueData.data.labels.map(label => label.name);
-    const labelCheck = checkLabelConditions(currentLabels, context);
-    if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
-
-    await ensureProcessingLabel(currentLabels, context, octokit);
-
-    const updatedIssueRef: IssueJobData = { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` };
-    await updateTaskTitleInStorage(taskId, updatedIssueRef, stateManager, correlatedLogger);
-    await job.updateProgress(25);
-
-    const repoValidation: RepoValidationResult = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload as unknown as RepoValidationResult['repoData'] } : await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
-    const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
-    const repoUrl = getRepoUrl(issueRef);
-
-    try {
-      await ensureGitRepository(correlatedLogger);
-      localRepoPath = await ensureRepoCloned({ repoUrl, owner: issueRef.repoOwner, repoName: issueRef.repoName, authToken: githubToken.token });
-      await job.updateProgress(50);
-
-      const worktreeResult = await executeWorktreeOperations({
-        job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath
-      });
-      worktreeInfo = worktreeResult.worktreeInfo;
-      claudeResult = worktreeResult.claudeResult;
-      postProcessingResult = worktreeResult.postProcessingResult;
-      commitResult = worktreeResult.commitResult;
-
-    } finally {
-      await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger });
-    }
-
-    await job.updateProgress(100);
-    await markTaskComplete({
-      stateManager,
-      taskId,
-      issueRef,
-      currentIssueLabels: currentLabels,
-      claudeResult,
-      postProcessingResult,
-      commitResult,
-      correlatedLogger
-    });
-    return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
-
+    context.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, issueRef.baseBranch, () => prepareRepositoryWorkflow({
+      octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch: issueRef.baseBranch,
+    }));
   } catch (error) {
-    const latest = await stateManager.getTaskState(taskId);
-    if (isStoppedTask(latest)) {
-      if (latest.terminalReason === 'cancelled_by_user') {
-        await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-      }
-      if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
-        // Another cleanup failure keeps a closure obligation for reconciliation.
-        await excludeWithdrawnIssue({ ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG }, latest.terminalReason);
-      }
-      return { status: 'cancelled', reason: latest.terminalReason };
+    await handleGenericError(error as Error, job, issueRef, {
+      octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
+    });
+    throw error;
+  }
+  try {
+    return await processIssueWithAdmission(job, context, octokit);
+  } catch (error) {
+    if (error instanceof RepositoryWorkflowCapacityError) {
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: true, ...repositoryWorkflowDeferralData(job.data, context.repositoryWorkflow, issueRef.baseBranch) });
     }
-    if (error instanceof UsageLimitError) {
-      await handleUsageLimitError(error, job, issueRef, {
-        octokit, correlatedLogger, stateManager, taskId,
-        AI_PROCESSING_TAG, AI_WAITING_TAG
-      });
-      const afterRetry = await stateManager.getTaskState(taskId);
-      if (isStoppedTask(afterRetry)) return { status: 'cancelled', reason: afterRetry.terminalReason };
-      return { status: 'requeued', reason: 'rate_limit' };
-    } else {
-      await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-      const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
-      if (isUserCancelled) {
-        return { status: 'cancelled', reason: 'user_request' };
-      }
-      throw error;
-    }
+    throw error;
   } finally {
     await cleanupUserStoppedIssue(context);
   }
+}
+
+function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>): Promise<JobResult> {
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  return withRepositoryWorkflowAdmission({
+    workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
+    redisClient, taskId, stateManager, correlatedLogger,
+  }, async (): Promise<JobResult> => {
+    // Successful admission ends this capacity wait; subsequent execution failures
+    // retain the existing ordinary retry behavior and reload the base policy.
+    if (job.data.repositoryWorkflowDeferred) {
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: false, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
+    }
+    // Handle retry from rate limit - swap AI-waiting back to AI-processing
+    if (job.data.isRetryFromRateLimit) {
+      correlatedLogger.info({ jobId, issueNumber: issueRef.number }, 'Resuming from rate limit retry - swapping labels');
+      try {
+        await safeRemoveLabel(
+          { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+          AI_WAITING_TAG
+        );
+        await safeAddLabel(
+          { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+          AI_PROCESSING_TAG
+        );
+      } catch (labelError) {
+        correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to swap labels on rate limit retry');
+      }
+    }
+
+    let localRepoPath: string | undefined;
+    let worktreeInfo: WorktreeInfo | undefined;
+    let claudeResult: ClaudeCodeResponse | null = null;
+    let postProcessingResult: PostProcessingResult | null = null;
+    let commitResult: CommitResult | null = null;
+
+    try {
+      await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
+      });
+
+      const currentIssueData: CurrentIssueData =
+        await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+          owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+          mediaType: { format: 'full' }
+        }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
+
+      const cancellation = await checkIssueCancellation(context, currentIssueData);
+      if (cancellation) return cancellation;
+      const currentLabels = currentIssueData.data.labels.map(label => label.name);
+      const labelCheck = checkLabelConditions(currentLabels, context);
+      if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+
+      await ensureProcessingLabel(currentLabels, context, octokit);
+
+      const updatedIssueRef: IssueJobData = { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` };
+      await updateTaskTitleInStorage(taskId, updatedIssueRef, stateManager, correlatedLogger);
+      await job.updateProgress(25);
+
+      const repoValidation: RepoValidationResult = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload as unknown as RepoValidationResult['repoData'] } : await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
+      const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
+      const repoUrl = getRepoUrl(issueRef);
+
+      try {
+        await ensureGitRepository(correlatedLogger);
+        localRepoPath = await ensureRepoCloned({ repoUrl, owner: issueRef.repoOwner, repoName: issueRef.repoName, authToken: githubToken.token });
+        await job.updateProgress(50);
+
+        const worktreeResult = await executeWorktreeOperations({
+          job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath
+        });
+        worktreeInfo = worktreeResult.worktreeInfo;
+        claudeResult = worktreeResult.claudeResult;
+        postProcessingResult = worktreeResult.postProcessingResult;
+        commitResult = worktreeResult.commitResult;
+
+      } finally {
+        await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger });
+      }
+
+      await job.updateProgress(100);
+      await markTaskComplete({
+        stateManager,
+        taskId,
+        issueRef,
+        currentIssueLabels: currentLabels,
+        claudeResult,
+        postProcessingResult,
+        commitResult,
+        correlatedLogger
+      });
+      return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
+
+    } catch (error) {
+      const latest = await stateManager.getTaskState(taskId);
+      if (isStoppedTask(latest)) {
+        if (latest.terminalReason === 'cancelled_by_user') {
+          await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+        }
+        if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
+          // Another cleanup failure keeps a closure obligation for reconciliation.
+          await excludeWithdrawnIssue({ ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG }, latest.terminalReason);
+        }
+        return { status: 'cancelled', reason: latest.terminalReason };
+      }
+      if (error instanceof UsageLimitError) {
+        await handleUsageLimitError(error, job, issueRef, {
+          octokit, correlatedLogger, stateManager, taskId,
+          AI_PROCESSING_TAG, AI_WAITING_TAG
+        });
+        const afterRetry = await stateManager.getTaskState(taskId);
+        if (isStoppedTask(afterRetry)) return { status: 'cancelled', reason: afterRetry.terminalReason };
+        return { status: 'requeued', reason: 'rate_limit' };
+      } else {
+        await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+        const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
+        if (isUserCancelled) {
+          return { status: 'cancelled', reason: 'user_request' };
+        }
+        throw error;
+      }
+    }
+  });
 }
 
 export { processGitHubIssueJob as default };
