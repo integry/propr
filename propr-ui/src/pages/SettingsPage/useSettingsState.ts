@@ -306,6 +306,12 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleEscalationModelsChange = useCallback((models: string[]) => {
+    const newSettings = { ...settings, ultrafix_escalation_models: models };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
   const handleReviewContextEnabledChange = useCallback((enabled: boolean) => {
     const newSettings = { ...settings, pr_review_context_enabled: enabled };
     setSettings(newSettings);
@@ -414,7 +420,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,

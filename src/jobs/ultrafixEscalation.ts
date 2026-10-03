@@ -45,7 +45,7 @@ async function resolveModel(
         try {
             const { AliasSpecificAgentTankSnapshotProvider } = await import('../../packages/core/src/services/syntheticUsageSnapshotProvider.js');
             const usage = await new AliasSpecificAgentTankSnapshotProvider().getSnapshot(alias);
-            if (usage && Math.max(usage.sessionPercent ?? 0, usage.weeklyPercent ?? 0) >= 90) {
+            if (usage && Math.max(usage.sessionPercent ?? 0, usage.weeklyPercent ?? 0) >= 100) {
                 onSkip?.({ resolvedModel: resolved, reason: 'usage_limit', sessionPercent: usage.sessionPercent, weeklyPercent: usage.weeklyPercent });
                 return null;
             }

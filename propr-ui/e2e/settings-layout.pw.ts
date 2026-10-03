@@ -15,7 +15,7 @@ const notificationPreferences = Object.fromEntries([
 
 const catalogAgents = [
   { id: 'claude', kind: 'direct' as const, alias: 'claude', enabled: true, supportedModels: ['claude-opus-5-5', 'claude-sonnet-5-5'] },
-  { id: 'codex', kind: 'direct' as const, alias: 'codex', enabled: true, supportedModels: ['gpt-5-codex'] },
+  { id: 'codex', kind: 'direct' as const, alias: 'codex', enabled: true, supportedModels: ['gpt-5-codex', 'gpt-6-astra'] },
 ];
 
 async function installSettingsFixture(page: Page): Promise<void> {
@@ -204,11 +204,19 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   const section = page.getByRole('region', { name: 'Ultrafix', exact: true });
   await expect(section.getByLabel('Automatic Escalation')).not.toBeChecked();
   await section.getByLabel('Automatic Escalation').check();
-  const models = section.getByLabel('Escalation Models (in order)');
-  await models.fill('codex:gpt-6-astra, claude:claude-opus-5-5');
+  const models = section.getByLabel('Escalation model 1', { exact: true });
+  await section.getByLabel('Add escalation model').selectOption('codex:gpt-6-astra');
+  await section.getByLabel('Add escalation model').selectOption('claude:claude-opus-5-5');
+  await models.selectOption('codex:gpt-5-codex');
+  await expect(models).toHaveValue('codex:gpt-5-codex');
+  await models.selectOption('codex:gpt-6-astra');
+  await section.getByLabel('Add escalation model').selectOption('claude:claude-sonnet-5-5');
+  await section.getByRole('button', { name: 'Remove escalation model 3' }).click();
+  await expect(section.getByLabel('Escalation model 3', { exact: true })).toHaveCount(0);
   await section.getByLabel('Escalation Patience').fill('4');
   await section.getByLabel('Max Reasoning Levels per Model').fill('0');
-  await expect(models).toHaveValue('codex:gpt-6-astra, claude:claude-opus-5-5');
+  await expect(models).toHaveValue('codex:gpt-6-astra');
+  await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
   await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
   await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
   const saved = page.waitForResponse(response => {
@@ -229,7 +237,8 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   await expect(page.getByRole('status').filter({ hasText: 'Settings auto-saved' })).toBeVisible();
   await page.reload();
   await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
-  await expect(models).toHaveValue('codex:gpt-6-astra, claude:claude-opus-5-5');
+  await expect(models).toHaveValue('codex:gpt-6-astra');
+  await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
   await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
   await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
   if (process.env.PROPR_CAPTURE_PREVIEWS) {

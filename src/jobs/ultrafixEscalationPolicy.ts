@@ -26,6 +26,7 @@ export async function advanceEscalation(
     score: number,
     resolveAvailableModel: (model: string) => Promise<EscalationModel | null>,
 ): Promise<void> {
+    state.exhausted = false;
     if (state.bestScore === null || score > state.bestScore) {
         state.bestScore = score;
         state.stalledReviews = 0;
@@ -42,12 +43,13 @@ export async function advanceEscalation(
         state.climbs++;
         return;
     }
-    while (++state.modelIndex < state.models.length) {
-        const candidate = await resolveAvailableModel(state.models[state.modelIndex]);
+    for (let index = state.modelIndex + 1; index < state.models.length; index++) {
+        const candidate = await resolveAvailableModel(state.models[index]);
         if (!candidate) continue;
+        state.modelIndex = index;
         state.current = candidate;
         state.climbs = 0;
         return;
     }
-    state.exhausted = true;
+    // Keep the current model and effort when no later candidate is available.
 }

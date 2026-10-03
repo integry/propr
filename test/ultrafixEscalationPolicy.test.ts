@@ -38,7 +38,7 @@ test('climbs at most N then hands off at its own base effort and fresh patience'
     await advanceEscalation(s, 6, available);
     assert.equal(s.current.effort, 'high');
     await advanceEscalation(s, 6, available);
-    assert.equal(s.exhausted, true);
+    assert.equal(s.exhausted, false);
 });
 
 test('N=0 with patience=4 never touches the reasoning dial', async () => {
@@ -51,7 +51,7 @@ test('N=0 with patience=4 never touches the reasoning dial', async () => {
     assert.equal(s.climbs, 0);
 });
 
-test('two-tier provider switches its encoded model effort then exhausts', async () => {
+test('two-tier provider switches its encoded model effort then retains its final effort', async () => {
     const model = 'antigravity:antigravity-gemini-3.1-pro-low';
     const s = state({ models: [model], patience: 1, bestScore: 6, maxReasoningLevels: 10,
         current: { model, levels: getReasoningLevelsForAgentType('antigravity', model), effort: 'low', effortInModel: true } });
@@ -59,7 +59,7 @@ test('two-tier provider switches its encoded model effort then exhausts', async 
     assert.equal(s.current.effort, 'high');
     assert.equal(s.current.model, 'antigravity:antigravity-gemini-3.1-pro-high');
     await advanceEscalation(s, 6, available);
-    assert.equal(s.exhausted, true);
+    assert.equal(s.exhausted, false);
     assert.equal(s.climbs, 1);
 });
 
@@ -69,7 +69,7 @@ test('single-tier GPT-OSS immediately hands off once stalled', async () => {
     assert.equal(s.current.model, 'stronger');
 });
 
-test('skips unavailable or near-limit models, exhausts when none remain', async () => {
+test('skips unavailable models and keeps the current model when none remain', async () => {
     const s = state({ models: ['base', 'limited', 'available'], patience: 1, maxReasoningLevels: 0, bestScore: 6 });
     const visited: string[] = [];
     await advanceEscalation(s, 6, async model => {
@@ -79,7 +79,7 @@ test('skips unavailable or near-limit models, exhausts when none remain', async 
     assert.deepEqual(visited, ['limited', 'available']);
     assert.equal(s.current.model, 'available');
     await advanceEscalation(s, 6, available);
-    assert.equal(s.exhausted, true);
+    assert.equal(s.exhausted, false);
 });
 
 
@@ -98,4 +98,20 @@ test('unspecified effort takes the first explicit step for each dial runtime', a
         assert.equal(s.current.model, 'stronger');
         assert.equal(s.climbs, 0);
     }
+});
+
+test('all later models unavailable retains the current stage and execution across reviews', async () => {
+    const s = state({ models: ['base', 'missing', 'limited'], patience: 1, maxReasoningLevels: 0, bestScore: 6 });
+    const current = { ...s.current };
+    for (let i = 0; i < 3; i++) {
+        const visited: string[] = [];
+        await advanceEscalation(s, 6, async model => { visited.push(model); return null; });
+        assert.deepEqual(visited, ['missing', 'limited']);
+        assert.deepEqual(s.current, current);
+        assert.equal(s.modelIndex, 0);
+        assert.equal(s.exhausted, false);
+    }
+    await advanceEscalation(s, 6, available);
+    assert.equal(s.current.model, 'missing');
+    assert.equal(s.modelIndex, 1);
 });

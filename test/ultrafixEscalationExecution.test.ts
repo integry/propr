@@ -65,15 +65,16 @@ test('N=0 keeps original dial, handoff uses its own effort, and overrides old PR
     assert.deepEqual(await resolveUltrafixFixExecution(input), { model: 'claude:stronger', effort: 'medium' });
 });
 
-test('near-limit usage skips the candidate; unavailable signal allows handoff', async () => {
+test('only exhausted usage skips the candidate; unavailable signal allows handoff', async () => {
     enabled = true;
-    for (const [signal, exhausted] of [[{ weeklyPercent: 95 }, true], [null, false]] as const) {
+    for (const [signal, selected] of [[{ weeklyPercent: 95 }, 'claude:stronger'], [{ sessionPercent: 99.9 }, 'claude:stronger'], [{ weeklyPercent: 100 }, 'codex:base'], [{ sessionPercent: 100 }, 'codex:base'], [null, 'claude:stronger']] as const) {
         usage = signal;
         const f = fixture();
         await resolveUltrafixFixExecution({ redis: f.redis, owner: 'o', repo: 'r', pr: 1, workEpoch: 0, model: 'codex:base' });
         await recordUltrafixEscalationReview(f.redis, f.read(), 6);
         await recordUltrafixEscalationReview(f.redis, f.read(), 6);
-        assert.equal(f.read().escalation.exhausted, exhausted);
+        assert.equal(f.read().escalation.current.model, selected);
+        assert.equal(f.read().escalation.exhausted, false);
     }
 });
 
@@ -171,7 +172,7 @@ test('logs candidate skip reasons, including resolution failures and both usage 
     for (const reason of ['agent_unavailable', 'agent_disabled', 'model_unsupported', 'usage_limit_session', 'usage_limit_weekly', 'model_resolution_failed'] as const) {
         await t.test(reason, async () => {
             logs.length = 0;
-            usage = reason === 'usage_limit_session' ? { sessionPercent: 90 } : reason === 'usage_limit_weekly' ? { weeklyPercent: 95 } : null;
+            usage = reason === 'usage_limit_session' ? { sessionPercent: 100 } : reason === 'usage_limit_weekly' ? { weeklyPercent: 100 } : null;
             candidates = [reason === 'agent_unavailable' ? 'missing:model' : reason === 'model_unsupported' ? 'claude:missing' : 'claude:stronger'];
             configs.claude.enabled = reason !== 'agent_disabled';
             failResolution = reason === 'model_resolution_failed';
@@ -180,7 +181,9 @@ test('logs candidate skip reasons, including resolution failures and both usage 
                 await resolveUltrafixFixExecution({ redis: f.redis, owner: 'o', repo: 'r', pr: 1, workEpoch: 0, model: 'codex:base' });
                 await recordUltrafixEscalationReview(f.redis, f.read(), 6);
                 await recordUltrafixEscalationReview(f.redis, f.read(), 6);
-                assert.equal(f.read().escalation.exhausted, true);
+                assert.equal(f.read().escalation.exhausted, false);
+                assert.equal(f.read().escalation.modelIndex, 0);
+                assert.equal(f.read().escalation.current.model, 'codex:base');
                 assert.equal(logs.length, 1);
                 assert.equal(logs[0].message, 'Ultrafix escalation: candidate skipped');
                 assert.equal(logs[0].details.candidate, candidates[0]);

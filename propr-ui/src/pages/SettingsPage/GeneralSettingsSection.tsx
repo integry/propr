@@ -1,5 +1,6 @@
 import React from 'react';
 import { SettingsCheckboxField, SettingsField, SettingsSection } from './SettingsLayout';
+import { buildAllModelOptions, type ModelSelectionAgent } from './modelSelectionHelpers';
 import { SETTINGS_CONTROL } from './settingsStyles';
 
 interface GeneralSettings {
@@ -17,6 +18,8 @@ interface GeneralSettings {
 interface GeneralSettingsSectionProps {
   settings: GeneralSettings;
   onSettingChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void;
+  modelAgents: ModelSelectionAgent[];
+  onEscalationModelsChange: (models: string[]) => void;
   onBlur?: () => void;
   className?: string;
 }
@@ -25,8 +28,12 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   settings,
   onSettingChange,
   onBlur,
+  modelAgents,
+  onEscalationModelsChange,
   className
 }) => {
+  const modelOptions = buildAllModelOptions(modelAgents);
+  const models = settings.ultrafix_escalation_models;
   return (
     <div className={`space-y-10 ${className || ''}`}>
       <SettingsSection title="Processing">
@@ -80,11 +87,33 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           helperText="When progress stalls, increase reasoning effort, then hand off to the next model. Disabled by default."
           checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
         />
-        <SettingsField label="Escalation Models (in order)" htmlFor="ultrafix_escalation_models"
-          helperText="Comma-separated model names or agent:model pairs. The current implementation model always runs first. Providers at 90% usage are skipped when fresh Agent Tank data is available.">
-          <input id="ultrafix_escalation_models" name="ultrafix_escalation_models"
-            value={settings.ultrafix_escalation_models.join(', ')} onChange={onSettingChange} onBlur={onBlur}
-            placeholder="codex:gpt-6-astra, claude:claude-opus-5-5" className={SETTINGS_CONTROL} />
+        <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
+          helperText="The current implementation model runs first. Unavailable models are skipped; if none remain, the current model continues. Agent Tank is optional; only usage at 100% blocks a handoff.">
+          <div className="space-y-2">
+            {models.map((model, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">{index + 1}.</span>
+                <select id={`ultrafix_escalation_model_${index}`} aria-label={`Escalation model ${index + 1}`}
+                  value={model} className={SETTINGS_CONTROL}
+                  onChange={event => onEscalationModelsChange(models.map((value, i) => i === index ? event.target.value : value))}>
+                  {!modelOptions.some(option => option.value === model) && <option value={model}>{model} (unavailable)</option>}
+                  {modelOptions.map(option => <option key={option.value} value={option.value}>
+                    {option.label}{option.enabled ? '' : ' (disabled)'}
+                  </option>)}
+                </select>
+                <button type="button" aria-label={`Remove escalation model ${index + 1}`}
+                  onClick={() => onEscalationModelsChange(models.filter((_, i) => i !== index))}
+                  className="text-sm text-gray-600 hover:text-gray-900">Remove</button>
+              </div>
+            ))}
+            <select id="ultrafix_escalation_model_add" aria-label="Add escalation model" value="" className={SETTINGS_CONTROL}
+              onChange={event => { if (event.target.value) onEscalationModelsChange([...models, event.target.value]); }}>
+              <option value="">Add escalation model…</option>
+              {modelOptions.map(option => <option key={option.value} value={option.value}>
+                {option.label}{option.enabled ? '' : ' (disabled)'}
+              </option>)}
+            </select>
+          </div>
         </SettingsField>
         <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
           helperText="Stalled reviews before each escalation step. Any new best score resets this counter.">

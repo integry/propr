@@ -320,7 +320,7 @@ describe('Ultrafix continuation entry point', () => {
 });
 
 
-test('exhausting the final model flags the user and persists a failed loop', async () => {
+test('reaching the final model keeps the loop running with its current execution', async () => {
     escalationEnabled = true;
     const redis = createMockRedis();
     const { state } = await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 90, goal: 9, maxCycles: 20 }, false);
@@ -337,14 +337,15 @@ test('exhausting the final model flags the user and persists a failed loop', asy
         redisClient: redis as never, correlatedLogger: logger as never,
         correlationId: 'exhaustion', currentReviewCommentIds: [101], currentReviewResultCount: 1,
     });
-    assert.equal(result.continued, false);
-    assert.equal(result.outcome, 'failed');
-    assert.match(result.reason, /Escalation exhausted/);
+    assert.equal(result.continued, true);
     const saved = await loadState(redis as never, 'acme', 'web', 90);
-    assert.equal(saved?.completionStatus, 'failed');
+    assert.equal(saved?.active, true);
+    assert.equal(saved?.escalation?.exhausted, false);
+    assert.equal(saved?.escalation?.modelIndex, 0);
+    assert.deepEqual(saved?.escalation?.current, state.escalation.current);
     const comments = mockOctokitRequest.mock.calls.slice(before).filter(call => call.arguments[0].startsWith('POST'));
-    assert.equal(comments.length, 1);
-    assert.match(comments[0].arguments[1].body, /All available escalation models and reasoning levels stalled/);
+    assert.equal(comments.length, 0);
+    assert.equal(mockQueueAdd.mock.callCount(), 1);
 });
 
 test('disabled escalation leaves persisted review state byte-for-byte unchanged', async () => {
