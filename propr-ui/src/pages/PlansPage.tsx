@@ -5,6 +5,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
 import { Filter, Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
+import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
@@ -58,7 +59,7 @@ const PlansPage: React.FC = () => {
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
   // Build repo options for the shared RepositorySelector
-  const repoFilterOptions: RepoOption[] = useMemo(() => {
+  const repoFilterOptions = useDecoratedRepoOptions(useMemo<RepoOption[]>(() => {
     const allOption: RepoOption = {
       name: 'all',
       enabled: true,
@@ -73,7 +74,7 @@ const PlansPage: React.FC = () => {
         count,
       }));
     return [allOption, ...repoOptions];
-  }, [allRepositories, totalAllDrafts]);
+  }, [allRepositories, totalAllDrafts]));
 
   // Fetch all repositories for the filter dropdown
   const loadAllRepositories = useCallback(async () => {

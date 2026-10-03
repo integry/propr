@@ -1,5 +1,5 @@
 import TextareaAutosize from 'react-textarea-autosize';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, ExternalLink, Loader2, ScrollText, Zap } from 'lucide-react';
 import { getInstanceCatalog } from '../api/proprApi';
@@ -15,6 +15,7 @@ import { GoalAttachmentInput } from '../components/Goals/GoalAttachmentInput';
 import { useCurrentUser } from '../contexts/AuthContext';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50';
 interface Prefill { initialRepository?: string; initialPrompt?: string; todoIds?: string[] }
@@ -274,6 +275,7 @@ function NewTaskLauncher({ scope }: { scope: string }) {
 
   const navigate = useNavigate();
   const [dirty, setDirty] = useState(false);
+  const repoOptions = useDecoratedRepoOptions(useMemo(() => catalog?.repositories.map(({ name, enabled }) => ({ name, enabled })), [catalog]));
   const requestClose = async () => {
     if (launcher.busy || processingFiles) return;
     if (!snapshot && dirty && !window.confirm('Discard this unsaved task? Your prompt, attachments, and form changes will be lost.')) return;
@@ -294,7 +296,7 @@ function NewTaskLauncher({ scope }: { scope: string }) {
       </li>)}</ul>
     </section>}
       <fieldset disabled={locked || isDemoMode} className="space-y-5 disabled:opacity-60">
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={catalog?.repositories.map(({ name, enabled }) => ({ name, enabled }))} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" /></div>
+        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={repoOptions} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" /></div>
         <div><label htmlFor="task-instruction" className="mb-2 block text-sm font-medium text-slate-700">Prompt</label>
           <div className="rounded-md border border-slate-200 focus-within:border-teal-500 focus-within:ring-1 focus-within:ring-teal-500">
           <TextareaAutosize id="task-instruction" required maxLength={50000} value={instruction} onChange={event => setInstruction(event.target.value)} onPaste={event => {
