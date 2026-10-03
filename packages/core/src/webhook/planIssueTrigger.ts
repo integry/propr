@@ -205,8 +205,15 @@ export async function labelPlanIssueForProcessing({
 
 }
 
-/** Labels the epic PR only after all children in the draft are done. */
-export async function finalizeEpicPlanIfComplete(draftId: string, canFinalize: () => Promise<boolean> = async () => true): Promise<boolean> {
+/**
+ * Labels the epic PR only after all children in the draft are done.
+ * A missing saved selector never counts as success: it is recovered or finalization stays owed.
+ */
+export async function finalizeEpicPlanIfComplete(
+    draftId: string,
+    canFinalize: () => Promise<boolean> = async () => true,
+    recoverEpicLabel?: () => Promise<string | undefined>
+): Promise<boolean> {
     const isReady = async () => {
         const issues = await getPlanIssuesByDraft(draftId);
         if (issues.some(issue => isInProgressStatus(issue.status) || issue.status === PlanIssueStatus.PENDING)) return false;
@@ -216,8 +223,12 @@ export async function finalizeEpicPlanIfComplete(draftId: string, canFinalize: (
     const draft = await db('task_drafts').where({ draft_id: draftId }).first('repository', 'context_config');
     if (!draft || !await isReady()) return false;
     const context = parseHistoryMetadata(draft.context_config);
-    const epicLabel = typeof context.epicLabel === 'string' ? context.epicLabel : undefined;
-    if (!epicLabel) return true;
+    const epicLabel = typeof context.epicLabel === 'string' ? context.epicLabel : await recoverEpicLabel?.();
+    if (!epicLabel) {
+        logger.withCorrelation(`epic-complete-${draftId}`).warn({ draftId },
+            'Epic branch selector is missing; epic PR finalization deferred');
+        return false;
+    }
     return addProcessingLabelToEpicPR(draft.repository, epicLabel,
         logger.withCorrelation(`epic-complete-${draftId}`), isReady);
 }
