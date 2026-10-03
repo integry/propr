@@ -152,6 +152,48 @@ test("a server error after a mutation is reported as uncertain rather than as a 
   }
 });
 
+test("an access refusal after an unconfirmed attempt keeps the outcome uncertain with the same key", async () => {
+  // Each mutation loses its first response, then the retry is refused because the login expired.
+  const { client, requests, restore } = clientWith((_request, attempt) =>
+    attempt % 2 === 1 ? new TypeError("socket hang up") : { status: 401, body: { error: "Authentication required" } });
+  try {
+    const mutations = [
+      { key: "create-key-6", run: () => createGoal(createRequest, "create-key-6", { client, retryDelayMs: 0 }) },
+      { key: "input-key-4", run: () => sendGoalInput("goal-1", { message: "Fix it" }, "input-key-4", { client, retryDelayMs: 0 }) },
+    ];
+    for (const mutation of mutations) {
+      await assert.rejects(mutation.run(), (error) => {
+        assert.ok(error instanceof GoalMutationUncertainError);
+        assert.equal(error.idempotencyKey, mutation.key);
+        assert.equal(error.attempts, 2);
+        assert.ok(error.cause instanceof NetworkError);
+        assert.ok(error.refusal instanceof ApiError);
+        assert.equal(error.refusal.status, 401);
+        assert.match(error.message, /refused \(401\)/);
+        return true;
+      });
+    }
+    assert.deepEqual(requests.map((request) => request.headers["Idempotency-Key"]),
+      ["create-key-6", "create-key-6", "input-key-4", "input-key-4"]);
+  } finally {
+    restore();
+  }
+});
+
+test("an access refusal on the first attempt stays definitive", async () => {
+  const { client, requests, restore } = clientWith(() => ({ status: 403, body: { error: "Forbidden" } }));
+  try {
+    await assert.rejects(sendGoalInput("goal-1", { message: "Fix it" }, "input-key-5", { client, retryDelayMs: 0 }), (error) => {
+      assert.ok(error instanceof ApiError && !(error instanceof GoalMutationUncertainError));
+      assert.equal(error.status, 403);
+      return true;
+    });
+    assert.equal(requests.length, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("lifecycle mutations use the goal endpoints with encoded IDs and the caller key", async () => {
   const { client, requests, restore } = clientWith(() => ({ body: { goal } }));
   try {

@@ -297,6 +297,29 @@ test("an uncertain create gives the idempotency key as a recovery path instead o
   assert.match(output.error.recovery, new RegExp(output.error.idempotencyKey));
 });
 
+test("a login refusal after a lost response keeps the recovery key instead of reporting a plain failure", async () => {
+  const lostThenRefused = (_request: RecordedRequest, attempt: number) =>
+    attempt === 1 ? new TypeError("fetch failed") : { status: 401, body: { error: "Authentication required" } };
+
+  const create = await run(["create", "Do it", "-p", "acme/repo", "-a", "codex", "-m", "model-a"], lostThenRefused);
+  assert.equal(create.exitCode, 1);
+  assert.equal(create.requests.length, 2);
+  const key = create.requests[0].headers["Idempotency-Key"];
+  assert.equal(create.requests[1].headers["Idempotency-Key"], key);
+  assert.match(create.stderr, /Could not confirm the outcome/);
+  assert.match(create.stderr, /propr login/);
+  assert.match(create.stderr, new RegExp(`After 'propr login', re-run the same command with --idempotency-key ${key}`));
+
+  const input = await run(["input", "goal-1", "Fix the tests", "--json"], lostThenRefused);
+  assert.equal(input.exitCode, 1);
+  const output = JSON.parse(input.stdout);
+  assert.equal(output.error.code, "outcome_uncertain");
+  assert.equal(output.error.status, 401);
+  assert.deepEqual(output.error.refusal, { code: "unauthorized", status: 401 });
+  assert.equal(output.error.idempotencyKey, input.requests[0].headers["Idempotency-Key"]);
+  assert.match(output.error.recovery, new RegExp(output.error.idempotencyKey));
+});
+
 test("goal list sends filters and pagination and reports the next offset", async () => {
   const result = await run(["list", "-p", "acme/repo", "--state", "paused", "--limit", "1", "--offset", "4", "--json"],
     () => ({ body: { goals: [goalFixture({ desiredState: "paused", pausePending: true })], offset: 4, limit: 1, nextOffset: 5 } }));

@@ -249,7 +249,7 @@ Pause, resume, cancel, model changes and inputs are *requests*. They are accepte
 
 Every mutation sends an `Idempotency-Key`. Without `--idempotency-key` the CLI generates one per invocation and prints it. Transient failures (network errors, timeouts, 502/503/504) are retried automatically with the same key, so a retry never starts a second goal or queues a second input. Reusing a key with a different payload is rejected with `idempotency_conflict`.
 
-If the outcome still cannot be confirmed, the command exits 1 with `outcome_uncertain` and the key. Re-run the same command with `--idempotency-key <key>`: if the goal was created, it is returned (`outcome: "replayed"`) instead of starting another one. A `saved_queue_pending` outcome means the goal was saved and the server's recovery will start it; do not create it again.
+If the outcome still cannot be confirmed, the command exits 1 with `outcome_uncertain` and the key. This also applies when a retry after a lost response is refused with 401 or 403 (for example, because the login expired): the refusal does not prove that the earlier attempt failed, so the error keeps `outcome_uncertain` and the key, and adds `refusal` (`unauthorized` or `forbidden`). Run `propr login` or restore access first, then retry with the key. Re-run the same command with `--idempotency-key <key>`: if the goal was created, it is returned (`outcome: "replayed"`) instead of starting another one. A `saved_queue_pending` outcome means the goal was saved and the server's recovery will start it; do not create it again.
 
 ### JSON output
 

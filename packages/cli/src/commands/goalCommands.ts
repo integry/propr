@@ -339,9 +339,12 @@ function failureCode(error: unknown, command: string): { code: GoalFailureCode; 
 
 function recoveryHint(error: unknown, context: FailureContext, code: GoalFailureCode): string | null {
   if (code === "outcome_uncertain" && error instanceof GoalMutationUncertainError) {
+    const rerun = error.refusal?.status === 401
+      ? "After 'propr login', re-run"
+      : error.refusal ? "Once access is restored, re-run" : "Re-run";
     return context.command === "create"
-      ? `The goal may already have been created. Re-run the same command with --idempotency-key ${error.idempotencyKey} to recover it without starting another goal, or check 'propr goal list'.`
-      : `The request may already have been accepted. Re-run the same command with --idempotency-key ${error.idempotencyKey}; it will not be applied twice.`;
+      ? `The goal may already have been created. ${rerun} the same command with --idempotency-key ${error.idempotencyKey} to recover it without starting another goal, or check 'propr goal list'.`
+      : `The request may already have been accepted. ${rerun} the same command with --idempotency-key ${error.idempotencyKey}; it will not be applied twice.`;
   }
   if (code === "idempotency_conflict") return "Use a new --idempotency-key for a different request, or repeat the original request exactly.";
   return null;
@@ -352,6 +355,9 @@ function fail(error: unknown, context: FailureContext): never {
   const { code, status } = failureCode(error, context.command);
   const message = error instanceof Error ? error.message : String(error);
   const idempotencyKey = error instanceof GoalMutationUncertainError ? error.idempotencyKey : context.idempotencyKey;
+  const refusal = error instanceof GoalMutationUncertainError && error.refusal
+    ? { code: failureCode(error.refusal, context.command).code, status: error.refusal.status }
+    : null;
   const recovery = recoveryHint(error, context, code);
   if (context.json) {
     printJson({
@@ -360,7 +366,8 @@ function fail(error: unknown, context: FailureContext): never {
       error: {
         code,
         message,
-        status: status ?? null,
+        status: status ?? refusal?.status ?? null,
+        ...(refusal ? { refusal } : {}),
         ...(context.goalId ? { goalId: context.goalId } : {}),
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(error instanceof GoalMutationUncertainError ? { attempts: error.attempts } : {}),
@@ -375,6 +382,7 @@ function fail(error: unknown, context: FailureContext): never {
     console.error(`Error: Goal not found: ${context.goalId}`);
   } else if (code === "outcome_uncertain") {
     console.error(`Error: Could not confirm the outcome (${message}).`);
+    if (refusal) console.error(refusal.code === "unauthorized" ? LOGIN_REQUIRED_ERROR : "Error: Access denied.");
   } else {
     console.error(`Error: ${message}`);
   }

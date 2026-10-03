@@ -165,6 +165,10 @@ export interface GoalCreateResult extends GoalMutationResult {
  * The server may or may not have applied the mutation. Re-running the same
  * command with `idempotencyKey` is always safe: it returns the original
  * result instead of applying the mutation twice.
+ *
+ * `refusal` is set when a retry after an unconfirmed attempt was rejected
+ * before the server could resolve the key (401/403), e.g. because the login
+ * expired mid-retry. The earlier attempt may still have been applied.
  */
 export class GoalMutationUncertainError extends Error {
   constructor(
@@ -172,6 +176,7 @@ export class GoalMutationUncertainError extends Error {
     readonly idempotencyKey: string,
     readonly attempts: number,
     readonly cause?: unknown,
+    readonly refusal?: ApiError,
   ) {
     super(message);
     this.name = "GoalMutationUncertainError";
@@ -201,6 +206,14 @@ function isTransientFailure(error: unknown): boolean {
   return error instanceof ApiError && [502, 503, 504].includes(error.status) && !queuedGoalId(error);
 }
 
+/**
+ * Access refusals can precede the server's idempotency lookup, so they say
+ * nothing about whether an earlier unconfirmed attempt was applied.
+ */
+function isAccessRefusal(error: unknown): error is ApiError {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
+
 /** A 503 with a goal ID means creation was durably saved and queue recovery is pending. */
 function queuedGoalId(error: unknown): string | null {
   if (!(error instanceof ApiError) || error.status !== 503) return null;
@@ -224,7 +237,8 @@ interface MutationOptions {
 /**
  * Sends one logical mutation, retrying transient failures with the same key.
  * Definitive HTTP answers (4xx, 500) are rethrown unchanged; exhausted
- * transient failures become {@link GoalMutationUncertainError}.
+ * transient failures become {@link GoalMutationUncertainError}, as does an
+ * access refusal that follows an unconfirmed attempt.
  */
 async function mutate<T>(
   client: ApiClient,
@@ -244,6 +258,16 @@ async function mutate<T>(
       if (!isTransientFailure(error)) {
         if (error instanceof ApiError && error.status >= 500 && !queuedGoalId(error)) {
           throw new GoalMutationUncertainError(error.message, options.idempotencyKey, attempt, error);
+        }
+        if (lastError !== undefined && isAccessRefusal(error)) {
+          const earlier = lastError instanceof Error ? lastError.message : String(lastError);
+          throw new GoalMutationUncertainError(
+            `${earlier}; the retry was then refused (${error.status}): ${error.message}`,
+            options.idempotencyKey,
+            attempt,
+            lastError,
+            error,
+          );
         }
         if (error instanceof ApiError) Object.assign(error, { attempts: attempt });
         throw error;
