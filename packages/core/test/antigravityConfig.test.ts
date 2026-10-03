@@ -250,7 +250,7 @@ test('Antigravity output parser reads the sanitized 1.1.12 stream envelope exact
 
     assert.equal(parsed.sessionId, 'conversation-sanitized');
     assert.equal(parsed.conversationId, 'conversation-sanitized');
-    assert.equal(parsed.modelUsed, 'Gemini 3.7 Flash (High)');
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash');
     assert.equal(parsed.summary, 'STREAM_OK\n');
     assert.equal(parsed.terminalStatus, 'success');
     assert.equal(parsed.hasStreamEnvelopes, true);
@@ -1097,6 +1097,35 @@ test('Antigravity analysis inherits reasoning only when enabled', async t => {
             t.mock.method(internals, 'buildDockerArgs', params => { args = build(params); throw new Error('captured launch'); });
             await agent.analyze('test', { model, useConfiguredReasoningLevel: inherit, reasoningLevel: explicit, suppressLlmLog: true });
             assert.equal(args[args.indexOf('--model') + 1], `gemini-3.8-flash-${explicit ?? (inherit ? 'high' : 'medium')}`);
+        }
+    }
+});
+
+
+test('retained Flash defaults execute against provider display identities', async () => {
+    for (const version of ['3.6', '3.7']) {
+        for (const effort of ['low', 'medium', 'high'] as const) {
+            const base = `antigravity-gemini-${version}-flash`;
+            const saved = `${base}-${effort}`;
+            const display = `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`;
+            const requestedCliModel = toAntigravityCliModelId(saved);
+            assert.equal(requestedCliModel, version === '3.6' ? display : `gemini-${version}-flash-${effort}`);
+            const agent = new AntigravityAgent(createAntigravityConfig({ supportedModels: [saved], defaultModel: saved }));
+            const internals = agent as unknown as AntigravityTestInternals;
+            internals.persistImplementationLog = async () => undefined;
+            for (const reported of [display, `Gemini ${version} Flash (${effort === 'low' ? 'High' : 'Low'})`, `Gemini ${version === '3.6' ? '3.7' : '3.6'} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`]) {
+                const stdout = [
+                    JSON.stringify({ event: 'init', conversation_id: 'retained', init: { model: reported, cwd: '/tmp', tools: [] } }),
+                    JSON.stringify({ event: 'result', result: { conversation_id: 'retained', status: 'SUCCESS', response: 'done' } }),
+                ].join('\n');
+                const result = await internals.processExecutionResult({
+                    result: { stdout, stderr: '', exitCode: 0 }, executionTime: 1,
+                    issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' }, effectiveModel: saved,
+                    requestedCliModel, prompt: '', worktreePath: '/tmp', worktreeGitContent: null,
+                });
+                assert.equal(result.success, reported === display, result.error);
+                if (reported === display) assert.equal(result.modelUsed, base);
+            }
         }
     }
 });

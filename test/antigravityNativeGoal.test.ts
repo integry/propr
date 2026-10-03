@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
 import { describe, test } from 'node:test';
 import { GOAL_CONTINUE_INPUT } from '../packages/core/src/goals.ts';
 import { probeGoalCapability } from '../packages/core/src/agents/goalCapabilities.ts';
@@ -452,6 +453,28 @@ describe('Antigravity goal stream adapter', () => {
         }
     });
 
+    test('retained Flash defaults confirm goal identity only with matching effort', async () => {
+        for (const version of ['3.6', '3.7']) {
+            for (const effort of ['low', 'medium', 'high']) {
+                const saved = `antigravity-gemini-${version}-flash-${effort}`;
+                const display = `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`;
+                for (const reported of [display, `Gemini ${version} Flash (${effort === 'low' ? 'High' : 'Low'})`]) {
+                    const child = fakeChild();
+                    child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };
+                    const stream = new AntigravityGoalStream(child as unknown as ChildProcess, { append: () => undefined } as never, toAntigravityCliModelId(saved));
+                    child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: reported } }));
+                    child.stdout.write(step(1, 'DONE', { text_delta: CHECKPOINT }));
+                    child.stdout.write(line({ event: 'result', result: { status: 'SUCCESS', response: ANTIGRAVITY_GOAL_COMPLETE_MARKER } }));
+                    child.emit('close', reported === display ? 0 : 1);
+                    await stream.waitForExit();
+                    assert.equal(stream.conversationId, reported === display ? 'agy' : undefined);
+                    assert.equal(stream.stepCompleted, reported === display);
+                    assert.equal(stream.result?.status, reported === display ? 'success' : 'error');
+                }
+            }
+        }
+    });
+
     test('effort mismatch cannot confirm identity or release queued input', async () => {
         const child = fakeChild();
         child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };
@@ -468,26 +491,28 @@ describe('Antigravity goal stream adapter', () => {
     });
 
     test('effort conflict during an awaited heartbeat cannot acknowledge pending input', async () => {
-        const child = fakeChild();
-        child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };
-        const stream = new AntigravityGoalStream(child as unknown as ChildProcess, { append: () => undefined } as never, 'gemini-3.8-flash-high');
-        const calls: string[] = [];
-        const control = {
-            load: async () => ({ desiredState: 'running', pendingInputs: [] }),
-            heartbeat: async () => {
-                child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: 'gemini-3.8-flash-low' } }));
-            },
-            markInputDelivered: async () => { calls.push('delivered'); },
-            setActiveTurn: async () => { calls.push('active'); },
-            publishCheckpoint: async () => { calls.push('checkpoint'); },
-        } as unknown as GoalExecutionControl;
-        child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: 'gemini-3.8-flash-high' } }));
-        // Yielding in the identity callback exposes a later conflicting init.
-        await assert.rejects(runAntigravityGoalProtocol(async () => stream, {
-            goalControl: control, initialControlInputId: 'pending', initialControlInputMessage: 'input',
-            onSessionId: async () => { await control.heartbeat(); },
-        } as AgentTaskOptions, COMMAND), /reported model/);
-        assert.deepEqual(calls, []);
+        for (const version of ['3.8', '3.7', '3.6']) {
+            const child = fakeChild();
+            child.kill = signal => { child.signals.push(signal); child.emit('close', 1); return true; };
+            const stream = new AntigravityGoalStream(child as unknown as ChildProcess, { append: () => undefined } as never, toAntigravityCliModelId(`antigravity-gemini-${version}-flash-high`));
+            const calls: string[] = [];
+            const control = {
+                load: async () => ({ desiredState: 'running', pendingInputs: [] }),
+                heartbeat: async () => {
+                    child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: `Gemini ${version} Flash (Low)` } }));
+                },
+                markInputDelivered: async () => { calls.push('delivered'); },
+                setActiveTurn: async () => { calls.push('active'); },
+                publishCheckpoint: async () => { calls.push('checkpoint'); },
+            } as unknown as GoalExecutionControl;
+            child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: toAntigravityCliModelId(`antigravity-gemini-${version}-flash-high`) } }));
+            // Yielding in the identity callback exposes a later conflicting init.
+            await assert.rejects(runAntigravityGoalProtocol(async () => stream, {
+                goalControl: control, initialControlInputId: 'pending', initialControlInputMessage: 'input',
+                onSessionId: async () => { await control.heartbeat(); },
+            } as AgentTaskOptions, COMMAND), /reported model/);
+            assert.deepEqual(calls, []);
+        }
     });
 
     test('assembles fragmented narration, tracks step boundaries, and reports the terminal result', async () => {

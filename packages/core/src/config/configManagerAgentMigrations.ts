@@ -1,4 +1,4 @@
-import { getAntigravityCompatibilityRoute } from '../agents/impl/antigravityModelIds.js';
+import { ANTIGRAVITY_MODEL_LABELS, getAntigravityCompatibilityRoute } from '../agents/impl/antigravityModelIds.js';
 /**
  * Forward migrations applied to saved agent configs on load.
  *
@@ -277,7 +277,7 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
     // removed hosted defaults, preserving user-defined models and their defaults.
     const isRetired = (model: string) => agent.type === 'vibe'
         ? RETIRED_VIBE_MODELS.has(model)
-        : !MODEL_INFO_MAP[model];
+        : !MODEL_INFO_MAP[model] && !(agent.type === 'antigravity' && Object.hasOwn(ANTIGRAVITY_MODEL_LABELS, model));
     const validModels = agent.supportedModels.filter(m => !isRetired(m));
     const removedModels = agent.supportedModels.filter(isRetired);
     if (removedModels.length === 0) {

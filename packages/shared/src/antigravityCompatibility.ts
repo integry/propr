@@ -11,6 +11,15 @@ for (const model of ANTIGRAVITY_MODELS) {
         ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-${model.shortAlias}-${effort}`] = id;
     }
 }
+// Retained saved Flash selections need routes even though they are no longer selectable.
+for (const version of ['3.6', '3.7']) {
+    for (const effort of getReasoningLevelsForAgentType('antigravity')) {
+        const model = `antigravity-gemini-${version}-flash`;
+        const id = `${model}-${effort}`;
+        ANTIGRAVITY_COMPATIBILITY_ROUTES[id] = { model, effort };
+        ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-flash${version.replace('.', '')}-${effort}`] = id;
+    }
+}
 for (const family of ['opus', 'sonnet']) {
     const id = `antigravity-claude-${family}-4.6-thinking`;
     ANTIGRAVITY_COMPATIBILITY_ROUTES[id] = { model: `antigravity-claude-${family}-5.5`, effort: 'high' };

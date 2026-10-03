@@ -1,5 +1,6 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
+import { antigravityModelIdsMatch, toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
 import fs from 'node:fs';
 import { buildAgentConfig } from '../propr-ui/src/pages/SettingsPage/agentCredentialSetupUtils.js';
 import { AGENT_DEFAULTS, getManagedAgentConfigPath } from '@propr/shared';
@@ -417,5 +418,25 @@ test('Antigravity migration rewrites legacy credential paths only', () => {
         migrateAgentConfig(agent);
         assert.equal(agent.configPath, expected);
         assert.equal(migrateAgentConfig(agent), false);
+    }
+});
+
+
+test('Antigravity migration retains older Flash defaults and their effort', () => {
+    for (const version of ['3.6', '3.7']) {
+        for (const effort of ['low', 'medium', 'high'] as const) {
+            const base = `antigravity-gemini-${version}-flash`;
+            const saved = `${base}-${effort}`;
+            const agent = createAgent({ type: 'antigravity', supportedModels: [saved], defaultModel: saved,
+                modelCustomLabels: { [saved]: 'retained-flash' } });
+            assert.equal(migrateAgentConfig(agent), true);
+            assert.equal(agent.defaultModel, base);
+            assert.ok(agent.supportedModels.includes(base));
+            assert.equal(agent.modelReasoningLevels?.[base], effort);
+            assert.equal(agent.modelCustomLabels?.[saved], 'retained-flash');
+            const cli = toAntigravityCliModelId(agent.defaultModel!, agent.modelReasoningLevels?.[base]);
+            assert.equal(antigravityModelIdsMatch(cli, `Gemini ${version} Flash (${effort[0].toUpperCase()}${effort.slice(1)})`), true);
+            assert.equal(migrateAgentConfig(agent), false);
+        }
     }
 });
