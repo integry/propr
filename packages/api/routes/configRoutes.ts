@@ -285,6 +285,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', true)) !== false,
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
+        ...await configStore.loadUltrafixEscalationSettings().then(escalation => ({
+          ultrafix_escalation_enabled: escalation.enabled,
+          ultrafix_escalation_models: escalation.models,
+          ultrafix_escalation_patience: escalation.patience,
+          ultrafix_escalation_max_reasoning_levels: escalation.maxReasoningLevels,
+        })),
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,

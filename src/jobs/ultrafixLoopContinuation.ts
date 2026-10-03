@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from 'pino';
+import { recordUltrafixEscalationReview } from './ultrafixEscalation.js';
 import type { Redis } from 'ioredis';
 import {
     generateCorrelationId,
@@ -249,7 +250,7 @@ export async function continueUltrafixLoop(
     }
 
     // 2. Record the completed action
-    const updatedState = await recordAction(redisClient, {
+    let updatedState = await recordAction(redisClient, {
         owner, repo, pr: pullRequestNumber, action: completedAction, workEpoch,
     });
     if (!updatedState) {
@@ -294,6 +295,16 @@ export async function continueUltrafixLoop(
 
     // 5. Determine next action
     const decision = determineNextAction(updatedState, latestScore, reviewStatus, isPartial);
+    // Existing goal, coverage, invalid-output, and overall cycle limits take precedence.
+    if (completedAction === 'review' && latestScore !== null && !isPartial
+        && reviewStatus !== 'invalid' && decision.action !== null) {
+        updatedState = await recordUltrafixEscalationReview(redisClient, updatedState, latestScore);
+        if (!updatedState) return { continued: false, reason: 'ultrafix_superseded' };
+        if (updatedState.escalation?.exhausted) {
+            decision.action = null;
+            decision.reason = 'Escalation exhausted: all available models and reasoning levels stalled';
+        }
+    }
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore, isPartial },
         'Ultrafix loop: next action decision',

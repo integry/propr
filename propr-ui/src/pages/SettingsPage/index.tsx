@@ -78,9 +78,11 @@ const AdminSettingsPage: React.FC = () => {
 
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
-    let value: string | number | boolean;
-    const numericFields = ['usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
-    if (numericFields.includes(settingName)) {
+    let value: string | string[] | number | boolean;
+    const numericFields = ['ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    if (settingName === 'ultrafix_escalation_models') {
+      value = event.target.value.split(',').map(model => model.trim());
+    } else if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
       // to avoid silent coercion of values like "1e6" or "2.5".
@@ -88,7 +90,7 @@ const AdminSettingsPage: React.FC = () => {
       const parsed = Number(raw);
       if (!Number.isSafeInteger(parsed)) return;
       value = parsed;
-    } else if (settingName === 'auto_resolve_merge_conflicts' || settingName === 'usage_tips_enabled') {
+    } else if (settingName === 'ultrafix_escalation_enabled' || settingName === 'auto_resolve_merge_conflicts' || settingName === 'usage_tips_enabled') {
       value = (event.target as HTMLInputElement).checked;
     } else {
       value = event.target.value;
@@ -163,12 +165,16 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'general-configuration',
       category: 'automation',
-      searchText: 'general configuration processing worker concurrency resolve merge conflicts ultrafix rating goal maximum cycles pause seconds',
+      searchText: 'general configuration processing worker concurrency resolve merge conflicts ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
       content: (
         <GeneralSettingsSection
           settings={{
             worker_concurrency: settings.worker_concurrency,
             auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
+            ultrafix_escalation_enabled: settings.ultrafix_escalation_enabled,
+            ultrafix_escalation_models: settings.ultrafix_escalation_models,
+            ultrafix_escalation_patience: settings.ultrafix_escalation_patience,
+            ultrafix_escalation_max_reasoning_levels: settings.ultrafix_escalation_max_reasoning_levels,
             ultrafix_rating_goal: settings.ultrafix_rating_goal,
             ultrafix_max_cycles: settings.ultrafix_max_cycles,
             ultrafix_pause_seconds: settings.ultrafix_pause_seconds

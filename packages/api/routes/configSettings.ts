@@ -9,6 +9,10 @@ interface SettingFields {
   dashboard_summary_enabled?: unknown;
   model_reasoning_level?: unknown;
   pr_review_model?: unknown;
+  ultrafix_escalation_enabled?: unknown;
+  ultrafix_escalation_models?: unknown;
+  ultrafix_escalation_patience?: unknown;
+  ultrafix_escalation_max_reasoning_levels?: unknown;
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
@@ -22,6 +26,10 @@ export type SettingSaveName =
   | 'dashboard_summary_enabled'
   | 'model_reasoning_level'
   | 'pr_review_model'
+  | 'ultrafix_escalation_enabled'
+  | 'ultrafix_escalation_models'
+  | 'ultrafix_escalation_patience'
+  | 'ultrafix_escalation_max_reasoning_levels'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds';
@@ -130,6 +138,29 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [], normalized };
     normalized.ultrafix_pause_seconds = v;
     saves.push({ name: 'ultrafix_pause_seconds' });
+  }
+
+  if (fields.ultrafix_escalation_enabled !== undefined) {
+    if (typeof fields.ultrafix_escalation_enabled !== 'boolean') return { error: 'ultrafix_escalation_enabled must be a boolean', saves: [], normalized };
+    normalized.ultrafix_escalation_enabled = fields.ultrafix_escalation_enabled;
+    saves.push({ name: 'ultrafix_escalation_enabled' });
+  }
+  for (const [name, min] of [['ultrafix_escalation_patience', 1], ['ultrafix_escalation_max_reasoning_levels', 0]] as const) {
+    if (fields[name] === undefined) continue;
+    const value = validateStrictInt(fields[name], min, Infinity);
+    if (value === null) return { error: `${name} must be a safe integer >= ${min}`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
+  }
+  if (fields.ultrafix_escalation_models !== undefined) {
+    const models = fields.ultrafix_escalation_models;
+    if (!Array.isArray(models) || models.some(m => typeof m !== 'string' || !m.trim())) return { error: 'ultrafix_escalation_models must be an ordered array of nonempty model names', saves: [], normalized };
+    for (const model of models) {
+      const result = await validatePrReviewModel(model);
+      if (result.error) return { error: result.error.replaceAll('pr_review_model', 'ultrafix_escalation_models'), saves: [], normalized };
+    }
+    normalized.ultrafix_escalation_models = [...new Set(models.map(m => m.trim()))];
+    saves.push({ name: 'ultrafix_escalation_models' });
   }
 
   return { saves, normalized };

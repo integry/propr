@@ -5,6 +5,10 @@ import { SETTINGS_CONTROL } from './settingsStyles';
 interface GeneralSettings {
   worker_concurrency: string;
   auto_resolve_merge_conflicts: boolean;
+  ultrafix_escalation_enabled: boolean;
+  ultrafix_escalation_models: string[];
+  ultrafix_escalation_patience: number;
+  ultrafix_escalation_max_reasoning_levels: number;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;
@@ -70,6 +74,28 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           </>
         }
       >
+        <SettingsCheckboxField
+          id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
+          label="Automatic Escalation"
+          helperText="When progress stalls, increase reasoning effort, then hand off to the next model. Disabled by default."
+          checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
+        />
+        <SettingsField label="Escalation Models (in order)" htmlFor="ultrafix_escalation_models"
+          helperText="Comma-separated model names or agent:model pairs. The current implementation model always runs first. Providers at 90% usage are skipped when fresh Agent Tank data is available.">
+          <input id="ultrafix_escalation_models" name="ultrafix_escalation_models"
+            value={settings.ultrafix_escalation_models.join(', ')} onChange={onSettingChange} onBlur={onBlur}
+            placeholder="codex:gpt-6-astra, claude:claude-opus-5-5" className={SETTINGS_CONTROL} />
+        </SettingsField>
+        <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
+          helperText="Stalled reviews before each escalation step. Any new best score resets this counter.">
+          <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
+            value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+        </SettingsField>
+        <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
+          helperText="Maximum effort increases for each model. Use 0 to hand off directly after patience expires.">
+          <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
+            value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+        </SettingsField>
         <SettingsField
           label="Rating Goal"
           htmlFor="ultrafix_rating_goal"

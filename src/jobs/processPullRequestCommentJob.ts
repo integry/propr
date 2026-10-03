@@ -19,6 +19,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext, restorePendingComments } from './prPendingComments.js';
 import { executeReviewProcessing, type PRJobContext } from './prCommentReviewJob.js';
+import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
@@ -186,6 +187,14 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
         repoOwner, repoName, pullRequestNumber, correlatedLogger,
     });
+    if (job.data.ultrafixMeta) {
+        const execution = await resolveUltrafixFixExecution({
+            redis: redisClient, owner: repoOwner, repo: repoName, pr: pullRequestNumber,
+            workEpoch: job.data.ultrafixMeta.workEpoch ?? 0, model: llm, effort: job.data.reasoningLevel,
+        });
+        llm = execution.model ?? llm;
+        job.data.reasoningLevel = execution.effort;
+    }
     let commentHistory = '';
     if (!job.data.ultrafixMeta) {
         commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);

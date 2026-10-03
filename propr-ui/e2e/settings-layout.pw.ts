@@ -188,3 +188,23 @@ test('fast analysis model describes the review context scout', async ({ page }) 
   await page.getByRole('tab', { name: 'Automation' }).click();
   await expect(page.getByLabel('Auto-Followup Score Threshold')).toHaveCount(0);
 });
+
+test('ultrafix escalation controls retain ordered models and support direct handoff', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=automation');
+  const section = page.getByRole('region', { name: 'Ultrafix', exact: true });
+  await expect(section.getByLabel('Automatic Escalation')).not.toBeChecked();
+  await section.getByLabel('Automatic Escalation').check();
+  const models = section.getByLabel('Escalation Models (in order)');
+  await models.fill('codex:gpt-6-astra, claude:claude-opus-5-5');
+  await section.getByLabel('Escalation Patience').fill('4');
+  await section.getByLabel('Max Reasoning Levels per Model').fill('0');
+  await expect(models).toHaveValue('codex:gpt-6-astra, claude:claude-opus-5-5');
+  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir(path.resolve('../.propr/previews'), { recursive: true });
+    await section.screenshot({ path: '../.propr/previews/ultrafix-escalation.png', animations: 'disabled' });
+  }
+});

@@ -70,6 +70,10 @@ export function useSettingsState() {
     pr_review_context_model: '',
     pr_review_max_context_tokens: 0,
     pr_review_context_budget_percent: DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
+    ultrafix_escalation_enabled: false,
+    ultrafix_escalation_models: [],
+    ultrafix_escalation_patience: 3,
+    ultrafix_escalation_max_reasoning_levels: 2,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60
@@ -164,6 +168,10 @@ export function useSettingsState() {
         pr_review_context_model: settingsToSave.pr_review_context_model,
         pr_review_max_context_tokens: settingsToSave.pr_review_max_context_tokens,
         pr_review_context_budget_percent: settingsToSave.pr_review_context_budget_percent,
+        ultrafix_escalation_enabled: settingsToSave.ultrafix_escalation_enabled,
+        ultrafix_escalation_models: settingsToSave.ultrafix_escalation_models.filter(Boolean),
+        ultrafix_escalation_patience: settingsToSave.ultrafix_escalation_patience,
+        ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
