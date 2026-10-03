@@ -241,6 +241,26 @@ function resolveCommandMode(
   return typeof initial.commandMode === 'string' ? initial.commandMode : undefined;
 }
 
+function resolvePullRequestNumber(
+  task: Record<string, unknown>,
+  initial: Record<string, unknown>,
+  historyMetadata: Record<string, unknown>,
+  taskId: string,
+): number | undefined {
+  const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
+    ? historyMetadata.prResult as Record<string, unknown>
+    : {};
+  const isPullRequestTask = task.task_type === 'review'
+    || task.task_type === 'pr-comment'
+    || taskId.startsWith('pr-comments-batch-')
+    || positiveInteger(initial.pullRequestNumber) !== undefined;
+  return positiveInteger(task.pr_number)
+    ?? positiveInteger(initial.pullRequestNumber)
+    ?? positiveInteger(initial.prNumber)
+    ?? positiveInteger(prResult.prNumber)
+    ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
+}
+
 function isReviewDeferred(metadata: Record<string, unknown>): boolean {
   return metadata.deferred === true
     || metadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
@@ -1041,23 +1061,12 @@ export class NotificationProjectionService {
     if (!task) return undefined;
     const initial = parseJsonObject(task.initial_job_data);
     const historyMetadata = await this.loadCompletedHistoryMetadata(payload);
-    const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
-      ? historyMetadata.prResult as Record<string, unknown>
-      : {};
     const repository = typeof task.repository === 'string'
       ? task.repository
       : payload.repository;
     if (typeof repository !== 'string') return undefined;
     const taskType = typeof task.task_type === 'string' ? task.task_type : '';
-    const isPullRequestTask = taskType === 'review'
-      || taskType === 'pr-comment'
-      || payload.taskId.startsWith('pr-comments-batch-')
-      || positiveInteger(initial.pullRequestNumber) !== undefined;
-    const prNumber = positiveInteger(task.pr_number)
-      ?? positiveInteger(initial.pullRequestNumber)
-      ?? positiveInteger(initial.prNumber)
-      ?? positiveInteger(prResult.prNumber)
-      ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
+    const prNumber = resolvePullRequestNumber(task, initial, historyMetadata, payload.taskId);
     const commandMode = resolveCommandMode(historyMetadata, initial);
     const isReview = taskType === 'review' || commandMode === 'review';
     const reviewDeferred = isReviewDeferred(historyMetadata);
