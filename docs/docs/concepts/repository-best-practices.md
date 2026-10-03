@@ -1,12 +1,12 @@
 # Repository Best Practices
 
-ProPR opens pull requests; it does not run your test suite or linters before committing. Its execution flow has no validation phase — agent output is committed and pushed, and **your CI is the layer that catches regressions**. A repository set up with strong CI and good hygiene gets safer, more autonomous results from ProPR; one without it relies entirely on human review to catch problems.
+ProPR opens pull requests. Unless a repository declares `validation` commands in [`.propr/workflow.yml`](../features/repository-workflow.md), ProPR does not run your test suite or linters before committing, and its execution flow has no validation phase — agent output is committed and pushed. Even with workflow validation configured, results are reported in the completion summary but do not block the commit, so **your CI is the layer that catches regressions** and enforces merge requirements. A repository set up with strong CI and good hygiene gets safer, more autonomous results from ProPR; one without it relies entirely on human review to catch problems.
 
 These practices are about preparing a repository so ProPR's automation works *with* you. None of them are enforced by ProPR — they are the conditions under which it performs best.
 
 ## Make CI The Quality Gate
 
-Run lint, type checks, tests, and the build on every pull request through GitHub Actions (or your CI of choice). Because ProPR commits agent changes without validating them itself, CI is what verifies an agent-generated PR actually works.
+Run lint, type checks, tests, and the build on every pull request through GitHub Actions (or your CI of choice). Because ProPR commits agent changes without validating them itself — or, when workflow `validation` commands are configured, reports their results without gating the commit — CI is what verifies an agent-generated PR actually works.
 
 Two ProPR features consume CI results directly, so CI is not just a reviewer aid — it changes how automation behaves:
 
