@@ -79,7 +79,7 @@ async function resolveLabelApplierCached(opts: {
             }
             labelApplierCache.set(cacheKey, {
                 evidence: result,
-                expiresAt: result.staleSinceApplied ? Date.now() + STALE_EVIDENCE_CACHE_TTL_MS : Infinity,
+                expiresAt: result.staleSinceApplied || result.orderingUnverified ? Date.now() + STALE_EVIDENCE_CACHE_TTL_MS : Infinity,
             });
         }
         return result;
@@ -380,7 +380,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after its stale
                 // `-processing`/`-cancelled` marker, matching webhook-mode behaviour.
-                if (stale && (!evidence?.actor || evidence.staleSinceApplied)) {
+                if (stale && (!evidence?.actor || evidence.staleSinceApplied || evidence.orderingUnverified)) {
                     correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Stale issue has no trigger reapplication after its stale marker — skipping');
                     return null;
                 }

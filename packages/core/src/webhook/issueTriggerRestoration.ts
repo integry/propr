@@ -9,10 +9,11 @@ import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js'
  * A stale delivery of the original application must not restart cancelled
  * work. Either the timeline shows an authorized application after the latest
  * stale marker, or this delivery's own event postdates that marker (the new
- * labeled event may not be visible in the timeline yet).
+ * labeled event may not be visible in the timeline yet). An application found
+ * only across an unscanned timeline gap does not establish that ordering.
  */
 function isRenewedApplication(evidence: TriggerEvidence, deliveredAt: string | undefined): boolean {
-    if (evidence.actor && !evidence.staleSinceApplied) return isAuthorizedIssueTriggerActor(evidence.actor.login);
+    if (evidence.actor && !evidence.staleSinceApplied && !evidence.orderingUnverified) return isAuthorizedIssueTriggerActor(evidence.actor.login);
     const delivered = deliveredAt ? Date.parse(deliveredAt) : NaN;
     const marked = evidence.staleMarkedAt ? Date.parse(evidence.staleMarkedAt) : NaN;
     return delivered > marked;

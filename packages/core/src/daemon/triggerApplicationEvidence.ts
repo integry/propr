@@ -11,11 +11,15 @@ export interface TriggerActor {
 // stale marker (`<trigger>-processing` or any `-cancelled`) was applied after
 // the most recent trigger application, i.e. the trigger has not been reapplied
 // since that work started or was cancelled. `staleMarkedAt` is the time of the
-// most recent such marker seen before the application.
+// most recent such marker seen before the application. `orderingUnverified`
+// is true when the application was found only after skipping unscanned
+// timeline pages, so a marker between it and the scanned window may be
+// missed; the actor is still usable, but it is not proof of renewed intent.
 export interface TriggerEvidence {
     actor: TriggerActor | null;
     staleSinceApplied: boolean;
     staleMarkedAt?: string;
+    orderingUnverified?: boolean;
 }
 
 interface TimelineEvent {
@@ -114,8 +118,11 @@ export async function readTriggerApplicationEvidence(opts: {
     }
     // The recent-page window starts at page 2, but page 1 is already in hand —
     // search it too so a label event near the start of a short multi-page
-    // timeline (e.g. 2–5 pages) is still found.
-    return findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, acc);
+    // timeline (e.g. 2–5 pages) is still found. When pages between 1 and the
+    // window were skipped, a stale marker may lie in that gap, so an
+    // application found on page 1 cannot establish ordering after it.
+    const evidence = findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, acc);
+    return evidence.actor && firstRecentPage > 2 ? { ...evidence, orderingUnverified: true } : evidence;
 }
 
 type IssueRef = { owner: string; repo: string; issueNumber: number };

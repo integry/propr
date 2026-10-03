@@ -782,8 +782,12 @@ const pollingOctokit = {
         id: 42, number: 42, title: 'Restored request', html_url: 'https://github.com/acme/widgets/issues/42',
         labels: tracker.labels, created_at: '2026-10-01T00:00:00Z', updated_at: `2026-10-02T00:00:00.${timelineRevision}Z`,
     }] : [],
-    request: async () => ({ headers: {}, data: [...timeline] }),
+    request: async (_endpoint: string, params: any) => pollingTimelinePages
+        ? { headers: { link: `<https://api.github.com/x?page=${pollingTimelinePages.length}>; rel="last"` }, data: pollingTimelinePages[params.page - 1] }
+        : { headers: {}, data: [...timeline] },
 };
+// Multi-page timeline for polling; when set, it replaces `timeline`.
+let pollingTimelinePages: any[][] | undefined;
 async function pollRestoredIssues() {
     const issues = await fetchIssuesForRepo(pollingOctokit as never, 'acme/widgets', 'poll-restore');
     const results = [];
@@ -857,6 +861,22 @@ test('polling skips a cancelled issue when the timeline cannot show trigger reap
     timelineRevision++;
     assert.deepEqual(await pollRestoredIssues(), []);
     assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+});
+
+test('polling skips a cancelled issue whose trigger is found only across an unscanned timeline gap', async () => {
+    const bot = { id: 1, login: 'propr-dev[bot]' };
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
+    pollingTimelinePages = Array.from({ length: 8 }, () => [{ event: 'commented' }]);
+    pollingTimelinePages[0] = [{ event: 'labeled', label: { name: 'AI' }, actor: bot }];
+    pollingTimelinePages[1] = [{ event: 'labeled', label: { name: 'AI-cancelled' }, actor: bot }];
+    timelineRevision++;
+    try {
+        assert.deepEqual(await pollRestoredIssues(), []);
+        assert.deepEqual(tracker.labels, ['AI', 'AI-cancelled']);
+        assert.equal(jobs.length, 0);
+    } finally {
+        pollingTimelinePages = undefined;
+    }
 });
 
 for (const phase of ['running', 'waiting', 'delayed', 'active', 'prioritized'] as const) {

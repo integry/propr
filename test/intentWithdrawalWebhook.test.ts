@@ -7,7 +7,7 @@ let cancellationWait: Promise<void> | undefined;
 let cancellationFinished = false;
 const restore = mock.fn(async () => ['AI']);
 const handlers: string[] = [];
-beforeEach(() => { currentLabels = ['AI']; currentState = 'open'; timeline = []; cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
+beforeEach(() => { currentLabels = ['AI']; currentState = 'open'; timeline = []; timelinePages = undefined; timelinePagesRead.length = 0; cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
     restoreIssueTrigger: restore,
@@ -29,9 +29,16 @@ await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', { nam
 let currentLabels: string[] = ['AI'];
 let currentState = 'open';
 let timeline: any[] = [];
+// Multi-page timeline; when set, it replaces `timeline`.
+let timelinePages: any[][] | undefined;
+const timelinePagesRead: number[] = [];
 await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
     getGitHubInstallationToken: async () => { throw new Error('GitHub auth not configured'); },
-    getAuthenticatedOctokit: async () => ({ request: async (endpoint: string) => {
+    getAuthenticatedOctokit: async () => ({ request: async (endpoint: string, params: any) => {
+        if (endpoint.endsWith('/timeline') && timelinePages) {
+            timelinePagesRead.push(params.page);
+            return { headers: { link: `<https://api.github.com/x?page=${timelinePages.length}>; rel="last"` }, data: timelinePages[params.page - 1] };
+        }
         if (endpoint.endsWith('/timeline')) return { headers: {}, data: timeline };
         if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { state: currentState, labels: currentLabels.map(name => ({ name })) } };
         throw new Error('GitHub auth not configured');
@@ -213,6 +220,26 @@ test('a trigger removed again before delivery is not restored', () => withTrigge
     timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')];
     assert.deepEqual(await deliverAI('2026-10-01T02:00:00Z', ['AI', 'AI-cancelled']), { status: 'ignored', reason: 'intent_not_current' });
     assert.equal(restore.mock.callCount(), 0);
+}));
+
+test('an original trigger found only across an unscanned timeline gap cannot restart cancelled work', () => withTriggers(async () => {
+    // AI on page 1, cancellation on page 2; the default five-page budget scans
+    // pages 8–4 and then page 1, never seeing the cancellation.
+    currentLabels = ['AI', 'AI-cancelled'];
+    timelinePages = Array.from({ length: 8 }, () => [{ event: 'commented' }]);
+    timelinePages[0] = [labeled('AI', 'alice', '2026-10-01T00:00:00Z')];
+    timelinePages[1] = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z')];
+    assert.deepEqual(await deliverAI('2026-10-01T00:00:00Z'), { status: 'ignored', reason: 'intent_not_current' });
+    assert.ok(!timelinePagesRead.includes(2));
+    assert.equal(restore.mock.callCount(), 0);
+    assert.equal(processed.length, 0);
+}));
+
+test('an original trigger on page 1 of a contiguously scanned timeline is still checked for ordering', () => withTriggers(async () => {
+    currentLabels = ['AI', 'AI-cancelled'];
+    timelinePages = [[labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')], [{ event: 'commented' }], [{ event: 'commented' }]];
+    await deliverAI('2026-10-01T00:00:00Z');
+    assert.equal(restore.mock.callCount(), 1);
 }));
 
 const deliverModelLabel = (labels = ['AI', 'llm-codex-astra']) => processWebhookEvent({ repository, action: 'labeled', label: { name: 'llm-codex-astra' },
