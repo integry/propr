@@ -104,6 +104,8 @@ export const listScopeShape = {
 export const PLAN_STATUSES = ['draft', 'generating', 'refining', 'review', 'approved', 'executed', 'executing', 'pr_created', 'merged', 'failed'] as const;
 /** A plan is done when every published issue merged, or when the plan itself failed. */
 export const TERMINAL_PLAN_STATUSES = ['merged', 'failed'] as const;
+/** Idle plans and plans in a terminal status may be deleted; busy plans and in-flight published plans may not. */
+export const DELETABLE_PLAN_STATUSES = ['draft', 'review', 'approved', ...TERMINAL_PLAN_STATUSES] as const;
 /** The plan counterpart of `listScopeShape.state`, declared the same way so both filters behave alike. */
 export const planScopeShape = {
   status: z.enum(['active', ...PLAN_STATUSES, 'all']).default('all').describe('active covers every plan that has not reached a terminal status (merged or failed).'),
