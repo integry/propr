@@ -287,12 +287,12 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
   const documentedTokens = new Set([...guide.matchAll(/`([a-z_]+)`/g)].map(match => match[1]));
   const nonToolTokens = new Set([
     'accepted', 'active', 'activity', 'all', 'approved', 'artifacts', 'auth', 'authorization', 'blockers',
-    'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'cursor', 'cycle',
-    'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'draft', 'error', 'execute', 'executed',
-    'executing', 'failed', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
+    'cancelled', 'cause', 'cf_tunnel_id', 'client', 'code', 'completed', 'connection', 'count', 'creation', 'cursor',
+    'cycle', 'cycles_exhausted', 'database', 'denied', 'deploy', 'details', 'direct', 'draft', 'error', 'execute',
+    'executed', 'executing', 'failed', 'false', 'format', 'generating', 'github', 'goal_reached', 'head', 'instruction',
     'instructions', 'internal', 'iss', 'issue_created', 'issues', 'items', 'kind', 'labels', 'limit', 'manage',
     'mcp_access_log', 'mcp_operations', 'mcp_records', 'merge', 'merged', 'message', 'model', 'models',
-    'name', 'node', 'none', 'notifications', 'null', 'number', 'offset', 'outcome', 'page', 'path', 'plan', 'plan_issues',
+    'name', 'node', 'none', 'notifications', 'null', 'number', 'offset', 'orchestrate', 'outcome', 'page', 'path', 'plan', 'plan_issues',
     'posted', 'pr_created', 'precondition', 'private_key_jwt', 'progress', 'prompt', 'propr', 'publish',
     'queue', 'queued', 'read', 'refining', 'repositories', 'repository', 'resource', 'retryable', 'review',
     'role', 'running', 'section', 'since', 'stage', 'started', 'state', 'status', 'stopped', 'submitted', 'success', 'true',

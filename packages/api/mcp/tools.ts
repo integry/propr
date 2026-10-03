@@ -6,6 +6,10 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import type { InstancePermission } from '@propr/shared';
+import {
+  DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+  MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
+} from '@propr/shared';
 import type { FileChangesData } from '@propr/core';
 import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue, UNSTARTED_EPIC_REASON } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
@@ -37,8 +41,10 @@ import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addDocsTools } from './toolsDocs.js';
 import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
+import { markMergedPullRequests, markMergedListPullRequests } from '../services/pullRequestMergeState.js';
+import { applyGoalLifecycleFilter, inspectGoalDetail } from '../services/goalReadProjection.js';
 import { getAgentActivity } from './agentActivity.js';
-import { GOAL_DETAIL_COLUMNS, goalDetail, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
+import { GOAL_DETAIL_COLUMNS, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 import { queryTaskSummaries } from './taskListing.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 
@@ -50,6 +56,19 @@ export const textSchema = z.string().min(1).max(65536);
 export const pageShape = { offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) };
 export const mutationShape = { idempotencyKey: z.string().regex(/^[\w.-]{8,128}$/) };
 export const planShape = { repository: repositorySchema, planId: z.uuid() };
+/** MCP view of the shared goal creation contract; the goal route re-validates with the same rules. */
+export const createGoalSchema = z.object({
+  ...mutationShape, repository: repositorySchema, objective: textSchema, agentId: idSchema, model: idSchema,
+  launchStrategy: z.enum(GOAL_LAUNCH_STRATEGIES),
+  baseBranch: z.string().min(1).max(GOAL_BASE_BRANCH_MAX_LENGTH).optional(),
+  // Omitted stays 1 so existing receipts and idempotent retries keep their payload identity.
+  maxParallelTasks: z.number().int().min(MIN_GOAL_PARALLEL_TASKS).max(MAX_GOAL_PARALLEL_TASKS).default(1),
+  checkpointIntervalMinutes: z.number().int().min(MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES).max(MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES).optional()
+    .describe('Direct goals only.'),
+  ultrafix: z.boolean().default(false).describe('Run Ultrafix before delivering the draft PR. Never merges.'),
+}).strict().refine(args => validateGoalCheckpointInterval(args) === null, {
+  message: 'checkpointIntervalMinutes only applies to direct goals', path: ['checkpointIntervalMinutes'],
+});
 export const goalShape = { repository: repositorySchema, goalId: z.uuid() };
 export const taskShape = { repository: repositorySchema, taskId: idSchema };
 const agentActivitySchema = z.object({
@@ -74,31 +93,7 @@ export interface McpTool {
 export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
-export async function markMergedPullRequests(
-  db: Knex, repository: string, items: Record<string, unknown>[],
-  fields = { number: 'pr_number', state: 'pr_state' },
-): Promise<void> {
-  const numbers = [...new Set(items.map(item => Number(item[fields.number]))
-    .filter(number => Number.isSafeInteger(number) && number > 0))];
-  if (!numbers.length) return;
-  const rows = await db('notification_pull_request_state').where({ repository })
-    .whereIn('pr_number', numbers).whereNotNull('merged_at').select('pr_number');
-  const merged = new Set(rows.map(row => Number(row.pr_number)));
-  for (const item of items) if (merged.has(Number(item[fields.number]))) item[fields.state] = 'merged';
-}
-
-/** Cross-repository list results carry their own repository, so merge state is resolved per repository. */
-export async function markMergedListPullRequests(db: Knex, items: Record<string, unknown>[]): Promise<void> {
-  const groups = new Map<string, Record<string, unknown>[]>();
-  for (const item of items) {
-    const repository = typeof item.repository === 'string' ? item.repository : null;
-    if (!repository) continue;
-    const group = groups.get(repository) ?? [];
-    group.push(item);
-    groups.set(repository, group);
-  }
-  for (const [repository, group] of groups) await markMergedPullRequests(db, repository, group);
-}
+export { markMergedPullRequests, markMergedListPullRequests };
 
 export const listScopeShape = {
   repository: repositorySchema.optional().describe('Exact repository handle. Omit to list across every repository in this grant.'),
@@ -187,8 +182,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
     scopeRepositories(query, 'repository', args.repository, await listScope(principal, args));
-    if (args.state === 'active') query.whereNull('result_state');
-    else if (args.state === 'completed' || args.state === 'failed') query.where('result_state', args.state);
+    applyGoalLifecycleFilter(query, args.state);
     const rows = await query
       .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state', 'current_task_id',
         'agent_alias', 'requested_model', 'effective_model', 'final_pr_number', 'artifact_refs', 'failure_reason',
@@ -206,8 +200,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     const response = await callWorkflow(goals.get, principal, { params: { goalId: args.goalId } });
     const row = await loadGoalRow(principal, args);
     if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
-    const detail = await goalDetail({ db, redisClient }, row,
-      (repository, items, fields) => markMergedPullRequests(db, repository, items, fields));
+    const detail = await inspectGoalDetail({ db, redisClient }, row);
     return { status: response.status, data: { ...response.data as Record<string, unknown>, ...detail } };
   } });
   tools.push({ name: 'list_goal_inputs', description: 'Read the bounded, newest-first history of operator inputs already sent to a goal, so an existing correction is not sent twice. Delivery state is persisted; delivered does not prove the agent acted on it.', scope: 'read', readOnly: true, schema: z.object({ ...goalShape, ...pageShape }).strict(), target: goalTarget, run: async ({ principal, args }) => {
@@ -215,11 +208,11 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
     return ok(await goalInputPage(db, row, { offset: args.offset, limit: args.limit }));
   } });
-  workflow(tools, { name: 'create_goal', description: 'Create a goal and explicitly START autonomous work. Requires a supported model and launch strategy.', scope: 'execute', schema: z.object({ ...mutationShape, repository: repositorySchema, objective: textSchema, agentId: idSchema, model: idSchema, launchStrategy: z.enum(['direct', 'orchestrate']), baseBranch: idSchema.optional(), maxParallelTasks: z.number().int().min(1).max(8).default(1), checkpointIntervalMinutes: z.number().int().min(5).max(120).optional(), ultrafix: z.literal(false).default(false) }).strict() }, goals.create, args => ({ body: args, idempotencyKey: args.idempotencyKey }));
+  workflow(tools, { name: 'create_goal', description: `Create a goal and explicitly START autonomous work; the agent runs without further confirmation and delivers a draft pull request. Requires an agent and model reported by get_goal_capabilities, which also returns this creation contract. maxParallelTasks is ${MIN_GOAL_PARALLEL_TASKS}–${MAX_GOAL_PARALLEL_TASKS} (default 1). checkpointIntervalMinutes is ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES}–${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES} (default ${DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES}) and only valid for direct goals. ultrafix: true asks the agent to run Ultrafix before delivery; it never merges or grants merge authority.`, scope: 'execute', schema: createGoalSchema }, goals.create, args => ({ body: args, idempotencyKey: args.idempotencyKey }));
   for (const action of ['pause', 'resume', 'cancel'] as const) workflow(tools, { name: `${action}_goal`, description: `${action} your goal. Cancellation acceptance does not mean execution has stopped.`, scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape }).strict(), target: goalTarget }, goals[action], args => ({ params: { goalId: args.goalId }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'send_goal_input', description: 'Deliver a correction or question to your running goal. This instance persists exactly one operator input kind, so instruction and question produce the same durable input and differ only on this receipt; state your intent in the message itself. Acceptance means the input was queued for the next provider boundary, not that the agent has read or acted on it — confirm with get_goal or list_goal_inputs.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, message: textSchema, kind: z.enum(['instruction', 'question']).optional().describe('Omit for an instruction. Recorded on the mutation receipt. Both kinds map to the same durable goal input this backend supports.') }).strict(), target: goalTarget }, goals.input, args => ({ params: { goalId: args.goalId }, body: { message: args.message }, idempotencyKey: args.idempotencyKey }));
   workflow(tools, { name: 'set_goal_model', description: 'Request a supported model change for your goal.', scope: 'execute', schema: z.object({ ...goalShape, ...mutationShape, model: idSchema }).strict(), target: goalTarget }, goals.requestModel, args => ({ params: { goalId: args.goalId }, body: { model: args.model }, idempotencyKey: args.idempotencyKey }));
-  workflow(tools, { name: 'get_goal_capabilities', description: 'Get current native goal support for configured agents.', scope: 'read', readOnly: true, schema: z.object({}).strict() }, goals.capabilities, () => ({}));
+  workflow(tools, { name: 'get_goal_capabilities', description: 'Get current native goal support for configured agents, plus the goal creation contract (launch strategies, maxParallelTasks and checkpoint bounds, Ultrafix support) shared by the API, MCP, UI and CLI.', scope: 'read', readOnly: true, schema: z.object({}).strict() }, goals.capabilities, () => ({}));
 
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];

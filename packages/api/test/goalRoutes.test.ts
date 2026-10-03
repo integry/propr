@@ -11,6 +11,7 @@ import { up as addGoalCheckpointDeclarations } from '../../core/src/db/migration
 import { up as addGoalTitles } from '../../core/src/db/migrations/20260907000000_add_goal_titles.js';
 import { up as addGoalAttachments } from '../../core/src/db/migrations/20260908000000_add_goal_attachments.js';
 import { up as addGoalInputDisplayBody } from '../../core/src/db/migrations/20260923000000_add_goal_input_display_body.js';
+import { GOAL_CREATION_CONTRACT } from '@propr/shared';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
@@ -290,6 +291,66 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.match(storedPreviewContext.message, /VISUAL PREVIEW REQUIREMENT/);
         assert.match(storedPreviewContext.message, /Capture the completed dashboard/);
         assert.match(storedPreviewContext.message, /already-open draft PR at checkpoint boundaries/);
+        queued.length = 0;
+
+        const creation = (rechecked.state.body as { creation: typeof GOAL_CREATION_CONTRACT }).creation;
+        assert.deepEqual(creation, GOAL_CREATION_CONTRACT);
+        assert.deepEqual(creation.maxParallelTasks, { min: 1, max: 32 });
+        assert.equal(creation.ultrafix.grantsMerge, false);
+
+        const createWith = async (key: string, options: Record<string, unknown>) => {
+            const created = response();
+            const createOptionsRequest = request('owner-1', {}, {
+                repository: 'acme/repo', objective: 'Ship options', agentId: 'agent-1', model: 'gpt-5.6',
+                launchStrategy: 'direct', ...options,
+            });
+            createOptionsRequest.get = () => key;
+            await routes.create(createOptionsRequest, created.res);
+            return created.state;
+        };
+        for (const maxParallelTasks of [0, 33, 1.5]) {
+            const rejected = await createWith(`parallel-${maxParallelTasks}`, { maxParallelTasks });
+            assert.equal(rejected.status, 400, `maxParallelTasks ${maxParallelTasks}`);
+            assert.deepEqual(rejected.body, { error: 'maxParallelTasks must be an integer from 1 to 32' });
+        }
+        const rejectedUltrafix = await createWith('ultrafix-string', { ultrafix: 'yes' });
+        assert.equal(rejectedUltrafix.status, 400);
+        const unsupportedModel = await createWith('unsupported-model', { model: 'unknown-model' });
+        assert.equal(unsupportedModel.status, 400);
+        assert.equal(await database('goals').where({ create_idempotency_key: 'unsupported-model' }).first(), undefined);
+        for (const maxParallelTasks of [1, 8, 9, 32]) {
+            const accepted = await createWith(`parallel-${maxParallelTasks}`, { maxParallelTasks });
+            assert.equal(accepted.status, 201, `maxParallelTasks ${maxParallelTasks}: ${JSON.stringify(accepted.body)}`);
+            const stored = await database('goals').where({ create_idempotency_key: `parallel-${maxParallelTasks}` }).first();
+            assert.equal(stored.max_parallel_tasks, maxParallelTasks);
+        }
+
+        const ultrafixGoal = await createWith('ultrafix-enabled', { ultrafix: true, maxParallelTasks: 32 });
+        assert.equal(ultrafixGoal.status, 201);
+        const ultrafixRow = await database('goals').where({ create_idempotency_key: 'ultrafix-enabled' }).first();
+        assert.equal(Boolean(ultrafixRow.ultrafix), true);
+        const ultrafixContext = await database('goal_inputs').where({ goal_id: ultrafixRow.goal_id, kind: 'context' }).first();
+        assert.match(ultrafixContext.message, /Ultrafix policy: Enabled/);
+        assert.match(ultrafixContext.message, /Run at most 32 implementation tasks/);
+        const queuedBeforeRetry = queued.length;
+        const ultrafixRetry = await createWith('ultrafix-enabled', { ultrafix: true, maxParallelTasks: 32 });
+        assert.equal(ultrafixRetry.status, 200);
+        assert.equal((ultrafixRetry.body as { goal: { id: string } }).goal.id, ultrafixRow.goal_id);
+        const ultrafixChanged = await createWith('ultrafix-enabled', { ultrafix: false, maxParallelTasks: 32 });
+        assert.equal(ultrafixChanged.status, 409);
+        assert.equal(queued.length, queuedBeforeRetry);
+        assert.equal(await database('goals').where({ create_idempotency_key: 'ultrafix-enabled' }).count({ count: '*' }).first()
+            .then(row => Number(row?.count)), 1);
+
+        for (const [key, options] of [['ultrafix-omitted', {}], ['ultrafix-false', { ultrafix: false }]] as const) {
+            assert.equal((await createWith(key, options)).status, 201);
+            const disabledRow = await database('goals').where({ create_idempotency_key: key }).first();
+            assert.equal(Boolean(disabledRow.ultrafix), false);
+            const disabledContext = await database('goal_inputs').where({ goal_id: disabledRow.goal_id, kind: 'context' }).first();
+            assert.match(disabledContext.message, /Ultrafix policy: Disabled/);
+        }
+        // Omitted and explicit false share one payload identity.
+        assert.equal((await createWith('ultrafix-omitted', { ultrafix: false })).status, 200);
         queued.length = 0;
 
         await database('goals').where({ goal_id: 'goal-1' }).update({
