@@ -94,6 +94,40 @@ describe('summary miner batch fallback', () => {
     await closeConnection();
   });
 
+  test('file and directory budgets retain legacy Antigravity synthetic member routes', async t => {
+    const { Redis } = await import('ioredis');
+    t.mock.method(Redis.prototype, 'get', async () => null);
+    const { SyntheticAgent } = await import('../packages/core/src/agents/SyntheticAgent.js');
+    const { AgentRegistry } = await import('../packages/core/src/agents/AgentRegistry.js');
+    const { processBatches } = await import('../packages/core/src/services/relevance/summaryMinerHelpers.js');
+    const { aggregateDirectories } = await import('../packages/core/src/services/relevance/summaryMinerDirectories.js');
+    const base = 'antigravity-gemini-3.8-flash';
+    const route = `${base}-high`;
+    const direct = createAgent('agy-budget', base, async () => ({ success: false, response: '', modelUsed: base, executionTimeMs: 1, error: 'test provider' }));
+    direct.config.type = 'antigravity';
+    const pool = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', alias: 'agy-budget-pool', enabled: true, defaultModel: 'smart',
+      models: [{ id: 'smart', enabled: true, strategy: 'round_robin' as const,
+        members: [{ id: '33333333-3333-4333-8333-333333333333', directAgentAlias: direct.config.alias, model: route, enabled: true, priority: 100 }] }],
+    };
+    const router = new SyntheticRoutingService({ database: db, loadSyntheticConfigs: async () => [pool],
+      getDirectAgent: alias => alias === direct.config.alias ? direct as never : undefined,
+      usageSnapshotProvider: { getSnapshot: async () => null } });
+    const virtual = new SyntheticAgent(pool, router);
+    const registry = AgentRegistry.getInstance();
+    t.mock.method(registry, 'beginRoutingSession', options => router.begin(options));
+    t.mock.method(registry, 'getAgentByAlias', alias => alias === direct.config.alias ? direct as never : undefined);
+    const budgetModels: string[] = [];
+    const budgetLog = { ...log, info: (fields: { model?: string }, message?: string) => {
+      if (message?.includes('budget') && fields.model) budgetModels.push(fields.model);
+      if (message === 'Calculated directory batch budget') throw new Error('budget captured');
+    } };
+    await processBatches({ repoPath: '/tmp', fullName: 'integry/propr', files: [], agent: virtual, log: budgetLog as never });
+    await db('file_summaries').insert({ path: 'integry/propr/src/a.ts', branch: 'main', summary: 'A helper', commit_hash: 'agy-budget', model_used: base });
+    await assert.rejects(aggregateDirectories({ fullName: 'integry/propr', agent: virtual, log: budgetLog as never, branch: 'main' }), /budget captured/);
+    assert.deepEqual(budgetModels, [`${direct.config.alias}:${route}`, `${direct.config.alias}:${route}`]);
+  });
+
   test('tries primary once, saves successful fallback summaries with fallback model', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;

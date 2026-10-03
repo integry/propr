@@ -231,7 +231,7 @@ Examples:
   $ propr agent add my-claude -t claude -m claude-opus-5-5
   $ propr agent add opencode -t opencode -m opencode-big-pickle
   $ propr agent add prod-agent -t claude -m claude-opus-5-5,claude-fable-5-1 -d claude-opus-5-5
-  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash-high --disabled
+  $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash --disabled
   $ propr agent add --file agent-config.json
   $ cat config.json | propr agent add --file -
 `)

@@ -68,9 +68,9 @@ For an interactive login, choose direct login while adding the agent or select *
 
 ## Reasoning Levels
 
-The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use each CLI's default. Each supported model can also set one of its agent runtime's native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
+The system setting `model_reasoning_level` applies to Claude, Codex, and Antigravity agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use the default effort (Antigravity starts from medium and resolves it against the selected model's supported levels). Each supported model can also set one of its native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An explicit run selection or issue or PR `level-*` label has the highest precedence and overrides both.
 
-Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
+Valid system preference and `level-*` label values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR resolves the requested effort against the selected agent and model's vocabulary. Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode. Antigravity chooses the closest supported level at or below the request, falling back to the model's lowest level when necessary; `auto` starts from medium. For example, `xhigh` or `max` becomes high for Claude 5.5 and Gemini Flash, medium becomes low for Gemini 3.1 Pro, and GPT-OSS always uses medium. Model configuration offers only the selected model's supported levels; reasoning effort is separate from its base model label.
 
 Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a global or model-specific reasoning level surfaces a non-blocking warning for enabled agents pinned below those versions. If the mismatch remains, ProPR also fails an affected run before starting the CLI with a version-specific error.
 
@@ -152,14 +152,13 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
-| Gemini 3.8 Flash Low / Medium / High | `llm-antigravity-flash38-low` / `-flash38-medium` / `-flash38-high` |
-| Gemini 3.7 Flash Low / Medium / High | `llm-antigravity-flash37-low` / `-flash37-medium` / `-flash37-high` |
-| Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
-| Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
-| Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
-| Claude Sonnet 4.6 Thinking | `llm-antigravity-sonnet46-thinking` |
-| Claude Opus 4.6 Thinking | `llm-antigravity-opus46-thinking` |
-| GPT-OSS 120B Medium | `llm-antigravity-gpt-oss-120b` |
+| Gemini 3.8 Flash | `llm-antigravity-flash38` |
+| Gemini 3.1 Pro | `llm-antigravity-pro` |
+| Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
+| Claude Opus 5.5 | `llm-antigravity-opus55` |
+| GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
+
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5 and Gemini Flash support low, medium, and high; Gemini 3.1 Pro supports low and high (medium maps to low); GPT-OSS always uses medium.
 
 ## OpenCode Models
 

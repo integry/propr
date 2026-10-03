@@ -15,8 +15,8 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     enabled: true,
     dockerImage: 'propr/agent:latest',
     configPath: '~/.gemini',
-    supportedModels: ['antigravity-gemini-3.5-flash-medium'],
-    defaultModel: 'antigravity-gemini-3.5-flash-medium',
+    supportedModels: ['antigravity-gemini-3.8-flash'],
+    defaultModel: 'antigravity-gemini-3.8-flash',
     ...overrides
   };
 }
@@ -41,4 +41,19 @@ test('agent config validation accepts antigravity and rejects gemini for new con
   assert.match(error || '', /invalid type/);
   assert.match(error || '', /antigravity/);
   assert.doesNotMatch(error || '', /gemini/);
+});
+
+test('Antigravity reasoning validation respects each model effort range', async () => {
+  const { validateAgentsConfig } = await import('../routes/configAgentValidation.js');
+  for (const [model, level] of [
+    ['antigravity-claude-opus-5.5', 'low'],
+    ['antigravity-gemini-3.8-flash', 'medium'],
+    ['antigravity-gemini-3.1-pro', 'high'],
+    ['antigravity-gpt-oss-120b', 'medium'],
+  ] as const) {
+    assert.equal(validateAgentsConfig([createAgentConfig({ modelReasoningLevels: { [model]: level } })]), null);
+  }
+  assert.match(validateAgentsConfig([createAgentConfig({
+    modelReasoningLevels: { 'antigravity-gemini-3.1-pro': 'medium' }
+  })]) ?? '', /Supported levels: low, high/);
 });

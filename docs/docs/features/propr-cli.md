@@ -372,7 +372,7 @@ Visual previews are also per-repository and **off by default**. `--preview-types
 ```bash
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
-propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
+propr agent add test -t antigravity -m antigravity-gemini-3.1-pro --disabled
 propr agent add opencode -t opencode -m opencode-big-pickle \
   -d opencode-big-pickle --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)
@@ -436,7 +436,7 @@ Settings keys:
 | `planner_generation_model` | Model for planner generation |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
 | `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
-| `model_reasoning_level` | Reasoning level for GPT and Claude agents (empty = agent default) |
+| `model_reasoning_level` | System reasoning preference for Claude, Codex, and Antigravity, resolved against the selected model's supported levels (empty = default effort; model overrides and explicit run / `level-*` selections take precedence). See [Reasoning Levels](./agents-and-models.md#reasoning-levels). |
 | `usage_tips_enabled` | Show daily documentation tips on the dashboard |
 | `usage_tips_dismissal_cooldown_days` | Base dismissal cooldown for tips (1–365 days) |
 | `pr_review_model` | Model for full PR reviews |

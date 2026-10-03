@@ -1,4 +1,5 @@
-import { CODEX_MODELS, MODEL_INFO_MAP } from './modelDefinitions.js';
+import { getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility } from '@propr/shared';
+import { CODEX_MODELS } from './modelDefinitions.js';
 
 export type ContextLevel = number;
 
@@ -51,7 +52,8 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
     const colonIdx = modelId.indexOf(':');
     agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
     effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
-    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+    effectiveModelId = getAntigravityCompatibilityRoute(effectiveModelId)?.model ?? effectiveModelId;
+    const modelInfo = getModelInfoWithAntigravityCompatibility(effectiveModelId);
 
     if (modelInfo?.maxTokens) {
       limit = modelInfo.maxTokens;
@@ -83,7 +85,8 @@ export function getModelHardLimit(modelId: string | undefined): number {
     const colonIdx = modelId.indexOf(':');
     agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
     effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
-    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+    effectiveModelId = getAntigravityCompatibilityRoute(effectiveModelId)?.model ?? effectiveModelId;
+    const modelInfo = getModelInfoWithAntigravityCompatibility(effectiveModelId);
 
     if (modelInfo?.maxTokens) {
       limit = modelInfo.maxTokens;

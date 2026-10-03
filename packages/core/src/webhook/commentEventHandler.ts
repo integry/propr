@@ -1,3 +1,4 @@
+import { antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 /* eslint-disable max-lines */
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
@@ -59,9 +60,7 @@ async function isKnownOrConfiguredModel(model: string): Promise<boolean> {
         const registry = AgentRegistry.getInstance();
         await registry.ensureInitialized();
         return registry.getAllAgents().some(agent =>
-            agent.config.enabled && agent.config.supportedModels.some(
-                supportedModel => supportedModel.toLowerCase() === model.toLowerCase()
-            )
+            agent.config.enabled && antigravitySupportedModel(agent.config, model)
         );
     } catch {
         return false;

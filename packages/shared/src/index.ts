@@ -541,3 +541,5 @@ export * from './analyticsTimeframe.js';
 // Browser-safe checkpoint parsing shared by goal workers and readable timelines.
 export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
+
+export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility } from './antigravityCompatibility.js';
