@@ -160,16 +160,12 @@ describe('toAntigravityCliModelId', () => {
     });
 
     test('converts base models and separate efforts to exact CLI arguments', () => {
-        for (const version of ['3.8', '3.7']) {
-            for (const effort of ['low', 'medium', 'high'] as const) {
-                const id = `antigravity-gemini-${version}-flash`;
-                assert.equal(toAntigravityCliModelId(id, effort), `gemini-${version}-flash-${effort}`);
-            }
+        for (const effort of ['low', 'medium', 'high'] as const) {
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash', effort), `gemini-3.8-flash-${effort}`);
         }
         for (const [id, name] of [
             ['antigravity-claude-opus-5.5', 'Claude Opus 5.5'],
             ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5'],
-            ['antigravity-gemini-3.6-flash', 'Gemini 3.6 Flash'],
             ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash'],
         ]) {
             for (const effort of ['low', 'medium', 'high'] as const) {
@@ -198,8 +194,6 @@ describe('toAntigravityCliModelId', () => {
             ['antigravity-claude-opus-5.5', 'Claude Opus 5.5 (High)'],
             ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5 (High)'],
             ['antigravity-gemini-3.8-flash', 'gemini-3.8-flash-high'],
-            ['antigravity-gemini-3.7-flash', 'gemini-3.7-flash-high'],
-            ['antigravity-gemini-3.6-flash', 'Gemini 3.6 Flash (High)'],
             ['antigravity-gemini-3.5-flash', 'Gemini 3.5 Flash (High)'],
             ['antigravity-gemini-3.1-pro', 'Gemini 3.1 Pro (High)'],
         ]) {

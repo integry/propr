@@ -77,8 +77,6 @@ export const CODEX_MODELS: ModelInfo[] = [
 // Google/Gemini model.
 export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-3.8-flash', name: 'Antigravity Gemini 3.8 Flash', shortName: 'Gemini 3.8 Flash', shortAlias: 'flash38', githubLabel: 'llm-antigravity-flash38', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.8-flash', minAgentVersion: '1.1.25' },
-  { id: 'antigravity-gemini-3.7-flash', name: 'Antigravity Gemini 3.7 Flash', shortName: 'Gemini 3.7 Flash', shortAlias: 'flash37', githubLabel: 'llm-antigravity-flash37', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
-  { id: 'antigravity-gemini-3.6-flash', name: 'Antigravity Gemini 3.6 Flash', shortName: 'Gemini 3.6 Flash', shortAlias: 'flash36', githubLabel: 'llm-antigravity-flash36', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
   { id: 'antigravity-gemini-3.5-flash', name: 'Antigravity Gemini 3.5 Flash', shortName: 'Gemini 3.5 Flash', shortAlias: 'flash', githubLabel: 'llm-antigravity-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
   { id: 'antigravity-gemini-3.1-pro', name: 'Antigravity Gemini 3.1 Pro', shortName: 'Gemini 3.1 Pro', shortAlias: 'pro', githubLabel: 'llm-antigravity-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
   { id: 'antigravity-claude-sonnet-5.5', name: 'Antigravity Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-antigravity-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },

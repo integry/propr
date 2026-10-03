@@ -35,7 +35,7 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
-        supportedModels: ['antigravity-gemini-3.7-flash', 'antigravity-gemini-3.5-flash', 'antigravity-claude-opus-5.5'],
+        supportedModels: ['antigravity-gemini-3.8-flash', 'antigravity-gemini-3.5-flash', 'antigravity-claude-opus-5.5'],
         defaultModel: 'antigravity-gemini-3.5-flash',
         ...overrides
     };
@@ -250,7 +250,7 @@ test('Antigravity output parser reads the sanitized 1.1.12 stream envelope exact
 
     assert.equal(parsed.sessionId, 'conversation-sanitized');
     assert.equal(parsed.conversationId, 'conversation-sanitized');
-    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash');
+    assert.equal(parsed.modelUsed, 'Gemini 3.7 Flash (High)');
     assert.equal(parsed.summary, 'STREAM_OK\n');
     assert.equal(parsed.terminalStatus, 'success');
     assert.equal(parsed.hasStreamEnvelopes, true);
@@ -286,7 +286,7 @@ test('Antigravity stream response is useful in analysis and conversation logs wi
 
 test('Antigravity stream response deltas remain one assistant turn without duplicating the result', () => {
     const parsed = parseAntigravityJsonl([
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.8 Flash (High)' } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: 'STREAM' } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: ' ' } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'OK\n' } }),
@@ -336,14 +336,14 @@ test('Antigravity stream only deduplicates responses from the same conversation'
     assert.equal(filterAntigravityAnalysisEvents(parsed.conversationLog).length, 2);
 });
 
-test('Antigravity output parser reverse-maps a canonical 3.7 ID to its ProPR identity', () => {
+test('Antigravity output parser reverse-maps a canonical 3.8 ID to its ProPR identity', () => {
     const parsed = parseAntigravityJsonl(JSON.stringify({
         event: 'init',
         conversation_id: 'conversation-sanitized',
-        init: { model: 'gemini-3.7-flash-low' },
+        init: { model: 'gemini-3.8-flash-low' },
     }));
 
-    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash');
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.8-flash');
 });
 
 test('Antigravity final response remains usable when no agent-response step is present', () => {
@@ -391,7 +391,7 @@ test('Antigravity output parser ignores mixed diagnostics when a structured fina
 
 test('Antigravity output parser handles uppercase ERROR terminal results', () => {
     const parsed = parseAntigravityJsonl([
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-high' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' } }),
     ].join('\n'));
 
@@ -403,21 +403,21 @@ test('Antigravity output parser handles uppercase ERROR terminal results', () =>
 
 test('Antigravity output parser rejects a changed-model second initialization', () => {
     const parsed = parseAntigravityJsonl([
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-low' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.5-flash-low' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
     ].join('\n'));
 
-    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash');
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.8-flash');
     assert.equal(parsed.terminalStatus, 'success');
-    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: gemini-3.7-flash-high then gemini-3.8-flash-low');
+    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: gemini-3.8-flash-high then gemini-3.5-flash-low');
     assert.equal(parsed.summary, 'first');
     assert.equal(parsed.conversationLog.length, 2);
 });
 
 test('Antigravity output parser rejects stream updates after a terminal result', () => {
     const parsed = parseAntigravityJsonl([
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-high' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first', usage: { output_tokens: 5 } } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'late', usage: { output_tokens: 99 } } }),
     ].join('\n'));
@@ -431,7 +431,7 @@ test('Antigravity output parser rejects stream updates after a terminal result',
 
 test('Antigravity output parser rejects duplicate terminal results', () => {
     const parsed = parseAntigravityJsonl([
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.8-flash-high' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'second' } }),
     ].join('\n'));
@@ -448,7 +448,7 @@ test('Antigravity output parser requires a non-empty init before stream updates'
         step_update: { conversation_id: 'conversation-sanitized', step_index: 1, state: 'RUNNING', step_type: 'agent_response' },
     }));
     const emptyInit = parseAntigravityJsonl(JSON.stringify({
-        event: 'init', conversation_id: ' ', init: { model: 'gemini-3.7-flash-high' },
+        event: 'init', conversation_id: ' ', init: { model: 'gemini-3.8-flash-high' },
     }));
 
     assert.equal(beforeInit.protocolError, 'Antigravity step_update envelope arrived before an initiating conversation_id');
@@ -459,7 +459,7 @@ test('Antigravity output parser requires a non-empty init before stream updates'
 
 test('Antigravity agent rejects stream results from a different conversation', async () => {
     const stdout = [
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.8 Flash (High)', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-unrelated', status: 'SUCCESS', response: 'must not succeed' } }),
     ].join('\n');
     const agent = new AntigravityAgent(createAntigravityConfig());
@@ -481,7 +481,7 @@ test('Antigravity agent rejects stream results from a different conversation', a
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.7-flash',
+        effectiveModel: 'antigravity-gemini-3.8-flash',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
@@ -491,16 +491,16 @@ test('Antigravity agent rejects stream results from a different conversation', a
     assert.equal(result.error, 'Antigravity result envelope expected conversation_id "conversation-sanitized", got "conversation-unrelated"');
     assert.equal(result.sessionId, 'conversation-sanitized');
     assert.equal(result.conversationId, 'conversation-sanitized');
-    assert.equal(result.modelUsed, 'antigravity-gemini-3.7-flash');
+    assert.equal(result.modelUsed, 'antigravity-gemini-3.8-flash');
 });
 
 test('Antigravity agent rejects differing stdout and transcript conversation identities', async () => {
     const stdout = [
-        JSON.stringify({ event: 'init', conversation_id: 'stdout-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'init', conversation_id: 'stdout-conversation', init: { model: 'gemini-3.8-flash-high', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'stdout-conversation', status: 'SUCCESS', response: 'must not succeed' } }),
     ].join('\n');
     const transcript = [
-        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.8-flash-high', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'transcript-conversation', status: 'SUCCESS', response: 'unrelated success' } }),
     ].join('\n');
     const transcriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-conflict-'));
@@ -527,7 +527,7 @@ test('Antigravity agent rejects differing stdout and transcript conversation ide
             result: { stdout, stderr: '', exitCode: 0 },
             executionTime: 10,
             issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-            effectiveModel: 'antigravity-gemini-3.7-flash',
+            effectiveModel: 'antigravity-gemini-3.8-flash',
             prompt: 'test',
             worktreePath: '/tmp',
             worktreeGitContent: null,
@@ -567,14 +567,14 @@ test('Antigravity agent rejects and persists a reported model that differs from 
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.7-flash',
+        effectiveModel: 'antigravity-gemini-3.5-flash',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.error, 'Antigravity reported model "antigravity-gemini-3.8-flash" but "antigravity-gemini-3.7-flash" was requested');
+    assert.equal(result.error, 'Antigravity reported model "antigravity-gemini-3.8-flash" but "antigravity-gemini-3.5-flash" was requested');
     assert.equal(result.modelUsed, 'antigravity-gemini-3.8-flash');
     assert.equal(persistedModel, 'antigravity-gemini-3.8-flash');
 });
@@ -689,7 +689,7 @@ test('Antigravity agent rejects a stream result before its initiating conversati
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.7-flash',
+        effectiveModel: 'antigravity-gemini-3.8-flash',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
@@ -705,7 +705,7 @@ test('Antigravity agent rejects a stream result before its initiating conversati
 
 test('Antigravity agent rejects a malformed terminal result with exit code 0', async () => {
     const stdout = [
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.8 Flash (High)', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'DONE', response: 'must not succeed' } }),
     ].join('\n');
     const agent = new AntigravityAgent(createAntigravityConfig());
@@ -727,7 +727,7 @@ test('Antigravity agent rejects a malformed terminal result with exit code 0', a
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.7-flash',
+        effectiveModel: 'antigravity-gemini-3.8-flash',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
@@ -740,7 +740,7 @@ test('Antigravity agent rejects a malformed terminal result with exit code 0', a
 
 test('Antigravity agent rejects a truncated stream even when a legacy result reports success', async () => {
     const stdout = [
-        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.8 Flash (High)', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'must not succeed' } }),
         JSON.stringify({ type: 'result', status: 'success' }),
     ].join('\n');
@@ -763,7 +763,7 @@ test('Antigravity agent rejects a truncated stream even when a legacy result rep
         result: { stdout, stderr: '', exitCode: 0 },
         executionTime: 10,
         issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
-        effectiveModel: 'antigravity-gemini-3.7-flash',
+        effectiveModel: 'antigravity-gemini-3.8-flash',
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
@@ -955,13 +955,6 @@ test('Antigravity labels resolve to Antigravity models', async (t) => {
 
     assert.equal(resolveModelAlias('antigravity-flash'), 'antigravity-gemini-3.5-flash');
 
-    const flash37Resolution = await resolveLlmLabel('antigravity-flash37');
-    assert.deepEqual(flash37Resolution, {
-        agentAlias: 'antigravity',
-        model: 'antigravity-gemini-3.7-flash'
-    });
-    assert.equal(resolveModelAlias('antigravity-flash37'), 'antigravity-gemini-3.7-flash');
-
     const flash38Resolution = await resolveLlmLabel('antigravity-flash38');
     assert.deepEqual(flash38Resolution, {
         agentAlias: 'antigravity',
@@ -1003,7 +996,6 @@ test('Antigravity compatibility aliases, review values and custom labels retain 
     t.mock.method(registry, 'getAgentByAlias', alias => alias === config.alias ? { config } as Agent : undefined);
     for (const [label, id, cli] of [
         ['antigravity-flash38-high', 'antigravity-gemini-3.8-flash-high', 'gemini-3.8-flash-high'],
-        ['antigravity-flash37-low', 'antigravity-gemini-3.7-flash-low', 'gemini-3.7-flash-low'],
         ['antigravity-pro-high', 'antigravity-gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)'],
         ['antigravity-opus46-thinking', 'antigravity-claude-opus-4.6-thinking', 'Claude Opus 5.5 (High)'],
         ['antigravity-sonnet46-thinking', 'antigravity-claude-sonnet-4.6-thinking', 'Claude Sonnet 5.5 (High)'],

@@ -28,7 +28,7 @@ export function toAntigravityCliModelId(modelName: string, reasoningLevel?: Mode
         REASONING_LEVELS.indexOf(candidate) <= preferredIndex
     ) ?? levels[0];
     // The CLI encodes effort; selectable model IDs remain independent of effort.
-    if (model.shortAlias === 'flash38' || model.shortAlias === 'flash37') {
+    if (model.shortAlias === 'flash38') {
         return `${model.id.slice('antigravity-'.length)}-${level}`;
     }
     return `${model.shortName} (${level[0].toUpperCase()}${level.slice(1)})`;

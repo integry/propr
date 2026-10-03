@@ -101,6 +101,11 @@ for (const viewport of [
       await expect(antigravityCard.getByRole('button', { name: `Copy ${model.shortAlias}`, exact: true })).toHaveCount(1);
     }
     await expect(antigravityCard.getByRole('button', { name: /^Copy / })).toHaveCount(AGENT_MODELS.antigravity.length);
+    await expect(antigravityCard.getByRole('button', { name: 'Copy flash36', exact: true })).toHaveCount(0);
+    await expect(antigravityCard.getByRole('button', { name: 'Copy flash37', exact: true })).toHaveCount(0);
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await antigravityCard.screenshot({ animations: 'disabled', path: `../.propr/previews/antigravity-models-${viewport.name}.png` });
+    }
     await expect(configuration.getByRole('button', { name: 'Copy flash38', exact: true })).toBeVisible();
     await configuration.getByRole('button', { name: 'Collapse claude models' }).click();
     await expect(opusAlias).toBeHidden();
