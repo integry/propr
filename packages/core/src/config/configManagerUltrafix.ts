@@ -101,3 +101,26 @@ export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean
     logger.info({ ultrafix_pause_seconds: seconds }, 'Successfully saved ultrafix pause seconds');
     return true;
 }
+
+export interface UltrafixEscalationSettings {
+    enabled: boolean;
+    models: string[];
+    patience: number;
+    maxReasoningLevels: number;
+}
+
+/** Instance-wide policy; loops snapshot its ladder and check the master toggle live. */
+export async function loadUltrafixEscalationSettings(): Promise<UltrafixEscalationSettings> {
+    const [enabled, models, patience, levels] = await Promise.all([
+        getConfig<unknown>('ultrafix_escalation_enabled', false),
+        getConfig<unknown>('ultrafix_escalation_models', []),
+        getConfig<unknown>('ultrafix_escalation_patience', 3),
+        getConfig<unknown>('ultrafix_escalation_max_reasoning_levels', 2),
+    ]);
+    return {
+        enabled: enabled === true,
+        models: Array.isArray(models) ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0) : [],
+        patience: typeof patience === 'number' && Number.isSafeInteger(patience) && patience >= 1 ? patience : 3,
+        maxReasoningLevels: typeof levels === 'number' && Number.isSafeInteger(levels) && levels >= 0 ? levels : 2,
+    };
+}

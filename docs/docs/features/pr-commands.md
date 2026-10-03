@@ -335,6 +335,25 @@ Or configure the loop:
 
 A bare number is treated as the goal: `/ultrafix 8` is the same as `/ultrafix goal=8`. Defaults can be changed in Settings. Unknown keys and invalid values are ignored with a warning. Lines below the command become extra instructions for the cycles.
 
+#### Automatic Escalation
+
+Settings → Automation → General configuration provides an instance-wide escalation policy, disabled by default. It does not add repository or PR overrides.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ultrafix_escalation_enabled` | `false` | Enable automatic escalation |
+| `ultrafix_escalation_models` | `[]` | Ordered handoff models, as model IDs or `agent:model` pairs |
+| `ultrafix_escalation_patience` | `3` | Stalled reviews before each escalation step |
+| `ultrafix_escalation_max_reasoning_levels` | `2` | Maximum effort increases per model; `0` hands off directly |
+
+The first model is the model already implementing the PR, including its normal reasoning configuration. Review model selection remains controlled by the existing review setting. Every complete, usable review compares its score with the best score seen during this run: `6 → 6` stalls; `6 → 7` resets patience. Lower scores also stall. Invalid and partial reviews do not drive escalation.
+
+After patience expires, the implementation model climbs one of its own available effort tiers. After the configured number of increases, or when no higher tier exists, ProPR tries the next handoff model at that model's own configured base effort. Each step receives a fresh patience window, while the best score remains shared across the run. Antigravity uses the matching effort variant of its model ID (Pro has low/high; GPT-OSS has only medium). Models without an effort dial hand off directly.
+
+Select escalation models from the ordered dropdowns in General settings. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
+
+The policy is captured when the first automatic fix starts and persisted with the run, including its current model, effort, best score, and patience counter. Webhook and polling intake use the same continuation; deferred CI resumes retain this state. Disabling the master toggle also bypasses escalation in existing runs. The existing overall maximum cycle limit and goal/coverage rules still apply across all models. With escalation disabled, model and reasoning selection and stopping behavior remain unchanged.
+
 #### Waiting Rules
 
 Before each cycle, ProPR checks readiness:
