@@ -87,6 +87,8 @@ const updates: Array<{ number: number; body: unknown }> = [];
 const githubCalls: string[] = [];
 let dispatchFailure = false;
 let configFailure = false;
+let dispatchFailureNumber: number | undefined;
+let prepareFailureNumber: number | undefined;
 const principal = { user: { id: 'user' }, grant: { id: 'grant' }, github: {
   request: async (route: string, input: Record<string, unknown>) => {
     githubCalls.push(route);
@@ -94,7 +96,10 @@ const principal = { user: { id: 'user' }, grant: { id: 'grant' }, github: {
     return { data: {} };
   },
 } } as unknown as McpPrincipal;
-const deps = { db: database, policy: { repository: async () => {}, requireScope: () => {},
+const deps = { db: database, policy: { repository: async () => {
+  if (dispatches.length === 0 && prepareFailureNumber === 0) throw new Error('prepare failed');
+  if (prepareFailureNumber !== undefined && dispatches.at(-1) === prepareFailureNumber) throw new Error('prepare failed');
+}, requireScope: () => {},
   oauth: { store: { seal: (value: unknown) => JSON.stringify(value) } },
 } as unknown as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never } satisfies ToolDeps;
 const planner = {
@@ -103,7 +108,7 @@ const planner = {
     dispatches.push(number);
     // The real handler derives the label it removes from the selection persisted before it runs.
     headSelections.push((await database('plan_issues').where({ draft_id: planId, issue_number: number }).first()).model_name);
-    if (dispatchFailure) throw new Error('dispatch failed');
+    if (dispatchFailure || number === dispatchFailureNumber) throw new Error('dispatch failed');
     await database('plan_issues').where({ draft_id: planId, issue_number: number }).update({ status: 'processing', ...models[0] });
     res.json({ issueNumber: number });
   },
@@ -130,7 +135,7 @@ beforeEach(async () => {
   await database('plan_issues').insert([10, 20, 30, 40].map(issue_number => ({ draft_id: planId, repository, issue_number, status: 'pending' })));
   dispatches.length = 0; headSelections.length = 0; updates.length = 0; githubCalls.length = 0; labelCalls.length = 0; issueLabels.clear();
   for (const number of [10, 20, 30, 40]) issueLabels.set(number, ['llm-old', 'base-old', 'auto-merge']);
-  dispatchFailure = false; configFailure = false;
+  dispatchFailure = false; configFailure = false; dispatchFailureNumber = undefined; prepareFailureNumber = undefined;
   epicPR = null; epicLookups = 0; epicLabelFailure = false; queuedLabelFailure = false; afterEpicLookup = undefined;
 });
 
@@ -214,10 +219,10 @@ test('a parallel epic cannot start under a non-epic queue that owes no epic fina
   assert.equal((await database('mcp_records').where({ kind: 'issue_execution' })).length, 0);
 });
 
-test('parallel epic dispatch failure releases its finalization obligation', async () => {
+test('parallel epic dispatch failure retains finalization for an uncertain external outcome', async () => {
   dispatchFailure = true;
   await assert.rejects(run({ epicExecution: 'parallel' }), /dispatch failed/);
-  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
 });
 
 test('the sequential head keeps its prior model until its handler replaces that model label', async () => {
@@ -238,10 +243,11 @@ test('multiple models fail before any claim, queue or GitHub call', async () => 
   assert.equal((await database('mcp_records')).length, 0);
 });
 
-test('head dispatch failure cancels the queue; selector failure holds progression', async () => {
+test('head dispatch failure retains the unready queue for uncertain outcome recovery', async () => {
   dispatchFailure = true;
   await assert.rejects(run(), /dispatch failed/);
-  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
+  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, false);
   assert.deepEqual(updates, []);
 });
 
@@ -288,7 +294,10 @@ for (const queueStatus of ['active', 'cancelled'] as const) {
   for (const mode of ['non-epic', 'parallel'] as const) {
     test(`${mode} receipt completes independently of an unrelated ${queueStatus} queue`, async () => {
       dispatchFailure = queueStatus === 'cancelled';
-      if (dispatchFailure) await assert.rejects(run({ issues: [10, 30] }), /dispatch failed/);
+      if (dispatchFailure) {
+        await assert.rejects(run({ issues: [10, 30] }), /dispatch failed/);
+        await core.cancelEpicExecutionQueue(planId);
+      }
       else await run({ issues: [10, 30] });
       assert.equal((await core.getEpicExecutionQueue(planId))?.status, queueStatus);
       dispatchFailure = false;
@@ -330,6 +339,7 @@ for (const queueStatus of ['active', 'cancelled'] as const) {
     const nextArgs = args({ issues: [40], idempotencyKey: 'replacement-request' });
     const replacement = await operations.run(principal, { tool: 'implement_plan', args: nextArgs, repository }, operationId =>
       implement.run({ principal, args: nextArgs, operationId } as never));
+    if (queueStatus === 'cancelled') await core.cancelEpicExecutionQueue(planId);
     const queue = await core.getEpicExecutionQueue(planId);
     assert.equal(queue?.status, queueStatus);
     assert.notEqual(queue?.executionId, originalExecutionId);
@@ -518,17 +528,20 @@ test('a non-epic auto-merge UI request starts the next pending issue after each 
   assert.equal(queue?.useEpic, false);
   assert.equal(queue?.advanceOn, 'terminal');
   assert.deepEqual(dispatches, [30]);
-  assert.deepEqual(issueLabels.get(10)?.sort(), ['auto-merge', 'base-old', 'llm-model']);
+  assert.deepEqual(issueLabels.get(10)?.sort(), ['auto-merge', 'llm-model']);
   assert.equal(labelCalls.some(call => call.number !== 30 && call.labels.includes('AI')), false);
   await database('plan_issues').where({ draft_id: planId, issue_number: 30 }).update({ pr_number: 300 });
   await core.updatePlanIssueByPR(repository, 300, { status: core.PlanIssueStatus.MERGED });
+  assert.deepEqual(issueLabels.get(10)?.sort(), ['AI', 'auto-merge', 'llm-model']);
   await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.CLOSED);
+  assert.deepEqual(issueLabels.get(20)?.sort(), ['AI', 'auto-merge', 'llm-model']);
   // The plan's stored epic label belongs to an earlier epic run; non-epic successors must not target it.
   assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).slice(1),
     [{ number: 10, labels: ['AI', 'auto-merge'] }, { number: 20, labels: ['AI', 'auto-merge'] }]);
   // Completing the non-epic queue must not activate the historical epic PR.
   epicPR = { number: 999, labels: [] };
   await core.updatePlanIssueStatus(repository, 20, core.PlanIssueStatus.MERGED);
+  assert.deepEqual(issueLabels.get(40)?.sort(), ['AI', 'auto-merge', 'llm-model']);
   await core.updatePlanIssueStatus(repository, 40, core.PlanIssueStatus.MERGED);
   assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
   assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
@@ -643,4 +656,54 @@ test('replacement during epic lookup revokes the old finalizer before labeling',
   assert.equal(queue?.status, 'active');
   assert.equal(queue?.finalizedAt, null);
   assert.equal(queue?.finalizationStartedAt, null);
+});
+
+for (const failure of ['prepare', 'dispatch'] as const) {
+  test(`parallel finalization survives second child ${failure} failure after the first starts`, async () => {
+    epicPR = { number: 999, labels: [] };
+    if (failure === 'prepare') prepareFailureNumber = 10;
+    else dispatchFailureNumber = 20;
+    await assert.rejects(run({ issues: [10, 20], epicExecution: 'parallel' }), new RegExp(`${failure} failed`));
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
+    assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).first()).status, 'processing');
+    for (const number of [20, 30, 40]) await core.updatePlanIssueStatus(repository, number, core.PlanIssueStatus.CLOSED);
+    await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+    assert.ok((await core.getEpicExecutionQueue(planId))?.finalizedAt);
+    assert.equal(labelCalls.filter(call => call.number === 999).length, 1);
+  });
+}
+
+for (const epicExecution of ['parallel', 'sequential']) {
+  test(`${epicExecution} preparation failure before any dispatch cancels only its own queue`, async () => {
+    prepareFailureNumber = 0;
+    await assert.rejects(run({ epicExecution }), /prepare failed/);
+    assert.deepEqual(dispatches, []);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'cancelled');
+  });
+}
+
+for (const useEpic of [true, false]) {
+  test(`UI useEpic=${useEpic} retains its queue when implementation starts then rejects`, async () => {
+    await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+    const { enqueueEpicImplementation, enqueueAutoMergeImplementation } = await import('../routes/planIssueEpicQueue.js');
+    const enqueue = useEpic ? enqueueEpicImplementation : enqueueAutoMergeImplementation;
+    await assert.rejects(enqueue({ draftId: planId, repository, issueNumber: 10, autoMerge: true,
+      contextConfig: null, implement: async () => {
+        await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'processing' });
+        throw new Error('uncertain dispatch');
+      } }), /uncertain dispatch/);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'active');
+    assert.equal((await core.getEpicExecutionQueue(planId))?.ready, !useEpic);
+  });
+}
+
+test('preparation failure under an existing epic cannot cancel its finalization obligation', async () => {
+  await run({ issues: [10] });
+  const original = await core.getEpicExecutionQueue(planId);
+  prepareFailureNumber = 10;
+  await assert.rejects(run({ issues: [20], epicExecution: 'parallel' }), /prepare failed/);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.executionId, original?.executionId);
+  assert.equal(queue?.status, 'active');
 });

@@ -16,7 +16,6 @@ export async function enqueueEpicImplementation(params: {
   implement: () => Promise<unknown>;
 }): Promise<unknown> {
   const {
-    cancelEpicExecutionQueue,
     createEpicExecutionQueue,
     db,
     getEpicExecutionQueue,
@@ -44,13 +43,9 @@ export async function enqueueEpicImplementation(params: {
     if ((error as Error).message.includes('active epic execution queue')) throw new EpicQueueRequestError((error as Error).message);
     throw error;
   }
-  let result: unknown;
-  try {
-    result = await params.implement();
-  } catch (error) {
-    await cancelEpicExecutionQueue(draftId);
-    throw error;
-  }
+  // A rejected implementation can already have published labels or queued work.
+  // Keep recovery and finalization owed when the external outcome is uncertain.
+  const result = await params.implement();
   // The head establishes the epic branch. Configure successors without starting them,
   // preserving each issue's selected model and effective ultrafix settings.
   const draft = await db('task_drafts').where({ draft_id: draftId }).first('context_config');
@@ -73,7 +68,7 @@ export async function enqueueAutoMergeImplementation(params: {
   contextConfig: Record<string, unknown> | null;
   implement: () => Promise<unknown>;
 }): Promise<unknown> {
-  const { cancelEpicExecutionQueue, createEpicExecutionQueue, getEpicExecutionQueue, getPlanIssuesByDraft, PlanIssueStatus } = core;
+  const { createEpicExecutionQueue, getEpicExecutionQueue, getPlanIssuesByDraft, PlanIssueStatus } = core;
   const { draftId, issueNumber, repository } = params;
   // An active queue already owns progression and skips issues started out of band.
   if ((await getEpicExecutionQueue(draftId))?.status === 'active') return params.implement();
@@ -91,12 +86,7 @@ export async function enqueueAutoMergeImplementation(params: {
     if (!(error as Error).message.includes('active epic execution queue')) throw error;
     return params.implement();
   }
-  try {
-    return await params.implement();
-  } catch (error) {
-    await cancelEpicExecutionQueue(draftId);
-    throw error;
-  }
+  return params.implement();
 }
 
 /** Persist each successor's model and ultrafix settings, then sync selectors without a processing label. */
@@ -129,7 +119,7 @@ export async function syncQueuedEpicIssueSelectors(params: {
   const githubIssue = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber });
   const labels = githubIssue.data.labels.map(label => typeof label === 'string' ? label : label.name);
   const stale = labels.filter((label): label is string => !!label && (
-    (epicLabel !== undefined && label.startsWith('base-') && label !== epicLabel)
+    (label.startsWith('base-') && label !== epicLabel)
     || (label.startsWith('llm-') && label !== modelLabel) || (!autoMerge && label === 'auto-merge')));
   const synced = await core.safeUpdateLabels({ octokit, owner, repo, issueNumber,
     logger: core.logger.withCorrelation(`epic-setup-${draftId}`) }, stale,

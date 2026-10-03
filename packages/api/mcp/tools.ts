@@ -587,7 +587,7 @@ export function addPlanImplementationTool(
       const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
         useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
       const queued = new Set(dispatch.queued);
-      const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallel?: boolean }> => {
+      const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallelExecutionId?: string }> => {
         for (const number of args.issues) {
           const id = `${args.planId}:${number}`;
           const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
@@ -612,9 +612,9 @@ export function addPlanImplementationTool(
           const active = await getEpicExecutionQueue(args.planId, { database: tx });
           if (active?.status === 'active' && !active.useEpic) throw new McpError('PRECONDITION_FAILED', 'A non-epic execution queue is running for this plan. Wait for it to finish before starting a parallel epic.', 409);
           if (active?.status !== 'active') {
-            await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository, issues: dispatch.dispatchNow,
+            const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository, issues: dispatch.dispatchNow,
               advanceOn: dispatch.advanceOn, autoMerge: args.autoMerge, parallel: true }, { database: tx });
-            return { parallel: true };
+            return { parallelExecutionId: queue.executionId };
           }
         }
         return {};
@@ -629,13 +629,17 @@ export function addPlanImplementationTool(
           catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
         }
       };
+      let dispatchAttempted = false;
       try {
         for (const number of dispatch.dispatchNow) {
           await prepareIssue(number);
+          // Once entered, a failed workflow may still have started external work.
+          dispatchAttempted = true;
           results.push((await callWorkflow(planner.implementIssue, principal, { params: { id: args.planId, issueNumber: String(number) }, body: { repository: args.repository, models: args.models, useEpic: args.useEpic, autoMerge: args.autoMerge } })).data);
         }
       } catch (error) {
-        if (executionId || claimed.parallel) await cancelEpicExecutionQueue(args.planId);
+        const ownedExecutionId = executionId ?? claimed.parallelExecutionId;
+        if (ownedExecutionId && !dispatchAttempted) await cancelEpicExecutionQueue(args.planId, ownedExecutionId);
         throw error;
       }
       if (dispatch.mode === 'sequential') {

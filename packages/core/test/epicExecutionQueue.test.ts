@@ -368,3 +368,34 @@ test('use_epic migration keeps existing queues on the epic branch and rolls back
     await oldDatabase.destroy();
   }
 });
+
+test('a full failed recovery batch rotates so the healthy queue beyond it can run', async () => {
+  for (let index = 0; index < 100; index++) {
+    const draftId = `failed-${String(index).padStart(3, '0')}`;
+    await database('task_drafts').insert({ draft_id: draftId });
+    await createEpicExecutionQueue({ ...input, draftId, ready: false }, { now: () => 0 });
+  }
+  await createEpicExecutionQueue(input, { now: () => 1 });
+  const repairSetup = mock.fn(async () => { throw new Error('Repository inaccessible'); });
+  assert.deepEqual(await reconcileEpicExecutionQueues({ now: () => 16 * 60_000, repairSetup }), { reconciled: 0 });
+  assert.equal(repairSetup.mock.callCount(), 100);
+  assert.deepEqual(starts, []);
+  await reconcileEpicExecutionQueues({ now: () => 17 * 60_000, repairSetup });
+  assert.deepEqual(starts, [10]);
+});
+
+test('failed recovery cannot rotate or cancel a replacement execution', async () => {
+  const original = await createEpicExecutionQueue({ ...input, ready: false }, { now: () => 0 });
+  let replacementId = '';
+  await reconcileEpicExecutionQueues({ now: () => 16 * 60_000, repairSetup: async () => {
+    await cancelEpicExecutionQueue('draft', original.executionId);
+    const replacement = await createEpicExecutionQueue(input, { now: () => 42 });
+    replacementId = replacement.executionId;
+    throw new Error('Original setup failed');
+  } });
+  await cancelEpicExecutionQueue('draft', original.executionId);
+  const replacement = await getEpicExecutionQueue('draft');
+  assert.equal(replacement?.executionId, replacementId);
+  assert.equal(replacement?.status, 'active');
+  assert.equal((await database('epic_execution_queues').where({ draft_id: 'draft' }).first()).updated_at, 42);
+});

@@ -107,9 +107,10 @@ export async function readyEpicExecutionQueue(draftId: string): Promise<void> {
   await startEpicQueueHead(draftId);
 }
 
-export async function cancelEpicExecutionQueue(draftId: string): Promise<void> {
-  await db('epic_execution_queues').where({ draft_id: draftId, status: 'active' })
-    .update({ status: 'cancelled', updated_at: Date.now() });
+export async function cancelEpicExecutionQueue(draftId: string, executionId?: string): Promise<void> {
+  const query = db('epic_execution_queues').where({ draft_id: draftId, status: 'active' });
+  if (executionId) query.where({ execution_id: executionId });
+  await query.update({ status: 'cancelled', updated_at: Date.now() });
 }
 
 /** Only a matching head may move the cursor. Other observers reload the winning state. */
@@ -335,11 +336,14 @@ export async function reconcileEpicExecutionQueues(deps: EpicQueueDependencies =
         await reconcileQueueHead(queue.draft_id, deps);
         await startEpicQueueHead(queue.draft_id, deps);
       }
-      await database('epic_execution_queues').where({ draft_id: queue.draft_id, execution_id: queue.execution_id })
-        .update({ updated_at: (deps.now ?? Date.now)() });
       reconciled++;
     } catch (error) {
       logger.warn({ draftId: queue.draft_id, error: (error as Error).message }, 'Failed to reconcile epic queue');
+    } finally {
+      // Rotate every attempted execution, including failed setup and finalization.
+      // A replacement execution must retain its own recovery priority.
+      await database('epic_execution_queues').where({ draft_id: queue.draft_id, execution_id: queue.execution_id })
+        .update({ updated_at: (deps.now ?? Date.now)() });
     }
   }
   return { reconciled };

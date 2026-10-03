@@ -305,9 +305,10 @@ async function recoverPRClosedPlanIssue(
             octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: planIssue.issue_number }),
         ]);
         const mergedAt = pr.merged_at ? Date.parse(pr.merged_at) : null;
-        // The merge itself may close the source issue through its closing keyword.
-        const closedByMerge = mergedAt !== null && !!issue.closed_at && Date.parse(issue.closed_at) >= mergedAt;
-        if (issue.state === 'closed' && !closedByMerge) return null;
+        if (issue.state === 'closed') {
+            if (mergedAt === null || !pr.merge_commit_sha) return null;
+            if (!await sourceIssueClosedByMerge(octokit, { owner, repo, issueNumber: planIssue.issue_number, mergeCommitSha: pr.merge_commit_sha })) return null;
+        }
         const recovered = mergedAt !== null ? PlanIssueStatus.MERGED : pr.state === 'open' ? PlanIssueStatus.UNDER_REVIEW : null;
         if (recovered) log.info({ repository, prNumber: planIssue.pr_number, issueNumber: planIssue.issue_number, recovered }, 'Recovered plan issue closed by its unmerged PR');
         return recovered;
@@ -315,6 +316,32 @@ async function recoverPRClosedPlanIssue(
         log.warn({ repository, prNumber: planIssue.pr_number, error: (error as Error).message }, 'Could not verify closed plan issue recovery');
         return null;
     }
+}
+
+/** Verify the cause of the current closure, rather than its ordering relative to a merge. */
+async function sourceIssueClosedByMerge(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    params: { owner: string; repo: string; issueNumber: number; mergeCommitSha: string }
+): Promise<boolean> {
+    const { owner, repo, issueNumber, mergeCommitSha } = params;
+    // GitHub records the closing commit on the issue's closed event.
+    let lastStateEvent: { event: string; commit_id: string | null; created_at: string } | undefined;
+    for (let page = 1; ; page++) {
+        const { data: events } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/events', {
+            owner, repo, issue_number: issueNumber, per_page: 100, page,
+        });
+        for (const event of events) {
+            if (event.event === 'closed' || event.event === 'reopened') lastStateEvent = event;
+        }
+        if (events.length < 100) break;
+    }
+    if (lastStateEvent?.event !== 'closed' || lastStateEvent.commit_id !== mergeCommitSha) return false;
+    // Re-read after the event lookup: the evidence must still describe the current
+    // closure before releasing the merged-only queue obligation.
+    const { data: currentIssue } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+        owner, repo, issue_number: issueNumber,
+    });
+    return currentIssue.state === 'closed' && currentIssue.closed_at === lastStateEvent.created_at;
 }
 
 /**
