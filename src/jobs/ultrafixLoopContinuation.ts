@@ -26,6 +26,7 @@ import {
     clearDeferredContinuationIfCurrent,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixOrchestrationService.js';
+import type { UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
@@ -115,12 +116,9 @@ async function deferNextAction(
         'Ultrafix loop: deferred continuation — waiting for readiness',
     );
     return {
-        continued: false,
+        continued: false, deferred: true,
         reason: `deferred: ${reasons.join(', ')}`,
-        nextAction,
-        score: latestScore,
-        cycleCount,
-        deferred: true,
+        nextAction, score: latestScore, cycleCount,
     };
 }
 
@@ -144,11 +142,8 @@ async function enqueueCurrentNextAction(
     if (!cleared) return { continued: false, reason: 'ultrafix_superseded' };
     await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000);
     return {
-        continued: true,
-        reason: decisionReason,
-        nextAction,
-        score: latestScore,
-        cycleCount,
+        continued: true, reason: decisionReason,
+        nextAction, score: latestScore, cycleCount,
     };
 }
 
@@ -209,6 +204,28 @@ async function collectReviewOutput(
         );
         return { latestScore: null, reviewStatus: 'invalid', isPartial: false };
     }
+}
+
+async function applyReviewEscalation(
+    params: UltrafixContinuationParams,
+    state: UltrafixLoopState,
+    review: Awaited<ReturnType<typeof collectReviewOutput>>,
+    decision: ReturnType<typeof determineNextAction>,
+): Promise<UltrafixLoopState | null> {
+    const { completedAction, redisClient } = params;
+    const { latestScore, reviewStatus, isPartial } = review;
+    // Existing goal, coverage, invalid-output, and overall cycle limits take precedence.
+    if (completedAction === 'review' && latestScore !== null && !isPartial
+        && reviewStatus !== 'invalid' && decision.action !== null) {
+        const escalatedState = await recordUltrafixEscalationReview(redisClient, state, latestScore);
+        if (!escalatedState) return null;
+        state = escalatedState;
+        if (state.escalation?.exhausted) {
+            decision.action = null;
+            decision.reason = 'Escalation exhausted: all available models and reasoning levels stalled';
+        }
+    }
+    return state;
 }
 
 /**
@@ -295,16 +312,8 @@ export async function continueUltrafixLoop(
 
     // 5. Determine next action
     const decision = determineNextAction(updatedState, latestScore, reviewStatus, isPartial);
-    // Existing goal, coverage, invalid-output, and overall cycle limits take precedence.
-    if (completedAction === 'review' && latestScore !== null && !isPartial
-        && reviewStatus !== 'invalid' && decision.action !== null) {
-        updatedState = await recordUltrafixEscalationReview(redisClient, updatedState, latestScore);
-        if (!updatedState) return { continued: false, reason: 'ultrafix_superseded' };
-        if (updatedState.escalation?.exhausted) {
-            decision.action = null;
-            decision.reason = 'Escalation exhausted: all available models and reasoning levels stalled';
-        }
-    }
+    updatedState = await applyReviewEscalation(params, updatedState, { latestScore, reviewStatus, isPartial }, decision);
+    if (!updatedState) return { continued: false, reason: 'ultrafix_superseded' };
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore, isPartial },
         'Ultrafix loop: next action decision',
@@ -335,11 +344,8 @@ export async function continueUltrafixLoop(
 
     if (!readiness.ready) {
         return deferNextAction({
-            params,
-            nextAction: decision.action,
-            reasons: readiness.reasons,
-            latestScore,
-            cycleCount: updatedState.cycleCount,
+            params, nextAction: decision.action,
+            reasons: readiness.reasons, latestScore, cycleCount: updatedState.cycleCount,
         });
     }
 

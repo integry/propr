@@ -140,6 +140,11 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  return extractEscalationSettingSaves(fields, result);
+}
+
+async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
+  const { saves, normalized } = result;
   if (fields.ultrafix_escalation_enabled !== undefined) {
     if (typeof fields.ultrafix_escalation_enabled !== 'boolean') return { error: 'ultrafix_escalation_enabled must be a boolean', saves: [], normalized };
     normalized.ultrafix_escalation_enabled = fields.ultrafix_escalation_enabled;
@@ -164,4 +169,28 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
   }
 
   return { saves, normalized };
+}
+
+interface IntegerSettingConfig {
+  name: string;
+  value: unknown;
+  defaultValue: number;
+  minimum: number;
+  maximum?: number;
+}
+interface InvalidIntegerSetting {
+  name: string;
+  value: unknown;
+}
+
+function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
+  if (value === undefined || value === null) return null;
+  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
+  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
+}
+export function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
+  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
+  if (parsed !== null) return { value: parsed };
+  if (value === undefined || value === null) return { value: defaultValue };
+  return { value: defaultValue, invalid: { name, value } };
 }

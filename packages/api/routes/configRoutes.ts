@@ -1,3 +1,4 @@
+import { getIntegerSettingOrDefault } from './configSettings.js';
 import { parseUsageTipsSettings } from '@propr/shared';
 import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
@@ -33,30 +34,6 @@ const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
 const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
-interface IntegerSettingConfig {
-  name: string;
-  value: unknown;
-  defaultValue: number;
-  minimum: number;
-  maximum?: number;
-}
-interface InvalidIntegerSetting {
-  name: string;
-  value: unknown;
-}
-
-function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
-  if (value === undefined || value === null) return null;
-  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
-  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
-}
-function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
-  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
-  if (parsed !== null) return { value: parsed };
-  if (value === undefined || value === null) return { value: defaultValue };
-  return { value: defaultValue, invalid: { name, value } };
-}
-
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) return `${fieldName} must be an array of strings`;
   return value;
