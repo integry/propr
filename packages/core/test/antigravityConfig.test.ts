@@ -988,7 +988,7 @@ interface AntigravityTestInternals {
     processExecutionResult(options: {
         result: { stdout: string; stderr: string; exitCode: number }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string;
-        requestedCliModel: string; prompt: string; worktreePath: string; worktreeGitContent: null;
+        requestedCliModel: string; prompt: string; worktreePath: string; worktreeGitContent: null; transcriptPath?: string;
     }): Promise<AgentExecutionResult>;
     resolveSessionOutput(stdout: string, transcriptPath: string): Promise<{ response: { protocolError?: string } }>;
     buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number }): string[];
@@ -1063,6 +1063,48 @@ test('Antigravity rejects stdout and transcript effort conflicts', async () => {
         const agent = new AntigravityAgent(createAntigravityConfig());
         const { response } = await (agent as unknown as AntigravityTestInternals).resolveSessionOutput([init('high'), result].join('\n'), file);
         assert.match(response.protocolError, /Conflicting Antigravity model identities/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Antigravity preserves explicit effort when merging base-only and effort-bearing identities', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-effort-merge-'));
+    const file = path.join(dir, 'transcript.jsonl');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as AntigravityTestInternals;
+    internals.persistImplementationLog = async () => undefined;
+    try {
+        for (const [model, requestedCliModel, wrongEffort] of [
+            ['antigravity-gemini-3.8-flash', 'gemini-3.8-flash-low', 'gemini-3.8-flash-high'],
+            ['antigravity-claude-sonnet-5.5', 'Claude Sonnet 5.5 (Low)', 'Claude Sonnet 5.5 (High)'],
+        ]) {
+            for (const stream of [true, false]) {
+                const output = (identity: string) => [
+                    JSON.stringify(stream
+                        ? { event: 'init', conversation_id: 'effort', init: { model: identity, cwd: '/tmp', tools: [] } }
+                        : { type: 'init', session_id: 'effort', model: identity }),
+                    JSON.stringify(stream
+                        ? { event: 'result', result: { conversation_id: 'effort', status: 'SUCCESS', response: 'done' } }
+                        : { type: 'result', status: 'success' }),
+                ].join('\n');
+                for (const explicitInTranscript of [true, false]) {
+                    for (const explicitIdentity of [wrongEffort, requestedCliModel]) {
+                        const stdout = output(explicitInTranscript ? model : explicitIdentity);
+                        fs.writeFileSync(file, output(explicitInTranscript ? explicitIdentity : model));
+                        const result = await internals.processExecutionResult({
+                            result: { stdout, stderr: '', exitCode: 0 }, executionTime: 1,
+                            issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' }, effectiveModel: model,
+                            requestedCliModel, prompt: '', worktreePath: dir, worktreeGitContent: null, transcriptPath: file,
+                        });
+                        assert.equal(result.providerModel, explicitIdentity);
+                        assert.equal(result.success, explicitIdentity === requestedCliModel);
+                        if (explicitIdentity !== requestedCliModel) {
+                            assert.ok(result.error?.includes(`requested CLI model "${requestedCliModel}"`));
+                            assert.ok(result.error?.includes(`reported "${wrongEffort}"`));
+                        } else assert.equal(result.error, undefined);
+                    }
+                }
+            }
+        }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

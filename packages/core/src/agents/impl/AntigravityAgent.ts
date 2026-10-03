@@ -225,7 +225,11 @@ export class AntigravityAgent implements Agent {
             .map(convertEventToClaudeFormat);
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
         const evidenceConflict = resolveAntigravityEvidenceConflict(parsedOutput.reportedModel, sessionOutput.reportedModel, parsedOutput.conversationId, sessionOutput.conversationId); const modelUsed = evidenceConflict ? undefined : parsedOutput.modelUsed || sessionOutput.modelUsed;
-        const reportedModel = evidenceConflict ? undefined : parsedOutput.reportedModel || sessionOutput.reportedModel;
+        // Matching base identities can differ in specificity. Keep explicit effort
+        // evidence so final validation can compare it with the actual CLI argument.
+        const reportedModel = evidenceConflict ? undefined
+            : sessionOutput.reportedModel && antigravityReportedIdentity(sessionOutput.reportedModel).effort
+                ? sessionOutput.reportedModel : parsedOutput.reportedModel || sessionOutput.reportedModel;
         const terminalStatus: 'success' | 'error' | undefined = parsedOutput.terminalStatus === 'error' || sessionOutput.terminalStatus === 'error' ? 'error' : parsedOutput.terminalStatus || sessionOutput.terminalStatus;
         const protocolError = resolveAntigravityProtocolError(parsedOutput.terminalStatus, parsedOutput.protocolError, parsedOutput.hasStreamEnvelopes) ?? resolveAntigravityProtocolError(sessionOutput.terminalStatus, sessionOutput.protocolError, sessionOutput.hasStreamEnvelopes) ?? evidenceConflict; const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
         // rawConversationLog (full agentic trace: file views, searches, command
