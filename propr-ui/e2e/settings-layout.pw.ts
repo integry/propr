@@ -19,6 +19,7 @@ const catalogAgents = [
 ];
 
 async function installSettingsFixture(page: Page): Promise<void> {
+  let savedSettings: Record<string, unknown> = {};
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const pathname = new URL(route.request().url()).pathname;
@@ -77,6 +78,13 @@ async function installSettingsFixture(page: Page): Promise<void> {
         badgeEnabled: true,
       },
     };
+    if (pathname === '/api/config/settings') {
+      if (route.request().method() === 'POST') {
+        savedSettings = { ...savedSettings, ...route.request().postDataJSON().settings };
+        return route.fulfill({ json: { success: true, settings: savedSettings } });
+      }
+      return route.fulfill({ json: { ...(responses[pathname] as Record<string, unknown>), ...savedSettings } });
+    }
     if (pathname in responses) return route.fulfill({ json: responses[pathname] });
     return route.fulfill({ status: 503, json: { error: 'Unavailable in settings layout fixture' } });
   });
@@ -202,6 +210,27 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   await section.getByLabel('Max Reasoning Levels per Model').fill('0');
   await expect(models).toHaveValue('codex:gpt-6-astra, claude:claude-opus-5-5');
   await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  const saved = page.waitForResponse(response => {
+    const request = response.request();
+    return new URL(response.url()).pathname === '/api/config/settings'
+      && request.method() === 'POST'
+      && request.postDataJSON().settings.ultrafix_escalation_max_reasoning_levels === 0;
+  });
+  await section.getByLabel('Max Reasoning Levels per Model').blur();
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON().settings).toMatchObject({
+    ultrafix_escalation_enabled: true,
+    ultrafix_escalation_models: ['codex:gpt-6-astra', 'claude:claude-opus-5-5'],
+    ultrafix_escalation_patience: 4,
+    ultrafix_escalation_max_reasoning_levels: 0,
+  });
+  await expect(page.getByRole('status').filter({ hasText: 'Settings auto-saved' })).toBeVisible();
+  await page.reload();
+  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(models).toHaveValue('codex:gpt-6-astra, claude:claude-opus-5-5');
+  await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
   await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir(path.resolve('../.propr/previews'), { recursive: true });

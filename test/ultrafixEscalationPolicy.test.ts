@@ -81,3 +81,21 @@ test('skips unavailable or near-limit models, exhausts when none remain', async 
     await advanceEscalation(s, 6, available);
     assert.equal(s.exhausted, true);
 });
+
+
+test('unspecified effort takes the first explicit step for each dial runtime', async () => {
+    for (const type of ['codex', 'claude'] as const) {
+        const s = state({ patience: 1, bestScore: 6,
+            current: { model: type, levels: getReasoningLevelsForAgentType(type).filter(level => level !== 'auto') } });
+        await advanceEscalation(s, 6, available);
+        assert.equal(s.current.effort, 'medium');
+        assert.equal(s.climbs, 1);
+        assert.equal(s.modelIndex, 0);
+        await advanceEscalation(s, 6, available);
+        assert.equal(s.current.effort, 'high');
+        assert.equal(s.climbs, 2);
+        await advanceEscalation(s, 6, available);
+        assert.equal(s.current.model, 'stronger');
+        assert.equal(s.climbs, 0);
+    }
+});

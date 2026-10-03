@@ -1,19 +1,26 @@
-import { test, mock } from 'node:test';
+import { after, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import type { ReasoningLevel } from '@propr/shared';
+import { resolveAgentModelReasoningLevel, resolveRuntimeModelReasoningLevel } from '../packages/core/src/config/configManagerReasoning.js';
 import { createDefaultState } from '../src/jobs/ultrafixOrchestrationService.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => { await closeConnection(); });
 
 let enabled = false;
+let maxReasoningLevels = 0;
+let globalEffort: ReasoningLevel | '' = '';
 let usage: { sessionPercent?: number; weeklyPercent?: number } | null = null;
 const configs = {
-    codex: { alias: 'codex', type: 'codex', enabled: true, supportedModels: ['base'], modelReasoningLevels: { base: 'high' } },
-    claude: { alias: 'claude', type: 'claude', enabled: true, supportedModels: ['stronger'], modelReasoningLevels: { stronger: 'medium' } },
+    codex: { alias: 'codex', type: 'codex', enabled: true, supportedModels: ['base'], modelReasoningLevels: { base: 'high' } as Record<string, ReasoningLevel> },
+    claude: { alias: 'claude', type: 'claude', enabled: true, supportedModels: ['stronger'], modelReasoningLevels: { stronger: 'medium' } as Record<string, ReasoningLevel> },
 };
 await mock.module('@propr/core', { namedExports: {
     AgentRegistry: { getInstance: () => ({ ensureInitialized: async () => {}, getAgentByAlias: (alias: keyof typeof configs) => ({ config: configs[alias] }) }) },
-    loadUltrafixEscalationSettings: async () => ({ enabled, models: ['claude:stronger'], patience: 1, maxReasoningLevels: 0 }),
-    loadModelReasoningLevel: async () => '',
-    resolveAgentModelReasoningLevel: (levels: Record<string, string>, model: string) => levels[model],
-    resolveRuntimeModelReasoningLevel: (_type: string, effort: string) => effort || null,
+    loadUltrafixEscalationSettings: async () => ({ enabled, models: ['claude:stronger'], patience: 1, maxReasoningLevels }),
+    loadModelReasoningLevel: async () => globalEffort,
+    resolveAgentModelReasoningLevel,
+    resolveRuntimeModelReasoningLevel,
     resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),
     resolveConfiguredModel: async (model: string) => model,
 } });
@@ -74,4 +81,58 @@ test('switching the master toggle off bypasses an existing escalation stage', as
     assert.deepEqual(await resolveUltrafixFixExecution(input), { model: 'codex:base', effort: 'high' });
     await recordUltrafixEscalationReview(f.redis, f.read(), 6);
     assert.equal(JSON.stringify(f.read()), before);
+});
+
+test('absent and auto effort retain runtime selection until the first explicit step', async t => {
+    // These assertions describe our explicit dial, not the runtime's implicit
+    // effort. An unknown runtime default cannot establish a downward transition.
+    for (const alias of ['codex', 'claude'] as const) {
+        for (const source of ['absent', 'global auto', 'model auto', 'override auto'] as const) {
+            for (const limit of [0, 1]) {
+                await t.test(`${alias}: ${source}, N=${limit}`, async () => {
+                    enabled = true; usage = null; maxReasoningLevels = limit;
+                    globalEffort = source === 'global auto' ? 'auto' : '';
+                    configs.codex.modelReasoningLevels = {};
+                    configs.claude.modelReasoningLevels = {};
+                    const id = alias === 'codex' ? 'base' : 'stronger';
+                    if (source === 'model auto') configs[alias].modelReasoningLevels[id] = 'auto';
+                    const effort = source === 'override auto' ? 'auto' as const : undefined;
+                    const f = fixture();
+                    const input = { redis: f.redis, owner: 'o', repo: 'r', pr: 1, workEpoch: 0, model: `${alias}:${id}`, effort };
+                    try {
+                        assert.deepEqual(await resolveUltrafixFixExecution(input), { model: input.model, effort });
+                        assert.equal(f.read().escalation.current.effort, undefined);
+                        assert.ok(!f.read().escalation.current.levels.includes('auto'));
+                        await recordUltrafixEscalationReview(f.redis, f.read(), 6);
+                        assert.deepEqual(await resolveUltrafixFixExecution(input), { model: input.model, effort });
+                        await recordUltrafixEscalationReview(f.redis, f.read(), 6);
+                        if (limit === 1) {
+                            assert.deepEqual(await resolveUltrafixFixExecution(input), { model: input.model, effort: 'medium' });
+                            assert.equal(f.read().escalation.climbs, 1);
+                            assert.equal(f.read().escalation.modelIndex, 0);
+                        } else {
+                            assert.equal(f.read().escalation.modelIndex, 1);
+                            assert.equal(f.read().escalation.climbs, 0);
+                            assert.equal(f.read().escalation.current.effort, undefined);
+                            assert.deepEqual(await resolveUltrafixFixExecution(input), { model: 'claude:stronger', effort: undefined });
+                        }
+                        // Handoff models also start from an absent/auto setting.
+                        if (limit === 1) {
+                            await recordUltrafixEscalationReview(f.redis, f.read(), 6);
+                            assert.equal(f.read().escalation.modelIndex, 1);
+                            assert.equal(f.read().escalation.current.effort, undefined);
+                            assert.deepEqual(await resolveUltrafixFixExecution(input), { model: 'claude:stronger', effort: undefined });
+                            await recordUltrafixEscalationReview(f.redis, f.read(), 6);
+                            assert.deepEqual(await resolveUltrafixFixExecution(input), { model: 'claude:stronger', effort: 'medium' });
+                            assert.equal(f.read().escalation.climbs, 1);
+                        }
+                    } finally {
+                        maxReasoningLevels = 0; globalEffort = '';
+                        configs.codex.modelReasoningLevels = { base: 'high' };
+                        configs.claude.modelReasoningLevels = { stronger: 'medium' };
+                    }
+                });
+            }
+        }
+    }
 });
