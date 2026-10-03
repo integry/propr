@@ -37,7 +37,7 @@ const stateManager = {
         return current;
     },
 };
-let pullRequestState: { state?: string; merged?: boolean } = {};
+let pullRequestState: { state?: string; merged?: boolean; base?: { ref: string } } = {};
 const octokit = {
     auth: async () => ({ token: 'fixture-token' }),
     request: async (route: string, params: Record<string, unknown>) => {
@@ -339,4 +339,23 @@ test('PR follow-ups record the workflow revision on PROCESSING and reuse it acro
     });
     assert.equal((waiting.data as { repositoryWorkflow?: unknown }).repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
     assert.equal((waiting.data as { repositoryWorkflowDeferrals?: unknown }).repositoryWorkflowDeferrals, undefined);
+});
+
+test('a follow-up refused on a base without a workflow loads the new base policy after the PR is retargeted', async () => {
+    const waiting = job();
+    waiting.updateData = async (data: Record<string, unknown>) => { waiting.data = JSON.parse(JSON.stringify(data)); };
+    refuseCapacity = true;
+    for (let refusal = 0; refusal < 2; refusal++) await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.equal(policyLoads, 1, 'the absent policy is reused while the base branch is unchanged');
+    assert.equal((waiting.data as { repositoryWorkflow?: unknown }).repositoryWorkflow, null);
+    assert.equal((waiting.data as { repositoryWorkflowBaseBranch?: unknown }).repositoryWorkflowBaseBranch, 'main');
+    // A maintainer retargets the PR to a branch that has a workflow while the job is delayed.
+    pullRequestState = { base: { ref: 'release' } };
+    resolvedWorkflow = { revision: 'release-sha', baseBranch: 'release', fileRevision: 'blob-sha', config: {}, timeoutMs: 1000, maxParallelTasks: 2 };
+    refuseCapacity = false;
+    agentError = new Error('agent stopped by test');
+    await assert.rejects(processPullRequestCommentJob(waiting as never), /agent stopped by test/);
+    assert.equal(policyLoads, 2, 'the retargeted base branch policy is loaded');
+    assert.equal((processingMetadata.at(-1)?.repositoryWorkflow as { baseBranch?: string } | undefined)?.baseBranch, 'release');
+    assert.equal((waiting.data as { repositoryWorkflowBaseBranch?: unknown }).repositoryWorkflowBaseBranch, undefined);
 });

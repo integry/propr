@@ -17,7 +17,7 @@ await mock.module('@propr/core', { namedExports: {
     executeWithRepositoryWorkflow, loadSettings: async () => ({}),
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
 } });
-const { deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow } = await import('../src/jobs/repositoryWorkflow.js');
+const { deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow, repositoryWorkflowDeferralData } = await import('../src/jobs/repositoryWorkflow.js');
 const log = { error() {} };
 
 test('capacity deferral waits for cleanup and passes the current BullMQ lock token', async () => {
@@ -57,12 +57,30 @@ test('deferred re-entry reuses the resolved policy, including no policy, unless 
     const prepare = async () => { loads++; return undefined; };
     assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, 'main', prepare), cached);
     assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, undefined, prepare), cached);
-    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowDeferrals: 1 }, 'main', prepare), undefined);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowBaseBranch: 'main', repositoryWorkflowDeferrals: 1 }, 'main', prepare), undefined);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowBaseBranch: null, repositoryWorkflowDeferrals: 1 }, undefined, prepare), undefined);
     assert.equal(loads, 0);
     await resolveRepositoryWorkflow({ repositoryWorkflow: cached, repositoryWorkflowDeferrals: 2 }, 'release', prepare);
     await resolveRepositoryWorkflow({ repositoryWorkflow: cached }, 'main', prepare);
     await resolveRepositoryWorkflow({}, 'main', prepare);
     assert.equal(loads, 3);
+});
+
+test('an absent policy is reloaded when the task was retargeted or the snapshot has no branch identity', async () => {
+    const release = { revision: 'release-sha', baseBranch: 'release' } as never;
+    let loads = 0;
+    const prepare = async () => { loads++; return release; };
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowBaseBranch: 'main', repositoryWorkflowDeferrals: 1 }, 'release', prepare), release);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowBaseBranch: null, repositoryWorkflowDeferrals: 1 }, 'release', prepare), release);
+    assert.equal(await resolveRepositoryWorkflow({ repositoryWorkflow: null, repositoryWorkflowDeferrals: 1 }, 'main', prepare), release);
+    assert.equal(loads, 3);
+});
+
+test('deferral data records the base branch with the snapshot, including when no workflow exists', () => {
+    const workflow = { revision: 'sha', baseBranch: 'develop' } as never;
+    assert.deepEqual(repositoryWorkflowDeferralData({}, undefined, 'main'), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: 'main', repositoryWorkflowDeferrals: 1 });
+    assert.deepEqual(repositoryWorkflowDeferralData({ repositoryWorkflowDeferrals: 1 }, undefined, undefined), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: null, repositoryWorkflowDeferrals: 2 });
+    assert.equal(repositoryWorkflowDeferralData({}, workflow, undefined).repositoryWorkflowBaseBranch, 'develop');
 });
 
 test('cancelled re-entry and cancellation during admission never delay or execute', async () => {

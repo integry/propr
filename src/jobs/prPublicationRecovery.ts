@@ -28,6 +28,8 @@ export interface ProcessingState {
     publication?: PullRequestPublication;
     /** Policy resolved for this execution, retained if admission is refused. */
     repositoryWorkflow?: ResolvedRepositoryWorkflow;
+    /** PR base branch the policy above was read from, including when it has no workflow. */
+    repositoryWorkflowBaseBranch?: string;
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     localRepoPath: string | undefined;
     worktreeInfo: WorktreeInfo | undefined;

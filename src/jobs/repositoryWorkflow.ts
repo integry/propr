@@ -8,7 +8,7 @@ import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 
 type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-type RepositoryWorkflowDeferralData = Pick<IssueJobData, 'repositoryWorkflow' | 'repositoryWorkflowDeferrals'>;
+type RepositoryWorkflowDeferralData = Pick<IssueJobData, 'repositoryWorkflow' | 'repositoryWorkflowBaseBranch' | 'repositoryWorkflowDeferrals'>;
 
 export async function prepareRepositoryWorkflow(options: {
     octokit: Octokit; repoOwner: string; repoName: string; baseBranch?: string | null;
@@ -59,17 +59,24 @@ export async function resolveRepositoryWorkflow(
     data: RepositoryWorkflowDeferralData, baseBranch: string | null | undefined, prepare: () => Promise<ResolvedRepositoryWorkflow | undefined>,
 ): Promise<ResolvedRepositoryWorkflow | undefined> {
     const cached = data.repositoryWorkflowDeferrals ? data.repositoryWorkflow : undefined;
-    if (cached === null || (cached && (!baseBranch || cached.baseBranch === baseBranch))) return cached ?? undefined;
+    if (cached && (!baseBranch || cached.baseBranch === baseBranch)) return cached;
+    // An absent policy is only known for the branch it was read from; a snapshot without one predates retarget tracking.
+    if (cached === null && data.repositoryWorkflowBaseBranch !== undefined && data.repositoryWorkflowBaseBranch === (baseBranch ?? null)) return undefined;
     return prepare();
 }
 
 /** Persist with the deferral so re-entry can attempt admission before any policy request. */
-export function repositoryWorkflowDeferralData(data: RepositoryWorkflowDeferralData, workflow?: ResolvedRepositoryWorkflow): RepositoryWorkflowDeferralData {
-    return { repositoryWorkflow: workflow ?? null, repositoryWorkflowDeferrals: (data.repositoryWorkflowDeferrals ?? 0) + 1 };
+export function repositoryWorkflowDeferralData(
+    data: RepositoryWorkflowDeferralData, workflow: ResolvedRepositoryWorkflow | undefined, baseBranch: string | null | undefined,
+): RepositoryWorkflowDeferralData {
+    return { repositoryWorkflow: workflow ?? null, repositoryWorkflowBaseBranch: workflow?.baseBranch ?? baseBranch ?? null,
+        repositoryWorkflowDeferrals: (data.repositoryWorkflowDeferrals ?? 0) + 1 };
 }
 
 /** Admission ends the wait; ordinary retries must read the base branch policy again. */
-export const CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: RepositoryWorkflowDeferralData = { repositoryWorkflow: undefined, repositoryWorkflowDeferrals: undefined };
+export const CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: RepositoryWorkflowDeferralData = {
+    repositoryWorkflow: undefined, repositoryWorkflowBaseBranch: undefined, repositoryWorkflowDeferrals: undefined,
+};
 
 const DEFERRAL_BASE_MS = 10_000;
 const DEFERRAL_MAX_MS = 300_000;

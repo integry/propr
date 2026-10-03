@@ -174,7 +174,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
-    const octokit = state.octokit, baseBranch = prData!.data.base.ref;
+    const octokit = state.octokit, baseBranch = state.repositoryWorkflowBaseBranch = prData!.data.base.ref;
     const repositoryWorkflow = state.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, baseBranch, () => prepareRepositoryWorkflow({ octokit, repoOwner, repoName, baseBranch }));
     return withRepositoryWorkflowAdmission({
         workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
@@ -346,7 +346,7 @@ async function persistCapacityDeferredComments(job: Job<CommentJobData>, context
     // This same delayed job retains the claimed comments, command context and resolved policy.
     // Wait for durable storage before releasing its PR lock or queue ownership.
     try {
-        await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow) });
+        await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow, state.repositoryWorkflowBaseBranch) });
     } catch (persistError) {
         await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
         throw persistError;

@@ -90,7 +90,7 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
     return await processIssueWithAdmission(job, context, octokit);
   } catch (error) {
     if (error instanceof RepositoryWorkflowCapacityError) {
-      await job.updateData({ ...job.data, repositoryWorkflowDeferred: true, ...repositoryWorkflowDeferralData(job.data, context.repositoryWorkflow) });
+      await job.updateData({ ...job.data, repositoryWorkflowDeferred: true, ...repositoryWorkflowDeferralData(job.data, context.repositoryWorkflow, issueRef.baseBranch) });
     }
     throw error;
   }

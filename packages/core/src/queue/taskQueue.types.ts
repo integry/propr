@@ -10,6 +10,8 @@ import type { ResolvedRepositoryWorkflow } from '../workflow/repositoryWorkflow.
 export interface RepositoryWorkflowDeferralData {
     /** Policy resolved before the first refusal; `null` when the base has no workflow file. */
     repositoryWorkflow?: ResolvedRepositoryWorkflow | null;
+    /** Base branch the policy was resolved for (`null` when unknown), so a retargeted task reloads it. */
+    repositoryWorkflowBaseBranch?: string | null;
     repositoryWorkflowDeferrals?: number;
 }
 
