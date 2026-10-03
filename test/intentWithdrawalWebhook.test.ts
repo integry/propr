@@ -7,7 +7,7 @@ let cancellationWait: Promise<void> | undefined;
 let cancellationFinished = false;
 const restore = mock.fn(async () => ['AI']);
 const handlers: string[] = [];
-beforeEach(() => { currentLabels = ['AI']; timeline = []; cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
+beforeEach(() => { currentLabels = ['AI']; currentState = 'open'; timeline = []; cancellationError = undefined; cancellationWait = undefined; cancellationFinished = false; handlers.length = 0; restore.mock.resetCalls(); processed.length = 0; });
 const cancellations: Array<{ target: any; reason: string }> = [];
 await mock.module('../packages/core/src/services/taskIntent.js', { namedExports: {
     restoreIssueTrigger: restore,
@@ -27,12 +27,13 @@ await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', { nam
 } });
 // Fresh tracker state read by trigger webhooks; delayed payloads can be stale.
 let currentLabels: string[] = ['AI'];
+let currentState = 'open';
 let timeline: any[] = [];
 await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
     getGitHubInstallationToken: async () => { throw new Error('GitHub auth not configured'); },
     getAuthenticatedOctokit: async () => ({ request: async (endpoint: string) => {
         if (endpoint.endsWith('/timeline')) return { headers: {}, data: timeline };
-        if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { state: 'open', labels: currentLabels.map(name => ({ name })) } };
+        if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { state: currentState, labels: currentLabels.map(name => ({ name })) } };
         throw new Error('GitHub auth not configured');
     } }),
 } });
@@ -212,4 +213,36 @@ test('a trigger removed again before delivery is not restored', () => withTrigge
     timeline = [labeled('AI-cancelled', 'propr-dev[bot]', '2026-10-01T01:00:00Z'), labeled('AI', 'alice', '2026-10-01T02:00:00Z')];
     assert.deepEqual(await deliverAI('2026-10-01T02:00:00Z', ['AI', 'AI-cancelled']), { status: 'ignored', reason: 'intent_not_current' });
     assert.equal(restore.mock.callCount(), 0);
+}));
+
+const deliverModelLabel = (labels = ['AI', 'llm-codex-astra']) => processWebhookEvent({ repository, action: 'labeled', label: { name: 'llm-codex-astra' },
+    sender: { login: 'alice' }, issue: { number: 42, state: 'open', labels, updated_at: '2026-10-01T00:00:00Z' },
+}, 'issues', 'delayed-model-label');
+
+test('a delayed unrelated-label delivery cannot restart an issue cancelled after it', () => withTriggers(async () => {
+    // The model label payload predates the closure, cancellation and reopening
+    // with AI still present; it carries no cancellation marker.
+    currentLabels = ['AI', 'llm-codex-astra', 'AI-cancelled'];
+    await deliverModelLabel();
+    assert.equal(restore.mock.callCount(), 0);
+    assert.equal(processed.length, 1);
+    assert.deepEqual(processed[0].labels, currentLabels);
+    assert.equal(processed[0].triggerReapplied, undefined);
+    const { processDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
+    const redis = { set: async () => { throw new Error('admission must stop before deduplication'); } };
+    assert.deepEqual(await processDetectedIssue(processed[0], 'delayed-model-label', redis as never),
+        { status: 'ignored', reason: 'issue_has_terminal_label' });
+}));
+
+test('a delayed unrelated-label delivery for an issue closed since is not admitted', () => withTriggers(async () => {
+    currentState = 'closed';
+    assert.deepEqual(await deliverModelLabel(), { status: 'ignored', reason: 'intent_not_current' });
+    assert.equal(processed.length, 0);
+}));
+
+test('an unrelated-label delivery for a live request reaches admission with current labels', () => withTriggers(async () => {
+    currentLabels = ['AI', 'llm-codex-astra', 'bug'];
+    await deliverModelLabel();
+    assert.equal(processed.length, 1);
+    assert.deepEqual(processed[0].labels, currentLabels);
 }));

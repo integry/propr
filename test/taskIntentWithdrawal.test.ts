@@ -752,8 +752,11 @@ test('trigger reapplication retries cleanup and model labels do not clear status
     assert.equal(deletes, 3);
     assert.deepEqual(discovered.at(-1).labels, ['AI']);
     requests.length = 0;
+    tracker = { state: 'open', labels: ['AI', 'AI-cancelled'] };
     await reapplyTrigger('llm-codex-astra');
-    assert.deepEqual(requests, []);
+    // Model labels only read current status; they never clear it.
+    assert.deepEqual(requests.map(r => r.endpoint), ['GET /repos/{owner}/{repo}/issues/{issue_number}']);
+    assert.deepEqual(discovered.at(-1).labels, ['AI', 'AI-cancelled']);
 });
 
 test('user-stop cleanup preserves a sibling that starts during retry backoff', async () => {

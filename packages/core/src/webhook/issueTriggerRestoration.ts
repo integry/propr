@@ -1,7 +1,7 @@
 import type { IssuesLabeledEvent } from '@octokit/webhooks-types';
 import { restoreIssueTrigger } from '../services/taskIntent.js';
 import { isAuthorizedIssueTriggerActor } from '../daemon/issueTriggerAuthorization.js';
-import { hasStaleTriggerLabels, readCurrentTriggerEvidence, type TriggerEvidence } from '../daemon/triggerApplicationEvidence.js';
+import { hasStaleTriggerLabels, readCurrentIssueLabels, readCurrentTriggerEvidence, type TriggerEvidence } from '../daemon/triggerApplicationEvidence.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
@@ -18,7 +18,7 @@ function isRenewedApplication(evidence: TriggerEvidence, deliveredAt: string | u
     return delivered > marked;
 }
 
-/** Resolves the issue labels for a trigger-label event, restoring stale `-processing`/`-cancelled` labels first. */
+/** Resolves current issue labels for a label event, restoring stale `-processing`/`-cancelled` labels first for a trigger event. */
 export async function resolveIssueTriggerLabels(
     payload: IssuesLabeledEvent,
     owner: string,
@@ -26,9 +26,16 @@ export async function resolveIssueTriggerLabels(
 ): Promise<{ labels: string[]; triggerReapplied: boolean } | DeliveryDisposition> {
     const labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
     const labelName = payload.label?.name;
-    if (payload.issue.pull_request || !labelName) return { labels, triggerReapplied: false };
+    if (payload.issue.pull_request) return { labels, triggerReapplied: false };
     const triggers = await loadPrimaryProcessingLabels();
-    if (!triggers.includes(labelName)) return { labels, triggerReapplied: false };
+    if (!labelName || !triggers.includes(labelName)) {
+        // Unrelated label events are not renewed intent, but they can still
+        // reach admission. A delayed payload may predate a cancellation, so
+        // admission must see the current state and exclusion markers.
+        const current = await readCurrentIssueLabels({ owner, repo, issueNumber: payload.issue.number });
+        if (!current.open) return { status: 'ignored', reason: 'intent_not_current' };
+        return { labels: current.labels, triggerReapplied: false };
+    }
     const current = await readCurrentTriggerEvidence({ owner, repo, issueNumber: payload.issue.number }, labelName, triggers);
     if (!current.evidence && !hasStaleTriggerLabels(labels, labelName, triggers)) return { labels, triggerReapplied: true };
     if (!isAuthorizedIssueTriggerActor(payload.sender?.login)) return { status: 'ignored', reason: 'user_not_allowed' };

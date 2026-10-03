@@ -118,21 +118,36 @@ export async function readTriggerApplicationEvidence(opts: {
     return findTriggerEvidenceInEvents(firstPage.data as TimelineEvent[], targetLabels, staleMarkers, acc);
 }
 
+type IssueRef = { owner: string; repo: string; issueNumber: number };
+
+/**
+ * Current state and labels of an issue. Delayed label deliveries carry old
+ * labels, so admission reads exclusion markers from here, never the payload.
+ */
+export async function readCurrentIssueLabels(
+    { owner, repo, issueNumber }: IssueRef,
+    octokit?: PaginatedOctokitInstance,
+): Promise<{ open: boolean; labels: string[] }> {
+    const client = octokit ?? await getAuthenticatedOctokit();
+    const issue = await withRetry(() => client.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber }),
+        retryConfigs.githubApi, 'read_trigger_labels');
+    const data = issue.data as { state?: string; labels?: Array<string | { name?: string }> };
+    const labels = (data.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
+    return { open: data.state !== 'closed', labels };
+}
+
 /**
  * Fresh evidence for a trigger webhook. Delayed deliveries carry old labels,
  * so stale status is read from the current issue, never the payload alone.
  * `evidence` is null when the current issue has no stale markers.
  */
 export async function readCurrentTriggerEvidence(
-    { owner, repo, issueNumber }: { owner: string; repo: string; issueNumber: number },
+    { owner, repo, issueNumber }: IssueRef,
     trigger: string,
     triggers: string[],
 ): Promise<{ labels: string[]; evidence: TriggerEvidence | null }> {
     const octokit = await getAuthenticatedOctokit();
-    const issue = await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber }),
-        retryConfigs.githubApi, 'read_trigger_labels');
-    const labels = ((issue.data as { labels?: Array<string | { name?: string }> }).labels ?? [])
-        .map(label => typeof label === 'string' ? label : label.name ?? '');
+    const { labels } = await readCurrentIssueLabels({ owner, repo, issueNumber }, octokit);
     if (!hasStaleTriggerLabels(labels, trigger, triggers)) return { labels, evidence: null };
     const evidence = await withRetry(() => readTriggerApplicationEvidence({
         octokit, owner, repo, issueNumber, targetLabels: [trigger], staleMarkers: staleTriggerMarkers(trigger, triggers),
