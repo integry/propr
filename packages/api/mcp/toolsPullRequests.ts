@@ -17,7 +17,7 @@ import { beforeSideEffects } from './errorEnvelope.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { callWorkflow } from './adapter.js';
 import { type Args, type McpTool, type ToolDeps, repositorySchema, idSchema, mutationShape, ok, textSchema } from './tools.js';
-import { ULTRAFIX_LABEL, type InventoryOptions, findRepositoryModelLabel, hasUltrafixLabel, labelNames, listPullRequestInventory, lookupRepositoryModelLabel, managedModelLabels, repositoryModelLabels, resolveEnabledModel } from './pullRequestInventory.js';
+import { ULTRAFIX_LABEL, type InventoryOptions, type ModelChoice, describeChoices, enabledModelChoices, findRepositoryModelLabel, hasUltrafixLabel, labelNames, listPullRequestInventory, lookupRepositoryModelLabel, managedModelLabels, matchEnabledModel, repositoryModelLabels, resolveEnabledModel } from './pullRequestInventory.js';
 import {
   type PullRequestStateSource,
   assertMergePreconditions,
@@ -28,6 +28,11 @@ import {
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
 const SLASH_COMMAND = /^\s*\/(?:merge|review|fix|ultrafix|deploy|use|switch)\b/im;
+
+/** Upper bound on one review fan-out: every listed model is an independent review run. */
+export const MAX_REVIEW_MODELS = 8;
+/** One model token on the `/review` command line, exactly as a hand-typed comment carries it. */
+const reviewModelSchema = z.string().min(1).max(255).regex(/^[A-Za-z0-9][\w.:~/@+-]*$/, 'A model alias is a single token without spaces.');
 
 const MODEL_LABEL_LEASE_MS = 60_000;
 const MODEL_LABEL_WAIT_MS = 15_000;
@@ -170,6 +175,82 @@ async function resolveFixSelection(
   return canonical;
 }
 
+interface ReviewModelChoice extends ModelChoice { requested: string }
+
+/**
+ * Resolve every requested reviewing model against the enabled agents `list_models`
+ * exposes before anything is posted. A model that resolves to no enabled choice, or
+ * to a choice another entry already requested, is named in the error rather than
+ * dropped or replaced by a fallback, and no review is requested at all.
+ */
+async function resolveReviewModels(requested: string[]): Promise<ReviewModelChoice[]> {
+  const choices = await enabledModelChoices();
+  const resolved: ReviewModelChoice[] = [];
+  const rejected: Array<{ model: string; code: string; message: string }> = [];
+  const claimed = new Map<string, string>();
+  for (const alias of requested) {
+    const match = await matchEnabledModel(alias, choices);
+    if (!match) {
+      rejected.push({ model: alias, code: 'UNKNOWN_MODEL', message: `Model “${alias}” does not resolve to an enabled agent model.` });
+      continue;
+    }
+    const key = `${match.agentAlias}:${match.model}`.toLowerCase();
+    const first = claimed.get(key);
+    if (first !== undefined) {
+      rejected.push({ model: alias, code: 'DUPLICATE_MODEL', message: `Model “${alias}” resolves to ${match.agentAlias}:${match.model}, which “${first}” already requested.` });
+      continue;
+    }
+    claimed.set(key, alias);
+    resolved.push({ requested: alias, ...match });
+  }
+  if (rejected.length) {
+    throw new McpError(rejected.some(entry => entry.code === 'UNKNOWN_MODEL') ? 'UNKNOWN_MODEL' : 'DUPLICATE_MODEL',
+      `No review was requested. ${rejected.map(entry => entry.message).join(' ')} Valid choices: ${describeChoices(choices)}.`,
+      400, { stage: 'validation', details: { rejectedModels: rejected } });
+  }
+  return resolved;
+}
+
+/**
+ * Post one `/review <model>` comment per resolved model, each its own independent
+ * review run, exactly as separate hand-typed comments would be. Every review after
+ * the first re-reads the pull request and must still find it open at the head the
+ * first one was pinned to; once that guard fails, the remaining models are reported
+ * as not posted instead of reviewing a head the caller has not seen. No label is
+ * read or written, so the pull request's model routing is left untouched.
+ */
+async function postModelReviews(
+  principal: Parameters<McpTool['run']>[0]['principal'], args: Args,
+  context: { owner: string; repo: string; resolvedHead: string; headSource: string; operationId?: string },
+  models: ReviewModelChoice[],
+): Promise<Record<string, unknown>[]> {
+  const { owner, repo, resolvedHead, headSource, operationId } = context;
+  const reviews: Record<string, unknown>[] = [];
+  let blocked: { code: string; message: string; details?: Record<string, unknown> } | null = null;
+  for (const [index, choice] of models.entries()) {
+    const receipt = { model: choice.requested, agentAlias: choice.agentAlias, resolvedModel: choice.model, expectedHead: args.expectedHead };
+    if (index > 0 && !blocked) {
+      try {
+        const { data: current } = await principal.github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: args.pullRequest });
+        assertPullRequestOpen(current, 'run review on');
+        assertPullRequestHead(current, resolvedHead);
+      } catch (error) {
+        blocked = error instanceof McpError
+          ? { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) }
+          : { code: 'GITHUB_READ_FAILED', message: 'The pull request could not be read again before this review, so it was not requested.' };
+      }
+    }
+    if (blocked) {
+      reviews.push({ ...receipt, resolvedHead, headSource, state: 'not_posted', error: blocked });
+      continue;
+    }
+    const body = `/review ${choice.requested}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
+    const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+    reviews.push({ ...receipt, commentId: data.id, url: data.html_url, resolvedHead, headSource, state: 'posted' });
+  }
+  return reviews;
+}
+
 export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
   const tasks = createTaskRoutes({ db: deps.db, taskQueue: deps.taskQueue });
   const shape = { repository: repositorySchema, pullRequest: z.number().int().positive() };
@@ -221,6 +302,12 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         ? ' Name merge-blocking findings in findingIds and non-blocking suggestions in suggestionIds; at least one identifier is required and they may be mixed freely.'
           + ' Selecting a suggestion does not change how blockers are treated: blockers stay required, suggestions are acted on only because you asked for them.'
           + ' Unknown or mismatched identifiers are rejected rather than dropped.'
+        : '')
+      + (command === 'review'
+        ? ` Omit model to review with the model the pull request is routed to. Supply model as one alias, or as a list of up to ${MAX_REVIEW_MODELS} aliases to fan out one independent review per model, the same as posting one /review <model> comment per model.`
+          + ' Every alias is checked against the enabled models list_models reports before anything is posted; an unknown, disabled or duplicate alias rejects the whole call with a per-model error in details.rejectedModels instead of being dropped or replaced.'
+          + ' A model review never changes the pull request\'s model labels, so later default reviews keep their routing; use set_pull_request_model for that.'
+          + ' With model, the receipt lists one entry per model in reviews (model, agentAlias, resolvedModel, commentId, url, resolvedHead, state); every review is pinned to the same head, and if the pull request moves or closes part-way the remaining models are reported as not_posted.'
         : ''), scope,
       // `findingIds` is widened from a required `.min(1)` array to an optional
       // one so existing clients that send only findings stay byte-compatible,
@@ -228,7 +315,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       // `resolveFixSelection` instead: a cross-field `.superRefine` would return
       // ZodEffects and break the `schema: z.ZodObject` contract that
       // `tools/list` depends on.
-      schema: z.object({ ...appendOnlyMutation, instructions: textSchema.optional(), ...(command === 'fix' ? { reviewCommentId: z.number().int().positive(), findingIds: z.array(z.string().regex(REVIEW_FINDING_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]), suggestionIds: z.array(z.string().regex(REVIEW_SUGGESTION_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]) } : {}), ...(command === 'ultrafix' ? { goal: z.number().int().min(1).max(10).default(9), maxCycles: z.number().int().min(1).max(10).default(3) } : {}) }).strict(),
+      schema: z.object({ ...appendOnlyMutation, instructions: textSchema.optional(), ...(command === 'fix' ? { reviewCommentId: z.number().int().positive(), findingIds: z.array(z.string().regex(REVIEW_FINDING_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]), suggestionIds: z.array(z.string().regex(REVIEW_SUGGESTION_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]) } : {}), ...(command === 'ultrafix' ? { goal: z.number().int().min(1).max(10).default(9), maxCycles: z.number().int().min(1).max(10).default(3) } : {}), ...(command === 'review' ? { model: z.union([reviewModelSchema, z.array(reviewModelSchema).min(1).max(MAX_REVIEW_MODELS)]).optional().describe('Reviewing model alias, or a list of aliases for one independent review per model. Read list_models for valid choices.') } : {}) }).strict(),
       run: async ({ principal, args, operationId }) => {
         if (command === 'ultrafix') deps.policy.requireScope(principal, 'review');
         const { owner, repo, pr } = await pull(principal, args);
@@ -237,6 +324,17 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         assertPullRequestOpen(pr, `run ${command} on`);
         assertPullRequestHead(pr, args.expectedHead);
         if (args.instructions && /^\s*\//m.test(args.instructions)) throw new McpError('INVALID_INPUT', 'Instructions cannot introduce additional slash commands.');
+        if (command === 'review' && args.model !== undefined) {
+          const requested: string[] = typeof args.model === 'string' ? [args.model] : args.model;
+          const models = await beforeSideEffects(() => resolveReviewModels(requested));
+          const reviews = await postModelReviews(principal, args, { owner, repo, resolvedHead, headSource, operationId }, models);
+          // A single requested model keeps the flat receipt every other command
+          // returns, so operation tracking follows its one comment as before.
+          const [only] = reviews;
+          return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, resolvedHead, headSource, state: 'posted',
+            ...(reviews.length === 1 ? { commentId: only.commentId, url: only.url, model: only.model, agentAlias: only.agentAlias, resolvedModel: only.resolvedModel } : {}),
+            reviews } };
+        }
         // Canonical selection for the posted command body. Empty for the two
         // commands that take no identifiers, so the body composition below stays
         // a single expression.

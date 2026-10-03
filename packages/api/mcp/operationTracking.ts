@@ -117,13 +117,15 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   const result = JSON.parse(row.result) as ExecutionResult & Record<string, unknown>;
   if (['create_task', 'retry_task_submission'].includes(row.tool) && !result.continuation?.taskId) return;
   if (result.error) return;
-  const task = row.tool === 'index_repository' ? undefined : await findExecutionTask(deps, row, result);
+  const fanOut = row.tool === 'review_pull_request' && postedReviews(result).length > 1;
+  const task = row.tool === 'index_repository' || fanOut ? undefined : await findExecutionTask(deps, row, result);
   if (result.executionResolved && terminalStates.includes(row.state)) {
     restoreResolvedTarget(receipt, result, task);
     return;
   }
   let pickupTimedOut = false;
-  if (task) await trackTask(deps, row, { task, result, receipt });
+  if (fanOut) pickupTimedOut = await trackReviewFanOut(deps, row, result, receipt);
+  else if (task) await trackTask(deps, row, { task, result, receipt });
   else if (result.jobId) await trackQueuedJob(row, result.jobId, receipt);
   else if (commentTools.includes(row.tool) && Date.now() - Number(row.created_at) > PICKUP_DEADLINE_MS) {
     pickupTimedOut = true;
@@ -177,7 +179,66 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   }
 }
 
+interface ReviewReceipt {
+  model?: string; commentId?: number; state?: string;
+  taskId?: string; taskState?: string; reviewResults?: ExecutionResult['reviewResults'];
+}
+
+function postedReviews(result: ExecutionResult): ReviewReceipt[] {
+  return Array.isArray(result.reviews) ? result.reviews.filter(review => review?.commentId && review.state !== 'not_posted') : [];
+}
+
+/** Record which task picked up one model's review comment, and where that task is now. */
+async function observeReview(deps: ToolDeps, row: Operation, pullRequest: number | undefined, { review, pastDeadline }: { review: ReviewReceipt; pastDeadline: boolean }): Promise<void> {
+  const task = pullRequest && row.repository ? await detectPickup(deps.db, {
+    repository: row.repository, pullRequest, commentId: Number(review.commentId), tool: row.tool,
+  }) : undefined;
+  if (!task) {
+    delete review.taskId;
+    review.taskState = pastDeadline ? 'unknown' : 'pending';
+    return;
+  }
+  const event = await deps.db('task_history').where({ task_id: task.task_id }).orderBy('history_id', 'desc').first('state', 'metadata');
+  const metadata = typeof event?.metadata === 'string' ? JSON.parse(event.metadata) : event?.metadata;
+  review.taskId = task.task_id;
+  review.taskState = event?.state ?? 'pending';
+  if (metadata?.reviewResults) review.reviewResults = metadata.reviewResults;
+  if (review.taskState === 'completed' && review.reviewResults?.length && review.reviewResults.every(outcome => !outcome.success)) review.taskState = 'failed';
+}
+
+/**
+ * Follow each comment of a multi-model review on its own, so every model reports
+ * the task that picked it up and that task's state. The operation completes once
+ * every posted review has finished, fails only when every one of them failed, and
+ * is unknown when a review was never picked up within the pickup deadline.
+ */
+async function trackReviewFanOut(deps: ToolDeps, row: Operation, result: ExecutionResult, receipt: Record<string, unknown>): Promise<boolean> {
+  const reviews = postedReviews(result);
+  const pastDeadline = Date.now() - Number(row.created_at) > PICKUP_DEADLINE_MS;
+  for (const review of reviews) await observeReview(deps, row, result.pullRequest, { review, pastDeadline });
+  const states = reviews.map(review => String(review.taskState));
+  const taskIds = reviews.flatMap(review => review.taskId ? [review.taskId] : []);
+  const finished = states.every(state => terminalStates.includes(state));
+  const allFailed = finished && states.every(state => state === 'failed');
+  // Only reviews that never got picked up may hold the operation in doubt; one
+  // still pending or running keeps it running instead.
+  const stalled = states.includes('unknown') && states.every(state => state === 'unknown' || terminalStates.includes(state));
+  if (finished) receipt.state = allFailed ? 'failed' : 'completed';
+  else if (stalled) receipt.state = 'unknown';
+  else if (taskIds.length) receipt.state = 'running';
+  receipt.targetState = { state: receipt.state, taskIds,
+    reviews: reviews.map(review => ({ model: review.model, commentId: review.commentId, taskId: review.taskId ?? null, state: review.taskState })) };
+  if (allFailed) {
+    receipt.lifecycleFailure = { code: 'REVIEW_FAILED', message: 'Every requested model review failed.', stage: 'workflow', retryable: false, status: 500,
+      details: { failedReviewCount: reviews.length } };
+  } else if (receipt.state === 'unknown') {
+    receipt.lifecycleFailure = COMMAND_NOT_PICKED_UP_FAILURE;
+  }
+  return receipt.state === 'unknown' && !taskIds.length;
+}
+
 interface ExecutionResult {
+  reviews?: ReviewReceipt[];
   jobId?: string; commentId?: number; pullRequest?: number;
   submissionId?: string; taskId?: string; progress?: SubmissionProgress;
   goal?: number; maxCycles?: number;

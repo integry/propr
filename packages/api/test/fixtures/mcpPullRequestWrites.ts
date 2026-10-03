@@ -51,7 +51,7 @@ export function leaseRedis() {
 
 export type LeaseRedis = ReturnType<typeof leaseRedis>;
 
-interface WriteFixture {
+export interface WriteFixture {
   t: TestContext;
   call: (name: string, args: Args, actor?: McpPrincipal) => Promise<Args>;
   mutate: (name: string, args: Args, actor?: McpPrincipal) => Promise<Args>;
@@ -65,7 +65,7 @@ interface WriteFixture {
 type GitHubRequest = (route: string, args: Args) => Promise<unknown>;
 
 /** Run `hook` once, before the next GitHub request to `route` is answered. */
-function interceptRest(principal: McpPrincipal, route: string, hook: () => Promise<void>): void {
+export function interceptRest(principal: McpPrincipal, route: string, hook: () => Promise<void>): void {
   const github = principal.github as unknown as { request: GitHubRequest };
   const next = github.request;
   let pending = true;
