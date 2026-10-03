@@ -241,6 +241,12 @@ function resolveCommandMode(
   return typeof initial.commandMode === 'string' ? initial.commandMode : undefined;
 }
 
+function isReviewDeferred(metadata: Record<string, unknown>): boolean {
+  return metadata.deferred === true
+    || metadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
+    || metadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
+}
+
 function notificationRecap(metadata: Record<string, unknown>): string | undefined {
   const direct = compactDisplayText(metadata.notificationRecap);
   if (direct) return direct;
@@ -1054,9 +1060,7 @@ export class NotificationProjectionService {
       ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
     const commandMode = resolveCommandMode(historyMetadata, initial);
     const isReview = taskType === 'review' || commandMode === 'review';
-    const reviewDeferred = historyMetadata.deferred === true
-      || historyMetadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
-      || historyMetadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
+    const reviewDeferred = isReviewDeferred(historyMetadata);
     const storedIssueNumber = positiveInteger(task.issue_number);
     const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
