@@ -69,7 +69,10 @@ for (const viewport of [
     }
     await expect(configuration.getByText('Ready', { exact: true })).toHaveCount(4);
     await expectHeaderRails(configuration);
-    const opusAlias = configuration.getByRole('button', { name: 'Copy opus55', exact: true });
+    const claudeCard = configuration.locator('.coding-agent-card').filter({
+      has: page.getByRole('button', { name: /claude models$/ }),
+    });
+    const opusAlias = claudeCard.getByRole('button', { name: 'Copy opus55', exact: true });
     await expect(opusAlias).toHaveAttribute('title', /claude-opus-5-5/);
     const modelRow = opusAlias.locator('xpath=../..');
     await expect(modelRow.getByRole('button', { name: /^Copy / })).toHaveCount(1);
@@ -90,15 +93,15 @@ for (const viewport of [
     }
 
     await configuration.getByRole('button', { name: 'Expand antigravity models' }).click();
-    await expect(configuration.getByRole('button', { name: 'Copy flash38-high', exact: true })).toBeVisible();
+    await expect(configuration.getByRole('button', { name: 'Copy flash38', exact: true })).toBeVisible();
     await configuration.getByRole('button', { name: 'Collapse claude models' }).click();
     await expect(opusAlias).toBeHidden();
-    await expect(configuration.getByRole('button', { name: 'Copy flash38-high', exact: true })).toBeVisible();
+    await expect(configuration.getByRole('button', { name: 'Copy flash38', exact: true })).toBeVisible();
     await configuration.getByRole('button', { name: 'More actions for antigravity' }).click();
     await expect(configuration.getByRole('menuitem', { name: 'Log in' })).toBeFocused();
     const menu = await configuration.getByRole('menu').boundingBox();
     const trigger = await configuration.getByRole('button', { name: 'More actions for antigravity' }).boundingBox();
-    const firstModel = await configuration.getByRole('button', { name: 'Copy flash38-medium', exact: true }).locator('xpath=../..').boundingBox();
+    const firstModel = await configuration.getByRole('button', { name: 'Copy flash38', exact: true }).locator('xpath=../..').boundingBox();
     expect(menu!.y).toBeGreaterThanOrEqual(trigger!.y + trigger!.height);
     expect(Math.abs(menu!.x + menu!.width - trigger!.x - trigger!.width)).toBeLessThanOrEqual(1);
     expect(firstModel!.y).toBeGreaterThanOrEqual(menu!.y + menu!.height);

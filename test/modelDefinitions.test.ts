@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { getReasoningLevelsForAgentType } from '../packages/shared/src/reasoningLevels.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
@@ -113,24 +114,16 @@ test('Codex CLI defaults agree and support every catalog model', () => {
     }
 });
 
-test('Gemini 3.8 Flash tiers are namespaced Antigravity models with 1M limits', () => {
-    const expectedModels = [
-        ['medium', 'llm-antigravity-flash38-medium'],
-        ['high', 'llm-antigravity-flash38-high'],
-        ['low', 'llm-antigravity-flash38-low'],
-    ] as const;
-
-    for (const [tier, githubLabel] of expectedModels) {
-        const modelId = `antigravity-gemini-3.8-flash-${tier}`;
-        const model = MODEL_INFO_MAP[modelId];
-        assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
-        assert.strictEqual(model?.githubLabel, githubLabel);
-        assert.strictEqual(model?.shortAlias, `flash38-${tier}`);
-        assert.strictEqual(model?.openRouterId, 'google/gemini-3.8-flash');
-        assert.strictEqual(model?.minAgentVersion, '1.1.25');
-        assert.strictEqual(model?.contextWindow, '1M');
-        assert.strictEqual(model?.maxTokens, 1_000_000);
-    }
+test('Gemini 3.8 Flash is one namespaced Antigravity model with 1M limits', () => {
+    const modelId = 'antigravity-gemini-3.8-flash';
+    const model = MODEL_INFO_MAP[modelId];
+    assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+    assert.strictEqual(model?.githubLabel, 'llm-antigravity-flash38');
+    assert.strictEqual(model?.shortAlias, 'flash38');
+    assert.strictEqual(model?.openRouterId, 'google/gemini-3.8-flash');
+    assert.strictEqual(model?.minAgentVersion, '1.1.25');
+    assert.strictEqual(model?.contextWindow, '1M');
+    assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
 });
 
@@ -174,25 +167,28 @@ test('Vibe GLM models share defaults, names, labels, limits, and runtime version
     assert.strictEqual(AGENT_DEFAULT_VERSIONS.vibe, '2.25.8');
 });
 
-test('Antigravity offers supported reasoning tiers for Claude 5.5, Flash, Pro and GPT-OSS', () => {
-    const tiersFor = (prefix: string) => ANTIGRAVITY_MODELS
-        .filter(model => model.id.startsWith(prefix))
-        .map(model => model.id.slice(prefix.length)).sort();
-
+test('Antigravity offers one model entry with separate supported reasoning choices', () => {
     for (const family of ['opus', 'sonnet']) {
-        assert.deepStrictEqual(tiersFor(`antigravity-claude-${family}-5.5-`), ['high', 'low', 'medium']);
-        for (const tier of ['low', 'medium', 'high']) {
-            const model = MODEL_INFO_MAP[`antigravity-claude-${family}-5.5-${tier}`];
-            assert.strictEqual(model.shortAlias, `${family}55-${tier}`);
-            assert.strictEqual(model.githubLabel, `llm-antigravity-${family}55-${tier}`);
-            assert.strictEqual(model.openRouterId, `anthropic/claude-${family}-5.5`);
-            assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(model.id));
-        }
+        const model = MODEL_INFO_MAP[`antigravity-claude-${family}-5.5`];
+        assert.ok(model);
+        assert.strictEqual(model.shortAlias, `${family}55`);
+        assert.strictEqual(model.githubLabel, `llm-antigravity-${family}55`);
+        assert.strictEqual(model.openRouterId, `anthropic/claude-${family}-5.5`);
+        assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(model.id));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', model.id), ['low', 'medium', 'high']);
     }
     assert.ok(!ANTIGRAVITY_MODELS.some(model => model.id.includes('4.6-thinking')));
+    assert.ok(!ANTIGRAVITY_MODELS.some(model => /-(low|medium|high)$/.test(model.id)));
     for (const version of ['3.8', '3.7', '3.6', '3.5']) {
-        assert.deepStrictEqual(tiersFor(`antigravity-gemini-${version}-flash-`), ['high', 'low', 'medium']);
+        const modelId = `antigravity-gemini-${version}-flash`;
+        assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);
     }
-    assert.deepStrictEqual(tiersFor('antigravity-gemini-3.1-pro-'), ['high', 'low']);
-    assert.deepStrictEqual(tiersFor('antigravity-gpt-oss-120b-'), ['medium']);
+    for (const [modelId, levels] of [
+        ['antigravity-gemini-3.1-pro', ['low', 'high']],
+        ['antigravity-gpt-oss-120b', ['medium']],
+    ] as const) {
+        assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), levels);
+    }
 });
