@@ -1,7 +1,7 @@
 import type { ReviewFeedbackSelection } from '@propr/shared';
 import type { McpPrincipal } from './policy.js';
 
-/** One selected review record, with the prose its file citations are read from. */
+/** One selected review record, with all of its prose: every field may cite a file. */
 export interface FixRecord { id: string; kind: 'finding' | 'suggestion'; text: string }
 
 /** A record still sent to `/fix`; `touchedPaths` are cited files that changed since the review. */
@@ -29,11 +29,24 @@ export interface FixReanchorReport {
 
 interface ComparedFile { filename: string; status: string; previous_filename?: string }
 
-/** Repository-relative path tokens as reviews cite them, e.g. `src/config.ts:10`. */
-const CITED_PATH = /(?:^|[\s`'"([])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]*)(?=[:#\s`'",)\]]|$)/g;
+/** Conventional repository files that carry no extension, e.g. `Dockerfile`. */
+const EXTENSIONLESS_FILES = 'Dockerfile|Containerfile|Makefile|GNUmakefile|Procfile|Gemfile|Rakefile|Jenkinsfile|Vagrantfile|Brewfile|Justfile|Caddyfile|Pipfile|Podfile|Fastfile|Earthfile|Tiltfile|LICENSE|LICENCE|NOTICE|CODEOWNERS|OWNERS|AUTHORS|VERSION';
+
+/**
+ * Repository-relative path tokens as reviews cite them, e.g. `src/config.ts:10`,
+ * `docker/entrypoint`, `.env` or `Dockerfile`. Over-matching prose (`and/or`) is
+ * harmless: an unrecognised token is never "removed", so it only keeps a record
+ * applied. Under-matching is what would wrongly withhold one.
+ */
+const CITED_PATH = new RegExp(String.raw`(?:^|[\s\`'"([])(` + [
+  String.raw`(?:[\w.-]+\/)+[\w.-]*[\w-]`,
+  String.raw`[\w.-]+\.[A-Za-z][A-Za-z0-9]*`,
+  String.raw`\.[\w-](?:[\w.-]*[\w-])?`,
+  String.raw`[\w.-]*(?:${EXTENSIONLESS_FILES})`,
+].join('|') + String.raw`)(?=[:#\s\`'",;)\]]|\.(?:\s|$)|$)`, 'g');
 
 export function citedPaths(text: string): string[] {
-  return [...new Set([...text.replace(/\\/g, '/').matchAll(CITED_PATH)].map(match => match[1]))];
+  return [...new Set([...text.replace(/\\/g, '/').matchAll(CITED_PATH)].map(match => match[1].replace(/^(?:\.\/)+/, '')))];
 }
 
 async function changedSince(principal: McpPrincipal, repository: string, from: string, to: string): Promise<ComparedFile[] | null> {

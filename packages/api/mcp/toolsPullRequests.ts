@@ -177,7 +177,10 @@ async function resolveFixSelection(
   const records: FixRecord[] = [
     ...canonical.findingIds.map(id => {
       const finding = review.actionableFindings.find(item => item.id === id)!;
-      return { id, kind: 'finding' as const, text: [finding.title, finding.evidence, finding.minimumCorrection].join('\n') };
+      // Every prose field: a surviving file cited only in, say, the requirement
+      // must still keep the record from being withheld as removed code.
+      const text = [finding.title, finding.violatedRequirement, finding.evidence, finding.introducedByPRExplanation, finding.minimumCorrection].join('\n');
+      return { id, kind: 'finding' as const, text };
     }),
     ...canonical.suggestionIds.map(id => {
       const suggestion = review.suggestions.find(item => item.id === id)!;
@@ -197,7 +200,7 @@ interface ProjectedFixReview {
   reviewedHead: string | null;
   selectableFindingIds: string[];
   selectableSuggestionIds: string[];
-  actionableFindings: Array<{ id: string; title: string; evidence: string; minimumCorrection: string }>;
+  actionableFindings: Array<{ id: string; title: string; violatedRequirement: string; evidence: string; introducedByPRExplanation: string; minimumCorrection: string }>;
   suggestions: Array<{ id: string; title: string; description: string }>;
 }
 

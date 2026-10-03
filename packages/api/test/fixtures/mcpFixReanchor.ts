@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import type { McpPrincipal } from '../../mcp/policy.js';
+import { citedPaths, reanchorFixRecords } from '../../mcp/fixReanchor.js';
 import { type Args, type WriteFixture, fixtureReviewBody } from './mcpPullRequestWrites.js';
 
 /**
@@ -70,5 +72,63 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.equal(unverified.state, 'posted', JSON.stringify(unverified));
     assert.equal(unverified.result.comparison, 'unavailable');
     assert.deepEqual(unverified.result.findingIds, ['F21']);
+  });
+
+  await t.test('fix_review_findings keeps a record whose surviving citation is extensionless or outside the evidence', async () => {
+    const head = 'a'.repeat(40);
+    const reviewedHead = 'd'.repeat(40);
+    const pull = { repository: 'acme/repo', pullRequest: 42 };
+    const reviewCommentId = 971;
+    comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]', createdAt: new Date().toISOString(), body: [
+      '## 🔍 AI Code Review — Fixture',
+      '',
+      '## Overall Evaluation',
+      'Two blockers.',
+      '## Merge blockers',
+      'Every finding below was introduced by this PR and must be resolved before merging.',
+      '',
+      '### F40: 🔴 Drop the unsupported runtime pin',
+      '- **Required behavior:** Build on a supported Node.js runtime.',
+      '- **Evidence:** legacy/package.json and Dockerfile both pin Node 14.',
+      '- **Minimum fix:** Pin a supported runtime.',
+      '',
+      '### F41: 🔴 Keep the worker entrypoint in sync',
+      '- **Required behavior:** src/worker.ts must start through the shared bootstrap.',
+      '- **Evidence:** legacy/boot.ts:12 — the old bootstrap is still wired in.',
+      '- **Minimum fix:** Route startup through the shared bootstrap.',
+      '## Suggestions',
+      'These are optional follow-ups and are not sent to `/fix`.',
+      'No suggestions.',
+      '## Score',
+      'Score: 5/10',
+      `<!-- propr:ai-review model="fixture" head="${reviewedHead}" -->`,
+    ].join('\n') });
+
+    // Only one of each record's cited files was deleted; the other still needs the fix.
+    comparisons.set(`${reviewedHead}...${head}`, [{ filename: 'legacy/package.json', status: 'removed' }, { filename: 'legacy/boot.ts', status: 'removed' }]);
+    const kept = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F40', 'F41'] });
+    assert.equal(kept.state, 'posted', JSON.stringify(kept));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F40 F41');
+    assert.deepEqual(kept.result.skipped, []);
+    assert.deepEqual(kept.result.applied, [
+      { id: 'F40', kind: 'finding', touchedPaths: ['legacy/package.json'] },
+      { id: 'F41', kind: 'finding', touchedPaths: ['legacy/boot.ts'] },
+    ]);
+    comparisons.delete(`${reviewedHead}...${head}`);
+  });
+
+  await t.test('citation extraction covers every path form a removed-code skip depends on', async () => {
+    assert.deepEqual(citedPaths('legacy/package.json and Dockerfile pin Node 14.'), ['legacy/package.json', 'Dockerfile']);
+    assert.deepEqual(citedPaths('docker/entrypoint:3, `.env` and ./scripts/run.sh; see src/config.ts.'), ['docker/entrypoint', '.env', 'scripts/run.sh', 'src/config.ts']);
+
+    // A surviving file cited only in the introduced-by-PR explanation still keeps the record.
+    const principal = { github: { request: async () => ({ data: { files: [{ filename: 'src/old.ts', status: 'removed' }] } }) } } as unknown as McpPrincipal;
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const report = await reanchorFixRecords(principal, target, [
+      { id: 'F1', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:4 is wrong\nThis PR added Makefile targets that call it.\nFix it' },
+      { id: 'F2', kind: 'finding', text: 'Title\nRequirement\nsrc/old.ts:9 is wrong\nIntroduced here.\nFix it' },
+    ]);
+    assert.deepEqual(report.applied, [{ id: 'F1', kind: 'finding', touchedPaths: ['src/old.ts'] }]);
+    assert.deepEqual(report.skipped, [{ id: 'F2', kind: 'finding', reason: 'code_removed', removedPaths: ['src/old.ts'] }]);
   });
 }
