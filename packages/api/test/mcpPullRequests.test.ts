@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
 import { leaseRedis, verifyPullRequestWrites } from './fixtures/mcpPullRequestWrites.js';
+import { verifyFixReanchor } from './fixtures/mcpFixReanchor.js';
 import { verifyModelReviews } from './fixtures/mcpPullRequestModelReviews.js';
 import type { Args, CommentFixture, PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
 
@@ -386,6 +387,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
 
     const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, redis: deps.redisClient as never };
     await verifyPullRequestWrites(writeFixture);
+    await verifyFixReanchor(writeFixture);
     await verifyModelReviews(writeFixture);
 
     await t.test('a repository configured for several base branches is scanned and listed once', async () => {

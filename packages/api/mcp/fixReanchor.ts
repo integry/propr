@@ -30,7 +30,7 @@ export interface FixReanchorReport {
 interface ComparedFile { filename: string; status: string; previous_filename?: string }
 
 /** Repository-relative path tokens as reviews cite them, e.g. `src/config.ts:10`. */
-const CITED_PATH = /(?:^|[\s`'"(\[])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]*)(?=[:#\s`'",)\]]|$)/g;
+const CITED_PATH = /(?:^|[\s`'"([])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]*)(?=[:#\s`'",)\]]|$)/g;
 
 export function citedPaths(text: string): string[] {
   return [...new Set([...text.replace(/\\/g, '/').matchAll(CITED_PATH)].map(match => match[1]))];
