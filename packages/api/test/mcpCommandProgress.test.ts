@@ -576,6 +576,43 @@ test('a multi-model review fails only when every model review failed', async t =
   assert.equal((final.lifecycle as { failure: { code: string } }).failure.code, 'REVIEW_FAILED');
 });
 
+test('a multi-model review stays unknown while a review may have posted without confirmation', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'e'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  for (const [key, commentId, taskState] of [['fan-out-uncertain-done', 1001, 'completed'], ['fan-out-uncertain-failed', 1002, 'failed']] as const) {
+    const receipt = await operations.run(principal, {
+      tool: 'review_pull_request', repository: 'acme/repo', args: { idempotencyKey: key },
+    }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, reviews: [
+      { model: 'claude-opus-5', commentId, state: 'posted' },
+      { model: 'gpt-5.6', state: 'unknown', error: { code: 'OUTCOME_UNKNOWN', cause: { code: 'UPSTREAM_UNREACHABLE' } } },
+    ] } }));
+    const taskId = `${key}-task`;
+    await db('tasks').insert({ task_id: taskId, repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'pr-comment',
+      created_at: new Date(), initial_job_data: JSON.stringify({ commandCommentId: commentId, commandCommentType: 'issue', commandMode: 'review' }) });
+    await db('task_history').insert({ task_id: taskId, state: taskState, timestamp: new Date(), metadata: '{}' });
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    const final = operations.project(await operations.get(principal, String(receipt.operationId)));
+    // The confirmed review settled, but the uncertain one may still be queued.
+    assert.equal(final.state, 'unknown', key);
+    assert.equal((final.lifecycle as { state: string }).state, 'unknown', key);
+    const failure = (final.lifecycle as { failure: { code: string; details: Record<string, unknown> } }).failure;
+    assert.equal(failure.code, 'OUTCOME_UNKNOWN', key);
+    assert.deepEqual(failure.details.uncertainModels, ['gpt-5.6'], key);
+    const reviews = (final.result as { reviews: Array<Record<string, unknown>> }).reviews;
+    assert.deepEqual(reviews.map(review => [review.state, review.taskState ?? null]), [['posted', taskState], ['unknown', null]], key);
+    assert.notEqual((final.result as { executionResolved?: boolean }).executionResolved, true, key);
+  }
+});
+
 test('terminal recovery replaces an obsolete pickup failure with the execution failure', async t => {
   const db = await fixture(t);
   const principal = {

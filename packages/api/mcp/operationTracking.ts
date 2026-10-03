@@ -212,7 +212,9 @@ async function observeReview(deps: ToolDeps, row: Operation, pullRequest: number
  * Follow each comment of a multi-model review on its own, so every model reports
  * the task that picked it up and that task's state. The operation completes once
  * every posted review has finished, fails only when every one of them failed, and
- * is unknown when a review was never picked up within the pickup deadline.
+ * is unknown when a review was never picked up within the pickup deadline. A
+ * review whose comment may have been posted but was never confirmed cannot be
+ * followed, so it holds the operation unknown once the confirmed reviews settle.
  */
 async function trackReviewFanOut(deps: ToolDeps, row: Operation, result: ExecutionResult, receipt: Record<string, unknown>): Promise<boolean> {
   const reviews = postedReviews(result);
@@ -225,12 +227,17 @@ async function trackReviewFanOut(deps: ToolDeps, row: Operation, result: Executi
   // Only reviews that never got picked up may hold the operation in doubt; one
   // still pending or running keeps it running instead.
   const stalled = states.includes('unknown') && states.every(state => state === 'unknown' || terminalStates.includes(state));
-  if (finished) receipt.state = allFailed ? 'failed' : 'completed';
-  else if (stalled) receipt.state = 'unknown';
+  const uncertain = (result.reviews ?? []).filter(review => review?.state === 'unknown' && !review.commentId);
+  if (finished && !uncertain.length) receipt.state = allFailed ? 'failed' : 'completed';
+  else if (finished || stalled) receipt.state = 'unknown';
   else if (taskIds.length) receipt.state = 'running';
   receipt.targetState = { state: receipt.state, taskIds,
     reviews: reviews.map(review => ({ model: review.model, commentId: review.commentId, taskId: review.taskId ?? null, state: review.taskState })) };
-  if (allFailed) {
+  if (finished && uncertain.length) {
+    receipt.lifecycleFailure = { code: 'OUTCOME_UNKNOWN', stage: 'github', retryable: false, status: 502,
+      message: 'A requested model review may have been posted but could not be confirmed. Inspect the pull request comments before requesting it again.',
+      details: { uncertainModels: uncertain.map(review => review.model ?? null) } };
+  } else if (allFailed) {
     receipt.lifecycleFailure = { code: 'REVIEW_FAILED', message: 'Every requested model review failed.', stage: 'workflow', retryable: false, status: 500,
       details: { failedReviewCount: reviews.length } };
   } else if (receipt.state === 'unknown') {
