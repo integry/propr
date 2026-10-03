@@ -1,15 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { loadAgents, loadSyntheticAgents } from '@propr/core';
+import { getEpicExecutionQueue, summarizeEpicQueue, type EpicAdvancePolicy } from '@propr/core';
 import type { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { McpError } from './config.js';
 import { callWorkflow } from './adapter.js';
-import { type McpTool, type ToolDeps, TERMINAL_PLAN_STATUSES, planScopeShape, planShape, mutationShape, pageShape, repositorySchema, textSchema, idSchema, ok, workflow, markMergedPullRequests } from './tools.js';
+import { type McpTool, type ToolDeps, addPlanImplementationTool, TERMINAL_PLAN_STATUSES, planScopeShape, planShape, mutationShape, pageShape, repositorySchema, textSchema, idSchema, ok, workflow, markMergedPullRequests } from './tools.js';
 import { planRelationLimit, summarizePlan } from './listSummaries.js';
 import { getCurrentPlanCause, getPlanRevision, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { classifyError, type McpErrorStage } from './errorEnvelope.js';
 import { activePublication as parseActivePublication, findMarkedIssue, parseContextConfig, partialPublication, publicationLeaseLapsed, publicationLeaseLapsesAt, publicationSummary, publicationOwner, publicationOwnerStopped, withinPublicationLease, PUBLICATION_LEASE_EXPIRED, PUBLICATION_LEASE_MS, type ActivePublication, type PublishedIssue } from './planPublication.js';
 import { McpOperations } from './operations.js';
+
+/** Pure dispatch policy; schemas deliberately leave new options absent on old replays. */
+export function planEpicDispatch({ issues, planOrder, useEpic, epicExecution, epicAdvanceOn, modelCount }: {
+  issues: number[]; planOrder: number[]; useEpic: boolean;
+  epicExecution?: 'sequential' | 'parallel'; epicAdvanceOn?: EpicAdvancePolicy; modelCount: number;
+}): { mode: 'sequential' | 'parallel'; advanceOn: EpicAdvancePolicy; dispatchNow: number[]; queued: number[] } {
+  const mode = useEpic ? epicExecution ?? 'sequential' : 'parallel';
+  const advanceOn = epicAdvanceOn ?? 'merged';
+  if (mode === 'parallel') return { mode, advanceOn, dispatchNow: [...issues], queued: [] };
+  if (modelCount > 1) throw new McpError('INVALID_INPUT', 'Sequential epics require one model per issue: comparing models would create multiple PRs into the same epic branch. Use epicExecution: "parallel" for model comparisons.');
+  const selected = new Set(issues);
+  const ordered = planOrder.filter(number => selected.has(number));
+  if (ordered.length !== issues.length) throw new McpError('INVALID_INPUT', 'Selected issues must appear once in plan publication order.');
+  return { mode, advanceOn, dispatchNow: ordered.slice(0, 1), queued: ordered.slice(1) };
+}
 
 const target = { table: 'task_drafts', column: 'draft_id', arg: 'planId', owner: 'user_id' };
 const columns = ['draft_id', 'repository', 'name', 'initial_prompt', 'plan_json', 'plan_cause', 'attachments', 'context_config', 'status', 'mcp_revision', 'paused', 'created_at', 'updated_at'];
@@ -101,6 +116,7 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
           })),
           tools: ['list_plan_revisions', 'get_plan_revision', 'restore_plan_revision'],
         },
+        epicQueue: summarizeEpicQueue(await getEpicExecutionQueue(args.planId, { database: db })),
         issues: await db('plan_issues').where({ draft_id: args.planId }).limit(100) });
     } });
   tools.push({ name: 'create_plan', description: 'Create a draft plan only. This does not publish issues or start execution.', scope: 'plan',
@@ -401,42 +417,5 @@ export function addPlanningTools(tools: McpTool[], deps: ToolDeps, planner: Retu
       return ok({ planId: args.planId, issues, resumed: Boolean(args.resume), adopted });
     } });
 
-  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues using explicit models, epic and auto-merge choices. Ultrafix is bounded to 10 cycles.', scope: 'execute', target,
-    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: z.number().int().min(1).max(10).default(9), ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
-      if (args.autoMerge) policy.requireScope(principal, 'merge');
-      if (args.runUltrafix) policy.requireScope(principal, 'review');
-      if (new Set(args.issues).size !== args.issues.length) throw new McpError('INVALID_INPUT', 'Select each issue only once.');
-      const [agents, synthetic] = await Promise.all([loadAgents(), loadSyntheticAgents()]);
-      for (const model of args.models) {
-        const supported = agents.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.supportedModels.includes(model.model_name))
-          || synthetic.some(agent => agent.enabled && agent.alias === model.agent_alias && agent.models.some(choice => choice.enabled && choice.id === model.model_name));
-        if (!supported) throw new McpError('INVALID_MODEL', 'Choose an enabled agent and supported model from list_models.');
-      }
-      const available = await db('plan_issues').where({ draft_id: args.planId }).whereIn('issue_number', args.issues);
-      if (available.length !== new Set(args.issues).size) throw new McpError('NOT_FOUND', 'One or more selected issues do not belong to this plan.', 404);
-      if (available.some(issue => issue.status !== 'pending')) throw new McpError('PRECONDITION_FAILED', 'A selected issue has already started.', 409);
-      await db.transaction(async tx => {
-        for (const number of args.issues) {
-          const id = `${args.planId}:${number}`;
-          const inserted = await tx('mcp_records').insert({ kind: 'issue_execution', id, owner_id: principal.user.id,
-            value: policy.oauth.store.seal({ operationId, ownerId: principal.user.id }), expires_at: null }).onConflict(['kind', 'id']).ignore().returning('id');
-          if (!inserted.length) throw new McpError('IMPLEMENTATION_ALREADY_REQUESTED', 'An implementation receipt already owns a selected issue. Inspect the plan and prior operation before recovery.', 409);
-          await tx('plan_issues').where({ draft_id: args.planId, issue_number: number }).update({
-            run_ultrafix: args.runUltrafix, ultrafix_goal: args.runUltrafix ? args.ultrafixGoal : null,
-            ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
-          });
-        }
-      });
-      const results = [];
-      for (const number of args.issues) {
-        await policy.repository(principal, args.repository, true);
-        if (!args.autoMerge) {
-          const [owner, repo] = args.repository.split('/');
-          try { await principal.github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { owner, repo, issue_number: number, name: 'auto-merge' }); }
-          catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
-        }
-        results.push((await callWorkflow(planner.implementIssue, principal, { params: { id: args.planId, issueNumber: String(number) }, body: { repository: args.repository, models: args.models, useEpic: args.useEpic, autoMerge: args.autoMerge } })).data);
-      }
-      return { status: 202, data: { planId: args.planId, issues: args.issues, results, message: 'Implementation requested. Inspect plan issues and tasks for execution state.' } };
-    } });
+  addPlanImplementationTool(tools, deps, planner, target);
 }

@@ -235,7 +235,7 @@ export function selectBodySource(sources: {
  * --stdin. Stdin is read only when --stdin is given explicitly, so commands
  * never block on an inherited-but-silent stdin pipe (cron, CI).
  */
-async function resolveTextInput(
+export async function resolveTextInput(
   positional: string[] | undefined,
   options: { file?: string; stdin?: boolean }
 ): Promise<string | undefined> {

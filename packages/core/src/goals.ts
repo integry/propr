@@ -1,24 +1,31 @@
 import type { VisualPreviewSettings } from './config/configManager.js';
 import { buildVisualPreviewPrompt } from './services/visualPreviewService.js';
-import { parseGoalCheckpointDeclaration } from '@propr/shared';
-import type { GoalCheckpointDeclaration, RejectedGoalCheckpointDeclaration } from '@propr/shared';
+import {
+    DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    GOAL_LAUNCH_STRATEGIES,
+    MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    parseGoalCheckpointDeclaration,
+} from '@propr/shared';
+import type { GoalCheckpointDeclaration, GoalLaunchStrategy, RejectedGoalCheckpointDeclaration } from '@propr/shared';
 
-export { parseGoalCheckpointDeclaration };
-export type { GoalCheckpointDeclaration, RejectedGoalCheckpointDeclaration };
+export {
+    DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    GOAL_LAUNCH_STRATEGIES,
+    MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    parseGoalCheckpointDeclaration,
+};
+export type { GoalCheckpointDeclaration, GoalLaunchStrategy, RejectedGoalCheckpointDeclaration };
 
 export type GoalDesiredState = 'running' | 'paused' | 'cancelled';
 export type GoalResultState = 'completed' | 'failed' | 'cancelled';
-export const GOAL_LAUNCH_STRATEGIES = ['direct', 'orchestrate'] as const;
-export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
 export const GOAL_CONTINUE_INPUT = 'ProPR has acknowledged any checkpoint request from the previous turn. Continue working toward the goal.';
 export const NATIVE_GOAL_COMMAND_PREFIX = '/goal ';
 export const CODEX_GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
 export const CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH = CODEX_GOAL_OBJECTIVE_MAX_LENGTH
     - Array.from(NATIVE_GOAL_COMMAND_PREFIX).length;
-export const DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES = 15;
-export const MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES = 5;
-export const MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES = 120;
 
 /** Claude Code rejects `/goal` conditions longer than this many UTF-16 units. */
 export const CLAUDE_GOAL_CONDITION_MAX_LENGTH = 4_000;

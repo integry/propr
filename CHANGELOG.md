@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sequential MCP epics**: `implement_plan` now queues exactly the selected
+  issues in publication order for `useEpic: true`, starts one model on the head,
+  and advances durably after merge. Optional `epicAdvanceOn: "terminal"` also
+  advances on closed/failed issues; the default records a `blockedReason` until
+  a blocked head is fixed and merged. Pause/resume holds and releases the next
+  issue, and worker reconciliation repairs missed advancement and dispatch.
+  Results and plan/operation reads expose queue progress; receipts stay
+  accepted until completion. `epicExecution: "parallel"` restores fan-out and
+  multi-model comparisons, and still labels the epic PR once every issue is done.
+  A head closed with its unmerged PR resumes when that PR is reopened and merged. Existing idempotency hashes are preserved. UI, CLI
+  and API **Implement Epic** and non-epic auto-merge requests feed the same
+  queue with `terminal` advancement, so a failed issue still continues the
+  plan. Plans already running at upgrade have no queue; restart them from
+  their next pending issue.
 - **Review fix selection**: `/fix all` requests every pending merge blocker and
   optional suggestion. Review comments include a copyable `/fix F# S#` command
   containing their published records for editing an explicit selection.

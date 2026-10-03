@@ -91,6 +91,7 @@ interface TaskContext {
   recap?: string;
   commandMode?: string;
   isReview: boolean;
+  reviewDeferred: boolean;
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
   pullRequestFollowupEligible: boolean;
@@ -238,6 +239,32 @@ function resolveCommandMode(
 ): string | undefined {
   if (typeof historyMetadata.commandMode === 'string') return historyMetadata.commandMode;
   return typeof initial.commandMode === 'string' ? initial.commandMode : undefined;
+}
+
+function resolvePullRequestNumber(
+  task: Record<string, unknown>,
+  initial: Record<string, unknown>,
+  historyMetadata: Record<string, unknown>,
+  taskId: string,
+): number | undefined {
+  const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
+    ? historyMetadata.prResult as Record<string, unknown>
+    : {};
+  const isPullRequestTask = task.task_type === 'review'
+    || task.task_type === 'pr-comment'
+    || taskId.startsWith('pr-comments-batch-')
+    || positiveInteger(initial.pullRequestNumber) !== undefined;
+  return positiveInteger(task.pr_number)
+    ?? positiveInteger(initial.pullRequestNumber)
+    ?? positiveInteger(initial.prNumber)
+    ?? positiveInteger(prResult.prNumber)
+    ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
+}
+
+function isReviewDeferred(metadata: Record<string, unknown>): boolean {
+  return metadata.deferred === true
+    || metadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
+    || metadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
 }
 
 function notificationRecap(metadata: Record<string, unknown>): string | undefined {
@@ -620,6 +647,9 @@ export class NotificationProjectionService {
       return;
     }
     if (payload.state !== 'completed') return;
+    // A worker can finish after deferring a review without running it. Keep
+    // its activity terminal, but do not advertise a result in Inbox or push.
+    if (context.reviewDeferred) return;
 
     if (context.isReview && context.prNumber !== undefined) {
       await this.projectCompletedReview(
@@ -1031,25 +1061,15 @@ export class NotificationProjectionService {
     if (!task) return undefined;
     const initial = parseJsonObject(task.initial_job_data);
     const historyMetadata = await this.loadCompletedHistoryMetadata(payload);
-    const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
-      ? historyMetadata.prResult as Record<string, unknown>
-      : {};
     const repository = typeof task.repository === 'string'
       ? task.repository
       : payload.repository;
     if (typeof repository !== 'string') return undefined;
     const taskType = typeof task.task_type === 'string' ? task.task_type : '';
-    const isPullRequestTask = taskType === 'review'
-      || taskType === 'pr-comment'
-      || payload.taskId.startsWith('pr-comments-batch-')
-      || positiveInteger(initial.pullRequestNumber) !== undefined;
-    const prNumber = positiveInteger(task.pr_number)
-      ?? positiveInteger(initial.pullRequestNumber)
-      ?? positiveInteger(initial.prNumber)
-      ?? positiveInteger(prResult.prNumber)
-      ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
-    const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
+    const prNumber = resolvePullRequestNumber(task, initial, historyMetadata, payload.taskId);
     const commandMode = resolveCommandMode(historyMetadata, initial);
+    const isReview = taskType === 'review' || commandMode === 'review';
+    const reviewDeferred = isReviewDeferred(historyMetadata);
     const storedIssueNumber = positiveInteger(task.issue_number);
     const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
@@ -1063,6 +1083,7 @@ export class NotificationProjectionService {
       recap: notificationRecap(historyMetadata),
       commandMode,
       isReview,
+      reviewDeferred,
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
       pullRequestFollowupEligible: supportsPullRequestFollowup(task, prNumber),

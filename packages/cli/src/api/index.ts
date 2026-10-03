@@ -248,3 +248,41 @@ export type {
   RoutingState,
   QueueStats,
 } from "./system.js";
+
+// Goals API
+export {
+  GOAL_LAUNCH_STRATEGIES,
+  GOAL_LIST_STATES,
+  GOAL_MUTATION_ATTEMPTS,
+  IDEMPOTENCY_KEY_PATTERN,
+  GoalMutationUncertainError,
+  newIdempotencyKey,
+  resolveIdempotencyKey,
+  getGoalCapabilities,
+  listGoals,
+  getGoalDetail,
+  listGoalInputs,
+  createGoal,
+  sendGoalInput,
+  pauseGoal,
+  resumeGoal,
+  cancelGoal,
+  setGoalModel,
+} from "./goals.js";
+
+export type {
+  Goal,
+  GoalDetail,
+  GoalInput,
+  GoalInputPage,
+  GoalCheckpoint,
+  GoalCapabilityAgent,
+  GoalLaunchStrategy,
+  GoalListState,
+  GoalListResponse,
+  GoalCreateOutcome,
+  GoalCreateResult,
+  GoalMutationResult,
+  CreateGoalRequest,
+  GoalApiOptions,
+} from "./goals.js";

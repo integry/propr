@@ -33,4 +33,16 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Product docs and where a setting lives | `search_docs`, `get_doc`, `find_setting` |
 
+`implement_plan` with `useEpic: true` runs selected issues sequentially in plan
+publication order. It starts one issue and durably queues the rest, using one
+model per issue. `epicExecution: "parallel"` restores fan-out (up to four
+models) and labels the epic PR once every issue finishes; non-epic calls keep their existing fan-out. `epicAdvanceOn: "merged"`
+is the default: closed or failed heads record a `blockedReason` and wait until
+fixed and merged. `epicAdvanceOn: "terminal"` advances on any core terminal
+issue state. `pause_plan` holds the successor and `resume_plan` starts it.
+`get_plan` and `get_operation` expose the queue's issues, cursor, head, status,
+advanceOn and blockedReason. The result reports executionMode, started and
+queued; a sequential receipt remains accepted until the queue completes.
+Unselected pending issues never start through the queue.
+
 Mutations require their corresponding scopes and repository access, and return durable receipts. Queue acceptance is not completion. Keep idempotency keys stable when retrying the same request, and repeat its arguments exactly. Failures return a structured error with a stable `code`, the `stage` where it failed and whether it is `retryable`. See the [full operator/setup reference](https://github.com/integry/propr/blob/main/docs/mcp.md) and [tool coverage](https://github.com/integry/propr/blob/main/docs/mcp-coverage.md) for schemas, Connect registration and deployment requirements.

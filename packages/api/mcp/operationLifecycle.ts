@@ -64,6 +64,19 @@ function issueNumbersFromReceipt(
   return [...issueNumbers];
 }
 
+/** A multi-model review posts one comment per model, and each is picked up by its own task. */
+function reviewFanOutArtifacts(result: Record<string, unknown>, target: Record<string, unknown>): Record<string, unknown> {
+  const artifacts: Record<string, unknown> = {};
+  const reviews = Array.isArray(result.reviews) ? result.reviews.map(record).filter((value): value is Record<string, unknown> => !!value) : [];
+  const commentIds = reviews.flatMap(review => positiveInteger(review.commentId) ?? []);
+  if (commentIds.length > 1) artifacts.commentIds = commentIds;
+  // A list that ended with one posted review carries no flat commentId.
+  else if (commentIds.length === 1 && !positiveInteger(result.commentId)) artifacts.commentId = commentIds[0];
+  const taskIds = Array.isArray(target.taskIds) ? target.taskIds.filter((value): value is string => typeof value === 'string' && value.length > 0) : [];
+  if (taskIds.length) artifacts.taskIds = taskIds;
+  return artifacts;
+}
+
 /** Collect stable output handles from mutation results and tracker observations. */
 export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt: Record<string, unknown>): Record<string, unknown> {
   const result = record(receipt.result) ?? {};
@@ -107,6 +120,7 @@ export function artifactsFromReceipt(row: Pick<Operation, 'repository'>, receipt
 
   const commentId = positiveInteger(result.commentId, continuation.commentId, target.commentId);
   if (commentId) artifacts.commentId = commentId;
+  Object.assign(artifacts, reviewFanOutArtifacts(result, target));
   const reviews = Array.isArray(result.reviewResults) ? result.reviewResults.map(record).filter(Boolean) : [];
   const reviewCommentId = positiveInteger(...reviews.flatMap(review => [review?.commentId]));
   if (reviewCommentId) artifacts.reviewCommentId = reviewCommentId;
@@ -236,7 +250,7 @@ export async function syncLifecycle(
   if (lifecycleProgress && !outcome) await operations.recordProgress(row.id, lifecycleProgress);
 
   const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool)
-    && typeof artifacts.taskId === 'string';
+    && (typeof artifacts.taskId === 'string' || Array.isArray(artifacts.taskIds));
   const startedAt = pickedUpCommand ? epochMilliseconds(target?.timestamp) ?? Date.now()
     : observedStartTimestamp(target, result, targetState);
   if (startedAt !== null) await operations.markStarted(row.id, startedAt);
