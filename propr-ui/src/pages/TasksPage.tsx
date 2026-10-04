@@ -41,7 +41,7 @@ const TasksPage: React.FC = () => {
 
   // Wide screens open a task beside the list; narrower ones navigate to it.
   const openTaskId = isSplitViewport ? selectedTaskId : null;
-  // The row the open run belongs to: its runs are what the pane's run switcher offers.
+  // The row the open run belongs to: its runs are what the pane's timeline lists.
   const openGroup = openTaskId ? pageGroups.find(group => group.tasks.some(task => task.id === openTaskId)) ?? null : null;
   return (
     <div className="h-full w-full min-w-0 bg-white">

@@ -72,6 +72,8 @@ export interface Task {
   failedReason: string | null;
   /** Commit the run pushed (null when it pushed none or predates commit tracking) */
   commitHash?: string | null;
+  /** Score the run recorded when it completed (a review's `6/10`); null when it was not scored */
+  score?: number | null;
   /** Progress percentage (0-100) */
   progress: number;
   /** Number of processing attempts */

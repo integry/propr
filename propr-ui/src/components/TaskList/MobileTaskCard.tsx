@@ -14,8 +14,8 @@ interface MobileTaskCardProps {
   /**
    * The card selects its task in place, beside the list. The trailing chevron
    * promises a drill-in to another screen, so it is drawn only when the card
-   * navigates. Its runs are then reached through the pane's run switcher, so
-   * the card counts them and lists none.
+   * navigates. Its runs are then reached through the pane's timeline, so the
+   * card shows their trend and lists none.
    */
   selectsInPlace?: boolean;
 }

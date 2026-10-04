@@ -14,7 +14,7 @@ const pullRequest = (prNumber: number, issueNumber: number, runs: FixtureRun[]) 
   title: run.title, subtitle: run.subtitle ?? null, status: run.status ?? 'completed',
   createdAt: ago(run.minutes), processedAt: ago(run.minutes),
   completedAt: run.status === 'processing' ? null : new Date(Date.parse(ago(run.minutes)) + (run.took ?? 5) * 60_000).toISOString(),
-  llmProvider: 'codex', model: 'gpt-6-astra', critiqueScore: run.score ?? null,
+  llmProvider: 'codex', model: 'gpt-6-astra', score: run.score ?? null,
   previewMedia: run.previewMedia, planIssueStatus: run.planIssueStatus ?? null,
   commitHash: run.commitHash ?? null, failedReason: run.failedReason ?? null,
 }));
@@ -22,10 +22,13 @@ export const tag = (issue: number) => `[${issue} by GPT-6 Astra]`;
 export const tasks = [
   ...pullRequest(2664, 2659, [
     { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Ultrafix cycle 3 (linting)', status: 'processing', minutes: 1 },
-    { title: 'Followup: Update', subtitle: 'Update', minutes: 13, took: 1 },
-    { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Restrict issue-level withdrawal labels to actual intent withdrawal', minutes: 19, score: 9 },
+    { title: 'Followup: Update', subtitle: 'Update', minutes: 13, took: 1, score: 5 },
+    { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Restrict issue-level withdrawal labels to actual intent withdrawal', minutes: 19, score: 6 },
     { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Replace `cancelled_issue_closed` error code with human-readable UI text', minutes: 24, took: 4 },
-    ...Array.from({ length: 4 }, (_, index) => ({ title: `Followup: Update ${index + 1}`, minutes: 30 + index * 9 })),
+    { title: 'Followup: Update 1', subtitle: 'Applied regex escape patch', minutes: 30 },
+    { title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues', minutes: 39, took: 3, score: 6 },
+    { title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', minutes: 48 },
+    { title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Initial review', minutes: 57, took: 4, score: 4 },
   ]),
   ...pullRequest(2661, 2658, [
     { title: `Review PR #2661: ${tag(2658)} Give implementation runs and direct goals a read-only GitHub token`, subtitle: 'No blocking findings; token scope verified', minutes: 50, took: 8, score: 8 },
@@ -85,4 +88,17 @@ export const detailsEvents = [
   { id: 'thought-1', type: 'thought', timestamp: ago(0.8), content: 'Linting flagged the withdrawal handler; tightening the label check before rerunning.' },
   { id: 'tool-1', toolUseId: 'tool-1', type: 'tool_use', timestamp: ago(0.6), toolName: 'Bash', input: { command: 'npm run lint -w propr-ui' } },
   { id: 'result-1', toolUseId: 'tool-1', type: 'tool_result', timestamp: ago(0.5), result: 'eslint . --max-warnings 0\n✔ no problems' },
+];
+
+// An earlier run of PR #2664 (Run 3, a review), for moving back through the task's timeline.
+export const historicalRun = 'pr-2664-run-5';
+export const historicalHistory = [
+  { state: 'PENDING', timestamp: ago(39), metadata: { model: 'gpt-6-astra' } },
+  { state: 'CLAUDE_EXECUTION', timestamp: ago(38.8), metadata: { model: 'gpt-6-astra', description: 'Review the withdrawal handlers' } },
+  { state: 'COMPLETED', timestamp: ago(36), metadata: { model: 'gpt-6-astra' } },
+];
+export const historicalEvents = [
+  { id: 'review-thought-1', type: 'thought', timestamp: ago(38), content: 'The label check also matches unrelated labels; flagging it as a finding.' },
+  { id: 'review-tool-1', toolUseId: 'review-tool-1', type: 'tool_use', timestamp: ago(37.5), toolName: 'Bash', input: { command: 'grep -rn withdraw src/jobs' } },
+  { id: 'review-result-1', toolUseId: 'review-tool-1', type: 'tool_result', timestamp: ago(37.4), result: 'src/jobs/withdrawalHandlers.ts:14: if (label.includes(\'withdraw\'))' },
 ];

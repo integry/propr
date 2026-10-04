@@ -1,10 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { ExternalLink, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import TaskDetails from '../TaskDetails';
-import { taskPath } from './rowModel';
-import { RunSwitcher } from './RunSwitcher';
+import { buildTaskRow, buildTaskRuns, taskPath } from './rowModel';
 import type { TaskGroup } from './types';
 import { isDialogOpen, isTypingTarget } from './keyboardOwnership';
 
@@ -13,7 +12,7 @@ interface TaskSplitWorkspaceProps {
   list: React.ReactNode;
   /** The task open beside the list, or null for the full-width list. */
   selectedTaskId: string | null;
-  /** The list row the open run belongs to; with more than one run, the pane offers a run switcher. */
+  /** The list row the open run belongs to; with more than one run, the pane's timeline lists them all. */
   selectedGroup?: TaskGroup | null;
   /** Opens another run of the same task in the pane. */
   onSelectRun?: (taskId: string) => void;
@@ -37,6 +36,8 @@ const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>
  * table breakpoint, so its container query shows the stacked cards there.
  */
 const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedTaskId, selectedGroup, onSelectRun, onClose, onDeleted }) => {
+  const runs = useMemo(() => (selectedGroup ? buildTaskRuns(buildTaskRow(selectedGroup)) : undefined), [selectedGroup]);
+
   useEffect(() => {
     if (!selectedTaskId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -96,9 +97,8 @@ const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedT
                   embedded
                   onClose={onClose}
                   onDeleted={onDeleted}
-                  runSwitcher={selectedGroup && onSelectRun
-                    ? <RunSwitcher group={selectedGroup} selectedTaskId={selectedTaskId} onSelect={onSelectRun} />
-                    : null}
+                  runs={runs}
+                  onSelectRun={onSelectRun}
                 />
               </div>
             </section>

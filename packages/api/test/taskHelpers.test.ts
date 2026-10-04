@@ -172,7 +172,7 @@ test('presentation enrichment queries are constrained to the selected page', asy
   database.on('query', event => queries.push({ sql: event.sql, bindings: event.bindings ?? [] }));
   await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 1, offset: 0 });
 
-  assert.equal(queries.length, 5);
+  assert.equal(queries.length, 6);
   assert.ok(queries.every(query => !/analysis_report/i.test(query.sql)));
   assert.doesNotMatch(queries[0].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   assert.doesNotMatch(queries[1].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
@@ -180,6 +180,31 @@ test('presentation enrichment queries are constrained to the selected page', asy
     assert.ok(query.bindings.includes('page-task'));
     assert.ok(!query.bindings.includes('off-page-task'));
   }
+});
+
+test('each run carries the score its latest completion recorded', async () => {
+  const database = await createDatabase();
+  await database('tasks').insert([
+    { task_id: 'review', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T04:00:00.000Z' },
+    { task_id: 'ultrafix', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T03:00:00.000Z' },
+    { task_id: 'rerun', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T02:00:00.000Z' },
+    { task_id: 'fix', repository: 'acme/widget', task_type: 'pr_comment', created_at: '2026-09-14T01:00:00.000Z' },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'review', state: 'processing', timestamp: '2026-09-14T04:01:00.000Z' },
+    // Two reviewers: the lower score decides.
+    { task_id: 'review', state: 'completed', timestamp: '2026-09-14T04:02:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Scores 8/10, 6/10 · 2 issues found' }) },
+    { task_id: 'ultrafix', state: 'processing', timestamp: '2026-09-14T03:01:00.000Z' },
+    { task_id: 'ultrafix', state: 'completed', timestamp: '2026-09-14T03:02:00.000Z', metadata: JSON.stringify({ ultrafixScore: 4 }) },
+    // A score from before the task was started again does not describe the new run.
+    { task_id: 'rerun', state: 'completed', timestamp: '2026-09-14T02:01:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Score 9/10' }) },
+    { task_id: 'rerun', state: 'processing', timestamp: '2026-09-14T02:02:00.000Z' },
+    { task_id: 'fix', state: 'completed', timestamp: '2026-09-14T01:02:00.000Z', metadata: JSON.stringify({ notificationRecap: 'Fixed the seed test' }) },
+  ]);
+
+  const page = await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 10, offset: 0 });
+  const scores = Object.fromEntries((page.tasks as Array<Record<string, unknown>>).map(task => [task.id, task.score]));
+  assert.deepEqual(scores, { review: 6, ultrafix: 4, rerun: null, fix: null });
 });
 
 test('task history migration replaces the redundant index and satisfies latest-state ordering', async () => {

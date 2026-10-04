@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { ago, detailsEvents, detailsHistory, now, selectedRun, tag, tasks } from './task-list-desktop.fixture';
+import { ago, detailsEvents, detailsHistory, historicalEvents, historicalHistory, historicalRun, now, selectedRun, tag, tasks } from './task-list-desktop.fixture';
 
 async function fixture(page: Page, platform?: 'macos' | 'linux') {
   await page.clock.install({ time: now });
@@ -44,6 +44,19 @@ async function fixture(page: Page, platform?: 'macos' | 'linux') {
       [`/api/task/${selectedRun}/file-changes`]: {
         taskId: selectedRun, lastUpdated: ago(0.5),
         files: [{ path: 'src/jobs/withdrawalLabels.ts', linesAdded: 12, linesRemoved: 4, status: 'modified', diff: '@@ -1,4 +1,12 @@\n-export const WITHDRAW = true;\n+export const WITHDRAW = isIntentLabel(label);' }],
+      },
+      [`/api/task/${historicalRun}/history`]: {
+        history: historicalHistory,
+        taskInfo: {
+          title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues',
+          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
+        },
+        usageMetricRecords: [],
+      },
+      [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
+      [`/api/task/${historicalRun}/file-changes`]: {
+        taskId: historicalRun, lastUpdated: ago(36),
+        files: [{ path: 'src/jobs/withdrawalHandlers.ts', linesAdded: 3, linesRemoved: 1, status: 'modified', diff: '@@ -14,1 +14,3 @@\n-if (label.includes(\'withdraw\'))\n+if (isWithdrawalLabel(label))' }],
       },
     };
     return pathname in responses ? route.fulfill({ json: responses[pathname] }) : route.fulfill({ status: 503, json: { error: 'Unavailable in privacy-safe layout fixture' } });
@@ -148,10 +161,12 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       expect(footerGap).toBe(0);
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
-      // A row is the task: its runs are counted in a chip, never listed under it, because the
-      // task pane's run switcher moves between them.
+      // A row is the task: its runs show as a trend of at most four outcomes, never listed under
+      // it, because the task pane's timeline moves between them.
       const runCount = rows.filter({ hasText: 'Give implementation runs' }).getByTestId('run-count');
-      await expect(runCount).toHaveText('7 runs');
+      await expect(runCount).toHaveAttribute('aria-label', '7 runs');
+      await expect(runCount.getByTestId('run-track-overflow')).toHaveText('+3');
+      await expect(runCount.locator('[data-outcome]')).toHaveCount(4);
       await expect(table).not.toContainText(/earlier run/);
       await expect(table.getByRole('list', { name: 'Earlier runs' })).toHaveCount(0);
       expect(await runCount.evaluate(node => node.tagName)).toBe('SPAN');
@@ -249,14 +264,25 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   // A pane is too narrow for the timeline/output split, so they stack in one column.
   const columns = await details.getByTestId('task-workspace-scroll').evaluate(node => getComputedStyle(node).flexDirection);
   expect(columns).toBe('column');
-  // The pane names the run it shows against the task's runs, and switches to an earlier one in place.
-  const runSwitcher = details.getByTestId('run-switcher').filter({ visible: true });
-  await expect(runSwitcher.locator(':scope > span')).toHaveText('Run 8 of 8');
-  const runOptions = runSwitcher.getByRole('option');
-  await expect(runOptions).toHaveCount(8);
-  await expect(runOptions.nth(0)).toHaveText('Run 8 (Active) — Ultrafix cycle 3 (linting)');
-  await expect(runOptions.nth(2)).toHaveText('Run 6 (Completed) — Restrict issue-level withdrawal labels to actual intent withdrawal');
-  await expect(selectedCard.getByTestId('run-count')).toHaveText('8 runs');
+  // The timeline is the task's history: every run on one rail, oldest first, and only the run
+  // shown is open, its steps branching off the rail.
+  const timeline = details.getByRole('list', { name: 'Runs' });
+  const runRows = timeline.getByTestId('run-timeline-run');
+  await expect(runRows).toHaveCount(8);
+  await expect(runRows.nth(0).getByRole('button')).toContainText(/Run 1.*Initial review/);
+  await expect(runRows.nth(0).getByTitle('Run score: 4/10')).toBeVisible();
+  await expect(runRows.nth(2).getByTitle('Run score: 6/10')).toBeVisible();
+  await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Running….*Active/);
+  await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
+  await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+  await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
+  await expect(details.getByTestId('run-switcher')).toHaveCount(0);
+  // The card shows the newest four runs and counts the rest: [+4] ●──■──■──⟳.
+  const track = selectedCard.getByTestId('run-count');
+  await expect(track).toHaveAttribute('aria-label', '8 runs');
+  await expect(track.getByTestId('run-track-overflow')).toHaveText('+4');
+  expect(await track.locator('[data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome'))))
+    .toEqual(['passed', 'findings', 'findings', 'active']);
   // Every run line leads with its type after the chip, including a follow-up whose summary names no action.
   const runLines = list.locator('[data-testid="task-card"]').filter({ has: page.getByTestId('run-count') });
   for (const card of await runLines.all()) await expect(card.getByTestId('work-type-badge')).toBeVisible();
@@ -275,8 +301,16 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   expect(runOut).toBeGreaterThanOrEqual(24);
   await capture(page, 'tasks-split-1920-end');
   await scroller.evaluate(node => { node.scrollTop = 0; });
-  await runSwitcher.getByRole('combobox', { name: 'Run' }).selectOption('pr-2664-run-2');
-  await expect(page).toHaveURL(/task=pr-2664-run-2/);
+  // Choosing an earlier run opens it: its steps, files changed and execution log replace the newest run's.
+  await runRows.nth(2).getByRole('button').click();
+  await expect(page).toHaveURL(new RegExp(`task=${historicalRun}`));
+  const historical = details.getByRole('list', { name: 'Runs' }).getByTestId('run-timeline-run');
+  await expect(historical.nth(2).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+  await expect(historical.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
+  await expect(details.getByRole('region', { name: 'Changed files' })).toHaveText(/^(?!.*withdrawalLabels).*withdrawalHandlers\.ts/s);
+  await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
+  await capture(page, 'tasks-split-1920-run-3');
   // The run belongs to the same task, so its row stays selected.
   await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');
   // Stepping starts from the row the open run belongs to.

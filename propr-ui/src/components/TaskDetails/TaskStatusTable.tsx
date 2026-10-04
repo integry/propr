@@ -8,6 +8,11 @@ interface TaskStatusTableProps {
   history: HistoryItem[];
   compact?: boolean;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  /**
+   * `branch` draws the steps as tics off the task timeline's run rail, under
+   * the run they belong to: `├── 11:59:12  Read the handlers   12s`.
+   */
+  variant?: 'rail' | 'branch';
 }
 
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
@@ -260,7 +265,48 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
   return steps;
 };
 
-const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false, commandMode }) => {
+/**
+ * One run's steps hanging off the run rail (2px at 7px in): each step branches
+ * off it with a short tic. The right edge clears the run row's score slot, so
+ * a step's duration sits under the run's.
+ */
+const BranchSteps: React.FC<{
+  items: Array<HistoryItem & { duration: number | null }>;
+  history: HistoryItem[];
+  commandMode?: string;
+}> = ({ items, history, commandMode }) => (
+  <ol aria-label="Run steps" className="m-0 list-none p-0">
+    {items.map((item, index) => {
+      const stateUpper = item.state?.toUpperCase() || '';
+      const isLast = index === items.length - 1;
+      const isRunning = isLast && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
+      const isFailure = stateUpper === 'FAILED';
+      return (
+        <li key={`${item.state}-${item.timestamp}-${index}`} className="relative flex min-w-0 items-start gap-2 py-0.5 pl-6 pr-[3.75rem] text-xs leading-5">
+          <span aria-hidden="true" className="absolute left-[9px] top-[10px] h-px w-3 bg-slate-300" />
+          <span className="w-14 flex-none font-mono text-[11px] tabular-nums text-slate-400">
+            {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--'}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className={`block break-words ${isFailure ? 'font-medium text-red-700' : isRunning ? 'font-medium text-slate-900' : 'text-slate-600'}`}>
+              {getDisplayLabel(item, index, history, commandMode)}
+            </span>
+            {item.metadata?.terminalReason && (
+              <span className="block break-words text-[11px] text-slate-500" data-testid="task-terminal-reason">
+                {formatTaskTerminalReason(item.metadata.terminalReason)}
+              </span>
+            )}
+          </span>
+          <span className={`w-16 flex-none text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+            {isRunning ? 'Running…' : item.duration !== null ? formatRelativeTime(item.duration) : ''}
+          </span>
+        </li>
+      );
+    })}
+  </ol>
+);
+
+const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false, commandMode, variant = 'rail' }) => {
   const timelineHistory = useMemo(() => coalescePipelineHistory(history ?? []), [history]);
 
   // Pre-calculate durations to find the longest one for highlighting
@@ -293,6 +339,10 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
   }, [timelineHistory]);
 
   if (!history || history.length === 0) return null;
+
+  if (variant === 'branch') {
+    return <BranchSteps items={itemsWithDuration} history={timelineHistory} commandMode={commandMode} />;
+  }
 
   return (
     <div className="pt-2">

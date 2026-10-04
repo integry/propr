@@ -2,6 +2,7 @@ import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '..
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
+import { recordedRunScore } from './dashboardOutcomeQueries.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 
 export interface TaskQuery {
@@ -248,7 +249,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
   if (pageTasks.length === 0) return { tasks: [], ...page };
 
   const taskIds = pageTasks.map((row: Record<string, unknown>) => String(row.task_id));
-  const { historyByTask, planStatusByTask, commentMetadataByTask } = await timeApiStage(
+  const { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask } = await timeApiStage(
     'sql.tasks.enrichment',
     async () => enrichTaskPage(db, taskIds, Boolean(excludeMerged))
   );
@@ -262,6 +263,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
       ...historyByTask.get(String(row.task_id)),
       plan_issue_status: planStatusByTask.get(String(row.task_id)) ?? null,
     }),
+    score: scoreByTask.get(String(row.task_id)) ?? null,
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
   return { tasks, ...page };
@@ -271,6 +273,40 @@ interface TaskPageEnrichment {
   historyByTask: Map<string, Record<string, unknown>>;
   planStatusByTask: Map<string, unknown>;
   commentMetadataByTask: Map<string, unknown>;
+  /** The score the task's latest run recorded when it completed (a review's `Score 6/10`). */
+  scoreByTask: Map<string, number>;
+}
+
+/** States that open a run: a task followed up runs again under the same id. */
+const RUN_START_STATES: readonly string[] = [...QUEUED_TASK_STATES, ...RUNNING_TASK_STATES];
+
+/**
+ * The score of each task's latest run. Only the completions at the end of the
+ * task's history count: once a task is started again, an earlier run's score
+ * no longer describes it, and a run still in flight has none.
+ */
+async function loadRunScores(db: Knex, taskIds: string[]): Promise<Map<string, number>> {
+  const rows = await db('task_history')
+    .whereIn('task_id', taskIds)
+    .whereIn('state', ['completed', ...RUN_START_STATES])
+    .select('task_id', 'state', 'metadata')
+    .orderBy([{ column: 'timestamp', order: 'desc' }, { column: 'history_id', order: 'desc' }]) as Array<Record<string, unknown>>;
+  const scores = new Map<string, number>();
+  const settled = new Set<string>();
+  for (const row of rows) {
+    const taskId = String(row.task_id);
+    if (settled.has(taskId)) continue;
+    if (row.state !== 'completed') {
+      settled.add(taskId);
+      continue;
+    }
+    const score = recordedRunScore(row.metadata);
+    if (score !== null) {
+      scores.set(taskId, score);
+      settled.add(taskId);
+    }
+  }
+  return scores;
 }
 
 async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolean): Promise<TaskPageEnrichment> {
@@ -320,7 +356,9 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
     if (!planStatusByTask.has(taskId)) planStatusByTask.set(taskId, row.status);
   }
 
-  return { historyByTask, planStatusByTask, commentMetadataByTask };
+  const scoreByTask = await loadRunScores(db, taskIds);
+
+  return { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask };
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {

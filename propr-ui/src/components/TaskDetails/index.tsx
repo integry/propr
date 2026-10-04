@@ -23,7 +23,7 @@ import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/proprApi';
 import { useTotalDuration, useCommitInfo, useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
-import { sanitizeTaskTitle } from '../TaskList/rowModel';
+import { sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -107,14 +107,20 @@ interface TaskDetailsProps {
   onClose?: () => void;
   /** Called with the deleted task's ID, which may no longer be the task on screen. */
   onDeleted?: (taskId: string) => void;
-  /** Moves between the runs of this task (`Run 8 of 8`), drawn beside the title. */
-  runSwitcher?: React.ReactNode;
+  /**
+   * Every run of this task, oldest first. With more than one, the timeline
+   * lists them all and moves between them: the files changed and the
+   * execution log follow the run chosen there.
+   */
+  runs?: TaskRunEntry[];
+  /** Opens another run of this task in its place. */
+  onSelectRun?: (taskId: string) => void;
 }
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
 
-const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runSwitcher }) => {
+const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, onSelectRun }) => {
   const params = useParams();
   const taskId = taskIdProp ?? params.taskId;
   const navigate = useNavigate();
@@ -213,17 +219,15 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
-        <div className="flex items-start justify-between gap-3 px-3 py-2 border-b border-slate-100">
-          <div className="min-w-0 flex-1"><TaskHeader {...headerProps} /></div>
-          {runSwitcher}
+        <div className="px-3 py-2 border-b border-slate-100">
+          <TaskHeader {...headerProps} />
         </div>
       </header>
 
       {/* Desktop sticky header shell; keep below global navigation overlays. */}
       <header className="hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white">
-        <div className="flex items-start justify-between gap-4 px-6 py-3 border-b border-slate-100">
-          <div className="min-w-0 flex-1"><TaskHeader {...headerProps} /></div>
-          {runSwitcher}
+        <div className="px-6 py-3 border-b border-slate-100">
+          <TaskHeader {...headerProps} />
         </div>
 
         <div className="px-6 py-2 bg-slate-50 border-b border-slate-200">
@@ -286,6 +290,8 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
               taskId={taskId}
               isTaskActive={derivedData.isTaskActive}
               onTodoHover={setHighlightedTodoId}
+              runs={runs}
+              onSelectRun={onSelectRun}
             />
           </div>
 

@@ -8,8 +8,9 @@ import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
+import { RunTrack } from './RunTrack';
 import {
-  hasRollupLine, pluralize, rowContainsTask, runCount, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -123,11 +124,12 @@ const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
 const RUN_CHIP_CLASSES = 'inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600';
 
 /**
- * How many agent runs went into the task: `8 runs`. The row is the task, so
- * its runs are counted rather than listed under it. Where the task opens
- * beside the list, the pane's run switcher moves between them and the chip
- * only counts. Where a click leaves the list instead, the chip is the one way
- * to reach an earlier run, so it opens them in place.
+ * The task's runs as a bounded trend: `[+4] ●──■──■──⟳`, the newest four runs
+ * marked by outcome. The row is the task, so its runs are summarized rather
+ * than listed under it. Where the task opens beside the list, the pane's
+ * timeline moves between them and the track only shows the trend. Where a
+ * click leaves the list instead, the track is the one way to reach an earlier
+ * run, so it opens them in place.
  */
 export const RunCountChip: React.FC<{
   row: TaskRowView;
@@ -136,11 +138,13 @@ export const RunCountChip: React.FC<{
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
   selectsInPlace: boolean;
 }> = ({ row, expanded, runsId, onToggle, selectsInPlace }) => {
-  const label = pluralize(runCount(row), 'run');
+  const runs = buildTaskRuns(row);
+  const label = pluralize(runs.length, 'run');
+  const description = `${label}: ${runs.slice(-RUN_TRACK_LIMIT).map(describeRun).join(', ')}`;
   if (selectsInPlace) {
     return (
-      <span data-testid="run-count" className={RUN_CHIP_CLASSES} title={`${label} — open the task to switch between them`}>
-        {label}
+      <span data-testid="run-count" role="img" aria-label={label} title={description} className="inline-flex flex-none items-center">
+        <RunTrack runs={runs} />
       </span>
     );
   }
@@ -148,6 +152,8 @@ export const RunCountChip: React.FC<{
     <button
       type="button"
       data-testid="run-count"
+      aria-label={label}
+      title={description}
       aria-expanded={expanded}
       aria-controls={runsId}
       onClick={event => onToggle(row.key, event)}
@@ -157,13 +163,13 @@ export const RunCountChip: React.FC<{
       <span aria-hidden="true" className="task-rollup-caret flex h-3 w-3 flex-none items-center justify-center">
         <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} strokeWidth={2.5} />
       </span>
-      {label}
+      <RunTrack runs={runs} />
     </button>
   );
 };
 
 /**
- * The line under a title, held to one line: `[7 runs] · REVIEW what the newest
+ * The line under a title, held to one line: `[+3] ●──■──■──⟳ · REVIEW what the newest
  * run did · 2 previews`. The type belongs to the newest run, not the task, so
  * it travels with that run's summary rather than taking room from the title.
  * A newest run with no summary states its outcome in the same place, as the
@@ -255,7 +261,7 @@ interface TaskQueueRowProps {
   onRowClick: (taskId: string) => void;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
   selectedTaskId?: string | null;
-  /** The task opens beside the list, whose run switcher reaches its earlier runs. */
+  /** The task opens beside the list, whose timeline reaches its earlier runs. */
   selectsInPlace?: boolean;
 }
 

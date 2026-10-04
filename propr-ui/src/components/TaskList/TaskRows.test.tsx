@@ -94,14 +94,30 @@ describe('task ledger rows', () => {
     expect(within(table).queryByRole('list', { name: 'Earlier runs' })).not.toBeInTheDocument();
   });
 
-  it('counts runs in a chip and lists none under the row when the task opens beside the list', () => {
+  it('shows the trend of runs and lists none under the row when the task opens beside the list', () => {
     render(<TaskTableContent groupedTasks={[group]} expandedGroups={new Set([group.key])} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
     const table = screen.getByRole('table', { name: 'Tasks' });
-    const chip = within(table).getByTestId('run-count');
-    expect(chip).toHaveTextContent(/^6 runs$/);
+    const chip = within(table).getByRole('img', { name: '6 runs' });
+    expect(chip).toHaveAttribute('data-testid', 'run-count');
     expect(chip.tagName).toBe('SPAN');
     expect(table).not.toHaveTextContent(/earlier run/);
     expect(within(table).queryByRole('list', { name: 'Earlier runs' })).not.toBeInTheDocument();
+  });
+
+  it('caps the run track at the newest four runs, marked by outcome, and counts the rest', () => {
+    const outcomes: Array<Partial<Task>> = [
+      { status: 'processing' }, { status: 'completed', score: 6 }, { status: 'completed', score: 5 },
+      { status: 'completed', planIssueStatus: 'merged' }, { status: 'failed' }, { status: 'completed', score: 9 },
+      { status: 'completed', score: 4 }, { status: 'cancelled' },
+    ];
+    const busy: TaskGroup = { ...group, tasks: outcomes.map((outcome, index) => ({ ...group.tasks[Math.min(index, 5)], id: `busy-${index}`, ...outcome })) };
+    render(<TaskTableContent groupedTasks={[busy]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
+    const chip = within(screen.getByRole('table', { name: 'Tasks' })).getByRole('img', { name: '8 runs' });
+    expect(within(chip).getByTestId('run-track-overflow')).toHaveTextContent(/^\+4$/);
+    // Oldest of the four first, the run in flight last: ●──■──■──⟳.
+    expect([...chip.querySelectorAll('[data-outcome]')].map(node => node.getAttribute('data-outcome')))
+      .toEqual(['passed', 'findings', 'findings', 'active']);
+    expect(chip).toHaveAttribute('title', '8 runs: Run 5 passed, Run 6 left findings (5/10), Run 7 left findings (6/10), Run 8 running');
   });
 
   it('keeps a single run without a summary on one line, its type in front of the title', () => {

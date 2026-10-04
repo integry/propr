@@ -5,7 +5,7 @@
  * row under the newest one, so a single busy PR filled the screen and the page
  * boundary in the footer stopped meaning anything. A group is now one row: the
  * newest run carries the status, agent and duration, and the row counts its
- * runs in an `N runs` chip. A row is the task (the pull request or issue);
+ * runs in a track of their outcomes. A row is the task (the pull request or issue);
  * its runs are the agent sessions that worked on it, and the task pane beside
  * the list switches between them.
  *
@@ -67,7 +67,7 @@ export interface TaskRowView {
   /**
    * What the newest run came to, when it recorded no summary but the row has
    * earlier runs: the line under the title is drawn for them anyway, and every
-   * such line reads `[N runs] · [type] what the newest run did`.
+   * such line reads `[runs] · [type] what the newest run did`.
    */
   outcome: string | null;
   previewCount: number;
@@ -238,53 +238,56 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
  */
 export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
 
-/** How many runs the row stands for: the newest and every earlier one. */
-export const runCount = (row: TaskRowView): number => row.earlierRuns.length + 1;
+/**
+ * What came of a run, as the list's run track and the task pane's timeline
+ * mark it: a failure, a review that left findings to fix, a pass, a run still
+ * in flight, or one that was stopped.
+ */
+export type RunOutcome = 'failed' | 'findings' | 'passed' | 'active' | 'stopped';
 
-/** A run's state in one word, for the run switcher: `Active`, `Completed`, `Failed`. */
-export function runStatusLabel(status: string): string {
-  switch (status) {
-    case 'completed': return 'Completed';
-    case 'merged': return 'Merged';
-    case 'failed': return 'Failed';
-    case 'cancelled': return 'Cancelled';
-    case 'waiting':
-    case 'pending':
-    case 'queued':
-      return 'Pending';
-    case 'active':
-    case 'implementing':
-    case 'claude_execution':
-    case 'processing':
-    case 'post_processing':
-      return 'Active';
-    default:
-      return status ? status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ') : 'Unknown';
+/** A score at or below this left findings to fix. */
+export const LOW_SCORE = 6;
+
+export function runOutcomeOf(task: Task): RunOutcome {
+  switch (getDisplayStatus(task)) {
+    case 'failed': return 'failed';
+    case 'cancelled': return 'stopped';
+    case 'completed':
+    case 'merged':
+      return task.score != null && task.score <= LOW_SCORE ? 'findings' : 'passed';
+    default: return 'active';
   }
 }
 
-export interface RunOption {
-  taskId: string;
+export interface TaskRunEntry {
+  task: Task;
   /** 1 for the oldest run of the task on this page, counting up to the newest. */
   number: number;
-  status: string;
+  type: string | null;
+  /** What the run changed, or its outcome when it recorded no summary. */
   summary: string;
+  outcome: RunOutcome;
 }
 
-/** The task's runs, newest first, numbered from the oldest so `Run 8` stays `Run 8` as new runs arrive. */
-export function buildRunOptions(group: TaskGroup): RunOption[] {
-  const row = buildTaskRow(group);
-  const runs: Array<{ task: Task; summary: string }> = [
-    { task: row.task, summary: row.detail ?? runOutcome(row.task) },
-    ...row.earlierRuns.map(run => ({ task: run.task, summary: run.delta })),
+/** The task's runs, oldest first and numbered from it, so `Run 8` stays `Run 8` as new runs arrive. */
+export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
+  const newestFirst = [
+    { task: row.task, type: row.type, summary: row.detail ?? runOutcome(row.task) },
+    ...row.earlierRuns.map(run => ({ task: run.task, type: run.type, summary: run.delta })),
   ];
-  return runs.map(({ task, summary }, index) => ({
-    taskId: task.id,
-    number: runs.length - index,
-    status: runStatusLabel(getDisplayStatus(task)),
-    summary,
-  }));
+  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task) }));
 }
+
+/** The list card shows at most this many runs, the newest; a `+N` chip counts the rest. */
+export const RUN_TRACK_LIMIT = 4;
+
+const OUTCOME_WORDS: Record<RunOutcome, string> = {
+  failed: 'failed', findings: 'left findings', passed: 'passed', active: 'running', stopped: 'stopped',
+};
+
+/** One run in words, for tooltips and screen readers: `Run 3 left findings (6/10)`. */
+export const describeRun = (run: TaskRunEntry): string =>
+  `Run ${run.number} ${OUTCOME_WORDS[run.outcome]}${run.task.score != null ? ` (${run.task.score}/10)` : ''}`;
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
