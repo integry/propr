@@ -105,9 +105,11 @@ describe('task ledger rows', () => {
   });
 
   it('caps the run track at the newest four runs, marked by outcome, and counts the rest', () => {
+    const review = 'Review PR #2664: Stop work when intent is withdrawn';
     const outcomes: Array<Partial<Task>> = [
-      { status: 'processing' }, { status: 'completed', score: 6 }, { status: 'completed', score: 5 },
-      { status: 'completed', planIssueStatus: 'merged' }, { status: 'failed' }, { status: 'completed', score: 9 },
+      { status: 'processing' }, { status: 'completed', score: 6, title: review }, { status: 'completed', score: 5, title: review },
+      // A fix's score belongs to the loop that reviewed it, not to the fix: it passed.
+      { status: 'completed', planIssueStatus: 'merged', score: 3 }, { status: 'failed' }, { status: 'completed', score: 9 },
       { status: 'completed', score: 4 }, { status: 'cancelled' },
     ];
     const busy: TaskGroup = { ...group, tasks: outcomes.map((outcome, index) => ({ ...group.tasks[Math.min(index, 5)], id: `busy-${index}`, ...outcome })) };

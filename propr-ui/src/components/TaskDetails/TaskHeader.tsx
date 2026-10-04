@@ -1,7 +1,7 @@
 import React from 'react';
 import { TaskInfo } from './types';
 import { sanitizeTaskTitle } from '../TaskList/rowModel';
-import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History } from 'lucide-react';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
@@ -158,5 +158,41 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
     </div>
   );
 };
+
+/**
+ * Says that the run below the header is an earlier one, and how it ended. The
+ * header above keeps describing the task (its newest run), so an old run's
+ * `Completed` never reads as the state of a task that is still working.
+ */
+export const InspectedRunBanner: React.FC<{
+  runNumber: number;
+  runCount: number;
+  /** The inspected run's last recorded state. */
+  status: string;
+  commandMode?: string;
+  /** Opens the newest run again. */
+  onBack: () => void;
+}> = ({ runNumber, runCount, status, commandMode, onBack }) => (
+  <div
+    role="status"
+    data-testid="inspected-run-banner"
+    className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-100 px-6 py-1.5 text-xs text-slate-700"
+  >
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <History aria-hidden="true" className="h-3.5 w-3.5 flex-none text-slate-500" />
+      <span className="truncate">
+        Inspecting historical <span className="font-semibold text-slate-900">Run {runNumber} of {runCount}</span>
+        {' '}({getStatusInfo(status, commandMode).label})
+      </span>
+    </span>
+    <button
+      type="button"
+      onClick={onBack}
+      className="flex-none rounded-sm px-1.5 py-0.5 font-medium text-slate-700 underline-offset-2 hover:bg-white hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+    >
+      Back to Run {runCount}
+    </button>
+  </div>
+);
 
 export default TaskHeader;

@@ -25,9 +25,9 @@ export const tasks = [
     { title: 'Followup: Update', subtitle: 'Update', minutes: 13, took: 1, score: 5 },
     { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Restrict issue-level withdrawal labels to actual intent withdrawal', minutes: 19, score: 6 },
     { title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Replace `cancelled_issue_closed` error code with human-readable UI text', minutes: 24, took: 4 },
-    { title: 'Followup: Update 1', subtitle: 'Applied regex escape patch', minutes: 30 },
+    { title: 'Followup: Update 1', subtitle: 'Applied regex escape patch', minutes: 30, commitHash: '4be17c09d2f3' },
     { title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues', minutes: 39, took: 3, score: 6 },
-    { title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', minutes: 48 },
+    { title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', minutes: 48, commitHash: 'a81d3f56e0c2' },
     { title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Initial review', minutes: 57, took: 4, score: 4 },
   ]),
   ...pullRequest(2661, 2658, [

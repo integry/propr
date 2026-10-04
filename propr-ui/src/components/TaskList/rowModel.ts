@@ -248,13 +248,25 @@ export type RunOutcome = 'failed' | 'findings' | 'passed' | 'active' | 'stopped'
 /** A score at or below this left findings to fix. */
 export const LOW_SCORE = 6;
 
-export function runOutcomeOf(task: Task): RunOutcome {
+/**
+ * Whether a run is a review. Only a review scores the code: a fix writes
+ * commits, so a score recorded against it (the ultrafix loop's) is not its own
+ * and is never shown on it.
+ */
+export const isReviewRun = (type: string | null | undefined): boolean => type?.toLowerCase() === 'review';
+
+/** The run's own score: a review's, or null for any other run. */
+export const runScore = (run: Pick<TaskRunEntry, 'task' | 'type'>): number | null =>
+  isReviewRun(run.type) ? run.task.score ?? null : null;
+
+export function runOutcomeOf(task: Task, type: string | null = null): RunOutcome {
+  const score = runScore({ task, type });
   switch (getDisplayStatus(task)) {
     case 'failed': return 'failed';
     case 'cancelled': return 'stopped';
     case 'completed':
     case 'merged':
-      return task.score != null && task.score <= LOW_SCORE ? 'findings' : 'passed';
+      return score != null && score <= LOW_SCORE ? 'findings' : 'passed';
     default: return 'active';
   }
 }
@@ -275,7 +287,7 @@ export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
     { task: row.task, type: row.type, summary: row.detail ?? runOutcome(row.task) },
     ...row.earlierRuns.map(run => ({ task: run.task, type: run.type, summary: run.delta })),
   ];
-  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task) }));
+  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task, run.type) }));
 }
 
 /** The list card shows at most this many runs, the newest; a `+N` chip counts the rest. */
@@ -286,8 +298,10 @@ const OUTCOME_WORDS: Record<RunOutcome, string> = {
 };
 
 /** One run in words, for tooltips and screen readers: `Run 3 left findings (6/10)`. */
-export const describeRun = (run: TaskRunEntry): string =>
-  `Run ${run.number} ${OUTCOME_WORDS[run.outcome]}${run.task.score != null ? ` (${run.task.score}/10)` : ''}`;
+export const describeRun = (run: TaskRunEntry): string => {
+  const score = runScore(run);
+  return `Run ${run.number} ${OUTCOME_WORDS[run.outcome]}${score != null ? ` (${score}/10)` : ''}`;
+};
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 

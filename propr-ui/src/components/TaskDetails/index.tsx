@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { renderMarkdown } from './renderMarkdown';
@@ -21,9 +21,11 @@ import { getHistoryDerivedData } from './useHistoryData';
 import { getCleanDocumentTitle } from '../TaskList/utils.tsx';
 import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/proprApi';
-import { useTotalDuration, useCommitInfo, useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
+import { useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
 import { sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
+import { InspectedRunBanner } from './TaskHeader';
+import { useTaskHeaderView } from './useTaskHeaderView';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -150,10 +152,15 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
 
-  const totalDuration = useTotalDuration(taskData.history);
-  const commitInfo = useCommitInfo(taskData.history, taskData.taskInfo);
   const consumedReviewCommentIds = useConsumedReviewCommentIds(taskData.history);
   const tokenUsage = useTokenUsage(taskData.liveDetails, taskData.history);
+  const ownSummary = useMemo(() => ({
+    history: taskData.history,
+    taskInfo: taskData.taskInfo,
+    usageMetricRecords: taskData.usageMetricRecords,
+    tokenUsage,
+  }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage]);
+  const { headerProps, contextStripProps, inspection } = useTaskHeaderView(taskId, runs, ownSummary);
 
   const handleFollowupSubmit = useCallback(async (body: string) => {
     if (!taskId) {
@@ -188,20 +195,15 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
-  const headerProps = {
-    taskInfo: taskData.taskInfo,
-    currentStatus: derivedData.currentStatus,
-  };
-  const contextStripProps = {
-    taskInfo: taskData.taskInfo,
-    modelName: derivedData.modelName,
-    prInfo: derivedData.prInfo,
-    commitInfo,
-    duration: totalDuration,
-    tokenUsage,
-    usageMetricRecords: taskData.usageMetricRecords,
-    synthetic: taskData.history.some(item => item.metadata?.syntheticRouting !== undefined),
-  };
+  const inspectionBanner = inspection && onSelectRun ? (
+    <InspectedRunBanner
+      runNumber={inspection.run.number}
+      runCount={inspection.head.number}
+      status={derivedData.currentStatus}
+      commandMode={taskData.taskInfo?.commandMode}
+      onBack={() => onSelectRun(inspection.head.task.id)}
+    />
+  ) : null;
   const actionBarProps = {
     currentStatus: derivedData.currentStatus,
     historyItemWithPaths: derivedData.historyItemWithPaths,
@@ -237,6 +239,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           </div>
         </div>
 
+        {inspectionBanner}
         <ProgressBar todos={taskData.liveDetails.todos} />
       </header>
 

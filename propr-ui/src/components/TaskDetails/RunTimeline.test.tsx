@@ -10,7 +10,8 @@ const group: TaskGroup = {
   tasks: [
     { id: 'run-4', title: 'Ultrafix PR #2664: Stop work when intent is withdrawn', subtitle: 'Ultrafix cycle 3 (linting)', status: 'processing', createdAt: '2026-09-10T12:09:00Z', processedAt: '2026-09-10T12:09:00Z', prNumber: 2664 },
     { id: 'run-3', title: 'Review PR #2664: Stop work when intent is withdrawn', subtitle: 'Found 2 issues', status: 'completed', score: 6, createdAt: '2026-09-10T12:05:00Z', processedAt: '2026-09-10T12:05:00Z', completedAt: '2026-09-10T12:08:30Z', prNumber: 2664 },
-    { id: 'run-2', title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', status: 'failed', createdAt: '2026-09-10T12:02:00Z', prNumber: 2664 },
+    // The ultrafix loop recorded a score against this fix; a fix never shows one.
+    { id: 'run-2', title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', status: 'completed', score: 5, commitHash: '9f3c21e81a4d', createdAt: '2026-09-10T12:02:00Z', prNumber: 2664 },
     { id: 'run-1', title: 'Review PR #2664: Stop work when intent is withdrawn', subtitle: 'Initial review', status: 'completed', score: 4, createdAt: '2026-09-10T12:00:00Z', prNumber: 2664 },
   ],
 };
@@ -32,12 +33,16 @@ describe('RunTimeline', () => {
     const rows = within(screen.getByRole('list', { name: 'Runs' })).getAllByTestId('run-timeline-run');
     expect(rows.map(row => row.querySelector('button')!.textContent)).toEqual([
       expect.stringMatching(/^Run 1·ReviewInitial review.*\[4\]$/),
-      expect.stringMatching(/^Run 2·FixFixed seedCommit test/),
+      expect.stringMatching(/^Run 2·FixFixed seedCommit test.*9f3c21e$/),
       expect.stringMatching(/^Run 3·ReviewFound 2 issues.*3m 30s\[6\]$/),
       expect.stringMatching(/^Run 4·UltrafixUltrafix cycle 3 \(linting\).*Running…Active$/),
     ]);
     expect(rows.map(row => row.querySelector('button')!.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false', 'true']);
-    expect(rows.map(row => row.querySelector('[data-outcome]')!.getAttribute('data-outcome'))).toEqual(['findings', 'failed', 'findings', 'active']);
+    // Plain nodes on the rail: the type and the result slot say how each run went, not a coloured marker.
+    expect(screen.queryAllByTestId('run-timeline-node')).toHaveLength(4);
+    expect(screen.getByRole('list', { name: 'Runs' }).querySelector('[data-outcome]')).toBeNull();
+    expect(within(rows[1]).getByTestId('run-commit')).toHaveTextContent('9f3c21e');
+    expect(within(rows[1]).queryByTitle(/score/i)).toBeNull();
     // Only the open run carries its steps, each a branch off the rail.
     const stepList = within(rows[3]).getByRole('list', { name: 'Run steps' });
     expect(within(stepList).getAllByRole('listitem').map(step => step.textContent)).toEqual([

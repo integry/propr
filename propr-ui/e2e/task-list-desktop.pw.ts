@@ -270,19 +270,17 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   const runRows = timeline.getByTestId('run-timeline-run');
   await expect(runRows).toHaveCount(8);
   await expect(runRows.nth(0).getByRole('button')).toContainText(/Run 1.*Initial review/);
-  await expect(runRows.nth(0).getByTitle('Run score: 4/10')).toBeVisible();
-  await expect(runRows.nth(2).getByTitle('Run score: 6/10')).toBeVisible();
+  // Only reviews are scored, though runs 6 and 7 carry the loop's score in the data; a fix shows its commit.
+  expect(await timeline.getByTitle(/^(Review score|Commit)\b/).evaluateAll(nodes => nodes.map(node => node.title))).toEqual(['Review score: 4/10', 'Commit a81d3f56e0c2', 'Review score: 6/10', 'Commit 4be17c09d2f3']);
   await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Running….*Active/);
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
-  await expect(details.getByTestId('run-switcher')).toHaveCount(0);
-  // The card shows the newest four runs and counts the rest: [+4] ●──■──■──⟳.
+  // The card shows the newest four runs and counts the rest: +4 ●─●─●─⟳, on a pill so it reads as a track.
   const track = selectedCard.getByTestId('run-count');
   await expect(track).toHaveAttribute('aria-label', '8 runs');
   await expect(track.getByTestId('run-track-overflow')).toHaveText('+4');
-  expect(await track.locator('[data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome'))))
-    .toEqual(['passed', 'findings', 'findings', 'active']);
+  expect(await track.locator('[data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome')))).toEqual(['passed', 'passed', 'passed', 'active']);
   // Every run line leads with its type after the chip, including a follow-up whose summary names no action.
   const runLines = list.locator('[data-testid="task-card"]').filter({ has: page.getByTestId('run-count') });
   for (const card of await runLines.all()) await expect(card.getByTestId('work-type-badge')).toBeVisible();
@@ -310,6 +308,10 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
   await expect(details.getByRole('region', { name: 'Changed files' })).toHaveText(/^(?!.*withdrawalLabels).*withdrawalHandlers\.ts/s);
   await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
+  // The header still describes the task, which is working on Run 8; the banner names the run inspected.
+  await expect(details.locator('header:visible h2').locator('..')).toHaveText(/^Implementing.*Ultrafix cycle 3 \(linting\)$/);
+  await expect(details.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
+  await expect(details.getByTestId('inspected-run-banner')).toContainText('Inspecting historical Run 3 of 8 (Completed)');
   await capture(page, 'tasks-split-1920-run-3');
   // The run belongs to the same task, so its row stays selected.
   await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');

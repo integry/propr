@@ -33,24 +33,26 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
 };
 
 /**
- * The trend of a task's runs on its list card: `[+4] ●──■──■──⟳`. Never more
- * than the newest four, joined by a 1px rail; a muted chip counts the older
- * ones. The task pane's timeline carries every run in full.
+ * The trend of a task's runs on its list card: `+4 ●─■─■─⟳`. Never more than
+ * the newest four, joined by a 1px rail and set on a quiet slate pill, so a
+ * row of identical dots reads as a track rather than a masked password. The
+ * older runs are counted inside the pill; the task pane's timeline carries
+ * every run in full.
  */
 export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
   const shown = runs.slice(-RUN_TRACK_LIMIT);
   const hidden = runs.length - shown.length;
   return (
-    <span data-testid="run-track" className="inline-flex flex-none items-center gap-1.5">
+    <span data-testid="run-track" className="inline-flex flex-none items-center gap-1.5 rounded-sm bg-slate-100/70 px-1.5 py-0.5">
       {hidden > 0 && (
-        <span data-testid="run-track-overflow" className="rounded-sm bg-slate-100 px-1 font-mono text-[10px] leading-4 text-slate-500">
+        <span data-testid="run-track-overflow" className="font-mono text-[10px] leading-4 text-slate-500">
           +{hidden}
         </span>
       )}
       <span className="inline-flex items-center">
         {shown.map((run, index) => (
           <React.Fragment key={run.task.id}>
-            {index > 0 && <span aria-hidden="true" className="h-px w-2 bg-slate-200" />}
+            {index > 0 && <span aria-hidden="true" className="h-px w-2 bg-slate-300" />}
             <span title={describeRun(run)} className="inline-flex"><RunOutcomeMarker outcome={run.outcome} /></span>
           </React.Fragment>
         ))}

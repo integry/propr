@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, GitCommit } from 'lucide-react';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
-import { RunOutcomeMarker } from '../TaskList/RunTrack';
 import { ScoreBadge } from '../TaskList/ScoreBadge';
 import { formatDuration, formatRelativeTime } from '../TaskList/utils.tsx';
-import { describeRun, type TaskRunEntry } from '../TaskList/rowModel';
+import { describeRun, isReviewRun, runScore, type TaskRunEntry } from '../TaskList/rowModel';
 
 interface RunTimelineProps {
   /** Every run of the task, oldest first. */
@@ -17,10 +16,35 @@ interface RunTimelineProps {
 }
 
 /**
+ * What a run produced, in the row's last slot. A review scores the code; a
+ * fix writes it, so it shows the commit it pushed rather than a score, and a
+ * failed run says so, since the rail's nodes carry no colour.
+ */
+const RunResult: React.FC<{ run: TaskRunEntry }> = ({ run }) => {
+  if (run.outcome === 'active') {
+    return <span className="rounded-full bg-teal-50 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-teal-700">Active</span>;
+  }
+  if (isReviewRun(run.type)) {
+    return <ScoreBadge score={runScore(run)} bracketed className="!text-xs" label="Review score" />;
+  }
+  if (run.task.commitHash) {
+    return (
+      <span data-testid="run-commit" title={`Commit ${run.task.commitHash}`} className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-500">
+        <GitCommit aria-hidden="true" className="h-3 w-3 flex-none text-slate-400" strokeWidth={2.25} />
+        {run.task.commitHash.slice(0, 7)}
+      </span>
+    );
+  }
+  if (run.outcome === 'failed') return <span className="text-[11px] font-medium text-red-600">Failed</span>;
+  return null;
+};
+
+/**
  * The history of the whole task: one row per run, on a continuous 2px rail.
  * Earlier runs are single-line summaries (number, type, what it did, when, how
- * long, score); the run the pane shows is open, its steps branching off the
- * rail. Choosing another run opens it in the pane, so the files changed and
+ * long, and a review's score or a fix's commit); the run the pane shows is
+ * open, its steps branching off the rail. The rail's nodes are plain: the type
+ * and the result slot already say what each run was and how it went. Choosing another run opens it in the pane, so the files changed and
  * the execution log below follow it: the timeline is how the pane moves
  * through the task's history.
  */
@@ -50,9 +74,13 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
               onClick={() => (selected ? setExpanded(value => !value) : onSelectRun(run.task.id))}
               className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
             >
-              {/* The node sits on the rail; white behind it breaks the line around the marker. */}
-              <span className="relative z-[1] flex h-4 w-4 flex-none items-center justify-center bg-white">
-                <RunOutcomeMarker outcome={run.outcome} size="md" />
+              {/* A plain node on the rail; white behind it breaks the line around it. */}
+              <span className="relative z-[1] mr-1 flex h-4 w-4 flex-none items-center justify-center bg-white">
+                <span
+                  aria-hidden="true"
+                  data-testid="run-timeline-node"
+                  className={`h-2 w-2 rounded-full border-2 ${selected ? 'border-slate-500 bg-slate-500' : 'border-slate-300 bg-white'}`}
+                />
               </span>
               <ChevronRight
                 aria-hidden="true"
@@ -75,11 +103,9 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
               <span className={`w-16 flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
                 {active ? 'Running…' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
               </span>
-              {/* A fixed slot, so scores line up whether or not every run has one. */}
-              <span className="flex w-12 flex-none justify-end">
-                {active
-                  ? <span className="rounded-full bg-teal-50 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-teal-700">Active</span>
-                  : <ScoreBadge score={run.task.score} bracketed className="!text-xs" label="Run score" />}
+              {/* A fixed slot, so results line up whether or not every run has one. */}
+              <span className="flex w-16 flex-none justify-end">
+                <RunResult run={run} />
               </span>
             </button>
             {open && <div className="pb-1" data-testid="run-timeline-steps">{children}</div>}
