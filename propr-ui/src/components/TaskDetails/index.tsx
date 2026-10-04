@@ -23,6 +23,7 @@ import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/proprApi';
 import { useTotalDuration, useCommitInfo, useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
+import { sanitizeTaskTitle } from '../TaskList/rowModel';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -83,7 +84,9 @@ const renderTaskDetailsStatus = (
 };
 
 const getMobileSummaryTitle = (title: string | undefined, taskId?: string) => {
-  const firstLineTitle = title?.split('\n')[0]?.trim();
+  const firstLine = title?.split('\n')[0]?.trim();
+  // The same sanitizer as the task list and the desktop heading.
+  const firstLineTitle = sanitizeTaskTitle(firstLine).title ?? firstLine;
 
   if (firstLineTitle) {
     return firstLineTitle;

@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Filter, Search, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 
@@ -28,13 +28,30 @@ const normalizeFilterValue = (filter: string): string => {
   }
 };
 
+/**
+ * Every repository on this instance shares an owner, so the trigger shows
+ * `propr` rather than `integry/propr`; the full name stays in the row tooltip
+ * and the search. A name two owners share keeps its owner.
+ */
+const withShortNames = (repos: RepoOption[]): RepoOption[] => {
+  const shortName = (name: string) => name.split('/')[1] ?? name;
+  const seen = new Map<string, number>();
+  for (const repo of repos) seen.set(shortName(repo.name), (seen.get(shortName(repo.name)) ?? 0) + 1);
+  return repos.map(repo => (
+    repo.displayName || !repo.name.includes('/') || seen.get(shortName(repo.name))! > 1
+      ? repo
+      : { ...repo, displayName: shortName(repo.name) }
+  ));
+};
+
 const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | 'availableRepos' | 'reposLoading'>> = ({
   repoFilter,
   setRepoFilter,
   availableRepos,
   reposLoading
 }) => {
-  const repos = useDecoratedRepoOptions(availableRepos);
+  const decorated = useDecoratedRepoOptions(availableRepos);
+  const repos = useMemo(() => withShortNames(decorated), [decorated]);
   return (
   <RepositorySelector
     repos={repos}
@@ -42,8 +59,7 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     onRepoChange={setRepoFilter}
     isLoading={reposLoading}
     variant="default"
-    labelLayout="stacked"
-    className="flex-1 min-w-0 max-w-[220px] sm:flex-initial sm:min-w-[10rem] sm:w-[320px] sm:max-w-[320px]"
+    className="flex-1 min-w-0 max-w-[220px] sm:flex-initial sm:max-w-[13rem]"
   />
   );
 };
@@ -77,8 +93,8 @@ export const Filters: React.FC<FiltersProps> = ({
         {!hideFilters && (
           <>
             {/* Search input - hidden on mobile, shown on desktop */}
-            {/* Shrinks before the filters do, so the row fits a list pane beside an open task. */}
-            <div className="relative hidden sm:block w-64 min-w-[8rem] shrink">
+            {/* Takes the room the filters leave, so it stays usable in a list pane beside an open task. */}
+            <div className="relative hidden sm:block min-w-[8rem] flex-1 max-w-xs">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
@@ -99,7 +115,6 @@ export const Filters: React.FC<FiltersProps> = ({
             </div>
             {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2 min-w-0">
-              <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={selectedFilter}
                 onChange={(e) => setFilter(e.target.value)}

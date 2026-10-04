@@ -167,7 +167,11 @@ describe('task ledger rows', () => {
     const { rerender } = render(<Fixture selectedTaskId="task-0" />);
     const row = () => within(screen.getByRole('table')).getAllByTestId('task-row')[0].querySelector('[role="row"]')!;
     expect(row()).toHaveAttribute('aria-selected', 'true');
-    expect(row().className).toContain('bg-teal-50/60');
+    expect(row().className).toContain('bg-slate-100/80');
+    // The open task's title is dark and bold, not drawn as a link.
+    const title = row().querySelector('a.task-title')!;
+    expect(title).toHaveAttribute('aria-current', 'true');
+    expect(title.className).toContain('font-semibold');
     rerender(<MemoryRouter><Fixture selectedTaskId="task-3" /></MemoryRouter>);
     expect(row()).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));

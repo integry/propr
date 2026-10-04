@@ -37,7 +37,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
             <TitleLineType row={row} />
             <TitleLinePreviews row={row} />
           </div>
-          <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} className="min-w-0" />
+          <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} className="min-w-0" />
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
             {getStatusPill(getDisplayStatus(task))}
             <span className="truncate font-mono text-[11px]" title={row.repository}>{row.repositoryName}</span>

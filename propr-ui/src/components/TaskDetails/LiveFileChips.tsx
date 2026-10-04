@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { RefreshCw, AlertCircle, Plus, Minus, Trash2, ArrowRight } from 'lucide-react';
+import { RefreshCw, AlertCircle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
 import { useSocket } from '../../contexts/useSocket';
@@ -13,17 +13,18 @@ interface LiveFileChipsProps {
   isActive: boolean;
 }
 
-// Get status indicator for file change
-const getStatusIndicator = (status: FileChange['status']) => {
+// A file-tree icon that also carries the change: added, deleted or renamed files are tinted.
+const getFileIcon = (status: FileChange['status']) => {
+  const className = 'h-3.5 w-3.5 flex-shrink-0';
   switch (status) {
     case 'added':
-      return <Plus className="h-3 w-3 text-green-500 flex-shrink-0" />;
+      return <FilePlus className={`${className} text-green-600`} aria-label="Added" />;
     case 'deleted':
-      return <Trash2 className="h-3 w-3 text-red-500 flex-shrink-0" />;
+      return <FileX className={`${className} text-red-500`} aria-label="Deleted" />;
     case 'renamed':
-      return <ArrowRight className="h-3 w-3 text-yellow-500 flex-shrink-0" />;
+      return <FileSymlink className={`${className} text-amber-600`} aria-label="Renamed" />;
     default:
-      return null;
+      return <File className={`${className} text-slate-400`} aria-hidden="true" />;
   }
 };
 
@@ -187,41 +188,45 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
           <span>{error}</span>
         </div>
       ) : (
-        /* A bounded list keeps large changesets from taking over the timeline. */
-        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded border border-slate-200">
+        /*
+         * A file tree, not a form field: the shared folder as a quiet label and
+         * the files beneath it as plain rows. A bounded list keeps large
+         * changesets from taking over the timeline.
+         */
+        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
           {commonDirectory && (
-            <div className="sticky top-0 border-b border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px] text-slate-500 break-all" title={commonDirectory}>
+            <div className="sticky top-0 bg-white px-2 py-0.5 font-mono text-xs text-slate-400 break-all" title={commonDirectory}>
               {directoryLabel}
             </div>
           )}
-          {sortedFiles.map(file => {
-            const isSelected = selectedFilePath === file.path;
-            const relativePath = file.path.slice(commonDirectory.length);
-            const parentDirectory = relativePath.split('/').slice(-2, -1).map(part => `${part}/`).join('');
-            return (
-              <button
-                key={file.path}
-                onClick={() => handleSelectFile(file.path)}
-                aria-label={`View diff for ${file.path}`}
-                className={`flex w-full min-w-0 items-start gap-2 border-b border-slate-100 px-2 py-2 text-left font-mono text-xs transition-colors last:border-b-0 ${isSelected ? 'bg-primary-50' : 'hover:bg-slate-50'}`}
-                title={file.path}
-              >
-                {getStatusIndicator(file.status)}
-                <span className="min-w-0 flex-1 break-all">
-                  <span className="block text-slate-700">{file.path.split('/').pop()}</span>
-                  {parentDirectory && (
-                    <span className="mt-0.5 block text-[10px] text-slate-400">{parentDirectory}</span>
-                  )}
-                </span>
-                {(file.linesAdded > 0 || file.linesRemoved > 0) && (
-                  <span className="flex flex-shrink-0 items-center gap-1 text-[10px]">
-                    {file.linesAdded > 0 && <span className="text-green-600">+{file.linesAdded}</span>}
-                    {file.linesRemoved > 0 && <span className="text-red-500">-{file.linesRemoved}</span>}
+          <div className={commonDirectory ? 'pl-2' : ''}>
+            {sortedFiles.map(file => {
+              const isSelected = selectedFilePath === file.path;
+              const relativePath = file.path.slice(commonDirectory.length);
+              const parentDirectory = relativePath.split('/').slice(0, -1).map(part => `${part}/`).join('');
+              return (
+                <button
+                  key={file.path}
+                  onClick={() => handleSelectFile(file.path)}
+                  aria-label={`View diff for ${file.path}`}
+                  className={`flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                  title={file.path}
+                >
+                  {getFileIcon(file.status)}
+                  <span className="min-w-0 flex-1 break-all">
+                    {parentDirectory && <span className="text-slate-400">{parentDirectory}</span>}
+                    <span className="text-slate-700">{file.path.split('/').pop()}</span>
                   </span>
-                )}
-              </button>
-            );
-          })}
+                  {(file.linesAdded > 0 || file.linesRemoved > 0) && (
+                    <span className="flex flex-shrink-0 items-center gap-1 text-[11px] tabular-nums">
+                      {file.linesAdded > 0 && <span className="text-green-600">+{file.linesAdded}</span>}
+                      {file.linesRemoved > 0 && <span className="text-red-500">-{file.linesRemoved}</span>}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

@@ -221,8 +221,12 @@ export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.leng
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
-/** The selected row: a teal tint and a 2px teal bar on its leading edge, like the sidebar's active item. */
-export const SELECTED_ROW_CLASSES = 'bg-teal-50/60 shadow-[inset_2px_0_0_0_#0d9488]';
+/**
+ * The selected row: a quiet slate fill and a 4px teal rail on its leading edge,
+ * as in a mail or issue list. The rail is an inset shadow rather than a border,
+ * so selecting a row does not shift its content.
+ */
+export const SELECTED_ROW_CLASSES = 'bg-slate-100/80 shadow-[inset_4px_0_0_0_#0d9488]';
 
 export const taskPath = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
 

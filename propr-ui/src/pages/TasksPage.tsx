@@ -6,6 +6,13 @@ import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
 import TaskSplitWorkspace from '../components/TaskList/TaskSplitWorkspace';
 
+/**
+ * Runs of one pull request fold into one row, so a page of 50 tasks was often
+ * only five to eleven rows and left the list pane half empty beside an open
+ * task. 100 tasks fill the pane on a typical page; fewer tasks would mean fewer rows.
+ */
+const TASKS_PER_PAGE = 100;
+
 const TasksPage: React.FC = () => {
   const { taskId } = useParams();
   const { selectedTaskId, select, isSplitViewport } = useTaskSelection();
@@ -41,7 +48,7 @@ const TasksPage: React.FC = () => {
         onDeleted={handleDeleted}
         list={(
           <TaskList
-            limit={50}
+            limit={TASKS_PER_PAGE}
             selectedTaskId={openTaskId}
             onSelectTask={isSplitViewport ? select : undefined}
             refreshKey={listRefreshKey}

@@ -95,11 +95,14 @@ export const TaskTitleLink: React.FC<{
   tooltip: string;
   taskId: string;
   onRowClick: (id: string) => void;
+  /** The task open beside the list: the title stays dark and gains weight instead of looking like a link. */
+  selected?: boolean;
   className?: string;
-}> = ({ title, tooltip, taskId, onRowClick, className = 'min-w-0 flex-1' }) => (
+}> = ({ title, tooltip, taskId, onRowClick, selected = false, className = 'min-w-0 flex-1' }) => (
   <Link
     to={taskPath(taskId)}
-    className={`task-title block text-left text-sm font-medium text-slate-900 ${className}`}
+    aria-current={selected || undefined}
+    className={`task-title block text-left text-sm ${selected ? 'font-semibold' : 'font-medium'} text-slate-900 ${className}`}
     title={tooltip}
     onClick={event => {
       event.stopPropagation();
@@ -238,7 +241,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
             <TitleLineType row={row} />
-            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} />
+            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} />
             <TitleLinePreviews row={row} />
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} />

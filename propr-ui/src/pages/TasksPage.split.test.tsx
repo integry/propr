@@ -128,7 +128,7 @@ describe('TasksPage split workspace', () => {
     const pane = await screen.findByTestId('task-split-details');
     expect(within(pane).getByTestId('task-details')).toHaveTextContent('details for c');
     await screen.findByRole('table', { name: 'Tasks' });
-    expect(vi.mocked(getTasks)).toHaveBeenCalledWith('all', 50, 0, 'integry/propr', '');
+    expect(vi.mocked(getTasks)).toHaveBeenCalledWith('all', 100, 0, 'integry/propr', '');
   });
 
   it('steps through primary rows with j/k and the arrow keys, and closes with Escape', async () => {

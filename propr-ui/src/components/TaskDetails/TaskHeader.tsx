@@ -1,5 +1,6 @@
 import React from 'react';
 import { TaskInfo } from './types';
+import { sanitizeTaskTitle } from '../TaskList/rowModel';
 import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw } from 'lucide-react';
 
 interface TaskHeaderProps {
@@ -13,6 +14,16 @@ const getSubtitle = (taskInfo: TaskInfo): string => {
     return `Follow-up changes for PR #${taskInfo.number}`;
   }
   return `Initial implementation for Issue #${taskInfo.number}`;
+};
+
+/**
+ * The heading reads like the task list's row: the same sanitizer drops the
+ * workflow verb (shown as a badge), the `PR #2664:` the context strip already
+ * links, and the `[2659 by GPT-6 Astra]` model tag.
+ */
+const getDisplayTitle = (title: string | undefined) => {
+  const { title: clean, fullTitle } = sanitizeTaskTitle(title);
+  return { text: clean ?? title, tooltip: fullTitle ?? title };
 };
 
 const getStatusInfo = (status: string, commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
@@ -113,6 +124,7 @@ const getCommandModeBadge = (commandMode?: string): { icon: React.ReactNode; lab
 const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
   const commandModeBadge = getCommandModeBadge(taskInfo?.commandMode);
+  const title = getDisplayTitle(taskInfo?.title);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -136,8 +148,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
         )}
       </div>
       {/* Title */}
-      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words line-clamp-2" title={taskInfo?.title}>
-        {taskInfo?.title || 'Loading...'}
+      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words line-clamp-2" title={title.tooltip}>
+        {title.text || 'Loading...'}
       </h2>
       {/* Subtitle - smaller on mobile */}
       {taskInfo && (

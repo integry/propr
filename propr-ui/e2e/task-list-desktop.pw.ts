@@ -148,7 +148,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
       // The footer counts tasks and the rows they fold into (four pull requests and one issue).
-      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–50 of 14,769 · 5 rows on this page');
+      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–100 of 14,769 · 5 rows on this page');
       // The repository filter counts the same tasks with the same digit grouping as the footer.
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
@@ -314,7 +314,27 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(details.getByRole('link', { name: 'Open full page' })).toHaveAttribute('href', '/tasks/pr-2664-run-0');
   // The list pane is narrower than the ledger, so it shows cards, and the selected one is marked.
   await expect(table).not.toBeVisible();
-  await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');
+  const selectedCard = list.locator('[data-testid="task-card"][aria-current="true"]');
+  await expect(selectedCard).toContainText('Stop work when an issue or PR withdraws intent');
+  // The selection is the row's fill and rail; its title stays dark and bold, never a teal underlined link.
+  const selectedTitle = selectedCard.getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
+  await selectedTitle.hover();
+  await expect(selectedTitle).toHaveCSS('color', 'rgb(15, 23, 42)');
+  await expect(selectedTitle).toHaveCSS('text-decoration-line', 'none');
+  await expect(selectedTitle).toHaveCSS('font-weight', '600');
+  // The details heading is sanitized the same way as the row: no workflow verb, PR number or model tag.
+  await expect(details.locator('h2:visible')).toHaveText('Stop work when an issue or PR withdraws intent');
+  // The toolbar gives its width to search: no separate filter icon, and the repository without its owner.
+  await expect(list.locator('svg.lucide-filter, svg.lucide-funnel')).toHaveCount(0);
+  const repoTrigger = list.getByRole('button', { name: /propr/ });
+  await expect(repoTrigger).toContainText('propr');
+  await expect(repoTrigger).not.toContainText('integry/');
+  expect(await list.getByPlaceholder('Search tasks...').evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(200);
+  // Changed files read as a file tree: a quiet folder label over borderless file rows.
+  const changedFiles = details.getByRole('region', { name: 'Changed files' });
+  await expect(changedFiles).toHaveCSS('border-top-width', '0px');
+  await expect(changedFiles.getByText('src/jobs/', { exact: true })).toHaveCSS('color', 'rgb(148, 163, 184)');
+  await expect(changedFiles.getByRole('button', { name: 'View diff for src/jobs/withdrawalLabels.ts' })).toHaveCSS('border-top-width', '0px');
   const panes = await page.evaluate(() => ({
     list: document.querySelector('[data-testid="task-split-list"]')!.getBoundingClientRect().width,
     details: document.querySelector('[data-testid="task-split-details"]')!.getBoundingClientRect().width,
