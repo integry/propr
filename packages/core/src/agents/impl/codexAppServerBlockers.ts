@@ -7,7 +7,7 @@ import {
     GOAL_BLOCKER_QUESTION_LIMIT,
 } from '@propr/shared';
 import { redactSecrets } from '../../utils/github/secretRedaction.js';
-import type { AgentTaskOptions, GoalBlockerReport } from '../types.js';
+import type { AgentTaskOptions, GoalBlockerReport, GoalControlInput } from '../types.js';
 import type { AppServerConnection } from './codexAppServerConnection.js';
 
 /**
@@ -174,11 +174,21 @@ export function codexUserInputResponse(questionIds: string[], answer: string): R
     return { answers: { [questionIds[0]]: { answers: [answer] } } };
 }
 
+/** Without a recorded boundary or input order, the input cannot be shown to follow the question. */
+function answersAfter(request: OpenProviderRequest, input: GoalControlInput): boolean {
+    return request.inputBoundary !== undefined && input.sequence !== undefined && input.sequence > request.inputBoundary;
+}
+
 interface OpenProviderRequest {
     id: number | string;
     requestKey: string;
     answerQuestionIds: string[];
     answered: boolean;
+    /**
+     * Highest input sequence submitted before the question was reported. Only
+     * later inputs can be its answer; earlier ones stay ordinary corrections.
+     */
+    inputBoundary?: number;
 }
 
 /**
@@ -197,6 +207,13 @@ export class CodexProviderRequests {
 
     async sync(): Promise<void> {
         await this.persist(this.absorb());
+        // Read after the report is stored: every input up to this point was
+        // submitted before the operator could see the question.
+        for (const request of this.open.values()) {
+            if (!request.answerQuestionIds.length || request.inputBoundary !== undefined) continue;
+            const boundary = await this.control.latestInputSequence?.();
+            if (boundary !== undefined) request.inputBoundary = boundary;
+        }
     }
 
     /**
@@ -234,16 +251,17 @@ export class CodexProviderRequests {
     }
 
     /**
-     * Deliver an operator input as the reply to the unanswered question, if exactly one is waiting.
-     * A goal input names no question, so while several wait it answers none of them and is
-     * delivered as an ordinary correction instead.
+     * Deliver an operator input as the reply to the unanswered question, if exactly one is waiting
+     * and the input was submitted after that question was reported. A goal input names no question,
+     * so while several wait it answers none of them, and an input queued before the question is an
+     * unrelated correction; both are delivered as ordinary corrections instead.
      * Resolutions received while the caller awaited are applied first, with no await before the
      * response, so an input is never spent on a question the server already reported resolved.
      */
-    async answer(input: { id: string; message: string }, turnId: string): Promise<boolean> {
+    async answer(input: GoalControlInput, turnId: string): Promise<boolean> {
         const work = this.absorb();
         const waiting = [...this.open.values()].filter(request => !request.answered && request.answerQuestionIds.length);
-        const question = waiting.length === 1 ? waiting[0] : undefined;
+        const question = waiting.length === 1 && answersAfter(waiting[0], input) ? waiting[0] : undefined;
         if (question) {
             this.connection.respond(question.id, codexUserInputResponse(question.answerQuestionIds, input.message));
             question.answered = true;

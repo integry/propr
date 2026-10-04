@@ -152,11 +152,11 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
             if (!goal) throw new Error('Goal attempt ownership was superseded');
             const inputs = await db('goal_inputs')
                 .where({ goal_id: job.goalId, owner_id: goal.owner_id, state: 'pending' })
-                .orderBy('sequence', 'asc') as Array<{ input_id: string; message: string }>;
+                .orderBy('sequence', 'asc') as Array<{ input_id: string; message: string; sequence: number }>;
             return {
                 desiredState: goal.desired_state,
                 requestedModel: goal.requested_model,
-                pendingInputs: inputs.map(input => ({ id: input.input_id, message: input.message })),
+                pendingInputs: inputs.map(input => ({ id: input.input_id, message: input.message, sequence: Number(input.sequence) })),
                 controlGeneration: Number(goal.control_generation || 0),
             };
         },
@@ -253,6 +253,11 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                 return recordGoalBlocker(trx, attemptIdentity(job), owned, report);
             });
             if (recorded) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+        },
+        async latestInputSequence() {
+            const latest = await db('goal_inputs').where({ goal_id: job.goalId })
+                .max('sequence as sequence').first() as { sequence: number | string | null } | undefined;
+            return Number(latest?.sequence ?? 0);
         },
         async resolveBlocker(requestKey, resolution) {
             if (await resolveGoalBlocker(db, attemptIdentity(job), requestKey, resolution)) {

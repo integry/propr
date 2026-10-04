@@ -167,6 +167,8 @@ function providerRequestHarness() {
   const queued = { requests: [] as Array<Record<string, unknown>>, resolved: [] as Array<number | string> };
   const responses: Array<{ id: number | string; result: Record<string, unknown> }> = [];
   const calls: string[] = [];
+  // The highest input sequence the goal has recorded; inputs above it were submitted later.
+  const inputs = { latest: 0 };
   const connection = {
     takeServerRequests: () => queued.requests.splice(0),
     takeResolvedServerRequests: () => queued.resolved.splice(0),
@@ -176,8 +178,9 @@ function providerRequestHarness() {
     reportBlocker: async (report: { requestKey: string }) => { calls.push(`report:${report.requestKey}`); },
     resolveBlocker: async (key: string, reason: string) => { calls.push(`resolve:${key}:${reason}`); },
     markInputDelivered: async (id: string) => { calls.push(`delivered:${id}`); },
+    latestInputSequence: async () => inputs.latest,
   } as unknown as NonNullable<AgentTaskOptions['goalControl']>;
-  return { queued, responses, calls, requests: new CodexProviderRequests(connection, control) };
+  return { queued, responses, calls, inputs, requests: new CodexProviderRequests(connection, control) };
 }
 
 describe('Codex provider requests', () => {
@@ -185,9 +188,9 @@ describe('Codex provider requests', () => {
     const harness = providerRequestHarness();
     harness.queued.requests.push(fixtures.userInput);
     await harness.requests.sync();
-    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), true);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true);
     assert.deepEqual(harness.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
-    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'later' }, 'turn-1'), false,
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'later', sequence: 2 }, 'turn-1'), false,
       'an answered question does not take a second input');
     assert.deepEqual(harness.calls, ['report:codex:thread-1:turn-1:item-7:user-input', 'delivered:input-1']);
   });
@@ -198,7 +201,7 @@ describe('Codex provider requests', () => {
     await harness.requests.sync();
     // `serverRequest/resolved` arrives during the caller's `control.load()`.
     harness.queued.resolved.push(0);
-    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), false);
     assert.deepEqual(harness.responses, [], 'no reply is written to a resolved request');
     assert.deepEqual(harness.calls, [
       'report:codex:thread-1:turn-1:item-7:user-input',
@@ -210,7 +213,7 @@ describe('Codex provider requests', () => {
     const harness = providerRequestHarness();
     harness.queued.requests.push(fixtures.userInput);
     harness.queued.resolved.push(0);
-    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), false);
     assert.deepEqual(harness.responses, []);
     assert.ok(!harness.calls.includes('delivered:input-1'));
   });
@@ -221,20 +224,52 @@ describe('Codex provider requests', () => {
       questions: [{ ...fixtures.userInput.params.questions[0], id: 'region', question: 'Which region?' }] } };
     harness.queued.requests.push(fixtures.userInput, second);
     await harness.requests.sync();
-    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'eu-west-1' }, 'turn-1'), false);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'eu-west-1', sequence: 1 }, 'turn-1'), false);
     assert.deepEqual(harness.responses, [], 'neither question receives an answer meant for one of them');
     assert.ok(!harness.calls.includes('delivered:input-1'));
     // Once the provider resolves one, the remaining question is unambiguous again.
     harness.queued.resolved.push(0);
-    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'eu-west-1' }, 'turn-1'), true);
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'eu-west-1', sequence: 2 }, 'turn-1'), true);
     assert.deepEqual(harness.responses, [{ id: 10, result: { answers: { region: { answers: ['eu-west-1'] } } } }]);
+  });
+
+  test('a correction queued before the question was reported stays an ordinary correction', async () => {
+    const harness = providerRequestHarness();
+    // "Also update the documentation" is queued, then the question arrives before it is delivered.
+    harness.inputs.latest = 1;
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Also update the documentation', sequence: 1 }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, [], 'the earlier correction is never sent as the answer');
+    assert.ok(!harness.calls.includes('delivered:input-1'), 'the correction is left for ordinary delivery');
+    harness.inputs.latest = 2;
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'Postgres', sequence: 2 }, 'turn-1'), true,
+      'an input submitted after the question was reported answers it');
+    assert.deepEqual(harness.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
+  });
+
+  test('a question absorbed while answering cannot take an input loaded before it was reported', async () => {
+    const harness = providerRequestHarness();
+    // The question arrives during the caller's load, after the correction was queued.
+    harness.queued.requests.push(fixtures.userInput);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Also update the documentation', sequence: 1 }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, []);
+    assert.ok(!harness.calls.includes('delivered:input-1'));
+  });
+
+  test('an input without a durable order never answers a question', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.deepEqual(harness.responses, []);
   });
 
   test('a multi-question request never consumes an input', async () => {
     const harness = providerRequestHarness();
     harness.queued.requests.push(fixtures.multiQuestionInput);
     await harness.requests.sync();
-    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres' }, 'turn-1'), false);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), false);
     assert.deepEqual(harness.responses, []);
   });
 });

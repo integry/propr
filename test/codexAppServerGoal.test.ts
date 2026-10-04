@@ -383,8 +383,9 @@ test('Codex provider requests become blockers, inputs answer questions, and only
   const reports: Array<Record<string, unknown>> = [];
   const resolutions: string[] = [];
   const delivered: string[] = [];
-  let pending: Array<{ id: string; message: string }> = [];
+  let pending: Array<{ id: string; message: string; sequence: number }> = [];
   control.load = async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: pending, controlGeneration: 0 });
+  control.latestInputSequence = async () => Math.max(0, ...pending.map(input => input.sequence));
   control.markInputDelivered = async id => { delivered.push(id); pending = pending.filter(input => input.id !== id); };
   control.reportBlocker = async report => { reports.push(report as unknown as Record<string, unknown>); };
   control.resolveBlocker = async (key, resolution) => { resolutions.push(`${key}=${resolution}`); };
@@ -401,7 +402,7 @@ test('Codex provider requests become blockers, inputs answer questions, and only
   assert.deepEqual(reports.map(report => report.category), ['question', 'approval']);
   assert.deepEqual(connection.responses, [], 'nothing is answered or approved on the operator\'s behalf');
 
-  pending = [{ id: 'input-1', message: 'Postgres' }];
+  pending = [{ id: 'input-1', message: 'Postgres', sequence: 1 }];
   await waitFor(() => delivered.includes('input-1'), 'the answer to be delivered');
   assert.deepEqual(connection.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
   assert.equal(connection.requests.some(request => request.method === 'turn/steer'
@@ -417,4 +418,39 @@ test('Codex provider requests become blockers, inputs answer questions, and only
   assert.deepEqual(resolutions.slice(1),
     ['codex:thread-1:turn-native:item-2:item/commandExecution/requestApproval=turn_ended']);
   assert.equal(connection.responses.length, 1, 'the approval was never answered by ProPR');
+});
+
+test('a correction queued before a Codex question is steered, not sent as its answer', async () => {
+  const connection = new FakeConnection(false, 'before', false, 'active', true);
+  const { control } = controls();
+  const delivered: string[] = [];
+  let pending: Array<{ id: string; message: string; sequence: number }> = [];
+  let latest = 0;
+  control.load = async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: pending, controlGeneration: 0 });
+  control.latestInputSequence = async () => latest;
+  control.markInputDelivered = async id => { delivered.push(id); pending = pending.filter(input => input.id !== id); };
+  control.reportBlocker = async () => {};
+  control.resolveBlocker = async () => {};
+  const run = runGoalProtocol(connection as never, options(control), 'gpt-5.6');
+  await waitFor(() => connection.observingTurn, 'the native turn');
+
+  // Both become visible within one polling interval: the loop registers the
+  // question and only then loads the older, still undelivered correction.
+  latest = 1;
+  pending = [{ id: 'input-1', message: 'Also update the documentation', sequence: 1 }];
+  connection.serverRequests.push({ id: 0, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1',
+    turnId: 'turn-native', itemId: 'item-1', isBlocking: true,
+    questions: [{ id: 'db', header: 'Database', question: 'Which database?', isOther: false, isSecret: false, options: null }] } });
+  await waitFor(() => delivered.includes('input-1'), 'the correction to be delivered');
+  assert.equal(connection.requests.some(request => request.method === 'turn/steer'
+    && request.params.clientUserMessageId === 'input-1'), true, 'the correction is steered as ordinary input');
+  assert.deepEqual(connection.responses, [], 'the correction is never the question\'s answer');
+
+  latest = 2;
+  pending = [{ id: 'input-2', message: 'Postgres', sequence: 2 }];
+  await waitFor(() => delivered.includes('input-2'), 'the answer to be delivered');
+  assert.deepEqual(connection.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
+
+  connection.finishTurn();
+  await run;
 });

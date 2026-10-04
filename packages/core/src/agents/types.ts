@@ -109,6 +109,8 @@ export interface AgentTaskOptions {
 export interface GoalControlInput {
     id: string;
     message: string;
+    /** Durable submission order of the input within its goal. */
+    sequence?: number;
 }
 
 export interface GoalCheckpointRequest {
@@ -170,6 +172,8 @@ export interface GoalExecutionControl {
     appendOutput(records: string[]): Promise<void>;
     /** Persist an open provider blocker for this attempt. Repeated reports update the same blocker. */
     reportBlocker?(report: GoalBlockerReport): Promise<void>;
+    /** The highest input sequence submitted to this goal so far, or 0 when none was. */
+    latestInputSequence?(): Promise<number>;
     /** Close an open provider blocker on authoritative evidence that it no longer waits. */
     resolveBlocker?(requestKey: string, resolution: string): Promise<void>;
 }
