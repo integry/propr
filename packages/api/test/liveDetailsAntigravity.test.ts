@@ -237,7 +237,7 @@ test('a single resumed Antigravity invocation reports its own step usage, not th
 test('stored output detection and live-details rendering consume Antigravity stream arrays', async () => {
   const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
   const output = JSON.stringify([
-    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.7-flash-medium' } },
+    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.8-flash-medium' } },
     { event: 'step_update', step_update: { conversation_id: 'conversation-array', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
     { event: 'result', result: { conversation_id: 'conversation-array', status: 'SUCCESS', response: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
   ]);

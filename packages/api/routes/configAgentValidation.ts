@@ -118,8 +118,8 @@ function validateAgentModelReasoningLevels(agent: AgentConfig): string | null {
   if (!isAgentRecord(agent.modelReasoningLevels) || Array.isArray(agent.modelReasoningLevels)) {
     return `Agent '${agent.id}' has invalid modelReasoningLevels. Must be an object`;
   }
-  const supportedLevels = getReasoningLevelsForAgentType(agent.type);
   for (const [model, level] of Object.entries(agent.modelReasoningLevels)) {
+    const supportedLevels = getReasoningLevelsForAgentType(agent.type, model);
     const normalizedLevel = typeof level === 'string' ? level : String(level);
     if (!model.trim() || !isReasoningLevel(normalizedLevel)) {
       return `Agent '${agent.id}' has invalid reasoning level '${String(level)}' for model '${model}'`;

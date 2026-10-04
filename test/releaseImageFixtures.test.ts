@@ -70,7 +70,7 @@ const evidence = process.env.FAKE_INIT_MODEL_EVIDENCE;
 if (evidence === 'missing') delete init.init.model;
 else if (evidence === 'different-tier') {
   init.init.model = fixture.models.find(candidate => candidate.id !== modelId).id;
-} else if (evidence === 'alias') init.init.model = 'flash38-high';
+} else if (evidence === 'alias') init.init.model = 'flash38';
 else if (evidence === 'display-name') init.init.model = modelFixture.displayName;
 if (process.env.FAKE_CONVERSATION_EVIDENCE === 'mixed') {
   const stepUpdate = events.find(event => event.event === 'step_update');

@@ -56,11 +56,12 @@ after(async () => {
 });
 
 for (const [type, Adapter] of [['claude', ClaudeAgent], ['codex', CodexAgent], ['antigravity', AntigravityAgent], ['opencode', OpenCodeAgent], ['vibe', VibeAgent]] as const) {
+    const model = type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model';
     test(`${type} analysis waits for scoped access and passes only the prepared credentials and mounts`, async () => {
         launches = [];
         const configPath = path.join(root, type);
         await fs.mkdir(configPath, { recursive: true });
-        const config: AgentConfig = { id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath, supportedModels: ['test-model'], defaultModel: 'test-model' };
+        const config: AgentConfig = { id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath, supportedModels: [model], defaultModel: model };
         const agent = new Adapter(config);
         const options: AnalyzeOptions = { repository: 'owner/task', readOnlyWorkspacePath: root, suppressLlmLog: true };
         let release!: (value: typeof access) => void;
@@ -92,7 +93,7 @@ for (const [type, Adapter] of [['claude', ClaudeAgent], ['codex', CodexAgent], [
         launches = [];
         const configPath = path.join(root, type);
         await fs.mkdir(configPath, { recursive: true });
-        const config: AgentConfig = { id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath, supportedModels: ['test-model'], defaultModel: 'test-model' };
+        const config: AgentConfig = { id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath, supportedModels: [model], defaultModel: model };
         const agent = new Adapter(config);
         const task: AgentTaskOptions = { worktreePath: root, prompt: 'Implement', githubToken: 'worker-write-token', issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 } };
         for (let attempt = 1; attempt <= 2; attempt++) {

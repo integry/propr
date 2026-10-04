@@ -1,6 +1,6 @@
 import type { TokenUsage } from '../../types.js';
 import logger from '../../../utils/logger.js';
-import { ANTIGRAVITY_MODEL_LABELS, toAntigravityCliModelId } from '../antigravityModelIds.js';
+import { ANTIGRAVITY_MODEL_LABELS, antigravityReportedIdentity, antigravityModelIdsMatch } from '../antigravityModelIds.js';
 
 export { ANTIGRAVITY_MODEL_LABELS };
 
@@ -19,17 +19,10 @@ export interface AntigravityLegacyUsage {
 
 // Antigravity CLI 1.1.12+ --output-format stream-json envelope types.
 export interface AntigravityStreamUsage {
-    input_tokens?: number;
-    output_tokens?: number;
-    thinking_tokens?: number;
-    cache_read_tokens?: number;
-    total_tokens?: number;
+    input_tokens?: number; output_tokens?: number; total_tokens?: number;
+    thinking_tokens?: number; cache_read_tokens?: number;
 }
-export interface AntigravityStreamInitEvent {
-    event: 'init';
-    conversation_id: string;
-    init: { model: string; cwd?: string; tools?: unknown[] };
-}
+export interface AntigravityStreamInitEvent { event: 'init'; conversation_id: string; init: { model: string; cwd?: string; tools?: unknown[] } }
 export interface AntigravityStreamStepUpdateEvent {
     event: 'step_update';
     step_update: {
@@ -47,8 +40,7 @@ export interface AntigravityStreamResultEvent {
         conversation_id: string;
         status: 'SUCCESS' | 'ERROR' | 'success' | 'error';
         response?: string;
-        duration_seconds?: number;
-        num_turns?: number;
+        duration_seconds?: number; num_turns?: number;
         usage?: AntigravityStreamUsage;
     };
 }
@@ -59,9 +51,8 @@ export type AntigravityOutputEvent = AntigravityEvent | AntigravityStreamEvent |
 export type AntigravityTerminalStatus = 'success' | 'error';
 
 export interface AntigravityParsedOutput {
-    sessionId: string | undefined;
-    conversationId: string | undefined;
-    modelUsed: string | undefined;
+    sessionId: string | undefined; conversationId: string | undefined;
+    modelUsed: string | undefined; reportedModel: string | undefined;
     summary: string | undefined;
     conversationLog: AntigravityOutputEvent[];
     tokenUsage: TokenUsage;
@@ -82,7 +73,8 @@ function isRecord(value: unknown): value is Record<string, unknown> { return val
 function isFiniteNonNegativeNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
 
 /** Converts CLI canonical IDs and display names back to ProPR's namespaced model ID. */
-export function normalizeAntigravityModelId(modelId: string): string { const unscoped = modelId.startsWith('antigravity:') ? modelId.slice('antigravity:'.length) : modelId; return Object.entries(ANTIGRAVITY_MODEL_LABELS).find(([proprId, displayName]) => unscoped === proprId || unscoped === displayName || unscoped === toAntigravityCliModelId(proprId))?.[0] ?? unscoped; }
+export function normalizeAntigravityModelId(modelId: string): string {
+    return Object.keys(ANTIGRAVITY_MODEL_LABELS).find(id => antigravityModelIdsMatch(id, modelId)) ?? modelId; }
 
 function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];
@@ -221,7 +213,7 @@ function mergeTokenUsageByMax(target: TokenUsage, usage: TokenUsage): void {
 }
 
 interface ParseState {
-    sessionId?: string; conversationId?: string; streamConversationId?: string; modelUsed?: string;
+    sessionId?: string; conversationId?: string; streamConversationId?: string; modelUsed?: string; reportedModel?: string;
     tokenUsage: TokenUsage; currentAssistantMessage: string; lastCompleteAssistantMessage: string;
     legacyTerminalStatus?: AntigravityTerminalStatus; streamTerminalStatus?: AntigravityTerminalStatus; protocolError?: string;
 }
@@ -236,9 +228,16 @@ function correlateStreamEnvelope(state: ParseState, envelope: AntigravityStreamE
     return true;
 }
 
+function sameReportedIdentity(a: string, b: string): boolean {
+    const first = antigravityReportedIdentity(a);
+    const second = antigravityReportedIdentity(b);
+    return first.model === second.model && first.effort === second.effort;
+}
+
 function processLegacyEvent(event: AntigravityEvent, state: ParseState): void {
     if (state.streamConversationId) return;
-    if (event.type === 'init') { state.sessionId = event.session_id; state.modelUsed = normalizeAntigravityModelId(event.model); return; }
+    if (event.type === 'init') { state.sessionId = event.session_id; if (state.reportedModel && !sameReportedIdentity(state.reportedModel, event.model)) state.protocolError ??= `Conflicting Antigravity init model: ${state.reportedModel} then ${event.model}`;
+        state.reportedModel ??= event.model; state.modelUsed = normalizeAntigravityModelId(state.reportedModel); return; }
     if (event.type === 'message' && event.role === 'assistant') {
         if (event.delta) state.currentAssistantMessage += event.content;
         else { state.lastCompleteAssistantMessage = event.content; state.currentAssistantMessage = ''; }
@@ -254,10 +253,10 @@ function processStreamEvent(event: AntigravityStreamEvent, state: ParseState, ev
         const model = normalizeAntigravityModelId(event.init.model);
         if (state.streamConversationId !== undefined) {
             if (event.conversation_id !== state.streamConversationId) correlateStreamEnvelope(state, event.event, event.conversation_id);
-            else state.protocolError ??= model === state.modelUsed ? `Repeated Antigravity stream init for conversation_id "${event.conversation_id}"` : `Conflicting Antigravity stream init model: ${state.modelUsed} then ${model}`;
+            else state.protocolError ??= sameReportedIdentity(event.init.model, state.reportedModel ?? '') ? `Repeated Antigravity stream init for conversation_id "${event.conversation_id}"` : `Conflicting Antigravity stream init model: ${state.reportedModel} then ${event.init.model}`;
             return; }
         events.push(event); if (!correlateStreamEnvelope(state, event.event, event.conversation_id)) return;
-        state.modelUsed = model; state.tokenUsage = {};
+        state.modelUsed = model; state.reportedModel = event.init.model; state.tokenUsage = {};
         state.currentAssistantMessage = ''; state.lastCompleteAssistantMessage = '';
         return;
     }
@@ -355,6 +354,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         sessionId: state.sessionId,
         conversationId: state.conversationId,
         modelUsed: state.modelUsed,
+        reportedModel: state.reportedModel,
         summary: state.lastCompleteAssistantMessage || plainTextSummary,
         conversationLog: events,
         tokenUsage: state.tokenUsage,

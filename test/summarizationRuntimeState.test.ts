@@ -114,13 +114,13 @@ describe('summarization fallback runtime state', () => {
   test('promotes fallback after primary returns unusable summarization output', async () => {
     await saveSummarizationSettings({
       enabled: true,
-      agent_alias: 'antigravity:antigravity-gpt-oss-120b-medium',
+      agent_alias: 'antigravity:antigravity-gpt-oss-120b',
       fallback_agent_alias: 'claude:claude-haiku-4-5-20251001',
       custom_prompt: 'Summarize carefully'
     });
 
     const result = await recordPrimarySummarizationResponseFailure({
-      primaryAgentAlias: 'antigravity:antigravity-gpt-oss-120b-medium',
+      primaryAgentAlias: 'antigravity:antigravity-gpt-oss-120b',
       fallbackAgentAlias: 'claude:claude-haiku-4-5-20251001',
       reason: 'No valid summaries parsed for batch of 5 files'
     });
@@ -130,7 +130,7 @@ describe('summarization fallback runtime state', () => {
 
     const settings = await loadSummarizationSettings();
     assert.equal(settings.agent_alias, 'claude:claude-haiku-4-5-20251001');
-    assert.equal(settings.fallback_agent_alias, 'antigravity:antigravity-gpt-oss-120b-medium');
+    assert.equal(settings.fallback_agent_alias, 'antigravity:antigravity-gpt-oss-120b');
     assert.equal(settings.custom_prompt, 'Summarize carefully');
   });
 
