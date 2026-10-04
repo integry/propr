@@ -305,6 +305,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Goal blocker fields and categories returned by get_goal and list_goal_attention.
     'approval', 'attempt', 'category', 'detection', 'id', 'paused', 'paused_awaiting_resume_or_input',
     'provider_approval', 'provider_question', 'question', 'questions', 'reason', 'summary',
+    // Conditions, outcomes and event fields returned by wait_goal.
+    'checkpoint', 'condition', 'event', 'lifecycle', 'matched', 'terminal', 'timed_out', 'unreachable',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
     // Instance settings the omitted ultrafix bounds resolve from.
