@@ -50,7 +50,19 @@ const REASON_LABELS: Record<AttentionItem['kind'], string> = {
   task_failed: 'Run failed',
   task_action_required: 'Waiting on you',
   plan_review: 'Review requested',
+  goal_blocker: 'Goal waiting on you',
 };
+
+/** A goal blocker names what it is waiting for; the shared projection decided the category. */
+const GOAL_BLOCKER_LABELS: Record<NonNullable<AttentionItem['goalBlocker']>['category'], string> = {
+  question: 'Goal asked a question',
+  approval: 'Goal needs approval',
+  paused: 'Goal paused',
+};
+
+function reasonLabel(item: AttentionItem): string {
+  return item.goalBlocker ? GOAL_BLOCKER_LABELS[item.goalBlocker.category] : REASON_LABELS[item.kind];
+}
 
 /**
  * One word, always.
@@ -73,6 +85,7 @@ function actionLabel(item: AttentionItem): string {
  * accessible-name algorithm, which announces "Openissue #42".
  */
 function actionContext(item: AttentionItem): string {
+  if (item.kind === 'goal_blocker') return 'goal';
   if (item.prNumber) return `pull request #${item.prNumber}`;
   if (item.issueNumber) return `issue #${item.issueNumber}`;
   return 'task';
@@ -80,6 +93,7 @@ function actionContext(item: AttentionItem): string {
 
 /** The review decision lives on GitHub; everything else resolves in a task. */
 function actionHref(item: AttentionItem): string {
+  if (item.kind === 'goal_blocker' && item.goalId) return `/goals/${encodeURIComponent(item.goalId)}`;
   if (item.kind === 'plan_review') {
     if (item.prNumber) return `https://github.com/${item.repository}/pull/${item.prNumber}`;
     if (item.issueNumber) return `https://github.com/${item.repository}/issues/${item.issueNumber}`;
@@ -141,7 +155,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
             item.category === 'blocked' ? 'text-amber-700' : 'text-slate-700'
           }`}
         >
-          {REASON_LABELS[item.kind]}
+          {reasonLabel(item)}
         </span>
         <time
           dateTime={item.since}

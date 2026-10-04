@@ -20,7 +20,7 @@ export interface DashboardSummaryResponse {
 }
 
 export type AttentionCategory = 'blocked' | 'decision';
-export type AttentionKind = 'task_failed' | 'task_action_required' | 'plan_review';
+export type AttentionKind = 'task_failed' | 'task_action_required' | 'plan_review' | 'goal_blocker';
 
 export interface AttentionItem {
   id: string;
@@ -37,6 +37,14 @@ export interface AttentionItem {
   detail: string | null;
   /** When the item started needing attention; the list is ordered newest first. */
   since: string;
+  /** Goal blockers only: the goal console to open, and the blocker from the shared goal attention projection. */
+  goalId?: string;
+  goalBlocker?: {
+    id: string;
+    category: 'question' | 'approval' | 'paused';
+    actionable: boolean;
+    responseActions: Array<'send_input' | 'resume' | 'pause' | 'cancel'>;
+  };
 }
 
 export interface DashboardAttentionResponse {

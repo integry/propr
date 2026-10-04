@@ -109,6 +109,8 @@ export interface AgentTaskOptions {
 export interface GoalControlInput {
     id: string;
     message: string;
+    /** Durable submission order of the input within its goal. */
+    sequence?: number;
 }
 
 export interface GoalCheckpointRequest {
@@ -142,6 +144,23 @@ export interface GoalControlSnapshot {
     controlGeneration: number;
 }
 
+/**
+ * An explicit, structured provider request for a person: a question or an
+ * approval. Reported only from provider protocol events, never inferred from
+ * narration, silence or slow work.
+ */
+export interface GoalBlockerReport {
+    /** The provider's own identity for this request, stable across repeated events. */
+    requestKey: string;
+    category: 'question' | 'approval';
+    /** Protocol event that carried the request, e.g. `codex_app_server:item/tool/requestUserInput`. */
+    source: string;
+    summary: string;
+    questions?: Array<{ id: string; header: string | null; question: string; options: string[]; confidential: boolean }>;
+    responseActions: Array<'send_input' | 'pause' | 'cancel'>;
+    turnId?: string;
+}
+
 export interface GoalExecutionControl {
     load(): Promise<GoalControlSnapshot>;
     heartbeat(): Promise<void>;
@@ -151,6 +170,14 @@ export interface GoalExecutionControl {
     publishCheckpoint(request: GoalCheckpointRequest, turnId: string): Promise<GoalCheckpointOutcome>;
     rejectCheckpoint(request: GoalCheckpointRejection, turnId: string): Promise<void>;
     appendOutput(records: string[]): Promise<void>;
+    /**
+     * Persist an open provider blocker for this attempt. Repeated reports update the same blocker.
+     * Returns the highest input sequence submitted before the blocker was first opened, captured
+     * atomically with opening it, or null when no blocker is open for the report.
+     */
+    reportBlocker?(report: GoalBlockerReport): Promise<number | null>;
+    /** Close an open provider blocker on authoritative evidence that it no longer waits. */
+    resolveBlocker?(requestKey: string, resolution: string): Promise<void>;
 }
 
 export interface TokenUsage {

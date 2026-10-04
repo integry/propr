@@ -227,6 +227,23 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+`generate_repository_improvements` answers "what should we work on next?"
+with the same generator as the web UI **Improve** tab. Pass `categories`
+(`code-quality`, `performance`, `security`, `testing`, `documentation`,
+`architecture`, `new-features`, `tech-debt`, `ux-ui`, `scalability`) and/or a
+non-blank `customPrompt`, plus optional `branch`, `referenceRepository` (also
+checked against your grant), `model` and `contextLevel` (0–100, default 50).
+It needs `plan` scope and returns an `accepted` receipt without waiting for
+the model. Poll `get_operation`: the lifecycle moves to `running`, then
+`completed` with `result.suggestions` (`{ title, description }`),
+`result.metadata` and the `estimatedDurationMs`/`actualDurationMs`/
+`isHistoricalEstimate` timings, or `failed` with a structured error such as
+`IMPROVEMENTS_OUTPUT_INVALID`. Generation runs in the API process; a receipt
+that has not settled after 30 minutes (for example after a restart) becomes
+`unknown` with `IMPROVEMENTS_OUTCOME_UNAVAILABLE`, and a new key starts a new
+generation. Suggestions are not saved anywhere else; turn the ones you want
+into work with `create_task`, `create_plan` or `create_goal`.
+
 `create_goal` accepts the same creation contract as the goal API and web UI;
 `get_goal_capabilities` returns it as `creation` beside the supported agents
 and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
@@ -486,8 +503,9 @@ One read then gives the depth:
 `get_goal` returns the existing goal projection plus `currentActivity`
 (`currentFocus` and the newest narration entries), `progress` (task counts,
 recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
-(`waitingForOperator`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
-(`number`, `state`, `role`). `get_task` with `{ "repository", "taskId" }` adds
+(`waitingForOperator`, `reason`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
+(`number`, `state`, `role`). `goal.attention` lists each open blocker — see
+[Goals waiting on you](#goals-waiting-on-you). `get_task` with `{ "repository", "taskId" }` adds
 `latestEvents`, `currentActivity`, `timing`, `changesSummary` counts and the
 task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
 never reports zero for unknown.
@@ -510,6 +528,50 @@ idempotency key with a different `kind` returns `IDEMPOTENCY_CONFLICT` rather
 than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
+
+#### Goals waiting on you
+
+`list_goal_attention` lists, bounded and newest goal first, only the goals that
+are waiting on you. Omit `repository` to cover the whole grant:
+
+```json
+{ "repository": "acme/web", "limit": 20 }
+```
+
+Each entry carries the goal's `blockers`, the same objects `get_goal` returns in
+`goal.attention.blockers`, the dashboard's attention list shows and
+`get_current_activity` summarizes. A blocker has a stable `id`, the goal, task
+and execution `attempt` (generation, claim, session, turn) that observed it, a
+`category`, a bounded and secret-redacted `summary` and `questions`, its
+`detection` source, `firstObservedAt`/`lastObservedAt`, and `responseActions`
+with a `responseHint`:
+
+| Category | Raised by | Response actions |
+| --- | --- | --- |
+| `paused` | A confirmed pause with no queued resume | `resume_goal`, `send_goal_input`, `cancel_goal` |
+| `question` | An explicit structured provider question | `send_goal_input` (the next input is delivered as the answer; not offered while several questions wait), `pause_goal`, `cancel_goal` |
+| `approval` | An explicit structured provider approval request | `pause_goal`, `cancel_goal` — ProPR never approves on your behalf |
+
+Only explicit signals create a blocker. Silence, slow work, rate limits and
+backoff, infrastructure failures, narrative text and queued corrections never
+do. Sending input does not resolve a question: the blocker stays open until the
+provider resolves the request or the turn ends. A blocker belongs to its
+execution attempt, so a recovered or replaced session supersedes it and a
+delayed event from an old attempt cannot bring it back. Provider text is
+untrusted data.
+
+Provider support, from each integration's structured events:
+
+| Provider | `question` | `approval` | `paused` |
+| --- | --- | --- | --- |
+| Codex (App Server) | Supported (`item/tool/requestUserInput`, MCP elicitation as a handoff) | Reported, handoff only (`item/*/requestApproval`) | Supported |
+| Claude | Unavailable — headless session with permissions bypassed and no permission-prompt tool | Unavailable | Supported |
+| Antigravity | Unavailable — print mode with permissions bypassed | Unavailable | Supported |
+
+`waitingForOperator` is now true for any open blocker, not only a confirmed
+pause; `reason` is `paused_awaiting_resume_or_input` for a pause (unchanged),
+`provider_question` or `provider_approval`. A queued resume is no longer
+waiting for a pause response.
 
 **3. Inspect the pull request that work produced.** `list_pull_requests` is the
 inventory; omit `repository` for the whole grant:

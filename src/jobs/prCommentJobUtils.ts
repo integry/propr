@@ -150,7 +150,7 @@ export interface PromptOptions {
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
     const environmentRepairInstructions = getFixEnvironmentRepairInstructions(commandMode);
     const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
@@ -161,7 +161,7 @@ ${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
 ${commentHistory}${originalTaskSpec ? `**Immutable Original PR Objective:**\n${originalTaskSpec}\n` : ''}
 
 **CRITICAL INSTRUCTIONS:**
-- You are in directory: ${worktreeInfo.worktreePath}
+- Work in /home/node/workspace, the writable repository mount inside your container. Use this directory for all file edits and verification commands.
 - Analyze the existing code on this branch and the comment history provided above.
 ${reviewCommentsSection
         ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, the listed records are the complete implementation scope. An S# suggestion record is listed only because it was explicitly requested; implement it without letting it widen, substitute for, or relax the correction required by any F# record.\n- If no record is listed, do not modify files.\n- Do not infer work from prior review prose, scores, or unlisted record IDs.'
