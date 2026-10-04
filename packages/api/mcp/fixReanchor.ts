@@ -98,22 +98,29 @@ export function hasUnparsedPath(text: string, paths: string[]): boolean {
 const NAME_CHAR = /[\p{L}\p{M}\p{N}_@+~$-]/u;
 
 /**
- * True when `text`, once the extracted `paths` are taken out, names an entry of
- * `present` as a complete citation, e.g. `gradlew` in "legacy/bootstrap.sh and
- * gradlew run unverified code", `build wrapper` or `配置`. Each tree entry is
- * looked up whole, so a name with spaces or non-ASCII letters counts just like
- * an ASCII word; a trailing full stop ends a name rather than continuing it.
+ * True when `text` names an entry of `present` as a complete citation that is not
+ * just part of an extracted path, e.g. `gradlew` in "legacy/bootstrap.sh and
+ * gradlew run unverified code", `build wrapper`, `配置` or `Dockerfile production`
+ * beside a deleted `Dockerfile`. Each tree entry is looked up whole in the original
+ * text, so a surviving name that contains a deleted one still counts, while
+ * `bootstrap.sh` inside a cited `legacy/bootstrap.sh` does not; a name with spaces
+ * or non-ASCII letters counts just like an ASCII word, and a trailing full stop
+ * ends a name rather than continuing it.
  */
 function citesPresentFile(text: string, paths: string[], present: Set<string>): boolean {
-  let residue = text.replace(/\\/g, '/');
-  for (const path of [...paths].sort((a, b) => b.length - a.length)) residue = residue.split(path).join(' ');
-  const continues = (index: number) => NAME_CHAR.test(residue[index] ?? '');
+  const normalized = text.replace(/\\/g, '/');
+  const spans: Array<[number, number]> = [];
+  for (const path of paths) {
+    for (let at = normalized.indexOf(path); at !== -1; at = normalized.indexOf(path, at + 1)) spans.push([at, at + path.length]);
+  }
+  const insidePath = (start: number, end: number) => spans.some(([from, to]) => from <= start && end <= to);
+  const continues = (index: number) => NAME_CHAR.test(normalized[index] ?? '');
   const isWhole = (start: number, end: number) =>
-    !continues(start - 1) && residue[start - 1] !== '.'
-    && !continues(end) && !(residue[end] === '.' && (continues(end + 1) || residue[end + 1] === '.'));
+    !continues(start - 1) && normalized[start - 1] !== '.'
+    && !continues(end) && !(normalized[end] === '.' && (continues(end + 1) || normalized[end + 1] === '.'));
   for (const name of present) {
-    for (let at = residue.indexOf(name); at !== -1; at = residue.indexOf(name, at + 1)) {
-      if (isWhole(at, at + name.length)) return true;
+    for (let at = normalized.indexOf(name); at !== -1; at = normalized.indexOf(name, at + 1)) {
+      if (isWhole(at, at + name.length) && !insidePath(at, at + name.length)) return true;
     }
   }
   return false;
@@ -155,9 +162,9 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  *
  * A record is withheld only when it cites files, every one of them was deleted
  * since the review, no path-like, backticked or emphasised file-name citation in
- * it went unrecognised, and none of its remaining text names a file still present
- * at the current head, matched whole so names with spaces or non-ASCII letters
- * count: the code it describes is gone. When that tree cannot be read
+ * it went unrecognised, and none of its text names a file still present at the
+ * current head, matched whole so names with spaces or non-ASCII letters count and
+ * not merely as part of a deleted citation: the code it describes is gone. When that tree cannot be read
  * in full, applicability is uncertain and the record is applied. A rename or edit is not enough,
  * because the fixing agent reads the current tree and can follow moved code; such
  * records are applied and their changed citations reported in `touchedPaths`.

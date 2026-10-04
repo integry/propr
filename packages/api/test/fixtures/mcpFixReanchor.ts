@@ -273,6 +273,27 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.deepEqual(gone.skipped.map(record => record.id), ['F1', 'F2']);
   });
 
+  await t.test('a surviving file name that contains a deleted citation keeps its record', async () => {
+    const evidence = '`Dockerfile` and `Dockerfile production` both pin an unsupported runtime.';
+    assert.deepEqual(citedPaths(evidence), ['Dockerfile']);
+    assert.equal(hasUnparsedPath(evidence, ['Dockerfile']), false);
+
+    const records = [
+      { id: 'F1', kind: 'finding' as const, text: `Pin a supported runtime\nRequirement\n${evidence}\nFix both` },
+      { id: 'F2', kind: 'finding' as const, text: 'Pin a supported runtime\nRequirement\n`legacy/Dockerfile` pins an unsupported runtime.\nFix it' },
+    ];
+    const target = { repository: 'acme/repo', reviewedHead: 'd'.repeat(40), head: 'a'.repeat(40) };
+    const removed = [{ filename: 'Dockerfile', status: 'removed' }, { filename: 'legacy/Dockerfile', status: 'removed' }];
+    const report = await reanchorFixRecords(reanchorPrincipal(removed, ['Dockerfile production', 'docker/Dockerfile']), target, records);
+    assert.deepEqual(report.applied, [{ id: 'F1', kind: 'finding', touchedPaths: ['Dockerfile'] }]);
+    // A tree name found only inside a deleted citation (`Dockerfile` in `legacy/Dockerfile`) does not keep it.
+    assert.deepEqual(report.skipped, [{ id: 'F2', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/Dockerfile'] }]);
+
+    // Once the longer file is gone too, the record is withheld like any other.
+    const gone = await reanchorFixRecords(reanchorPrincipal(removed, ['docker/Dockerfile']), target, records.slice(0, 1));
+    assert.deepEqual(gone.skipped.map(record => record.id), ['F1']);
+  });
+
   await t.test('fix_review_findings posts a plain-prose or emphasised surviving citation alone or mixed', async () => {
     const head = 'a'.repeat(40);
     const reviewedHead = 'c'.repeat(40);
@@ -364,6 +385,50 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
     assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F60');
     assert.deepEqual(mixed.result.skipped, [{ id: 'F61', kind: 'finding', reason: 'code_removed', removedPaths: ['legacy/bootstrap.sh'] }]);
+    comparisons.delete(`${reviewedHead}...${head}`);
+    trees.delete(head);
+  });
+
+  await t.test('fix_review_findings posts a surviving file whose name contains a deleted citation, alone or mixed', async () => {
+    const head = 'a'.repeat(40);
+    const reviewedHead = 'c'.repeat(40);
+    const pull = { repository: 'acme/repo', pullRequest: 42 };
+    const reviewCommentId = 974;
+    comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]', createdAt: new Date().toISOString(), body: [
+      '## 🔍 AI Code Review — Fixture',
+      '',
+      '## Overall Evaluation',
+      'Two blockers.',
+      '## Merge blockers',
+      'Every finding below was introduced by this PR and must be resolved before merging.',
+      '',
+      '### F70: 🔴 Pin a supported runtime',
+      '- **Required behavior:** Images must use a supported runtime.',
+      '- **Evidence:** `Dockerfile` and `Dockerfile production` both pin an unsupported runtime.',
+      '- **Minimum fix:** Pin a supported runtime.',
+      '',
+      '### F71: 🔴 Drop the legacy image',
+      '- **Required behavior:** Images must use a supported runtime.',
+      '- **Evidence:** `Dockerfile:3` pins an unsupported runtime.',
+      '- **Minimum fix:** Pin a supported runtime.',
+      '## Suggestions',
+      'These are optional follow-ups and are not sent to `/fix`.',
+      'No suggestions.',
+      '## Score',
+      'Score: 4/10',
+      `<!-- propr:ai-review model="fixture" head="${reviewedHead}" -->`,
+    ].join('\n') });
+    comparisons.set(`${reviewedHead}...${head}`, [{ filename: 'Dockerfile', status: 'removed' }]);
+    trees.set(head, ['Dockerfile production', 'src/fetch.ts']);
+
+    const alone = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F70'] });
+    assert.equal(alone.state, 'posted', JSON.stringify(alone));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F70');
+    assert.deepEqual(alone.result.skipped, []);
+    const mixed = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F70', 'F71'] });
+    assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F70');
+    assert.deepEqual(mixed.result.skipped, [{ id: 'F71', kind: 'finding', reason: 'code_removed', removedPaths: ['Dockerfile'] }]);
     comparisons.delete(`${reviewedHead}...${head}`);
     trees.delete(head);
   });
