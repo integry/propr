@@ -19,6 +19,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext, restorePendingComments } from './prPendingComments.js';
 import { executeReviewProcessing, type PRJobContext } from './prCommentReviewJob.js';
+import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
@@ -160,6 +161,27 @@ async function handleSkippedPRValidation(params: ExecuteProcessingParams, reason
     return { status: 'skipped', reason, pullRequestNumber };
 }
 
+async function resolveExecutionReasoning(
+    params: ExecuteProcessingParams,
+    llm: ExecuteProcessingParams['llm'],
+    prLabels: Parameters<typeof resolvePrReasoningLevelOverride>[0],
+    linkedIssueLabels: Parameters<typeof resolvePrReasoningLevelOverride>[1],
+): Promise<ExecuteProcessingParams['llm']> {
+    const { job, context: { repoOwner, repoName, pullRequestNumber, correlatedLogger } } = params;
+    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prLabels, linkedIssueLabels, {
+        repoOwner, repoName, pullRequestNumber, correlatedLogger,
+    });
+    if (job.data.ultrafixMeta) {
+        const execution = await resolveUltrafixFixExecution({
+            redis: redisClient, owner: repoOwner, repo: repoName, pr: pullRequestNumber,
+            workEpoch: job.data.ultrafixMeta.workEpoch ?? 0, model: llm, effort: job.data.reasoningLevel,
+        });
+        llm = execution.model ?? llm;
+        job.data.reasoningLevel = execution.effort;
+    }
+    return llm;
+}
+
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
@@ -183,9 +205,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         .filter(comment => !comment.body || !isReviewComment(comment.body))
         .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
-        repoOwner, repoName, pullRequestNumber, correlatedLogger,
-    });
+    llm = await resolveExecutionReasoning(params, llm, prData!.data.labels, linkedIssueResult.linkedIssueLabels);
     let commentHistory = '';
     if (!job.data.ultrafixMeta) {
         commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
@@ -200,18 +220,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
             'Skipping fix processing because no review findings or suggestions were selected');
         await handleNoAuthorizedFindings({
-            job,
-            taskId,
-            taskUrl,
-            stateManager,
-            octokit: state.octokit,
-            unprocessedComments: state.unprocessedComments,
-            redisClient,
-            repoOwner,
-            repoName,
-            pullRequestNumber,
-            correlatedLogger,
-            correlationId,
+            job, taskId, taskUrl, stateManager, octokit: state.octokit,
+            unprocessedComments: state.unprocessedComments, redisClient,
+            repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
             // Naming the identifiers is what makes the posted explanation actionable.
             unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
         });
@@ -280,17 +291,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const summaryTitle = await generateSummaryTitle({
         combinedCommentBody: localizedCombinedCommentBody,
         titleContext: titleContext.context,
-        fallbackSubtitle,
-        worktreeInfo: state.worktreeInfo,
-        githubToken,
-        pullRequestNumber,
-        prTitle: prData!.data.title,
+        fallbackSubtitle, worktreeInfo: state.worktreeInfo, githubToken,
+        pullRequestNumber, prTitle: prData!.data.title,
         workflowLabel: getPrTaskWorkflowLabel(workflow),
-        repoOwner,
-        repoName,
-        correlationId,
-        taskId,
-        correlatedLogger,
+        repoOwner, repoName, correlationId, taskId, correlatedLogger,
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;

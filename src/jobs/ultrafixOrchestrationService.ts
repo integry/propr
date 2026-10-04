@@ -7,6 +7,7 @@
  */
 
 import type { Redis } from 'ioredis';
+import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 export {
@@ -78,6 +79,8 @@ export interface UltrafixLoopState {
     originalScopeCaptured?: boolean;
     /** Per-review actionable finding lifecycle, keyed by comment ID and F# ID. */
     findingLifecycle?: Record<string, UltrafixFindingLifecycle>;
+    escalation?: UltrafixEscalationState;
+    escalationBestScore?: number;
 }
 
 export interface UltrafixFindingLifecycle {
