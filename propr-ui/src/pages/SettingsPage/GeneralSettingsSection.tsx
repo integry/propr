@@ -141,13 +141,13 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
         <SettingsCheckboxField
           id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
           label="Automatic Escalation"
-          helperText="When progress stalls, increase reasoning effort, then hand off to the next model. Disabled by default."
+          helperText="Let Ultrafix increase reasoning effort and switch models when review scores stop improving. For example, try medium → high effort on the current model before switching to the first escalation model. Disabled by default."
           checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
         />
         {settings.ultrafix_escalation_enabled && (
           <>
             <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
-              helperText="The current implementation model runs first. Unavailable models are skipped; if none remain, the current model continues. Agent Tank is optional; only usage at 100% blocks a handoff.">
+              helperText="Models to try after the current implementation model, in the order shown. For example, if the first model in this list is unavailable, Ultrafix tries the second. If none are available, it keeps the current model. Agent Tank is optional; when available, usage at 100% blocks switching to that model.">
               <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2">
                 {models.map((model, index) => (
                   <div key={index} className="contents">
@@ -175,12 +175,12 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               </div>
             </SettingsField>
             <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
-              helperText="Stalled reviews before each escalation step. Any new best score resets this counter.">
+              helperText="Number of consecutive reviews without a new best score before increasing effort or switching models. For example, with patience 2 and a best score of 6/10, reviews of 6/10 then 5/10 trigger one step. A score of 7/10 resets the counter. The counter also resets after each step.">
               <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
                 value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
             </SettingsField>
             <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
-              helperText="Maximum effort increases for each model. Use 0 to hand off directly after patience expires.">
+              helperText="Maximum number of reasoning effort increases allowed on each model, starting from its initial effort. For example, 2 allows low → medium → high on a model that supports those levels, with a full patience wait before each increase. After another patience wait, Ultrafix tries the next model. It switches sooner if no higher effort is available. Set 0 to skip effort increases and switch models after the first patience wait.">
               <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
                 value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
             </SettingsField>
