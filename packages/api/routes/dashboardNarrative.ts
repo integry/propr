@@ -1,6 +1,7 @@
 import type { CompletionLoader } from '../services/dashboardReadService.js';
 /** Dashboard activity facts and signature cache. No LLM implementation is imported here. */
 import { createHash } from 'node:crypto';
+import { truncateAtWord } from '@propr/shared';
 import type { Knex } from 'knex';
 import { phaseLabel, RECENT_COMPLETION_WINDOW_HOURS, toIso } from './dashboardQueries.js';
 import { loadDashboardWork, loadRunningDashboardGoals } from './dashboardWorkQueries.js';
@@ -41,7 +42,7 @@ function promptTitle(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const normalized = value.replace(/\s+/g, ' ').trim();
   const sentences = normalized.match(/[^.!?]+[.!?]+/g)?.slice(0, 2).map(sentence => sentence.trim()) ?? [];
-  return short(sentences.length > 0 ? sentences.join(' ') : normalized.slice(0, 100));
+  return short(sentences.length > 0 ? sentences.join(' ') : truncateAtWord(normalized, 100));
 }
 
 function planTitle(name: unknown, initialPrompt: unknown): string {

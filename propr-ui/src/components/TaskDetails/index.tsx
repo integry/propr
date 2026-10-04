@@ -92,8 +92,26 @@ const getMobileSummaryTitle = (title: string | undefined, taskId?: string) => {
   return taskId ? `Task #${taskId}` : '';
 };
 
-const TaskDetails: React.FC = () => {
-  const { taskId } = useParams();
+interface TaskDetailsProps {
+  /** Wins over the `:taskId` route param, so the task list can show a task beside itself. */
+  taskId?: string;
+  /**
+   * Shown in a pane beside the task list: the list owns the document title, a
+   * delete closes the pane instead of navigating, and the timeline and output
+   * stack in one column, because a pane is never wide enough for the split.
+   */
+  embedded?: boolean;
+  onClose?: () => void;
+  /** Called with the deleted task's ID, which may no longer be the task on screen. */
+  onDeleted?: (taskId: string) => void;
+}
+
+/** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
+const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
+
+const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted }) => {
+  const params = useParams();
+  const taskId = taskIdProp ?? params.taskId;
   const navigate = useNavigate();
   const { addToast } = useToast();
   const taskData = useTaskData(taskId);
@@ -102,19 +120,21 @@ const TaskDetails: React.FC = () => {
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
 
   const handleDeleteTask = useCallback(async () => {
+    const deletedTaskId = taskId;
     const success = await taskData.handleDeleteTask();
-    if (success) {
+    if (success && deletedTaskId) {
       addToast({
         type: 'success',
         message: 'Task deleted successfully',
       });
-      navigate('/tasks');
+      if (embedded) onDeleted?.(deletedTaskId);
+      else navigate('/tasks');
     }
-  }, [taskData, navigate, addToast]);
+  }, [taskId, taskData, navigate, addToast, embedded, onDeleted]);
 
   // Set document title with task info
   const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId);
-  useDocumentTitle(documentTitle);
+  useDocumentTitle(documentTitle, !embedded);
 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
@@ -185,7 +205,7 @@ const TaskDetails: React.FC = () => {
   };
 
   return (
-    <div data-testid="task-details" className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
+    <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
@@ -219,32 +239,32 @@ const TaskDetails: React.FC = () => {
       {/* Main Content Area - 30/70 Split */}
       <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden">
         {/* Header Row - TIMELINE and section label */}
-        <div className="flex-shrink-0 flex border-b border-slate-200 sm:hidden lg:flex">
-          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
-            <div className="py-2 lg:py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
+        <div className={`flex-shrink-0 flex border-b border-slate-200 sm:hidden${wideOnly(embedded, 'lg:flex')}`}>
+          <div className={`w-full flex-shrink-0 px-4 flex items-center${wideOnly(embedded, 'lg:w-[30%]')}`}>
+            <div className={`py-2${wideOnly(embedded, 'lg:py-2.5')} text-xs font-bold uppercase tracking-widest text-slate-500`}>
               TIMELINE
             </div>
           </div>
           <SectionLabelHeader
             commandMode={taskData.taskInfo?.commandMode}
             ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
-            className="hidden lg:flex flex-1 px-4 items-center gap-3"
+            className={`hidden flex-1 px-4 items-center gap-3${wideOnly(embedded, 'lg:flex')}`}
           />
         </div>
 
         {/* Content Area */}
         <div
           data-testid="task-workspace-scroll"
-          className="scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain lg:flex-row lg:overflow-hidden"
+          className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain${wideOnly(embedded, 'lg:flex-row lg:overflow-hidden')}`}
         >
           {/* LEFT PANE (30%) */}
           <div
             data-testid="task-timeline-scroll"
             role="region"
             aria-label="Task timeline"
-            className="w-full min-w-0 flex-shrink-0 border-b border-gray-200 lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r scrollbar-stealth"
+            className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200 scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r')}`}
           >
-            <div className="sticky top-0 z-[1] hidden items-center border-b border-slate-200 bg-white px-4 sm:flex lg:hidden">
+            <div className={`sticky top-0 z-[1] hidden items-center border-b border-slate-200 bg-white px-4 sm:flex${wideOnly(embedded, 'lg:hidden')}`}>
               <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
                 TIMELINE
               </div>
@@ -263,26 +283,26 @@ const TaskDetails: React.FC = () => {
           </div>
 
           {/* RIGHT PANE (70%) */}
-          <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+          <div className={`flex flex-col min-w-0${wideOnly(embedded, 'lg:flex-1 lg:min-h-0 lg:overflow-hidden')}`}>
             {/* Mobile section header */}
             <SectionLabelHeader
               commandMode={taskData.taskInfo?.commandMode}
               ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
-              className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white lg:hidden"
+              className={`flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white${wideOnly(embedded, 'lg:hidden')}`}
             />
             {/* Scrollable Content Area - Summary + Thinking Log in same scroll flow */}
             {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
-            <div className="flex flex-col min-w-0 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+            <div className={`flex flex-col min-w-0${wideOnly(embedded, 'lg:flex-1 lg:min-h-0 lg:overflow-hidden')}`}>
               <div
                 data-testid="task-output-scroll"
                 role="region"
                 aria-label="Task implementation log"
-                className="min-w-0 overflow-x-hidden scrollbar-stealth lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
+                className={`min-w-0 overflow-x-hidden scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain')}`}
               >
                 <TaskVisualPreviews previews={taskData.previewMedia} />
                 <ResultOverview extractedSummary={thinkingLog.extractedSummary} renderMarkdown={renderMarkdown} />
 
-                <div className="p-3 lg:p-4 min-w-0 overflow-hidden">
+                <div className={`p-3 min-w-0 overflow-hidden${wideOnly(embedded, 'lg:p-4')}`}>
                   <ThinkingLog
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}
@@ -299,7 +319,7 @@ const TaskDetails: React.FC = () => {
       {/* Execution Event Log Footer */}
       <div
         ref={executionLogRef}
-        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex h-[clamp(12rem,42dvh,22rem)] max-h-[60dvh] min-h-0 flex-col lg:h-auto lg:max-h-[60%] lg:flex-1'}`}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex h-[clamp(12rem,42dvh,22rem)] max-h-[60dvh] min-h-0 flex-col' + wideOnly(embedded, 'lg:h-auto lg:max-h-[60%] lg:flex-1')}`}
       >
         <ExecutionEventLog
           events={taskData.liveDetails.events}

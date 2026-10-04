@@ -1,8 +1,8 @@
 import React from 'react';
 import { ChevronRight } from 'lucide-react';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
-import { EarlierRunsList, RollupLine, TaskAgent, TaskPrimaryChip, TitleLinePreviews, TitleLineType } from './TaskRows';
-import type { TaskRowView } from './rowModel';
+import { EarlierRunsList, RollupLine, TaskAgent, TaskPrimaryChip, TaskTitleLink, TitleLinePreviews, TitleLineType } from './TaskRows';
+import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
 
 interface MobileTaskCardProps {
   row: TaskRowView;
@@ -10,17 +10,23 @@ interface MobileTaskCardProps {
   expanded: boolean;
   onRowClick: (taskId: string) => void;
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
+  selectedTaskId?: string | null;
 }
 
 /** The mobile form of a ledger row: the same title, rollup and measures, stacked. */
-export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, expanded, onRowClick, onToggleGroup }) => {
+export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, expanded, onRowClick, onToggleGroup, selectedTaskId }) => {
   const { task } = row;
   const runsId = `task-runs-mobile-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+  const selected = rowContainsTask(row, selectedTaskId);
   return (
-    <div className="border-b border-slate-200 px-4 py-3">
+    <div
+      data-testid="task-card"
+      aria-current={selected || undefined}
+      className={`border-b border-slate-200 px-4 py-3${selected ? ` ${SELECTED_ROW_CLASSES}` : ''}`}
+    >
       <div
         onClick={event => {
-          if ((event.target as Element).closest('button')) return;
+          if ((event.target as Element).closest('a, button')) return;
           onRowClick(task.id);
         }}
         className="flex cursor-pointer items-start gap-2 active:bg-slate-50"
@@ -31,7 +37,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
             <TitleLineType row={row} />
             <TitleLinePreviews row={row} />
           </div>
-          <p className="line-clamp-2 text-sm font-medium text-slate-900">{row.title}</p>
+          <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} className="min-w-0" />
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
             {getStatusPill(getDisplayStatus(task))}
             <span className="truncate font-mono text-[11px]" title={row.repository}>{row.repositoryName}</span>
@@ -49,7 +55,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
       <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggleGroup} />
       {expanded && row.earlierRuns.length > 0 && (
         <div className="mt-2">
-          <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} />
+          <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />
         </div>
       )}
     </div>

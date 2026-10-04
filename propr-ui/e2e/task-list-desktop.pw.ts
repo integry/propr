@@ -58,6 +58,20 @@ const tasks = [
   },
 ];
 
+// What the details pane shows for the newest run of PR #2664.
+const selectedRun = 'pr-2664-run-0';
+const detailsHistory = [
+  { state: 'PENDING', timestamp: ago(1), metadata: { model: 'gpt-6-astra' } },
+  ...['Read the withdrawal handlers', 'Restrict withdrawal labels to intent', 'Run the lint suite'].map((description, index) => ({
+    state: 'CLAUDE_EXECUTION', timestamp: ago(1 - (index + 1) * 0.2), metadata: { model: 'gpt-6-astra', description },
+  })),
+];
+const detailsEvents = [
+  { id: 'thought-1', type: 'thought', timestamp: ago(0.8), content: 'Linting flagged the withdrawal handler; tightening the label check before rerunning.' },
+  { id: 'tool-1', toolUseId: 'tool-1', type: 'tool_use', timestamp: ago(0.6), toolName: 'Bash', input: { command: 'npm run lint -w propr-ui' } },
+  { id: 'result-1', toolUseId: 'tool-1', type: 'tool_result', timestamp: ago(0.5), result: 'eslint . --max-warnings 0\n✔ no problems' },
+];
+
 async function fixture(page: Page, platform?: 'macos' | 'linux') {
   await page.clock.install({ time: now });
   if (platform) await page.addInitScript(platform => {
@@ -86,6 +100,19 @@ async function fixture(page: Page, platform?: 'macos' | 'linux') {
       '/api/stats/repositories': { repositories: [{ repository: 'integry/propr', total: 14768, completed: 3, failed: 1, inProgress: 1, successRate: 43 }, { repository: 'integry/desktop-workspaces', total: 1, completed: 0, failed: 1, inProgress: 0, successRate: 0 }] },
       '/api/notifications/unread-count': { unreadCount: 0 },
       '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
+      [`/api/task/${selectedRun}/history`]: {
+        history: detailsHistory,
+        taskInfo: {
+          title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Ultrafix cycle 3 (linting)',
+          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
+        },
+        usageMetricRecords: [],
+      },
+      [`/api/task/${selectedRun}/live-details`]: { events: detailsEvents, todos: [], currentTask: null },
+      [`/api/task/${selectedRun}/file-changes`]: {
+        taskId: selectedRun, lastUpdated: ago(0.5),
+        files: [{ path: 'src/jobs/withdrawalLabels.ts', linesAdded: 12, linesRemoved: 4, status: 'modified', diff: '@@ -1,4 +1,12 @@\n-export const WITHDRAW = true;\n+export const WITHDRAW = isIntentLabel(label);' }],
+      },
     };
     return pathname in responses ? route.fulfill({ json: responses[pathname] }) : route.fulfill({ status: 503, json: { error: 'Unavailable in privacy-safe layout fixture' } });
   });
@@ -117,17 +144,18 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(rows).toHaveCount(5);
       await expect(table).not.toContainText('by GPT-6 Astra]');
       await expect(table).not.toContainText('Ultrafix PR #2664');
-      await expect(table.getByRole('button', { name: 'Update', exact: true })).toHaveCount(0);
+      await expect(table.getByRole('link', { name: 'Update', exact: true })).toHaveCount(0);
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
-      await expect(page.getByText('Showing 1–50 of 14,769 tasks')).toBeVisible();
+      // The footer counts tasks and the rows they fold into (four pull requests and one issue).
+      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–50 of 14,769 · 5 rows on this page');
       // The repository filter counts the same tasks with the same digit grouping as the footer.
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
 
       // A single run with no summary is one line: the type leads the title and nothing hangs under it.
       const singleRun = rows.filter({ hasText: 'a-very-long-unbroken' });
-      const titleLine = singleRun.getByRole('button', { name: /^Support configuration/ }).locator('xpath=..');
+      const titleLine = singleRun.getByRole('link', { name: /^Support configuration/ }).locator('xpath=..');
       await expect(titleLine.getByTestId('work-type-badge')).toHaveText('Implement');
       expect(await titleLine.evaluate(line => line.nextElementSibling)).toBeNull();
       // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
@@ -144,7 +172,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       expect(layout.fits).toBe(true);
       expect(layout.pageFits).toBe(true);
       for (const height of layout.heights) expect(height).toBeLessThanOrEqual(84);
-      expect(await table.getByRole('button', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
+      expect(await table.getByRole('link', { name: /^Stop work when/ }).evaluate(node => node.parentElement!.clientWidth)).toBeGreaterThan(200);
       // A long unbroken path in a title wraps inside its own cell: the metadata cells of that row
       // keep exactly their column widths, and REPO (10rem) and AGENT (190px) never shrink.
       const columnWidths = await table.evaluate(element => {
@@ -166,11 +194,19 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       // Titles wrap rather than being cut mid-word. The title column absorbs all the width the fixed
       // metadata columns leave, so a laptop-width list clamps a long title at two lines (the full
       // title stays in the tooltip); on a wide screen it fits on one line.
-      const longTitle = table.getByRole('button', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
+      const longTitle = table.getByRole('link', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
       const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
       expect(clamp.lines).toBe(width === 1920 ? 1 : 2);
       if (width === 1920) expect(clamp.clipped).toBe(false);
       await expect(longTitle).toHaveAttribute('title', 'Give implementation runs and direct goals a read-only GitHub token');
+      // The footer docks under the last row instead of the bottom of the viewport.
+      const footerGap = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('[role="table"] [data-testid="task-row"]')];
+        const footer = document.querySelector('[data-testid="pagination-summary"]')!;
+        return footer.getBoundingClientRect().top - rows[rows.length - 1].getBoundingClientRect().bottom;
+      });
+      expect(footerGap).toBeGreaterThanOrEqual(0);
+      expect(footerGap).toBeLessThanOrEqual(32);
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
       // The rollup opens in place, never navigates, and a mouse click leaves no focus frame behind.
@@ -226,12 +262,16 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(rollup).toHaveAttribute('aria-expanded', 'false');
       await expect(rollup).toHaveCSS('text-decoration-line', 'underline');
 
-      const title = table.getByRole('button', { name: 'Stop work when an issue or PR withdraws intent' });
+      // The title is a link to the task page; on a split-capable screen activating it opens the
+      // task beside the list instead of leaving it.
+      const title = table.getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
+      await expect(title).toHaveAttribute('href', '/tasks/pr-2664-run-0');
       await title.focus();
       await expect(title).toBeFocused();
       await expect(title).toHaveCSS('outline-style', 'solid');
       await page.keyboard.press('Enter');
-      await expect(page).toHaveURL(/\/tasks\/pr-2664-run-0$/);
+      await expect(page).toHaveURL(/\/tasks\?task=pr-2664-run-0$/);
+      await expect(page.getByTestId('task-split-details')).toBeVisible();
     });
   }
 }
@@ -255,6 +295,95 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
     if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-880`);
   });
 }
+
+test('1920px opens a task beside the list and steps through rows from the keyboard', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await fixture(page);
+  await page.goto('/tasks?repository=integry%2Fpropr');
+  const table = page.getByRole('table', { name: 'Tasks' });
+  await expect(table).toBeVisible();
+  // Nothing selected: the ledger keeps the full width.
+  await expect(page.getByTestId('task-split-details')).toHaveCount(0);
+
+  await table.getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' }).click();
+  await expect(page).toHaveURL(/\/tasks\?repository=integry%2Fpropr&task=pr-2664-run-0$/);
+  const list = page.getByTestId('task-split-list');
+  const details = page.getByTestId('task-split-details');
+  await expect(details.getByTestId('task-details')).toBeVisible();
+  await expect(details.getByRole('region', { name: 'Task timeline' })).toContainText('Restrict withdrawal labels to intent');
+  await expect(details.getByRole('region', { name: 'Task implementation log' })).toBeVisible();
+  await expect(details.getByRole('link', { name: 'Open full page' })).toHaveAttribute('href', '/tasks/pr-2664-run-0');
+  // The list pane is narrower than the ledger, so it shows cards, and the selected one is marked.
+  await expect(table).not.toBeVisible();
+  await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');
+  const panes = await page.evaluate(() => ({
+    list: document.querySelector('[data-testid="task-split-list"]')!.getBoundingClientRect().width,
+    details: document.querySelector('[data-testid="task-split-details"]')!.getBoundingClientRect().width,
+    pageScrolls: document.documentElement.scrollHeight > window.innerHeight || document.documentElement.scrollWidth > window.innerWidth,
+  }));
+  expect(panes.pageScrolls).toBe(false);
+  expect(panes.list / (panes.list + panes.details)).toBeGreaterThan(0.4);
+  expect(panes.list / (panes.list + panes.details)).toBeLessThan(0.5);
+  // A pane is too narrow for the timeline/output split, so they stack in one column.
+  const columns = await details.getByTestId('task-workspace-scroll').evaluate(node => getComputedStyle(node).flexDirection);
+  expect(columns).toBe('column');
+  await capture(page, 'tasks-split-1920');
+
+  await page.keyboard.press('j');
+  await expect(page).toHaveURL(/task=pr-2661-run-0/);
+  await page.keyboard.press('ArrowDown');
+  await expect(page).toHaveURL(/task=pr-2663-run-0/);
+  await page.keyboard.press('k');
+  await expect(page).toHaveURL(/task=pr-2661-run-0/);
+  await expect(page).toHaveURL(/repository=integry%2Fpropr/);
+
+  // Typing in the search box is typing, not triage.
+  const search = page.getByPlaceholder('Search tasks...');
+  await search.click();
+  await page.keyboard.press('j');
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/task=pr-2661-run-0/);
+  await search.fill('');
+  await search.blur();
+
+  await page.keyboard.press('Escape');
+  await expect(page).not.toHaveURL(/task=/);
+  await expect(details).toHaveCount(0);
+  await expect(table).toBeVisible();
+});
+
+test('1920px reload restores the selected task and the filter', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await fixture(page);
+  const requests: string[] = [];
+  page.on('request', request => { if (new URL(request.url()).pathname === '/api/tasks') requests.push(request.url()); });
+  await page.goto('/tasks?task=pr-2664-run-0&repository=integry%2Fpropr');
+  await expect(page.getByTestId('task-split-details').getByTestId('task-details')).toBeVisible();
+  await expect(page.getByTestId('task-split-list').locator('[data-testid="task-card"][aria-current="true"]')).toBeVisible();
+  expect(requests.some(url => new URL(url).searchParams.get('repository') === 'integry/propr')).toBe(true);
+});
+
+test('1920px modified and middle clicks still open the task page in a new tab', async ({ page, context }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await fixture(page);
+  await page.goto('/tasks');
+  const title = page.getByRole('table', { name: 'Tasks' }).getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' });
+  for (const click of [() => title.click({ modifiers: ['ControlOrMeta'] }), () => title.click({ button: 'middle' })]) {
+    const [tab] = await Promise.all([context.waitForEvent('page'), click()]);
+    await expect(tab).toHaveURL(/\/tasks\/pr-2664-run-0$/);
+    await tab.close();
+  }
+  expect(new URL(page.url()).search).toBe('');
+  await expect(page.getByTestId('task-split-details')).toHaveCount(0);
+});
+
+test('1024px a plain click still navigates to the task page', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await fixture(page);
+  await page.goto('/tasks');
+  await page.getByRole('link', { name: 'Stop work when an issue or PR withdraws intent' }).first().click();
+  await expect(page).toHaveURL(/\/tasks\/pr-2664-run-0$/);
+});
 
 test('mobile renders one card per pull request', async ({ page }) => {
   await fixture(page);

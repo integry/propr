@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronDown, CornerDownRight, Images } from 'lucide-react';
 import type { Task } from './types';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
@@ -7,7 +8,10 @@ import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
-import { hasRollupLine, pluralize, TASK_RUNS_COLUMN_SPAN, type TaskRowView, type TaskRunView } from './rowModel';
+import {
+  hasRollupLine, pluralize, rowContainsTask, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  type TaskRowView, type TaskRunView,
+} from './rowModel';
 
 // Prefer catalog labels (including version punctuation), with a readable fallback
 // for custom models. The logo already identifies the provider.
@@ -26,6 +30,10 @@ const openRow = (event: React.MouseEvent, taskId: string, onRowClick: (id: strin
   if (window.getSelection()?.toString()) return;
   onRowClick(taskId);
 };
+
+/** A plain left click: modified and middle clicks keep the link's own behaviour (new tab, new window). */
+const isPlainPrimaryClick = (event: React.MouseEvent) =>
+  event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 
 const taskDuration = (task: Task) => formatDuration(task.processedAt || task.createdAt, task.completedAt);
 
@@ -77,20 +85,32 @@ export const TaskAgent: React.FC<{ task: Task }> = ({ task }) => {
  * unbroken run of characters (a file path, a URL) breaks wherever it has to,
  * so it wraps inside the title column rather than pressing on the columns
  * beside it.
+ *
+ * The title is a real link to the task page, so Ctrl/Cmd-click, middle-click
+ * and "open in new tab" work. A plain click is handed to `onRowClick`, which
+ * either opens the task beside the list or navigates to it.
  */
-const TaskTitleButton: React.FC<{ title: string; taskId: string; onRowClick: (id: string) => void }> = ({ title, taskId, onRowClick }) => (
-  <button
-    type="button"
-    className="task-title block min-w-0 flex-1 text-left text-sm font-medium text-slate-900"
-    title={title}
+export const TaskTitleLink: React.FC<{
+  title: string;
+  tooltip: string;
+  taskId: string;
+  onRowClick: (id: string) => void;
+  className?: string;
+}> = ({ title, tooltip, taskId, onRowClick, className = 'min-w-0 flex-1' }) => (
+  <Link
+    to={taskPath(taskId)}
+    className={`task-title block text-left text-sm font-medium text-slate-900 ${className}`}
+    title={tooltip}
     onClick={event => {
       event.stopPropagation();
+      if (!isPlainPrimaryClick(event)) return;
+      event.preventDefault();
       if (event.detail > 0 && window.getSelection()?.toString()) return;
       onRowClick(taskId);
     }}
   >
     <span className="line-clamp-2 [overflow-wrap:anywhere]">{title}</span>
-  </button>
+  </Link>
 );
 
 /** Run statuses worth calling out in the timeline; a finished run says nothing new. */
@@ -160,17 +180,20 @@ export const EarlierRunsList: React.FC<{
   id: string;
   runs: TaskRunView[];
   onRowClick: (taskId: string) => void;
-}> = ({ id, runs, onRowClick }) => (
+  selectedTaskId?: string | null;
+}> = ({ id, runs, onRowClick, selectedTaskId }) => (
   <ul id={id} aria-label="Earlier runs" className="task-earlier-runs">
     {runs.map(run => {
       const status = getDisplayStatus(run.task);
       const created = new Date(run.task.createdAt).toLocaleString();
+      const selected = run.task.id === selectedTaskId;
       return (
         <li key={run.task.id}>
           <button
             type="button"
+            aria-current={selected || undefined}
             onClick={() => onRowClick(run.task.id)}
-            className="task-run grid w-full min-w-0 items-center rounded-sm py-0.5 pl-1 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
+            className={`${selected ? `${SELECTED_ROW_CLASSES} ` : ''}task-run grid w-full min-w-0 items-center rounded-sm py-0.5 pl-1 text-left text-xs leading-5 text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
           >
             <time dateTime={run.task.createdAt} title={`${created} · took ${taskDuration(run.task)}`} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-500">
               {formatRelativeTime(run.task.createdAt)}
@@ -195,24 +218,27 @@ interface TaskQueueRowProps {
   expanded: boolean;
   onRowClick: (taskId: string) => void;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  selectedTaskId?: string | null;
 }
 
 /** One ledger row: TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE. */
-export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle }) => {
+export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle, selectedTaskId }) => {
   const { task } = row;
   const runsId = `task-runs-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+  const selected = rowContainsTask(row, selectedTaskId);
   return (
     <div role="presentation" className="border-b border-slate-200" data-testid="task-row">
       <div
         role="row"
-        className="task-queue-grid pl-8 pr-6 cursor-pointer py-2 transition-colors hover:bg-slate-50"
+        aria-selected={selected}
+        className={`task-queue-grid pl-8 pr-6 cursor-pointer py-2 transition-colors ${selected ? SELECTED_ROW_CLASSES : 'hover:bg-slate-50'}`}
         onClick={event => openRow(event, task.id, onRowClick)}
       >
         <div role="cell" className="min-w-0">
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
             <TitleLineType row={row} />
-            <TaskTitleButton title={row.title} taskId={task.id} onRowClick={onRowClick} />
+            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} />
             <TitleLinePreviews row={row} />
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} />
@@ -230,7 +256,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
       {expanded && row.earlierRuns.length > 0 && (
         <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">
           <div role="cell" aria-colspan={TASK_RUNS_COLUMN_SPAN} className="task-runs-cell min-w-0">
-            <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} />
+            <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />
           </div>
         </div>
       )}

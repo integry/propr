@@ -65,7 +65,7 @@ describe('preview thumbnails', () => {
   });
   // A dense task ledger announces evidence instead of drawing thumbnails that load as empty boxes.
   it('announces previews as a count in the task ledger instead of drawing thumbnails', () => {
-    render(<TaskTableContent groupedTasks={[group]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
+    render(<MemoryRouter><TaskTableContent groupedTasks={[group]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} /></MemoryRouter>);
     expect(screen.queryAllByRole('img', { name: /Published screen/ })).toHaveLength(0);
     const badges = screen.getAllByTestId('preview-count');
     // One in the desktop ledger, one in the mobile card.

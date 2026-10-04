@@ -16,6 +16,7 @@
 
 import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
+import { ellipsizeHardCutTitle } from './displayTitle';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
@@ -55,6 +56,8 @@ export interface TaskRowView {
   repositoryName: string;
   /** The entity the row is about: the PR or issue title, sanitized. */
   title: string;
+  /** The same title without the `…` a legacy hard-cut title is given, for the tooltip. */
+  fullTitle: string;
   type: string | null;
   /** The newest run's own summary, when it says more than the title. */
   detail: string | null;
@@ -98,15 +101,27 @@ function runAction(type: string | null, summary: string | null): string | null {
 const isMeaningful = (text: string | null | undefined): text is string =>
   Boolean(text) && !GENERIC_TITLE.test(text!.trim());
 
-/** Strips workflow prefixes, duplicate entity references and model tags from a title. */
-export function sanitizeTaskTitle(raw: string | null | undefined): { type: string | null; title: string | null } {
+interface SanitizedTitle {
+  type: string | null;
+  /** The title as shown: a legacy title cut mid-word ends in `…`. */
+  title: string | null;
+  /** The title before that `…` was added. */
+  fullTitle: string | null;
+}
+
+/**
+ * Strips workflow prefixes, duplicate entity references and model tags from a
+ * title, and marks a title the backend cut mid-word with `…`.
+ */
+export function sanitizeTaskTitle(raw: string | null | undefined): SanitizedTitle {
   const work = splitWorkTitle(raw);
   const title = (work.title ?? '')
     .replace(MODEL_TAG, ' ')
     .replace(LEADING_REFERENCE, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return { type: work.type, title: title || null };
+  if (!title) return { type: work.type, title: null, fullTitle: null };
+  return { type: work.type, title: ellipsizeHardCutTitle(title, raw?.trim()), fullTitle: title };
 }
 
 function cleanSubtitle(subtitle: string | null | undefined): string | null {
@@ -124,16 +139,16 @@ export function previewCount(task: Task): number {
  * is titled `Followup: Update 3`, so the group falls back to an older run (the
  * one that opened the issue or PR) and then to a run summary before giving up.
  */
-function entityTitle(tasks: Task[]): string {
+function entityTitle(tasks: Task[]): { title: string; fullTitle: string } {
   for (const task of tasks) {
-    const { title } = sanitizeTaskTitle(task.title);
-    if (isMeaningful(title)) return title;
+    const { title, fullTitle } = sanitizeTaskTitle(task.title);
+    if (isMeaningful(title)) return { title, fullTitle: fullTitle ?? title };
   }
   for (const task of tasks) {
     const subtitle = cleanSubtitle(task.subtitle);
-    if (subtitle) return subtitle;
+    if (subtitle) return { title: subtitle, fullTitle: sanitizeTaskTitle(task.subtitle).fullTitle ?? subtitle };
   }
-  return 'Untitled task';
+  return { title: 'Untitled task', fullTitle: 'Untitled task' };
 }
 
 /** What a run changed and the action that names it, or null when it recorded nothing more specific. */
@@ -172,7 +187,7 @@ export function runOutcome(task: Task): string {
 
 export function buildTaskRow(group: TaskGroup): TaskRowView {
   const [task, ...earlier] = group.tasks;
-  const title = entityTitle(group.tasks);
+  const { title, fullTitle } = entityTitle(group.tasks);
   const newest = runDelta(task, title);
   return {
     key: group.key,
@@ -180,6 +195,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     repository: `${group.repoOwner}/${group.repoName}`,
     repositoryName: group.repoName,
     title,
+    fullTitle,
     type: newest.type,
     detail: newest.delta,
     previewCount: previewCount(task),
@@ -204,3 +220,12 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
 export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** The selected row: a teal tint and a 2px teal bar on its leading edge, like the sidebar's active item. */
+export const SELECTED_ROW_CLASSES = 'bg-teal-50/60 shadow-[inset_2px_0_0_0_#0d9488]';
+
+export const taskPath = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
+
+/** Whether the task open beside the list is one of this row's runs. */
+export const rowContainsTask = (row: TaskRowView, taskId: string | null | undefined): boolean =>
+  Boolean(taskId) && (row.task.id === taskId || row.earlierRuns.some(run => run.task.id === taskId));

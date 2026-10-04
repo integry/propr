@@ -22,6 +22,7 @@ import {
   selectValue,
 } from './TaskList/utils';
 import { useDebouncedCallback } from './TaskList/hooks';
+import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
 
@@ -72,7 +73,40 @@ const TaskBlockingState: React.FC<{
   return dashboard ? <DashboardErrorState error={state.message} /> : <FullPageErrorState error={state.message} />;
 };
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
+const NEXT_ROW_KEYS = new Set(['j', 'ArrowDown']);
+const PREVIOUS_ROW_KEYS = new Set(['k', 'ArrowUp']);
+
+/**
+ * j/ArrowDown and k/ArrowUp move the selection to the next or previous row of
+ * the page. Only primary rows (each group's newest run) are stops: an earlier
+ * run can be opened by clicking it, but stepping skips it.
+ */
+function useRowKeyboardNavigation(
+  groups: TaskGroup[],
+  selectedTaskId: string | null | undefined,
+  onSelectTask: ((taskId: string) => void) | undefined,
+) {
+  useEffect(() => {
+    if (!onSelectTask || !selectedTaskId || groups.length === 0) return;
+    const primaryTaskIds = groups.map(group => group.tasks[0].id);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target) || isDialogOpen()) return;
+      const step = NEXT_ROW_KEYS.has(event.key) ? 1 : PREVIOUS_ROW_KEYS.has(event.key) ? -1 : 0;
+      if (!step) return;
+      // An earlier run steps from its own row; a task not on this page starts at the top or bottom.
+      const index = groups.findIndex(group => group.tasks.some(task => task.id === selectedTaskId));
+      const next = index === -1
+        ? (step > 0 ? 0 : primaryTaskIds.length - 1)
+        : Math.min(Math.max(index + step, 0), primaryTaskIds.length - 1);
+      event.preventDefault();
+      if (primaryTaskIds[next] !== selectedTaskId) onSelectTask(primaryTaskIds[next]);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [groups, selectedTaskId, onSelectTask]);
+}
+
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, selectedTaskId = null, onSelectTask, refreshKey = 0 }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
@@ -227,6 +261,14 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     fetchTasks();
   }, [fetchTasks]);
 
+  const lastRefreshKey = useRef(refreshKey);
+  useEffect(() => {
+    if (lastRefreshKey.current === refreshKey) return;
+    lastRefreshKey.current = refreshKey;
+    fetchTasks();
+    refreshRepositoryStats(false);
+  }, [refreshKey, fetchTasks, refreshRepositoryStats]);
+
   useEffect(() => {
     if (hideFilters || hasLoadedRepoStats.current) return;
     refreshRepositoryStats(true);
@@ -266,8 +308,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const toggleGroup = useMemo(() => createToggleGroupHandler(setExpandedGroups), []);
 
   const handleRowClick = useCallback((taskId: string) => {
-    navigate(`/tasks/${encodeURIComponent(taskId)}`);
-  }, [navigate]);
+    if (onSelectTask) onSelectTask(taskId);
+    else navigate(`/tasks/${encodeURIComponent(taskId)}`);
+  }, [navigate, onSelectTask]);
+
+  useRowKeyboardNavigation(groupedTasks, selectedTaskId, onSelectTask);
 
   const scopeState = resolveTaskScopeState(loadedScope, queryScope, tasks, groupedTasks, error);
 
@@ -302,7 +347,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     expandedGroups,
     onRowClick: handleRowClick,
     onToggleGroup: toggleGroup,
+    selectedTaskId,
   };
+  // Runs of one pull request share a row, so the footer counts rows as well as tasks.
+  const groupNoun = visibleGroupedTasks.every(group => group.prNumber) ? 'pull request' : 'row';
 
   // Dashboard integration: simpler layout without anchored header/footer
   if (hideFilters) {
@@ -332,7 +380,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     );
   }
 
-  // Main Tasks page: full-height flex layout with anchored header/footer
+  // Main Tasks page: anchored header, and the footer docked under the last row
+  // rather than pinned to the bottom of the viewport, so a short page leaves no gap.
   return (
     <>
       {/* Anchored Header - compact on mobile */}
@@ -341,7 +390,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
@@ -350,20 +399,22 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         ) : (
           <TaskTableContent {...tableContentProps} />
         )}
-      </div>
 
-      {/* Anchored Footer */}
-      {visibleTasks.length > 0 && totalPages > 1 && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
-          <Pagination
-            hideFilters={false}
-            totalTasks={totalTasks}
-            tasksPerPage={tasksPerPage}
-            currentPage={currentPage}
-            setCurrentPage={setCurrentPage}
-          />
-        </div>
-      )}
+        {/* Footer, directly under the last row */}
+        {visibleTasks.length > 0 && totalPages > 1 && (
+          <div className="mt-4 pb-8">
+            <Pagination
+              hideFilters={false}
+              totalTasks={totalTasks}
+              tasksPerPage={tasksPerPage}
+              currentPage={currentPage}
+              setCurrentPage={setCurrentPage}
+              groupCount={visibleGroupedTasks.length}
+              groupNoun={groupNoun}
+            />
+          </div>
+        )}
+      </div>
     </>
   );
 };

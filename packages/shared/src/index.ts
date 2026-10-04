@@ -541,3 +541,6 @@ export * from './analyticsTimeframe.js';
 // Browser-safe checkpoint parsing shared by goal workers and readable timelines.
 export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
+
+// Word-boundary truncation for titles that must fit a fixed length.
+export * from './text.js';

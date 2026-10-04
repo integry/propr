@@ -9,6 +9,13 @@ interface PaginationProps {
   tasksPerPage: number;
   currentPage: number;
   setCurrentPage: (page: number | ((prev: number) => number)) => void;
+  /**
+   * Rows the page shows. Runs of one pull request fold into one row, so a page
+   * of 50 tasks can be 11 rows; the footer says so instead of implying 50 rows.
+   */
+  groupCount?: number;
+  /** What one row is: `pull request` unless some rows are issues or lone tasks. */
+  groupNoun?: string;
 }
 
 export const Pagination: React.FC<PaginationProps> = ({
@@ -16,7 +23,9 @@ export const Pagination: React.FC<PaginationProps> = ({
   totalTasks,
   tasksPerPage,
   currentPage,
-  setCurrentPage
+  setCurrentPage,
+  groupCount,
+  groupNoun = 'pull request',
 }) => {
   if (hideFilters || totalTasks <= tasksPerPage) {
     return null;
@@ -25,11 +34,18 @@ export const Pagination: React.FC<PaginationProps> = ({
   const totalPages = Math.ceil(totalTasks / tasksPerPage);
   // Convert from 0-based internal state to 1-based display
   const displayPage = currentPage + 1;
+  const firstTask = currentPage * tasksPerPage + 1;
+  const lastTask = Math.min((currentPage + 1) * tasksPerPage, totalTasks);
+  const tasksOnPage = Math.max(0, lastTask - firstTask + 1);
+  const showGroups = groupCount !== undefined && groupCount !== tasksOnPage;
 
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
-      <span className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing </span>{formatCount(currentPage * tasksPerPage + 1)}–{formatCount(Math.min((currentPage + 1) * tasksPerPage, totalTasks))}<span className="hidden sm:inline"> of {formatCount(totalTasks)} tasks</span>
+      <span data-testid="pagination-summary" className="text-xs sm:text-sm text-gray-600">
+        <span className="hidden sm:inline">Showing tasks </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)}</span>
+        {showGroups && (
+          <span className="hidden sm:inline"> · {formatCount(groupCount)} {groupNoun}{groupCount === 1 ? '' : 's'} on this page</span>
+        )}
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button
