@@ -88,9 +88,13 @@ const PLACEHOLDER_SUBTITLE = /^Preparing a PR\b/i;
 
 /**
  * Workflow labels that say a run happened, not what it did. A follow-up is
- * named after its summary instead: `Fix the seed test` is a fix.
+ * named after its summary instead: `Fix the seed test` is a fix. A summary
+ * that leads with no action still gets a type, so the type column under the
+ * titles never skips a row: a follow-up or PR comment run makes the changes a
+ * reviewer asked for, which is a fix, and a continued run carries on
+ * implementing.
  */
-const GENERIC_TYPES = new Set(['follow-up', 'continue', 'pr comment']);
+const GENERIC_TYPES = new Map([['follow-up', 'Fix'], ['continue', 'Implement'], ['pr comment', 'Fix']]);
 
 /** Leading verbs of a run summary, and the action each one names. */
 const SUMMARY_ACTIONS: ReadonlyArray<[RegExp, string]> = [
@@ -100,11 +104,12 @@ const SUMMARY_ACTIONS: ReadonlyArray<[RegExp, string]> = [
   [/^(?:rebase|merge|merged)\b/i, 'Merge'],
 ];
 
-/** The action a run took: its workflow type when that is specific, else what its summary leads with. */
+/** The action a run took: its workflow type when that is specific, else what its summary leads with, else the workflow's usual action. */
 function runAction(type: string | null, summary: string | null): string | null {
-  if (type && !GENERIC_TYPES.has(type.toLowerCase())) return type;
-  if (!summary) return null;
-  return SUMMARY_ACTIONS.find(([pattern]) => pattern.test(summary))?.[1] ?? null;
+  const fallback = type ? GENERIC_TYPES.get(type.toLowerCase()) : null;
+  if (type && !fallback) return type;
+  const named = summary ? SUMMARY_ACTIONS.find(([pattern]) => pattern.test(summary))?.[1] : undefined;
+  return named ?? fallback ?? null;
 }
 
 const isMeaningful = (text: string | null | undefined): text is string =>

@@ -240,10 +240,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     try {
       setError(current => current?.scope === queryScope ? null : current);
       const offset = currentPage * tasksPerPage;
-      // A page is exactly the tasks the footer counts. Runs of the same PR are
-      // rolled up into one row client-side, so reading ahead would only repeat
-      // tasks that belong to the next page.
-      const data = await getTasks(filter, tasksPerPage, offset, repoFilter, debouncedSearch);
+      // A page is whole tasks, each with all of its runs, so the footer counts
+      // the rows on screen and a task's runs never split across two pages.
+      const data = await getTasks({
+        status: filter, limit: tasksPerPage, offset, repository: repoFilter, search: debouncedSearch, groupBy: 'task',
+      });
       if (requestId !== tasksRequestId.current) return;
       setTasks(data.tasks || []);
       setTotalTasks(data.total || 0);
@@ -392,15 +393,24 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         <Filters {...filterProps} />
       </div>
 
-      {/* Scrollable Content Area */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* Scrollable Content Area, bounded by the header and footer */}
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="task-list-scroll">
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
             <p className="text-gray-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
-          <TaskTableContent {...tableContentProps} />
+          <>
+            <TaskTableContent {...tableContentProps} />
+            {/*
+              The list's run-out. Scrolled to the end, it is blank room between the
+              last row and the footer. Before that it sticks to the bottom edge and
+              fades the row the edge cuts, so a part-shown row reads as more below
+              rather than as a row sliced off by the footer.
+            */}
+            <div aria-hidden="true" data-testid="task-list-run-out" className="pointer-events-none sticky bottom-0 z-[1] h-6 bg-gradient-to-t from-white to-white/0" />
+          </>
         )}
       </div>
 
@@ -413,7 +423,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
             tasksPerPage={tasksPerPage}
             currentPage={currentPage}
             setCurrentPage={setCurrentPage}
-            returnedCount={visibleTasks.length}
+            returnedCount={visibleGroupedTasks.length}
           />
         </div>
       )}

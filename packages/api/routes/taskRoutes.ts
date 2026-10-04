@@ -39,7 +39,11 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
+      const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '', groupBy = '' } = req.query as Record<string, string>;
+      if (groupBy && groupBy !== 'task') {
+        res.status(400).json({ error: 'groupBy must be "task"' });
+        return;
+      }
 
       // Validate limit parameter
       const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: 1000 });
@@ -79,7 +83,8 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         offset,
         search,
         forReview: forReview === 'true',
-        excludeMerged: excludeMerged === 'true'
+        excludeMerged: excludeMerged === 'true',
+        groupByTask: groupBy === 'task',
       });
       res.json(result);
     } catch (error) {

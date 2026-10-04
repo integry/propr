@@ -118,7 +118,7 @@ const scenarios = [
     },
   },
   {
-    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 100,
+    name: 'tasks', path: '/tasks', chunk: 'TasksPage', listLimit: 25,
     usefulPath: '/api/tasks',
     usefulBody: { tasks: [task], total: 1 },
   },
@@ -201,7 +201,7 @@ for (const runtime of ['web', 'desktop'] as const) {
     const taskConsumers = {
       list: scenario.listLimit === null
         ? []
-        : taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit))
+        : taskRequestParams.filter(({ params }) => params.get('limit') === String(scenario.listLimit) && params.get('groupBy') === 'task')
           .map(({ request }) => request),
       headerReview: taskRequestParams.filter(({ params }) => params.get('limit') === '30'
         && params.get('forReview') === 'true' && params.get('excludeMerged') === 'true')

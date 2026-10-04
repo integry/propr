@@ -9,15 +9,14 @@ interface PaginationProps {
   tasksPerPage: number;
   currentPage: number;
   setCurrentPage: (page: number | ((prev: number) => number)) => void;
-  /** Runs the page actually returned; the range ends there rather than at the page size. */
+  /** Tasks the page actually returned; the range ends there rather than at the page size. */
   returnedCount?: number;
 }
 
 /**
- * `Showing 1–100 of 14,769 runs`: the slice and the whole, and nothing else.
- * The API pages through runs (agent sessions), not tasks, and a row folds a
- * task's runs together behind its `N runs` chip, so the range is counted in
- * runs: a task count here would promise rows the page does not have.
+ * `Showing 1–25 of 1,842 tasks`: the slice and the whole, and nothing else.
+ * The list pages by task (a pull request or issue), the same unit as its rows;
+ * a task's runs come with it and are counted in its `N runs` chip, never here.
  */
 
 export const Pagination: React.FC<PaginationProps> = ({
@@ -41,7 +40,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
       <span data-testid="pagination-summary" className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)} runs</span>
+        <span className="hidden sm:inline">Showing </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)} tasks</span>
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button

@@ -7,18 +7,18 @@ const footer = (props: Partial<React.ComponentProps<typeof Pagination>> = {}) =>
 );
 
 describe('Pagination', () => {
-  it('states the slice and the total, counted in runs', () => {
+  it('states the slice and the total, counted in tasks', () => {
     footer();
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 1–50 of 14,919 runs$/);
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 1–50 of 14,919 tasks$/);
   });
 
-  it('ends the range at the runs the page returned', () => {
-    footer({ currentPage: 1, returnedCount: 32 });
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 51–82 of 14,919 runs$/);
+  it('ends the range at the tasks the page returned', () => {
+    footer({ currentPage: 1, returnedCount: 7 });
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 51–57 of 14,919 tasks$/);
   });
 
   it('ends the last page at the total', () => {
     footer({ currentPage: 298 });
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 14,901–14,919 of 14,919 runs$/);
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 14,901–14,919 of 14,919 tasks$/);
   });
 });

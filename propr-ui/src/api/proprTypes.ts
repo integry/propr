@@ -109,6 +109,8 @@ export interface GetTasksOptions {
   search?: string;
   forReview?: boolean;
   excludeMerged?: boolean;
+  /** Page by task (a pull request or issue with all its runs) instead of by run. */
+  groupBy?: 'task';
 }
 
 export interface MonitoredRepo {

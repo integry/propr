@@ -8,11 +8,10 @@ import TaskSplitWorkspace from '../components/TaskList/TaskSplitWorkspace';
 import type { TaskGroup } from '../components/TaskList/types';
 
 /**
- * Runs of one pull request fold into one row, so a page of 50 tasks was often
- * only five to eleven rows and left the list pane half empty beside an open
- * task. 100 tasks fill the pane on a typical page; fewer tasks would mean fewer rows.
+ * The list pages by task, one row each with all of its runs, so 25 tasks are 25
+ * rows: more than a 1080p pane holds, and the list scrolls above its footer.
  */
-const TASKS_PER_PAGE = 100;
+const TASKS_PER_PAGE = 25;
 
 const TasksPage: React.FC = () => {
   const { taskId } = useParams();

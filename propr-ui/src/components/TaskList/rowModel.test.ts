@@ -56,7 +56,8 @@ describe('buildTaskRow', () => {
     expect(row.type).toBe('Ultrafix');
     expect(row.detail).toBe('Ultrafix cycle 3 (linting)');
     expect(row.earlierRuns.map(run => [run.type, run.delta, run.summarized])).toEqual([
-      [null, 'Pushed commit 9f3c21e', false],
+      // A follow-up makes the changes asked for, so it is a fix even when its summary names no action.
+      ['Fix', 'Pushed commit 9f3c21e', false],
       ['Fix', 'Restrict withdrawal labels', true],
       ['Review', 'No code changes: finished without a commit', false],
     ]);
@@ -72,7 +73,7 @@ describe('buildTaskRow', () => {
       { title, subtitle: 'Review the token scope' },
       { title, subtitle: 'Update repoBranching.ts for read-only tokens' },
     ]));
-    expect(row.earlierRuns.map(run => run.type)).toEqual(['Fix', 'Fix', 'Test', 'Review', null]);
+    expect(row.earlierRuns.map(run => run.type)).toEqual(['Fix', 'Fix', 'Test', 'Review', 'Fix']);
     expect(row.earlierRuns.map(run => run.type)).not.toContain('Follow-up');
   });
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import knex, { Knex } from 'knex';
-import { getTasksFromDb } from '../routes/taskHelpers.js';
+import { getTasksFromDb, type TaskQuery } from '../routes/taskHelpers.js';
 import {
   down as removeTaskHistoryLookupIndex,
   up as addTaskHistoryLookupIndex,
@@ -313,4 +313,45 @@ test('task count covering index preserves repository lookups and rolls back', as
   const indexes = await database.raw("PRAGMA index_list('tasks')") as Array<{ name: string }>;
   assert.ok(indexes.some(row => row.name === 'tasks_repository_index'));
   assert.ok(!indexes.some(row => row.name === 'tasks_repository_type_identity_index'));
+});
+
+test('task pages count and slice tasks, returning every run of each task on the page', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T08:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    // PR #20: three runs, one recorded only in the job data and one only in the result.
+    { task_id: 'pr20-review', repository: 'acme/widget', task_type: 'pr', pr_number: 20, created_at: at(50) },
+    { task_id: 'pr20-fix', repository: 'acme/widget', task_type: 'pr', created_at: at(40), initial_job_data: JSON.stringify({ pullRequestNumber: 20 }) },
+    // Issue #7 opened PR #20; its run joins the pull request's task.
+    { task_id: 'issue7', repository: 'acme/widget', task_type: 'issue', issue_number: 7, created_at: at(10), final_result: JSON.stringify({ postProcessing: { pr: { number: 20 } } }), initial_job_data: JSON.stringify({ issueNumber: 7 }) },
+    // Issue #8: two runs, no pull request yet.
+    { task_id: 'issue8-b', repository: 'acme/widget', task_type: 'issue', issue_number: 8, created_at: at(45) },
+    { task_id: 'issue8-a', repository: 'acme/widget', task_type: 'issue', issue_number: 8, created_at: at(5) },
+    // The same issue number in another repository is another task, and malformed JSON is ignored.
+    { task_id: 'other8', repository: 'acme/other', task_type: 'issue', issue_number: 8, created_at: at(30), initial_job_data: '{not json' },
+    { task_id: 'loose', repository: 'acme/widget', task_type: 'goal-step', created_at: at(20) },
+  ]);
+  await database('task_history').insert((await database('tasks').select('task_id', 'created_at'))
+    .map(row => ({ task_id: row.task_id, state: 'completed', timestamp: row.created_at })));
+
+  // Pull request runs would otherwise ask GitHub for their preview media.
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  const page = async (offset: number, limit: number) => {
+    const result = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit, offset, groupByTask: true });
+    return { ...result, ids: (result.tasks as Array<{ id: string }>).map(task => task.id) };
+  };
+
+  const first = await page(0, 2);
+  assert.equal(first.total, 4);
+  assert.equal(first.totalRuns, 7);
+  assert.deepEqual(first.ids, ['pr20-review', 'issue8-b', 'pr20-fix', 'issue7', 'issue8-a']);
+  const second = await page(2, 2);
+  assert.deepEqual(second.ids, ['other8', 'loose']);
+  assert.deepEqual((await page(4, 2)).ids, []);
+  // Without grouping, the page still counts runs.
+  const runs = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit: 2, offset: 0 });
+  assert.equal(runs.total, 7);
+  assert.equal(runs.tasks.length, 2);
+  assert.equal('totalRuns' in runs, false);
 });

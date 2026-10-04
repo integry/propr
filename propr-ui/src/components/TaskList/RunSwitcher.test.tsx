@@ -15,7 +15,8 @@ const group: TaskGroup = {
 describe('RunSwitcher', () => {
   it('names the open run against the task\'s run count and lists every run newest first', () => {
     render(<RunSwitcher group={group} selectedTaskId="run-8" onSelect={vi.fn()} />);
-    expect(screen.getByTestId('run-switcher')).toHaveTextContent('Run 3 of 3 (Active)');
+    // The status badge beside the title names the state, so the closed control does not repeat it.
+    expect(screen.getByTestId('run-switcher').querySelector(':scope > span')).toHaveTextContent(/^Run 3 of 3$/);
     expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
       'Run 3 (Active) — Ultrafix cycle 3 (linting)',
       'Run 2 (Completed) — Fixed seedCommit test',
@@ -26,7 +27,7 @@ describe('RunSwitcher', () => {
   it('opens the chosen run', () => {
     const onSelect = vi.fn();
     render(<RunSwitcher group={group} selectedTaskId="run-7" onSelect={onSelect} />);
-    expect(screen.getByTestId('run-switcher')).toHaveTextContent('Run 2 of 3 (Completed)');
+    expect(screen.getByTestId('run-switcher').querySelector(':scope > span')).toHaveTextContent(/^Run 2 of 3$/);
     fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'run-6' } });
     expect(onSelect).toHaveBeenCalledExactlyOnceWith('run-6');
   });

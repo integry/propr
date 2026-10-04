@@ -22,7 +22,8 @@ async function fixture(page: Page, platform?: 'macos' | 'linux') {
     const pathname = new URL(route.request().url()).pathname;
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: true },
-      '/api/tasks': { tasks, total: 14769 },
+      // Paged by task: 10 tasks (32 runs) of 1,842.
+      '/api/tasks': { tasks, total: 1842, totalRuns: 14769 },
       '/api/instance/catalog': { agents: [{ id: 'fixture', name: 'Fixture agent', defaultModel: 'gpt-6-astra' }], repositories: [{ name: 'integry/propr' }] },
       '/api/queue/stats': { active: 1, waiting: 1, completed: 3, failed: 1 },
       '/api/stats/generating-plans': { count: 0 },
@@ -78,10 +79,9 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table.getByRole('link', { name: 'Update', exact: true })).toHaveCount(0);
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
-      // The footer states the slice the API returned and the total, in runs, and nothing else:
-      // the fixture's 32 runs are the rows' run chips added up.
-      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing 1–32 of 14,769 runs');
-      // The repository filter counts the same tasks with the same digit grouping as the footer.
+      // The footer counts tasks, the unit the rows are: the 10 on this page, never their 32 runs.
+      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing 1–10 of 1,842 tasks');
+      // The repository filter groups its digits like the footer.
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
 
@@ -251,13 +251,30 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   expect(columns).toBe('column');
   // The pane names the run it shows against the task's runs, and switches to an earlier one in place.
   const runSwitcher = details.getByTestId('run-switcher').filter({ visible: true });
-  await expect(runSwitcher.locator(':scope > span')).toHaveText('Run 8 of 8 (Active)');
+  await expect(runSwitcher.locator(':scope > span')).toHaveText('Run 8 of 8');
   const runOptions = runSwitcher.getByRole('option');
   await expect(runOptions).toHaveCount(8);
   await expect(runOptions.nth(0)).toHaveText('Run 8 (Active) — Ultrafix cycle 3 (linting)');
   await expect(runOptions.nth(2)).toHaveText('Run 6 (Completed) — Restrict issue-level withdrawal labels to actual intent withdrawal');
   await expect(selectedCard.getByTestId('run-count')).toHaveText('8 runs');
+  // Every run line leads with its type after the chip, including a follow-up whose summary names no action.
+  const runLines = list.locator('[data-testid="task-card"]').filter({ has: page.getByTestId('run-count') });
+  for (const card of await runLines.all()) await expect(card.getByTestId('work-type-badge')).toBeVisible();
+  await expect(list.locator('[data-testid="task-card"]').filter({ hasText: 'Retry webhook deliveries' }).getByTestId('work-type-badge')).toHaveText('Fix');
   await capture(page, 'tasks-split-1920');
+  // The list scrolls inside its pane: at the end the last card sits whole above the footer, with room to spare.
+  const scroller = list.getByTestId('task-list-scroll');
+  expect(await scroller.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+  await scroller.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  const runOut = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('[data-testid="task-split-list"] [data-testid="task-card"]')];
+    const last = cards[cards.length - 1].getBoundingClientRect();
+    const footer = document.querySelector('[data-testid="task-list-footer"]')!.getBoundingClientRect();
+    return Math.round(footer.top - last.bottom);
+  });
+  expect(runOut).toBeGreaterThanOrEqual(24);
+  await capture(page, 'tasks-split-1920-end');
+  await scroller.evaluate(node => { node.scrollTop = 0; });
   await runSwitcher.getByRole('combobox', { name: 'Run' }).selectOption('pr-2664-run-2');
   await expect(page).toHaveURL(/task=pr-2664-run-2/);
   // The run belongs to the same task, so its row stays selected.
@@ -297,6 +314,10 @@ test('1920px reload restores the selected task and the filter', async ({ page })
   await expect(page.getByTestId('task-split-details').getByTestId('task-details')).toBeVisible();
   await expect(page.getByTestId('task-split-list').locator('[data-testid="task-card"][aria-current="true"]')).toBeVisible();
   expect(requests.some(url => new URL(url).searchParams.get('repository') === 'integry/propr')).toBe(true);
+  // The list pages by task, so a task's runs never split across two pages.
+  const listRequests = requests.filter(url => new URL(url).searchParams.get('limit') === '25');
+  expect(listRequests.length).toBeGreaterThan(0);
+  expect(listRequests.every(url => new URL(url).searchParams.get('groupBy') === 'task')).toBe(true);
 });
 
 test('1920px modified and middle clicks still open the task page in a new tab', async ({ page, context }) => {
