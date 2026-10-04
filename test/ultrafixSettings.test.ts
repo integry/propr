@@ -203,3 +203,15 @@ describe('parseSettingValue for ultrafix_pause_seconds', () => {
     assert.throws(() => parseSettingValue('ultrafix_pause_seconds', 'abc'), /must be a non-negative integer/);
   });
 });
+
+describe('Ultrafix escalation CLI settings', () => {
+  test('parses the instance toggle, ordered model list, patience, and N=0', () => {
+    assert.equal(parseSettingValue('ultrafix_escalation_enabled', 'false'), false);
+    assert.deepEqual(parseSettingValue('ultrafix_escalation_models', '["codex:gpt-6-astra","claude:claude-opus-5-5"]'), ['codex:gpt-6-astra', 'claude:claude-opus-5-5']);
+    assert.equal(parseSettingValue('ultrafix_escalation_patience', '4'), 4);
+    assert.equal(parseSettingValue('ultrafix_escalation_max_reasoning_levels', '0'), 0);
+    assert.throws(() => parseSettingValue('ultrafix_escalation_patience', '0'));
+    assert.throws(() => parseSettingValue('ultrafix_escalation_models', '[" "]'));
+    for (const key of ['ultrafix_escalation_enabled', 'ultrafix_escalation_models', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels']) assert.equal(isValidSettingKey(key), true);
+  });
+});

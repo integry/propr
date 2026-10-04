@@ -59,6 +59,10 @@ export interface WriteFixture {
   findPullRequest: (repository: string, number: number) => PullRequestFixture;
   restCalls: Array<{ route: string; args: Args }>;
   comments: CommentFixture[];
+  /** Files changed between two heads, keyed by `from...to`, as GitHub's compare endpoint reports them. */
+  comparisons: Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>;
+  /** Every file path at a commit, keyed by its SHA, as GitHub's recursive tree endpoint reports them. */
+  trees: Map<string, string[]>;
   redis: LeaseRedis;
 }
 
@@ -85,7 +89,7 @@ export function interceptRest(principal: McpPrincipal, route: string, hook: () =
  * 1 in each comment, so selecting S32 and S34 exercises a mid-list selection of
  * suggestions a previous review already numbered past.
  */
-function fixtureReviewBody(head: string): string {
+export function fixtureReviewBody(head: string): string {
   return [
     '## 🔍 AI Code Review — Fixture',
     '',
@@ -383,6 +387,12 @@ export async function verifyPullRequestWrites(
     assert.deepEqual(findingsOnly.result.suggestionIds, []);
     assert.equal(findingsOnly.result.resolvedHead, head);
     assert.equal(findingsOnly.result.headSource, 'caller');
+    // Head unchanged since the review: nothing to re-anchor, nothing skipped.
+    assert.equal(findingsOnly.result.reviewedHead, head);
+    assert.equal(findingsOnly.result.reanchored, false);
+    assert.equal(findingsOnly.result.comparison, 'same_head');
+    assert.deepEqual(findingsOnly.result.applied, [{ id: 'F20', kind: 'finding', touchedPaths: [] }]);
+    assert.deepEqual(findingsOnly.result.skipped, []);
 
     // Both namespaces, mixed and lower case on input, canonical on the wire,
     // with the caller's instructions carried through unchanged below the command.
@@ -437,11 +447,9 @@ export async function verifyPullRequestWrites(
     // The head preconditions are unchanged.
     const staleHead = await mutate('fix_review_findings', { ...pull, expectedHead: 'f'.repeat(40), reviewCommentId, findingIds: ['F20'] });
     assert.equal(staleHead.result.error.code, 'STALE_HEAD');
-    const olderReview = await mutate('fix_review_findings', {
-      repository: pull.repository, pullRequest: pull.pullRequest, reviewCommentId: staleCommentId, findingIds: ['F20'],
-    });
-    assert.equal(olderReview.result.error.code, 'STALE_FINDINGS');
-    assert.ok(olderReview.result.error.message.includes('older head'), olderReview.result.error.message);
+    // A caller pinning the head is still protected against a review of an older one.
+    const pinnedOlder = await mutate('fix_review_findings', { ...pull, expectedHead: 'b'.repeat(40), reviewCommentId: staleCommentId, findingIds: ['F20'] });
+    assert.equal(pinnedOlder.result.error.code, 'STALE_HEAD');
     const notAReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: plainCommentId, findingIds: ['F20'] });
     assert.equal(notAReview.result.error.code, 'STALE_FINDINGS');
 
