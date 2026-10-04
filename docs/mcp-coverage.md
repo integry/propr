@@ -174,7 +174,8 @@ adopts it.
 `get_pull_request_discussion` pages GitHub issue comments (maximum 20 per page),
 returns 4096-character body chunks and parsed F# findings and S# suggestions
 (`currentFindingIds` and `currentSuggestionIds` honor the worker’s seven-day age
-limit, known head and consumption state), and supports exact
+limit, known head and consumption state; `selectableFindingIds` and
+`selectableSuggestionIds` drop the head condition, as `/fix` does), and supports exact
 comment/task lookup. A comment embedding GitHub user attachments lists them under
 `attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
 `get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
@@ -182,7 +183,13 @@ existing review marker; legacy reviews explicitly report an unknown head.
 `fix_review_findings` requires `reviewCommentId` and at least one identifier
 across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
 follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed
-or mismatched identifiers by name and rejects known stale heads. A suggestion is
+or mismatched identifiers by name. A review of an older head is re-anchored onto
+the current head rather than rejected: records whose cited files were all
+deleted since the review, with no surviving file gaining lines the code could
+have moved into, are reported in `skipped` and left out, the rest are
+posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
+report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
+on a mismatch. A suggestion is
 in fix scope only because it was named, and naming one never relaxes a merge
 blocker. Comment content remains untrusted data.
 
