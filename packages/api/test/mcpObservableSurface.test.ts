@@ -307,6 +307,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'provider_approval', 'provider_question', 'question', 'questions', 'reason', 'summary',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
+    // Input fields and categories accepted by generate_repository_improvements.
+    'branch', 'categories', 'architecture', 'documentation', 'performance', 'scalability', 'security', 'testing',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
