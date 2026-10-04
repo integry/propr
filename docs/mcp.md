@@ -227,6 +227,23 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+`generate_repository_improvements` answers "what should we work on next?"
+with the same generator as the web UI **Improve** tab. Pass `categories`
+(`code-quality`, `performance`, `security`, `testing`, `documentation`,
+`architecture`, `new-features`, `tech-debt`, `ux-ui`, `scalability`) and/or a
+non-blank `customPrompt`, plus optional `branch`, `referenceRepository` (also
+checked against your grant), `model` and `contextLevel` (0–100, default 50).
+It needs `plan` scope and returns an `accepted` receipt without waiting for
+the model. Poll `get_operation`: the lifecycle moves to `running`, then
+`completed` with `result.suggestions` (`{ title, description }`),
+`result.metadata` and the `estimatedDurationMs`/`actualDurationMs`/
+`isHistoricalEstimate` timings, or `failed` with a structured error such as
+`IMPROVEMENTS_OUTPUT_INVALID`. Generation runs in the API process; a receipt
+that has not settled after 30 minutes (for example after a restart) becomes
+`unknown` with `IMPROVEMENTS_OUTCOME_UNAVAILABLE`, and a new key starts a new
+generation. Suggestions are not saved anywhere else; turn the ones you want
+into work with `create_task`, `create_plan` or `create_goal`.
+
 `create_goal` accepts the same creation contract as the goal API and web UI;
 `get_goal_capabilities` returns it as `creation` beside the supported agents
 and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
