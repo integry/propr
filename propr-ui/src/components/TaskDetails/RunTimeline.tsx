@@ -62,7 +62,8 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
 
   return (
     <ol aria-label="Runs" className="relative m-0 list-none p-0" data-testid="run-timeline">
-      <span aria-hidden="true" className="absolute bottom-3 left-[7px] top-3 w-0.5 bg-slate-300" />
+      {/* The trunk paints above the rows, so an open run's tinted row and its steps never cut it. */}
+      <span aria-hidden="true" data-testid="run-timeline-trunk" className="pointer-events-none absolute bottom-3 left-[7px] top-3 z-[1] w-0.5 bg-slate-300" />
       {runs.map(run => {
         const selected = run.task.id === selectedTaskId;
         const open = selected && expanded;
@@ -80,7 +81,7 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
               className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
             >
               {/* A plain node on the rail; white behind it breaks the line around it. */}
-              <span className="relative z-[1] mr-1 flex h-4 w-4 flex-none items-center justify-center bg-white">
+              <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center bg-white">
                 <span
                   aria-hidden="true"
                   data-testid="run-timeline-node"

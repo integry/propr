@@ -99,4 +99,19 @@ describe('Task action overflow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
     expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeEnabled();
   });
+
+  test('keeps Stop for a newer run that is still working while an earlier run is shown', () => {
+    const onStop = vi.fn();
+    const onStopExecution = vi.fn();
+    render(<ActionBar {...commonProps} onStopExecution={onStopExecution} currentStatus="COMPLETED" liveRun={{ number: 8, stopping: false, onStop }} />);
+
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop).toHaveAttribute('title', 'Stop Run 8, which is still running');
+    // The task is still working, so a follow-up waits, as it does on the newest run.
+    expect(screen.queryByRole('button', { name: 'Follow Up' })).toBeNull();
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStopExecution).not.toHaveBeenCalled();
+  });
 });
+

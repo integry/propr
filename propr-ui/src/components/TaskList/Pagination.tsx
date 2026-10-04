@@ -11,6 +11,8 @@ interface PaginationProps {
   setCurrentPage: (page: number | ((prev: number) => number)) => void;
   /** Tasks the page actually returned; the range ends there rather than at the page size. */
   returnedCount?: number;
+  /** A footer pinned under the list stays there with a single page, or none: it still states the count. */
+  pinned?: boolean;
 }
 
 /**
@@ -26,21 +28,24 @@ export const Pagination: React.FC<PaginationProps> = ({
   currentPage,
   setCurrentPage,
   returnedCount,
+  pinned = false,
 }) => {
-  if (hideFilters || totalTasks <= tasksPerPage) {
+  if (hideFilters || (!pinned && totalTasks <= tasksPerPage)) {
     return null;
   }
 
-  const totalPages = Math.ceil(totalTasks / tasksPerPage);
+  const totalPages = Math.max(1, Math.ceil(totalTasks / tasksPerPage));
   // Convert from 0-based internal state to 1-based display
   const displayPage = currentPage + 1;
-  const firstTask = currentPage * tasksPerPage + 1;
+  const firstTask = Math.min(currentPage * tasksPerPage + 1, totalTasks);
   const lastTask = Math.min(currentPage * tasksPerPage + (returnedCount ?? tasksPerPage), totalTasks);
 
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
       <span data-testid="pagination-summary" className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)} tasks</span>
+        {totalTasks === 0 ? '0 tasks' : (
+          <><span className="hidden sm:inline">Showing </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)} tasks</span></>
+        )}
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button

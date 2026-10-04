@@ -13,7 +13,20 @@ interface ActionBarProps {
   onViewLogs: (logsPath: string) => void;
   onDeleteTask?: () => void;
   onFollowUp?: () => void;
+  /**
+   * The task's newest run when the pane shows an earlier one. While it works,
+   * its Stop stays in the header, so the agent can be stopped from any run.
+   */
+  liveRun?: LiveRunControl;
 }
+
+export interface LiveRunControl {
+  number: number;
+  stopping: boolean;
+  onStop: () => void;
+}
+
+const ACTIVE_STATUSES = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'];
 
 // Cancelled badge component
 const CancelledBadge: React.FC<{ isCancelled: boolean }> = ({ isCancelled }) => {
@@ -34,13 +47,14 @@ const StopExecutionButton: React.FC<{
   isActive: boolean;
   stoppingExecution: boolean;
   onStopExecution: () => void;
-}> = ({ isActive, stoppingExecution, onStopExecution }) => {
+  title?: string;
+}> = ({ isActive, stoppingExecution, onStopExecution, title = 'Stop Execution' }) => {
   if (!isActive) return null;
   return (
     <button
       onClick={onStopExecution}
       disabled={stoppingExecution}
-      title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
+      title={stoppingExecution ? 'Stopping execution...' : title}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
         stoppingExecution
           ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
@@ -178,9 +192,13 @@ const ActionBar: React.FC<ActionBarProps> = ({
   onViewPrompt,
   onViewLogs,
   onDeleteTask,
-  onFollowUp
+  onFollowUp,
+  liveRun,
 }) => {
-  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'].includes(currentStatus);
+  const isActive = ACTIVE_STATUSES.includes(currentStatus);
+  // The run on screen is done, but a newer one is still working: its Stop takes this run's place.
+  const stopsLiveRun = !isActive && Boolean(liveRun);
+  const taskBusy = isActive || stopsLiveRun;
   const isCancelled = currentStatus === 'CANCELLED';
 
   return (
@@ -212,7 +230,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
       )}
 
       {/* Follow Up Button - Ghost style */}
-      {onFollowUp && !isActive && (
+      {onFollowUp && !taskBusy && (
         <button
           onClick={onFollowUp}
           title="Follow Up - Post a follow-up comment"
@@ -224,7 +242,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
       )}
 
       {/* Divider before destructive actions */}
-      {isActive && (
+      {taskBusy && (
         <div className="h-4 w-px bg-slate-300 mx-1" />
       )}
 
@@ -233,6 +251,14 @@ const ActionBar: React.FC<ActionBarProps> = ({
         stoppingExecution={stoppingExecution}
         onStopExecution={onStopExecution}
       />
+      {liveRun && (
+        <StopExecutionButton
+          isActive={stopsLiveRun}
+          stoppingExecution={liveRun.stopping}
+          onStopExecution={liveRun.onStop}
+          title={`Stop Run ${liveRun.number}, which is still running`}
+        />
+      )}
 
       {onDeleteTask && (
         <TaskOverflowMenu

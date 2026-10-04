@@ -188,7 +188,7 @@ export const InspectedRunBanner: React.FC<{
     <button
       type="button"
       onClick={onBack}
-      className="flex-none rounded-sm px-1.5 py-0.5 font-medium text-slate-700 underline-offset-2 hover:bg-white hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      className="flex-none rounded border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-teal-600 underline-offset-2 shadow-sm transition-colors hover:border-teal-300 hover:text-teal-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
     >
       Back to Run {runCount}
     </button>

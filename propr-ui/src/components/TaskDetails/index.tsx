@@ -26,6 +26,7 @@ import { useClickOutsideCollapse } from './useClickOutsideCollapse';
 import { sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
 import { InspectedRunBanner } from './TaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
+import { useLiveRunStop } from './useLiveRunStop';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -161,6 +162,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     tokenUsage,
   }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage]);
   const { headerProps, contextStripProps, inspection } = useTaskHeaderView(taskId, runs, ownSummary);
+  const liveRun = useLiveRunStop(inspection?.head, Boolean(inspection?.headActive));
 
   const handleFollowupSubmit = useCallback(async (body: string) => {
     if (!taskId) {
@@ -215,6 +217,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     onViewLogs: logFilesData.fetchLogFilesData,
     onDeleteTask: handleDeleteTask,
     onFollowUp: handleOpenFollowup,
+    liveRun,
   };
 
   return (

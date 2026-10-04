@@ -1,74 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { ago, detailsEvents, detailsHistory, historicalEvents, historicalHistory, historicalRun, now, selectedRun, tag, tasks } from './task-list-desktop.fixture';
-
-async function fixture(page: Page, platform?: 'macos' | 'linux') {
-  await page.clock.install({ time: now });
-  if (platform) await page.addInitScript(platform => {
-    const profile = { id: 'layout-fixture', name: 'Preview workspace', kind: 'remote' as const, baseUrl: 'https://fixture.example.test' };
-    window.__PROPR_DESKTOP__ = {
-      isDesktop: true, platform,
-      app: { onDeepLink: () => () => undefined },
-      profiles: { list: async () => [profile], getActiveId: async () => profile.id, setActiveId: async () => undefined, save: async () => undefined, remove: async () => undefined },
-      connection: { probe: async () => ({ status: 'ready' }) },
-      authentication: { authenticate: async () => undefined },
-      discovery: { supported: false, discover: async () => [] },
-      localSetup: { supported: false, setup: async () => profile },
-      externalBrowser: { open: async () => undefined },
-    };
-  }, platform);
-  await page.route('**/api/**', route => {
-    const pathname = new URL(route.request().url()).pathname;
-    const responses: Record<string, unknown> = {
-      '/api/auth/demo-mode': { demoMode: true },
-      // Paged by task: 10 tasks (32 runs) of 1,842.
-      '/api/tasks': { tasks, total: 1842, totalRuns: 14769 },
-      '/api/instance/catalog': { agents: [{ id: 'fixture', name: 'Fixture agent', defaultModel: 'gpt-6-astra' }], repositories: [{ name: 'integry/propr' }] },
-      '/api/queue/stats': { active: 1, waiting: 1, completed: 3, failed: 1 },
-      '/api/stats/generating-plans': { count: 0 },
-      '/api/stats/tasks': { summary: { total: 7, completed: 3, failed: 1, active: 1, waiting: 1 }, dailyCounts: [], statusDistribution: [], avgProcessingTime: [] },
-      '/api/stats/overview': { usage: { total_cost_usd: 0, total_tokens: 0, models: {} }, tasks: { completed: 3, planned: 7, pr_iterations_avg: 1, merged_prs: 1, total_followups: 5 }, system: { repos_indexed: 2 } },
-      '/api/stats/repositories': { repositories: [{ repository: 'integry/propr', total: 14768, completed: 3, failed: 1, inProgress: 1, successRate: 43 }, { repository: 'integry/desktop-workspaces', total: 1, completed: 0, failed: 1, inProgress: 0, successRate: 0 }] },
-      '/api/notifications/unread-count': { unreadCount: 0 },
-      '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
-      [`/api/task/${selectedRun}/history`]: {
-        history: detailsHistory,
-        taskInfo: {
-          title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Ultrafix cycle 3 (linting)',
-          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
-        },
-        usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.4 }],
-      },
-      [`/api/task/${selectedRun}/live-details`]: { events: detailsEvents, todos: [], currentTask: null },
-      [`/api/task/${selectedRun}/file-changes`]: {
-        taskId: selectedRun, lastUpdated: ago(0.5),
-        files: [{ path: 'src/jobs/withdrawalLabels.ts', linesAdded: 12, linesRemoved: 4, status: 'modified', diff: '@@ -1,4 +1,12 @@\n-export const WITHDRAW = true;\n+export const WITHDRAW = isIntentLabel(label);' }],
-      },
-      [`/api/task/${historicalRun}/history`]: {
-        history: historicalHistory,
-        taskInfo: {
-          title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues',
-          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
-        },
-        usageMetricRecords: [],
-      },
-      [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
-      [`/api/task/${historicalRun}/file-changes`]: {
-        taskId: historicalRun, lastUpdated: ago(36),
-        files: [{ path: 'src/jobs/withdrawalHandlers.ts', linesAdded: 3, linesRemoved: 1, status: 'modified', diff: '@@ -14,1 +14,3 @@\n-if (label.includes(\'withdraw\'))\n+if (isWithdrawalLabel(label))' }],
-      },
-    };
-    return pathname in responses ? route.fulfill({ json: responses[pathname] }) : route.fulfill({ status: 503, json: { error: 'Unavailable in privacy-safe layout fixture' } });
-  });
-}
-
-const capture = async (page: Page, name: string) => {
-  if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
-  const directory = path.resolve('../.propr/previews');
-  await mkdir(directory, { recursive: true });
-  await page.screenshot({ animations: 'disabled', path: path.join(directory, `${name}.png`) });
-};
+import { expect, test } from '@playwright/test';
+import { capture, fixture, historicalRun, tasks } from './task-list-desktop.fixture';
 
 for (const platform of [undefined, 'macos', 'linux'] as const) {
   for (const width of [1280, 1920]) {
@@ -296,7 +227,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
     const footer = document.querySelector('[data-testid="task-list-footer"]')!.getBoundingClientRect();
     return Math.round(footer.top - last.bottom);
   });
-  expect(runOut).toBeGreaterThanOrEqual(24);
+  expect(runOut).toBeGreaterThanOrEqual(32);
   await capture(page, 'tasks-split-1920-end');
   await scroller.evaluate(node => { node.scrollTop = 0; });
   // Choosing an earlier run opens it: its steps, files changed and execution log replace the newest run's.
@@ -312,6 +243,11 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(details.locator('header:visible h2').locator('..')).toHaveText(/^Implementing.*Ultrafix cycle 3 \(linting\)$/);
   await expect(details.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
   await expect(details.getByTestId('inspected-run-banner').filter({ hasText: 'Inspecting historical Run 3 of 8 (Completed)' }).getByRole('button', { name: 'Back to Run 8' })).toBeVisible();
+  // The newest run is still working, so its Stop stays in the header while an earlier run is read.
+  await expect(details.locator('header:visible').getByRole('button', { name: 'Stop' })).toHaveAttribute('title', 'Stop Run 8, which is still running');
+  await expect(details.locator('header:visible').getByRole('button', { name: 'Follow Up' })).toHaveCount(0);
+  // The trunk paints above the open run's tinted row and its steps, so it runs unbroken past them to Run 4.
+  await expect(details.getByTestId('run-timeline-trunk')).toHaveCSS('z-index', '1');
   await capture(page, 'tasks-split-1920-run-3');
   // The run belongs to the same task, so its row stays selected.
   await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');
@@ -339,6 +275,20 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(page).not.toHaveURL(/task=/);
   await expect(details).toHaveCount(0);
   await expect(table).toBeVisible();
+});
+
+test('1920px the footer stays pinned to the bottom with only a few tasks', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await fixture(page);
+  const few = tasks.filter(task => task.id.startsWith('pr-2661') || task.id.startsWith('pr-2663'));
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: { tasks: few, total: 2, totalRuns: few.length } }));
+  await page.goto('/tasks?repository=integry%2Fpropr');
+  const footer = page.getByTestId('task-list-footer');
+  await expect(footer.getByTestId('pagination-summary')).toHaveText('Showing 1–2 of 2 tasks');
+  const box = (await footer.boundingBox())!;
+  expect(Math.round(box.y + box.height)).toBe(1080);
+  await expect(footer.getByRole('button', { name: 'Next' })).toBeDisabled();
+  await capture(page, 'tasks-few-1920');
 });
 
 test('1920px reload restores the selected task and the filter', async ({ page }) => {

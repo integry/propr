@@ -16,8 +16,11 @@ interface TaskHeaderView {
     usageMetricRecords: TaskHeadSummary['usageMetricRecords'];
     synthetic: boolean;
   };
-  /** The run open below the header when it is not the newest, with the newest beside it. */
-  inspection: { run: TaskRunEntry; head: TaskRunEntry } | null;
+  /**
+   * The run open below the header when it is not the newest, with the newest
+   * beside it, and whether the newest is still working (its Stop stays in the header).
+   */
+  inspection: { run: TaskRunEntry; head: TaskRunEntry; headActive: boolean } | null;
 }
 
 /**
@@ -43,6 +46,10 @@ export function useTaskHeaderView(taskId: string | undefined, runs: TaskRunEntry
   }, [viewingHead, taskId, own]);
 
   const derived = getHistoryDerivedData(source.history, source.taskInfo);
+  // Until the newest run's history is read, the list's account of it decides.
+  const headActive = source === headSummary
+    ? derived.isTaskActive
+    : head?.outcome === 'active' || head?.outcome === 'waiting';
   return {
     headerProps: { taskInfo: source.taskInfo, currentStatus: derived.currentStatus },
     contextStripProps: {
@@ -55,6 +62,6 @@ export function useTaskHeaderView(taskId: string | undefined, runs: TaskRunEntry
       usageMetricRecords: source.usageMetricRecords,
       synthetic: source.history.some(item => item.metadata?.syntheticRouting !== undefined),
     },
-    inspection: run && head ? { run, head } : null,
+    inspection: run && head ? { run, head, headActive } : null,
   };
 }

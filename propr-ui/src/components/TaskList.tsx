@@ -330,7 +330,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const { tasks: visibleTasks, groups: visibleGroupedTasks, refreshError: currentError } = scopeState;
 
-  const totalPages = Math.ceil(totalTasks / tasksPerPage);
 
   // Shared filter props
   const filterProps = {
@@ -393,40 +392,34 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         <Filters {...filterProps} />
       </div>
 
-      {/* Scrollable Content Area, bounded by the header and footer */}
-      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="task-list-scroll">
+      {/*
+        Scrollable Content Area, bounded by the header and footer. Its bottom
+        padding is the list's run-out: scrolled to the end, the last row stops
+        2rem above the footer's border instead of sitting on it.
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-8" data-testid="task-list-scroll">
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
             <p className="text-gray-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
-          <>
-            <TaskTableContent {...tableContentProps} />
-            {/*
-              The list's run-out. Scrolled to the end, it is blank room between the
-              last row and the footer. Before that it sticks to the bottom edge and
-              fades the row the edge cuts, so a part-shown row reads as more below
-              rather than as a row sliced off by the footer.
-            */}
-            <div aria-hidden="true" data-testid="task-list-run-out" className="pointer-events-none sticky bottom-0 z-[1] h-6 bg-gradient-to-t from-white to-white/0" />
-          </>
+          <TaskTableContent {...tableContentProps} />
         )}
       </div>
 
-      {/* Anchored Footer, pinned to the bottom like the other sections */}
-      {visibleTasks.length > 0 && totalPages > 1 && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200" data-testid="task-list-footer">
-          <Pagination
-            hideFilters={false}
-            totalTasks={totalTasks}
-            tasksPerPage={tasksPerPage}
-            currentPage={currentPage}
-            setCurrentPage={setCurrentPage}
-            returnedCount={visibleGroupedTasks.length}
-          />
-        </div>
-      )}
+      {/* Anchored Footer, pinned to the bottom like the other sections, however few tasks there are */}
+      <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200" data-testid="task-list-footer">
+        <Pagination
+          hideFilters={false}
+          pinned
+          totalTasks={totalTasks}
+          tasksPerPage={tasksPerPage}
+          currentPage={currentPage}
+          setCurrentPage={setCurrentPage}
+          returnedCount={visibleGroupedTasks.length}
+        />
+      </div>
     </>
   );
 };

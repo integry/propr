@@ -1,4 +1,7 @@
 /** The `/tasks` ledger and details pane data for `task-list-desktop.pw.ts`. */
+import type { Page } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 export const now = Date.parse('2026-10-01T12:00:00Z');
 export const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
@@ -102,3 +105,70 @@ export const historicalEvents = [
   { id: 'review-tool-1', toolUseId: 'review-tool-1', type: 'tool_use', timestamp: ago(37.5), toolName: 'Bash', input: { command: 'grep -rn withdraw src/jobs' } },
   { id: 'review-result-1', toolUseId: 'review-tool-1', type: 'tool_result', timestamp: ago(37.4), result: 'src/jobs/withdrawalHandlers.ts:14: if (label.includes(\'withdraw\'))' },
 ];
+
+export async function fixture(page: Page, platform?: 'macos' | 'linux') {
+  await page.clock.install({ time: now });
+  if (platform) await page.addInitScript(platform => {
+    const profile = { id: 'layout-fixture', name: 'Preview workspace', kind: 'remote' as const, baseUrl: 'https://fixture.example.test' };
+    window.__PROPR_DESKTOP__ = {
+      isDesktop: true, platform,
+      app: { onDeepLink: () => () => undefined },
+      profiles: { list: async () => [profile], getActiveId: async () => profile.id, setActiveId: async () => undefined, save: async () => undefined, remove: async () => undefined },
+      connection: { probe: async () => ({ status: 'ready' }) },
+      authentication: { authenticate: async () => undefined },
+      discovery: { supported: false, discover: async () => [] },
+      localSetup: { supported: false, setup: async () => profile },
+      externalBrowser: { open: async () => undefined },
+    };
+  }, platform);
+  await page.route('**/api/**', route => {
+    const pathname = new URL(route.request().url()).pathname;
+    const responses: Record<string, unknown> = {
+      '/api/auth/demo-mode': { demoMode: true },
+      // Paged by task: 10 tasks (32 runs) of 1,842.
+      '/api/tasks': { tasks, total: 1842, totalRuns: 14769 },
+      '/api/instance/catalog': { agents: [{ id: 'fixture', name: 'Fixture agent', defaultModel: 'gpt-6-astra' }], repositories: [{ name: 'integry/propr' }] },
+      '/api/queue/stats': { active: 1, waiting: 1, completed: 3, failed: 1 },
+      '/api/stats/generating-plans': { count: 0 },
+      '/api/stats/tasks': { summary: { total: 7, completed: 3, failed: 1, active: 1, waiting: 1 }, dailyCounts: [], statusDistribution: [], avgProcessingTime: [] },
+      '/api/stats/overview': { usage: { total_cost_usd: 0, total_tokens: 0, models: {} }, tasks: { completed: 3, planned: 7, pr_iterations_avg: 1, merged_prs: 1, total_followups: 5 }, system: { repos_indexed: 2 } },
+      '/api/stats/repositories': { repositories: [{ repository: 'integry/propr', total: 14768, completed: 3, failed: 1, inProgress: 1, successRate: 43 }, { repository: 'integry/desktop-workspaces', total: 1, completed: 0, failed: 1, inProgress: 0, successRate: 0 }] },
+      '/api/notifications/unread-count': { unreadCount: 0 },
+      '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
+      [`/api/task/${selectedRun}/history`]: {
+        history: detailsHistory,
+        taskInfo: {
+          title: `Ultrafix PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Ultrafix cycle 3 (linting)',
+          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
+        },
+        usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.4 }],
+      },
+      [`/api/task/${selectedRun}/live-details`]: { events: detailsEvents, todos: [], currentTask: null },
+      [`/api/task/${selectedRun}/file-changes`]: {
+        taskId: selectedRun, lastUpdated: ago(0.5),
+        files: [{ path: 'src/jobs/withdrawalLabels.ts', linesAdded: 12, linesRemoved: 4, status: 'modified', diff: '@@ -1,4 +1,12 @@\n-export const WITHDRAW = true;\n+export const WITHDRAW = isIntentLabel(label);' }],
+      },
+      [`/api/task/${historicalRun}/history`]: {
+        history: historicalHistory,
+        taskInfo: {
+          title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues',
+          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
+        },
+        usageMetricRecords: [],
+      },
+      [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
+      [`/api/task/${historicalRun}/file-changes`]: {
+        taskId: historicalRun, lastUpdated: ago(36),
+        files: [{ path: 'src/jobs/withdrawalHandlers.ts', linesAdded: 3, linesRemoved: 1, status: 'modified', diff: '@@ -14,1 +14,3 @@\n-if (label.includes(\'withdraw\'))\n+if (isWithdrawalLabel(label))' }],
+      },
+    };
+    return pathname in responses ? route.fulfill({ json: responses[pathname] }) : route.fulfill({ status: 503, json: { error: 'Unavailable in privacy-safe layout fixture' } });
+  });
+}
+
+export const capture = async (page: Page, name: string) => {
+  if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
+  const directory = path.resolve('../.propr/previews');
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ animations: 'disabled', path: path.join(directory, `${name}.png`) });
+};
