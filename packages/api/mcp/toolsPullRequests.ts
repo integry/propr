@@ -27,9 +27,13 @@ import {
 } from './pullRequestPreconditions.js';
 import { type FixReanchorReport, type FixRecord, appliedSelection, reanchorFixRecords } from './fixReanchor.js';
 import { MAX_REVIEW_MODELS, postModelReviews, resolveReviewModels, reviewModelSchema } from './reviewModels.js';
+import { ULTRAFIX_COMMAND_TOOLS, resolveUltrafixGoal, resolveUltrafixMaxCycles, ultrafixGoalSchema } from './ultrafix.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
 const SLASH_COMMAND = /^\s*\/(?:merge|review|fix|ultrafix|deploy|use|switch)\b/im;
+
+/** The `/ultrafix` command line, in the key=value form the worker's command parser documents. */
+const ultrafixCommand = (goal: number, maxCycles: number) => `/ultrafix goal=${goal} max=${maxCycles}`;
 
 const MODEL_LABEL_LEASE_MS = 60_000;
 const MODEL_LABEL_WAIT_MS = 15_000;
@@ -264,14 +268,15 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
           + ' Every alias is checked against the enabled models list_models reports before anything is posted; an unknown, disabled or duplicate alias rejects the whole call with a per-model error in details.rejectedModels instead of being dropped or replaced.'
           + ' A model review never changes the pull request\'s model labels, so later default reviews keep their routing; use set_pull_request_model for that.'
           + ' With model, the receipt lists one entry per model in reviews (model, agentAlias, resolvedModel, commentId, url, resolvedHead, state); every review is pinned to the same head, and if the pull request moves or closes part-way the remaining models are reported as not_posted. If a later comment cannot be posted, that model is reported as rejected (GitHub refused it, nothing posted) or unknown (it may have posted; inspect the pull request rather than retrying), the rest as not_posted, and the reviews already posted are still returned and tracked.'
-        : ''), scope,
+        : '')
+      + (command === 'ultrafix' ? ' Omit goal to use the instance ultrafix rating goal; the resolved goal is returned. To require an unchanged head, use start_ultrafix.' : ''), scope,
       // `findingIds` is widened from a required `.min(1)` array to an optional
       // one so existing clients that send only findings stay byte-compatible,
       // while the combined "at least one" rule is enforced in
       // `resolveFixSelection` instead: a cross-field `.superRefine` would return
       // ZodEffects and break the `schema: z.ZodObject` contract that
       // `tools/list` depends on.
-      schema: z.object({ ...appendOnlyMutation, instructions: textSchema.optional(), ...(command === 'fix' ? { reviewCommentId: z.number().int().positive(), findingIds: z.array(z.string().regex(REVIEW_FINDING_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]), suggestionIds: z.array(z.string().regex(REVIEW_SUGGESTION_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]) } : {}), ...(command === 'ultrafix' ? { goal: z.number().int().min(1).max(10).default(9), maxCycles: z.number().int().min(1).max(10).default(3) } : {}), ...(command === 'review' ? { model: z.union([reviewModelSchema, z.array(reviewModelSchema).min(1).max(MAX_REVIEW_MODELS)]).optional().describe('Reviewing model alias, or a list of aliases for one independent review per model. Read list_models for valid choices.') } : {}) }).strict(),
+      schema: z.object({ ...appendOnlyMutation, instructions: textSchema.optional(), ...(command === 'fix' ? { reviewCommentId: z.number().int().positive(), findingIds: z.array(z.string().regex(REVIEW_FINDING_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]), suggestionIds: z.array(z.string().regex(REVIEW_SUGGESTION_ID_PATTERN)).max(MAX_REVIEW_FEEDBACK_SELECTION).default([]) } : {}), ...(command === 'ultrafix' ? { goal: ultrafixGoalSchema, maxCycles: z.number().int().min(1).max(10).default(3) } : {}), ...(command === 'review' ? { model: z.union([reviewModelSchema, z.array(reviewModelSchema).min(1).max(MAX_REVIEW_MODELS)]).optional().describe('Reviewing model alias, or a list of aliases for one independent review per model. Read list_models for valid choices.') } : {}) }).strict(),
       run: async ({ principal, args, operationId }) => {
         if (command === 'ultrafix') deps.policy.requireScope(principal, 'review');
         const { owner, repo, pr } = await pull(principal, args);
@@ -296,15 +301,16 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         // a single expression.
         const fix = command === 'fix' ? await resolveFixSelection(deps, principal, args, resolvedHead) : null;
         const selection: ReviewFeedbackSelection = fix?.selection ?? emptyReviewFeedbackSelection();
+        const goal = command === 'ultrafix' ? await beforeSideEffects(() => resolveUltrafixGoal(args.goal)) : undefined;
         // Canonical upper-case identifiers on one line, instructions below it:
         // exactly the shape the worker's command parser documents, so the MCP
         // path and a hand-typed comment produce an identical fix run.
-        const body = `/${command}${command === 'fix' ? ` ${formatReviewFeedbackSelection(selection)}` : ''}${command === 'ultrafix' ? ` goal=${args.goal} max=${args.maxCycles}` : ''}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
+        const body = `${command === 'ultrafix' ? ultrafixCommand(goal!, args.maxCycles) : `/${command}`}${command === 'fix' ? ` ${formatReviewFeedbackSelection(selection)}` : ''}${args.instructions ? `\n\n${args.instructions}` : ''}\n\n<!-- propr-mcp:${operationId}; head:${resolvedHead} -->`;
         const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
         return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead, resolvedHead, headSource, state: 'posted',
           ...(fix ? { findingIds: selection.findingIds, suggestionIds: selection.suggestionIds, reviewedHead: fix.report.reviewedHead, reanchored: fix.report.reanchored,
             comparison: fix.report.comparison, applied: fix.report.applied, skipped: fix.report.skipped } : {}),
-          ...(command === 'ultrafix' ? { goal: args.goal, maxCycles: args.maxCycles } : {}) } };
+          ...(command === 'ultrafix' ? { goal, maxCycles: args.maxCycles } : {}) } };
       } });
   }
   tools.push({ name: 'comment_on_pull_request', description: 'Post an ordinary natural-language follow-up comment on an open PR, which is how ProPR queues a scoped refinement. expectedHead is optional; when omitted the current head at call time is used and returned as resolvedHead. Supply it to require that no new commits arrived since you read the PR. Slash commands are rejected; use the dedicated command tool instead.', scope: 'execute',
@@ -352,7 +358,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return ok({ repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, agentAlias: choice.agentAlias, model: choice.model, label: target,
         previousLabels, removedLabels: superseded, labels: [...previousLabels.filter(name => !superseded.includes(name)), ...(managed.includes(target) ? [] : [target])], state: 'updated' });
     }) });
-  tools.push({ name: 'stop_ultrafix', description: 'Clear the ultrafix circuit breaker by removing the ultrafix label, so the loop starts no further cycle. expectedHead is required because a moved head may contain a human fix the loop should still review. A cycle already running may still finish; this does not claim the loop stopped. Requires review scope.', scope: 'execute',
+  tools.push({ name: 'stop_ultrafix', description: 'Clear the ultrafix circuit breaker by removing the ultrafix label, so the loop starts no further cycle. expectedHead is required because a moved head may contain a human fix the loop should still review. A cycle already running may still finish; this does not claim the loop stopped. Use start_ultrafix to re-arm the loop. Requires review scope.', scope: 'execute',
     schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
       deps.policy.requireScope(principal, 'review');
       // Deliberately not limited to open pull requests: clearing the breaker is a de-escalation.
@@ -363,8 +369,8 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       const stoppingOperations: string[] = [];
       if (wasActive) {
         const rows = await deps.db('mcp_operations').where({
-          owner_id: principal.user.id, grant_id: principal.grant.id, repository: args.repository, tool: 'run_ultrafix',
-        }).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
+          owner_id: principal.user.id, grant_id: principal.grant.id, repository: args.repository,
+        }).whereIn('tool', ULTRAFIX_COMMAND_TOOLS).whereIn('lifecycle', ['accepted', 'running', 'unknown'])
           .whereNotIn('state', ['completed', 'failed', 'cancelled'])
           .whereRaw("json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END, '$.pullRequest') = ?", [args.pullRequest])
           .select('id', 'result', 'progress');
@@ -387,6 +393,23 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
         message: wasActive
           ? 'The ultrafix label was removed, so the loop will not start another cycle. A cycle already running may still finish; inspect the pull request to confirm.'
           : 'No ultrafix label was present, so no loop continuation was stopped.' });
+    } });
+  tools.push({ name: 'start_ultrafix', description: 'Start or re-arm the ultrafix review/fix loop on an open PR; the counterpart of stop_ultrafix. Posts the same /ultrafix command a hand-typed comment does, whose normal intake re-adds the ultrafix circuit-breaker label and starts the loop, so no label is written here directly. expectedHead is required because the loop should start from the code you have seen; a moved head is rejected with STALE_HEAD. Omit ultrafixGoal and ultrafixMaxCycles to use the instance ultrafix rating goal and max cycles; the resolved goal and maxCycles are returned. Returns a durable receipt that follows the loop through get_operation, like run_ultrafix. Requires review scope.', scope: 'execute',
+    schema: z.object({ ...mutation, ultrafixGoal: ultrafixGoalSchema,
+      ultrafixMaxCycles: z.number().int().min(1).max(10).optional().describe('Maximum review/fix cycles. Defaults to the instance ultrafix max cycles (ultrafix_max_cycles).') }).strict(),
+    run: async ({ principal, args, operationId }) => {
+      deps.policy.requireScope(principal, 'review');
+      const { owner, repo, pr } = await pull(principal, args);
+      assertPullRequestOpen(pr, 'start ultrafix on');
+      assertPullRequestHead(pr, args.expectedHead);
+      const [goal, maxCycles] = await beforeSideEffects(() => Promise.all([resolveUltrafixGoal(args.ultrafixGoal), resolveUltrafixMaxCycles(args.ultrafixMaxCycles)]));
+      const wasActive = hasUltrafixLabel(pr.labels);
+      // The /ultrafix intake owns the label: it asserts it under the same lease that starts the
+      // loop and rolls back a label it introduced if startup fails.
+      const body = `${ultrafixCommand(goal, maxCycles)}\n\n<!-- propr-mcp:${operationId}; head:${pr.head.sha} -->`;
+      const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+      return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
+        resolvedHead: pr.head.sha, headSource: 'caller', state: 'posted', goal, maxCycles, wasActive, circuitBreaker: 'requested' } };
     } });
   tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base, matching /merge semantics. expectedHead is required to avoid updating code you have not seen. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
     const { owner, repo, pr } = await pull(principal, args);

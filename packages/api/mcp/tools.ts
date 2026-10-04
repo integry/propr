@@ -48,6 +48,7 @@ import { GOAL_DETAIL_COLUMNS, goalInputPage, taskDetail, type GoalDetailRow } fr
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import { queryTaskSummaries } from './taskListing.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
+import { resolveUltrafixGoal, ultrafixGoalSchema } from './ultrafix.js';
 import { addImprovementTools, expireStaleImprovements, type RepoImprovementsToolServices } from './toolsImprovements.js';
 
 export { applyTaskVisibility } from './taskListing.js';
@@ -596,12 +597,13 @@ export function addPlanImplementationTool(
   tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>, target: McpTool['target'],
 ): void {
   const { db, policy } = deps;
-  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues. Epics default to sequential execution in publication order with one model, advancing on merge; epicExecution: parallel restores fan-out and epicAdvanceOn: terminal advances on closure too. Paused plans hold the next issue. Ultrafix is bounded to 10 cycles.', scope: 'execute', target,
-    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), epicExecution: z.enum(['sequential', 'parallel']).optional(), epicAdvanceOn: z.enum(['merged', 'terminal']).optional(), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: z.number().int().min(1).max(10).default(9), ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
+  tools.push({ name: 'implement_plan', description: 'Start selected published plan issues. Epics default to sequential execution in publication order with one model, advancing on merge; epicExecution: parallel restores fan-out and epicAdvanceOn: terminal advances on closure too. Paused plans hold the next issue. Ultrafix is bounded to 10 cycles; an omitted ultrafixGoal defaults to the instance ultrafix rating goal.', scope: 'execute', target,
+    schema: z.object({ ...mutationShape, ...planShape, issues: z.array(z.number().int().positive()).min(1).max(20), models: z.array(z.object({ agent_alias: idSchema, model_name: idSchema }).strict()).min(1).max(4), useEpic: z.boolean().default(false), epicExecution: z.enum(['sequential', 'parallel']).optional(), epicAdvanceOn: z.enum(['merged', 'terminal']).optional(), autoMerge: z.boolean().default(false), runUltrafix: z.boolean().default(false), ultrafixGoal: ultrafixGoalSchema, ultrafixMaxCycles: z.number().int().min(1).max(10).default(3) }).strict(), run: async ({ principal, args, operationId }) => {
       const available = await validatePlanImplementation(principal, args, deps);
       const dispatch = planEpicDispatch({ issues: args.issues, planOrder: available.map(issue => issue.issue_number),
         useEpic: args.useEpic, epicExecution: args.epicExecution, epicAdvanceOn: args.epicAdvanceOn, modelCount: args.models.length });
       const queued = new Set(dispatch.queued);
+      const ultrafixGoal = args.runUltrafix ? await resolveUltrafixGoal(args.ultrafixGoal) : null;
       const claimed = await db.transaction(async (tx): Promise<{ executionId?: string; parallelExecutionId?: string }> => {
         const previous = await getEpicExecutionQueue(args.planId, { database: tx });
         if (previous?.status === 'cancelled' && previous.blockedReason === UNSTARTED_EPIC_REASON) {
@@ -621,7 +623,7 @@ export function addPlanImplementationTool(
           await tx('plan_issues').where({ draft_id: args.planId, issue_number: number }).update({
             // The head keeps its prior selection until its handler replaces that model label.
             ...(queued.has(number) ? args.models[0] : {}),
-            run_ultrafix: args.runUltrafix, ultrafix_goal: args.runUltrafix ? args.ultrafixGoal : null,
+            run_ultrafix: args.runUltrafix, ultrafix_goal: ultrafixGoal,
             ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
           });
         }

@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import { isUltrafixCommandTool } from './ultrafix.js';
 
 export const PICKUP_DEADLINE_MS = 10 * 60 * 1000;
 
@@ -98,7 +99,7 @@ export async function detectPickup(db: Knex, input: {
       ELSE json_extract(${data}, '$.commentId') = ?
     END`, [input.commentId, input.commentId, input.commentId]);
 
-  if (input.tool === 'run_ultrafix') {
+  if (isUltrafixCommandTool(input.tool)) {
     query.whereRaw(`json_type(${data}, '$.ultrafixMeta.workEpoch') = 'integer'`);
   } else {
     const mode = input.tool === 'review_pull_request' ? 'review'
@@ -230,7 +231,7 @@ export async function ultrafixProgress(db: Knex, input: {
 export function summarizeLifecycle(tool: string, lifecycle: Record<string, unknown>): string {
   const state = String(lifecycle.state ?? 'accepted');
   const progress = jsonRecord(lifecycle.progress);
-  if (tool === 'run_ultrafix' && progress.kind === 'ultrafix') {
+  if (isUltrafixCommandTool(tool) && progress.kind === 'ultrafix') {
     const cycle = nonNegativeInteger(progress.cycle) ?? 0;
     const maxCycles = positiveInteger(progress.maxCycles) ?? 0;
     const goal = finiteScore(progress.goal) ?? 0;

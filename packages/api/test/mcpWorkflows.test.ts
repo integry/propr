@@ -421,7 +421,9 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const staleLoop = await call('run_ultrafix', pr, true);
         await pendingTask(`stale-loop-${modern}`, staleLoop.result.commentId, 'review', workEpoch);
         assert.equal((await call('get_operation', { operationId: staleLoop.operationId })).state, 'unknown');
-        assert.ok(comments.some(comment => comment.startsWith('/ultrafix goal=9 max=3')));
+        // run_ultrafix without a goal posts the instance rating goal, not a literal of its own.
+        const instanceGoal = await core.loadUltrafixRatingGoal();
+        assert.ok(comments.some(comment => comment.startsWith(`/ultrafix goal=${instanceGoal} max=3`)));
         checks = 'FAILURE'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_FAILING'); assert.equal(merged, false);
         checks = 'SUCCESS'; mergeState = 'BLOCKED'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'BRANCH_PROTECTION_BLOCKED'); assert.equal(merged, false);
         mergeState = 'CLEAN'; await call('update_pull_request_branch', pr, true); assert.equal(merged, false);

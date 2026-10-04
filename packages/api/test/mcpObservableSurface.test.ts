@@ -307,6 +307,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'provider_approval', 'provider_question', 'question', 'questions', 'reason', 'summary',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
+    // Instance settings the omitted ultrafix bounds resolve from.
+    'ultrafix_rating_goal', 'ultrafix_max_cycles', 'goal', 'maxCycles',
     // Input fields and categories accepted by generate_repository_improvements.
     'branch', 'categories', 'architecture', 'documentation', 'performance', 'scalability', 'security', 'testing',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
