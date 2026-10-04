@@ -30,6 +30,23 @@ const REFRESH_MS = 15_000;
  */
 const summaries = new Map<string, TaskHeadSummary>();
 
+/**
+ * The consumption the pane last saw for a newest run, and the time of the
+ * newest history entry when it saw it. Once polling stops at the live feed,
+ * this count only stands until the history records a newer one.
+ */
+interface SeenTokenUsage {
+  usage: TokenUsage;
+  asOf: number;
+}
+
+const seenUsage = new Map<string, SeenTokenUsage>();
+
+const entryTime = (item: HistoryItem | undefined): number => {
+  const time = item?.timestamp ? Date.parse(item.timestamp) : NaN;
+  return Number.isNaN(time) ? 0 : time;
+};
+
 const hasTokens = (usage: TokenUsage | null | undefined): usage is TokenUsage =>
   Boolean(usage) && Object.values(usage!).some(value => (value ?? 0) > 0);
 
@@ -39,9 +56,26 @@ export function pickTokenUsage(live: TokenUsage | null | undefined, history: His
   return history?.find(item => hasTokens(item.metadata?.tokenUsage))?.metadata?.tokenUsage ?? undefined;
 }
 
+/**
+ * The newest run's consumption from a fresh read of its history: the count the
+ * pane last saw, unless the history has since recorded a newer one. Usage the
+ * history records after that count was seen supersedes it, so the header
+ * follows a run that keeps working, and finishes, while an earlier run is open.
+ */
+export function reconcileTokenUsage(seen: SeenTokenUsage | undefined, history: HistoryItem[]): TokenUsage | undefined {
+  const recorded = [...history].reverse().find(item => hasTokens(item.metadata?.tokenUsage));
+  if (seen && hasTokens(seen.usage) && (!recorded || entryTime(recorded) <= seen.asOf)) return seen.usage;
+  return recorded?.metadata?.tokenUsage ?? undefined;
+}
+
 /** Remembers the newest run of a task as the pane shows it. */
 export function rememberTaskHead(taskId: string, summary: TaskHeadSummary): void {
   summaries.set(taskId, summary);
+  if (hasTokens(summary.tokenUsage)) {
+    seenUsage.set(taskId, { usage: summary.tokenUsage, asOf: Math.max(0, ...summary.history.map(entryTime)) });
+  } else {
+    seenUsage.delete(taskId);
+  }
 }
 
 const isFinished = (summary: TaskHeadSummary | null) =>
@@ -72,8 +106,8 @@ export function useTaskHeadSummary(headTaskId: string | undefined): TaskHeadSumm
           history,
           taskInfo: data.taskInfo ?? null,
           usageMetricRecords: data.usageMetricRecords ?? [],
-          // A live count read earlier may be newer than the history's.
-          tokenUsage: pickTokenUsage(summaries.get(headTaskId)?.tokenUsage, history),
+          // A live count seen earlier stands only until the history records a newer one.
+          tokenUsage: reconcileTokenUsage(seenUsage.get(headTaskId), history),
         };
         summaries.set(headTaskId, next);
         setSummary(next);

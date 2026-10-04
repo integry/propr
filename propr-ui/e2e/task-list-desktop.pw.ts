@@ -311,7 +311,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   // The header still describes the task, which is working on Run 8; the banner names the run inspected.
   await expect(details.locator('header:visible h2').locator('..')).toHaveText(/^Implementing.*Ultrafix cycle 3 \(linting\)$/);
   await expect(details.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
-  await expect(details.getByTestId('inspected-run-banner')).toContainText('Inspecting historical Run 3 of 8 (Completed)');
+  await expect(details.getByTestId('inspected-run-banner').filter({ hasText: 'Inspecting historical Run 3 of 8 (Completed)' }).getByRole('button', { name: 'Back to Run 8' })).toBeVisible();
   await capture(page, 'tasks-split-1920-run-3');
   // The run belongs to the same task, so its row stays selected.
   await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');

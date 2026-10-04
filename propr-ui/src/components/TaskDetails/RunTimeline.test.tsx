@@ -53,6 +53,18 @@ describe('RunTimeline', () => {
     expect(screen.getAllByRole('list', { name: 'Run steps' })).toHaveLength(1);
   });
 
+  it('shows a queued run as waiting, with no runtime and no Active badge', () => {
+    for (const status of ['queued', 'pending', 'waiting']) {
+      const queued = buildTaskRuns(buildTaskRow({ ...group, tasks: [{ ...group.tasks[0], status, processedAt: undefined }, ...group.tasks.slice(1)] }));
+      const { unmount } = render(<RunTimeline runs={queued} selectedTaskId="run-3" onSelectRun={vi.fn()}>{null}</RunTimeline>);
+      const newest = screen.getByRole('button', { name: /^Run 4/ });
+      expect(newest.textContent).toMatch(/QueuedWaiting$/);
+      expect(newest).not.toHaveTextContent(/Running…|Active/);
+      expect(newest).toHaveAttribute('title', 'Run 4 waiting to start');
+      unmount();
+    }
+  });
+
   it('opens an earlier run in the pane, and folds the open one in place', () => {
     const onSelectRun = vi.fn();
     render(

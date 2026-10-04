@@ -380,3 +380,42 @@ test('task pages count and slice tasks, returning every run of each task on the 
   assert.equal(runs.tasks.length, 2);
   assert.equal('totalRuns' in runs, false);
 });
+
+test('task pages select a task by its newest run and return every run of it', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T09:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    // PR #30: an older completed review, then a run still processing.
+    { task_id: 'pr30-review', repository: 'acme/widget', task_type: 'pr', pr_number: 30, created_at: at(10), initial_job_data: JSON.stringify({ title: 'Review the retry budget' }) },
+    { task_id: 'pr30-fix', repository: 'acme/widget', task_type: 'pr', pr_number: 30, created_at: at(40), initial_job_data: JSON.stringify({ title: 'Fix the flaky seed' }) },
+    // PR #31: an older processing run that never finished, then a completed one.
+    { task_id: 'pr31-old', repository: 'acme/widget', task_type: 'pr', pr_number: 31, created_at: at(20) },
+    { task_id: 'pr31-new', repository: 'acme/widget', task_type: 'pr', pr_number: 31, created_at: at(30) },
+    { task_id: 'pr32-queued', repository: 'acme/widget', task_type: 'pr', pr_number: 32, created_at: at(50) },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'pr30-review', state: 'completed', timestamp: at(11) },
+    { task_id: 'pr30-fix', state: 'processing', timestamp: at(41) },
+    { task_id: 'pr31-old', state: 'processing', timestamp: at(21) },
+    { task_id: 'pr31-new', state: 'completed', timestamp: at(31) },
+    { task_id: 'pr32-queued', state: 'queued', timestamp: at(51) },
+  ]);
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  const page = async (status: string, search?: string) => {
+    const result = await getTasksFromDb({ db: database, previewReader, status, repository: 'all', limit: 10, offset: 0, search, groupByTask: true });
+    return { total: result.total, totalRuns: result.totalRuns, ids: (result.tasks as Array<{ id: string }>).map(task => task.id) };
+  };
+
+  // Completed lists the task whose newest run completed, with its older run; not PR #30, still working.
+  assert.deepEqual(await page('completed'), { total: 1, totalRuns: 2, ids: ['pr31-new', 'pr31-old'] });
+  // Active lists PR #30 with its completed history, and not PR #31's stale processing run.
+  assert.deepEqual(await page('active'), { total: 1, totalRuns: 2, ids: ['pr30-fix', 'pr30-review'] });
+  assert.deepEqual(await page('waiting'), { total: 1, totalRuns: 1, ids: ['pr32-queued'] });
+  // Text only an older run carries finds the task, and the page still carries its current run.
+  assert.deepEqual(await page('all', 'retry budget'), { total: 1, totalRuns: 2, ids: ['pr30-fix', 'pr30-review'] });
+  assert.deepEqual(await page('completed', 'retry budget'), { total: 0, totalRuns: 0, ids: [] });
+  // By run, filters still pick runs.
+  const runs = await getTasksFromDb({ db: database, previewReader, status: 'completed', repository: 'all', limit: 10, offset: 0 });
+  assert.deepEqual((runs.tasks as Array<{ id: string }>).map(task => task.id), ['pr31-new', 'pr30-review']);
+});

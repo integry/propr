@@ -5,7 +5,8 @@ import { describeRun, RUN_TRACK_LIMIT, type RunOutcome, type TaskRunEntry } from
  * A run's outcome as a shape and a colour, so it reads without colour too:
  * a red triangle for a failure, an amber square for a review that left
  * findings (6/10 or lower), a slate dot for a pass or a merge, a pulsing teal
- * dot for a run in flight, and a hollow ring for a run that was stopped.
+ * dot for a run in flight, a still dashed ring for a run waiting to start, and
+ * a hollow ring for a run that was stopped.
  */
 export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md' }> = ({ outcome, size = 'sm' }) => {
   const box = size === 'sm' ? 'h-2 w-2' : 'h-2.5 w-2.5';
@@ -25,6 +26,8 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
           <span className={`relative inline-flex ${box} rounded-full bg-teal-500`} />
         </span>
       );
+    case 'waiting':
+      return <span data-outcome={outcome} aria-hidden="true" className={`${box} flex-none rounded-full border border-dashed border-slate-500 bg-white`} />;
     case 'stopped':
       return <span data-outcome={outcome} aria-hidden="true" className={`${box} flex-none rounded-full border border-slate-400 bg-white`} />;
     default:

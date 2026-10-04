@@ -122,6 +122,16 @@ describe('task ledger rows', () => {
     expect(chip).toHaveAttribute('title', '8 runs: Run 5 passed, Run 6 left findings (5/10), Run 7 left findings (6/10), Run 8 running');
   });
 
+  it('marks a queued newest run as waiting, never as a run in flight', () => {
+    const queued: TaskGroup = { ...group, tasks: [{ ...group.tasks[0], id: 'queued-run', status: 'queued' }, ...group.tasks.slice(1, 3)] };
+    render(<TaskTableContent groupedTasks={[queued]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
+    const chip = within(screen.getByRole('table', { name: 'Tasks' })).getByRole('img', { name: '3 runs' });
+    const newest = [...chip.querySelectorAll('[data-outcome]')].at(-1)!;
+    expect(newest).toHaveAttribute('data-outcome', 'waiting');
+    expect(chip.querySelector('.animate-ping')).toBeNull();
+    expect(chip.getAttribute('title')).toMatch(/Run 3 waiting to start$/);
+  });
+
   it('keeps a single run without a summary on one line, its type in front of the title', () => {
     const single: TaskGroup = {
       key: 'integry/desktop-workspaces-issue-86', repoOwner: 'integry', repoName: 'desktop-workspaces', prNumber: null,

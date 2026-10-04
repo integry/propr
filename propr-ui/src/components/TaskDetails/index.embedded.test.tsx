@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import TaskDetails from './index';
+import type { TaskRunEntry } from '../TaskList/rowModel';
 
 const handleDeleteTask = vi.fn(async () => true);
 const loadedTaskIds: Array<string | undefined> = [];
@@ -43,7 +44,9 @@ vi.mock('./PromptModal', () => ({ default: () => null }));
 vi.mock('./LogFilesModal', () => ({ default: () => null }));
 vi.mock('./FollowupModal', () => ({ default: () => null }));
 vi.mock('./ContextStrip', () => ({ default: () => null }));
-vi.mock('./TaskHeader', () => ({ default: () => null }));
+vi.mock('./TaskHeader', async importOriginal => ({ ...await importOriginal<typeof import('./TaskHeader')>(), default: () => null }));
+// The newest run is read from the API in its own suite.
+vi.mock('./useTaskHeadSummary', async importOriginal => ({ ...await importOriginal<typeof import('./useTaskHeadSummary')>(), useTaskHeadSummary: () => null }));
 vi.mock('./ProgressBar', () => ({ default: () => null }));
 vi.mock('./LeftPaneBody', () => ({ default: () => null }));
 vi.mock('./SectionLabelHeader', () => ({ default: () => null }));
@@ -95,5 +98,24 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(screen.getByTestId('task-workspace-scroll').className).toContain('lg:flex-row');
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
+  });
+
+  it('marks an earlier run outside both viewport headers, with a way back to the newest', () => {
+    const run = (id: string, number: number): TaskRunEntry => ({
+      task: { id, status: 'completed', createdAt: '2026-10-01T12:00:00Z' }, number, type: 'Review', summary: 'Found 2 issues', outcome: 'passed',
+    });
+    const onSelectRun = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=run-1']}>
+        <Routes><Route path="/tasks" element={<TaskDetails taskId="run-1" embedded runs={[run('run-1', 1), run('run-2', 2)]} onSelectRun={onSelectRun} />} /></Routes>
+      </MemoryRouter>,
+    );
+    const banner = screen.getByTestId('inspected-run-banner');
+    expect(banner).toHaveTextContent('Inspecting historical Run 1 of 2');
+    // Each header is hidden at one width or the other; the banner must be in neither.
+    expect(banner.closest('header')).toBeNull();
+    expect(banner.closest('.hidden, .sm\\:hidden')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Run 2' }));
+    expect(onSelectRun).toHaveBeenCalledWith('run-2');
   });
 });

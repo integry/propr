@@ -24,6 +24,9 @@ const RunResult: React.FC<{ run: TaskRunEntry }> = ({ run }) => {
   if (run.outcome === 'active') {
     return <span className="rounded-full bg-teal-50 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-teal-700">Active</span>;
   }
+  if (run.outcome === 'waiting') {
+    return <span className="rounded-full bg-slate-100 px-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Waiting</span>;
+  }
   if (isReviewRun(run.type)) {
     return <ScoreBadge score={runScore(run)} bracketed className="!text-xs" label="Review score" />;
   }
@@ -64,6 +67,8 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
         const selected = run.task.id === selectedTaskId;
         const open = selected && expanded;
         const active = run.outcome === 'active';
+        // A queued run has not started, so it has no runtime to count yet.
+        const waiting = run.outcome === 'waiting';
         return (
           <li key={run.task.id} ref={selected ? selectedRef : undefined} className="relative" data-testid="run-timeline-run">
             <button
@@ -101,7 +106,7 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
                 {formatRelativeTime(run.task.createdAt)}
               </time>
               <span className={`w-16 flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
-                {active ? 'Running…' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
+                {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
               </span>
               {/* A fixed slot, so results line up whether or not every run has one. */}
               <span className="flex w-16 flex-none justify-end">

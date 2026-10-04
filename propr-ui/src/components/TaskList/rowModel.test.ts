@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskRow, hasRollupLine, runOutcome, sanitizeTaskTitle } from './rowModel';
+import { buildTaskRow, hasRollupLine, runOutcome, runOutcomeOf, sanitizeTaskTitle } from './rowModel';
 import type { Task, TaskGroup } from './types';
 
 const base: Task = { id: 'task-1', status: 'completed', createdAt: '2026-09-15T10:00:00Z' };
@@ -132,5 +132,12 @@ describe('buildTaskRow', () => {
   it('counts only trusted previews', () => {
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A', previewMedia: [image(1), image(2), { type: 'image', url: 'javascript:alert(1)', title: 'x' }] as Task['previewMedia'] }]));
     expect(row.previewCount).toBe(2);
+  });
+});
+
+describe('runOutcomeOf', () => {
+  it('keeps queued work apart from work in flight', () => {
+    for (const status of ['queued', 'pending', 'waiting']) expect(runOutcomeOf({ ...base, status })).toBe('waiting');
+    for (const status of ['processing', 'claude_execution', 'post_processing']) expect(runOutcomeOf({ ...base, status })).toBe('active');
   });
 });

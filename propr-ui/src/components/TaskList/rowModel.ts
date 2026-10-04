@@ -241,9 +241,9 @@ export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.leng
 /**
  * What came of a run, as the list's run track and the task pane's timeline
  * mark it: a failure, a review that left findings to fix, a pass, a run still
- * in flight, or one that was stopped.
+ * in flight, one queued that has not started, or one that was stopped.
  */
-export type RunOutcome = 'failed' | 'findings' | 'passed' | 'active' | 'stopped';
+export type RunOutcome = 'failed' | 'findings' | 'passed' | 'active' | 'waiting' | 'stopped';
 
 /** A score at or below this left findings to fix. */
 export const LOW_SCORE = 6;
@@ -267,6 +267,11 @@ export function runOutcomeOf(task: Task, type: string | null = null): RunOutcome
     case 'completed':
     case 'merged':
       return score != null && score <= LOW_SCORE ? 'findings' : 'passed';
+    // Queued work has not started: it is neither running nor timed.
+    case 'waiting':
+    case 'pending':
+    case 'queued':
+      return 'waiting';
     default: return 'active';
   }
 }
@@ -294,7 +299,7 @@ export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
 export const RUN_TRACK_LIMIT = 4;
 
 const OUTCOME_WORDS: Record<RunOutcome, string> = {
-  failed: 'failed', findings: 'left findings', passed: 'passed', active: 'running', stopped: 'stopped',
+  failed: 'failed', findings: 'left findings', passed: 'passed', active: 'running', waiting: 'waiting to start', stopped: 'stopped',
 };
 
 /** One run in words, for tooltips and screen readers: `Run 3 left findings (6/10)`. */

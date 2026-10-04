@@ -239,9 +239,11 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           </div>
         </div>
 
-        {inspectionBanner}
         <ProgressBar todos={taskData.liveDetails.todos} />
       </header>
+
+      {/* Outside both headers, so an earlier run is marked at every width. */}
+      {inspectionBanner && <div className="flex-shrink-0">{inspectionBanner}</div>}
 
       <MobileStickySummary
         title={mobileSummaryTitle}
