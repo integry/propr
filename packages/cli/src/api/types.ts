@@ -37,6 +37,12 @@ export interface RequestOptions {
    * Request timeout in milliseconds. Defaults to 30000 (30 seconds).
    */
   timeout?: number;
+
+  /**
+   * Caller cancellation. An aborted request is never retried and rejects with
+   * a `RequestCancelledError`.
+   */
+  signal?: AbortSignal;
 }
 
 /**

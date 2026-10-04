@@ -39,6 +39,7 @@ import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addDocsTools } from './toolsDocs.js';
+import { addGoalWaitTools } from './toolsGoalWait.js';
 import { getDocsMetadata } from './docsIndex.js';
 import { summarizeGoal } from './listSummaries.js';
 import { markMergedPullRequests, markMergedListPullRequests } from '../services/pullRequestMergeState.js';
@@ -85,7 +86,8 @@ const agentActivitySchema = z.object({
   { message: 'Provide exactly one of goalId or taskId.' },
 );
 export type Args = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- Zod validates each concrete tool schema before dispatch
-export interface ToolContext { principal: McpPrincipal; args: Args; operationId?: string }
+/** `signal` aborts when the MCP request is cancelled or its HTTP connection closes. */
+export interface ToolContext { principal: McpPrincipal; args: Args; operationId?: string; signal?: AbortSignal }
 export interface McpTool {
   name: string; description: string; scope: McpScope; schema: z.ZodObject; readOnly?: boolean;
   permission?: InstancePermission;
@@ -217,6 +219,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     const detail = await inspectGoalDetail({ db, redisClient }, row);
     return { status: response.status, data: { ...response.data as Record<string, unknown>, ...detail } };
   } });
+  addGoalWaitTools(tools, deps, goalTarget);
   tools.push({ name: 'list_goal_inputs', description: 'Read the bounded, newest-first history of operator inputs already sent to a goal, so an existing correction is not sent twice. Delivery state is persisted; delivered does not prove the agent acted on it.', scope: 'read', readOnly: true, schema: z.object({ ...goalShape, ...pageShape }).strict(), target: goalTarget, run: async ({ principal, args }) => {
     const row = await loadGoalRow(principal, args);
     if (!row) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);

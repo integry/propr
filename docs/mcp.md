@@ -513,6 +513,52 @@ recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
 task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
 never reports zero for unknown.
 
+#### Waiting for goal progress
+
+Instead of polling `get_goal`, call `wait_goal`. It blocks for at most
+`timeoutSeconds` (default 15, maximum 30) and returns an ordinary structured
+result either way:
+
+```json
+{ "repository": "acme/web", "goalId": "0d6e1f7c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+  "until": "terminal", "timeoutSeconds": 30 }
+```
+
+| `until` | Matches |
+| --- | --- |
+| `completed`, `failed`, `cancelled` | The goal's persisted result. A cancellation request is not `cancelled`. |
+| `paused` | A pause the worker confirmed with no queued resume. A pause request is not `paused`. |
+| `terminal` | Any of completed, failed or cancelled. |
+| `checkpoint` | A checkpoint published after the cursor — never an older one. |
+| omitted | Any new durable goal event after the cursor. |
+
+The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
+`cursor`, `condition`, `matchedImmediately`, the triggering `event` (`kind`
+`lifecycle` with `state`/`previousState`, or `checkpoint` with the commit and
+pull request) and the current `goal` projection (`lifecycleState`,
+`requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
+count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
+the returned cursor. `unreachable` means the goal ended in a state that can never
+satisfy the condition, such as `paused` on a completed goal.
+
+Events come from a durable, monotonic per-goal journal that the database appends
+in the same transaction as each goal or checkpoint write, so a finished child
+task, an idle agent turn or a duplicate notification can never create one.
+Without `afterCursor`, a state condition that already holds matches immediately;
+otherwise only events after the current boundary count. With `afterCursor`, only
+newer events count and transitions that happened between calls are replayed in
+order, so retrying or reconnecting with the last cursor never misses or repeats a
+transition. A malformed cursor (`CURSOR_INVALID`), another goal's cursor
+(`CURSOR_WRONG_GOAL`) or one whose history is gone (`CURSOR_EXPIRED`) fails with
+`details.recovery` instead of silently skipping history: omit `afterCursor` and
+read the goal with `get_goal`.
+
+Every call re-checks repository authorization and goal ownership, and an open
+wait re-checks ownership and the grant before each read, so a revoked grant
+stops receiving events. Cancelling the MCP request or closing the HTTP
+connection releases the wait; it never pauses or cancels the goal. A client may
+hold at most 16 concurrent waits (`WAIT_LIMIT`).
+
 Before sending a correction, read what has already been sent with
 `list_goal_inputs`, then:
 

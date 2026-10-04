@@ -48,7 +48,7 @@ interface RecordedFailure { status: number; outcome: McpAccessOutcome; errorCode
 
 /** Identifiers, sizes, handles and outcomes the access log records for one invocation. */
 interface ToolAccess { repository?: string; operationId?: string; resultBytes: number; failure?: RecordedFailure }
-interface ToolInvocation { tool: McpTool; raw: unknown; principal: McpPrincipal; deps: ToolDeps; access: ToolAccess }
+interface ToolInvocation { tool: McpTool; raw: unknown; principal: McpPrincipal; deps: ToolDeps; access: ToolAccess; signal?: AbortSignal }
 
 /**
  * The outcome a durable receipt reports. A replayed operation returns the
@@ -103,7 +103,7 @@ function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] 
 }
 
 // eslint-disable-next-line complexity -- dispatch keeps authorization, durable mutation handling, content bounds and logging in one auditable path
-async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
+async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
   access.repository = args.repository;
   deps.policy.requireScope(principal, tool.scope);
@@ -130,7 +130,7 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
   }
   let readContent: ContentBlock[] | undefined;
   const result = deletedReplay ?? cancellationReplay ?? (tool.readOnly
-    ? await tool.run({ principal, args }).then(operation => {
+    ? await tool.run({ principal, args, signal }).then(operation => {
       readContent = operation.content;
       return operation.data;
     })
@@ -175,9 +175,11 @@ async function recordToolAccess(
   });
 }
 
-export async function executeTool(tool: McpTool, raw: unknown, principal: McpPrincipal, deps: ToolDeps): Promise<PresentedResult> {
+/** `signal` reaches read tools that block (for example `wait_goal`) so cancellation releases them. */
+// eslint-disable-next-line max-params -- the optional abort signal is transport context, not tool input
+export async function executeTool(tool: McpTool, raw: unknown, principal: McpPrincipal, deps: ToolDeps, signal?: AbortSignal): Promise<PresentedResult> {
   const startedAt = Date.now();
-  const invocation: ToolInvocation = { tool, raw, principal, deps, access: { resultBytes: 0 } };
+  const invocation: ToolInvocation = { tool, raw, principal, deps, access: { resultBytes: 0 }, signal };
   try {
     const presented = await runTool(invocation);
     await recordToolAccess(invocation, startedAt, invocation.access.failure ?? { status: 200, outcome: 'success', errorCode: null });

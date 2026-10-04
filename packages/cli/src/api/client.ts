@@ -19,6 +19,7 @@ import {
   ApiError,
   createApiError,
   NetworkError,
+  RequestCancelledError,
   TimeoutError,
   UnauthorizedError,
 } from "./errors.js";
@@ -124,6 +125,7 @@ export class ApiClient {
       headers: customHeaders = {},
       params,
       timeout = this.defaultTimeout,
+      signal,
     } = options;
 
     // Build the full URL
@@ -155,10 +157,13 @@ export class ApiClient {
     const maxAttempts = method === "GET" ? GET_REQUEST_ATTEMPTS : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal?.aborted) throw new RequestCancelledError();
       // Each retry receives its own timeout window and abort signal.
       const controller = new AbortController();
       fetchOptions.signal = controller.signal;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const cancel = () => controller.abort();
+      signal?.addEventListener("abort", cancel);
 
       try {
         const response = await fetch(url, fetchOptions);
@@ -192,6 +197,7 @@ export class ApiClient {
         };
       } catch (error) {
         clearTimeout(timeoutId);
+        if (signal?.aborted) throw new RequestCancelledError();
 
         // Re-throw API errors as-is. HTTP responses are not transport failures.
         if (error instanceof ApiError) {
@@ -215,6 +221,8 @@ export class ApiClient {
         throw new NetworkError(
           `Unexpected error: ${error instanceof Error ? error.message : String(error)}`
         );
+      } finally {
+        signal?.removeEventListener("abort", cancel);
       }
     }
 

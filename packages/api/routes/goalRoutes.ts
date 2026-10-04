@@ -31,7 +31,14 @@ import {
   type MulterFile,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
-import { GOAL_CREATION_CONTRACT, validateGoalCreationOptions } from '@propr/shared';
+import {
+  GOAL_CREATION_CONTRACT,
+  GOAL_WAIT_CONDITIONS,
+  GOAL_WAIT_MAX_TIMEOUT_SECONDS,
+  isGoalWaitCondition,
+  normalizeGoalWaitTimeoutSeconds,
+  validateGoalCreationOptions,
+} from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
@@ -43,6 +50,7 @@ import {
   type GoalListState,
 } from '../services/goalReadProjection.js';
 import { goalInputPage } from '../mcp/goalTaskDetail.js';
+import { GoalWaitError, waitForGoal } from '../services/goalWait.js';
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import {
   appendGoalAttachments,
@@ -69,6 +77,7 @@ interface GoalRoutesDeps {
   removeTemporaryUploads?: typeof removeTemporaryGoalUploads;
   loadVisualPreviewSettings?: typeof loadRepositoryVisualPreviewSettings;
   getOctokit?: typeof getAuthenticatedOctokit;
+  waitForGoal?: typeof waitForGoal;
 }
 
 const cannedInputs = {
@@ -425,6 +434,41 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       limit: page.limit,
       nextOffset: listed.hasMore ? page.offset + page.limit : null,
     });
+  };
+
+  /**
+   * Bounded wait for a goal state or a new durable event (`propr goal wait`).
+   * A timeout is an ordinary 200 result; a client disconnect only releases the waiter.
+   */
+  const wait = async (req: Request, res: Response) => {
+    const ownerId = currentOwnerId(req);
+    if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
+    const goalId = Array.isArray(req.params.goalId) ? req.params.goalId[0] : req.params.goalId;
+    const query = req.query ?? {};
+    const until = queryValue(query, 'until');
+    if (until !== undefined && !isGoalWaitCondition(until)) {
+      return void res.status(400).json({ error: `until must be one of: ${GOAL_WAIT_CONDITIONS.join(', ')}` });
+    }
+    const timeoutSeconds = normalizeGoalWaitTimeoutSeconds(queryValue(query, 'timeoutSeconds'));
+    if (timeoutSeconds === null) {
+      return void res.status(400).json({ error: `timeoutSeconds must be a number from 0 to ${GOAL_WAIT_MAX_TIMEOUT_SECONDS}` });
+    }
+    const disconnected = new AbortController();
+    const onClose = () => { if (!res.writableEnded) disconnected.abort(); };
+    res.once?.('close', onClose);
+    try {
+      const result = await (deps.waitForGoal ?? waitForGoal)({
+        db: deps.db, ownerId, goalId: String(goalId), until, timeoutSeconds,
+        afterCursor: queryValue(query, 'afterCursor'), signal: disconnected.signal,
+      });
+      res.json(result);
+    } catch (error) {
+      if (!(error instanceof GoalWaitError)) throw error;
+      if (error.code === 'WAIT_ABORTED') return;
+      res.status(error.status).json({ error: error.message, code: error.code, recovery: error.recovery });
+    } finally {
+      res.off?.('close', onClose);
+    }
   };
 
   /** Bounded, newest-first operator input history with persisted delivery state. */
@@ -1125,7 +1169,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, attention, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
+    capabilities, list, attention, get, detail, inputs, wait, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
     requireGoalTaskOwnership,
   };
 }

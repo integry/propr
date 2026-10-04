@@ -49,6 +49,7 @@ Goals are launched and managed from the Web UI, the [ProPR CLI](./propr-cli.md#g
 | Create and start a goal | `propr goal create` | `create_goal` |
 | List goals | `propr goal list` | `list_goals` |
 | Progress, current activity, checkpoints, pending input, PRs | `propr goal inspect <id>` | `get_goal` |
+| Wait for a confirmed state or a new checkpoint, with a deadline | `propr goal wait <id> --until <condition>` | `wait_goal` |
 | Send a correction or question | `propr goal input <id>` | `send_goal_input` |
 | Earlier inputs and their delivery state | `propr goal inputs <id>` | `list_goal_inputs` |
 | Goals waiting on you, and what resolves each | `propr goal attention` | `list_goal_attention` |
@@ -64,8 +65,11 @@ propr goal input <goal-id> "Keep the public API unchanged"
 propr goal pause <goal-id>
 propr goal resume <goal-id>
 propr goal model <goal-id> <model>
+propr goal wait <goal-id> --until terminal --timeout 3600   # exits 0 when finished, 2 at the deadline
 propr goal inspect <goal-id> --json   # final PR in goal.finalPr and goal.pullRequests
 ```
+
+Waits read the goal's durable event journal, so they only match persisted, confirmed states: a requested pause or cancellation, a finished child task or an idle agent never counts. See [Waiting for a goal](./propr-cli.md#waiting-for-a-goal) for conditions, cursors and exit codes.
 
 Mutations accept an idempotency key, so retrying a create or input never starts a second goal or queues a duplicate correction.
 

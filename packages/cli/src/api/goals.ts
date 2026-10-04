@@ -9,7 +9,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { GoalAttention } from "@propr/shared";
+import { GOAL_WAIT_MAX_TIMEOUT_SECONDS } from "@propr/shared";
+import type { GoalAttention, GoalWaitCondition, GoalWaitEvent, GoalWaitOutcome } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { ApiError, NetworkError, TimeoutError } from "./errors.js";
 
@@ -465,4 +466,97 @@ export function setGoalModel(
   options: GoalApiOptions = {},
 ): Promise<GoalMutationResult> {
   return goalMutation(goalId, { method: "PATCH", suffix: "/model", body: { model } }, idempotencyKey, options);
+}
+
+/** One bounded server-side wait, as returned by `GET /api/goals/:goalId/wait`. */
+export interface GoalWaitResponse {
+  outcome: GoalWaitOutcome;
+  condition: GoalWaitCondition | null;
+  cursor: string;
+  event: GoalWaitEvent | null;
+  matchedImmediately: boolean;
+  goal: {
+    id: string;
+    repository: string;
+    title: string | null;
+    lifecycleState: string;
+    requestedState: string;
+    resultState: string | null;
+    terminal: boolean;
+    goalCompleted: boolean;
+    pauseConfirmed: boolean;
+    currentTaskId: string | null;
+    checkpoint: { count: number; lastAt: string | null };
+    finalPr: { number: number; url: string | null } | null;
+    failureReason: string | null;
+    updatedAt: string | null;
+    completedAt: string | null;
+  };
+  waitedMs: number;
+  timeoutSeconds: number;
+}
+
+/** Extra time the HTTP request may take beyond the server-side wait. */
+const GOAL_WAIT_REQUEST_GRACE_MS = 15_000;
+
+/** One bounded wait request (at most {@link GOAL_WAIT_MAX_TIMEOUT_SECONDS} seconds). */
+export async function waitGoalOnce(
+  goalId: string,
+  request: { until?: GoalWaitCondition; afterCursor?: string; timeoutSeconds: number },
+  options: GoalApiOptions & { signal?: AbortSignal } = {},
+): Promise<GoalWaitResponse> {
+  const client = await resolveClient(options);
+  const timeoutSeconds = Math.min(Math.max(0, request.timeoutSeconds), GOAL_WAIT_MAX_TIMEOUT_SECONDS);
+  const response = await client.get<GoalWaitResponse>(goalPath(goalId, "/wait"), {
+    params: { until: request.until, afterCursor: request.afterCursor, timeoutSeconds },
+    timeout: timeoutSeconds * 1000 + GOAL_WAIT_REQUEST_GRACE_MS,
+    signal: options.signal,
+  });
+  return response.data;
+}
+
+export interface GoalWaitChainResult extends GoalWaitResponse {
+  /** Bounded requests issued to reach this result. */
+  requests: number;
+}
+
+/**
+ * Chain bounded wait requests until the condition matches, the goal can no
+ * longer match, or the overall deadline passes. The cursor returned by each
+ * request is carried into the next, so nothing between requests is missed or
+ * reported twice. Transient transport failures are retried with the same
+ * cursor until the deadline; aborting only stops waiting.
+ */
+export async function waitGoalUntil(
+  goalId: string,
+  request: { until?: GoalWaitCondition; afterCursor?: string; deadline: number },
+  options: GoalApiOptions & {
+    signal?: AbortSignal;
+    now?: () => number;
+    retryDelayMs?: number;
+    /** Called with every cursor the server returns, so an interrupted wait can still resume. */
+    onCursor?: (cursor: string) => void;
+  } = {},
+): Promise<GoalWaitChainResult> {
+  const now = options.now ?? Date.now;
+  let cursor = request.afterCursor;
+  let requests = 0;
+  let last: GoalWaitResponse | null = null;
+  for (;;) {
+    const remainingSeconds = Math.max(0, (request.deadline - now()) / 1000);
+    try {
+      requests++;
+      last = await waitGoalOnce(goalId, {
+        until: request.until, afterCursor: cursor,
+        timeoutSeconds: Math.min(remainingSeconds, GOAL_WAIT_MAX_TIMEOUT_SECONDS),
+      }, options);
+    } catch (error) {
+      if (!isTransientFailure(error) || request.deadline - now() <= 0 || options.signal?.aborted) throw error;
+      await sleep(Math.min(options.retryDelayMs ?? GOAL_MUTATION_RETRY_DELAY_MS, Math.max(0, request.deadline - now())));
+      continue;
+    }
+    cursor = last.cursor;
+    options.onCursor?.(cursor);
+    if (last.outcome !== "timed_out" || request.deadline - now() <= 0) return { ...last, requests };
+  }
 }

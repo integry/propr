@@ -78,8 +78,18 @@ function notificationSummary(tool: McpTool, result: Args): string {
   return `${notification.title}: ${notification.severity} ${notification.kind}, ${state}.`;
 }
 
+/** A wait's outcome, with the cursor to resume from; a timeout is not a goal failure. */
+function goalWaitSummary(result: Args): string {
+  const condition = result.condition ? ` for ${result.condition}` : ' for a new event';
+  const state = result.goal?.lifecycleState;
+  if (result.outcome === 'matched') return `Goal wait${condition} matched: ${result.event?.kind === 'checkpoint' ? 'new checkpoint' : result.event?.state ?? state}. Resume with cursor ${result.cursor}.`;
+  if (result.outcome === 'unreachable') return `Goal wait${condition} can no longer match: the goal is ${state}.`;
+  return `Goal wait${condition} timed out after ${result.timeoutSeconds}s; the goal is ${state}, not failed. Retry with cursor ${result.cursor}.`;
+}
+
 /** Digest reads answer a whole-instance question, so they summarize by section. */
 const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
+  wait_goal: goalWaitSummary,
   get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
