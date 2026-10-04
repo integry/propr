@@ -107,12 +107,15 @@ async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo ag
     }
     const bin = path.join(directory, 'bin');
     await mkdir(bin);
-    for (const [name, script] of Object.entries(binaries)) {
+    // CI runners may run tests as root, where the wrapper refuses to run repository
+    // commands without su-exec. Report an unprivileged user unless a test supplies its own binaries.
+    const isolated = Object.keys(binaries).length > 0;
+    for (const [name, script] of Object.entries(isolated ? binaries : { id: 'echo 1000' })) {
         await writeFile(path.join(bin, name), `#!/bin/bash\n${script}\n`, { mode: 0o755 });
     }
     try {
         const result = await executeDockerCommand('/usr/bin/env', [
-            `PATH=${Object.keys(binaries).length ? bin : process.env.PATH}`,
+            `PATH=${isolated ? bin : `${bin}:${process.env.PATH}`}`,
             `PROPR_WORKSPACE=${directory}`, `PROPR_CACHE_DIR=${directory}`, `TRACE=${trace}`,
             '/bin/bash', '-c', buildWorkflowWrapper(workflow, marker), entrypoint,
         ], { stdinData: 'the prompt', timeout: 5000 });
