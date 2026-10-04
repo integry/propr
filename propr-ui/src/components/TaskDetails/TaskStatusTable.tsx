@@ -15,6 +15,7 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
+  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
@@ -117,6 +118,19 @@ const TimelineDateDivider: React.FC<{
   );
 };
 
+/** Why a queued task is not progressing; the retry time only matters while it is still waiting. */
+const RepositoryWorkflowDeferral: React.FC<{ metadata?: HistoryItem['metadata']; isRunning: boolean }> = ({ metadata, isRunning }) => {
+  const deferrals = metadata?.repositoryWorkflowDeferrals;
+  if (!deferrals) return null;
+  const retryAt = isRunning ? metadata?.repositoryWorkflowRetryAt : undefined;
+  return (
+    <div className="mt-1 break-words text-xs text-slate-500" data-testid="repository-workflow-deferral">
+      {`Admission deferred ${deferrals} ${deferrals === 1 ? 'time' : 'times'}`}
+      {retryAt ? ` · next retry ${formatTimeOnly(retryAt)}` : ''}
+    </div>
+  );
+};
+
 const TimelineContent: React.FC<{
   item: HistoryItem & { duration: number | null };
   index: number;
@@ -156,6 +170,7 @@ const TimelineContent: React.FC<{
               <span className="block break-all">{item.metadata.repositoryWorkflow.baseBranch} @ {item.metadata.repositoryWorkflow.revision.slice(0, 12)}</span>
             </div>
           )}
+          <RepositoryWorkflowDeferral metadata={item.metadata} isRunning={isRunning} />
           {item.metadata?.terminalReason && (
             <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
               {formatTaskTerminalReason(item.metadata.terminalReason)}

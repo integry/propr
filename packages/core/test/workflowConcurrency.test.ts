@@ -6,9 +6,9 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
 
-import { getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
+import { getExecutionAbortError, getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
 
 const binary = process.env.PROPR_TEST_REDIS_SERVER || 'redis-server';
 const available = spawnSync(binary, ['--version']).status === 0;
@@ -127,6 +127,11 @@ for (const failure of ['rejected', 'hung'] as const) {
         assert.equal(signal.aborted, false);
         await h.tick(1);
         assert.equal(signal.aborted, true);
+        // The Docker executor rejects with this reason; it must stay distinguishable from a user stop.
+        const reason = getExecutionAbortError(signal);
+        assert.ok(reason instanceof RepositoryWorkflowLeaseLostError);
+        assert.notEqual(reason.name, 'ExecutionAbortedError');
+        assert.doesNotMatch(reason.message, /aborted by user/);
         assert.equal(running, 1);
         assert.equal(h.releases, 0, 'aborting alone is not evidence that execution has stopped');
         assert.equal(h.slots.size, 1, 'reservation remains during teardown');

@@ -27,7 +27,13 @@ let agentResult: unknown;
 let postExecutionParams: { visualPreviewSettings?: unknown } | undefined;
 const processingMetadata: Array<Record<string, unknown>> = [];
 const cancellations: Array<Record<string, unknown>> = [];
+const deferralHistory: Array<{ state: string; metadata: { reason?: string; historyMetadata?: Record<string, unknown> } }> = [];
 const stateManager = {
+    updateTaskStateIfCurrent: async (taskId: string, _expectation: unknown, state: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) => {
+        deferralHistory.push({ state, metadata });
+        events.push(`deferral-history:${taskId}:${state}`);
+        return { state };
+    },
     markTaskCancelled: async (taskId: string, _by: string, metadata: Record<string, unknown>) => { taskStates.set(taskId, 'cancelled'); cancellations.push(metadata); },
     updateTaskState: async (taskId: string, state: string, metadata?: { isRetry?: boolean; historyMetadata?: Record<string, unknown> }) => {
         if (state === 'processing') processingMetadata.push(metadata?.historyMetadata ?? {});
@@ -66,7 +72,7 @@ await mock.module('@propr/core', { namedExports: {
     loadRepositoryVisualPreviewSettings: async () => ({ enabled: true, types: ['image'] }),
     refineWorkflowPreviews, repositoryWorkflowPrompt,
     loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
-    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError,
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError: class extends Error {},
 } });
 // Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
@@ -160,7 +166,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
 beforeEach(() => {
     refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
-    cancellations.length = 0;
+    cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
 });
@@ -311,7 +317,9 @@ for (const persistenceFails of [false, true]) {
         assert.ok(!events.includes('prepare'));
         assert.ok(!events.includes('agent'));
         assert.ok(events.includes('cleanup-capacity'), 'cleanup must not enqueue duplicate pending-comment jobs');
-        assert.deepEqual(handledTaskIds, [], 'capacity is not an execution failure');
+        // A refusal is scheduling, not failure; a refusal that could not be persisted ends this attempt visibly.
+        assert.deepEqual(handledTaskIds, persistenceFails ? ['task-1'] : []);
+        if (persistenceFails) assert.ok(events.indexOf('restore') < events.indexOf('state:task-1:failed'));
         assert.ok(events.indexOf('persist-comments') < events.indexOf('stop-heartbeat'));
         assert.equal(events.includes('restore'), persistenceFails);
         if (persistenceFails) assert.ok(events.indexOf('restore') < events.indexOf('stop-heartbeat'));
@@ -319,6 +327,21 @@ for (const persistenceFails of [false, true]) {
     });
 }
 
+
+test('a persisted PR capacity refusal explains the wait on the task timeline without changing state', async () => {
+    refuseCapacity = true;
+    taskStates.set('task-1', 'pending');
+    const waiting = job();
+    waiting.updateData = async (data: Record<string, unknown>) => { events.push('persist-comments'); waiting.data = JSON.parse(JSON.stringify(data)); };
+    await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.equal(deferralHistory.length, 1);
+    assert.equal(deferralHistory[0].state, 'pending', 'the wait keeps the current state');
+    assert.match(deferralHistory[0].metadata.reason!, /Waiting for repository workflow capacity/);
+    const retryAt = (waiting.data as { repositoryWorkflowRetryAt?: number }).repositoryWorkflowRetryAt!;
+    assert.deepEqual(deferralHistory[0].metadata.historyMetadata, { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: new Date(retryAt).toISOString() });
+    assert.ok(events.indexOf('persist-comments') < events.indexOf('deferral-history:task-1:pending'), 'the timeline never announces an unpersisted wait');
+    assert.equal(taskStates.get('task-1'), 'pending');
+});
 
 test('capacity deferral cleans a worktree retained by publication recovery before releasing the PR lock', async () => {
     refuseCapacity = true;

@@ -236,6 +236,7 @@ const modules: Record<string, Record<string, unknown>> = {
         RepositoryWorkflowCapacityError: class extends Error {},
         resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
         repositoryWorkflowDeferralData: () => ({}), repositoryWorkflowHistoryMetadata: () => ({}), CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: {},
+        persistRepositoryWorkflowDeferral: noOp,
     },
     // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },

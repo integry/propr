@@ -33,6 +33,7 @@ const queueAssignments: unknown[] = [];
 const transitions: unknown[] = [];
 const terminal: Array<{ taskId: string; result: Record<string, unknown> }> = [];
 const processingHistory: Array<{ state: string; metadata: Record<string, unknown> }> = [];
+const deferralHistory: unknown[][] = [];
 // When set, preparation uses the real policy loader against this fake GitHub API.
 let githubRequests: string[] | undefined;
 const workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
@@ -50,6 +51,7 @@ const fakeGitHubRequest = async (route: string, params: { path?: string; body?: 
 const stateManager = {
   markTaskCancelled: async (_id: string, _by: string, metadata: Record<string, unknown>) => { obligations.push('record'); cancellations.push(metadata); },
   createTaskStateIfAbsent: async (_id: string, ref: unknown) => { events.push('create-if-absent'); storedRefs.push(ref); return initialState; },
+  updateTaskStateIfCurrent: async (...args: unknown[]) => { deferralHistory.push(args); events.push('deferral-history'); return {}; },
   getTaskState: async () => handoffState ?? (withdrawnDuringExecution ? { state: 'cancelled', terminalReason: executionCancellationReason } : taskState === 'pending' ? null : { state: taskState }),
   updateTaskState: async (...args: unknown[]) => {
     transitions.push(args);
@@ -184,6 +186,40 @@ test('issue capacity refusal delays before cloning, preserves task identity, and
   } finally { capacityFull = false; taskState = 'pending'; }
 });
 
+test('an issue capacity wait is explained on the timeline after the deferral is persisted', async () => {
+  capacityFull = true; taskState = 'queued'; events.length = 0; deferralHistory.length = 0;
+  const job = {
+    id: 'capacity-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, correlationId: 'c', agentAlias: 'a', modelName: 'm' } as IssueJobData,
+    updateData: async (data: IssueJobData) => { job.data = data; events.push('persist-deferral'); },
+    moveToDelayed: async (deadline: number) => { events.push(`delay:${deadline === job.data.repositoryWorkflowRetryAt}`); },
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.deepEqual(events.filter(event => event !== 'create-if-absent'), ['persist-deferral', 'deferral-history', 'delay:true']);
+    const [taskId, , state, metadata] = deferralHistory[0] as [string, unknown, string, { reason: string; historyMetadata: Record<string, unknown> }];
+    assert.equal(state, 'queued', 'the wait does not change task state');
+    assert.ok(taskId);
+    assert.match(metadata.reason, /Waiting for repository workflow capacity/);
+    assert.deepEqual(metadata.historyMetadata, { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: new Date(job.data.repositoryWorkflowRetryAt!).toISOString() });
+  } finally { capacityFull = false; taskState = 'pending'; }
+});
+
+test('an issue capacity refusal that cannot be persisted fails the task instead of leaving it pending', async () => {
+  capacityFull = true; terminal.length = 0; deferralHistory.length = 0;
+  const job = {
+    id: 'capacity-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, correlationId: 'c', agentAlias: 'a', modelName: 'm' } as IssueJobData,
+    updateData: async () => { throw new Error('Queue data update failed'); },
+    moveToDelayed: async () => assert.fail('an unpersisted deferral must not be delayed'),
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), /Queue data update failed/);
+    assert.deepEqual(terminal.map(entry => entry.result.status), ['failed']);
+    assert.equal(deferralHistory.length, 0, 'no wait is announced for an unpersisted deferral');
+  } finally { capacityFull = false; }
+});
+
 test('workflow preparation failures retain normal issue error reporting', async () => {
   workflowError = new Error('Invalid .propr/workflow.yml: expanded wrapper exceeds limit');
   terminal.length = 0;
@@ -246,14 +282,15 @@ test('capacity re-entries reuse the resolved policy, back off, and reload it aft
   try {
     for (let refusal = 0; refusal < 3; refusal++) await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
     assert.equal(githubRequests.filter(route => route.includes('/contents/')).length, 1, 'policy is fetched once across refusals');
-    assert.equal(githubRequests.length, 3);
+    // The dispatched repository payload already names the default branch.
+    assert.deepEqual(githubRequests, ['GET /repos/{owner}/{repo}/commits/{ref}', 'GET /repos/{owner}/{repo}/contents/{path}']);
     assert.equal(job.data.repositoryWorkflowDeferrals, 3);
     assert.equal(job.data.repositoryWorkflow?.revision, 'base-sha');
     // Jittered exponential backoff: each ceiling doubles from 10 s.
     delays.forEach((delay, index) => assert.ok(delay >= 5_000 * 2 ** index - 50 && delay <= 10_000 * 2 ** index + 50, `delay ${index}: ${delay}`));
     capacityFull = false;
     assert.equal((await processGitHubIssueJob(job as never)).status, 'processed');
-    assert.equal(githubRequests.length, 3, 'admitted re-entry reuses the policy that was waiting');
+    assert.equal(githubRequests.length, 2, 'admitted re-entry reuses the policy that was waiting');
     assert.equal((processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata.repositoryWorkflow as { revision: string }).revision, 'base-sha');
     assert.equal(job.data.repositoryWorkflowDeferred, false);
     assert.equal(job.data.repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');

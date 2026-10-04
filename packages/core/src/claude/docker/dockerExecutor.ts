@@ -1,4 +1,4 @@
-import { captureWorkflowMarkers } from '../../workflow/workflowExecution.js';
+import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
@@ -219,7 +219,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
     if (initialAbortError) return Promise.reject(initialAbortError);
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
-        const executionArgs = resolveExecutionArgs(command, args, taskId, ownershipContext?.attemptGeneration);
+        const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, timeout), taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);

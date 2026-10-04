@@ -7,7 +7,10 @@ import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
-import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from '../src/workflow/workflowExecution.js';
+import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH, withWorkflowExecutionDeadline } from '../src/workflow/workflowExecution.js';
+import { AntigravityGoalStream } from '../src/agents/impl/antigravityGoalStream.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { generateCompletionComment } from '../src/utils/github/logFiles.js';
 import { closeConnection } from '../src/db/connection.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../src/agents/impl/utils/boundedProviderOutput.js';
@@ -33,7 +36,7 @@ const policy = (source = '{}'): ResolvedRepositoryWorkflow => ({
 
 test('rejects malformed and privilege-expanding policy with actionable field errors', () => {
     for (const source of [
-        '', 'null', '[]', 'hooks: nope', 'hooks: { before_run: 1 }', 'hooks: { timeout_ms: 0 }',
+        'null', '~', '[]', 'hooks: nope', 'hooks: { before_run: 1 }', 'hooks: { timeout_ms: 0 }',
         'hooks: { before_run: echo, before_run: other }', 'validation: npm test', 'validation: [null]',
         'previews: { types: [audio] }', 'previews: { types: [image, image] }',
         'limits: { max_parallel_tasks: 1.5 }', 'limits: { max_parallel_tasks: 0 }',
@@ -43,6 +46,10 @@ test('rejects malformed and privilege-expanding policy with actionable field err
         'instructions: !custom file.md', 'validation: [&a npm, *a]',
     ]) assert.throws(() => parseRepositoryWorkflow(source), /Invalid .propr\/workflow.yml/, source);
     assert.deepEqual(parseRepositoryWorkflow('{}'), {});
+    // A scaffold with every section commented out is the empty policy, not an error.
+    for (const empty of ['', '\n', '# yaml-language-server: $schema=x\n# hooks:\n#   before_run: npm ci\n', '---\n# nothing\n']) {
+        assert.deepEqual(parseRepositoryWorkflow(empty), {}, JSON.stringify(empty));
+    }
     assert.throws(() => parseRepositoryWorkflow('a'.repeat(128 * 1024 + 1)), /exceeds 128 KiB/);
 });
 
@@ -96,7 +103,7 @@ test('published editor schema agrees with runtime on supported fields and reject
     }
 });
 
-async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker', binaries: Record<string, string> = {}) {
+async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker', binaries: Record<string, string> = {}, env: string[] = []) {
     const directory = await mkdtemp(path.join(tmpdir(), 'workflow-test-'));
     const entrypoint = path.join(directory, 'agent.sh');
     const trace = path.join(directory, 'trace');
@@ -116,7 +123,7 @@ async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo ag
     try {
         const result = await executeDockerCommand('/usr/bin/env', [
             `PATH=${isolated ? bin : `${bin}:${process.env.PATH}`}`,
-            `PROPR_WORKSPACE=${directory}`, `PROPR_CACHE_DIR=${directory}`, `TRACE=${trace}`,
+            `PROPR_WORKSPACE=${directory}`, `PROPR_CACHE_DIR=${directory}`, `TRACE=${trace}`, ...env,
             '/bin/bash', '-c', buildWorkflowWrapper(workflow, marker), entrypoint,
         ], { stdinData: 'the prompt', timeout: 5000 });
         return { ...result, trace: await readFile(trace, 'utf8').catch(() => '') };
@@ -386,4 +393,93 @@ test('validation reports for long accepted commands stay within the completion c
     const redacted = await execute([`: ${'c'.repeat(180)} GITHUB_TOKEN=${secret}`], () => '');
     assert.doesNotMatch(redacted.repositoryValidation!, /xxxx/);
     assert.match(redacted.repositoryValidation!, /: Not run/);
+});
+
+test('agent stderr and repository command output carry distinct labels, and Antigravity still finds its own error line', async () => {
+    const result = await runWrapper(policy('hooks: { before_run: "echo from-hook >&2" }'), 'echo error: provider quota >&2; cat');
+    assert.match(result.stderr, /^ProPR command output: from-hook$/m);
+    assert.match(result.stderr, /^ProPR agent stderr: error: provider quota$/m);
+    assert.doesNotMatch(result.stderr, /ProPR command output: error: provider quota/);
+    // Antigravity's goal stream reads the CLI's failure line from container stderr.
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough() });
+    const stream = new AntigravityGoalStream(child as never, { append() {} } as never);
+    child.stderr.write(`${result.stderr}ProPR agent stderr: trailing diagnostic\n`);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stream.errorText, 'error: provider quota');
+});
+
+test('read-only containers in the same execution never replace the observed hook and validation results', async () => {
+    const result = await executeWithRepositoryWorkflow(policy('validation: ["npm test"]\nhooks: { before_run: "exit 3" }'), async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        observeStderr(`\n${marker}:hook:before_run:3\n${marker}:validation:0:0\n`);
+        // A later analysis container runs the wrapper with setup disabled and `exec`s the agent.
+        for (const env of [['-e', 'PROPR_REPO_SETUP=0'], ['--env', 'PROPR_REPO_SETUP=0'], ['--env=PROPR_REPO_SETUP=0']]) {
+            const readOnly = ['run', '--rm', ...env, 'image', '-lc', `script ${marker}`];
+            assert.equal(captureWorkflowMarkers(readOnly), undefined);
+            assert.deepEqual(withWorkflowExecutionDeadline('docker', readOnly, 60_000), readOnly);
+        }
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.equal(result.success, false);
+    assert.match(result.error!, /before_run failed with exit code 3/);
+    assert.match(result.repositoryValidation!, /npm test: Passed/);
+});
+
+test('the transport time limit reaches only this execution\'s docker run wrapper', async () => {
+    const workflow = policy('validation: ["npm test"]');
+    assert.deepEqual(withWorkflowExecutionDeadline('docker', ['run', 'image'], 60_000), ['run', 'image'], 'no workflow execution');
+    await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const args = ['run', '--rm', 'image', '-lc', `script ${marker}`];
+        assert.deepEqual(withWorkflowExecutionDeadline('docker', args, 60_000), ['run', '-e', 'PROPR_EXECUTION_TIMEOUT_MS=60000', ...args.slice(1)]);
+        assert.deepEqual(withWorkflowExecutionDeadline('/usr/bin/docker', args, 60_000)[2], 'PROPR_EXECUTION_TIMEOUT_MS=60000');
+        assert.deepEqual(withWorkflowExecutionDeadline('docker', ['run', 'other-image'], 60_000), ['run', 'other-image']);
+        assert.deepEqual(withWorkflowExecutionDeadline('docker', ['exec', ...args.slice(1)], 60_000), ['exec', ...args.slice(1)]);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    await executeWithRepositoryWorkflow(policy('hooks: { before_run: "true" }'), async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const args = ['run', 'image', marker];
+        assert.deepEqual(withWorkflowExecutionDeadline('docker', args, 60_000), args, 'nothing to bound without validation');
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+});
+
+test('post-agent validation stops before the execution time limit instead of turning a finished agent into a timeout', async () => {
+    // 31 s limit minus the 30 s reserve leaves one second for validation.
+    const workflow = policy('validation: ["sleep 10", "echo second >> \\"$TRACE\\""]\nhooks: { before_remove: "echo remove >> \\"$TRACE\\"" }');
+    workflow.timeoutMs = 4000;
+    const reserve = 30 + 4 + 5;
+    const started = Date.now();
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const execution = await runWrapper(workflow, 'echo agent >> "$TRACE"; exit 0', undefined, marker, {}, [`PROPR_EXECUTION_TIMEOUT_MS=${(reserve + 1) * 1000}`]);
+        assert.equal(execution.exitCode, 0, 'the agent exit code is preserved');
+        assert.equal(execution.trace, 'agent\nremove\n', 'later commands are skipped, cleanup hooks still run');
+        assert.match(execution.stderr, /skipped validation command 2: execution time limit reached/);
+        observeStderr(execution.stderr);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.ok(Date.now() - started < 4000, 'the remaining budget, not the per-command timeout, bounded the first command');
+    assert.equal(result.success, true);
+    assert.match(result.repositoryValidation!, /sleep 10: Timed out/);
+    assert.match(result.repositoryValidation!, /second.*: Not run \(execution time limit reached\)/);
+    // An exhausted budget skips every command; an absent or malformed limit keeps per-command timeouts only.
+    const exhausted = await runWrapper(policy('validation: ["echo ran >> \\"$TRACE\\""]'), 'true', undefined, 'marker', {}, ['PROPR_EXECUTION_TIMEOUT_MS=1000']);
+    assert.equal(exhausted.trace, '');
+    assert.match(exhausted.stderr, /marker:validation:0:skipped/);
+    for (const env of [[], ['PROPR_EXECUTION_TIMEOUT_MS=abc']]) {
+        const unbounded = await runWrapper(policy('validation: ["echo ran >> \\"$TRACE\\""]'), 'true', undefined, 'marker', {}, env);
+        assert.equal(unbounded.trace, 'ran\n');
+    }
+});
+
+test('only the wrapper can report a skipped validation command; hooks cannot be skipped', async () => {
+    const result = await executeWithRepositoryWorkflow(policy('validation: ["a"]\nhooks: { before_run: "true" }'), async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        observeStderr(`\n${marker}:hook:before_run:skipped\n${marker}:validation:0:skipped\n`);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.equal(result.success, true);
+    assert.match(result.repositoryValidation!, /a: Not run \(execution time limit reached\)/);
 });

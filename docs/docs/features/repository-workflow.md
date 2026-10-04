@@ -23,17 +23,17 @@ limits:
   max_parallel_tasks: 3
 ```
 
-All fields are optional. Use `{}` for an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors. Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
+All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors. Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
 
 ## Base branch and revisions
 
-For issues, policy comes from the selected base branch, or the repository default branch when no override is selected. For follow-ups it comes from the PR's base branch, including when the implementation branch contains a different policy. The loader resolves the branch to a commit and reads both the workflow and instruction file from that same commit. Changes take effect on the next run; an active run keeps its snapshot.
+For issues, policy comes from the selected base branch, or the repository default branch when no override is selected. If the selected base branch does not exist yet (for example, an epic branch that is created when its first child PR opens), policy comes from the default branch, which is also where the task's worktree starts. For follow-ups it comes from the PR's base branch, including when the implementation branch contains a different policy. The loader resolves the branch to a commit and reads both the workflow and instruction file from that same commit. Changes take effect on the next run; an active run keeps its snapshot.
 
 The task timeline shows the workflow path, base branch and base commit. Hover over it for the full commit and workflow blob revisions. History metadata also records the effective parallel task cap and hook timeout.
 
 ## Lifecycle hooks
 
-Commands run with Bash, in the repository workspace **inside the agent container** and as its unprivileged agent user. They never execute on the worker or host. They receive `PROPR_WORKSPACE`, `PROPR_CACHE_DIR`, and `PROPR_AGENT_TYPE`, like the existing setup script. Hook stdin is closed and output goes to execution logs, preserving the agent's prompt input.
+Commands run with Bash, in the repository workspace **inside the agent container** and as its unprivileged agent user. They never execute on the worker or host. They receive `PROPR_WORKSPACE`, `PROPR_CACHE_DIR`, and `PROPR_AGENT_TYPE`, like the existing setup script. Hook stdin is closed and output goes to execution logs, preserving the agent's prompt input. In those logs, lines from hooks and validation commands are prefixed `ProPR command output:`, and the agent's own stderr is prefixed `ProPR agent stderr:`.
 
 | Hook | When | Failure |
 | --- | --- | --- |
@@ -52,13 +52,13 @@ When `after_create` is omitted, `.propr/setup.sh` remains implicit if present an
 
 `instructions` names a repository-relative text file; absolute paths and `..` traversal are rejected. Its contents are appended to implementation and follow-up prompts alongside the instance's existing instructions.
 
-`validation` adds commands the agent must run and report before finishing. ProPR also executes them in order after the agent exits, with the hook timeout applied to each command, and appends the observed passed, failed, timed-out or not-run results to the completion summary. A failing validation command does not suppress later commands or erase implementation work. Command output is available in execution logs. Validation commands should be safe to repeat.
+`validation` adds commands the agent must run and report before finishing. ProPR also executes them in order after the agent exits, with the hook timeout applied to each command, and appends the observed passed, failed, timed-out or not-run results to the completion summary. Validation shares the instance's overall execution timeout with the agent, so ProPR also bounds it as a whole. It stops starting commands early enough to leave time for `after_run`, `before_remove` and container teardown, and shortens a command's timeout to the remaining budget. The remaining commands are reported as `Not run (execution time limit reached)`, and the completed agent run is kept rather than reported as an execution timeout. A failing validation command does not suppress later commands or erase implementation work. Command output is available in execution logs. Validation commands should be safe to repeat.
 
 ## Instance defaults and hard limits
 
 Repository policy can refine instance configuration but cannot grant permissions:
 
-- `limits.max_parallel_tasks` caps concurrent issue implementations and follow-ups **across all branches and workers for this repository**. It is clamped to the instance `worker_concurrency` setting (or `WORKER_CONCURRENCY`, default 5). Attempts refused admission are delayed in the queue, freeing shared worker slots for other repositories. They check cancellation again on re-entry. Runs without a workflow participate in the count; when branches have different active caps, the smallest cap governs admission. Lowering a cap does not interrupt already-running work.
+- `limits.max_parallel_tasks` caps concurrent issue implementations and follow-ups **across all branches and workers for this repository**. It is clamped to the instance `worker_concurrency` setting (or `WORKER_CONCURRENCY`, default 5). Attempts refused admission are delayed in the queue, freeing shared worker slots for other repositories. They check cancellation again on re-entry. The task timeline shows **Waiting for Repository Capacity** with the number of refusals and the next retry time. Runs without a workflow participate in the count; when branches have different active caps, the smallest cap governs admission. Lowering a cap does not interrupt already-running work.
 - `previews.types` selects a subset of the types enabled in repository Settings. It cannot enable previews when Settings disable them. An empty subset disables capture for the run. Repository preview instructions are appended to Settings instructions; upload and storage limits remain unchanged.
 - Credentials, container networking, mounts, provider choice and other instance settings cannot be declared in this file. Unsupported keys fail validation.
 

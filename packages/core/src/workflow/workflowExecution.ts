@@ -5,6 +5,7 @@ import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 import { redactSecrets } from '../utils/secretRedaction.js';
 
+/** Hook exit codes, and validation exit codes or `skipped` when the execution time budget ran out first. */
 export interface WorkflowObservation { hooks: Map<string, string>; validation: Map<number, string> }
 
 /**
@@ -22,7 +23,7 @@ export class WorkflowMarkerCollector {
     private readonly maxLineLength: number;
 
     constructor(marker: string, private readonly validationCount: number) {
-        this.pattern = new RegExp(`^${marker}:(?:hook:(after_create|before_run|after_run|before_remove|setup)|validation:([0-9]+)):([0-9]+)$`);
+        this.pattern = new RegExp(`^${marker}:(?:hook:(after_create|before_run|after_run|before_remove|setup):([0-9]+)|validation:([0-9]+):([0-9]+|skipped))$`);
         this.maxLineLength = marker.length + 64;
     }
 
@@ -50,8 +51,8 @@ export class WorkflowMarkerCollector {
 
     private finishLine(): void {
         const match = this.afterLineFeed && !this.overflow ? this.pattern.exec(this.line) : null;
-        if (match?.[1]) this.observation.hooks.set(match[1], match[3]);
-        else if (match && Number(match[2]) < this.validationCount) this.observation.validation.set(Number(match[2]), match[3]);
+        if (match?.[1]) this.observation.hooks.set(match[1], match[2]);
+        else if (match && Number(match[3]) < this.validationCount) this.observation.validation.set(Number(match[3]), match[4]);
         this.line = '';
         this.overflow = false;
         this.afterLineFeed = true;
@@ -62,10 +63,24 @@ export class WorkflowMarkerCollector {
 export interface RepositoryWorkflowExecutionContext { workflow: ResolvedRepositoryWorkflow; marker: string; observed?: WorkflowObservation }
 export const repositoryWorkflowExecution = new AsyncLocalStorage<RepositoryWorkflowExecutionContext>();
 
-/** Collect reports only for the transport running this execution's wrapper. */
+/** Read-only analysis containers `exec` the agent without hooks or validation. */
+function isReadOnlyTransport(args: string[]): boolean {
+    return args.some((arg, index) => (arg === 'PROPR_REPO_SETUP=0' && ['-e', '--env'].includes(args[index - 1])) || arg === '--env=PROPR_REPO_SETUP=0');
+}
+
+/** The wrapper argument of this execution, when the transport runs it. */
+function runsWorkflowWrapper(context: RepositoryWorkflowExecutionContext | undefined, args: string[]): context is RepositoryWorkflowExecutionContext {
+    return !!context && args.some(arg => arg.includes(context.marker)) && !isReadOnlyTransport(args);
+}
+
+/**
+ * Collect reports only for the transport running this execution's wrapper. A
+ * read-only container in the same execution never reports, so it must not
+ * replace the observation of the run that actually executed hooks and validation.
+ */
 export function captureWorkflowMarkers(args: string[]): { append(chunk: string): void; finish(chunk: string): void } | undefined {
     const context = repositoryWorkflowExecution.getStore();
-    if (!context || !args.some(arg => arg.includes(context.marker))) return undefined;
+    if (!runsWorkflowWrapper(context, args)) return undefined;
     const collector = new WorkflowMarkerCollector(context.marker, context.workflow.config.validation?.length ?? 0);
     return {
         append: chunk => collector.append(chunk),
@@ -95,7 +110,8 @@ export async function executeWithRepositoryWorkflow(
     if (validation.length) {
         result.repositoryValidation = buildRepositoryValidationReport(validation.map((command, index) => {
             const code = observed.validation.get(index);
-            return { command, status: code === undefined ? 'Not run (execution ended before validation)' : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})` };
+            return { command, status: code === undefined ? 'Not run (execution ended before validation)' : code === 'skipped' ? 'Not run (execution time limit reached)'
+                : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})` };
         }));
     }
     return result;
@@ -130,6 +146,31 @@ export const WORKFLOW_MARKER_TEMPLATE = `PROPR_WORKFLOW_${'0'.repeat(36)}`;
 
 const quote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
 
+/** Agent stderr is labelled separately from repository command output in execution logs. */
+export const WORKFLOW_AGENT_STDERR_PREFIX = 'ProPR agent stderr: ';
+export const WORKFLOW_COMMAND_OUTPUT_PREFIX = 'ProPR command output: ';
+/** Removes the wrapper's agent stderr label from a diagnostic line. */
+export function stripWorkflowAgentStderrPrefix(line: string): string {
+    return line.startsWith(WORKFLOW_AGENT_STDERR_PREFIX) ? line.slice(WORKFLOW_AGENT_STDERR_PREFIX.length) : line;
+}
+
+// Container startup and teardown happen inside the execution timeout too.
+const VALIDATION_DEADLINE_MARGIN_S = 30;
+// timeout(1) sends KILL five seconds after TERM.
+const KILL_GRACE_S = 5;
+
+/**
+ * Tells this execution's wrapper the transport's time limit, so post-agent
+ * validation can stop before the limit instead of turning a completed agent run
+ * into an execution timeout. Only `docker run` transports carrying the wrapper change.
+ */
+export function withWorkflowExecutionDeadline(command: string, args: string[], timeoutMs: number): string[] {
+    const context = repositoryWorkflowExecution.getStore();
+    if (!runsWorkflowWrapper(context, args) || !(context.workflow.config.validation?.length) || args[0] !== 'run' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return args;
+    if (!/(?:^|\/)docker$/.test(command)) return args;
+    return [args[0], '-e', `PROPR_EXECUTION_TIMEOUT_MS=${timeoutMs}`, ...args.slice(1)];
+}
+
 /** This script is passed as a Docker argv element. It must never execute on the worker. */
 export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marker: string): string {
     const hooks = workflow.config.hooks ?? {};
@@ -137,6 +178,10 @@ export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marke
         const command = hooks[name];
         return command ? `run_hook ${name} ${quote(command)}` : ':';
     };
+    const hookTimeoutS = workflow.timeoutMs / 1000;
+    // Validation must leave room for the hooks that still follow it.
+    const reserveS = VALIDATION_DEADLINE_MARGIN_S
+        + (['after_run', 'before_remove'] as const).filter(name => hooks[name]).length * (Math.ceil(hookTimeoutS) + KILL_GRACE_S);
     const implicitSetup = `if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$PROPR_WORKSPACE/.propr/setup.sh" ]; then
     run_hook setup '/bin/bash .propr/setup.sh'
     setup_exit=$?
@@ -144,6 +189,12 @@ export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marke
 fi`;
     const script = `
 entrypoint="$0"
+# Post-agent validation shares the execution time limit; stop starting commands before it.
+validation_deadline=
+case "\${PROPR_EXECUTION_TIMEOUT_MS:-}" in
+    ''|*[!0-9]*) ;;
+    *) validation_deadline=$(( SECONDS + PROPR_EXECUTION_TIMEOUT_MS / 1000 - ${reserveS} )) ;;
+esac
 export PROPR_WORKSPACE="\${PROPR_WORKSPACE:-/home/node/workspace}"
 export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/git-processor/propr-cache/\${PROPR_AGENT_TYPE:-agent}}"
 # Read-only analysis calls must not run workflow hooks.
@@ -158,14 +209,14 @@ run_command() {
             echo "Cannot run repository workflow command: unprivileged node user and su-exec are required" >&2
             return 126
         fi
-        su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=5s ${workflow.timeoutMs / 1000}s /bin/bash -c "$1" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
     else
-        timeout --signal=TERM --kill-after=5s ${workflow.timeoutMs / 1000}s /bin/bash -c "$1" </dev/null >&2
+        timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
     fi
 # Child output is untrusted, even when it knows the marker from /proc.
 # Prefix every line so fragments from concurrent children cannot form a report.
 # This also covers output from surviving background children.
-} > >(/bin/sed -u 's/^/ProPR command output: /' >&2) 2>&1
+} > >(/bin/sed -u 's/^/${WORKFLOW_COMMAND_OUTPUT_PREFIX}/' >&2) 2>&1
 run_hook() {
     echo "Running ProPR workflow hook: $1" >&2
     run_command "$2"
@@ -173,6 +224,20 @@ run_hook() {
     printf '\\n%s\\n' "${marker}:hook:$1:$hook_exit" >&2
     if [ "$hook_exit" -ne 0 ]; then echo "ProPR workflow hook $1 failed with exit code $hook_exit" >&2; fi
     return "$hook_exit"
+}
+run_validation() {
+    limit=
+    if [ -n "$validation_deadline" ]; then
+        remaining=$(( validation_deadline - SECONDS ))
+        if [ "$remaining" -le 0 ]; then
+            echo "ProPR skipped validation command $(( $1 + 1 )): execution time limit reached" >&2
+            printf '\\n%s\\n' "${marker}:validation:$1:skipped" >&2
+            return 0
+        fi
+        if [ "$remaining" -lt ${Math.ceil(hookTimeoutS)} ]; then limit=$remaining; fi
+    fi
+    run_command "$2" $limit
+    printf '\\n%s\\n' "${marker}:validation:$1:$?" >&2
 }
 finish() {
     final_exit=$?
@@ -188,9 +253,9 @@ ${hooks.after_create ? `${hook('after_create')} || exit $?` : implicitSetup}
 ${hook('before_run')} || exit $?
 # Preserve the agent's stdin; repository commands never consume its prompt.
 agent_started=1
-"$entrypoint" "$@" 2> >(/bin/sed -u 's/^/ProPR command output: /' >&2)
+"$entrypoint" "$@" 2> >(/bin/sed -u 's/^/${WORKFLOW_AGENT_STDERR_PREFIX}/' >&2)
 agent_exit=$?
-${(workflow.config.validation ?? []).map((command, index) => `run_command ${quote(command)}\nprintf '\\n%s\\n' "${marker}:validation:${index}:$?" >&2`).join('\n')}
+${(workflow.config.validation ?? []).map((command, index) => `run_validation ${index} ${quote(command)}`).join('\n')}
 exit "$agent_exit"
 `.trim();
     if (Buffer.byteLength(script, 'utf8') > WORKFLOW_WRAPPER_MAX_BYTES) {

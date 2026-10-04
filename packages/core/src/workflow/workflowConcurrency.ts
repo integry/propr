@@ -42,6 +42,14 @@ export class RepositoryWorkflowCapacityError extends Error {
     constructor() { super('Repository workflow capacity is currently full'); }
 }
 
+/** Ownership of an admitted slot was lost (renewal failed or stalled); never a user cancellation. */
+export class RepositoryWorkflowLeaseLostError extends Error {
+    constructor() {
+        super('Repository workflow capacity lease lost');
+        this.name = 'RepositoryWorkflowLeaseLostError';
+    }
+}
+
 export async function withRepositoryWorkflowSlot<T>(options: {
     redis: Redis;
     repository: string;
@@ -68,7 +76,7 @@ export async function withRepositoryWorkflowSlot<T>(options: {
         throw new RepositoryWorkflowCapacityError();
     }
     confirmedDeadline = requestedAt + CONFIRMED_LEASE_MS;
-    const loseOwnership = () => controller.abort(new Error('Repository workflow capacity lease lost'));
+    const loseOwnership = () => controller.abort(new RepositoryWorkflowLeaseLostError());
     const checkOwnership = () => {
         if (performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();
         signal.throwIfAborted();

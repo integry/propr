@@ -1,5 +1,5 @@
 import { formatTaskTerminalReason } from '@propr/shared';
-import { prepareRepositoryWorkflow, resolveRepositoryWorkflow, repositoryWorkflowDeferralData, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
+import { prepareRepositoryWorkflow, resolveRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
     withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
@@ -440,15 +440,17 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         }
         return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
     } catch (error) {
+        const failJob = (failure: Error) => handleJobError(failure, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
         if (error instanceof RepositoryWorkflowCapacityError) {
             capacityRefused = true;
-            // This same delayed job retains the claimed comments, command context and resolved policy.
-            // Wait for durable storage before releasing its PR lock or queue ownership.
-            await job.updateData({ ...job.data, comments: context.commentsToProcess, ...repositoryWorkflowDeferralData(job.data, state.repositoryWorkflow, state.repositoryWorkflowBaseBranch) })
-                .catch(async (persistError: unknown) => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); throw persistError; });
+            // The delayed job keeps the claimed comments, command context and policy; store them before releasing
+            // the PR lock. On failure the queue retry owns the comments, but this attempt must not stay pending.
+            await persistRepositoryWorkflowDeferral({ job, workflow: state.repositoryWorkflow, baseBranch: state.repositoryWorkflowBaseBranch,
+                extraData: { comments: context.commentsToProcess }, stateManager, taskId, correlatedLogger,
+                onPersistFailure: async persistError => { await restorePendingComments(context.pickedUpComments, { ...context, redisClient }); await failJob(persistError); } });
             throw error;
         }
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
+        await failJob(error as Error);
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const cancelledState = await stateManager.getTaskState(taskId);
         if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };

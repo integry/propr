@@ -1,4 +1,4 @@
-import { parseDocument } from 'yaml';
+import { isScalar, parseDocument } from 'yaml';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
 
@@ -47,14 +47,21 @@ function validatePreviews(value: unknown): void {
     }
 }
 
-export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
-    if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
-    let value: unknown;
+function parseWorkflowDocument(source: string): unknown {
     try {
         const document = parseDocument(source, { uniqueKeys: true });
         if (document.errors.length || document.warnings.length) throw document.errors[0] || document.warnings[0];
-        value = document.toJS({ maxAliasCount: 0 });
+        // An empty or comment-only document (e.g. a scaffold with every section
+        // commented out) is the empty policy; an explicit `null` value is not.
+        const { contents } = document;
+        const empty = contents === null || (isScalar(contents) && contents.value === null && !contents.source);
+        return empty ? {} : document.toJS({ maxAliasCount: 0 });
     } catch (error) { invalid((error as Error).message); }
+}
+
+export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
+    if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
+    const value = parseWorkflowDocument(source);
     const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits'], 'workflow');
     if (config.hooks !== undefined) {
         const hooks = object(config.hooks, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');

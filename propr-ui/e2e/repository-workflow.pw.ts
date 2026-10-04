@@ -38,3 +38,40 @@ test('task history displays the pinned repository workflow revision', async ({ p
     await page.screenshot({ path: '../.propr/previews/repository-workflow.png', animations: 'disabled', clip: { ...bounds!, height: Math.min(bounds!.height, 430) } });
   }
 });
+
+test('task history explains a repository capacity wait with its count and next retry', async ({ page }) => {
+  await fixture(page, { width: 1440, height: 1000 });
+  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
+  const retryAt = '2026-09-30T12:01:20Z';
+  await page.route('**/api/task/workflow-waiting/**', route => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').at(-1);
+    const responses: Record<string, unknown> = {
+      history: {
+        history: [
+          { state: 'pending', timestamp: '2026-09-30T12:00:00Z' },
+          { state: 'pending', timestamp: '2026-09-30T12:00:02Z', reason: 'Waiting for repository workflow capacity (limit 1)',
+            metadata: { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: '2026-09-30T12:00:10Z' } },
+          { state: 'pending', timestamp: '2026-09-30T12:00:40Z', reason: 'Waiting for repository workflow capacity (limit 1)',
+            metadata: { repositoryWorkflowDeferrals: 3, repositoryWorkflowRetryAt: retryAt } },
+        ],
+        taskInfo: { title: 'Apply repository workflow policy', type: 'issue', number: 43, issueNumber: 43, repoOwner: 'example', repoName: 'workspace', modelName: 'gpt-6-astra' },
+        usageMetricRecords: [],
+      },
+      'live-details': { events: [], todos: [], currentTask: null },
+      'file-changes': { taskId: 'workflow-waiting', lastUpdated: '2026-09-30T12:00:40Z', files: [] },
+      analysis: { analysis: null },
+    };
+    return route.fulfill({ json: responses[endpoint!] ?? {} });
+  });
+  await page.goto('/tasks/workflow-waiting');
+  await expect(page.getByText('Waiting for Repository Capacity')).toBeVisible();
+  const deferral = page.getByTestId('repository-workflow-deferral');
+  await expect(deferral).toContainText('Admission deferred 3 times');
+  await expect(deferral).toContainText('next retry');
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    const bounds = await page.getByTestId('task-details').boundingBox();
+    await page.screenshot({ path: '../.propr/previews/repository-capacity-wait.png', animations: 'disabled', clip: { ...bounds!, height: Math.min(bounds!.height, 430) } });
+  }
+});
+

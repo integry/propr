@@ -39,6 +39,34 @@ describe('Task timeline lifecycle', () => {
   });
 });
 
+describe('repository workflow capacity waits', () => {
+  const retryAt = '2026-10-01T00:52:30.000Z';
+  const waiting = [
+    { state: 'pending', timestamp: at(1) },
+    { state: 'pending', timestamp: at(5), reason: 'Waiting for repository workflow capacity', metadata: { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: at(15) } },
+    { state: 'pending', timestamp: at(15), reason: 'Waiting for repository workflow capacity', metadata: { repositoryWorkflowDeferrals: 2, repositoryWorkflowRetryAt: retryAt } },
+  ];
+
+  it('explains why a queued task is not progressing, with the latest count and next retry', () => {
+    render(<TaskStatusTable history={waiting} />);
+    expect(screen.getByText('Waiting for Repository Capacity')).toBeInTheDocument();
+    expect(screen.queryByText('Task Queued')).not.toBeInTheDocument();
+    const time = new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    expect(screen.getByTestId('repository-workflow-deferral')).toHaveTextContent(`Admission deferred 2 times · next retry ${time}`);
+  });
+
+  it('keeps the wait in history without a stale retry time once the task is admitted', () => {
+    render(<TaskStatusTable history={[...waiting, { state: 'processing', timestamp: at(40) }]} />);
+    expect(screen.getByTestId('repository-workflow-deferral')).toHaveTextContent(/^Admission deferred 2 times$/);
+    expect(screen.getByText('Analyzing Request')).toBeInTheDocument();
+  });
+
+  it('labels a single deferral in the singular', () => {
+    render(<TaskStatusTable history={waiting.slice(0, 2)} />);
+    expect(screen.getByTestId('repository-workflow-deferral')).toHaveTextContent(/^Admission deferred 1 time · next retry/);
+  });
+});
+
 describe('task terminal reasons', () => {
   it.each([
     ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],

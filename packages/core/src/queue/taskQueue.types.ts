@@ -13,6 +13,8 @@ export interface RepositoryWorkflowDeferralData {
     /** Base branch the policy was resolved for (`null` when unknown), so a retargeted task reloads it. */
     repositoryWorkflowBaseBranch?: string | null;
     repositoryWorkflowDeferrals?: number;
+    /** Epoch milliseconds of the next admission attempt, shared by the delayed job and the task timeline. */
+    repositoryWorkflowRetryAt?: number;
 }
 
 export interface IssueJobData extends RepositoryWorkflowDeferralData {

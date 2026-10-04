@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import type { TokenUsage } from '../types.js';
 import { boundedProviderDiagnostic } from './utils/boundedProviderOutput.js';
+import { stripWorkflowAgentStderrPrefix } from '../../workflow/workflowExecution.js';
 import type { LiveAgentOutput } from './utils/liveAgentOutput.js';
 
 /** Antigravity's `/goal` hook marks a goal it judged finished with this line. */
@@ -108,7 +109,8 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
 
     /** The CLI's own failure line (`error: …` / `AGY_ERROR`), else its last diagnostic. */
     get errorText(): string | undefined {
-        const lines = this.stderr.split('\n').map(line => line.trim()).filter(Boolean);
+        // A repository workflow wrapper labels agent stderr lines; match the CLI's own text.
+        const lines = this.stderr.split('\n').map(line => stripWorkflowAgentStderrPrefix(line.trim()).trim()).filter(Boolean);
         return lines.filter(line => /^(?:error:|AGY_ERROR)/.test(line)).pop() ?? lines.pop();
     }
 

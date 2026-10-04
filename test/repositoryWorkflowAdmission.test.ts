@@ -7,18 +7,128 @@ import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { Queue, Worker, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError } from '../packages/core/src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
-import { runWithExecutionAbortSignal } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
+import { runWithExecutionAbortSignal, ExecutionAbortedError } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
 
 await mock.module('@propr/core', { namedExports: {
-    withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
+    withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, loadSettings: async () => ({}),
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
 } });
-const { deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow, repositoryWorkflowDeferralData } = await import('../src/jobs/repositoryWorkflow.js');
-const log = { error() {} };
+const {
+    deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow, repositoryWorkflowDeferralData,
+    prepareRepositoryWorkflow, clearAbsentRepositoryWorkflowCache, recordRepositoryWorkflowDeferral, isUserCancellationError,
+} = await import('../src/jobs/repositoryWorkflow.js');
+const log = { error() {}, warn() {} };
+
+/** A GitHub client serving the given branches; each maps to a commit and an optional workflow file. */
+function githubFixture(branches: Record<string, { sha: string; workflow?: string }>, defaultBranch = 'main') {
+    const requests: string[] = [];
+    const octokit = { request: async (route: string, params: { ref?: string; path?: string }) => {
+        requests.push(params.ref ? `${route} ${params.ref}` : route);
+        if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: defaultBranch } };
+        if (route === 'GET /repos/{owner}/{repo}/commits/{ref}') {
+            const branch = branches[params.ref!];
+            if (!branch) throw Object.assign(new Error('No commit found for SHA'), { status: 404 });
+            return { data: { sha: branch.sha } };
+        }
+        const branch = Object.values(branches).find(candidate => candidate.sha === params.ref);
+        if (!branch?.workflow || params.path !== WORKFLOW_PATH) throw Object.assign(new Error('Not Found'), { status: 404 });
+        const content = Buffer.from(branch.workflow);
+        return { data: { type: 'file', encoding: 'base64', content: content.toString('base64'), size: content.length, sha: `blob-${branch.sha}` } };
+    } };
+    return { octokit: octokit as never, requests };
+}
+
+test('policy for a base branch that does not exist yet comes from the default branch the worktree starts from', async () => {
+    clearAbsentRepositoryWorkflowCache();
+    const { octokit, requests } = githubFixture({ main: { sha: 'main-sha', workflow: 'limits: { max_parallel_tasks: 2 }' } });
+    const workflow = await prepareRepositoryWorkflow({ octokit, repoOwner: 'owner', repoName: 'repo', baseBranch: 'propr/epic-7', defaultBranch: 'main' });
+    assert.equal(workflow?.baseBranch, 'main');
+    assert.equal(workflow?.revision, 'main-sha');
+    assert.equal(workflow?.maxParallelTasks, 2);
+    assert.ok(!requests.includes('GET /repos/{owner}/{repo}'), 'a known default branch needs no repository lookup');
+    // Without a known default branch, it is looked up only after the base is missing.
+    const lookup = githubFixture({ trunk: { sha: 'trunk-sha', workflow: '{}' } }, 'trunk');
+    assert.equal((await prepareRepositoryWorkflow({ octokit: lookup.octokit, repoOwner: 'owner', repoName: 'repo', baseBranch: 'propr/epic-8' }))?.baseBranch, 'trunk');
+    // Other failures are not mistaken for a missing branch.
+    const broken = { request: async () => { throw Object.assign(new Error('Server Error'), { status: 502 }); } };
+    await assert.rejects(prepareRepositoryWorkflow({ octokit: broken as never, repoOwner: 'owner', repoName: 'repo', baseBranch: 'release' }), /Server Error/);
+});
+
+test('an issue with a known default branch and no base override resolves policy without a repository lookup', async () => {
+    clearAbsentRepositoryWorkflowCache();
+    const { octokit, requests } = githubFixture({ main: { sha: 'main-sha' } });
+    assert.equal(await prepareRepositoryWorkflow({ octokit, repoOwner: 'owner', repoName: 'repo', defaultBranch: 'main' }), undefined);
+    assert.deepEqual(requests, ['GET /repos/{owner}/{repo}/commits/{ref} main', 'GET /repos/{owner}/{repo}/contents/{path} main-sha']);
+});
+
+test('a missing workflow is remembered per base commit, so later jobs skip only the contents lookup', async () => {
+    clearAbsentRepositoryWorkflowCache();
+    const branches: Record<string, { sha: string; workflow?: string }> = { main: { sha: 'sha-1' } };
+    const { octokit, requests } = githubFixture(branches);
+    const prepare = () => prepareRepositoryWorkflow({ octokit, repoOwner: 'Owner', repoName: 'Repo', baseBranch: 'main' });
+    assert.equal(await prepare(), undefined);
+    assert.equal(await prepare(), undefined);
+    assert.equal(requests.filter(route => route.includes('/contents/')).length, 1);
+    assert.equal(requests.filter(route => route.includes('/commits/')).length, 2, 'the branch head is still resolved for every job');
+    // A new commit adding the workflow is read immediately.
+    branches.main = { sha: 'sha-2', workflow: 'validation: [npm test]' };
+    assert.deepEqual((await prepare())?.config, { validation: ['npm test'] });
+    assert.equal(requests.filter(route => route.includes('/contents/')).length, 2);
+    // A present workflow is never cached.
+    await prepare();
+    assert.equal(requests.filter(route => route.includes('/contents/')).length, 3);
+});
+
+test('a deferral resolved from the default branch is reused for the requested base it was resolved for', async () => {
+    const fallback = { revision: 'main-sha', baseBranch: 'main' } as never;
+    const data = { ...repositoryWorkflowDeferralData({}, fallback, 'propr/epic-7'), repositoryWorkflow: fallback };
+    assert.equal(data.repositoryWorkflowBaseBranch, 'propr/epic-7');
+    let loads = 0;
+    assert.equal(await resolveRepositoryWorkflow(data, 'propr/epic-7', async () => { loads++; return undefined; }), fallback);
+    await resolveRepositoryWorkflow(data, 'release', async () => { loads++; return undefined; });
+    assert.equal(loads, 1);
+});
+
+test('a lost capacity lease is never classified as a user cancellation', () => {
+    assert.equal(isUserCancellationError(new RepositoryWorkflowLeaseLostError()), false);
+    // Even if a transport relabels it, the lease-loss type wins.
+    assert.equal(isUserCancellationError(Object.assign(new RepositoryWorkflowLeaseLostError(), { name: 'ExecutionAbortedError' })), false);
+    assert.equal(isUserCancellationError(new ExecutionAbortedError()), true);
+    assert.equal(isUserCancellationError(new Error('Execution aborted by user request')), true);
+    assert.equal(isUserCancellationError(new Error('Agent failed')), false);
+});
+
+test('a capacity wait is recorded on the timeline with its count and the same retry time as the delayed job', async () => {
+    const updates: unknown[][] = [];
+    const current = { state: 'pending', createdAt: 'c', updatedAt: 'u', correlationId: 'id', version: 4 };
+    const stateManager = { getTaskState: async () => current, updateTaskStateIfCurrent: async (...args: unknown[]) => { updates.push(args); return current; } };
+    const deferral = repositoryWorkflowDeferralData({ repositoryWorkflowDeferrals: 1 }, undefined, 'main', { now: 1_000_000, random: () => 1 });
+    assert.deepEqual([deferral.repositoryWorkflowDeferrals, deferral.repositoryWorkflowRetryAt], [2, 1_020_000]);
+    await recordRepositoryWorkflowDeferral({ stateManager: stateManager as never, taskId: 'task', correlatedLogger: log as never, deferral,
+        workflow: { maxParallelTasks: 2 } as never });
+    assert.deepEqual(updates, [['task', { state: 'pending', createdAt: 'c', updatedAt: 'u', correlationId: 'id', version: 4 }, 'pending', {
+        reason: 'Waiting for repository workflow capacity (limit 2)',
+        historyMetadata: { repositoryWorkflowDeferrals: 2, repositoryWorkflowRetryAt: new Date(1_020_000).toISOString() },
+    }]]);
+    // Terminal tasks are left alone and timeline failures never block the delay.
+    for (const state of ['cancelled', 'failed', 'completed']) {
+        await recordRepositoryWorkflowDeferral({ stateManager: { ...stateManager, getTaskState: async () => ({ ...current, state }) } as never,
+            taskId: 'task', correlatedLogger: log as never, deferral });
+    }
+    assert.equal(updates.length, 1);
+    await recordRepositoryWorkflowDeferral({ stateManager: { getTaskState: async () => { throw new Error('Redis down'); } } as never,
+        taskId: 'task', correlatedLogger: log as never, deferral });
+    // The delayed job uses the persisted retry time shown on the timeline.
+    const retryAt = Date.now() + 60_000;
+    let deadline = 0;
+    await assert.rejects(deferRepositoryWorkflowJob({ token: 't', data: { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: retryAt },
+        moveToDelayed: async (value: number) => { deadline = value; } } as never, async () => { throw new RepositoryWorkflowCapacityError(); }), DelayedError);
+    assert.equal(deadline, retryAt);
+});
 
 test('capacity deferral waits for cleanup and passes the current BullMQ lock token', async () => {
     const events: string[] = [];
@@ -78,8 +188,8 @@ test('an absent policy is reloaded when the task was retargeted or the snapshot 
 
 test('deferral data records the base branch with the snapshot, including when no workflow exists', () => {
     const workflow = { revision: 'sha', baseBranch: 'develop' } as never;
-    assert.deepEqual(repositoryWorkflowDeferralData({}, undefined, 'main'), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: 'main', repositoryWorkflowDeferrals: 1 });
-    assert.deepEqual(repositoryWorkflowDeferralData({ repositoryWorkflowDeferrals: 1 }, undefined, undefined), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: null, repositoryWorkflowDeferrals: 2 });
+    assert.deepEqual(repositoryWorkflowDeferralData({}, undefined, 'main', { now: 0, random: () => 1 }), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: 'main', repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: 10_000 });
+    assert.deepEqual(repositoryWorkflowDeferralData({ repositoryWorkflowDeferrals: 1 }, undefined, undefined, { now: 0, random: () => 1 }), { repositoryWorkflow: null, repositoryWorkflowBaseBranch: null, repositoryWorkflowDeferrals: 2, repositoryWorkflowRetryAt: 20_000 });
     assert.equal(repositoryWorkflowDeferralData({}, workflow, undefined).repositoryWorkflowBaseBranch, 'develop');
 });
 

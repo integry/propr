@@ -22,8 +22,8 @@ import {
 import type { GitHubToken, CurrentIssueData, JobContext } from './issueJob/index.js';
 
 import {
-  prepareRepositoryWorkflow, resolveRepositoryWorkflow, repositoryWorkflowDeferralData, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
-  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError,
+  prepareRepositoryWorkflow, resolveRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
+  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError,
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 
@@ -147,6 +147,7 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
   try {
     context.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, issueRef.baseBranch, () => prepareRepositoryWorkflow({
       octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch: issueRef.baseBranch,
+      defaultBranch: typeof issueRef.repoPayload?.defaultBranch === 'string' ? issueRef.repoPayload.defaultBranch : undefined,
     }));
   } catch (error) {
     await handleGenericError(error as Error, job, issueRef, {
@@ -158,7 +159,13 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
     return await processIssueWithAdmission(job, context, octokit);
   } catch (error) {
     if (error instanceof RepositoryWorkflowCapacityError) {
-      await job.updateData({ ...job.data, repositoryWorkflowDeferred: true, ...repositoryWorkflowDeferralData(job.data, context.repositoryWorkflow, issueRef.baseBranch) });
+      await persistRepositoryWorkflowDeferral({
+        job, workflow: context.repositoryWorkflow, baseBranch: issueRef.baseBranch, extraData: { repositoryWorkflowDeferred: true },
+        stateManager, taskId, correlatedLogger,
+        onPersistFailure: persistError => handleGenericError(persistError, job, issueRef, {
+          octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
+        }),
+      });
     }
     throw error;
   } finally {
@@ -279,7 +286,7 @@ function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, 
         return { status: 'requeued', reason: 'rate_limit' };
       } else {
         await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-        const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
+        const isUserCancelled = isUserCancellationError(error);
         if (isUserCancelled) {
           return { status: 'cancelled', reason: 'user_request' };
         }
