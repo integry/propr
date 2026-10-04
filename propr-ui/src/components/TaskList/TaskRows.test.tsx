@@ -219,7 +219,7 @@ describe('task ledger rows', () => {
     expect(row()).toHaveAttribute('aria-selected', 'false');
   });
 
-  it('ends a legacy title hard-cut at 100 characters with an ellipsis in rows, cards and earlier runs', () => {
+  it('ends a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping its last word, in rows, cards and earlier runs', () => {
     const hardCut = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
     expect(hardCut).toHaveLength(100);
     const runCut = 'Followup: Expose the implementation log and the terminal output through MCP so that a client can rea';
@@ -232,7 +232,7 @@ describe('task ledger rows', () => {
       ],
     };
     render(<Fixture groups={[cut]} />);
-    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can…';
+    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can act…';
     const table = screen.getByRole('table');
     const title = within(table).getByRole('link', { name: shown });
     expect(title).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
@@ -240,6 +240,6 @@ describe('task ledger rows', () => {
     expect(within(cards[0]).getByRole('link', { name: shown })).toBeInTheDocument();
     fireEvent.click(within(table).getByRole('button', { name: '2 runs' }));
     const runs = within(table).getByRole('list', { name: 'Earlier runs' });
-    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can…');
+    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can rea…');
   });
 });

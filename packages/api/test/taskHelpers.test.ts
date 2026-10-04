@@ -419,3 +419,26 @@ test('task pages select a task by its newest run and return every run of it', as
   const runs = await getTasksFromDb({ db: database, previewReader, status: 'completed', repository: 'all', limit: 10, offset: 0 });
   assert.deepEqual((runs.tasks as Array<{ id: string }>).map(task => task.id), ['pr31-new', 'pr30-review']);
 });
+
+test('a task page asked for by one of its runs lists that whole task whatever the filters are', async () => {
+  const database = await createDatabase();
+  await addTaskHistoryLookupIndex(database);
+  const at = (minute: number) => `2026-10-04T10:${String(minute).padStart(2, '0')}:00.000Z`;
+  await database('tasks').insert([
+    { task_id: 'pr40-review', repository: 'acme/widget', task_type: 'pr', pr_number: 40, created_at: at(10) },
+    { task_id: 'pr40-fix', repository: 'acme/widget', task_type: 'pr', pr_number: 40, created_at: at(30) },
+    { task_id: 'pr41', repository: 'acme/widget', task_type: 'pr', pr_number: 41, created_at: at(20) },
+  ]);
+  await database('task_history').insert([
+    { task_id: 'pr40-review', state: 'completed', timestamp: at(11) },
+    { task_id: 'pr40-fix', state: 'processing', timestamp: at(31) },
+    { task_id: 'pr41', state: 'completed', timestamp: at(21) },
+  ]);
+  const previewReader = { project: async (sources: unknown[]) => sources.map(() => ({ previews: [] })) } as unknown as NonNullable<TaskQuery['previewReader']>;
+  // The completed filter and a search that matches nothing would both exclude PR #40.
+  const result = await getTasksFromDb({
+    db: database, previewReader, status: 'completed', repository: 'all', limit: 1, offset: 0, search: 'nothing matches', groupByTask: true, containsTask: 'pr40-review',
+  });
+  assert.equal(result.total, 1);
+  assert.deepEqual((result.tasks as Array<{ id: string; status: string }>).map(task => [task.id, task.status]), [['pr40-fix', 'processing'], ['pr40-review', 'completed']]);
+});

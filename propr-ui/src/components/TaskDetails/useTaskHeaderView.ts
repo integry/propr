@@ -29,7 +29,9 @@ interface TaskHeaderView {
 export function useTaskHeaderView(taskId: string | undefined, runs: TaskRunEntry[] | undefined, own: TaskHeadSummary): TaskHeaderView {
   const head = runs && runs.length > 1 ? runs[runs.length - 1] : undefined;
   const run = head && head.task.id !== taskId ? runs?.find(entry => entry.task.id === taskId) : undefined;
-  const headSummary = useTaskHeadSummary(run ? head?.task.id : undefined);
+  // The list's account of the newest run: when it changes, e.g. a finished run is started again, the header reads it again.
+  const headListState = head ? [head.task.status, head.task.processedAt, head.task.completedAt].join('|') : undefined;
+  const headSummary = useTaskHeadSummary(run ? head?.task.id : undefined, headListState);
   const source = headSummary && headSummary.history.length > 0 ? headSummary : own;
   const duration = useTotalDuration(source.history);
   const commitInfo = useCommitInfo(source.history, source.taskInfo);

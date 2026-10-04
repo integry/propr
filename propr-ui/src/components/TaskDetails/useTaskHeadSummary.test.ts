@@ -55,4 +55,30 @@ describe('useTaskHeadSummary', () => {
     expect(result.current?.tokenUsage?.input_tokens).toBe(950);
     expect(result.current?.history.at(-1)?.state).toBe('completed');
   });
+
+  it('reads a finished newest run again when the list shows it started again under the same id', async () => {
+    vi.useFakeTimers();
+    const done = [entry('queued', 0), entry('processing', 1), entry('completed', 2)];
+    getTaskHistory.mockResolvedValue({ history: done });
+    const { result, rerender } = renderHook(({ listState }) => useTaskHeadSummary('restarted-run', listState), {
+      initialProps: { listState: 'completed' },
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current?.history.at(-1)?.state).toBe('completed');
+    // Finished, so it is no longer polled.
+    const reads = getTaskHistory.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(getTaskHistory).toHaveBeenCalledTimes(reads);
+
+    // A follow-up starts the same run id again, and the list's refresh says so.
+    const restarted = [...done, entry('queued', 5), entry('processing', 6)];
+    getTaskHistory.mockResolvedValue({ history: restarted });
+    rerender({ listState: 'processing' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current?.history.at(-1)?.state).toBe('processing');
+    // Working again, so it is polled again until it finishes.
+    getTaskHistory.mockResolvedValue({ history: [...restarted, entry('completed', 9)] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(result.current?.history.at(-1)?.state).toBe('completed');
+  });
 });

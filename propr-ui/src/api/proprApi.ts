@@ -83,6 +83,7 @@ const getTasksRequest = async (
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
   if (options.groupBy) params.append('groupBy', options.groupBy);
+  if (options.task) params.append('task', options.task);
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include',
     ...(signal ? { signal } : {}),

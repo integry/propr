@@ -22,6 +22,11 @@ export interface TaskQuery {
    * number of tasks, and a page returns every matching run of its tasks.
    */
   groupByTask?: boolean;
+  /**
+   * With `groupByTask`: list only the task this run belongs to, with all of its
+   * runs, whatever the status and search filters would list.
+   */
+  containsTask?: string;
 }
 
 export interface TaskPage {
@@ -105,6 +110,15 @@ function taskSelection({ attentionTaskIds, states, reviewStates, search }: Selec
   };
 }
 
+/** A task asked for by one of its runs is found whatever the list's filters are. */
+function listFilters(query: TaskQuery): Pick<TaskQuery, 'containsTask' | 'status' | 'search' | 'forReview'> {
+  const { groupByTask, containsTask, status, search, forReview } = query;
+  if (groupByTask && containsTask) return { containsTask, status: 'all', search: '', forReview: false };
+  return { status, search, forReview };
+}
+
+const taskContaining = (runId: string): TaskSelection => ({ anyRunIn: new Set([runId]) });
+
 /** The run-paged slice: the filtered runs, a LIMIT/OFFSET page of them and their count. */
 async function narrowToRunPage(
   db: Knex,
@@ -133,7 +147,8 @@ async function narrowToRunPage(
 }
 
 export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
-  const { db, status, repository, limit, offset, search, forReview, excludeMerged, groupByTask } = query;
+  const { db, repository, limit, offset, excludeMerged, groupByTask } = query;
+  const { containsTask, status, search, forReview } = listFilters(query);
   // Resolve one history row per task with an indexed lookup. The former global
   // ROW_NUMBER window materialized and sorted all task_history rows for every
   // count and page request. timestamp remains the sole ordering key so equal
@@ -192,7 +207,8 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
 
   let page: Omit<TaskPage, 'tasks'>;
   if (groupByTask) {
-    const { empty, ...counts } = await narrowToTaskPage(db, baseQuery.clone(), baseQuery, { selection: taskSelection(filters), limit, offset });
+    const selection = containsTask ? taskContaining(containsTask) : taskSelection(filters);
+    const { empty, ...counts } = await narrowToTaskPage(db, baseQuery.clone(), baseQuery, { selection, limit, offset });
     page = { ...counts, offset, limit };
     if (empty) return { tasks: [], ...page };
   } else {

@@ -14,4 +14,14 @@ describe('TaskHeader', () => {
     expect(heading).toHaveTextContent(/^Stop work when an issue or PR withdraws intent$/);
     expect(heading).toHaveAttribute('title', 'Stop work when an issue or PR withdraws intent');
   });
+
+  it('keeps the last word of a 100-character title that may have been hard-cut', () => {
+    const title = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
+    expect(title).toHaveLength(100);
+    const taskInfo = { title, type: 'issue', number: 12, repoOwner: 'integry', repoName: 'propr' } as unknown as TaskInfo;
+    render(<TaskHeader taskInfo={taskInfo} currentStatus="completed" />);
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent(/MCP client can act…$/);
+    expect(heading).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
+  });
 });

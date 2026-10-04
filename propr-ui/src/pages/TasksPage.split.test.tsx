@@ -38,7 +38,9 @@ const FollowupDialog = () => {
 
 // The details view has its own suites; here it only has to say which task it shows and how.
 vi.mock('../components/TaskDetails', () => ({
-  default: ({ taskId, embedded, onDeleted }: { taskId?: string; embedded?: boolean; onDeleted?: (taskId: string) => void }) => {
+  default: ({ taskId, embedded, onDeleted, runs }: {
+    taskId?: string; embedded?: boolean; onDeleted?: (taskId: string) => void; runs?: Array<{ task: { id: string; status: string } }>;
+  }) => {
     // Like the real view, a delete reports to the callback it had when it started, even after unmounting.
     const deleteTask = () => {
       const finish = () => onDeleted?.(taskId!);
@@ -46,7 +48,7 @@ vi.mock('../components/TaskDetails', () => ({
       else finish();
     };
     return (
-      <div data-testid="task-details" data-embedded={String(Boolean(embedded))}>
+      <div data-testid="task-details" data-embedded={String(Boolean(embedded))} data-runs={runs?.map(run => `${run.task.id}:${run.task.status}`).join(',') ?? ''}>
         details for {taskId ?? 'route'}
         {embedded && <button type="button" onClick={deleteTask}>Delete task</button>}
         {embedded && <FollowupDialog />}
@@ -210,6 +212,26 @@ describe('TasksPage split workspace', () => {
     expect(within(screen.getByTestId('task-split-details')).getByTestId('task-details')).toHaveTextContent('details for b');
     // The deleted task still leaves the list.
     await waitFor(() => expect(vi.mocked(getTasks).mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('keeps the open task\'s runs and current state when a filter takes it off the list', async () => {
+    mockViewport(true);
+    vi.mocked(getTasks).mockImplementation(async options => {
+      const { task: runId, search } = options as { task?: string; search?: string };
+      // Read on its own, the task carries its newest run's current state.
+      if (runId) return { tasks: [{ ...tasks[2], status: 'processing' }, tasks[3]], total: 1 } as unknown as Awaited<ReturnType<typeof getTasks>>;
+      return { tasks: search === 'Change b' ? [tasks[1]] : tasks, total: search ? 1 : 4 } as unknown as Awaited<ReturnType<typeof getTasks>>;
+    });
+    renderAt('/tasks?task=c-earlier');
+    await screen.findByRole('table', { name: 'Tasks' });
+    const details = () => within(screen.getByTestId('task-split-details')).getByTestId('task-details');
+    await waitFor(() => expect(details()).toHaveAttribute('data-runs', 'c-earlier:completed,c:completed'));
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search tasks' }), { target: { value: 'Change b' } });
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Change c' })).not.toBeInTheDocument(), { timeout: 2000 });
+    expect(details()).toHaveTextContent('details for c-earlier');
+    await waitFor(() => expect(details()).toHaveAttribute('data-runs', 'c-earlier:completed,c:processing'));
+    expect(vi.mocked(getTasks)).toHaveBeenCalledWith({ groupBy: 'task', task: 'c-earlier', limit: 1, offset: 0 });
   });
 
   it('navigates to the task page below the split breakpoint', async () => {

@@ -23,12 +23,20 @@ describe('sanitizeTaskTitle', () => {
     expect(sanitizeTaskTitle('Stop work [2659 by GPT-6 Astra] on withdrawal').title).toBe('Stop work on withdrawal');
   });
 
-  it('marks a legacy title hard-cut mid-word at 100 characters with an ellipsis at a word boundary', () => {
+  it('marks a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping all of its text', () => {
     const hardCut = 'Followup: Expose task changes, logs and events through the MCP server so that an MCP client can actu';
     expect(hardCut).toHaveLength(100);
     const sanitized = sanitizeTaskTitle(hardCut);
-    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can…');
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu…');
     expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu');
+  });
+
+  it('keeps the last word of a complete 100-character title that ends on a letter', () => {
+    const complete = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
+    expect(complete).toHaveLength(100);
+    const sanitized = sanitizeTaskTitle(complete);
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act…');
+    expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act');
   });
 
   it('leaves titles of any other length, or ending in punctuation, alone', () => {

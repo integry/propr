@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useTaskSelection } from '../hooks/useTaskSelection';
+import { useOpenTaskGroup } from '../hooks/useOpenTaskGroup';
 import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
 import TaskSplitWorkspace from '../components/TaskList/TaskSplitWorkspace';
@@ -34,15 +35,17 @@ const TasksPage: React.FC = () => {
     setListRefreshKey(key => key + 1);
   }, [select]);
 
+  // Wide screens open a task beside the list; narrower ones navigate to it.
+  const openTaskId = !taskId && isSplitViewport ? selectedTaskId : null;
+  // The task the open run belongs to: its runs are what the pane's timeline
+  // lists. It stays with the pane when paging or a filter takes it off the list.
+  const openGroup = useOpenTaskGroup(openTaskId, pageGroups);
+
   // TaskDetails view should not be constrained by parent padding
   if (taskId) {
     return <TaskDetails />;
   }
 
-  // Wide screens open a task beside the list; narrower ones navigate to it.
-  const openTaskId = isSplitViewport ? selectedTaskId : null;
-  // The row the open run belongs to: its runs are what the pane's timeline lists.
-  const openGroup = openTaskId ? pageGroups.find(group => group.tasks.some(task => task.id === openTaskId)) ?? null : null;
   return (
     <div className="h-full w-full min-w-0 bg-white">
       <TaskSplitWorkspace

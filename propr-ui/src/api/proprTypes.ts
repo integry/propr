@@ -111,6 +111,8 @@ export interface GetTasksOptions {
   excludeMerged?: boolean;
   /** Page by task (a pull request or issue with all its runs) instead of by run. */
   groupBy?: 'task';
+  /** With `groupBy: 'task'`: only the task this run belongs to, with all its runs, whatever the filters. */
+  task?: string;
 }
 
 export interface MonitoredRepo {

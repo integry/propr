@@ -83,9 +83,12 @@ const isFinished = (summary: TaskHeadSummary | null) =>
 
 /**
  * Reads the newest run of the task while an earlier one is open in the pane,
- * and keeps reading it while it works. Null when no earlier run is open.
+ * and keeps reading it while it works. Polling stops once the run finishes,
+ * but a follow-up can start the same run id again, so the run is read again
+ * whenever `listState`, the list's account of that run, changes. Null when no
+ * earlier run is open.
  */
-export function useTaskHeadSummary(headTaskId: string | undefined): TaskHeadSummary | null {
+export function useTaskHeadSummary(headTaskId: string | undefined, listState?: string): TaskHeadSummary | null {
   const [summary, setSummary] = useState<TaskHeadSummary | null>(() => (headTaskId ? summaries.get(headTaskId) ?? null : null));
   const [readFor, setReadFor] = useState(headTaskId);
   if (readFor !== headTaskId) {
@@ -122,7 +125,7 @@ export function useTaskHeadSummary(headTaskId: string | undefined): TaskHeadSumm
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [headTaskId, finished]);
+  }, [headTaskId, finished, listState]);
 
   return headTaskId ? summary : null;
 }
