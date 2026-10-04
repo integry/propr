@@ -1,7 +1,6 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
-import type { ClaudeCodeResponse } from '@propr/core';
-import type { WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
+import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
 import {
     cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
     prepareVisualPreviewEvidence, pushBranch, TaskStates,
@@ -105,7 +104,7 @@ type Octokit = {
 };
 
 export interface PostProcessOptions {
-    octokit: Octokit;
+    octokit: Octokit & Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth'>;
     issueRef: IssueJobData;
     worktreeInfo: WorktreeInfo;
     currentIssueData: { data: { title: string; labels: Array<{ name: string }> } };
@@ -184,7 +183,7 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
-    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
@@ -229,7 +228,9 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             return { commitResult, postProcessingResult };
         }
 
-        await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+        // The token captured before agent execution may have expired while it worked.
+        const { token } = await octokit.auth({ type: 'installation' }) as GitHubToken;
+        await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: token });
 
         correlatedLogger.debug('Waiting for branch propagation...');
         await setTimeout(3000);
