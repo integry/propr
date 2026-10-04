@@ -40,7 +40,8 @@ export type GoalBlockerResolution =
     | 'goal_terminal';
 
 /**
- * Open (or refresh) the blocker for one provider request. Returns false when
+ * Open (or refresh) the blocker for one provider request. Returns the highest
+ * input sequence recorded before the blocker was first opened, or null when
  * the request was already closed: a replayed request stays closed.
  */
 export async function recordGoalBlocker(
@@ -48,20 +49,23 @@ export async function recordGoalBlocker(
     attempt: GoalBlockerAttempt,
     goal: GoalBlockerOwner,
     report: GoalBlockerReport,
-): Promise<boolean> {
+): Promise<{ inputBoundary: number | null } | null> {
     const requestKey = report.requestKey.slice(0, 255);
     const existing = await trx('goal_blockers')
         .where({ goal_id: attempt.goalId, request_key: requestKey })
-        .first('blocker_id', 'status', 'run_claim') as { blocker_id: string; status: string; run_claim: string } | undefined;
+        .first('blocker_id', 'status', 'run_claim', 'input_boundary') as {
+            blocker_id: string; status: string; run_claim: string; input_boundary: number | string | null;
+        } | undefined;
     if (existing) {
-        if (existing.status !== 'open' || existing.run_claim !== attempt.claimId) return false;
+        if (existing.status !== 'open' || existing.run_claim !== attempt.claimId) return null;
         await trx('goal_blockers').where({ blocker_id: existing.blocker_id, status: 'open' })
             .update({ last_observed_at: trx.fn.now() });
-        return true;
+        return { inputBoundary: existing.input_boundary === null ? null : Number(existing.input_boundary) };
     }
     const questions = normalizeGoalBlockerQuestions(report.questions ?? []);
+    const blockerId = randomUUID();
     await trx('goal_blockers').insert({
-        blocker_id: randomUUID(),
+        blocker_id: blockerId,
         goal_id: attempt.goalId,
         owner_id: goal.owner_id,
         repository: goal.repository,
@@ -77,9 +81,14 @@ export async function recordGoalBlocker(
         summary: boundGoalBlockerText(redactSecrets(report.summary), GOAL_BLOCKER_SUMMARY_LIMIT),
         questions: questions.length ? JSON.stringify(questions) : null,
         response_actions: JSON.stringify(report.responseActions),
+        // Read by the same statement that makes the blocker visible, so every
+        // input submitted once a reader could see it lies above the boundary.
+        input_boundary: trx.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_inputs WHERE goal_id = ?)', [attempt.goalId]),
         status: 'open',
     });
-    return true;
+    const inserted = await trx('goal_blockers').where({ blocker_id: blockerId })
+        .first('input_boundary') as { input_boundary: number | string };
+    return { inputBoundary: Number(inserted.input_boundary) };
 }
 
 /** Close one open blocker raised by this attempt. */

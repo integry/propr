@@ -385,9 +385,11 @@ test('Codex provider requests become blockers, inputs answer questions, and only
   const delivered: string[] = [];
   let pending: Array<{ id: string; message: string; sequence: number }> = [];
   control.load = async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: pending, controlGeneration: 0 });
-  control.latestInputSequence = async () => Math.max(0, ...pending.map(input => input.sequence));
   control.markInputDelivered = async id => { delivered.push(id); pending = pending.filter(input => input.id !== id); };
-  control.reportBlocker = async report => { reports.push(report as unknown as Record<string, unknown>); };
+  control.reportBlocker = async report => {
+    reports.push(report as unknown as Record<string, unknown>);
+    return Math.max(0, ...pending.map(input => input.sequence));
+  };
   control.resolveBlocker = async (key, resolution) => { resolutions.push(`${key}=${resolution}`); };
   const run = runGoalProtocol(connection as never, options(control), 'gpt-5.6');
   await waitFor(() => connection.observingTurn, 'the native turn');
@@ -427,9 +429,8 @@ test('a correction queued before a Codex question is steered, not sent as its an
   let pending: Array<{ id: string; message: string; sequence: number }> = [];
   let latest = 0;
   control.load = async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: pending, controlGeneration: 0 });
-  control.latestInputSequence = async () => latest;
   control.markInputDelivered = async id => { delivered.push(id); pending = pending.filter(input => input.id !== id); };
-  control.reportBlocker = async () => {};
+  control.reportBlocker = async () => latest;
   control.resolveBlocker = async () => {};
   const run = runGoalProtocol(connection as never, options(control), 'gpt-5.6');
   await waitFor(() => connection.observingTurn, 'the native turn');

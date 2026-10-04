@@ -249,15 +249,11 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                 const owned = await attemptWhere(trx<GoalRow>('goals'), job)
                     .first('owner_id', 'repository', 'session_id', 'agent_type') as Pick<GoalRow,
                         'owner_id' | 'repository' | 'session_id' | 'agent_type'> | undefined;
-                if (!owned) return false;
+                if (!owned) return null;
                 return recordGoalBlocker(trx, attemptIdentity(job), owned, report);
             });
             if (recorded) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
-        },
-        async latestInputSequence() {
-            const latest = await db('goal_inputs').where({ goal_id: job.goalId })
-                .max('sequence as sequence').first() as { sequence: number | string | null } | undefined;
-            return Number(latest?.sequence ?? 0);
+            return recorded?.inputBoundary ?? null;
         },
         async resolveBlocker(requestKey, resolution) {
             if (await resolveGoalBlocker(db, attemptIdentity(job), requestKey, resolution)) {

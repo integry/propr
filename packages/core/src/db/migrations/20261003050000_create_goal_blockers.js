@@ -10,6 +10,10 @@
  * `request_key` is the provider's own request identity within the session, so a
  * repeated or replayed event updates the same row instead of creating another,
  * and a row that was already resolved is never reopened.
+ *
+ * `input_boundary` is the highest goal input sequence recorded when the row
+ * was opened, captured by the same insert. Only inputs above it can have been
+ * submitted after the blocker became visible, so only they can answer it.
  */
 export async function up(knex) {
   await knex.schema.createTable('goal_blockers', table => {
@@ -29,6 +33,7 @@ export async function up(knex) {
     table.text('summary').notNullable();
     table.text('questions');
     table.text('response_actions').notNullable();
+    table.integer('input_boundary');
     table.string('status', 20).notNullable().defaultTo('open');
     table.string('resolution', 50);
     table.timestamp('first_observed_at').defaultTo(knex.fn.now()).notNullable();

@@ -185,10 +185,17 @@ interface OpenProviderRequest {
     answerQuestionIds: string[];
     answered: boolean;
     /**
-     * Highest input sequence submitted before the question was reported. Only
-     * later inputs can be its answer; earlier ones stay ordinary corrections.
+     * Highest input sequence submitted before the question's blocker was
+     * opened, as recorded with it. Only later inputs can be its answer;
+     * earlier ones stay ordinary corrections.
      */
     inputBoundary?: number;
+}
+
+/** Durable writes owed for requests and resolutions taken from the connection. */
+interface AbsorbedRequests {
+    reports: Array<{ id: number | string; report: GoalBlockerReport }>;
+    resolved: string[];
 }
 
 /**
@@ -207,21 +214,14 @@ export class CodexProviderRequests {
 
     async sync(): Promise<void> {
         await this.persist(this.absorb());
-        // Read after the report is stored: every input up to this point was
-        // submitted before the operator could see the question.
-        for (const request of this.open.values()) {
-            if (!request.answerQuestionIds.length || request.inputBoundary !== undefined) continue;
-            const boundary = await this.control.latestInputSequence?.();
-            if (boundary !== undefined) request.inputBoundary = boundary;
-        }
     }
 
     /**
      * Apply every request and resolution the connection has already received
      * to the local map, without awaiting, and return the durable writes owed.
      */
-    private absorb(): { reports: GoalBlockerReport[]; resolved: string[] } {
-        const reports: GoalBlockerReport[] = [];
+    private absorb(): AbsorbedRequests {
+        const reports: AbsorbedRequests['reports'] = [];
         const resolved: string[] = [];
         for (const message of this.connection.takeServerRequests()) {
             const blocker = codexServerRequestBlocker(message);
@@ -234,7 +234,7 @@ export class CodexProviderRequests {
                     answered: false,
                 });
             }
-            reports.push(blocker.report);
+            reports.push({ id: message.id, report: blocker.report });
         }
         for (const id of this.connection.takeResolvedServerRequests()) {
             const request = this.open.get(id);
@@ -245,8 +245,16 @@ export class CodexProviderRequests {
         return { reports, resolved };
     }
 
-    private async persist(work: { reports: GoalBlockerReport[]; resolved: string[] }): Promise<void> {
-        for (const report of work.reports) await this.control.reportBlocker?.(report);
+    private async persist(work: AbsorbedRequests): Promise<void> {
+        for (const { id, report } of work.reports) {
+            // The boundary was stored by the write that made the blocker visible, so an
+            // answer submitted the moment a reader sees the question lies above it.
+            const boundary = await this.control.reportBlocker?.(report);
+            const request = this.open.get(id);
+            if (request && request.inputBoundary === undefined && typeof boundary === 'number') {
+                request.inputBoundary = boundary;
+            }
+        }
         for (const requestKey of work.resolved) await this.control.resolveBlocker?.(requestKey, 'provider_resolved');
     }
 

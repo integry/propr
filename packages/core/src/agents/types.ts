@@ -170,10 +170,12 @@ export interface GoalExecutionControl {
     publishCheckpoint(request: GoalCheckpointRequest, turnId: string): Promise<GoalCheckpointOutcome>;
     rejectCheckpoint(request: GoalCheckpointRejection, turnId: string): Promise<void>;
     appendOutput(records: string[]): Promise<void>;
-    /** Persist an open provider blocker for this attempt. Repeated reports update the same blocker. */
-    reportBlocker?(report: GoalBlockerReport): Promise<void>;
-    /** The highest input sequence submitted to this goal so far, or 0 when none was. */
-    latestInputSequence?(): Promise<number>;
+    /**
+     * Persist an open provider blocker for this attempt. Repeated reports update the same blocker.
+     * Returns the highest input sequence submitted before the blocker was first opened, captured
+     * atomically with opening it, or null when no blocker is open for the report.
+     */
+    reportBlocker?(report: GoalBlockerReport): Promise<number | null>;
     /** Close an open provider blocker on authoritative evidence that it no longer waits. */
     resolveBlocker?(requestKey: string, resolution: string): Promise<void>;
 }

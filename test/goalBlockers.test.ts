@@ -168,17 +168,22 @@ function providerRequestHarness() {
   const responses: Array<{ id: number | string; result: Record<string, unknown> }> = [];
   const calls: string[] = [];
   // The highest input sequence the goal has recorded; inputs above it were submitted later.
-  const inputs = { latest: 0 };
+  // `afterReport` runs once a blocker is visible, before the tracker regains control.
+  const inputs = { latest: 0, afterReport: () => {} };
   const connection = {
     takeServerRequests: () => queued.requests.splice(0),
     takeResolvedServerRequests: () => queued.resolved.splice(0),
     respond: (id: number | string, result: Record<string, unknown>) => { responses.push({ id, result }); },
   } as unknown as AppServerConnection;
   const control = {
-    reportBlocker: async (report: { requestKey: string }) => { calls.push(`report:${report.requestKey}`); },
+    reportBlocker: async (report: { requestKey: string }) => {
+      calls.push(`report:${report.requestKey}`);
+      const boundary = inputs.latest;
+      inputs.afterReport();
+      return boundary;
+    },
     resolveBlocker: async (key: string, reason: string) => { calls.push(`resolve:${key}:${reason}`); },
     markInputDelivered: async (id: string) => { calls.push(`delivered:${id}`); },
-    latestInputSequence: async () => inputs.latest,
   } as unknown as NonNullable<AgentTaskOptions['goalControl']>;
   return { queued, responses, calls, inputs, requests: new CodexProviderRequests(connection, control) };
 }
@@ -255,6 +260,31 @@ describe('Codex provider requests', () => {
     assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Also update the documentation', sequence: 1 }, 'turn-1'), false);
     assert.deepEqual(harness.responses, []);
     assert.ok(!harness.calls.includes('delivered:input-1'));
+  });
+
+  test('an answer submitted as soon as the question becomes visible is its answer', async () => {
+    const harness = providerRequestHarness();
+    harness.inputs.latest = 1;
+    // The operator reads the committed blocker and answers before sync() has returned.
+    harness.inputs.afterReport = () => { harness.inputs.latest = 2; };
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Also update the documentation', sequence: 1 }, 'turn-1'), false,
+      'the input queued before the question stays a correction');
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'Postgres', sequence: 2 }, 'turn-1'), true);
+    assert.deepEqual(harness.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
+  });
+
+  test('a question absorbed while answering takes the answer submitted right after it became visible', async () => {
+    const harness = providerRequestHarness();
+    harness.inputs.latest = 1;
+    harness.inputs.afterReport = () => { harness.inputs.latest = 2; };
+    // The question arrives during the caller's load and is stored by answer() itself.
+    harness.queued.requests.push(fixtures.userInput);
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Also update the documentation', sequence: 1 }, 'turn-1'), false);
+    // No sync() runs before the next input is offered.
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'Postgres', sequence: 2 }, 'turn-1'), true);
+    assert.deepEqual(harness.responses, [{ id: 0, result: { answers: { db: { answers: ['Postgres'] } } } }]);
   });
 
   test('an input without a durable order never answers a question', async () => {
@@ -368,17 +398,24 @@ describe('persisted blocker lifecycle', () => {
         desired_state: 'running', current_task_id: 'task-1', run_generation: 2, run_claim: 'claim-2',
       });
       const report = codexServerRequestBlocker(fixtures.userInput)!.report;
-      assert.equal(await recordGoalBlocker(db, attempt, owner, report), true);
-      assert.equal(await recordGoalBlocker(db, attempt, owner, report), true, 'a repeated event refreshes the same row');
+      const input = (sequence: number) => ({ sequence, input_id: `input-${sequence}`, goal_id: attempt.goalId, owner_id: 'owner-1',
+        idempotency_key: `key-${sequence}`, operation: 'goal.input', payload_hash: 'h', kind: 'input', message: 'm', state: 'pending' });
+      await db('goal_inputs').insert(input(4));
+      assert.deepEqual(await recordGoalBlocker(db, attempt, owner, report), { inputBoundary: 4 },
+        'the boundary is captured by the write that opens the blocker');
+      // An answer submitted once the blocker is visible lies above the stored boundary,
+      // and a repeated event keeps the boundary from when the blocker opened.
+      await db('goal_inputs').insert(input(5));
+      assert.deepEqual(await recordGoalBlocker(db, attempt, owner, report), { inputBoundary: 4 }, 'a repeated event refreshes the same row');
       assert.equal((await db('goal_blockers')).length, 1);
       // A delayed event delivered under another attempt's claim does not touch this attempt's row.
-      assert.equal(await recordGoalBlocker(db, { ...attempt, claimId: 'claim-1' }, owner, report), false);
+      assert.equal(await recordGoalBlocker(db, { ...attempt, claimId: 'claim-1' }, owner, report), null);
 
       // Answering is not evidence; only the provider (or the end of its turn) resolves it.
       assert.equal(await resolveGoalBlocker(db, { goalId: attempt.goalId, claimId: 'claim-1' }, report.requestKey, 'provider_resolved'), false);
       assert.equal((await db('goal_blockers').first()).status, 'open');
       assert.equal(await resolveGoalBlocker(db, attempt, report.requestKey, 'provider_resolved'), true);
-      assert.equal(await recordGoalBlocker(db, attempt, owner, report), false, 'a replayed request stays closed');
+      assert.equal(await recordGoalBlocker(db, attempt, owner, report), null, 'a replayed request stays closed');
       const resolved = await db('goal_blockers').first();
       assert.equal(resolved.status, 'resolved');
       assert.equal(resolved.resolution, 'provider_resolved');
