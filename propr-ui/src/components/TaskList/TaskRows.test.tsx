@@ -42,14 +42,14 @@ describe('task ledger rows', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     expect(within(table).getAllByRole('columnheader').map(header => header.textContent))
-      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated']);
+      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score']);
   });
 
-  it('keeps all six columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
+  it('keeps all seven columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     fireEvent.click(within(table).getByRole('button', { name: '6 runs' }));
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
     const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
     expect(runsCell).toHaveAttribute('aria-colspan', '3');
     expect(runsCell.parentElement!.children).toHaveLength(1);
@@ -163,7 +163,25 @@ describe('task ledger rows', () => {
       expect(runs).toHaveTextContent('Change number 1');
     }
     expect(screen.queryByTitle('Code Quality Score: 8/10')).not.toBeInTheDocument();
-    expect(screen.queryByRole('columnheader', { name: 'Score' })).not.toBeInTheDocument();
+  });
+
+  it('shows the newest review score in the SCORE column, and a dash for a task no review scored', () => {
+    const reviewed: TaskGroup = {
+      key: 'integry/propr-pr-2700', repoOwner: 'integry', repoName: 'propr', prNumber: 2700,
+      tasks: [
+        { id: 'fix-2', title: 'Fix PR #2700', status: 'completed', createdAt: '2026-09-10T12:09:00Z', completedAt: '2026-09-10T12:10:00Z', prNumber: 2700, score: 5 },
+        { id: 'review-2', title: 'Review PR #2700', status: 'completed', createdAt: '2026-09-10T12:08:00Z', completedAt: '2026-09-10T12:09:00Z', prNumber: 2700, score: 8 },
+        { id: 'review-1', title: 'Review PR #2700', status: 'completed', createdAt: '2026-09-10T12:07:00Z', completedAt: '2026-09-10T12:08:00Z', prNumber: 2700, score: 4 },
+      ] as Task[],
+    };
+    render(<Fixture groups={[reviewed, group]} />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    const [reviewedRow, unscoredRow] = within(table).getAllByTestId('task-row');
+    // A fix's score belongs to the loop, not the fix, so the newest review's 8 is the task's score.
+    const score = within(reviewedRow).getByTitle('Review score: 8/10');
+    expect(score.textContent).toBe('[8]');
+    expect(score.closest('[role="cell"]')).toBe(reviewedRow.querySelector('[role="row"]')!.lastElementChild);
+    expect(within(unscoredRow).getByLabelText('No score')).toHaveTextContent('—');
   });
 
   it('keeps selection from opening a row and permits intentional keyboard activation', () => {

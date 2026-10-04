@@ -11,7 +11,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table).toBeVisible();
       // The column schema is the same at every width and in every row state.
       const headers = table.getByRole('columnheader');
-      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'];
+      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
       await expect(headers).toHaveText(columns);
       for (const header of await headers.all()) await expect(header).toBeVisible();
 
@@ -22,6 +22,10 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table).not.toContainText('Ultrafix PR #2664');
       await expect(table.getByRole('link', { name: 'Update', exact: true })).toHaveCount(0);
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
+      // SCORE is the last column: the newest review's score, never a fix's, and a dash for a task no review scored.
+      const lastCell = (text: string) => rows.filter({ hasText: text }).locator('[role="row"] > [role="cell"]:last-child');
+      await expect(lastCell('Stop work when an issue or PR withdraws intent').getByTitle('Review score: 6/10')).toHaveText('[6]');
+      await expect(lastCell('a-very-long-unbroken').getByLabel('No score')).toHaveText('—');
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
       // The footer counts tasks, the unit the rows are: the 10 on this page, never their 32 runs.
       await expect(page.getByTestId('pagination-summary')).toHaveText('Showing 1–10 of 1,842 tasks');
@@ -164,6 +168,16 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(selectedTitle).toHaveCSS('color', 'rgb(15, 23, 42)');
   await expect(selectedTitle).toHaveCSS('text-decoration-line', 'none');
   await expect(selectedTitle).toHaveCSS('font-weight', '600');
+  // Cards scrolled up under the toolbar fade out at the top edge instead of being sliced against its border.
+  const topFade = await list.getByTestId('task-list-scroll').evaluate(scroller => {
+    scroller.scrollTop = 150;
+    const fade = scroller.querySelector('[data-testid="task-cards-top-fade"]')!;
+    const result = { scrolled: scroller.scrollTop, offset: Math.round(fade.getBoundingClientRect().top - scroller.getBoundingClientRect().top), height: fade.getBoundingClientRect().height };
+    scroller.scrollTop = 0;
+    return result;
+  });
+  expect(topFade.scrolled).toBeGreaterThan(0);
+  expect(topFade).toMatchObject({ offset: 0, height: 8 });
   // The details heading is sanitized the same way as the row: no workflow verb, PR number or model tag.
   await expect(details.locator('h2:visible')).toHaveText('Stop work when an issue or PR withdraws intent');
   // Consumption stays on the context line after the runtime, set off by a bullet rather than a bordered pipe.
@@ -242,7 +256,11 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   // The header still describes the task, which is working on Run 8; the banner names the run inspected.
   await expect(details.locator('header:visible h2').locator('..')).toHaveText(/^Implementing.*Ultrafix cycle 3 \(linting\)$/);
   await expect(details.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
-  await expect(details.getByTestId('inspected-run-banner').filter({ hasText: 'Inspecting historical Run 3 of 8 (Completed)' }).getByRole('button', { name: 'Back to Run 8' })).toBeVisible();
+  const backToNewest = details.getByTestId('inspected-run-banner').filter({ hasText: 'Inspecting historical Run 3 of 8 (Completed)' }).getByRole('button', { name: 'Back to Run 8' });
+  await expect(backToNewest).toBeVisible();
+  // The way out reads as a button, not metadata: a slate-300 border around dark slate-800 text.
+  await expect(backToNewest).toHaveCSS('border-top-color', 'rgb(203, 213, 225)');
+  await expect(backToNewest).toHaveCSS('color', 'rgb(30, 41, 59)');
   // The newest run is still working, so its Stop stays in the header while an earlier run is read.
   await expect(details.locator('header:visible').getByRole('button', { name: 'Stop' })).toHaveAttribute('title', 'Stop Run 8, which is still running');
   await expect(details.locator('header:visible').getByRole('button', { name: 'Follow Up' })).toHaveCount(0);
@@ -330,7 +348,7 @@ test('1200px a task\'s run chip opens its earlier runs as a timeline in the ledg
   const table = page.getByRole('table', { name: 'Tasks' });
   await expect(table).toBeVisible();
   const headers = table.getByRole('columnheader');
-  const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'];
+  const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
   // Below the split breakpoint a click leaves the list, so the chip opens the runs in place,
   // never navigates, and a mouse click leaves no focus frame behind.
   const rollup = table.getByRole('button', { name: '7 runs' });

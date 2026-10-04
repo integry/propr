@@ -23,7 +23,7 @@ import { getDisplayStatus } from './utils.tsx';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
-export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'] as const;
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
 
 /** Expanded runs span TASK / PR through STATUS, keeping each run summary beside its timestamp. */
 export const TASK_RUNS_COLUMN_SPAN = 3;
@@ -293,6 +293,16 @@ export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
     ...row.earlierRuns.map(run => ({ task: run.task, type: run.type, summary: run.delta })),
   ];
   return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task, run.type) }));
+}
+
+/** The task's quality score: its newest review's, or null when no run on this page was a scored review. */
+export function rowScore(row: TaskRowView): number | null {
+  const runs = [{ task: row.task, type: row.type }, ...row.earlierRuns];
+  for (const run of runs) {
+    const score = runScore(run);
+    if (score != null) return score;
+  }
+  return null;
 }
 
 /** The list card shows at most this many runs, the newest; a `+N` chip counts the rest. */

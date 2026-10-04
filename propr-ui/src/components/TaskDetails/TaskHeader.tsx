@@ -1,7 +1,7 @@
 import React from 'react';
 import { TaskInfo } from './types';
 import { sanitizeTaskTitle } from '../TaskList/rowModel';
-import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight } from 'lucide-react';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
@@ -188,9 +188,10 @@ export const InspectedRunBanner: React.FC<{
     <button
       type="button"
       onClick={onBack}
-      className="flex-none rounded border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-teal-600 underline-offset-2 shadow-sm transition-colors hover:border-teal-300 hover:text-teal-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      className="inline-flex flex-none items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium text-slate-800 shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
     >
       Back to Run {runCount}
+      <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 text-teal-600" />
     </button>
   </div>
 );

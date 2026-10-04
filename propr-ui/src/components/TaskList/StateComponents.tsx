@@ -71,7 +71,13 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   return (
     <div className="task-ledger">
       {/* Card View (phones and narrow panes) */}
-      <div className="task-queue task-ledger-cards">
+      <div className="task-queue task-ledger-cards pt-1">
+        {/*
+          The cards have no header row to scroll under, so a card leaving the top would be sliced
+          against the toolbar's border. This fade, pinned to the top of the scroll area, lets it go
+          out of view softly instead. It takes no space, so the first card starts where it did.
+        */}
+        <div aria-hidden="true" data-testid="task-cards-top-fade" className="pointer-events-none sticky top-0 z-10 -mb-2 h-2 bg-gradient-to-b from-white to-transparent" />
         {rows.map(({ group, row }) => (
           <MobileTaskCard
             key={group.key}

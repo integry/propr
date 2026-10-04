@@ -1,7 +1,7 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED
+   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
 
-   The schema is locked: every width that shows the table shows all six
+   The schema is locked: every width that shows the table shows all seven
    columns, so nothing is added or dropped as the window or a pane resizes.
    REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
    REPO shows the repository name without its owner (the repo filter already
@@ -33,14 +33,14 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 5rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 5rem;
     column-gap: .5rem;
   }
 }

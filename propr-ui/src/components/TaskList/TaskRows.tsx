@@ -9,8 +9,9 @@ import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
+import { ScoreBadge } from './ScoreBadge';
 import {
-  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -116,6 +117,14 @@ export const TaskTitleLink: React.FC<{
     <span className="line-clamp-2 [overflow-wrap:anywhere]">{title}</span>
   </Link>
 );
+
+/** The ledger's SCORE cell: the task's newest review score, or a dash when no review scored it. */
+export const TaskScore: React.FC<{ row: TaskRowView }> = ({ row }) => {
+  const score = rowScore(row);
+  return score == null
+    ? <span className="text-xs text-slate-300" aria-label="No score">—</span>
+    : <ScoreBadge score={score} bracketed className="!w-auto !min-w-0 !max-w-none" label="Review score" />;
+};
 
 /** Run statuses worth calling out in the timeline; a finished run says nothing new. */
 const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
@@ -296,6 +305,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
           <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
         </div>
+        <div role="cell" className="justify-items-end"><TaskScore row={row} /></div>
       </div>
       {!selectsInPlace && expanded && row.earlierRuns.length > 0 && (
         <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">
