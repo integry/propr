@@ -234,7 +234,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
       <div
         role="row"
         aria-selected={selected}
-        className={`task-queue-grid pl-8 pr-6 cursor-pointer py-2 transition-colors ${selected ? SELECTED_ROW_CLASSES : 'hover:bg-slate-50'}`}
+        className={`task-queue-grid task-queue-row pl-8 pr-6 cursor-pointer py-2 transition-colors ${selected ? SELECTED_ROW_CLASSES : 'hover:bg-slate-50'}`}
         onClick={event => openRow(event, task.id, onRowClick)}
       >
         <div role="cell" className="min-w-0">

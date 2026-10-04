@@ -45,6 +45,18 @@
   }
 }
 
+/* A task row's metadata lines up with the first line of its title, so a title
+   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT and
+   the times floating in the middle of a taller row. Each metadata cell is a
+   box one title line tall (25px: the lead chip on the title's baseline), centred in that box. */
+.task-queue-row { align-items: start; }
+.task-queue-row > [role="cell"]:not(:first-child) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  min-height: 1.5625rem;
+}
+
 /* Earlier runs are one timeline block spanning TASK / PR through STATUS:
    when · what it did · summary. Each summary stays beside its timestamp. */
 .task-runs-cell { grid-column: 1 / span 3; }

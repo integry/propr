@@ -8,7 +8,7 @@ const preview = (name: string, type: 'image' | 'video' = 'image') => ({ type, ti
 
 interface FixtureRun { title: string; subtitle?: string | null; status?: string; minutes: number; took?: number; score?: number | null; previewMedia?: ReturnType<typeof preview>[]; planIssueStatus?: string; commitHash?: string | null; failedReason?: string | null }
 
-// Runs of four pull requests, written the way the backend titles them: workflow verb, repeated
+// Runs of nine pull requests, written the way the backend titles them: workflow verb, repeated
 // PR number and model tag in front of what the work is about, plus legacy "Update" follow-ups.
 const pullRequest = (prNumber: number, issueNumber: number, runs: FixtureRun[]) => runs.map((run, index) => ({
   id: `pr-${prNumber}-run-${index}`, repository: 'integry/propr', repositoryOwner: 'integry', repositoryName: 'propr',
@@ -50,6 +50,21 @@ const tasks = [
     { title: 'Followup: Update', minutes: 120, took: 1 },
     { title: `Ultrafix PR #2662: ${tag(2657)} Create a self-hosted GitHub App in one command (propr github-app create)`, subtitle: 'Fix GitHub App creation callback handling and review findings F1-F3', minutes: 130, took: 8, score: 8, previewMedia: [preview('callback-walkthrough', 'video')] },
   ]),
+  ...pullRequest(2656, 2652, [
+    { title: `Review PR #2656: ${tag(2652)} Show provider rate-limit resets in the usage panel`, status: 'queued', minutes: 140 },
+    { title: `Fix PR #2656: ${tag(2652)} Show provider rate-limit resets in the usage panel`, subtitle: 'Format reset times in the viewer’s time zone', minutes: 150, took: 4, score: 8 },
+  ]),
+  ...pullRequest(2654, 2650, [
+    { title: `Follow-up PR #2654: ${tag(2650)} Retry webhook deliveries that time out`, subtitle: 'Back off exponentially and cap retries at five', minutes: 165, took: 7, score: 9 },
+    { title: `Review PR #2654: ${tag(2650)} Retry webhook deliveries that time out`, minutes: 190, took: 3 },
+  ]),
+  ...pullRequest(2653, 2649, [{ title: `Fix PR #2653: ${tag(2649)} Keep goal drafts when the session expires`, status: 'failed', minutes: 205, took: 11, failedReason: 'Unit tests failed: draftStore.test.ts' }]),
+  ...pullRequest(2651, 2648, [
+    { title: `Merge PR #2651: ${tag(2648)} Cache repository indexes between runs`, minutes: 220, took: 2, score: 9, planIssueStatus: 'merged' },
+    { title: `Ultrafix PR #2651: ${tag(2648)} Cache repository indexes between runs`, subtitle: 'Invalidate the cache when the default branch moves', minutes: 235, took: 9, score: 8 },
+    { title: `Review PR #2651: ${tag(2648)} Cache repository indexes between runs`, minutes: 250, took: 4 },
+  ]),
+  ...pullRequest(2647, 2645, [{ title: `Review PR #2647: ${tag(2645)} Add keyboard shortcuts to the plan editor`, subtitle: 'Shortcuts do not clash with browser defaults', minutes: 270, took: 5, score: 8 }]),
   {
     id: 'long-title', repository: 'integry/desktop-workspaces', repositoryOwner: 'integry', repositoryName: 'desktop-workspaces', issueNumber: 86,
     title: `New Issue: ${tag(86)} Support configuration/desktop/workspaces/a-very-long-unbroken-configuration-filename.json in the task history`,
@@ -141,14 +156,14 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
 
       // One row per pull request, sanitized titles, no thumbnails and no nested threads.
       const rows = table.getByTestId('task-row');
-      await expect(rows).toHaveCount(5);
+      await expect(rows).toHaveCount(10);
       await expect(table).not.toContainText('by GPT-6 Astra]');
       await expect(table).not.toContainText('Ultrafix PR #2664');
       await expect(table.getByRole('link', { name: 'Update', exact: true })).toHaveCount(0);
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
-      // The footer counts tasks and the rows they fold into (four pull requests and one issue).
-      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–100 of 14,769 · 5 rows on this page');
+      // The footer counts tasks and the rows they fold into (nine pull requests and one issue).
+      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–100 of 14,769 · 10 rows on this page');
       // The repository filter counts the same tasks with the same digit grouping as the footer.
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
@@ -184,6 +199,14 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         };
       });
       expect(columnWidths.longRow).toEqual(columnWidths.header);
+      // Every row's metadata sits on the title's first line (25px tall), however many lines the
+      // title or its rollup takes, instead of floating in the middle of a taller row.
+      const offsets = await table.evaluate(element => [...element.querySelectorAll('[data-testid="task-row"] > [role="row"]')].flatMap(row => {
+        const [title, ...metadata] = [...row.children];
+        const firstLine = title.firstElementChild!.getBoundingClientRect().top + 12.5;
+        return metadata.map(cell => (box => Math.abs((box.top + box.bottom) / 2 - firstLine))((cell.firstElementChild ?? cell).getBoundingClientRect()));
+      }));
+      for (const offset of offsets) expect(offset).toBeLessThanOrEqual(1);
       expect(columnWidths.header).toEqual(width === 1920 ? [160, 128, 190] : [160, 112, 190]);
       // The lead chips sit a full table inset (2rem) in from the list's left edge.
       const inset = await table.evaluate(element => {
