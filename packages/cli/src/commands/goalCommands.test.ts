@@ -385,6 +385,56 @@ test("goal inspect distinguishes goal completion from task completion and includ
   assert.match(human404.stderr, /Goal not found: goal-x/);
 });
 
+test("goal attention lists blockers with the supported command for each action, and inspect shows them", async () => {
+  const blocker = {
+    id: "blocker-1", goalId: "goal-1", repository: "acme/repo", taskId: "goal-task-1",
+    attempt: { generation: 1, claim: "claim-1", sessionId: "thread-1", turnId: "turn-1" },
+    category: "question", provider: "codex", summary: "Which database should the migration target?",
+    questions: [{ id: "db", header: "Database", question: "Which database should the migration target?", options: ["Postgres"], confidential: false }],
+    detection: { kind: "provider_event", source: "codex_app_server:item/tool/requestUserInput" },
+    firstObservedAt: "2026-09-05T12:05:00.000Z", lastObservedAt: "2026-09-05T12:05:00.000Z", status: "open",
+    actionable: true, responseActions: ["send_input", "pause", "cancel"],
+    responseHint: "Send goal input to answer; ProPR delivers it as the reply to this question.",
+  };
+  const entry = { goalId: "goal-1", repository: "acme/repo", title: "Ship reliable delivery", taskId: "goal-task-1",
+    desiredState: "running", waitingForOperator: true, reason: "provider_question", blockers: [blocker] };
+  const json = await run(["attention", "-p", "acme/repo", "--limit", "5", "--json"],
+    () => ({ body: { goals: [entry], offset: 0, limit: 5, nextOffset: null } }));
+  assert.equal(json.exitCode, undefined, json.stdout);
+  assert.equal(json.requests[0].url.pathname, "/api/goals/attention");
+  assert.deepEqual(Object.fromEntries(json.requests[0].url.searchParams), { repository: "acme/repo", offset: "0", limit: "5" });
+  const output = JSON.parse(json.stdout);
+  assert.equal(output.kind, "goal-attention");
+  assert.deepEqual(output.goals[0].blockers[0].responseActions, ["send_input", "pause", "cancel"]);
+
+  const human = await run(["attention"], () => ({ body: { goals: [entry], offset: 0, limit: 20, nextOffset: null } }));
+  assert.match(human.stdout, /asked a question/);
+  assert.match(human.stdout, /Which database should the migration target\?/);
+  assert.match(human.stdout, /propr goal input goal-1 "<answer>"/);
+  assert.match(human.stdout, /propr goal cancel goal-1/);
+  assert.doesNotMatch(human.stdout, /approve/i);
+  const empty = await run(["attention"], () => ({ body: { goals: [], offset: 0, limit: 20, nextOffset: null } }));
+  assert.match(empty.stdout, /No goals are waiting on you/);
+  const emptyPage = await run(["attention", "--limit", "1"], () => ({ body: { goals: [], offset: 0, limit: 1, nextOffset: 1 } }));
+  assert.doesNotMatch(emptyPage.stdout, /No goals are waiting on you/);
+  assert.match(emptyPage.stdout, /No goals on this page are waiting on you/);
+  assert.match(emptyPage.stdout, /More goals: --offset 1/);
+
+  const detail = {
+    currentActivity: { currentFocus: null, entries: [], order: "newest_first" },
+    progress: { tasks: { total: 1, active: 1, completed: 0, failed: 0, cancelled: 0 }, recentTerminalTransitions: [],
+      startedAt: null, elapsedSeconds: 1, checkpoint: null },
+    pendingInput: { waitingForOperator: true, reason: "provider_question", undeliveredInputs: 0, lastInputAt: null, lastInputDeliveredAt: null },
+    pullRequests: [],
+  };
+  const goal = goalFixture({ attention: { waitingForOperator: true, reason: "provider_question", blockers: [blocker] } });
+  const inspected = await run(["inspect", "goal-1", "--json"], () => ({ body: { goal, detail } }));
+  assert.deepEqual(JSON.parse(inspected.stdout).goal.attention.blockers[0].id, "blocker-1");
+  const inspectedHuman = await run(["inspect", "goal-1"], () => ({ body: { goal, detail } }));
+  assert.match(inspectedHuman.stdout, /Waiting:\s+the goal needs you/);
+  assert.match(inspectedHuman.stdout, /Which database should the migration target\?/);
+});
+
 test("goal input reports queued, not acted-on, and goal inputs paginates history", async () => {
   const sent = await run(["input", "goal-1", "Use", "the", "helper", "--idempotency-key", "input-key-001", "--json"], () => ({
     body: { goal: goalFixture({ inputs: [{ id: "input-9", message: "Use the helper", attachmentCount: 0, state: "pending", createdAt: null, deliveredAt: null }] }) },

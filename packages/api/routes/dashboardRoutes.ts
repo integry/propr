@@ -254,7 +254,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.summary', () =>
-        loadDashboardWork(db, repository, { now: now() }));
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }));
       res.json({
         repository,
         needsAttention: work.counts.needsAttention,
@@ -274,7 +274,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.attention', () =>
-        loadDashboardWork(db, repository, { now: now() }));
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }));
       const blocked = work.attention.filter(item => item.category === 'blocked').length;
       res.json({
         repository,
@@ -296,7 +296,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     if (repository === null) return;
     try {
       const [work, goals] = await timeApiStage('dashboard.active', () => Promise.all([
-        loadDashboardWork(db, repository, { now: now() }),
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }),
         loadRunningDashboardGoals(db, repository, req.user?.id ? String(req.user.id) : null),
       ]));
       const runningRows = [...work.running, ...goals]

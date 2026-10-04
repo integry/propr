@@ -49,6 +49,7 @@ export {
     normalizeGoalTitle,
 } from './goals/goalTitle.js';
 export type {
+    GoalBlockerReport,
     GoalCheckpointOutcome,
     GoalCheckpointRejection,
     GoalCheckpointRequest,
@@ -70,3 +71,16 @@ export {
     type GoalLifecycleSnapshot,
     type GoalUpdatePublisher,
 } from './goals/goalActivityEvents.js';
+export {
+    codexServerRequestBlocker,
+    codexUserInputResponse,
+    type CodexServerRequestBlocker,
+} from './agents/impl/codexAppServerBlockers.js';
+export {
+    closeGoalBlockers,
+    recordGoalBlocker,
+    resolveGoalBlocker,
+    type GoalBlockerAttempt,
+    type GoalBlockerOwner,
+    type GoalBlockerResolution,
+} from './goals/goalBlockerStore.js';

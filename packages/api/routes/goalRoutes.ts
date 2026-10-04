@@ -43,6 +43,7 @@ import {
   type GoalListState,
 } from '../services/goalReadProjection.js';
 import { goalInputPage } from '../mcp/goalTaskDetail.js';
+import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
@@ -398,6 +399,31 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     res.json({
       goal: await serializeGoal(deps.db, deps.redisClient, row),
       detail: await inspectGoalDetail({ db: deps.db, redisClient: deps.redisClient }, row),
+    });
+  };
+
+  /**
+   * Owned goals waiting on their operator, bounded and optionally filtered by repository, so a
+   * client never has to read every goal to find the ones that need it. Each entry carries the same
+   * attention projection as the goal itself.
+   */
+  const attention = async (req: Request, res: Response) => {
+    const ownerId = currentOwnerId(req);
+    if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
+    const repository = queryValue(req.query ?? {}, 'repository');
+    if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) {
+      return void res.status(400).json({ error: 'repository must be in owner/repo format' });
+    }
+    const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
+    if ('error' in page) return void res.status(400).json({ error: page.error });
+    const listed = await timeApiStage('sql.goals.attention', () => listGoalsNeedingAttention(deps.db, {
+      ownerId, repositories: repository ? [repository] : null, offset: page.offset, limit: page.limit,
+    }));
+    res.json({
+      goals: listed.entries.map(goalAttentionSummary),
+      offset: page.offset,
+      limit: page.limit,
+      nextOffset: listed.hasMore ? page.offset + page.limit : null,
     });
   };
 
@@ -1099,7 +1125,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
+    capabilities, list, attention, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
     requireGoalTaskOwnership,
   };
 }

@@ -16,6 +16,9 @@ import type { Knex } from 'knex';
 // route modules must not import. The assertion below keeps the literals below
 // tied to `PlanIssueStatus` at compile time.
 import type { PlanIssueStatus } from '@propr/core';
+import type { GoalBlockerAction, GoalBlockerCategory } from '@propr/shared';
+import { goalBlockerHeadline } from '@propr/shared';
+import { listGoalsNeedingAttention } from '../services/goalAttention.js';
 import {
   ATTENTION_TASK_STATES,
   chunk,
@@ -224,7 +227,7 @@ export async function loadPlanIssueDecisions(db: Knex, repository: string): Prom
 export interface AttentionItem {
   id: string;
   category: 'blocked' | 'decision';
-  kind: 'task_failed' | 'task_action_required' | 'plan_review';
+  kind: 'task_failed' | 'task_action_required' | 'plan_review' | 'goal_blocker';
   taskId: string | null;
   repository: string;
   issueNumber: number | null;
@@ -235,6 +238,14 @@ export interface AttentionItem {
   state: string;
   detail: string | null;
   since: string;
+  /** Goal blockers only: the goal to open and the blocker as the shared projection reports it. */
+  goalId?: string;
+  goalBlocker?: {
+    id: string;
+    category: GoalBlockerCategory;
+    actionable: boolean;
+    responseActions: GoalBlockerAction[];
+  };
 }
 
 export interface DashboardWorkProjection {
@@ -394,17 +405,63 @@ export async function loadAttentionTaskIds(
   return taskIds;
 }
 
+/** How many waiting goals one dashboard read lists. */
+const MAX_GOAL_ATTENTION_ITEMS = 100;
+
+/**
+ * Goals waiting on this user, from the same attention projection as the goal
+ * console and MCP. Goals are owner-scoped, so an anonymous read lists none.
+ */
+export async function loadGoalAttentionItems(
+  db: Knex,
+  repository: string,
+  ownerId: string | null | undefined,
+): Promise<AttentionItem[]> {
+  if (!ownerId) return [];
+  const listed = await listGoalsNeedingAttention(db, {
+    ownerId,
+    repositories: repository && repository !== 'all' ? [repository] : null,
+    offset: 0,
+    limit: MAX_GOAL_ATTENTION_ITEMS,
+  });
+  return listed.entries.flatMap(({ goal, attention }) => attention.blockers.map(blocker => ({
+    id: `goal-blocker:${blocker.id}`,
+    category: 'blocked' as const,
+    kind: 'goal_blocker' as const,
+    taskId: goal.current_task_id ?? null,
+    repository: goal.repository,
+    issueNumber: null,
+    prNumber: null,
+    taskType: 'goal',
+    title: goal.title || goal.objective || null,
+    state: blocker.category,
+    detail: blocker.category === 'paused' ? goalBlockerHeadline(blocker) : blocker.summary,
+    since: blocker.firstObservedAt ?? toIso(goal.updated_at),
+    goalId: goal.goal_id,
+    goalBlocker: {
+      id: blocker.id,
+      category: blocker.category,
+      actionable: blocker.actionable,
+      responseActions: blocker.responseActions,
+    },
+  })));
+}
+
 /** One dashboard read of every work source, already projected. */
 export async function loadDashboardWork(
   db: Knex,
   repository: string,
-  options: { now?: Date; lookbackDays?: number; recentWindowHours?: number } = {},
+  options: { now?: Date; lookbackDays?: number; recentWindowHours?: number; ownerId?: string | null } = {},
 ): Promise<DashboardWorkProjection> {
-  const [rows, planIssues] = await Promise.all([
+  const [rows, planIssues, goalItems] = await Promise.all([
     loadDashboardWorkRows(db, repository, options),
     loadPlanIssueDecisions(db, repository),
+    loadGoalAttentionItems(db, repository, options.ownerId),
   ]);
-  return projectDashboardWork(rows, planIssues);
+  const work = projectDashboardWork(rows, planIssues);
+  if (goalItems.length === 0) return work;
+  const attention = [...work.attention, ...goalItems].sort((a, b) => Date.parse(b.since) - Date.parse(a.since));
+  return { ...work, attention, counts: { ...work.counts, needsAttention: attention.length } };
 }
 
 /** Running native goals visible to this user; task-only feeds remain independent. */
