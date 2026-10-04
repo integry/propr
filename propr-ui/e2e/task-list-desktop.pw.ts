@@ -271,7 +271,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(runRows).toHaveCount(8);
   await expect(runRows.nth(0).getByRole('button')).toContainText(/Run 1.*Initial review/);
   // Only reviews are scored, though runs 6 and 7 carry the loop's score in the data; a fix shows its commit.
-  expect(await timeline.getByTitle(/^(Review score|Commit)\b/).evaluateAll(nodes => nodes.map(node => node.title))).toEqual(['Review score: 4/10', 'Commit a81d3f56e0c2', 'Review score: 6/10', 'Commit 4be17c09d2f3']);
+  expect(await timeline.getByTitle(/^(Review score|Commit)\b/).evaluateAll(nodes => nodes.map(node => node.getAttribute('title')))).toEqual(['Review score: 4/10', 'Commit a81d3f56e0c2', 'Review score: 6/10', 'Commit 4be17c09d2f3']);
   await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Running….*Active/);
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
