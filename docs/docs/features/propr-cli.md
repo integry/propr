@@ -255,6 +255,7 @@ The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number
 propr goal capabilities                       # Goal-capable agents, their models, and why others are unavailable (--recheck)
 propr goal create -p owner/repo -a codex -m <model> "Add audit logging"   # Create AND start a goal (or --file / --stdin)
 propr goal list --state active                # Your goals (--project, --state, --limit, --offset)
+propr goal attention                          # Goals waiting on you: pauses, provider questions and approvals, with the command that resolves each
 propr goal inspect <goal-id>                  # State, narration, progress, checkpoints, pending input, model, failures, PRs
 propr goal input <goal-id> "Also cover the admin endpoints"   # Correction or question (or --file / --stdin / --canned done|left)
 propr goal inputs <goal-id>                   # Input delivery history, newest first (--limit, --offset)

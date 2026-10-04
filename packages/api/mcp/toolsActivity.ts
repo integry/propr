@@ -4,7 +4,8 @@ import { loadMonitoredReposRaw } from '@propr/core';
 import { McpError } from './config.js';
 import type { McpPrincipal } from './policy.js';
 import { getAgentActivity } from './agentActivity.js';
-import { whereAwaitingOperator } from './goalTaskDetail.js';
+import { goalBlockerHeadline, type GoalAttention, type GoalBlockerGoalState } from '@propr/shared';
+import { GOAL_ATTENTION_COLUMNS, loadGoalAttention, whereGoalNeedsAttention } from '../services/goalAttention.js';
 import { compactText, summarizeGoal, summarizeTask } from './listSummaries.js';
 import { applyTaskVisibility, ok, repositorySchema, type McpTool, type ToolDeps } from './tools.js';
 import {
@@ -196,7 +197,10 @@ function section(
 }
 
 /** Everything waiting on a human: failed tasks, stopped goals, blocking Inbox cards. */
-function blockerItems(failed: Row[], goals: Row[], inbox: InboxRow[], now: number): Row[] {
+function blockerItems(
+  failed: Row[], goals: { rows: Row[]; attention: Map<string, GoalAttention> }, inbox: InboxRow[], now: number,
+): Row[] {
+  const { attention } = goals;
   const tasks = failed.map(row => {
     const task = projectTask(row, now, null);
     return {
@@ -209,16 +213,27 @@ function blockerItems(failed: Row[], goals: Row[], inbox: InboxRow[], now: numbe
       }),
     };
   });
-  const stopped = goals.map(row => ({
-    id: String(row.goal_id), occurredAt: isoTimestamp(row.updated_at) ?? '',
-    kind: 'goal', repository: row.repository,
-    // ProPR persists no `awaiting_input` goal state; a confirmed pause with no
-    // queued resume is the persisted shape of a goal waiting on its operator.
-    summary: line(row.result_state === 'failed' ? 'Goal failed' : 'Goal paused, awaiting input',
-      compactText(row.title ?? row.objective, DIGEST_TEXT_LIMIT),
-      compactText(row.failure_reason, DIGEST_TEXT_LIMIT)),
-    reference: reference({ goalId: row.goal_id, taskId: row.current_task_id }),
-  }));
+  const stopped = goals.rows.flatMap(row => {
+    const failedGoal = row.result_state === 'failed';
+    // The shared attention projection decides whether a live goal waits on its operator, so this
+    // digest, get_goal, the attention listing and the console agree on every blocker.
+    const blocker = failedGoal ? null : attention.get(String(row.goal_id))?.blockers[0];
+    if (!failedGoal && !blocker) return [];
+    return [{
+      id: String(row.goal_id),
+      occurredAt: ((blocker?.detection.kind === 'provider_event' ? blocker.firstObservedAt : null)
+        ?? isoTimestamp(row.updated_at)) ?? '',
+      kind: 'goal', repository: row.repository,
+      summary: line(failedGoal ? 'Goal failed' : goalBlockerHeadline(blocker!),
+        compactText(row.title ?? row.objective, DIGEST_TEXT_LIMIT),
+        compactText(failedGoal ? row.failure_reason : blocker!.category === 'paused' ? null : blocker!.summary,
+          DIGEST_TEXT_LIMIT)),
+      reference: reference({ goalId: row.goal_id, taskId: row.current_task_id }),
+      ...(blocker ? { goalBlocker: {
+        id: blocker.id, category: blocker.category, actionable: blocker.actionable, responseActions: blocker.responseActions,
+      } } : {}),
+    }];
+  });
   const cards = inbox.map(notification => ({
     id: notification.id, occurredAt: notification.occurredAt,
     kind: 'notification', repository: notification.repository,
@@ -262,10 +277,9 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         orderByNewest(active.where('desired_state', 'running').whereNull('result_state')
           .select(ACTIVE_GOAL_COLUMNS), 'started_at')
           .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
-        orderByNewest(blocked.where(builder => builder.where('result_state', 'failed')
-          .orWhere(paused => whereAwaitingOperator(paused)))
-          .select('goal_id', 'repository', 'title', 'objective', 'desired_state', 'result_state',
-            'current_task_id', 'failure_reason', 'updated_at'), 'updated_at')
+        orderByNewest(blocked.where(builder => builder.where('goals.result_state', 'failed')
+          .orWhere(waiting => whereGoalNeedsAttention(db, waiting)))
+          .select([...GOAL_ATTENTION_COLUMNS, 'owner_id', 'title', 'objective', 'failure_reason', 'updated_at']), 'updated_at')
           .orderBy('goal_id', 'desc').limit(page) as Promise<Row[]>,
         orderByNewest(db('task_drafts').where({ user_id: owner }).whereIn('repository', repositories)
           .whereIn('status', ['generating', 'refining'])
@@ -280,6 +294,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         }),
       ]);
 
+      const attention = await loadGoalAttention(db, owner, blockedGoals as unknown as GoalBlockerGoalState[]);
       const narration = await goalNarration(deps, principal, goalRows);
       // Narration already resolved for an owned goal is free to reuse for the
       // task that goal is running, so no task pays for a live read of its own.
@@ -300,7 +315,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
           activeGoals: section(goalRows.map(row => projectGoal(row, now, narration.get(String(row.goal_id)))), limit),
           plansInProgress: section(plans.map(row => projectPlan(row, now)), limit),
           queued: section(queued.map(row => projectTask(row, now, null)), limit),
-          blockers: section(blockerItems(failed, blockedGoals, inbox.notifications, now), limit,
+          blockers: section(blockerItems(failed, { rows: blockedGoals, attention }, inbox.notifications, now), limit,
             inbox.truncated),
         },
       });
