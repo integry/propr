@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the pull-request write scenarios share one stateful GitHub fixture */
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import type { McpPrincipal } from '../../mcp/policy.js';
@@ -282,6 +283,46 @@ export async function verifyPullRequestWrites(
     assert.equal(restCalls.filter(item => item.route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}' && item.args.name === 'ultrafix').length, deletions);
     const stale = await mutate('stop_ultrafix', { ...pull, expectedHead: 'f'.repeat(40) });
     assert.equal(stale.result.error.code, 'STALE_HEAD');
+  });
+
+  await t.test('start_ultrafix re-arms the loop through the /ultrafix command at a pinned head', async () => {
+    const { saveUltrafixRatingGoal, saveUltrafixMaxCycles } = await import('@propr/core');
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const withoutReview = { ...principal, scopes: principal.scopes.filter(scope => scope !== 'review') } as McpPrincipal;
+    const posted = () => comments.filter(comment => comment.repository === 'acme/repo' && comment.pullRequest === 42 && comment.body.startsWith('/ultrafix')).length;
+    const before = posted();
+    const refused = await mutate('start_ultrafix', pull, withoutReview);
+    assert.equal(refused.result.error.code, 'INSUFFICIENT_SCOPE');
+    const stale = await mutate('start_ultrafix', { ...pull, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.equal(posted(), before, 'a refused start must post nothing');
+
+    // Omitted bounds track the instance settings, including after they change.
+    await saveUltrafixRatingGoal(8);
+    await saveUltrafixMaxCycles(4);
+    const started = await mutate('start_ultrafix', pull);
+    assert.equal(started.state, 'posted');
+    assert.equal(started.lifecycle.state, 'accepted');
+    assert.equal(started.result.goal, 8);
+    assert.equal(started.result.maxCycles, 4);
+    assert.equal(started.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(started.result.headSource, 'caller');
+    assert.equal(started.result.wasActive, false);
+    assert.equal(started.result.circuitBreaker, 'requested');
+    const body = comments.at(-1)!.body;
+    assert.match(body, /^\/ultrafix goal=8 max=4\n\n<!-- propr-mcp:[^;]+; head:a{40} -->$/);
+    assert.equal(started.result.commentId, comments.at(-1)!.id);
+    // The /ultrafix intake owns the label; the tool never writes it directly.
+    assert.ok(!restCalls.some(item => item.route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels' && (item.args.labels as string[]).includes('ultrafix')));
+
+    await saveUltrafixRatingGoal(6);
+    assert.equal((await mutate('start_ultrafix', pull)).result.goal, 6);
+    const explicit = await mutate('start_ultrafix', { ...pull, ultrafixGoal: 10, ultrafixMaxCycles: 2 });
+    assert.equal(explicit.result.goal, 10);
+    assert.equal(explicit.result.maxCycles, 2);
+    assert.ok(comments.at(-1)!.body.startsWith('/ultrafix goal=10 max=2\n'));
+    await saveUltrafixRatingGoal(8);
   });
 
   await t.test('a truncated label list leaves the ultrafix breaker undetermined', async () => {

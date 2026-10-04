@@ -97,7 +97,7 @@ const generate = () => callLLMForPlan({
   repository: 'owner/repo',
   correlationId: 'plan-correlation',
   tokenLimit: 100_000,
-  model: 'antigravity:gemini-3.8-flash-high',
+  model: 'antigravity:antigravity-gemini-3.8-flash',
   repairModel: 'codex:gpt-5.3-codex',
   granularity: 'balanced',
   routingSession: generationRoutingSession as never,
@@ -122,7 +122,7 @@ test('a malformed but whole plan is repaired in a workspace by the default codin
 
   assert.deepEqual(result.plan, [task('Fixed plan')]);
   assert.equal(analysisCalls.length, 1, 'repair no longer re-sends the whole plan as a prompt');
-  assert.equal(analysisCalls[0].model, 'antigravity:gemini-3.8-flash-high');
+  assert.equal(analysisCalls[0].model, 'antigravity:antigravity-gemini-3.8-flash');
   assert.equal(analysisCalls[0].routingSession, generationRoutingSession);
   assert.equal(repairCalls.length, 1);
   const repair = repairCalls[0];
@@ -137,7 +137,7 @@ test('a malformed but whole plan is repaired in a workspace by the default codin
   assert.match(repair.prompt, /node validate-plan\.mjs/);
   assert.match(repair.prompt, /Never reword, summarize/);
   assert.equal(repair.metadata.jsonRepair, true);
-  assert.equal(repair.metadata.sourceModel, 'antigravity:gemini-3.8-flash-high');
+  assert.equal(repair.metadata.sourceModel, 'antigravity:antigravity-gemini-3.8-flash');
   assert.equal(repair.metadata.sourceResponseLength, malformedResponse.length);
   assert.equal(repair.correlationId, 'plan-correlation-repair');
 });

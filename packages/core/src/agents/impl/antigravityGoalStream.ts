@@ -1,3 +1,4 @@
+import { antigravityModelIdsMatch, antigravityReportedIdentity } from './antigravityModelIds.js';
 import type { ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import type { TokenUsage } from '../types.js';
@@ -61,6 +62,7 @@ export interface AntigravityGoalSegment {
     readonly result?: AntigravitySegmentResult;
     readonly exited: boolean;
     readonly errorText?: string;
+    readonly protocolError?: string;
     readonly tokenUsage: TokenUsage;
     readonly textCursor: number;
     textsAfter(cursor: number): string[];
@@ -72,6 +74,7 @@ export interface AntigravityGoalSegment {
 /** One `agy --print` invocation of a goal conversation, observed line by line. */
 export class AntigravityGoalStream implements AntigravityGoalSegment {
     private stderr = '';
+    private identityError?: string;
     private texts: string[] = [];
     private pendingText = new Map<number, string>();
     private stepUsage = new Map<number, StreamUsage>();
@@ -84,7 +87,7 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
     result?: AntigravitySegmentResult;
     exited = false;
 
-    constructor(private readonly child: ChildProcess, private readonly output: LiveAgentOutput) {
+    constructor(private readonly child: ChildProcess, private readonly output: LiveAgentOutput, private readonly requestedCliModel?: string) {
         child.stderr?.on('data', chunk => {
             this.stderr = boundedProviderDiagnostic(this.stderr + chunk.toString());
         });
@@ -104,11 +107,14 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
         child.stdin?.on('error', () => undefined);
     }
 
+    get protocolError(): string | undefined { return this.identityError; }
+
     get textCursor(): number { return this.texts.length; }
     get tokenUsage(): TokenUsage { return sumAntigravityStepUsage(this.stepUsage.values()); }
 
     /** The CLI's own failure line (`error: …` / `AGY_ERROR`), else its last diagnostic. */
     get errorText(): string | undefined {
+        if (this.identityError) return this.identityError;
         // A repository workflow wrapper labels agent stderr lines; match the CLI's own text.
         const lines = this.stderr.split('\n').map(line => stripWorkflowAgentStderrPrefix(line.trim()).trim()).filter(Boolean);
         return lines.filter(line => /^(?:error:|AGY_ERROR)/.test(line)).pop() ?? lines.pop();
@@ -128,9 +134,18 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
         this.output.append(`${line}\n`);
         let envelope: StreamEnvelope;
         try { envelope = JSON.parse(line) as StreamEnvelope; } catch { return; }
+        if (this.identityError) return;
         if (envelope.event === 'init' && typeof envelope.conversation_id === 'string') {
+            const reported = envelope.init?.model;
+            if (this.hasModelIdentityConflict(reported)) {
+                this.identityError = `Antigravity reported model "${reported}" but "${this.requestedCliModel ?? this.model}" was requested`;
+                this.result = { status: 'error', response: '' };
+                this.interrupt();
+                this.notify();
+                return;
+            }
             this.conversationId = envelope.conversation_id;
-            if (typeof envelope.init?.model === 'string') this.model = envelope.init.model;
+            if (reported) this.model = reported;
         } else if (envelope.event === 'step_update' && envelope.step_update) {
             this.onStep(envelope.step_update);
         } else if (envelope.event === 'result' && envelope.result) {
@@ -140,6 +155,11 @@ export class AntigravityGoalStream implements AntigravityGoalSegment {
             };
         }
         this.notify();
+    }
+
+    private hasModelIdentityConflict(reported: string | undefined): boolean {
+        const conflict = this.model && reported && JSON.stringify(antigravityReportedIdentity(this.model)) !== JSON.stringify(antigravityReportedIdentity(reported));
+        return Boolean(conflict || (this.requestedCliModel && (!reported || !antigravityModelIdsMatch(this.requestedCliModel, reported))));
     }
 
     private onStep(step: NonNullable<StreamEnvelope['step_update']>): void {

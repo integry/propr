@@ -86,9 +86,11 @@ Model labels route work to configured models; the worker's dispatch step resolve
 ```text
 llm-claude-opus5
 llm-codex-gpt56-sol
-llm-antigravity-pro-high
-llm-antigravity-opus46-thinking
+llm-antigravity-pro
+llm-antigravity-opus55
 ```
+
+Antigravity uses one catalog entry and base label per model. Configure reasoning effort separately through a per-model override in AI Agents, a `level-low` / `level-medium` / `level-high` issue label, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; without either, the closest supported effort to the system preference is used. Flash and Claude support low / medium / high, Pro supports low / high, and GPT-OSS uses medium.
 
 If an issue carries a trigger label but no model label, ProPR falls back to the deployment default model (`DEFAULT_CLAUDE_MODEL`, or the catalog default when unset). The exact model labels available in a deployment come from AI Agents in the Web UI.
 

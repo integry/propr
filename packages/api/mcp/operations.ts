@@ -409,7 +409,7 @@ export class McpOperations {
       artifacts: json(row.artifacts) ?? {},
       progress: json(row.progress),
     };
-    const commandReceipt = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool);
+    const commandReceipt = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'comment_on_pull_request'].includes(row.tool);
     return { operationId: row.id, tool: row.tool, state, result: json(row.result), lifecycle: {
       ...lifecycle, ...(commandReceipt ? { summary: summarizeLifecycle(row.tool, lifecycle) } : {}),
     },

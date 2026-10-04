@@ -1,5 +1,6 @@
 import { redactSecrets, type McpErrorEnvelope } from './errorEnvelope.js';
 import type { McpOperations, LifecycleOutcome, Operation } from './operations.js';
+import { isUltrafixCommandTool } from './ultrafix.js';
 
 const startedTaskStates = new Set(['processing', 'claude_execution', 'post_processing']);
 const executedGoalTaskStates = new Set([...startedTaskStates, 'completed', 'failed']);
@@ -193,7 +194,7 @@ function lifecycleOutcome(
   targetState: string,
 ): LifecycleOutcome | undefined {
   if (terminalStates.has(receiptState as LifecycleOutcome)) return receiptState as LifecycleOutcome;
-  if (row.tool === 'run_ultrafix' || (!target?.taskId && !target?.task_id)) return undefined;
+  if (isUltrafixCommandTool(row.tool) || (!target?.taskId && !target?.task_id)) return undefined;
   return terminalStates.has(targetState as LifecycleOutcome) ? targetState as LifecycleOutcome : undefined;
 }
 
@@ -249,7 +250,7 @@ export async function syncLifecycle(
   const lifecycleProgress = progressFromReceipt(receipt, result, target, outcome);
   if (lifecycleProgress && !outcome) await operations.recordProgress(row.id, lifecycleProgress);
 
-  const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'].includes(row.tool)
+  const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'comment_on_pull_request'].includes(row.tool)
     && (typeof artifacts.taskId === 'string' || Array.isArray(artifacts.taskIds));
   const startedAt = pickedUpCommand ? epochMilliseconds(target?.timestamp) ?? Date.now()
     : observedStartTimestamp(target, result, targetState);

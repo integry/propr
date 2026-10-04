@@ -48,9 +48,11 @@ const baseConfig = (type: AgentConfig['type']): AgentConfig => ({
   enabled: true,
   dockerImage: 'propr/agent:test',
   configPath: type === 'codex' ? codexConfigPath : `/tmp/${type}-config`,
-  supportedModels: ['test-model'],
-  defaultModel: 'test-model',
+  supportedModels: [type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model'],
+  defaultModel: type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model',
 });
+
+const antigravityModel = 'antigravity-gemini-3.8-flash';
 
 const common = {
   worktreePath: '/tmp/worktree',
@@ -212,7 +214,7 @@ describe('native goal provider contract', () => {
         executionMode: 'goal'; environment: Record<string, string>;
       }): string[];
     };
-    const agy = antigravity.buildDockerArgs({ ...common, executionMode: 'goal', environment });
+    const agy = antigravity.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', environment });
 
     for (const args of [claude, codex, agy]) {
       assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
@@ -238,9 +240,9 @@ describe('native goal provider contract', () => {
     const agent = new AntigravityAgent(baseConfig('antigravity')) as unknown as {
       buildDockerArgs(params: typeof common & { executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean }): string[];
     };
-    const normal = agent.buildDockerArgs(common);
-    const initial = agent.buildDockerArgs({ ...common, executionMode: 'goal', nativeGoalLaunch: true });
-    const resumed = agent.buildDockerArgs({ ...common, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
+    const normal = agent.buildDockerArgs({ ...common, modelName: antigravityModel });
+    const initial = agent.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', nativeGoalLaunch: true });
+    const resumed = agent.buildDockerArgs({ ...common, modelName: antigravityModel, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
     assert.ok(normal.includes('PROPR_EPHEMERAL_STATE=1'));
     assert.ok(normal.some(argument => argument.endsWith(':/home/node/.gemini-source:rw')));
     assert.equal(initial.includes('PROPR_EPHEMERAL_STATE=1'), false);
@@ -452,7 +454,7 @@ test('all five implementation adapters expose only writable task files and rejec
   const variants = [
     buildClaudeDockerArgs(config('claude'), 1000, params),
     buildCodexDockerArgs(config('codex'), params),
-    antigravity.buildDockerArgs(params),
+    antigravity.buildDockerArgs({ ...params, modelName: antigravityModel }),
     buildOpenCodeDockerArgs({ ...params, config: config('opencode'), ensureConfigPath: () => {} }),
     vibe.buildDockerArgs(params),
   ];
@@ -468,7 +470,7 @@ test('all five implementation adapters expose only writable task files and rejec
 test('orchestrated goal adapters retain GitHub credentials and writable git mounts', () => {
   const params = { ...common, executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } };
   const antigravity = new AntigravityAgent(baseConfig('antigravity')) as unknown as { buildDockerArgs(input: typeof params): string[] };
-  for (const args of [buildClaudeDockerArgs(baseConfig('claude'), 1000, params), buildCodexAppServerDockerArgs(baseConfig('codex'), params), antigravity.buildDockerArgs(params)]) {
+  for (const args of [buildClaudeDockerArgs(baseConfig('claude'), 1000, params), buildCodexAppServerDockerArgs(baseConfig('codex'), params), antigravity.buildDockerArgs({ ...params, modelName: antigravityModel })]) {
     assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:rw'));
     assert.ok(args.includes('GH_TOKEN=token'));
     assert.equal(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'), false);
