@@ -323,6 +323,41 @@ describe('Codex provider requests', () => {
     assert.deepEqual(harness.responses.map(response => response.id), [0, 99]);
   });
 
+  test('a request repeated after it was answered gets the same answer without another input', async () => {
+    const harness = providerRequestHarness();
+    const key = 'codex:thread-1:turn-1:item-7:user-input';
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true);
+    // The provider repeats the question under a new id before resolving it.
+    harness.queued.requests.push({ ...fixtures.userInput, id: 99 });
+    await harness.requests.sync();
+    const answer = { answers: { db: { answers: ['Postgres'] } } };
+    assert.deepEqual(harness.responses, [{ id: 0, result: answer }, { id: 99, result: answer }],
+      'the already-authorized answer reaches the new id');
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'later', sequence: 2 }, 'turn-1'), false,
+      'no further input is consumed by the repeat');
+    assert.equal(harness.responses.length, 2);
+    // Seeing the same id again does not send a second reply.
+    harness.queued.requests.push({ ...fixtures.userInput, id: 99 });
+    await harness.requests.sync();
+    assert.equal(harness.responses.length, 2);
+    harness.queued.resolved.push(0, 99);
+    await harness.requests.sync();
+    assert.deepEqual(harness.calls.filter(call => call.startsWith('resolve:')), [`resolve:${key}:provider_resolved`]);
+  });
+
+  test('a repeat already resolved by the provider receives no reply', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true);
+    harness.queued.requests.push({ ...fixtures.userInput, id: 99 });
+    harness.queued.resolved.push(99);
+    await harness.requests.sync();
+    assert.deepEqual(harness.responses.map(response => response.id), [0], 'no reply is written to a resolved id');
+  });
+
   test('the blocker of a repeated request closes only when its last id is resolved', async () => {
     const harness = providerRequestHarness();
     const key = 'codex:thread-1:turn-1:item-7:user-input';

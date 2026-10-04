@@ -187,7 +187,11 @@ interface OpenProviderRequest {
     ids: Set<number | string>;
     requestKey: string;
     answerQuestionIds: string[];
-    answered: boolean;
+    /**
+     * The reply an operator input already authorized, kept so an id the provider
+     * repeats the request under later receives the same answer.
+     */
+    response?: Record<string, unknown>;
     /**
      * Highest input sequence submitted before the question's blocker was
      * opened, as recorded with it. Only later inputs can be its answer;
@@ -230,26 +234,32 @@ export class CodexProviderRequests {
     private absorb(): AbsorbedRequests {
         const reports: AbsorbedRequests['reports'] = [];
         const resolved: string[] = [];
-        for (const message of this.connection.takeServerRequests()) {
+        const messages = this.connection.takeServerRequests();
+        const resolvedIds = this.connection.takeResolvedServerRequests();
+        const resolvedNow = new Set(resolvedIds);
+        for (const message of messages) {
             const blocker = codexServerRequestBlocker(message);
             if (!blocker || message.id === undefined || message.id === null) continue;
             const key = blocker.report.requestKey;
             const request = this.open.get(key);
             if (request) {
-                // Answer and boundary state belong to the request, not to one of its ids.
+                // Answer and boundary state belong to the request, not to one of its ids,
+                // so a new id for an answered request gets the answer already given.
+                if (request.response && !request.ids.has(message.id) && !resolvedNow.has(message.id)) {
+                    this.connection.respond(message.id, request.response);
+                }
                 request.ids.add(message.id);
             } else {
                 this.open.set(key, {
                     ids: new Set([message.id]),
                     requestKey: key,
                     answerQuestionIds: blocker.answerQuestionIds,
-                    answered: false,
                 });
             }
             this.keysById.set(message.id, key);
             reports.push(blocker.report);
         }
-        for (const id of this.connection.takeResolvedServerRequests()) {
+        for (const id of resolvedIds) {
             const key = this.keysById.get(id);
             if (key === undefined) continue;
             this.keysById.delete(id);
@@ -287,13 +297,13 @@ export class CodexProviderRequests {
      */
     async answer(input: GoalControlInput, turnId: string): Promise<boolean> {
         const work = this.absorb();
-        const waiting = [...this.open.values()].filter(request => !request.answered && request.answerQuestionIds.length);
+        const waiting = [...this.open.values()].filter(request => !request.response && request.answerQuestionIds.length);
         const question = waiting.length === 1 && answersAfter(waiting[0], input) ? waiting[0] : undefined;
         if (question) {
             // Every id the provider still waits under is the same question, so each gets the reply.
             const response = codexUserInputResponse(question.answerQuestionIds, input.message);
             for (const id of question.ids) this.connection.respond(id, response);
-            question.answered = true;
+            question.response = response;
         }
         await this.persist(work);
         if (!question) return false;
