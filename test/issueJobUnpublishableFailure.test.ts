@@ -208,3 +208,36 @@ test('an interrupted execution without a commit remains retryable and never crea
     assert.match(request.mock.calls[0].arguments[1].body as string, /failed before producing publishable work/i);
     assert.doesNotMatch(request.mock.calls[0].arguments[1].body as string, /AI-done/);
 });
+
+test('publication obtains current credentials after committing instead of reusing the pre-agent token', async () => {
+    commitChanges.mock.resetCalls();
+    pushBranch.mock.resetCalls();
+    createPullRequest.mock.resetCalls();
+    const commit = { commitHash: 'new-commit', filesChanged: ['src/change.ts'] };
+    commitChanges.mock.mockImplementationOnce(async () => commit);
+    const auth = mock.fn(async () => {
+        assert.equal(commitChanges.mock.calls.length, 1);
+        assert.equal(pushBranch.mock.calls.length, 0);
+        return { token: 'current-token' };
+    });
+    const result = await performPostProcessing({
+        octokit: { auth, request: mock.fn(async () => ({ data: {} })) },
+        issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        worktreeInfo: { worktreePath: '/tmp/worktree', branchName: 'propr/42-fix' },
+        currentIssueData: { data: { title: 'Fix startup', labels: [{ name: 'AI' }] } },
+        claudeResult: { ...failedAgentResult(), success: true, error: null, summary: 'Implemented the fix.' },
+        modelName: 'codex-test',
+        repoValidation: { isValid: true, repoData: { defaultBranch: 'main' } },
+        repoUrl: 'https://github.com/owner/repo.git',
+        githubToken: { token: 'expired-pre-agent-token' },
+        PR_LABEL: 'propr', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done',
+        jobId: 'job-42', correlatedLogger: logger,
+    });
+    assert.deepEqual(auth.mock.calls.map(call => call.arguments), [[{ type: 'installation' }]]);
+    assert.deepEqual(pushBranch.mock.calls[0].arguments, [
+        '/tmp/worktree', 'propr/42-fix',
+        { repoUrl: 'https://github.com/owner/repo.git', authToken: 'current-token' },
+    ]);
+    assert.equal(createPullRequest.mock.calls.length, 1);
+    assert.equal(result.commitResult, commit);
+});

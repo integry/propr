@@ -119,7 +119,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
                 try {
                     await pushOperation(currentToken);
                 } catch (error) {
-                    if (tokenRefreshFn && ((error as Error).message.includes('Authentication failed') || (error as Error).message.includes('Invalid username or token'))) {
+                    if (tokenRefreshFn && isAuthenticationError(error)) {
                         logger.info({ correlationId, worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
 
                         try {
@@ -159,7 +159,7 @@ export interface PushBranchResult {
 
 function isAuthenticationError(error: unknown): boolean {
     const message = (error as Error).message || '';
-    return message.includes('Authentication failed') || message.includes('Invalid username or token');
+    return /Authentication failed|Invalid username or token|could not read (?:Username|Password) for ['"]https:\/\/github\.com(?:\/|['"])/i.test(message);
 }
 
 function isNonFastForwardPushError(error: unknown): boolean {
@@ -261,7 +261,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             logger.info({ worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
             try {
                 const freshOctokit = await getAuthenticatedOctokit();
-                const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string }) => Promise<InstallationAuth> }).auth({ type: "installation" });
+                const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string; refresh: boolean }) => Promise<InstallationAuth> }).auth({ type: "installation", refresh: true });
                 const rebasedResult = await performPushWithRebaseFallback(freshAuth.token);
                 if (rebasedResult) return rebasedResult;
                 logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully after token refresh');
