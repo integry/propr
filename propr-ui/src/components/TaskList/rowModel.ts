@@ -4,8 +4,10 @@
  * The task list used to unroll every run of a pull request as its own nested
  * row under the newest one, so a single busy PR filled the screen and the page
  * boundary in the footer stopped meaning anything. A group is now one row: the
- * newest run carries the status, agent and duration, and the runs before
- * it are rolled up behind `↳ N earlier runs`.
+ * newest run carries the status, agent and duration, and the row counts its
+ * runs in an `N runs` chip. A row is the task (the pull request or issue);
+ * its runs are the agent sessions that worked on it, and the task pane beside
+ * the list switches between them.
  *
  * Titles are written for GitHub, not for a ledger: `Ultrafix PR #2664: [2659 by
  * GPT-6 Astra] Stop work…` repeats the PR number that is already on the row as
@@ -17,6 +19,7 @@
 import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
 import { ellipsizeHardCutTitle } from './displayTitle';
+import { getDisplayStatus } from './utils.tsx';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
@@ -64,7 +67,7 @@ export interface TaskRowView {
   /**
    * What the newest run came to, when it recorded no summary but the row has
    * earlier runs: the line under the title is drawn for them anyway, and every
-   * such line reads `↳ N earlier runs · [type] what the newest run did`.
+   * such line reads `[N runs] · [type] what the newest run did`.
    */
   outcome: string | null;
   previewCount: number;
@@ -229,6 +232,54 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
  * front of the title instead, so it stays one line tall.
  */
 export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
+
+/** How many runs the row stands for: the newest and every earlier one. */
+export const runCount = (row: TaskRowView): number => row.earlierRuns.length + 1;
+
+/** A run's state in one word, for the run switcher: `Active`, `Completed`, `Failed`. */
+export function runStatusLabel(status: string): string {
+  switch (status) {
+    case 'completed': return 'Completed';
+    case 'merged': return 'Merged';
+    case 'failed': return 'Failed';
+    case 'cancelled': return 'Cancelled';
+    case 'waiting':
+    case 'pending':
+    case 'queued':
+      return 'Pending';
+    case 'active':
+    case 'implementing':
+    case 'claude_execution':
+    case 'processing':
+    case 'post_processing':
+      return 'Active';
+    default:
+      return status ? status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ') : 'Unknown';
+  }
+}
+
+export interface RunOption {
+  taskId: string;
+  /** 1 for the oldest run of the task on this page, counting up to the newest. */
+  number: number;
+  status: string;
+  summary: string;
+}
+
+/** The task's runs, newest first, numbered from the oldest so `Run 8` stays `Run 8` as new runs arrive. */
+export function buildRunOptions(group: TaskGroup): RunOption[] {
+  const row = buildTaskRow(group);
+  const runs: Array<{ task: Task; summary: string }> = [
+    { task: row.task, summary: row.detail ?? runOutcome(row.task) },
+    ...row.earlierRuns.map(run => ({ task: run.task, summary: run.delta })),
+  ];
+  return runs.map(({ task, summary }, index) => ({
+    taskId: task.id,
+    number: runs.length - index,
+    status: runStatusLabel(getDisplayStatus(task)),
+    summary,
+  }));
+}
 
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 

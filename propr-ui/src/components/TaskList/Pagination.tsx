@@ -9,14 +9,16 @@ interface PaginationProps {
   tasksPerPage: number;
   currentPage: number;
   setCurrentPage: (page: number | ((prev: number) => number)) => void;
-  /**
-   * Rows the page shows. Runs of one pull request fold into one row, so a page
-   * of 50 tasks can be 11 rows; the footer says so instead of implying 50 rows.
-   */
-  groupCount?: number;
-  /** What one row is: `pull request` unless some rows are issues or lone tasks. */
-  groupNoun?: string;
+  /** Runs the page actually returned; the range ends there rather than at the page size. */
+  returnedCount?: number;
 }
+
+/**
+ * `Showing 1–100 of 14,769 runs`: the slice and the whole, and nothing else.
+ * The API pages through runs (agent sessions), not tasks, and a row folds a
+ * task's runs together behind its `N runs` chip, so the range is counted in
+ * runs: a task count here would promise rows the page does not have.
+ */
 
 export const Pagination: React.FC<PaginationProps> = ({
   hideFilters,
@@ -24,8 +26,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   tasksPerPage,
   currentPage,
   setCurrentPage,
-  groupCount,
-  groupNoun = 'pull request',
+  returnedCount,
 }) => {
   if (hideFilters || totalTasks <= tasksPerPage) {
     return null;
@@ -35,17 +36,12 @@ export const Pagination: React.FC<PaginationProps> = ({
   // Convert from 0-based internal state to 1-based display
   const displayPage = currentPage + 1;
   const firstTask = currentPage * tasksPerPage + 1;
-  const lastTask = Math.min((currentPage + 1) * tasksPerPage, totalTasks);
-  const tasksOnPage = Math.max(0, lastTask - firstTask + 1);
-  const showGroups = groupCount !== undefined && groupCount !== tasksOnPage;
+  const lastTask = Math.min(currentPage * tasksPerPage + (returnedCount ?? tasksPerPage), totalTasks);
 
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
       <span data-testid="pagination-summary" className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing tasks </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)}</span>
-        {showGroups && (
-          <span className="hidden sm:inline"> · {formatCount(groupCount)} {groupNoun}{groupCount === 1 ? '' : 's'} on this page</span>
-        )}
+        <span className="hidden sm:inline">Showing </span>{formatCount(firstTask)}–{formatCount(lastTask)}<span className="hidden sm:inline"> of {formatCount(totalTasks)} runs</span>
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button

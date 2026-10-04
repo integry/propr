@@ -4,6 +4,8 @@ import { ExternalLink, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import TaskDetails from '../TaskDetails';
 import { taskPath } from './rowModel';
+import { RunSwitcher } from './RunSwitcher';
+import type { TaskGroup } from './types';
 import { isDialogOpen, isTypingTarget } from './keyboardOwnership';
 
 interface TaskSplitWorkspaceProps {
@@ -11,6 +13,10 @@ interface TaskSplitWorkspaceProps {
   list: React.ReactNode;
   /** The task open beside the list, or null for the full-width list. */
   selectedTaskId: string | null;
+  /** The list row the open run belongs to; with more than one run, the pane offers a run switcher. */
+  selectedGroup?: TaskGroup | null;
+  /** Opens another run of the same task in the pane. */
+  onSelectRun?: (taskId: string) => void;
   onClose: () => void;
   onDeleted: (taskId: string) => void;
 }
@@ -30,7 +36,7 @@ const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>
  * Each pane scrolls on its own. The list pane is narrower than the ledger's
  * table breakpoint, so its container query shows the stacked cards there.
  */
-const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedTaskId, onClose, onDeleted }) => {
+const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedTaskId, selectedGroup, onSelectRun, onClose, onDeleted }) => {
   useEffect(() => {
     if (!selectedTaskId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -84,7 +90,16 @@ const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedT
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
                 {/* Keyed by task, so switching tasks drops the old task's live subscriptions and state. */}
-                <TaskDetails key={selectedTaskId} taskId={selectedTaskId} embedded onClose={onClose} onDeleted={onDeleted} />
+                <TaskDetails
+                  key={selectedTaskId}
+                  taskId={selectedTaskId}
+                  embedded
+                  onClose={onClose}
+                  onDeleted={onDeleted}
+                  runSwitcher={selectedGroup && onSelectRun
+                    ? <RunSwitcher group={selectedGroup} selectedTaskId={selectedTaskId} onSelect={onSelectRun} />
+                    : null}
+                />
               </div>
             </section>
           </Panel>

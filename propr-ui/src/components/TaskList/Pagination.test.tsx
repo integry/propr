@@ -7,18 +7,18 @@ const footer = (props: Partial<React.ComponentProps<typeof Pagination>> = {}) =>
 );
 
 describe('Pagination', () => {
-  it('counts the tasks of the page and the pull-request rows they fold into', () => {
-    footer({ groupCount: 11 });
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent('Showing tasks 1–50 of 14,919 · 11 pull requests on this page');
+  it('states the slice and the total, counted in runs', () => {
+    footer();
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 1–50 of 14,919 runs$/);
   });
 
-  it('names rows when some are not pull requests', () => {
-    footer({ groupCount: 1, groupNoun: 'row', currentPage: 2 });
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent('Showing tasks 101–150 of 14,919 · 1 row on this page');
+  it('ends the range at the runs the page returned', () => {
+    footer({ currentPage: 1, returnedCount: 32 });
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 51–82 of 14,919 runs$/);
   });
 
-  it('leaves the row count out when every task is its own row', () => {
-    footer({ groupCount: 19, currentPage: 298 });
-    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing tasks 14,901–14,919 of 14,919$/);
+  it('ends the last page at the total', () => {
+    footer({ currentPage: 298 });
+    expect(screen.getByTestId('pagination-summary')).toHaveTextContent(/^Showing 14,901–14,919 of 14,919 runs$/);
   });
 });

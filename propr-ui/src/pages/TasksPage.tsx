@@ -5,6 +5,7 @@ import { useTaskSelection } from '../hooks/useTaskSelection';
 import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
 import TaskSplitWorkspace from '../components/TaskList/TaskSplitWorkspace';
+import type { TaskGroup } from '../components/TaskList/types';
 
 /**
  * Runs of one pull request fold into one row, so a page of 50 tasks was often
@@ -17,6 +18,7 @@ const TasksPage: React.FC = () => {
   const { taskId } = useParams();
   const { selectedTaskId, select, isSplitViewport } = useTaskSelection();
   const [listRefreshKey, setListRefreshKey] = useState(0);
+  const [pageGroups, setPageGroups] = useState<TaskGroup[]>([]);
 
   // Only set title when viewing task list (TaskDetails sets its own title)
   useDocumentTitle(taskId ? undefined : 'Tasks');
@@ -40,10 +42,14 @@ const TasksPage: React.FC = () => {
 
   // Wide screens open a task beside the list; narrower ones navigate to it.
   const openTaskId = isSplitViewport ? selectedTaskId : null;
+  // The row the open run belongs to: its runs are what the pane's run switcher offers.
+  const openGroup = openTaskId ? pageGroups.find(group => group.tasks.some(task => task.id === openTaskId)) ?? null : null;
   return (
     <div className="h-full w-full min-w-0 bg-white">
       <TaskSplitWorkspace
         selectedTaskId={openTaskId}
+        selectedGroup={openGroup}
+        onSelectRun={select}
         onClose={closeTask}
         onDeleted={handleDeleted}
         list={(
@@ -52,6 +58,7 @@ const TasksPage: React.FC = () => {
             selectedTaskId={openTaskId}
             onSelectTask={isSplitViewport ? select : undefined}
             refreshKey={listRefreshKey}
+            onGroupsChange={setPageGroups}
           />
         )}
       />

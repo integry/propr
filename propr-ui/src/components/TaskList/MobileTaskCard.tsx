@@ -14,7 +14,8 @@ interface MobileTaskCardProps {
   /**
    * The card selects its task in place, beside the list. The trailing chevron
    * promises a drill-in to another screen, so it is drawn only when the card
-   * navigates.
+   * navigates. Its runs are then reached through the pane's run switcher, so
+   * the card counts them and lists none.
    */
   selectsInPlace?: boolean;
 }
@@ -58,8 +59,8 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
         </div>
         {!selectsInPlace && <ChevronRight size={16} className="mt-1 flex-shrink-0 text-slate-400" aria-hidden="true" />}
       </div>
-      <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggleGroup} />
-      {expanded && row.earlierRuns.length > 0 && (
+      <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggleGroup} selectsInPlace={selectsInPlace} />
+      {!selectsInPlace && expanded && row.earlierRuns.length > 0 && (
         <div className="mt-2">
           <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />
         </div>

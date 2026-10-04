@@ -105,6 +105,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
               onRowClick={onRowClick}
               onToggle={onToggleGroup}
               selectedTaskId={selectedTaskId}
+              selectsInPlace={selectsInPlace}
             />
           ))}
         </div>

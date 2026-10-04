@@ -48,7 +48,7 @@ describe('task ledger rows', () => {
   it('keeps all six columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
-    fireEvent.click(within(table).getByRole('button', { name: /5 earlier runs/ }));
+    fireEvent.click(within(table).getByRole('button', { name: '6 runs' }));
     expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
     const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
     expect(runsCell).toHaveAttribute('aria-colspan', '3');
@@ -81,7 +81,7 @@ describe('task ledger rows', () => {
     render(<Fixture onRowClick={navigate} />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     expect(within(table).queryByText('Change number 1')).not.toBeInTheDocument();
-    const toggle = within(table).getByRole('button', { name: /5 earlier runs/ });
+    const toggle = within(table).getByRole('button', { name: '6 runs' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
     expect(navigate).not.toHaveBeenCalled();
@@ -90,7 +90,17 @@ describe('task ledger rows', () => {
     expect(within(runs).getAllByRole('listitem')).toHaveLength(5);
     fireEvent.click(within(runs).getByText('Change number 5'));
     expect(navigate).toHaveBeenCalledExactlyOnceWith('task-5');
-    fireEvent.click(within(table).getByRole('button', { name: /Hide 5 earlier runs/ }));
+    fireEvent.click(within(table).getByRole('button', { name: '6 runs' }));
+    expect(within(table).queryByRole('list', { name: 'Earlier runs' })).not.toBeInTheDocument();
+  });
+
+  it('counts runs in a chip and lists none under the row when the task opens beside the list', () => {
+    render(<TaskTableContent groupedTasks={[group]} expandedGroups={new Set([group.key])} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    const chip = within(table).getByTestId('run-count');
+    expect(chip).toHaveTextContent(/^6 runs$/);
+    expect(chip.tagName).toBe('SPAN');
+    expect(table).not.toHaveTextContent(/earlier run/);
     expect(within(table).queryByRole('list', { name: 'Earlier runs' })).not.toBeInTheDocument();
   });
 
@@ -120,7 +130,7 @@ describe('task ledger rows', () => {
     expect((group.tasks[1] as Task & { critiqueScore: number }).critiqueScore).toBe(8);
     render(<Fixture />);
     expect(screen.queryByTitle('Code Quality Score: 9/10')).not.toBeInTheDocument();
-    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: '6 runs' }));
     for (const runs of screen.getAllByRole('list', { name: 'Earlier runs' })) {
       expect(runs).toHaveTextContent('Change number 1');
     }
@@ -174,7 +184,7 @@ describe('task ledger rows', () => {
     expect(title.className).toContain('font-semibold');
     rerender(<MemoryRouter><Fixture selectedTaskId="task-3" /></MemoryRouter>);
     expect(row()).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /5 earlier runs/ }));
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: '6 runs' }));
     const runs = within(screen.getByRole('table')).getByRole('list', { name: 'Earlier runs' });
     expect(within(runs).getByText('Change number 3').closest('button')).toHaveAttribute('aria-current', 'true');
     rerender(<MemoryRouter><Fixture selectedTaskId="elsewhere" /></MemoryRouter>);
@@ -200,7 +210,7 @@ describe('task ledger rows', () => {
     expect(title).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
     const cards = screen.getAllByTestId('task-card');
     expect(within(cards[0]).getByRole('link', { name: shown })).toBeInTheDocument();
-    fireEvent.click(within(table).getByRole('button', { name: /1 earlier run/ }));
+    fireEvent.click(within(table).getByRole('button', { name: '2 runs' }));
     const runs = within(table).getByRole('list', { name: 'Earlier runs' });
     expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can…');
   });

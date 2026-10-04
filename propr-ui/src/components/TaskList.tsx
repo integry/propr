@@ -106,7 +106,7 @@ function useRowKeyboardNavigation(
   }, [groups, selectedTaskId, onSelectTask]);
 }
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, selectedTaskId = null, onSelectTask, refreshKey = 0 }) => {
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, selectedTaskId = null, onSelectTask, refreshKey = 0, onGroupsChange }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
@@ -305,6 +305,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 
+  useEffect(() => {
+    onGroupsChange?.(groupedTasks);
+  }, [groupedTasks, onGroupsChange]);
+
   const toggleGroup = useMemo(() => createToggleGroupHandler(setExpandedGroups), []);
 
   const handleRowClick = useCallback((taskId: string) => {
@@ -351,8 +355,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     // Rows open beside the list rather than navigating away, so cards draw no drill-in chevron.
     selectsInPlace: Boolean(onSelectTask),
   };
-  // Runs of one pull request share a row, so the footer counts rows as well as tasks.
-  const groupNoun = visibleGroupedTasks.every(group => group.prNumber) ? 'pull request' : 'row';
 
   // Dashboard integration: simpler layout without anchored header/footer
   if (hideFilters) {
@@ -411,8 +413,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
             tasksPerPage={tasksPerPage}
             currentPage={currentPage}
             setCurrentPage={setCurrentPage}
-            groupCount={visibleGroupedTasks.length}
-            groupNoun={groupNoun}
+            returnedCount={visibleTasks.length}
           />
         </div>
       )}

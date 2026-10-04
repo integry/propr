@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, CornerDownRight, Images } from 'lucide-react';
+import { ChevronDown, Images } from 'lucide-react';
 import type { Task } from './types';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { ProviderLogo } from '../ui/ProviderLogo';
@@ -9,7 +9,7 @@ import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import {
-  hasRollupLine, pluralize, rowContainsTask, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  hasRollupLine, pluralize, rowContainsTask, runCount, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -119,10 +119,53 @@ export const TaskTitleLink: React.FC<{
 /** Run statuses worth calling out in the timeline; a finished run says nothing new. */
 const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
 
+/** The chip's look; the toggle form adds only hover and focus states. */
+const RUN_CHIP_CLASSES = 'inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600';
+
 /**
- * The line under a title, held to one line: `↳ 6 earlier runs · REVIEW what the
- * newest run did · 2 previews`. The type belongs to the newest run, not the PR,
- * so it travels with that run's summary rather than taking room from the title.
+ * How many agent runs went into the task: `8 runs`. The row is the task, so
+ * its runs are counted rather than listed under it. Where the task opens
+ * beside the list, the pane's run switcher moves between them and the chip
+ * only counts. Where a click leaves the list instead, the chip is the one way
+ * to reach an earlier run, so it opens them in place.
+ */
+export const RunCountChip: React.FC<{
+  row: TaskRowView;
+  expanded: boolean;
+  runsId: string;
+  onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  selectsInPlace: boolean;
+}> = ({ row, expanded, runsId, onToggle, selectsInPlace }) => {
+  const label = pluralize(runCount(row), 'run');
+  if (selectsInPlace) {
+    return (
+      <span data-testid="run-count" className={RUN_CHIP_CLASSES} title={`${label} — open the task to switch between them`}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="run-count"
+      aria-expanded={expanded}
+      aria-controls={runsId}
+      onClick={event => onToggle(row.key, event)}
+      className={`task-rollup-toggle ${RUN_CHIP_CLASSES} hover:border-slate-300 hover:text-slate-900`}
+    >
+      {/* A fixed box, so the run timeline's rail can start exactly under the caret. */}
+      <span aria-hidden="true" className="task-rollup-caret flex h-3 w-3 flex-none items-center justify-center">
+        <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? '' : '-rotate-90'}`} strokeWidth={2.5} />
+      </span>
+      {label}
+    </button>
+  );
+};
+
+/**
+ * The line under a title, held to one line: `[7 runs] · REVIEW what the newest
+ * run did · 2 previews`. The type belongs to the newest run, not the task, so
+ * it travels with that run's summary rather than taking room from the title.
  * A newest run with no summary states its outcome in the same place, as the
  * run timeline does, so no line ends on a bare type.
  * A single run with no summary has nothing to put here: its type and previews
@@ -134,29 +177,16 @@ export const RollupLine: React.FC<{
   expanded: boolean;
   runsId: string;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
-}> = ({ row, expanded, runsId, onToggle }) => {
+  selectsInPlace?: boolean;
+}> = ({ row, expanded, runsId, onToggle, selectsInPlace = false }) => {
   if (!hasRollupLine(row)) return null;
-  const count = row.earlierRuns.length;
+  const hasRuns = row.earlierRuns.length > 0;
   const summary = row.detail ?? row.outcome;
   const hasSummary = Boolean(row.type || summary);
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
-      {count > 0 && (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={runsId}
-          onClick={event => onToggle(row.key, event)}
-          className="task-rollup-toggle inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm hover:text-slate-900"
-        >
-          {/* A fixed box, so the run timeline's rail can start exactly under the caret. */}
-          <span aria-hidden="true" className="task-rollup-caret flex h-3 w-3 flex-none items-center justify-center">
-            {expanded ? <ChevronDown className="h-3 w-3" strokeWidth={2.5} /> : <CornerDownRight className="h-3 w-3" />}
-          </span>
-          {expanded ? 'Hide ' : ''}{count} earlier {count === 1 ? 'run' : 'runs'}
-        </button>
-      )}
-      {count > 0 && hasSummary && <span aria-hidden="true" className="flex-none">·</span>}
+      {hasRuns && <RunCountChip row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />}
+      {hasRuns && hasSummary && <span aria-hidden="true" className="flex-none">·</span>}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
       {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
       <PreviewCountBadge count={row.previewCount} />
@@ -225,10 +255,12 @@ interface TaskQueueRowProps {
   onRowClick: (taskId: string) => void;
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
   selectedTaskId?: string | null;
+  /** The task opens beside the list, whose run switcher reaches its earlier runs. */
+  selectsInPlace?: boolean;
 }
 
 /** One ledger row: TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE. */
-export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle, selectedTaskId }) => {
+export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle, selectedTaskId, selectsInPlace = false }) => {
   const { task } = row;
   const runsId = `task-runs-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const selected = rowContainsTask(row, selectedTaskId);
@@ -247,7 +279,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
             <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} />
             <TitleLinePreviews row={row} />
           </div>
-          <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} />
+          <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />
         </div>
         <div role="cell" className="min-w-0">
           <RepositoryChip repository={row.repository} label={row.repositoryName} />
@@ -259,7 +291,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
           <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
         </div>
       </div>
-      {expanded && row.earlierRuns.length > 0 && (
+      {!selectsInPlace && expanded && row.earlierRuns.length > 0 && (
         <div role="row" className="task-queue-grid pl-8 pr-6 pb-2">
           <div role="cell" aria-colspan={TASK_RUNS_COLUMN_SPAN} className="task-runs-cell min-w-0">
             <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />

@@ -36,6 +36,8 @@ export interface TaskListProps {
   onSelectTask?: (taskId: string) => void;
   /** Changing it reloads the page of tasks in place, e.g. after a task is deleted beside the list. */
   refreshKey?: number;
+  /** Receives the page's rows, so the task pane can switch between the runs of the open task. */
+  onGroupsChange?: (groups: TaskGroup[]) => void;
 }
 
 export interface TaskGroup {

@@ -78,8 +78,9 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table.getByRole('link', { name: 'Update', exact: true })).toHaveCount(0);
       await expect(table.locator('img, canvas, video')).toHaveCount(0);
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
-      // The footer counts tasks and the rows they fold into (nine pull requests and one issue).
-      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing tasks 1–100 of 14,769 · 10 rows on this page');
+      // The footer states the slice the API returned and the total, in runs, and nothing else:
+      // the fixture's 32 runs are the rows' run chips added up.
+      await expect(page.getByTestId('pagination-summary')).toHaveText('Showing 1–32 of 14,769 runs');
       // The repository filter counts the same tasks with the same digit grouping as the footer.
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
@@ -147,58 +148,13 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       expect(footerGap).toBe(0);
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
-      // The rollup opens in place, never navigates, and a mouse click leaves no focus frame behind.
-      const rollup = table.getByRole('button', { name: /6 earlier runs/ });
-      await rollup.click();
-      await expect(rollup).toHaveAttribute('aria-expanded', 'true');
-      await expect(rollup).toHaveCSS('outline-style', 'none');
-      await expect(rollup).toHaveCSS('box-shadow', 'none');
-      await expect(rollup).toHaveCSS('text-decoration-line', 'none');
-      await expect(headers).toHaveText(columns);
-      const runs = table.getByRole('list', { name: 'Earlier runs' });
-      await expect(runs.getByRole('listitem')).toHaveCount(6);
-      await expect(runs).toContainText('Resolve AntigravityAgent git access conflicts');
-      expect(new URL(page.url()).pathname).toBe('/tasks');
-      // Runs are one timeline block over TASK / PR through STATUS, each labelled by what it did
-      // rather than "Follow-up", and a run with no summary states its outcome instead of filler.
-      await expect(runs.locator('xpath=ancestor::*[@role="cell"][1]')).toHaveAttribute('aria-colspan', '3');
-      await expect(runs.getByTestId('work-type-badge').first()).toHaveText('Fix');
-      await expect(runs.getByTestId('work-type-badge').filter({ hasText: /follow-up/i })).toHaveCount(0);
-      await expect(runs).not.toContainText(/follow-up run/i);
-      await expect(runs).toContainText('Pushed commit 9f3c23e');
-      await expect(runs).toContainText('No code changes: finished without a commit');
-      // Run timestamps are secondary but legible: slate-500 (#64748b), 4.76:1 on white.
-      await expect(runs.locator('time').first()).toHaveCSS('color', 'rgb(100, 116, 139)');
-      const timeline = await table.evaluate(element => {
-        const headers = [...element.querySelectorAll('[role="columnheader"]')].map(header => header.getBoundingClientRect());
-        const list = element.querySelector('[aria-label="Earlier runs"]')!;
-        const caret = element.querySelector(`[aria-controls="${list.id}"] .task-rollup-caret`)!.getBoundingClientRect();
-        const rail = getComputedStyle(list, '::before');
-        const listBox = list.getBoundingClientRect();
-        return {
-          blockRight: list.closest('[role="cell"]')!.getBoundingClientRect().right,
-          statusRight: headers[2].right,
-          railCentre: listBox.left + parseFloat(rail.borderLeftWidth) / 2,
-          caretCentre: caret.left + caret.width / 2,
-          railTop: listBox.top + parseFloat(rail.top),
-          caretTop: caret.top,
-          caretBottom: caret.bottom,
-        };
-      });
-      expect(timeline.blockRight).toBeLessThanOrEqual(timeline.statusRight + 1);
-      await expect(table.locator('[title^="Code Quality Score"]')).toHaveCount(0);
-      // The rail is threaded from the caret: it starts inside the caret's box, on its centre line.
-      expect(Math.abs(timeline.railCentre - timeline.caretCentre)).toBeLessThanOrEqual(1);
-      expect(timeline.railTop).toBeGreaterThanOrEqual(timeline.caretTop);
-      expect(timeline.railTop).toBeLessThanOrEqual(timeline.caretBottom);
-      if (platform === undefined && width === 1920) await capture(page, 'tasks-ledger-rollup-expanded');
-      if (platform === undefined && width === 1280) await capture(page, 'tasks-ledger-rollup-expanded-1280');
-
-      // Keyboard focus is still visible on the toggle.
-      await rollup.focus();
-      await page.keyboard.press('Enter');
-      await expect(rollup).toHaveAttribute('aria-expanded', 'false');
-      await expect(rollup).toHaveCSS('text-decoration-line', 'underline');
+      // A row is the task: its runs are counted in a chip, never listed under it, because the
+      // task pane's run switcher moves between them.
+      const runCount = rows.filter({ hasText: 'Give implementation runs' }).getByTestId('run-count');
+      await expect(runCount).toHaveText('7 runs');
+      await expect(table).not.toContainText(/earlier run/);
+      await expect(table.getByRole('list', { name: 'Earlier runs' })).toHaveCount(0);
+      expect(await runCount.evaluate(node => node.tagName)).toBe('SPAN');
 
       // The title is a link to the task page; on a split-capable screen activating it opens the
       // task beside the list instead of leaving it.
@@ -225,7 +181,8 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
     await expect(page.locator('body')).not.toContainText('by GPT-6 Astra]');
     await expect(page.getByTestId('preview-count').first()).toHaveText('2 previews');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const rollup = page.getByRole('button', { name: /6 earlier runs/ });
+    // A click leaves the list here, so the run chip is what opens a task's earlier runs.
+    const rollup = page.getByRole('button', { name: '7 runs' });
     await rollup.click();
     await expect(rollup).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByRole('list', { name: 'Earlier runs' }).getByRole('listitem')).toHaveCount(6);
@@ -292,7 +249,21 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   // A pane is too narrow for the timeline/output split, so they stack in one column.
   const columns = await details.getByTestId('task-workspace-scroll').evaluate(node => getComputedStyle(node).flexDirection);
   expect(columns).toBe('column');
+  // The pane names the run it shows against the task's runs, and switches to an earlier one in place.
+  const runSwitcher = details.getByTestId('run-switcher').filter({ visible: true });
+  await expect(runSwitcher.locator(':scope > span')).toHaveText('Run 8 of 8 (Active)');
+  const runOptions = runSwitcher.getByRole('option');
+  await expect(runOptions).toHaveCount(8);
+  await expect(runOptions.nth(0)).toHaveText('Run 8 (Active) — Ultrafix cycle 3 (linting)');
+  await expect(runOptions.nth(2)).toHaveText('Run 6 (Completed) — Restrict issue-level withdrawal labels to actual intent withdrawal');
+  await expect(selectedCard.getByTestId('run-count')).toHaveText('8 runs');
   await capture(page, 'tasks-split-1920');
+  await runSwitcher.getByRole('combobox', { name: 'Run' }).selectOption('pr-2664-run-2');
+  await expect(page).toHaveURL(/task=pr-2664-run-2/);
+  // The run belongs to the same task, so its row stays selected.
+  await expect(list.locator('[data-testid="task-card"][aria-current="true"]')).toContainText('Stop work when an issue or PR withdraws intent');
+  // Stepping starts from the row the open run belongs to.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
   await page.keyboard.press('j');
   await expect(page).toHaveURL(/task=pr-2661-run-0/);
@@ -343,6 +314,67 @@ test('1920px modified and middle clicks still open the task page in a new tab', 
   }
   expect(new URL(page.url()).search).toBe('');
   await expect(page.getByTestId('task-split-details')).toHaveCount(0);
+});
+
+test('1200px a task\'s run chip opens its earlier runs as a timeline in the ledger', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 820 });
+  await fixture(page);
+  await page.goto('/tasks');
+  const table = page.getByRole('table', { name: 'Tasks' });
+  await expect(table).toBeVisible();
+  const headers = table.getByRole('columnheader');
+  const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'];
+  // Below the split breakpoint a click leaves the list, so the chip opens the runs in place,
+  // never navigates, and a mouse click leaves no focus frame behind.
+  const rollup = table.getByRole('button', { name: '7 runs' });
+  await rollup.click();
+  await expect(rollup).toHaveAttribute('aria-expanded', 'true');
+  await expect(rollup).toHaveCSS('outline-style', 'none');
+  await expect(rollup).toHaveCSS('box-shadow', 'none');
+  await expect(rollup).toHaveCSS('text-decoration-line', 'none');
+  await expect(headers).toHaveText(columns);
+  const runs = table.getByRole('list', { name: 'Earlier runs' });
+  await expect(runs.getByRole('listitem')).toHaveCount(6);
+  await expect(runs).toContainText('Resolve AntigravityAgent git access conflicts');
+  expect(new URL(page.url()).pathname).toBe('/tasks');
+  // Runs are one timeline block over TASK / PR through STATUS, each labelled by what it did
+  // rather than "Follow-up", and a run with no summary states its outcome instead of filler.
+  await expect(runs.locator('xpath=ancestor::*[@role="cell"][1]')).toHaveAttribute('aria-colspan', '3');
+  await expect(runs.getByTestId('work-type-badge').first()).toHaveText('Fix');
+  await expect(runs.getByTestId('work-type-badge').filter({ hasText: /follow-up/i })).toHaveCount(0);
+  await expect(runs).not.toContainText(/follow-up run/i);
+  await expect(runs).toContainText('Pushed commit 9f3c23e');
+  await expect(runs).toContainText('No code changes: finished without a commit');
+  // Run timestamps are secondary but legible: slate-500 (#64748b), 4.76:1 on white.
+  await expect(runs.locator('time').first()).toHaveCSS('color', 'rgb(100, 116, 139)');
+  const timeline = await table.evaluate(element => {
+    const headers = [...element.querySelectorAll('[role="columnheader"]')].map(header => header.getBoundingClientRect());
+    const list = element.querySelector('[aria-label="Earlier runs"]')!;
+    const caret = element.querySelector(`[aria-controls="${list.id}"] .task-rollup-caret`)!.getBoundingClientRect();
+    const rail = getComputedStyle(list, '::before');
+    const listBox = list.getBoundingClientRect();
+    return {
+      blockRight: list.closest('[role="cell"]')!.getBoundingClientRect().right,
+      statusRight: headers[2].right,
+      railCentre: listBox.left + parseFloat(rail.borderLeftWidth) / 2,
+      caretCentre: caret.left + caret.width / 2,
+      railTop: listBox.top + parseFloat(rail.top),
+      caretTop: caret.top,
+      caretBottom: caret.bottom,
+    };
+  });
+  expect(timeline.blockRight).toBeLessThanOrEqual(timeline.statusRight + 1);
+  await expect(table.locator('[title^="Code Quality Score"]')).toHaveCount(0);
+  // The rail is threaded from the caret: it starts inside the caret's box, on its centre line.
+  expect(Math.abs(timeline.railCentre - timeline.caretCentre)).toBeLessThanOrEqual(1);
+  expect(timeline.railTop).toBeGreaterThanOrEqual(timeline.caretTop);
+  expect(timeline.railTop).toBeLessThanOrEqual(timeline.caretBottom);
+
+  // Keyboard focus is still visible on the chip.
+  await rollup.focus();
+  await page.keyboard.press('Enter');
+  await expect(rollup).toHaveAttribute('aria-expanded', 'false');
+  await expect(rollup).toHaveCSS('text-decoration-line', 'underline');
 });
 
 test('1024px a plain click still navigates to the task page', async ({ page }) => {
