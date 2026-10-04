@@ -233,7 +233,8 @@ The MCP `fix_review_findings` tool continues to accept explicit IDs only; it
 supplies `selectableFindingIds` and `selectableSuggestionIds` for callers to
 select. Like `/fix`, it runs against the current head even when new commits
 landed after the review: it reports the selected records that still apply and
-skips, by name, any whose cited files were deleted since the review. Passing
+skips, by name, any whose cited files were deleted since the review when no
+surviving file gained lines the code could have moved into. Passing
 `expectedHead` keeps the stricter behaviour and refuses a moved head. An MCP
 `all` option is a possible follow-up.
 

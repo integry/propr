@@ -8,7 +8,7 @@ import { type Args, type WriteFixture, fixtureReviewBody } from './mcpPullReques
  * it runs on the current head and only drops records whose cited code is gone.
  */
 /** A principal whose comparison reports `files` and whose head tree holds `tree`; a null tree is unreadable. */
-function reanchorPrincipal(files: Array<{ filename: string; status: string }>, tree: string[] | null): McpPrincipal {
+export function reanchorPrincipal(files: Array<{ filename: string; status: string; additions?: number }>, tree: string[] | null): McpPrincipal {
   const request = async (route: string) => {
     if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { files } };
     if (tree) return { data: { truncated: false, tree: tree.map(path => ({ path, type: 'blob' })) } };

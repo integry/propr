@@ -587,7 +587,8 @@ the fix is re-anchored onto the current resolved head: the receipt returns
 `reanchored: true`. ProPR compares the two heads and lists each selected record
 under `applied` (with `touchedPaths` naming cited files that changed since the
 review) or `skipped` (`reason: "code_removed"` with `removedPaths`, when every
-file the record cites was deleted). Only applied records are posted in the
+file the record cites was deleted and no surviving file gained lines the code
+could have moved into). Only applied records are posted in the
 `/fix` command; `findingIds` and `suggestionIds` report exactly those.
 `comparison` is `same_head`, `compared`, or `unavailable` when the changes since
 the review could not be read (for example after a force-push), in which case

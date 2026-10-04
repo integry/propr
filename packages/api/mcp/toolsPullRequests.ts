@@ -141,8 +141,8 @@ async function withModelLabelLease<T>(redis: RedisClientType, repository: string
  * rejection here names the identifiers it rejected instead of dropping them.
  *
  * A review of an older head is re-anchored onto `head`, as a hand-typed `/fix`
- * is: records whose cited code was deleted since the review are reported as
- * skipped, and the rest are posted. Only when nothing still applies is the call
+ * is: records whose cited code was deleted since the review, with no surviving
+ * file gaining lines it could have moved into, are reported as skipped, and the rest are posted. Only when nothing still applies is the call
  * refused, because then there is no `/fix` left to post.
  */
 async function resolveFixSelection(
@@ -256,7 +256,7 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
           + ' Selecting a suggestion does not change how blockers are treated: blockers stay required, suggestions are acted on only because you asked for them.'
           + ' Unknown or mismatched identifiers are rejected rather than dropped.'
           + ' Like a hand-typed /fix, a review of an older head is not refused: the fix is re-anchored onto the current head (returned as resolvedHead, with reviewedHead and reanchored=true).'
-          + ' Records whose cited files were all deleted since the review are reported in skipped with reason code_removed and left out of the posted command; the rest are posted and listed in applied, with touchedPaths naming cited files that changed since the review.'
+          + ' Records whose cited files were all deleted since the review, when no surviving file gained lines the code could have moved into, are reported in skipped with reason code_removed and left out of the posted command; the rest are posted and listed in applied, with touchedPaths naming cited files that changed since the review.'
           + ' comparison=unavailable means the changes since the review could not be read, so every record was posted. The call is refused with STALE_FINDINGS only when no selected record still applies; pass expectedHead to refuse a moved head outright.'
         : '')
       + (command === 'review'

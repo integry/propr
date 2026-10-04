@@ -7,7 +7,7 @@ export interface FixRecord { id: string; kind: 'finding' | 'suggestion'; text: s
 /** A record still sent to `/fix`; `touchedPaths` are cited files that changed since the review. */
 export interface AppliedFixRecord { id: string; kind: 'finding' | 'suggestion'; touchedPaths: string[] }
 
-/** A record withheld because every file it cites was deleted after the review. */
+/** A record withheld because every file it cites was deleted after the review and its code went nowhere else. */
 export interface SkippedFixRecord { id: string; kind: 'finding' | 'suggestion'; reason: 'code_removed'; removedPaths: string[] }
 
 export interface FixReanchorReport {
@@ -27,7 +27,10 @@ export interface FixReanchorReport {
   skipped: SkippedFixRecord[];
 }
 
-interface ComparedFile { filename: string; status: string; previous_filename?: string }
+interface ComparedFile { filename: string; status: string; previous_filename?: string; additions?: number }
+
+/** GitHub lists at most this many files in an unpaginated comparison; a full page may be missing some. */
+const COMPARE_FILE_LIMIT = 300;
 
 /** Conventional repository files that carry no extension, e.g. `Dockerfile`. */
 const EXTENSIONLESS_FILES = 'Dockerfile|Containerfile|Makefile|GNUmakefile|Procfile|Gemfile|Rakefile|Jenkinsfile|Vagrantfile|Brewfile|Justfile|Caddyfile|Pipfile|Podfile|Fastfile|Earthfile|Tiltfile|LICENSE|LICENCE|NOTICE|CODEOWNERS|OWNERS|AUTHORS|VERSION';
@@ -168,6 +171,11 @@ async function changedSince(principal: McpPrincipal, repository: string, from: s
  * in full, applicability is uncertain and the record is applied. A rename or edit is not enough,
  * because the fixing agent reads the current tree and can follow moved code; such
  * records are applied and their changed citations reported in `touchedPaths`.
+ *
+ * A deleted path alone does not show the code is gone: it may have moved into a file
+ * the review never named. So nothing is withheld unless the comparison rules that out
+ * by listing, in full, no surviving file that gained a line; otherwise every record is
+ * applied and the fixing agent judges the current code.
  */
 export async function reanchorFixRecords(
   principal: McpPrincipal,
@@ -190,10 +198,14 @@ export async function reanchorFixRecords(
     else touched.add(file.filename);
     if (file.previous_filename) touched.add(file.previous_filename);
   }
+  // Code may have moved into any surviving file that gained lines, cited or not; an
+  // unknown addition count, or a comparison too long to be listed in full, may hide one.
+  const relocationRuledOut = files.length < COMPARE_FILE_LIMIT
+    && files.every(file => file.status === 'removed' || file.additions === 0);
   const report: FixReanchorReport = { ...base, reanchored: true, comparison: 'compared', applied: [], skipped: [] };
   const cited = records.map(record => ({ ...record, paths: citedPaths(record.text) }));
   const allRemoved = ({ text, paths }: { text: string; paths: string[] }) =>
-    paths.length > 0 && paths.every(path => removed.has(path)) && !hasUnparsedPath(text, paths);
+    relocationRuledOut && paths.length > 0 && paths.every(path => removed.has(path)) && !hasUnparsedPath(text, paths);
   // Only a record about to be withheld needs the current tree, so it is read lazily.
   const present = cited.some(allRemoved) ? await filesAt(principal, target.repository, target.head) : null;
   for (const record of cited) {

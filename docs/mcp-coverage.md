@@ -185,7 +185,8 @@ across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
 follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed
 or mismatched identifiers by name. A review of an older head is re-anchored onto
 the current head rather than rejected: records whose cited files were all
-deleted since the review are reported in `skipped` and left out, the rest are
+deleted since the review, with no surviving file gaining lines the code could
+have moved into, are reported in `skipped` and left out, the rest are
 posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
 report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
 on a mismatch. A suggestion is
