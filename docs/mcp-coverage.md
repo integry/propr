@@ -18,7 +18,7 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Cross-repository “what is happening now” | `get_current_activity`; running tasks, active goals, plans being generated, queued work and blockers waiting on a human, for every repository in the grant at once. Optional exact `repository`; `includeRoutine` keeps filtered Inbox noise; `activity` resource |
 | “What has been done recently” | `get_recent_activity`; one merged newest-first timeline of terminal tasks, opened/merged pull requests, finished goals, published plans, reviews, ultrafix loops and blocking notifications. `sinceMinutes` or `since`/`until`, default 60 minutes and at most seven days; `activity/recent` resource |
 | Task/PR work overview | `get_work_overview`; running, recent or all task summaries joined to bounded current PR head, review, checks, merge state, newest ProPR review and ultrafix state, using one aliased GraphQL call per repository |
-| Draft list/read/create/update/delete | `list_plans`, `get_plan`, `create_plan`, `update_plan`, `delete_plan`; `list_plans` takes an optional `status` filter (`active`, any persisted plan status such as `draft`/`generating`/`refining`/`review`/`approved`/`executed`/`executing`/`pr_created`/`merged`/`failed`, or `all`, the default), applied in the query so `offset`/`limit` page the filtered set |
+| Draft list/read/create/update/delete | `list_plans`, `get_plan`, `create_plan`, `update_plan`, `delete_plan`; `list_plans` takes an optional `status` filter (`active`, any persisted plan status such as `draft`/`generating`/`refining`/`review`/`approved`/`executed`/`executing`/`pr_created`/`merged`/`failed`, or `all`, the default), applied in the query so `offset`/`limit` page the filtered set. `delete_plan` removes idle (`draft`/`review`/`approved`) and terminal (`failed`/`merged`) plans; its `expectedRevision` is an optional guard that is rejected with `STALE_REVISION` only when stale, and a plan that is generating, refining or executing is refused with `PLAN_NOT_DELETABLE`. `mcp_revision` (returned by `get_plan`) is an MCP-internal optimistic-concurrency token, not a user-facing number, and is not shown in the web UI |
 | Plan revision history | `list_plan_revisions`, `get_plan_revision`, `restore_plan_revision`; every replaced plan is kept (up to 50 per plan), revisions expose their persisted cause (`generation`, `refinement`, `manual_edit`, `restore`, `rename` or `unknown`), and a restore requires the exact `expectedRevision` and is refused for published or busy plans |
 | Generate/refine a plan | `generate_plan`, `refine_plan`; refinement output is schema-validated before replacement and an invalid result remains observable as `REFINEMENT_OUTPUT_INVALID` without destroying the prior plan |
 | Publish GitHub issues | `publish_plan`; publication does not start implementation. A recoverable partial publication stays inspectable and requires a fresh receipt with `resume: true`, which adopts marked issues before creating missing ones |
@@ -174,7 +174,8 @@ adopts it.
 `get_pull_request_discussion` pages GitHub issue comments (maximum 20 per page),
 returns 4096-character body chunks and parsed F# findings and S# suggestions
 (`currentFindingIds` and `currentSuggestionIds` honor the worker’s seven-day age
-limit, known head and consumption state), and supports exact
+limit, known head and consumption state; `selectableFindingIds` and
+`selectableSuggestionIds` drop the head condition, as `/fix` does), and supports exact
 comment/task lookup. A comment embedding GitHub user attachments lists them under
 `attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
 `get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
@@ -182,7 +183,13 @@ existing review marker; legacy reviews explicitly report an unknown head.
 `fix_review_findings` requires `reviewCommentId` and at least one identifier
 across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
 follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed
-or mismatched identifiers by name and rejects known stale heads. A suggestion is
+or mismatched identifiers by name. A review of an older head is re-anchored onto
+the current head rather than rejected: records whose cited files were all
+deleted since the review, with no surviving file gaining lines the code could
+have moved into, are reported in `skipped` and left out, the rest are
+posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
+report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
+on a mismatch. A suggestion is
 in fix scope only because it was named, and naming one never relaxes a merge
 blocker. Comment content remains untrusted data.
 

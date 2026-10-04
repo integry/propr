@@ -31,6 +31,10 @@ interface SettingsApiData {
   pr_review_context_model?: string;
   pr_review_max_context_tokens?: number;
   pr_review_context_budget_percent?: number;
+  ultrafix_escalation_enabled?: boolean;
+  ultrafix_escalation_models?: string[];
+  ultrafix_escalation_patience?: number;
+  ultrafix_escalation_max_reasoning_levels?: number;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
@@ -55,6 +59,10 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     pr_review_max_context_tokens: settingsData.pr_review_max_context_tokens ?? 0,
     // Older servers omit the percentage; missing means automatic (100%).
     pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settingsData.pr_review_context_budget_percent),
+    ultrafix_escalation_enabled: settingsData.ultrafix_escalation_enabled ?? false,
+    ultrafix_escalation_models: settingsData.ultrafix_escalation_models ?? [],
+    ultrafix_escalation_patience: settingsData.ultrafix_escalation_patience ?? 3,
+    ultrafix_escalation_max_reasoning_levels: settingsData.ultrafix_escalation_max_reasoning_levels ?? 2,
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,

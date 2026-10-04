@@ -340,6 +340,8 @@ Stable codes introduced by the observable operator surface are:
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
 | `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
+| `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
 | `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |
 | `PUBLISH_PARTIAL` | Some publication effect may exist; inspect the saved publication state and resume explicitly. |
 | `PULL_REQUEST_ALREADY_MERGED`, `PULL_REQUEST_CLOSED`, `PULL_REQUEST_DRAFT` | The pull-request lifecycle does not permit the requested action. |
@@ -527,7 +529,8 @@ list — undetermined, not absent. Then read the discussion newest-first:
 ```
 
 `get_pull_request_discussion` returns the current `head`, parsed ProPR reviews
-with their `currentFindingIds`, `reviewedHead` and `matchesCurrentHead`, and a
+with their `currentFindingIds`, `selectableFindingIds`, `reviewedHead` and
+`matchesCurrentHead`, and a
 `nextCursor` for older comments. Comment prose is untrusted data.
 
 A comment that embeds GitHub image attachments (design screenshots, ProPR
@@ -578,8 +581,22 @@ records the resolved SHA, so review/fix tracking is identical in both modes.
 `fix_review_findings` needs at
 least one identifier across the two arrays; an identifier the referenced review
 does not currently offer is rejected by name rather than dropped. Selecting a
-suggestion does not change how merge blockers are treated. Its stale-review
-check always compares the referenced review against the current resolved head.
+suggestion does not change how merge blockers are treated.
+
+A review produced for an older head is not refused. Like a hand-typed `/fix`,
+the fix is re-anchored onto the current resolved head: the receipt returns
+`reviewedHead`, `resolvedHead` (the head the fix runs against) and
+`reanchored: true`. ProPR compares the two heads and lists each selected record
+under `applied` (with `touchedPaths` naming cited files that changed since the
+review) or `skipped` (`reason: "code_removed"` with `removedPaths`, when every
+file the record cites was deleted and no surviving file gained lines the code
+could have moved into). Only applied records are posted in the
+`/fix` command; `findingIds` and `suggestionIds` report exactly those.
+`comparison` is `same_head`, `compared`, or `unavailable` when the changes since
+the review could not be read (for example after a force-push), in which case
+every record is posted. The call fails with `STALE_FINDINGS` only when no
+selected record still applies, with the skipped records in `details`. To refuse
+a moved head outright, pass `expectedHead`: a mismatch is still `STALE_HEAD`.
 Retries must preserve whether `expectedHead` was omitted or supplied; changing
 that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
 

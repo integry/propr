@@ -22,6 +22,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext, restorePendingComments } from './prPendingComments.js';
 import { executeReviewProcessing, type PRJobContext } from './prCommentReviewJob.js';
+import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
@@ -158,6 +159,27 @@ async function handleSkippedPRValidation(params: ExecuteProcessingParams, reason
     return { status: 'skipped', reason, pullRequestNumber };
 }
 
+async function resolveExecutionReasoning(
+    params: ExecuteProcessingParams,
+    llm: ExecuteProcessingParams['llm'],
+    prLabels: Parameters<typeof resolvePrReasoningLevelOverride>[0],
+    linkedIssueLabels: Parameters<typeof resolvePrReasoningLevelOverride>[1],
+): Promise<ExecuteProcessingParams['llm']> {
+    const { job, context: { repoOwner, repoName, pullRequestNumber, correlatedLogger } } = params;
+    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prLabels, linkedIssueLabels, {
+        repoOwner, repoName, pullRequestNumber, correlatedLogger,
+    });
+    if (job.data.ultrafixMeta) {
+        const execution = await resolveUltrafixFixExecution({
+            redis: redisClient, owner: repoOwner, repo: repoName, pr: pullRequestNumber,
+            workEpoch: job.data.ultrafixMeta.workEpoch ?? 0, model: llm, effort: job.data.reasoningLevel,
+        });
+        llm = execution.model ?? llm;
+        job.data.reasoningLevel = execution.effort;
+    }
+    return llm;
+}
+
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
@@ -188,9 +210,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             .filter(comment => !comment.body || !isReviewComment(comment.body))
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-        job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
-            repoOwner, repoName, pullRequestNumber, correlatedLogger,
-        });
+        llm = await resolveExecutionReasoning(params, llm, prData!.data.labels, linkedIssueResult.linkedIssueLabels);
         let commentHistory = '';
         if (!job.data.ultrafixMeta) {
             commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
@@ -205,8 +225,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
                 'Skipping fix processing because no review findings or suggestions were selected');
             await handleNoAuthorizedFindings({
-                job, taskId, taskUrl, stateManager, octokit,
-                unprocessedComments: state.unprocessedComments,
+                job, taskId, taskUrl, stateManager, octokit, unprocessedComments: state.unprocessedComments,
                 redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
                 // Naming the identifiers is what makes the posted explanation actionable.
                 unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
@@ -215,9 +234,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         }
 
         await markSelectedUltrafixFindings(
-            job, redisClient,
-            { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
-            selectedReviewComments,
+            job, redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber }, selectedReviewComments,
         );
 
         state.startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -258,16 +275,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             : originalTaskSpec;
 
         const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
-        const instructionText = workflow === 'followup'
-            ? localizedCombinedCommentBody
-            : job.data.commandInstructions;
+        const instructionText = workflow === 'followup' ? localizedCombinedCommentBody : job.data.commandInstructions;
         const titleContext = buildPrTaskTitleContext({
-            workflow,
-            pullRequestNumber,
-            prTitle: prData!.data.title,
-            instructionText,
-            recentComments: allComments,
-            prDescription: prData!.data.body,
+            workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText,
+            recentComments: allComments, prDescription: prData!.data.body,
             reviewFeedback: reviewCommentsSection,
             excludeCommentIds: state.unprocessedComments.map(comment => comment.id),
         });
@@ -275,11 +286,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const summaryTitle = await generateSummaryTitle({
             combinedCommentBody: localizedCombinedCommentBody,
             titleContext: titleContext.context,
-            fallbackSubtitle,
-            worktreeInfo: state.worktreeInfo,
-            githubToken,
-            pullRequestNumber,
-            prTitle: prData!.data.title,
+            fallbackSubtitle, worktreeInfo: state.worktreeInfo, githubToken,
+            pullRequestNumber, prTitle: prData!.data.title,
             workflowLabel: getPrTaskWorkflowLabel(workflow),
             repoOwner, repoName, correlationId, taskId, correlatedLogger,
         });
@@ -380,13 +388,10 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     const lockToken = await ensurePRProcessingLockToken(job.data, correlationId, () => job.updateData(job.data));
 
     const lockKey = await acquireCurrentPRLock({ lockKey: initialLockKey, lockToken, correlatedLogger }, resolveLockKey);
-    if (!lockKey) return handlePRCommentLockContention({
-        job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments, correlatedLogger,
-    });
+    if (!lockKey) return handlePRCommentLockContention({ job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments, correlatedLogger });
 
     const recovery = await evaluatePRCommentPreExecutionRecovery({
-        job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments,
-        correlatedLogger,
+        job, taskId, stateManager, redisClient, pickedUpComments: context.pickedUpComments, correlatedLogger,
         releaseLock: () => releasePRProcessingLock(redisClient, lockKey, lockToken),
     });
     if (recovery.result) return recovery.result;
@@ -394,16 +399,12 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
 
     const executionController = new AbortController();
     const stopLockHeartbeat = startPRProcessingLockHeartbeat({
-        redisClient,
-        lockKey,
-        lockToken,
+        redisClient, lockKey, lockToken,
         onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'); executionController.abort(new Error('PR processing lock was lost during agent execution')); },
         onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
     });
 
-    await createPRCommentTaskStateIfMissing({
-        job, taskId, stateManager, preexistingState, modelName, correlatedLogger,
-    });
+    await createPRCommentTaskStateIfMissing({ job, taskId, stateManager, preexistingState, modelName, correlatedLogger });
 
     let capacityRefused = false;
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };

@@ -1118,6 +1118,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1158,6 +1159,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1199,6 +1204,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1239,6 +1245,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1269,6 +1279,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1312,6 +1323,10 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
             },
@@ -2975,6 +2990,7 @@ describe('config route follow-up helpers', () => {
                     loadUltrafixRatingGoal: loadUltrafixRatingGoalMock,
                     loadUltrafixMaxCycles: loadUltrafixMaxCyclesMock,
                     loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
+                    loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
                 },
             });
             const res = {
@@ -3015,6 +3031,10 @@ describe('config route follow-up helpers', () => {
                 ultrafix_rating_goal: 7,
                 ultrafix_max_cycles: 5,
                 ultrafix_pause_seconds: 60,
+                ultrafix_escalation_enabled: false,
+                ultrafix_escalation_models: [],
+                ultrafix_escalation_patience: 3,
+                ultrafix_escalation_max_reasoning_levels: 2,
             });
         } finally {
             if (previousPlannerContextModel === undefined) {
