@@ -95,9 +95,10 @@ export const getStatusPill = (status: string) => {
     case 'waiting':
     case 'pending':
     case 'queued':
+      // Neutral slate: purple belongs to Merged alone. The hollow dot marks a run that has not started.
       return (
-        <span className={`${baseClasses} bg-purple-50 text-purple-700 border border-purple-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+        <span className={`${baseClasses} bg-slate-100 text-slate-600 border border-slate-200`}>
+           <span className="w-1.5 h-1.5 rounded-full border border-slate-400"></span>
            Pending
         </span>
       );

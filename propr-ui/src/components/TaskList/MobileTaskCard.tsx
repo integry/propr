@@ -11,10 +11,16 @@ interface MobileTaskCardProps {
   onRowClick: (taskId: string) => void;
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
   selectedTaskId?: string | null;
+  /**
+   * The card selects its task in place, beside the list. The trailing chevron
+   * promises a drill-in to another screen, so it is drawn only when the card
+   * navigates.
+   */
+  selectsInPlace?: boolean;
 }
 
 /** The mobile form of a ledger row: the same title, rollup and measures, stacked. */
-export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, expanded, onRowClick, onToggleGroup, selectedTaskId }) => {
+export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, expanded, onRowClick, onToggleGroup, selectedTaskId, selectsInPlace = false }) => {
   const { task } = row;
   const runsId = `task-runs-mobile-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const selected = rowContainsTask(row, selectedTaskId);
@@ -50,7 +56,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
             <span className="flex-none font-mono">{formatDuration(task.processedAt || task.createdAt, task.completedAt)}</span>
           </div>
         </div>
-        <ChevronRight size={16} className="mt-1 flex-shrink-0 text-slate-400" aria-hidden="true" />
+        {!selectsInPlace && <ChevronRight size={16} className="mt-1 flex-shrink-0 text-slate-400" aria-hidden="true" />}
       </div>
       <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggleGroup} />
       {expanded && row.earlierRuns.length > 0 && (

@@ -52,7 +52,9 @@ const ContextGroup: React.FC<{ label: string; divided?: boolean; children: React
   const items = React.Children.toArray(children);
   if (!items.length) return null;
   return (
-    <div role="group" aria-label={label} className={`flex min-w-0 flex-wrap items-center gap-y-1 ${divided ? 'border-l border-slate-200 pl-3' : ''}`}>
+    <div role="group" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-y-1">
+      {/* Groups continue the same line with a bullet, not a bordered pipe that reads as a stray character. */}
+      {divided && <span aria-hidden="true" className="mr-3 text-gray-300">•</span>}
       {items.map((item, index) => (
         <React.Fragment key={index}>
           {index > 0 && <Dot />}

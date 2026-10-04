@@ -94,8 +94,26 @@ describe('buildTaskRow', () => {
     expect(run({ status: 'failed' })).toBe('Stopped before reporting a result');
     expect(run({ status: 'cancelled' })).toBe('Stopped before committing changes');
     expect(run({ status: 'processing' })).toBe('No result yet');
+    expect(run({ status: 'queued' })).toBe('Waiting to start');
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A' }, { title: 'Follow-up PR #1: A' }, { title: 'Followup: Update 2' }]));
     expect(row.earlierRuns.map(earlier => earlier.delta)).not.toContain('Follow-up run');
+  });
+
+  it('gives a rollup line whose newest run has no summary that run\'s outcome, never a bare type', () => {
+    const queued = buildTaskRow(group([
+      { title: 'Review PR #2656: Show provider rate-limit resets', status: 'queued' },
+      { title: 'Fix PR #2656: Show provider rate-limit resets', subtitle: 'Format reset times' },
+    ]));
+    expect(queued).toMatchObject({ type: 'Review', detail: null, outcome: 'Waiting to start' });
+    const summarized = buildTaskRow(group([
+      { title: 'Follow-up PR #2654: Retry webhooks', subtitle: 'Back off exponentially' },
+      { title: 'Review PR #2654: Retry webhooks' },
+    ]));
+    expect(summarized).toMatchObject({ detail: 'Back off exponentially', outcome: null });
+    // A single run stays one line: no outcome is invented to give it a second.
+    const single = buildTaskRow(group([{ title: 'New Issue: Add retries' }]));
+    expect(single.outcome).toBeNull();
+    expect(hasRollupLine(single)).toBe(false);
   });
 
   it('shows the repository by name, keeping the owner for the tooltip', () => {

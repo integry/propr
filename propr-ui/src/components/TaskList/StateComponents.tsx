@@ -48,6 +48,8 @@ interface TaskTableContentProps {
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
   /** The task open beside the list; its row is marked selected. */
   selectedTaskId?: string | null;
+  /** A row click opens the task beside the list instead of navigating to it. */
+  selectsInPlace?: boolean;
 }
 
 const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
@@ -62,6 +64,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   onRowClick,
   onToggleGroup,
   selectedTaskId,
+  selectsInPlace = false,
 }) => {
   const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
@@ -78,6 +81,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
             onRowClick={onRowClick}
             onToggleGroup={onToggleGroup}
             selectedTaskId={selectedTaskId}
+            selectsInPlace={selectsInPlace}
           />
         ))}
       </div>

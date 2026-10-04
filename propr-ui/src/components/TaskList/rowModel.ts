@@ -61,6 +61,12 @@ export interface TaskRowView {
   type: string | null;
   /** The newest run's own summary, when it says more than the title. */
   detail: string | null;
+  /**
+   * What the newest run came to, when it recorded no summary but the row has
+   * earlier runs: the line under the title is drawn for them anyway, and every
+   * such line reads `↳ N earlier runs · [type] what the newest run did`.
+   */
+  outcome: string | null;
   previewCount: number;
   earlierRuns: TaskRunView[];
 }
@@ -180,6 +186,10 @@ export function runOutcome(task: Task): string {
       return firstLine(task.failedReason) ?? 'Stopped before reporting a result';
     case 'cancelled':
       return task.commitHash ? `Stopped after commit ${task.commitHash.slice(0, 7)}` : 'Stopped before committing changes';
+    case 'waiting':
+    case 'pending':
+    case 'queued':
+      return 'Waiting to start';
     default:
       return 'No result yet';
   }
@@ -198,6 +208,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     fullTitle,
     type: newest.type,
     detail: newest.delta,
+    outcome: earlier.length > 0 && !newest.delta ? runOutcome(task) : null,
     previewCount: previewCount(task),
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);

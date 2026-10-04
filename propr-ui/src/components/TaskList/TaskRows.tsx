@@ -123,6 +123,8 @@ const QUIET_RUN_STATUSES = new Set(['completed', 'merged']);
  * The line under a title, held to one line: `↳ 6 earlier runs · REVIEW what the
  * newest run did · 2 previews`. The type belongs to the newest run, not the PR,
  * so it travels with that run's summary rather than taking room from the title.
+ * A newest run with no summary states its outcome in the same place, as the
+ * run timeline does, so no line ends on a bare type.
  * A single run with no summary has nothing to put here: its type and previews
  * ride on the title line instead (`TitleLineType`, `TitleLinePreviews`), and this line is not
  * drawn at all.
@@ -135,7 +137,8 @@ export const RollupLine: React.FC<{
 }> = ({ row, expanded, runsId, onToggle }) => {
   if (!hasRollupLine(row)) return null;
   const count = row.earlierRuns.length;
-  const hasSummary = Boolean(row.type || row.detail);
+  const summary = row.detail ?? row.outcome;
+  const hasSummary = Boolean(row.type || summary);
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
       {count > 0 && (
@@ -155,7 +158,7 @@ export const RollupLine: React.FC<{
       )}
       {count > 0 && hasSummary && <span aria-hidden="true" className="flex-none">·</span>}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
-      {row.detail && <span className="min-w-0 truncate" title={row.detail}>{row.detail}</span>}
+      {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
       <PreviewCountBadge count={row.previewCount} />
     </div>
   );

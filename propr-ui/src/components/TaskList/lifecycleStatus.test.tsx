@@ -31,9 +31,18 @@ describe('lifecycle status presentation', () => {
     }
   );
 
-  it.each(['waiting', 'pending', 'queued'])('renders the Pending badge for the %s queue state', status => {
+  it.each(['waiting', 'pending', 'queued'])('renders a neutral slate Pending badge for the %s queue state', status => {
     render(<>{getStatusPill(status)}</>);
-    expect(screen.getByText('Pending').className).toContain('bg-purple-50');
+    const pill = screen.getByText('Pending');
+    expect(pill.className).toContain('bg-slate-100');
+    expect(pill.className).toContain('text-slate-600');
+    expect(pill.className).not.toMatch(/purple|violet/);
+  });
+
+  it('keeps purple for Merged alone', () => {
+    render(<>{getStatusPill('merged')}{getStatusPill('queued')}</>);
+    expect(screen.getByText('Merged').className).toContain('bg-violet-50');
+    expect(screen.getByText('Pending').className).not.toBe(screen.getByText('Merged').className);
   });
 
   it.each([

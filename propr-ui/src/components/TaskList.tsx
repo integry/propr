@@ -348,6 +348,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     onRowClick: handleRowClick,
     onToggleGroup: toggleGroup,
     selectedTaskId,
+    // Rows open beside the list rather than navigating away, so cards draw no drill-in chevron.
+    selectsInPlace: Boolean(onSelectTask),
   };
   // Runs of one pull request share a row, so the footer counts rows as well as tasks.
   const groupNoun = visibleGroupedTasks.every(group => group.prNumber) ? 'pull request' : 'row';
