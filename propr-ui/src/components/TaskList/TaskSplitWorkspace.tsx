@@ -4,6 +4,7 @@ import { ExternalLink, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import TaskDetails from '../TaskDetails';
 import { taskPath } from './rowModel';
+import { isDialogOpen, isTypingTarget } from './keyboardOwnership';
 
 interface TaskSplitWorkspaceProps {
   /** The task list; it keeps its place in the tree whether or not a task is open, so it never remounts. */
@@ -14,11 +15,9 @@ interface TaskSplitWorkspaceProps {
   onDeleted: (taskId: string) => void;
 }
 
-/** A dialog (the prompt, the log files, a follow-up) handles its own Escape. */
+/** A dialog or a field handles its own Escape. */
 const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>
-  event.defaultPrevented
-  || Boolean(document.querySelector('[role="dialog"], [aria-modal="true"]'))
-  || (event.target instanceof Element && Boolean(event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')));
+  event.defaultPrevented || isDialogOpen() || isTypingTarget(event.target);
 
 /**
  * `/tasks` as a triage console on wide screens: the list on the left and the

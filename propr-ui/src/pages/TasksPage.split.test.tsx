@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import TasksPage from './TasksPage';
@@ -22,6 +23,19 @@ vi.mock('../components/TaskList/Filters', () => ({
 // Deletion is held here until a test lets it finish, as a slow request would be.
 const deletion = vi.hoisted(() => ({ hold: false, finish: [] as Array<() => void> }));
 
+// Like the real follow-up dialog, the draft lives in the details view and goes when it unmounts.
+const FollowupDialog = () => {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  if (!open) return <button type="button" onClick={() => setOpen(true)}>Follow up</button>;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Follow-up">
+      <textarea aria-label="Follow-up request" value={draft} onChange={event => setDraft(event.target.value)} />
+      <button type="button">Send follow-up</button>
+    </div>
+  );
+};
+
 // The details view has its own suites; here it only has to say which task it shows and how.
 vi.mock('../components/TaskDetails', () => ({
   default: ({ taskId, embedded, onDeleted }: { taskId?: string; embedded?: boolean; onDeleted?: (taskId: string) => void }) => {
@@ -35,6 +49,7 @@ vi.mock('../components/TaskDetails', () => ({
       <div data-testid="task-details" data-embedded={String(Boolean(embedded))}>
         details for {taskId ?? 'route'}
         {embedded && <button type="button" onClick={deleteTask}>Delete task</button>}
+        {embedded && <FollowupDialog />}
       </div>
     );
   },
@@ -147,6 +162,22 @@ describe('TasksPage split workspace', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' });
     fireEvent.keyDown(search, { key: 'Escape' });
     expect(location().searchParams.get('task')).toBe('a');
+  });
+
+  it('leaves the selection and an unsent follow-up alone while its dialog is open', async () => {
+    mockViewport(true);
+    renderAt('/tasks?task=a');
+    await screen.findByRole('table', { name: 'Tasks' });
+    fireEvent.click(screen.getByRole('button', { name: 'Follow up' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Follow-up request' }), { target: { value: 'Also cover k' } });
+    // Focus leaves the textarea, so the keys reach the page from a dialog button.
+    const send = screen.getByRole('button', { name: 'Send follow-up' });
+    send.focus();
+    for (const key of ['j', 'ArrowDown', 'k', 'ArrowUp', 'Escape']) fireEvent.keyDown(send, { key });
+
+    expect(location().searchParams.get('task')).toBe('a');
+    expect(within(screen.getByTestId('task-split-details')).getByTestId('task-details')).toHaveTextContent('details for a');
+    expect(screen.getByRole('textbox', { name: 'Follow-up request' })).toHaveValue('Also cover k');
   });
 
   it('closes the pane and reloads the list after the task is deleted from it', async () => {

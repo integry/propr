@@ -22,6 +22,7 @@ import {
   selectValue,
 } from './TaskList/utils';
 import { useDebouncedCallback } from './TaskList/hooks';
+import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
 
@@ -72,10 +73,6 @@ const TaskBlockingState: React.FC<{
   return dashboard ? <DashboardErrorState error={state.message} /> : <FullPageErrorState error={state.message} />;
 };
 
-/** Keys typed into a field belong to the field, not to row navigation. */
-const isTypingTarget = (target: EventTarget | null): boolean =>
-  target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
-
 const NEXT_ROW_KEYS = new Set(['j', 'ArrowDown']);
 const PREVIOUS_ROW_KEYS = new Set(['k', 'ArrowUp']);
 
@@ -93,7 +90,7 @@ function useRowKeyboardNavigation(
     if (!onSelectTask || !selectedTaskId || groups.length === 0) return;
     const primaryTaskIds = groups.map(group => group.tasks[0].id);
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target) || isDialogOpen()) return;
       const step = NEXT_ROW_KEYS.has(event.key) ? 1 : PREVIOUS_ROW_KEYS.has(event.key) ? -1 : 0;
       if (!step) return;
       // An earlier run steps from its own row; a task not on this page starts at the top or bottom.
