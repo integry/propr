@@ -180,7 +180,11 @@ function answersAfter(request: OpenProviderRequest, input: GoalControlInput): bo
 }
 
 interface OpenProviderRequest {
-    id: number | string;
+    /**
+     * Transport ids the provider has raised this request under and not yet
+     * reported resolved. A repeated event carries a new id for the same request.
+     */
+    ids: Set<number | string>;
     requestKey: string;
     answerQuestionIds: string[];
     answered: boolean;
@@ -194,7 +198,7 @@ interface OpenProviderRequest {
 
 /** Durable writes owed for requests and resolutions taken from the connection. */
 interface AbsorbedRequests {
-    reports: Array<{ id: number | string; report: GoalBlockerReport }>;
+    reports: GoalBlockerReport[];
     resolved: string[];
 }
 
@@ -203,9 +207,12 @@ interface AbsorbedRequests {
  * reported once it arrives and resolved only on authoritative evidence: the
  * server's `serverRequest/resolved`, or the end of the turn that raised it.
  * Answering a question with a goal input does not resolve it by itself.
+ * Requests are tracked by the same request key as their durable blocker, so a
+ * repeated event joins the request it repeats instead of becoming a second one.
  */
 export class CodexProviderRequests {
-    private readonly open = new Map<number | string, OpenProviderRequest>();
+    private readonly open = new Map<string, OpenProviderRequest>();
+    private readonly keysById = new Map<number | string, string>();
 
     constructor(
         private readonly connection: AppServerConnection,
@@ -225,32 +232,44 @@ export class CodexProviderRequests {
         const resolved: string[] = [];
         for (const message of this.connection.takeServerRequests()) {
             const blocker = codexServerRequestBlocker(message);
-            if (!blocker || message.id === undefined) continue;
-            if (!this.open.has(message.id)) {
-                this.open.set(message.id, {
-                    id: message.id,
-                    requestKey: blocker.report.requestKey,
+            if (!blocker || message.id === undefined || message.id === null) continue;
+            const key = blocker.report.requestKey;
+            const request = this.open.get(key);
+            if (request) {
+                // Answer and boundary state belong to the request, not to one of its ids.
+                request.ids.add(message.id);
+            } else {
+                this.open.set(key, {
+                    ids: new Set([message.id]),
+                    requestKey: key,
                     answerQuestionIds: blocker.answerQuestionIds,
                     answered: false,
                 });
             }
-            reports.push({ id: message.id, report: blocker.report });
+            this.keysById.set(message.id, key);
+            reports.push(blocker.report);
         }
         for (const id of this.connection.takeResolvedServerRequests()) {
-            const request = this.open.get(id);
+            const key = this.keysById.get(id);
+            if (key === undefined) continue;
+            this.keysById.delete(id);
+            const request = this.open.get(key);
             if (!request) continue;
-            this.open.delete(id);
-            resolved.push(request.requestKey);
+            request.ids.delete(id);
+            // The blocker stays open while the provider still waits under another id.
+            if (request.ids.size) continue;
+            this.open.delete(key);
+            resolved.push(key);
         }
         return { reports, resolved };
     }
 
     private async persist(work: AbsorbedRequests): Promise<void> {
-        for (const { id, report } of work.reports) {
+        for (const report of work.reports) {
             // The boundary was stored by the write that made the blocker visible, so an
             // answer submitted the moment a reader sees the question lies above it.
             const boundary = await this.control.reportBlocker?.(report);
-            const request = this.open.get(id);
+            const request = this.open.get(report.requestKey);
             if (request && request.inputBoundary === undefined && typeof boundary === 'number') {
                 request.inputBoundary = boundary;
             }
@@ -271,7 +290,9 @@ export class CodexProviderRequests {
         const waiting = [...this.open.values()].filter(request => !request.answered && request.answerQuestionIds.length);
         const question = waiting.length === 1 && answersAfter(waiting[0], input) ? waiting[0] : undefined;
         if (question) {
-            this.connection.respond(question.id, codexUserInputResponse(question.answerQuestionIds, input.message));
+            // Every id the provider still waits under is the same question, so each gets the reply.
+            const response = codexUserInputResponse(question.answerQuestionIds, input.message);
+            for (const id of question.ids) this.connection.respond(id, response);
             question.answered = true;
         }
         await this.persist(work);
@@ -282,8 +303,9 @@ export class CodexProviderRequests {
 
     /** A thread runs one turn at a time, so a finished turn leaves no request waiting. */
     async closeTurn(): Promise<void> {
-        for (const [id, request] of this.open) {
-            this.open.delete(id);
+        this.keysById.clear();
+        for (const [key, request] of this.open) {
+            this.open.delete(key);
             await this.control.resolveBlocker?.(request.requestKey, 'turn_ended');
         }
     }

@@ -295,6 +295,50 @@ describe('Codex provider requests', () => {
     assert.deepEqual(harness.responses, []);
   });
 
+  test('a request repeated under a new id is one question and its answer replies to it', async () => {
+    const harness = providerRequestHarness();
+    const key = 'codex:thread-1:turn-1:item-7:user-input';
+    harness.queued.requests.push(fixtures.userInput, { ...fixtures.userInput, id: 99 });
+    await harness.requests.sync();
+    assert.deepEqual(harness.calls, [`report:${key}`, `report:${key}`], 'both events refresh the one blocker');
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true,
+      'the advertised send_input answers the question instead of being steered');
+    const answer = { answers: { db: { answers: ['Postgres'] } } };
+    assert.deepEqual(harness.responses, [{ id: 0, result: answer }, { id: 99, result: answer }]);
+    assert.equal(await harness.requests.answer({ id: 'input-2', message: 'later', sequence: 2 }, 'turn-1'), false,
+      'the repeat does not reopen an answered question');
+    await harness.requests.closeTurn();
+    assert.deepEqual(harness.calls.filter(call => call.startsWith('resolve:')), [`resolve:${key}:turn_ended`]);
+  });
+
+  test('a repeat arriving after the boundary was recorded keeps the earlier boundary', async () => {
+    const harness = providerRequestHarness();
+    harness.queued.requests.push(fixtures.userInput);
+    await harness.requests.sync();
+    // A correction is queued, then the provider repeats the question.
+    harness.inputs.latest = 1;
+    harness.queued.requests.push({ ...fixtures.userInput, id: 99 });
+    await harness.requests.sync();
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true);
+    assert.deepEqual(harness.responses.map(response => response.id), [0, 99]);
+  });
+
+  test('the blocker of a repeated request closes only when its last id is resolved', async () => {
+    const harness = providerRequestHarness();
+    const key = 'codex:thread-1:turn-1:item-7:user-input';
+    harness.queued.requests.push(fixtures.userInput, { ...fixtures.userInput, id: 99 });
+    await harness.requests.sync();
+    harness.queued.resolved.push(0);
+    await harness.requests.sync();
+    assert.ok(!harness.calls.some(call => call.startsWith('resolve:')), 'the provider still waits under id 99');
+    assert.equal(await harness.requests.answer({ id: 'input-1', message: 'Postgres', sequence: 1 }, 'turn-1'), true);
+    assert.deepEqual(harness.responses.map(response => response.id), [99], 'no reply goes to the resolved id');
+    harness.queued.resolved.push(99);
+    await harness.requests.sync();
+    await harness.requests.closeTurn();
+    assert.deepEqual(harness.calls.filter(call => call.startsWith('resolve:')), [`resolve:${key}:provider_resolved`]);
+  });
+
   test('a multi-question request never consumes an input', async () => {
     const harness = providerRequestHarness();
     harness.queued.requests.push(fixtures.multiQuestionInput);
