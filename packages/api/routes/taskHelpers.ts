@@ -2,7 +2,7 @@ import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '..
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
-import { recordedRunScore } from './dashboardOutcomeQueries.js';
+import { recordedRunScore } from './runScore.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 
 export interface TaskQuery {
