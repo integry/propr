@@ -9,6 +9,7 @@ import {
     up as addPlanNotificationActions
 } from '../src/db/migrations/20260824030000_add_plan_notification_actions.js';
 import { NotificationService } from '../src/services/notificationService.js';
+import { closeEventPublisher } from '../src/utils/eventPublisher.js';
 
 interface SqliteConnection {
     pragma(statement: string): unknown;
@@ -32,7 +33,12 @@ function createDatabase(): Knex {
     });
 }
 
-after(async () => closeConnection());
+after(async () => {
+    await closeConnection();
+    // Notification writes now publish a push event; close the publisher's Redis
+    // client so a test process is not held open by best-effort telemetry.
+    await closeEventPublisher();
+});
 
 test('preserves prior advertised actions across the plan-action migration rollback', async () => {
     const database = createDatabase();

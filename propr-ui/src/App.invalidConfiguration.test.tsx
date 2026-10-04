@@ -16,6 +16,8 @@ describe('invalid eager API configuration', () => {
     vi.resetModules();
   });
 
+  // The first dynamic App import transforms its dependency graph on cold CI workers.
+  // Allow it to finish before timeout cleanup lets the next case start rendering.
   it.each(sentinels)('renders a bounded safe connection screen without leaking configured input', async configured => {
     vi.resetModules();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -46,5 +48,5 @@ describe('invalid eager API configuration', () => {
       expect(diagnostics).not.toContain(secret);
     }
     expect(visible.length).toBeLessThan(1000);
-  });
+  }, 15_000);
 });

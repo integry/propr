@@ -103,7 +103,7 @@ Recovery runs through the PR conversation:
 - `/switch <model-id>` to change the PR's model going forward, or `/use <model-id>` for a one-off task with a different model.
 - `/review` then `/fix`, or `/ultrafix` for an automated review-fix loop (remove the `ultrafix` PR label to stop it).
 - Re-run with a smaller scope — see [Work Splitting](../features/work-splitting.md).
-- Undo a bad commit with `propr task revert owner/repo <pr> <sha> <issue>`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.
+- Undo a bad commit with `propr task revert owner/repo <pr> <sha> [comment-id]`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.
 
 ## Jobs Stuck In The Queue
 

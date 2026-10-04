@@ -29,8 +29,14 @@ interface Message {
 }
 type MessageUsage = NonNullable<Message['usage']>;
 interface ContentBlock { type: string; text?: string; content?: unknown; }
-export interface ClaudeMessageContext { timestamp: string; events: Array<Record<string, unknown>>; pendingSubagents: Map<string, PendingSubagent>; setTodos: (todos: TodoItem[]) => void; }
-interface ClaudeParseContext { events: Array<Record<string, unknown>>; timestamp: string; pendingSubagents: Map<string, PendingSubagent>; }
+/**
+ * Source slot of each event within its message: content block index times two,
+ * plus one for an event synthesized from that block. Unlike its position among
+ * emitted events, it does not depend on earlier messages (a Task invocation).
+ */
+export type ClaudeEventSlots = WeakMap<object, number>;
+export interface ClaudeMessageContext { timestamp: string; events: Array<Record<string, unknown>>; pendingSubagents: Map<string, PendingSubagent>; setTodos: (todos: TodoItem[]) => void; eventSlots?: ClaudeEventSlots; }
+interface ClaudeParseContext { events: Array<Record<string, unknown>>; timestamp: string; pendingSubagents: Map<string, PendingSubagent>; eventSlots?: ClaudeEventSlots; }
 const MAX_MALFORMED_CLAUDE_LINE_WARNINGS = 5;
 interface ClaudeWarningState { malformedLineWarnings: number; }
 
@@ -217,24 +223,29 @@ function buildSubagentCompletionEvent(subagent: PendingSubagent, content: Claude
   };
 }
 
+function pushSlotted(context: ClaudeMessageContext, event: Record<string, unknown>, slot: number): void {
+  context.events.push(event);
+  context.eventSlots?.set(event, slot);
+}
+
 export function appendClaudeAssistantMessageEvents(contentArray: ClaudeMessageContent[], context: ClaudeMessageContext): boolean {
   let handled = false;
-  for (const content of contentArray) {
+  for (const [block, content] of contentArray.entries()) {
     const textContent = typeof content.text === 'string'
       ? content.text
       : (typeof content.content === 'string' ? content.content : '');
     if (content.type === 'text' && textContent) {
-      context.events.push({
+      pushSlotted(context, {
         type: 'thought',
         content: textContent,
         ...(content.internalReasoning ? { internalReasoning: true } : {}),
         timestamp: context.timestamp,
-      });
+      }, block * 2);
       handled = true;
       continue;
     }
     if (content.type !== 'tool_use') continue;
-    context.events.push({ type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp: context.timestamp });
+    pushSlotted(context, { type: 'tool_use', toolName: content.name, input: content.input, id: content.id, timestamp: context.timestamp }, block * 2);
     if (content.name === 'TodoWrite' && content.input?.todos) {
       context.setTodos(content.input.todos);
     }
@@ -253,18 +264,18 @@ export function appendClaudeAssistantMessageEvents(contentArray: ClaudeMessageCo
 
 export function appendClaudeUserMessageEvents(contentArray: ClaudeMessageContent[], context: ClaudeMessageContext): boolean {
   let handled = false;
-  for (const content of contentArray) {
+  for (const [block, content] of contentArray.entries()) {
     if (content.type !== 'tool_result') continue;
-    context.events.push({
+    pushSlotted(context, {
       type: 'tool_result',
       toolUseId: content.tool_use_id,
       result: content.content,
       isError: content.is_error || false,
       timestamp: context.timestamp
-    });
+    }, block * 2);
     if (content.tool_use_id && context.pendingSubagents.has(content.tool_use_id)) {
       const subagent = context.pendingSubagents.get(content.tool_use_id)!;
-      context.events.push(buildSubagentCompletionEvent(subagent, content, context.timestamp));
+      pushSlotted(context, buildSubagentCompletionEvent(subagent, content, context.timestamp), block * 2 + 1);
       context.pendingSubagents.delete(content.tool_use_id);
     }
     handled = true;
@@ -299,14 +310,13 @@ function parseUserContent(contentArray: ClaudeMessageContent[], context: ClaudeP
 
 function parseLine(
   line: string,
-  events: Array<Record<string, unknown>>,
-  pendingSubagents: Map<string, PendingSubagent>,
+  stream: Omit<ClaudeParseContext, 'timestamp'>,
   warningState: ClaudeWarningState
 ): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
-    const context = { events, timestamp, pendingSubagents };
+    const context = { ...stream, timestamp };
     const usage = message.usage || message.message?.usage;
     if (message.antigravity) {
       if (message.antigravity.source === 'MODEL' && message.antigravity.type === 'PLANNER_RESPONSE' && message.message?.content) {
@@ -337,8 +347,28 @@ export async function parseClaudeConversationFile(conversationPath: string): Pro
   return parseClaudeOutputToConversationResult(conversationContent);
 }
 
-export function parseClaudeOutputToConversationResult(conversationContent: string): ConversationResult {
-  const lines = conversationContent.trim().split('\n').filter(line => line.trim());
+/**
+ * Record-by-record projection of Claude stream-json, for readers that only
+ * fetch new output. Feeding every record and then calling result() gives
+ * exactly what parseClaudeOutputToConversationResult() returns.
+ */
+export interface ClaudeStreamProjection {
+  /** Consumes one record and returns the events it completed. */
+  feed(line: string): Array<Record<string, unknown>>;
+  /** An event's stable slot within the record that produced it (see {@link ClaudeEventSlots}). */
+  slot(event: object): number | undefined;
+  /** Everything but the events, without touching them. */
+  metadata(): Omit<ConversationResult, 'events'>;
+  /** Every event fed so far; empty unless the projection retains events. */
+  result(): ConversationResult;
+}
+
+/**
+ * `retainEvents: false` releases each event once feed() returns it, keeping only
+ * what later records depend on (todos, usage, pending subagents), so a live
+ * reader's memory does not grow with the length of the run.
+ */
+export function createClaudeStreamProjection({ retainEvents = true }: { retainEvents?: boolean } = {}): ClaudeStreamProjection {
   const events: Array<Record<string, unknown>> = [];
   let todos: TodoItem[] = [];
   const tokenUsage: TokenUsage = {
@@ -349,23 +379,39 @@ export function parseClaudeOutputToConversationResult(conversationContent: strin
   };
   const pendingSubagents: Map<string, PendingSubagent> = new Map();
   const warningState: ClaudeWarningState = { malformedLineWarnings: 0 };
+  const eventSlots: ClaudeEventSlots = new WeakMap();
+  const metadata = () => {
+    const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
+      tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
+    return { todos, currentTask: deriveCurrentTask(todos), tokenUsage: hasTokens ? { ...tokenUsage } : null };
+  };
 
-  for (const line of lines) {
-    const parsed = parseLine(line, events, pendingSubagents, warningState);
-    if (parsed.newTodos) todos = parsed.newTodos;
-    if (parsed.tokenUsage) {
-      tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
-      tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
-      tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
-      tokenUsage.cache_read_input_tokens += parsed.tokenUsage.cache_read_input_tokens;
-    }
-  }
+  return {
+    feed(line) {
+      if (!line.trim()) return [];
+      const before = events.length;
+      const parsed = parseLine(line, { events, pendingSubagents, eventSlots }, warningState);
+      if (parsed.newTodos) todos = parsed.newTodos;
+      if (parsed.tokenUsage) {
+        tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
+        tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
+        tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
+        tokenUsage.cache_read_input_tokens += parsed.tokenUsage.cache_read_input_tokens;
+      }
+      const emitted = events.slice(before);
+      if (!retainEvents) events.length = 0;
+      return emitted;
+    },
+    slot: event => eventSlots.get(event),
+    metadata,
+    result: () => ({ events, ...metadata() }),
+  };
+}
 
-  const currentTask = deriveCurrentTask(todos);
-  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
-    tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
-
-  return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
+export function parseClaudeOutputToConversationResult(conversationContent: string): ConversationResult {
+  const projection = createClaudeStreamProjection();
+  for (const line of conversationContent.trim().split('\n')) projection.feed(line);
+  return projection.result();
 }
 
 export function parseCodexOutputToConversationResult(output: string): ConversationResult | null {

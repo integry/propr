@@ -241,7 +241,9 @@ function findLatestMetadata(
     if (!h.metadata || typeof h.metadata !== 'object') continue;
     const meta = h.metadata as Record<string, unknown>;
     if (commandMode === undefined && 'commandMode' in meta) commandMode = meta.commandMode;
-    if (ultrafixCycle === undefined && meta.ultrafixCycle === true) ultrafixCycle = true;
+    const cycle = meta.ultrafixCycle;
+    if (ultrafixCycle === undefined && (cycle === true
+      || (typeof cycle === 'number' && Number.isSafeInteger(cycle) && cycle > 0))) ultrafixCycle = true;
     if (commandMode !== undefined && ultrafixCycle !== undefined) break;
   }
   return { commandMode, ultrafixCycle };

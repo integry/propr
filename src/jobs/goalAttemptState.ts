@@ -1,5 +1,15 @@
 import type { Knex } from 'knex';
-import { db, type GoalExecutionControl, type GoalJobData } from '@propr/core';
+import {
+    closeGoalBlockers,
+    getEventPublisher,
+    db,
+    logger,
+    publishGoalTransition,
+    recordGoalBlocker,
+    resolveGoalBlocker,
+    type GoalExecutionControl,
+    type GoalJobData,
+} from '@propr/core';
 import type { GoalArtifact } from '@propr/core';
 import { publishDirectGoalCheckpoint, rejectDirectGoalCheckpoint } from './goalCheckpointPublisher.js';
 
@@ -52,6 +62,9 @@ function attemptWhere(query: Knex.QueryBuilder, job: GoalJobData): Knex.QueryBui
 }
 
 export async function claimGoalAttempt(job: GoalJobData): Promise<GoalRow | null> {
+    // Read before claiming so the announcement below can tell a goal starting
+    // for the first time from one resuming an attempt it had already started.
+    const previous = await attemptWhere(db<GoalRow>('goals'), job).first() as GoalRow | null;
     const claimed = await attemptWhere(db('goals'), job)
         .where({ desired_state: 'running' })
         .whereNull('claimed_at')
@@ -63,7 +76,16 @@ export async function claimGoalAttempt(job: GoalJobData): Promise<GoalRow | null
             updated_at: db.fn.now(),
         });
     if (claimed !== 1) return null;
-    return attemptWhere(db<GoalRow>('goals'), job).first() as Promise<GoalRow | null>;
+    // A new attempt replaces whatever session raised an older blocker; nothing
+    // that attempt was waiting on can still be answered.
+    // The projection already fences them out, so a failed write here must not fail the claim.
+    await closeGoalBlockers(db, job.goalId, { exceptClaim: job.claimId }, 'superseded_by_attempt')
+        .catch(error => logger.warn({ goalId: job.goalId, error: (error as Error).message }, 'Could not supersede goal blockers'));
+    const goal = await attemptWhere(db<GoalRow>('goals'), job).first() as GoalRow | null;
+    // The one place a goal starts executing. Announced from the claim itself so
+    // 'queued' becoming 'running' is pushed rather than discovered by polling.
+    await publishGoalTransition({ previous, next: goal });
+    return goal;
 }
 
 export async function fencedGoal(job: GoalJobData): Promise<GoalRow | null> {
@@ -71,7 +93,11 @@ export async function fencedGoal(job: GoalJobData): Promise<GoalRow | null> {
 }
 
 export async function fencedGoalUpdate(job: GoalJobData, values: Record<string, unknown>): Promise<boolean> {
-    return await attemptWhere(db('goals'), job).update({ ...values, updated_at: db.fn.now() }) === 1;
+    const changed = await attemptWhere(db('goals'), job).update({ ...values, updated_at: db.fn.now() }) === 1;
+    if (changed && Object.keys(values).some(key => key !== 'attempt_heartbeat_at')) {
+        void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    }
+    return changed;
 }
 
 export function assertProviderIdentityMatches(
@@ -92,7 +118,7 @@ export async function saveFencedGoalSession(
     sessionId: string,
     conversationId?: string,
 ): Promise<boolean> {
-    return db.transaction(async trx => {
+    const changed = await db.transaction(async trx => {
         const existing = await attemptWhere(trx<GoalRow>('goals'), job)
             .first('session_id', 'conversation_id');
         if (!existing) return false;
@@ -104,6 +130,19 @@ export async function saveFencedGoalSession(
             updated_at: trx.fn.now(),
         }) === 1;
     });
+    if (changed) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    return changed;
+}
+
+function attemptIdentity(job: GoalJobData) {
+    return { goalId: job.goalId, taskId: job.taskId, generation: job.generation, claimId: job.claimId };
+}
+
+/** The provider session of this attempt has ended: nothing it raised can still be waiting. */
+export async function closeAttemptBlockers(job: GoalJobData): Promise<void> {
+    if (await closeGoalBlockers(db, job.goalId, { claim: job.claimId }, 'attempt_ended') > 0) {
+        void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+    }
 }
 
 export function createGoalExecutionControl(job: GoalJobData): GoalExecutionControl {
@@ -113,11 +152,11 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
             if (!goal) throw new Error('Goal attempt ownership was superseded');
             const inputs = await db('goal_inputs')
                 .where({ goal_id: job.goalId, owner_id: goal.owner_id, state: 'pending' })
-                .orderBy('sequence', 'asc') as Array<{ input_id: string; message: string }>;
+                .orderBy('sequence', 'asc') as Array<{ input_id: string; message: string; sequence: number }>;
             return {
                 desiredState: goal.desired_state,
                 requestedModel: goal.requested_model,
-                pendingInputs: inputs.map(input => ({ id: input.input_id, message: input.message })),
+                pendingInputs: inputs.map(input => ({ id: input.input_id, message: input.message, sequence: Number(input.sequence) })),
                 controlGeneration: Number(goal.control_generation || 0),
             };
         },
@@ -153,6 +192,7 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                     updated_at: trx.fn.now(),
                 });
             });
+            void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
         },
         async markInputUndeliverable(inputId, reason) {
             await db.transaction(async trx => {
@@ -176,6 +216,7 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                     updated_at: trx.fn.now(),
                 });
             });
+            void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
         },
         async publishCheckpoint(request, turnId) {
             const published = await publishDirectGoalCheckpoint(job, {
@@ -201,6 +242,23 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                 summary: request.summary,
                 turnId,
             });
+        },
+        async reportBlocker(report) {
+            const recorded = await db.transaction(async trx => {
+                // Fenced: a delayed event from a superseded attempt cannot open a blocker.
+                const owned = await attemptWhere(trx<GoalRow>('goals'), job)
+                    .first('owner_id', 'repository', 'session_id', 'agent_type') as Pick<GoalRow,
+                        'owner_id' | 'repository' | 'session_id' | 'agent_type'> | undefined;
+                if (!owned) return null;
+                return recordGoalBlocker(trx, attemptIdentity(job), owned, report);
+            });
+            if (recorded) void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+            return recorded?.inputBoundary ?? null;
+        },
+        async resolveBlocker(requestKey, resolution) {
+            if (await resolveGoalBlocker(db, attemptIdentity(job), requestKey, resolution)) {
+                void getEventPublisher().publishGoalUpdate({ goalId: job.goalId });
+            }
         },
         async appendOutput(records) {
             if (records.length === 0) return;

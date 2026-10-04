@@ -60,54 +60,29 @@ const SCORED_OUTCOMES = outcomes.filter(outcome => outcome.score !== null).lengt
  * the page and change the DOM order the layout tests read.
  */
 const user = {
-  id: 'responsive-user',
-  login: 'operator',
-  username: 'operator',
-  displayName: 'Dana Okonkwo',
-  email: null,
-  avatarUrl: null,
-  role: 'member',
-  permissions: [],
-  authorizationSource: 'local',
+  id: 'responsive-user', login: 'operator', username: 'operator', displayName: 'Dana Okonkwo',
+  email: null, avatarUrl: null, role: 'member', permissions: [], authorizationSource: 'local',
 };
 
 const dashboardResponses = (attentionItems: typeof attention): Record<string, unknown> => ({
-  '/api/dashboard/summary': {
-    repository: 'all',
-    needsAttention: attentionItems.length,
-    running: running.length,
-    queued: 1,
-    completedRecently: 2,
-    recentWindowHours: 24,
-  },
+  '/api/dashboard/narrative': { repository: 'all', enabled: true, summary: `“${LONG_TITLE}” is editing HappeningNowSection.tsx at step 2 of 6 for example/workspace issue #2480. “Tighten the reference chip contrast” was recently completed.` },
+  '/api/dashboard/summary': { repository: 'all', needsAttention: attentionItems.length,
+    running: running.length, queued: 1, completedRecently: 2, recentWindowHours: 24 },
   '/api/dashboard/attention': {
-    repository: 'all',
-    items: attentionItems,
-    counts: {
-      blocked: attentionItems.filter(item => item.category === 'blocked').length,
+    repository: 'all', items: attentionItems,
+    counts: { blocked: attentionItems.filter(item => item.category === 'blocked').length,
       decisions: attentionItems.filter(item => item.category === 'decision').length,
-      total: attentionItems.length,
-    },
+      total: attentionItems.length },
   },
   '/api/dashboard/active': {
-    repository: 'all',
-    running,
-    queued: [],
+    repository: 'all', running, queued: [],
     queue: { queuedCount: 1, reason: 'All agents are busy' },
     counts: { running: running.length, queued: 1 },
   },
   '/api/dashboard/outcomes': { repository: 'all', limit: 50, items: outcomes },
   '/api/stats/dashboard': {
-    period: '7d',
-    repository: 'all',
-    completed: 34,
-    successRate: 87.5,
-    recordedSpend: 12.42,
-    dailyCompleted: [
-      { date: '2026-09-17', count: 4 }, { date: '2026-09-18', count: 7 }, { date: '2026-09-19', count: 3 },
-      { date: '2026-09-20', count: 6 }, { date: '2026-09-21', count: 2 }, { date: '2026-09-22', count: 8 },
-      { date: '2026-09-23', count: 4 },
-    ],
+    period: '7d', repository: 'all', completed: 34, successRate: 87.5, recordedSpend: 12.42,
+    dailyCompleted: [4, 7, 3, 6, 2, 8, 4].map((count, index) => ({ date: `2026-09-${17 + index}`, count })),
     previous: { completed: 29, successRate: 81.2, recordedSpend: 9.8 },
   },
 });
@@ -125,11 +100,8 @@ async function fixture(page: Page, attentionItems: typeof attention = attention)
       '/api/tasks': { tasks: [], total: 0 },
       '/api/instance/catalog': {
         agents: [{ id: 'fixture', name: 'Fixture agent', defaultModel: 'gpt-6-astra' }],
-        repositories: [
-          { name: 'example/workspace', enabled: true, baseBranch: 'main' },
-          { name: 'example/design-system', enabled: true, baseBranch: 'main' },
-          { name: 'example/docs', enabled: true, baseBranch: 'main' },
-        ],
+        repositories: ['example/workspace', 'example/design-system', 'example/docs']
+          .map(name => ({ name, enabled: true, baseBranch: 'main' })),
       },
       '/api/queue/stats': { active: 2, waiting: 1, completed: 34, failed: 3 },
       '/api/stats/generating-plans': { count: 0 },
@@ -149,6 +121,7 @@ async function openDashboard(page: Page, width: number, attentionItems = attenti
   await page.setViewportSize({ width, height: 1200 });
   await fixture(page, attentionItems);
   await page.goto('/');
+  await expect(page.getByTestId('dashboard-summary')).toBeVisible();
   await expect(page.getByTestId('happening-now-list')).toBeVisible();
   await expect(page.getByTestId('completed-list')).toBeVisible();
   await expect(page.getByTestId('historical-stats-section')).toBeVisible();
@@ -163,13 +136,22 @@ async function capture(page: Page, name: string): Promise<void> {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(directory, `${name}.png`) });
 }
 
-/** Every element wider than the viewport, named well enough to fix. */
+/** Elements visibly extending past the viewport, named well enough to fix. */
 async function horizontalOverflow(page: Page) {
   return page.evaluate(() => ({
     documentScrollWidth: document.documentElement.scrollWidth,
     innerWidth: window.innerWidth,
     wide: [...document.querySelectorAll('main *')]
-      .filter(node => node.getBoundingClientRect().right > window.innerWidth + 1)
+      .filter(node => {
+        let right = node.getBoundingClientRect().right;
+        // Inline tokens retain their full bounds even when an ellipsis clips them.
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+          if (getComputedStyle(parent).overflowX !== 'visible') {
+            right = Math.min(right, parent.getBoundingClientRect().right);
+          }
+        }
+        return right > window.innerWidth + 1;
+      })
       .map(node => ({
         className: String(node.className).slice(0, 80),
         text: (node.textContent || '').slice(0, 40),
@@ -179,9 +161,27 @@ async function horizontalOverflow(page: Page) {
   }));
 }
 
+test('overflow detection ignores clipped tokens but catches visible overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 600 });
+  await page.setContent('<main><p style="width: 100px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis"><strong>Implementing</strong> <code>workspace#2587: Consolidating overlapping tests in Dashboard.test.tsx</code></p></main>');
+  const clipped = await horizontalOverflow(page);
+  expect(clipped.wide).toEqual([]);
+  expect(clipped.documentScrollWidth).toBeLessThanOrEqual(clipped.innerWidth);
+
+  await page.locator('p').evaluate(node => { node.style.overflow = 'visible'; });
+  const visible = await horizontalOverflow(page);
+  expect(visible.wide.some(node => node.text.includes('workspace#2587'))).toBe(true);
+  expect(visible.documentScrollWidth).toBeGreaterThan(visible.innerWidth);
+
+  await page.locator('p').evaluate(node => { node.style.overflow = 'hidden'; node.style.width = '400px'; });
+  const wideContainer = await horizontalOverflow(page);
+  expect(wideContainer.wide.length).toBeGreaterThan(0);
+  expect(wideContainer.documentScrollWidth).toBeGreaterThan(wideContainer.innerWidth);
+});
+
 /** The four panes, and the phone's scope bar above them, in priority order. */
 const PANES = ['needs-attention-panel', 'happening-now-section', 'completed-section', 'historical-stats-section'];
-const SECTIONS = ['dashboard-scope-bar', ...PANES];
+const SECTIONS = ['dashboard-scope-bar', 'dashboard-summary', ...PANES];
 
 /** The scope bar and panes in the order the document lists them. */
 async function sectionOrder(page: Page): Promise<string[]> {
@@ -222,6 +222,7 @@ for (const width of NARROW_WIDTHS) {
     const boxes = Object.values(await sectionBoxes(page, SECTIONS));
     expect(new Set(boxes.map(box => box.left)).size).toBe(1);
     expect(new Set(boxes.map(box => box.width)).size).toBe(1);
+    for (let i = 1; i < boxes.length; i++) expect(boxes[i].top).toBeGreaterThanOrEqual(boxes[i - 1].bottom);
 
     await capture(page, `dashboard-responsive-${width}`);
   });
@@ -245,7 +246,7 @@ test('the wide layout keeps live work in the main column and the supporting pane
   await capture(page, 'dashboard-responsive-1440');
 });
 
-test('the wide layout spends no row on a page bar: the filter sits left of search and both columns hang off the global header', async ({ page }) => {
+test('the wide layout spends no row on a page bar: the filter sits right of search and both columns follow the activity summary', async ({ page }) => {
   await openDashboard(page, 1440);
 
   await expect(page.getByTestId('dashboard-scope-bar')).toBeHidden();
@@ -258,22 +259,26 @@ test('the wide layout spends no row on a page bar: the filter sits left of searc
     return {
       headerMiddle: Math.round(header.top + header.height / 2),
       headerBottom: Math.round(header.bottom),
+      summaryTop: Math.round(rect('[data-testid="dashboard-summary"]').top),
+      summaryBottom: Math.round(rect('[data-testid="dashboard-summary"]').bottom),
       filterMiddle: Math.round(filter.top + filter.height / 2),
-      filterRight: Math.round(filter.right),
-      searchLeft: Math.round(search.left),
+      filterLeft: Math.round(filter.left),
+      searchRight: Math.round(search.right),
       running: Math.round(rect('[data-testid="happening-now-section"]').top),
       attention: Math.round(rect('[data-testid="needs-attention-panel"]').top),
     };
   });
 
   // The filter is in the global toolbar, on its center line, immediately
-  // left of search with nothing between them.
+  // right of search with nothing between them: search leads the bar as the
+  // toolbar's primary input, and the scope control sits beside what it scopes.
   expect(Math.abs(geometry.filterMiddle - geometry.headerMiddle)).toBeLessThanOrEqual(1);
-  expect(geometry.searchLeft - geometry.filterRight).toBeGreaterThan(0);
-  expect(geometry.searchLeft - geometry.filterRight).toBeLessThanOrEqual(8);
-  // Both columns start on the global header's own rule.
-  expect(geometry.running).toBe(geometry.headerBottom);
-  expect(geometry.attention).toBe(geometry.headerBottom);
+  expect(geometry.filterLeft - geometry.searchRight).toBeGreaterThan(0);
+  expect(geometry.filterLeft - geometry.searchRight).toBeLessThanOrEqual(8);
+  // The prose spans both columns beneath the global toolbar.
+  expect(geometry.summaryTop).toBe(geometry.headerBottom);
+  expect(geometry.running).toBe(geometry.summaryBottom);
+  expect(geometry.attention).toBe(geometry.summaryBottom);
 });
 
 test('an empty attention list holds the right column instead of collapsing it', async ({ page }) => {
@@ -548,18 +553,19 @@ for (const width of NARROW_WIDTHS) {
       const [bar, button, label] = ['', ' button', ' button span.truncate'].map(part => rect(`[data-testid="dashboard-scope-bar"]${part}`));
       const labelNode = document.querySelector('[data-testid="dashboard-scope-bar"] button span.truncate') as HTMLElement;
       return {
-        bar: bar.toJSON() as DOMRect, canvas: rect('main').top, buttonWidth: button.width, firstPane: rect('[data-testid="needs-attention-panel"]').top,
+        bar: bar.toJSON() as DOMRect, canvas: rect('main').top, buttonWidth: button.width, summaryTop: rect('[data-testid="dashboard-summary"]').top, summaryBottom: rect('[data-testid="dashboard-summary"]').bottom, firstPane: rect('[data-testid="needs-attention-panel"]').top,
         offCenter: Math.abs((label.left + label.right) / 2 - (bar.left + bar.right) / 2),
         truncated: labelNode.scrollWidth > labelNode.clientWidth,
       };
     });
     // It is the first thing on the canvas, spans the row inside the 12px
-    // rail, reads centered, and the panes start on its bottom rule.
+    // rail, reads centered, and the summary starts on its bottom rule.
     expect(geometry.bar.top).toBe(geometry.canvas);
     expect(Math.round(geometry.buttonWidth)).toBe(Math.round(geometry.bar.width) - 24);
     expect(geometry.offCenter).toBeLessThanOrEqual(12);
     expect(geometry.truncated).toBe(false);
-    expect(Math.round(geometry.firstPane)).toBe(Math.round(geometry.bar.bottom));
+    expect(Math.round(geometry.summaryTop)).toBe(Math.round(geometry.bar.bottom));
+    expect(Math.round(geometry.firstPane)).toBe(Math.round(geometry.summaryBottom));
     await capture(page, `dashboard-responsive-${width}-scope`);
   });
 }

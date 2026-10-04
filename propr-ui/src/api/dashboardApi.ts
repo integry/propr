@@ -20,7 +20,7 @@ export interface DashboardSummaryResponse {
 }
 
 export type AttentionCategory = 'blocked' | 'decision';
-export type AttentionKind = 'task_failed' | 'task_action_required' | 'plan_review';
+export type AttentionKind = 'task_failed' | 'task_action_required' | 'plan_review' | 'goal_blocker';
 
 export interface AttentionItem {
   id: string;
@@ -37,6 +37,14 @@ export interface AttentionItem {
   detail: string | null;
   /** When the item started needing attention; the list is ordered newest first. */
   since: string;
+  /** Goal blockers only: the goal console to open, and the blocker from the shared goal attention projection. */
+  goalId?: string;
+  goalBlocker?: {
+    id: string;
+    category: 'question' | 'approval' | 'paused';
+    actionable: boolean;
+    responseActions: Array<'send_input' | 'resume' | 'pause' | 'cancel'>;
+  };
 }
 
 export interface DashboardAttentionResponse {
@@ -46,6 +54,7 @@ export interface DashboardAttentionResponse {
 }
 
 export interface ActiveItem {
+  goalId?: string;
   id: string;
   taskId: string;
   repository: string;
@@ -89,10 +98,16 @@ export interface DashboardActiveResponse {
 }
 
 /**
- * One successfully completed run, newest first. Failures are attention items,
+ * One entity’s newest successful outcome. Failures are attention items,
  * and cancelled or skipped runs are not listed at all.
  */
 export interface OutcomeItem {
+  entityId?: string;
+  revision?: string;
+  /** Completed task outcomes rolled up; absent on older servers. */
+  eventCount?: number;
+  /** Prior completed actions, newest first; excludes the displayed outcome. */
+  earlierUpdates?: Array<Omit<OutcomeItem, 'eventCount' | 'earlierUpdates'>>;
   id: string;
   taskId: string;
   repository: string;
@@ -139,8 +154,8 @@ export interface DashboardStatsResponse extends DashboardStatsTotals {
 const repositoryQuery = (repository: RepositoryFilter): string =>
   `repository=${encodeURIComponent(repository)}`;
 
-const readJson = async <T>(path: string, signal: AbortSignal): Promise<T> => {
-  const response = await apiFetch(`${API_BASE_URL}${path}`, { credentials: 'include', signal });
+const readJson = async <T>(path: string, signal: AbortSignal, accept = 'application/json'): Promise<T> => {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, { credentials: 'include', signal, headers: { Accept: accept } });
   await handleApiResponse(response);
   return response.json() as Promise<T>;
 };
@@ -163,13 +178,15 @@ export const getDashboardOutcomes = (
   repository: RepositoryFilter = 'all',
   limit?: number,
   search = '',
+  view: 'legacy' | 'summary' = 'summary',
 ): Promise<DashboardOutcomesResponse> => {
   const params = [repositoryQuery(repository)];
   if (limit !== undefined) params.push(`limit=${encodeURIComponent(String(limit))}`);
   const term = search.trim();
   if (term) params.push(`search=${encodeURIComponent(term)}`);
-  return shareInFlightApiRead(`dashboard-outcomes:${repository}:${limit ?? 'default'}:${term}`, signal =>
-    readJson<DashboardOutcomesResponse>(`/api/dashboard/outcomes?${params.join('&')}`, signal));
+  return shareInFlightApiRead(`dashboard-outcomes:${view}:${repository}:${limit ?? 'default'}:${term}`, signal =>
+    readJson<DashboardOutcomesResponse>(`/api/dashboard/outcomes?${params.join('&')}`, signal,
+      view === 'summary' ? 'application/vnd.propr.outcome-summaries+json' : 'application/json'));
 };
 
 export const getDashboardStats = (
@@ -181,3 +198,34 @@ export const getDashboardStats = (
       `/api/stats/dashboard?${repositoryQuery(repository)}&period=${encodeURIComponent(period)}`,
       signal,
     ));
+
+export interface DashboardNarrativeResponse {
+  repository: RepositoryFilter;
+  enabled: boolean;
+  summary: string | null;
+}
+
+export const getDashboardNarrative = (
+  repository: RepositoryFilter = 'all',
+  refresh = false,
+): Promise<DashboardNarrativeResponse> =>
+  shareInFlightApiRead(`dashboard-narrative:${repository}:${refresh}`, signal =>
+    readJson<DashboardNarrativeResponse>(
+      `/api/dashboard/narrative?${repositoryQuery(repository)}${refresh ? '&refresh=true' : ''}`, signal,
+    ));
+
+
+export interface OutcomeHistoryPage { items: OutcomeItem[]; nextCursor: string | null }
+export class OutcomeHistoryStaleError extends Error {}
+export const getDashboardOutcomeHistory = (
+  repository: string, entityId: string, revision: string, cursor: string | null = null,
+): Promise<OutcomeHistoryPage> => {
+  const query = new URLSearchParams({ repository, view: 'history', entityId, revision, limit: '20' });
+  if (cursor) query.set('cursor', cursor);
+  return shareInFlightApiRead(`dashboard-history:${query}`, async signal => {
+    const response = await apiFetch(`${API_BASE_URL}/api/dashboard/outcomes?${query}`, { credentials: 'include', signal });
+    if (response.status === 409) throw new OutcomeHistoryStaleError('Updates changed. Refreshing…');
+    await handleApiResponse(response);
+    return response.json() as Promise<OutcomeHistoryPage>;
+  });
+};

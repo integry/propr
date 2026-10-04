@@ -28,3 +28,13 @@ scripts/teardown-pr.sh
 config/nginx-preview-environments.conf
 config/nginx-propr-maps.conf
 config/nginx-propr-server.conf
+
+# The app image bundles only these MCP-readable docs inputs. Keep them in the
+# build context even if broader docs exclusions are added above in the future.
+!docs/
+!docs/docs/
+!docs/docs/**
+!docs/sidebars.ts
+!docs/mcp.md
+!docs/mcp-coverage.md
+!docs/mcp-operator-surface.md

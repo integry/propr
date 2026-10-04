@@ -260,6 +260,36 @@ function createMockCheckRunPayload(options: {
 // ============= areAllChecksPassing Tests =============
 
 describe('areAllChecksPassing', () => {
+    test('a failing check the repository marked non-blocking does not hold automation back', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Run Full Test Suite', status: 'completed', conclusion: 'success' },
+                    { name: 'Validate unsigned darwin-x64 package', status: 'completed', conclusion: 'failure' },
+                    { name: 'Packaged Connect (darwin-arm64)', status: 'in_progress', conclusion: null },
+                ]
+            }
+        }));
+        const nonBlocking = async () => ['Validate unsigned * package', 'packaged connect*'];
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', nonBlocking), true);
+        // Without the setting the same checks still block.
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => []), false);
+    });
+
+    test('a blocking failure still fails when other failures are non-blocking', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Build & Lint Check', status: 'completed', conclusion: 'failure' },
+                    { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+                ]
+            }
+        }));
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => ['Validate unsigned * package']), false);
+    });
+
     test('returns true when all checks completed with success', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => ({

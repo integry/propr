@@ -7,17 +7,38 @@ import {
   type NotificationRecipient,
 } from '@propr/core';
 import {
+  formatTaskTerminalReason,
   normalizeISO8601Timestamp,
+  NOTIFICATION_UPDATE,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type JsonObject,
+  type NotificationChange,
   type NotificationEventAction,
+  type NotificationUpdatePayload,
   type TaskUpdatePayload,
 } from '@propr/shared';
+
+function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
+  const terminalReason = payload.metadata?.terminalReason;
+  return [notificationRecap(historyMetadata), typeof terminalReason === 'string' ? formatTaskTerminalReason(terminalReason) : undefined]
+    .filter(Boolean).join(' · ') || undefined;
+}
 
 const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
+const CANCELLATION_REASONS = new Set([
+  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
+]);
+
+function isNotifiableCancellation(payload: TaskUpdatePayload): boolean {
+  const terminalReason = payload.metadata?.terminalReason;
+  return payload.state === 'cancelled'
+    && typeof terminalReason === 'string'
+    && CANCELLATION_REASONS.has(terminalReason);
+}
+
 const TERMINAL_ACTIVITY_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 // Repository settings change rarely while lifecycle projections are frequent;
 // a short TTL removes almost all reads yet applies an operator's change quickly.
@@ -45,9 +66,24 @@ type NotificationEventWriter = Pick<NotificationService,
   | 'reconcileSystemFailureTransition'
   | 'dismissSystemFailureNotifications'>;
 
+/** A notification change published for exactly one recipient. */
+export type RecipientNotificationUpdate = NotificationUpdatePayload & { recipientId: string };
+
 export interface NotificationProjectionOptions {
   database: Knex;
   notificationService?: NotificationEventWriter;
+  /**
+   * Publishes receipt cleanup performed directly by this projection. Mutations
+   * delegated to NotificationService are announced by that service.
+   *
+   * Production passes `@propr/core`'s `publishNotificationUpdateThroughRedis`:
+   * projection runs outside the process that owns the websocket, in a worker
+   * thread or beside an API the recipient is not connected to, so the change
+   * travels the same Redis path as every other event. A projection constructed
+   * without it stays silent rather than opening a connection its owner did not
+   * ask for.
+   */
+  publishNotificationUpdate?: (payload: RecipientNotificationUpdate) => void;
   now?: () => Date;
   stalledAfterMs?: number;
   stalledCheckIntervalMs?: number;
@@ -64,6 +100,7 @@ export interface SystemHealthSnapshot {
 
 interface TaskContext {
   repository: string;
+  goalId?: string;
   issueNumber?: number;
   prNumber?: number;
   description?: string;
@@ -72,6 +109,7 @@ interface TaskContext {
   recap?: string;
   commandMode?: string;
   isReview: boolean;
+  reviewDeferred: boolean;
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
   pullRequestFollowupEligible: boolean;
@@ -87,6 +125,12 @@ interface TaskEventProjection {
 
 interface PullRequestTaskEventProjection extends TaskEventProjection {
   prNumber: number;
+}
+
+/** One active Inbox receipt a server-side cleanup dismissed. */
+interface DismissedReceipt {
+  userId: string;
+  eventId: string;
 }
 
 interface SourceActivityRow {
@@ -213,6 +257,32 @@ function resolveCommandMode(
 ): string | undefined {
   if (typeof historyMetadata.commandMode === 'string') return historyMetadata.commandMode;
   return typeof initial.commandMode === 'string' ? initial.commandMode : undefined;
+}
+
+function resolvePullRequestNumber(
+  task: Record<string, unknown>,
+  initial: Record<string, unknown>,
+  historyMetadata: Record<string, unknown>,
+  taskId: string,
+): number | undefined {
+  const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
+    ? historyMetadata.prResult as Record<string, unknown>
+    : {};
+  const isPullRequestTask = task.task_type === 'review'
+    || task.task_type === 'pr-comment'
+    || taskId.startsWith('pr-comments-batch-')
+    || positiveInteger(initial.pullRequestNumber) !== undefined;
+  return positiveInteger(task.pr_number)
+    ?? positiveInteger(initial.pullRequestNumber)
+    ?? positiveInteger(initial.prNumber)
+    ?? positiveInteger(prResult.prNumber)
+    ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
+}
+
+function isReviewDeferred(metadata: Record<string, unknown>): boolean {
+  return metadata.deferred === true
+    || metadata.recoveryReason === 'ultrafix_waiting_for_exact_head_checks'
+    || metadata.jobResultReason === 'ultrafix_waiting_for_exact_head_checks';
 }
 
 function notificationRecap(metadata: Record<string, unknown>): string | undefined {
@@ -408,6 +478,7 @@ function connectSeatLimitBlock(account: Record<string, unknown>): ConnectSeatLim
 export class NotificationProjectionService {
   private readonly database: Knex;
   private readonly notifications: NotificationEventWriter;
+  private readonly publishNotificationUpdate: (payload: RecipientNotificationUpdate) => void;
   private readonly now: () => Date;
   private readonly stalledAfterMs: number;
   private readonly stalledCheckIntervalMs: number;
@@ -424,6 +495,7 @@ export class NotificationProjectionService {
     this.database = options.database;
     this.notifications = options.notificationService
       ?? new NotificationService({ database: options.database });
+    this.publishNotificationUpdate = options.publishNotificationUpdate ?? (() => undefined);
     this.now = options.now ?? (() => new Date());
     this.stalledAfterMs = resolveStalledAfterMs(options.stalledAfterMs);
     this.stalledCheckIntervalMs = options.stalledCheckIntervalMs ?? Math.min(
@@ -434,6 +506,54 @@ export class NotificationProjectionService {
     this.contentionRetryDelaysMs = options.contentionRetryDelaysMs
       ?? SQLITE_CONTENTION_RETRY_DELAYS_MS;
     this.repositoryNotificationsEnabled = options.repositoryNotificationsEnabled;
+  }
+
+  /**
+   * Tells each recipient's open tabs that their Inbox changed.
+   *
+   * Only ever called once the change is committed: the Inbox re-reads on this
+   * event rather than polling, so publishing before the row exists would hand
+   * it the state it already had. A publish that fails costs those tabs
+   * freshness until their next focus or reconnect - never the projection.
+   */
+  private announce(
+    change: NotificationChange,
+    recipients: readonly NotificationRecipient[],
+    eventId?: string,
+  ): void {
+    const occurredAt = normalizeISO8601Timestamp(this.now());
+    const recipientIds = new Set(recipients.map(
+      recipient => typeof recipient === 'string' ? recipient : recipient.userId,
+    ));
+    for (const recipientId of recipientIds) {
+      try {
+        this.publishNotificationUpdate({
+          eventType: NOTIFICATION_UPDATE,
+          change,
+          recipientId,
+          ...(eventId === undefined ? {} : { eventId }),
+          occurredAt,
+        });
+      } catch {
+        // Freshness only; the notification itself is already durable.
+      }
+    }
+  }
+
+  /** Announces receipts a server-side cleanup dismissed, per recipient. */
+  private announceDismissed(dismissed: readonly DismissedReceipt[]): void {
+    const eventIdsByRecipient = new Map<string, string[]>();
+    for (const receipt of dismissed) {
+      const eventIds = eventIdsByRecipient.get(receipt.userId) ?? [];
+      eventIds.push(receipt.eventId);
+      eventIdsByRecipient.set(receipt.userId, eventIds);
+    }
+    // One announcement per recipient: a sweep that resolves several cards at
+    // once still costs that Inbox a single re-read, and naming the notification
+    // only helps the recipient when there is exactly one to name.
+    for (const [userId, eventIds] of eventIdsByRecipient) {
+      this.announce('dismissed', [userId], eventIds.length === 1 ? eventIds[0] : undefined);
+    }
   }
 
   async bestEffort(label: string, projection: () => Promise<void>): Promise<void> {
@@ -491,6 +611,9 @@ export class NotificationProjectionService {
     const itemCount = planItemCount(draft.plan_json);
     const planName = name && name !== 'Untitled Plan' ? name : undefined;
 
+    const planRecipients: NotificationRecipient[] = [
+      { userId: draft.user_id, pushEnabled: true },
+    ];
     await this.notifications.createNotificationEvent({
       deduplicationKey: stableKey('plan-ready', payload.draftId, 'review', occurredAt),
       kind: 'plan',
@@ -502,7 +625,7 @@ export class NotificationProjectionService {
         : `Ready for review with ${itemCount} planned ${itemCount === 1 ? 'task' : 'tasks'}.`,
       actions: ['refine', 'approve_execute', 'dismiss'],
       occurredAt,
-    }, [{ userId: draft.user_id, pushEnabled: true }]);
+    }, planRecipients);
   }
 
   async projectTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
@@ -515,6 +638,7 @@ export class NotificationProjectionService {
       ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
       ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       isReview: context.isReview,
+      ...(context.goalId ? { goalId: context.goalId } : {}),
       ...(context.description === undefined ? {} : { description: context.description }),
     };
     const accepted = await this.upsertSourceActivity({
@@ -534,13 +658,16 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
-    if (payload.state === 'failed') {
+    if (payload.state === 'failed' || isNotifiableCancellation(payload)) {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
       });
       return;
     }
     if (payload.state !== 'completed') return;
+    // A worker can finish after deferring a review without running it. Keep
+    // its activity terminal, but do not advertise a result in Inbox or push.
+    if (context.reviewDeferred) return;
 
     if (context.isReview && context.prNumber !== undefined) {
       await this.projectCompletedReview(
@@ -609,6 +736,7 @@ export class NotificationProjectionService {
         const issueNumber = positiveInteger(metadata.issueNumber);
         const prNumber = positiveInteger(metadata.prNumber);
         const description = compactDisplayText(metadata.description);
+        const taskRecipients = await this.loadInstanceMemberRecipients();
         await this.notifications.createSourceActivityNotificationEvent({
           type: 'task', key: row.activity_key, repository: row.repository,
           lastActivityAt: row.last_activity_at,
@@ -623,14 +751,16 @@ export class NotificationProjectionService {
             ...(issueNumber === undefined ? {} : { issueNumber }),
             ...(prNumber === undefined ? {} : { prNumber }),
           },
+          ...(typeof metadata.goalId === 'string' ? { metadata: { goalId: metadata.goalId } } : {}),
           title: 'Task appears stalled',
           body: description
             ? `${quotedDescription(description)} has not reported progress.`
             : `Active work for ${row.repository} has not reported progress.`,
           actions: taskActions({ active: true }),
           occurredAt: row.last_activity_at,
-        }, await this.loadInstanceMemberRecipients());
+        }, taskRecipients);
       } else {
+        const indexingRecipients = await this.loadAdministratorRecipients();
         await this.notifications.createSourceActivityNotificationEvent({
           type: 'indexing', key: row.activity_key, repository: row.repository,
           ...(row.branch === null ? {} : { branch: row.branch }),
@@ -649,7 +779,7 @@ export class NotificationProjectionService {
           body: `Indexing ${row.branch ? `branch ${row.branch}` : row.repository} has not reported progress.`,
           actions: ['dismiss'],
           occurredAt: row.last_activity_at,
-        }, await this.loadAdministratorRecipients());
+        }, indexingRecipients);
       }
     }
   }
@@ -660,8 +790,10 @@ export class NotificationProjectionService {
    * audit; only their active Inbox receipts are dismissed.
    */
   async cleanupResolvedActivities(): Promise<number> {
-    return this.database.transaction(transaction =>
+    const dismissed = await this.database.transaction(transaction =>
       this.dismissResolvedActivityReceipts(transaction));
+    this.announceDismissed(dismissed);
+    return dismissed.length;
   }
 
   async projectSystemSnapshot(
@@ -796,47 +928,48 @@ export class NotificationProjectionService {
     return new Set([...enabledByRepository].filter(([, enabled]) => !enabled).map(([name]) => name));
   }
 
-  private createPullRequestAwareEvent<K extends 'task' | 'review'>(
+  private async createPullRequestAwareEvent<K extends 'task' | 'review'>(
     input: CreateNotificationEventInput<K>,
     recipients: readonly NotificationRecipient[],
     repository: string,
     prNumber: number | undefined,
   ): Promise<{ id: string } | null> {
-    if (prNumber === undefined) {
-      return this.notifications.createNotificationEvent(input, recipients);
-    }
-    return this.notifications.createPullRequestNotificationEvent(
-      repository,
-      prNumber,
-      input,
-      recipients,
-    );
+    return prNumber === undefined
+      ? await this.notifications.createNotificationEvent(input, recipients)
+      : await this.notifications.createPullRequestNotificationEvent(
+        repository,
+        prNumber,
+        input,
+        recipients,
+      );
   }
 
   private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {
     const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    const terminalReason = typeof payload.metadata?.terminalReason === 'string' ? payload.metadata.terminalReason : undefined;
     return this.createPullRequestAwareEvent({
       deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
       kind: 'task',
-      severity: 'error',
+      severity: payload.state === 'cancelled' ? 'info' : 'error',
       target: {
         type: 'task', repository: context.repository, taskId: payload.taskId,
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
       title: context.subjectTitle ?? (context.prNumber !== undefined
-        ? `Task failed for PR #${context.prNumber}`
+        ? `Task ${payload.state} for PR #${context.prNumber}`
         : context.issueNumber !== undefined
-          ? `Task failed for issue #${context.issueNumber}`
-          : 'Task failed'),
-      body: context.description
+          ? `Task ${payload.state} for issue #${context.issueNumber}`
+          : `Task ${payload.state}`),
+      body: terminalReason ? formatTaskTerminalReason(terminalReason) : (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
-        : `Work for ${context.repository} did not complete.`,
+        : `Work for ${context.repository} did not complete.`),
       actions: taskActions({
-        followup: context.followupEligible,
+        followup: payload.state !== 'cancelled' && context.followupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
+      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
       occurredAt,
     }, recipients, context.repository, context.prNumber);
   }
@@ -860,6 +993,7 @@ export class NotificationProjectionService {
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
+      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
       occurredAt,
     }, recipients, context.repository, prNumber);
   }
@@ -888,15 +1022,16 @@ export class NotificationProjectionService {
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
+      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
       occurredAt,
     }, recipients, context.repository, context.prNumber);
   }
 
-  private projectPullRequestAttention(
+  private async projectPullRequestAttention(
     input: PullRequestTaskEventProjection,
   ): Promise<{ id: string } | null> {
     const { payload, context, occurredAt, recipients, pullRequestUrl, prNumber } = input;
-    return this.notifications.createPullRequestAttentionNotificationEvent(
+    return await this.notifications.createPullRequestAttentionNotificationEvent(
       context.repository,
       prNumber,
       {
@@ -913,6 +1048,7 @@ export class NotificationProjectionService {
         // Persist only the completing implementation identity, never arbitrary task metadata.
         metadata: {
           completedImplementationTaskId: payload.taskId,
+          ...(context.goalId ? { goalId: context.goalId } : {}),
           completionType: context.commandMode ?? 'implementation',
         },
         actions: [
@@ -944,36 +1080,29 @@ export class NotificationProjectionService {
     if (!task) return undefined;
     const initial = parseJsonObject(task.initial_job_data);
     const historyMetadata = await this.loadCompletedHistoryMetadata(payload);
-    const prResult = typeof historyMetadata.prResult === 'object' && historyMetadata.prResult !== null
-      ? historyMetadata.prResult as Record<string, unknown>
-      : {};
     const repository = typeof task.repository === 'string'
       ? task.repository
       : payload.repository;
     if (typeof repository !== 'string') return undefined;
     const taskType = typeof task.task_type === 'string' ? task.task_type : '';
-    const isPullRequestTask = taskType === 'review'
-      || taskType === 'pr-comment'
-      || payload.taskId.startsWith('pr-comments-batch-')
-      || positiveInteger(initial.pullRequestNumber) !== undefined;
-    const prNumber = positiveInteger(task.pr_number)
-      ?? positiveInteger(initial.pullRequestNumber)
-      ?? positiveInteger(initial.prNumber)
-      ?? positiveInteger(prResult.prNumber)
-      ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
-    const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
+    const prNumber = resolvePullRequestNumber(task, initial, historyMetadata, payload.taskId);
     const commandMode = resolveCommandMode(historyMetadata, initial);
+    const isReview = taskType === 'review' || commandMode === 'review';
+    const reviewDeferred = isReviewDeferred(historyMetadata);
     const storedIssueNumber = positiveInteger(task.issue_number);
     const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
       repository,
+      ...(taskType === 'goal' && typeof initial.goalId === 'string' && initial.goalId.trim()
+        ? { goalId: initial.goalId } : {}),
       issueNumber,
       prNumber,
       description: taskDescription(initial),
       subjectTitle: subjectTitle(initial),
-      recap: notificationRecap(historyMetadata),
+      recap: taskNotificationRecap(historyMetadata, payload),
       commandMode,
       isReview,
+      reviewDeferred,
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
       pullRequestFollowupEligible: supportsPullRequestFollowup(task, prNumber),
@@ -990,6 +1119,9 @@ export class NotificationProjectionService {
     metadata?: JsonObject;
   }): Promise<boolean> {
     const completedAt = TERMINAL_ACTIVITY_STATUSES.has(input.status) ? input.occurredAt : null;
+    // Receipts this terminal transition resolves, announced once the
+    // transaction that dismissed them has actually committed.
+    let dismissed: DismissedReceipt[] = [];
     const values = {
         activity_type: input.type,
         activity_key: input.key,
@@ -1002,7 +1134,7 @@ export class NotificationProjectionService {
         created_at: input.occurredAt,
         updated_at: input.occurredAt,
     };
-    return this.database.transaction(async transaction => {
+    const accepted = await this.database.transaction(async transaction => {
       const existing = await transaction('notification_source_activity')
         .select('status', 'last_activity_at')
         .where({ activity_type: input.type, activity_key: input.key })
@@ -1042,18 +1174,20 @@ export class NotificationProjectionService {
         .select('status', 'last_activity_at')
         .where({ activity_type: input.type, activity_key: input.key })
         .first() as { status?: unknown; last_activity_at?: unknown } | undefined;
-      const accepted = stored?.status === input.status
+      const storedAccepted = stored?.status === input.status
         && stored.last_activity_at === input.occurredAt;
-      if (accepted && completedAt !== null) {
-        await this.dismissResolvedActivityReceipts(transaction);
+      if (storedAccepted && completedAt !== null) {
+        dismissed = await this.dismissResolvedActivityReceipts(transaction);
       }
-      return accepted;
+      return storedAccepted;
     });
+    this.announceDismissed(dismissed);
+    return accepted;
   }
 
   private async dismissResolvedActivityReceipts(
     transaction: Knex.Transaction,
-  ): Promise<number> {
+  ): Promise<DismissedReceipt[]> {
     const timestamp = normalizeISO8601Timestamp(this.now());
     // Stalled warnings resolve on any terminal transition; failures resolve
     // once the same task or indexing source later completes successfully.
@@ -1071,7 +1205,9 @@ export class NotificationProjectionService {
             .whereRaw('activity.last_activity_at > event.occurred_at');
         });
       });
-    const resolvedEvents = transaction('notification_events as event')
+    // Rebuilt per use: the same query selects the receipts to announce and
+    // then bounds the update that dismisses them.
+    const resolvedEvents = () => transaction('notification_events as event')
       .select('event.event_id')
       .whereIn('event.severity', ['warning', 'error'])
       .andWhere((resolvable) => {
@@ -1094,17 +1230,23 @@ export class NotificationProjectionService {
             });
         });
       });
-    const changed = await transaction('notification_user_states')
+    const resolving = await transaction('notification_user_states')
       .where({ inbox_enabled: true })
       .whereNull('dismissed_at')
-      .whereIn('event_id', resolvedEvents)
+      .whereIn('event_id', resolvedEvents())
+      .select('user_id', 'event_id') as Array<{ user_id: string; event_id: string }>;
+    if (resolving.length === 0) return [];
+    await transaction('notification_user_states')
+      .where({ inbox_enabled: true })
+      .whereNull('dismissed_at')
+      .whereIn('event_id', resolvedEvents())
       .update({
         dismissed_at: transaction.raw(
           'CASE WHEN created_at > ? THEN created_at ELSE ? END',
           [timestamp, timestamp],
         ),
       });
-    return Number(changed);
+    return resolving.map(receipt => ({ userId: receipt.user_id, eventId: receipt.event_id }));
   }
 
   private async hasActiveSystemFailureReceipt(component: string): Promise<boolean> {

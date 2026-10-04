@@ -213,8 +213,12 @@ export const createPackagedJourneyFixture = async ({ approvalReadinessDelayMs = 
         return;
       }
       if (request.method === 'GET' && record.authorization === `Bearer ${token}`) {
-        response.writeHead(200, cors);
-        response.end('{}');
+        // Optional dashboard reads can finish before the authenticated socket.
+        // Returning 200 with {} supplies invalid data that crashes the route and
+        // removes the selector before it can report REACT_CONNECTED. Let these
+        // unimplemented reads use the renderer's normal request-error handling.
+        response.writeHead(404, cors);
+        response.end('{"code":"UNIMPLEMENTED_SMOKE_ENDPOINT"}');
         return;
       }
     } catch {

@@ -3,8 +3,10 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
-import { Filter, LoaderCircle, Search, X } from 'lucide-react';
+import { Filter, Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
+import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
 import type { DraftUpdatePayload } from '@propr/shared';
@@ -31,7 +33,6 @@ const PlansPage: React.FC = () => {
 
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [error, setError] = useState<{ scope: string; message: string } | null>(null);
 
@@ -58,7 +59,7 @@ const PlansPage: React.FC = () => {
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
   // Build repo options for the shared RepositorySelector
-  const repoFilterOptions: RepoOption[] = useMemo(() => {
+  const repoFilterOptions = useDecoratedRepoOptions(useMemo<RepoOption[]>(() => {
     const allOption: RepoOption = {
       name: 'all',
       enabled: true,
@@ -73,7 +74,7 @@ const PlansPage: React.FC = () => {
         count,
       }));
     return [allOption, ...repoOptions];
-  }, [allRepositories, totalAllDrafts]);
+  }, [allRepositories, totalAllDrafts]));
 
   // Fetch all repositories for the filter dropdown
   const loadAllRepositories = useCallback(async () => {
@@ -97,11 +98,7 @@ const PlansPage: React.FC = () => {
     showLoading = true
   ) => {
     const requestId = ++draftsRequestId.current;
-    if (showLoading) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
+    if (showLoading) setLoading(true);
     setError(current => current?.scope === queryScope ? null : current);
     try {
       const data = await getDrafts({
@@ -123,7 +120,6 @@ const PlansPage: React.FC = () => {
     } finally {
       if (requestId === draftsRequestId.current) {
         setLoading(false);
-        setRefreshing(false);
       }
     }
   }, [queryScope]);
@@ -296,7 +292,7 @@ const PlansPage: React.FC = () => {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
         </div>
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
-          <div role="status" className="flex items-center gap-2 text-gray-500"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading plans...</div>
+          <ListSkeleton rows={8} layout="table" columns={4} label="Loading plans…" data-testid="plans-skeleton" />
         </div>
       </div>
     );
@@ -423,7 +419,6 @@ const PlansPage: React.FC = () => {
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
         {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
-        {(loading || refreshing) && <div role="status" className="px-4 pt-3 text-xs text-slate-500 sm:px-6">Refreshing plans…</div>}
         {renderContent()}
       </div>
 

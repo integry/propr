@@ -2,9 +2,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getQueueStats, getTasks } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
+import { CONNECTED_RECONCILE_MS } from './useLiveRefreshScheduler';
 import { useSocket } from '../contexts/useSocket';
 import { isDesktopRuntime } from '../config/runtimeMode';
-import type { DraftUpdatePayload, QueueStatsUpdatePayload, TaskUpdatePayload } from '@propr/shared';
+import type {
+  ActivityChange,
+  ActivityDomain,
+  ActivityUpdatePayload,
+  DraftUpdatePayload,
+  QueueStatsUpdatePayload,
+  TaskUpdatePayload,
+} from '@propr/shared';
 import { useCurrentUser } from '../contexts/AuthContext';
 import { getDesktopSocketConfigurationKey } from '../api/apiClient';
 import { useSharedSystemStatus } from '../contexts/SystemStatusContext';
@@ -25,6 +33,7 @@ import {
   saveDismissedIds,
   saveDismissedTaskTimestamps,
 } from './useHeaderStatsHelpers';
+import type { ActivityUpdatePayload as ScopedActivityUpdatePayload } from '@propr/shared/dist/activityEvents.js';
 import type {
   DismissedTaskTimestamps,
   RunningItem,
@@ -34,10 +43,51 @@ import type {
 
 export type { RunningItem } from './useHeaderStatsHelpers';
 
+const documentIsHidden = () => document.visibilityState === 'hidden';
 const LIVE_INVALIDATION_COALESCE_MS = 100;
 const LIVE_REVALIDATION_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
 const ALL_STATS_RESOURCES: readonly HeaderStatsResource[] = ['queue', 'drafts', 'tasks', 'status'];
+
+/**
+ * Which header resource reacts to which pushed change.
+ *
+ * The header is mounted on every page, so a timer here would cost requests on
+ * screens that show none of this data. Declaring the interests makes each read
+ * happen because the thing it reads actually changed.
+ */
+const HEADER_INTERESTS: Record<HeaderStatsResource, {
+  domains: readonly (ActivityDomain | 'system')[];
+  changes?: readonly (ActivityChange | 'progressed')[];
+}> = {
+  queue: { domains: ['task', 'queue', 'goal'] },
+  drafts: { domains: ['plan'] },
+  // The task widget shows what needs a person and what just finished, so it
+  // does not need to wake for every intermediate step.
+  tasks: {
+    domains: ['task', 'plan'],
+    changes: ['blocked', 'failed', 'completed', 'cancelled'],
+  },
+  // Status is about the instance, not about one run: health (a worker, the
+  // daemon, Redis, authentication or an agent), indexing and capacity are the
+  // pushed changes that move it, and per-file indexing progress does not change
+  // what the health rows say. A stopped worker produces no run activity at all,
+  // so without the `health` domain a connected client would keep its healthy
+  // snapshot until an unrelated trigger.
+  status: {
+    domains: ['health', 'system', 'indexing', 'usage'],
+    changes: ['created', 'started', 'completed', 'failed', 'cancelled', 'updated'],
+  },
+};
+
+function resourcesAffectedByActivity(payload: ActivityUpdatePayload | ScopedActivityUpdatePayload): HeaderStatsResource[] {
+  return ALL_STATS_RESOURCES.filter(resource => {
+    const interest = HEADER_INTERESTS[resource];
+    if (!interest.domains.includes(payload.domain)) return false;
+    const change = payload.domain === 'system' && payload.change === 'progressed' ? 'updated' : payload.change;
+    return !interest.changes || interest.changes.some(allowedChange => allowedChange === change);
+  });
+}
 
 export type HeaderStatsResourceStatus = 'checking' | 'available' | 'unavailable';
 
@@ -125,7 +175,7 @@ export interface HeaderStats {
 
 export function useHeaderStats(): HeaderStats {
   const currentUser = useCurrentUser();
-  const { getStatus, refreshStatus } = useSharedSystemStatus();
+  const { getStatus, refreshStatus, status: sharedStatus, error: sharedStatusError, managed: managedStatus } = useSharedSystemStatus();
   const requestIdentityKey = `${getDesktopSocketConfigurationKey()}\0${currentUser?.id ?? 'anonymous'}`;
   const [runningCount, setRunningCount] = useState<number>(0);
   const [runningItems, setRunningItems] = useState<RunningItem[]>([]);
@@ -165,6 +215,7 @@ export function useHeaderStats(): HeaderStats {
   const liveRefreshPendingRef = useRef<Set<HeaderStatsResource>>(new Set());
   const liveRefreshRetryAttemptRef = useRef(0);
   const lastQueueStatsFingerprintRef = useRef<string | null>(null);
+  const lastActivityFingerprintsRef = useRef<Map<string, string>>(new Map());
   const pendingQueueStatsFingerprintRef = useRef<string | null>(null);
   const draftsSnapshotRef = useRef<DraftListItem[]>([]);
   const activeJobsSnapshotRef = useRef<Awaited<ReturnType<typeof getQueueStats>>['activeJobs']>([]);
@@ -175,9 +226,19 @@ export function useHeaderStats(): HeaderStats {
   const requestIdentityRef = useRef(requestIdentityKey);
 
   // WebSocket connection for real-time updates
-  const { onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, isConnected } = useSocket();
+  const { onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, onActivityReady, onActivityUpdate, onUsageUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
   const socketConnectedRef = useRef(isConnected);
   socketConnectedRef.current = isConnected;
+
+  useEffect(() => {
+    if (!managedStatus || (!sharedStatus && !sharedStatusError)) return;
+    statsRequestRef.current.status += 1;
+    if (sharedStatus) setSystemHealth(buildSystemHealth(sharedStatus));
+    resourceErrorsRef.current.status = sharedStatusError?.message ?? null;
+    setResourceStatuses(previous => ({ ...previous, status: sharedStatusError ? 'unavailable' : 'available' }));
+    setError(ALL_STATS_RESOURCES.map(resource => resourceErrorsRef.current[resource])
+      .find((message): message is string => message !== null) ?? null);
+  }, [managedStatus, sharedStatus, sharedStatusError]);
 
   // A mounted desktop renderer can switch instances/accounts without a page
   // reload. Drop every account-derived snapshot before starting reads under
@@ -195,6 +256,7 @@ export function useHeaderStats(): HeaderStats {
     taskFingerprintsRef.current.clear();
     lastQueueStatsFingerprintRef.current = null;
     pendingQueueStatsFingerprintRef.current = null;
+    lastActivityFingerprintsRef.current.clear();
     setRunningItems([]);
     setRunningCount(0);
     setActivePlans([]);
@@ -279,7 +341,7 @@ export function useHeaderStats(): HeaderStats {
           ? coalesceHeaderStatsRead(requestIdentityKey, 'tasks', () =>
             getTasks({ limit: 30, forReview: true, excludeMerged: true })) : null,
         status: requested.has('status')
-          ? coalesceHeaderStatsRead(requestIdentityKey, 'status', isInitialLoad ? getStatus : refreshStatus) : null,
+          ? coalesceHeaderStatsRead(requestIdentityKey, 'status', isInitialLoad || managedStatus ? getStatus : refreshStatus) : null,
       };
       const entries = await Promise.all((Object.entries(reads) as Array<[
         HeaderStatsResource, Promise<unknown> | null
@@ -345,7 +407,7 @@ export function useHeaderStats(): HeaderStats {
           const reviewableGroups = buildReviewGroups(response);
           setReviewGroups(reviewableGroups);
           setReviewCount(reviewableGroups.length);
-        } else {
+        } else if (!managedStatus) {
           setSystemHealth(buildSystemHealth(value as SystemStatus));
         }
       }
@@ -393,7 +455,7 @@ export function useHeaderStats(): HeaderStats {
         setIsLoading(false);
       }
     }
-  }, [getStatus, refreshStatus, requestIdentityKey]);
+  }, [getStatus, refreshStatus, requestIdentityKey, managedStatus]);
   /* eslint-enable complexity */
 
   // Refresh function for manual refresh
@@ -404,14 +466,16 @@ export function useHeaderStats(): HeaderStats {
   // Queue, task, and draft transitions are often emitted together. Collect the
   // affected resources and reconcile each at most once after the burst.
   const scheduleLiveRefresh = useCallback((resources: readonly HeaderStatsResource[] = ALL_STATS_RESOURCES) => {
-    resources.forEach(resource => liveRefreshPendingRef.current.add(resource));
-    if (document.visibilityState === 'hidden') return;
+    resources.forEach(resource => {
+      if (resource !== 'status' || !managedStatus) liveRefreshPendingRef.current.add(resource);
+    });
+    if (documentIsHidden()) return;
     if (liveRefreshTimerRef.current !== null || liveRefreshInFlightRef.current) return;
 
     const armRefresh = (delayMs: number) => {
       liveRefreshTimerRef.current = setTimeout(async () => {
         liveRefreshTimerRef.current = null;
-        if (!isMountedRef.current || liveRefreshPendingRef.current.size === 0) return;
+        if (!isMountedRef.current || liveRefreshPendingRef.current.size === 0 || documentIsHidden()) return;
 
         const pendingResources = [...liveRefreshPendingRef.current];
         liveRefreshPendingRef.current.clear();
@@ -427,7 +491,7 @@ export function useHeaderStats(): HeaderStats {
           const retryDelay = LIVE_REVALIDATION_RETRY_DELAYS_MS[liveRefreshRetryAttemptRef.current];
           liveRefreshRetryAttemptRef.current += 1;
           outcome.failedResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
-          if (document.visibilityState !== 'hidden') armRefresh(retryDelay);
+          if (!documentIsHidden()) armRefresh(retryDelay);
         } else {
           liveRefreshRetryAttemptRef.current = 0;
           if (outcome.failedResources.includes('queue')) {
@@ -437,14 +501,14 @@ export function useHeaderStats(): HeaderStats {
 
         if (liveRefreshPendingRef.current.size > 0
           && liveRefreshTimerRef.current === null
-          && document.visibilityState !== 'hidden') {
+          && !documentIsHidden()) {
           armRefresh(LIVE_INVALIDATION_COALESCE_MS);
         }
       }, delayMs);
     };
 
     armRefresh(LIVE_INVALIDATION_COALESCE_MS);
-  }, [fetchStats]);
+  }, [fetchStats, managedStatus]);
 
   // A reconnect can carry a forced queue snapshot whose counts match the last
   // payload even though drafts, tasks, or health changed while offline. Reset
@@ -464,6 +528,9 @@ export function useHeaderStats(): HeaderStats {
       liveRefreshRetryAttemptRef.current = 0;
       pendingQueueStatsFingerprintRef.current = null;
       lastQueueStatsFingerprintRef.current = null;
+      // Anything could have changed while the socket was down, so no pushed
+      // change may be treated as a repeat of what this client already has.
+      lastActivityFingerprintsRef.current.clear();
       ALL_STATS_RESOURCES.forEach(resource => { statsRequestRef.current[resource] += 1; });
       if (isDesktopRuntime()) {
         setRunningItems([]);
@@ -491,7 +558,7 @@ export function useHeaderStats(): HeaderStats {
 
     // Initial fetch
     const initialResources = ALL_STATS_RESOURCES;
-    if (document.visibilityState === 'hidden') {
+    if (documentIsHidden()) {
       initialResources.forEach(resource => liveRefreshPendingRef.current.add(resource));
     } else {
       void fetchStats(initialResources, true).then(outcome => {
@@ -538,6 +605,7 @@ export function useHeaderStats(): HeaderStats {
     };
 
     const handleQueueStatsUpdate = (payload: QueueStatsUpdatePayload) => {
+      if (payload.initial) return;
       const fingerprint = queueStatsFingerprint(payload);
       if (fingerprint === lastQueueStatsFingerprintRef.current
         || fingerprint === pendingQueueStatsFingerprintRef.current) return;
@@ -546,17 +614,55 @@ export function useHeaderStats(): HeaderStats {
       scheduleLiveRefresh(['queue']);
     };
 
+    // The derived envelope covers changes that have no dedicated lifecycle
+    // event on this client (repository indexing, capacity, goal transitions).
+    // Only the resources a change can actually move are invalidated, and the
+    // existing scheduler coalesces a burst into one read per resource.
+    const handleActivityUpdate = (payload: ActivityUpdatePayload) => {
+      // Producers repeat a task's state while a run is in flight. Reading again
+      // for a change this client already reconciled would undo the request
+      // reduction the lifecycle handlers above achieve. Aggregate changes carry
+      // no subject and are only published when they actually moved, so they are
+      // never treated as repeats.
+      if (payload.subjectId) {
+        const subject = `${payload.domain}\0${payload.subjectId}`;
+        if (lastActivityFingerprintsRef.current.get(subject) === payload.change) return;
+        lastActivityFingerprintsRef.current.set(subject, payload.change);
+      }
+      const affected = resourcesAffectedByActivity(payload);
+      if (affected.length > 0) scheduleLiveRefresh(affected);
+    };
+
     // Subscribe to every event that can change active work.
     const unsubscribeTask = onTaskUpdate(handleTaskUpdate);
     const unsubscribeDraft = onDraftUpdate(handleDraftUpdate);
     const unsubscribeQueueStats = onQueueStatsUpdate(handleQueueStatsUpdate);
+    const unsubscribeActivity = onActivityUpdate(handleActivityUpdate);
+    // Capacity moves the agent lines in the status popover.
+    const unsubscribeUsage = onUsageUpdate(() => scheduleLiveRefresh(['status']));
 
     return () => {
       unsubscribeTask();
       unsubscribeDraft();
       unsubscribeQueueStats();
+      unsubscribeActivity();
+      unsubscribeUsage();
     };
-  }, [isConnected, onTaskUpdate, onDraftUpdate, onQueueStatsUpdate, scheduleLiveRefresh]);
+  }, [
+    isConnected,
+    onTaskUpdate,
+    onDraftUpdate,
+    onQueueStatsUpdate,
+    onActivityUpdate,
+    onUsageUpdate,
+    scheduleLiveRefresh,
+  ]);
+
+  useEffect(() => {
+    subscribeToActivity?.();
+    const unsubscribeReady = onActivityReady?.(() => scheduleLiveRefresh(ALL_STATS_RESOURCES));
+    return () => { unsubscribeReady?.(); unsubscribeFromActivity?.(); };
+  }, [onActivityReady, subscribeToActivity, unsubscribeFromActivity, scheduleLiveRefresh]);
 
   // Hidden tabs accumulate invalidations without issuing requests. Becoming
   // visible (or receiving focus after a suspended socket) performs one full
@@ -564,17 +670,23 @@ export function useHeaderStats(): HeaderStats {
   // fallback so the UI cannot remain stale forever.
   useEffect(() => {
     const recoverVisible = () => {
-      if (document.visibilityState !== 'hidden') scheduleLiveRefresh(ALL_STATS_RESOURCES);
+      if (!documentIsHidden()) scheduleLiveRefresh(ALL_STATS_RESOURCES);
     };
     const fallbackPoll = window.setInterval(() => {
-      if (!socketConnectedRef.current && document.visibilityState !== 'hidden') {
+      if (!socketConnectedRef.current && !documentIsHidden()) {
         scheduleLiveRefresh(ALL_STATS_RESOURCES);
       }
     }, FALLBACK_POLL_INTERVAL_MS);
+    const safetyPoll = window.setInterval(() => {
+      if (socketConnectedRef.current && !documentIsHidden()) {
+        scheduleLiveRefresh(ALL_STATS_RESOURCES);
+      }
+    }, CONNECTED_RECONCILE_MS);
     document.addEventListener('visibilitychange', recoverVisible);
     window.addEventListener('focus', recoverVisible);
     return () => {
       window.clearInterval(fallbackPoll);
+      window.clearInterval(safetyPoll);
       document.removeEventListener('visibilitychange', recoverVisible);
       window.removeEventListener('focus', recoverVisible);
     };

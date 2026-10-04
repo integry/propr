@@ -151,7 +151,7 @@ test('launcher derives and mounts managed agent credentials without another host
   }, { manifestPath });
 
   assert.equal(cfg.managedCredentialsDir, '/host/propr/data/agent-credentials');
-  for (const service of ['api', 'worker', 'analysis-worker', 'indexing-worker']) {
+  for (const service of ['api', 'worker', 'indexing-worker']) {
     const { args } = buildServiceSpec(cfg, service);
     assert.ok(args.includes(
       '/host/propr/data/agent-credentials:/host/propr/data/agent-credentials',
@@ -188,7 +188,7 @@ test('packaged app services always receive production mode after the env file', 
   const cfg = resolveHostConfig({ rootDir, env: { NODE_ENV: 'development' }, manifestPath });
 
   assert.equal(cfg.nodeEnv, 'production', 'runtime mode must come from the stack env file');
-  for (const service of ['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']) {
+  for (const service of ['daemon', 'worker', 'indexing-worker', 'api']) {
     const { args } = buildServiceSpec(cfg, service);
     assert.deepEqual(envValues(args, 'NODE_ENV'), ['production'], service);
     assert.ok(args.indexOf('NODE_ENV=production') > args.indexOf('--env-file'), service);

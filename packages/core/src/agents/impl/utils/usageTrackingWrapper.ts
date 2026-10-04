@@ -88,14 +88,19 @@ export interface UsageTrackingMetrics {
 /**
  * Returns true when Agent Tank tracking is enabled.
  *
- * Checks the database settings for the Agent Tank configuration.
- * Tracking is disabled when enabled is false or url is empty/invalid.
+ * Checks the database settings for the Agent Tank configuration. Tracking is
+ * off in `disabled` mode, and in `external` mode when the URL is empty or
+ * invalid. `bundled` mode needs no URL — it runs the CLI in the agent image.
  */
 export async function isAgentTankEnabled(): Promise<boolean> {
     try {
         const settings = await loadAgentTankSettings();
-        const enabled = settings.enabled && !!settings.url && settings.url !== 'false' && settings.url !== '0';
-        logger.info({ enabled, settings }, 'Agent Tank enabled check');
+        // Bundled mode contacts no URL at all, so the URL sanity checks only
+        // apply to the external transport.
+        const enabled = settings.mode === 'bundled'
+            || (settings.mode === 'external'
+                && !!settings.url && settings.url !== 'false' && settings.url !== '0');
+        logger.info({ enabled, mode: settings.mode }, 'Agent Tank enabled check');
         return enabled;
     } catch (err) {
         logger.warn({ error: (err as Error).message }, 'Failed to load Agent Tank settings, assuming disabled');
@@ -225,15 +230,33 @@ function extractArrayMetricRecords(
 /**
  * Refresh the agent and then fetch its current status.
  *
- * Always calls POST /refresh/:agent first to ensure Agent Tank has the
- * latest data, then calls GET /status/:agent to retrieve it.
+ * External mode refreshes over HTTP. Bundled mode awaits the phase-specific
+ * refresh with its own budget before reading the snapshot.
  */
 async function refreshAndGetStatus(
     agent: string,
-    timeoutMs?: number,
+    timeoutMs: number | undefined,
+    alias: string,
+    phase: 'pre-call' | 'post-call',
 ): Promise<AgentStatusResponse> {
-    await refreshAgent(agent, timeoutMs);
-    return getStatus(agent, timeoutMs);
+    await refreshAgent(agent, timeoutMs, phase);
+    return getStatus(agent, timeoutMs, alias);
+}
+
+/**
+ * Whether the post-call status is the *same snapshot* the pre-call read returned.
+ *
+ * A successful refresh can still return unchanged provider data. Subtracting
+ * that snapshot from itself is not evidence of this call's consumption.
+ *
+ * `lastUpdated` is the transport-independent identity of a snapshot - Agent Tank
+ * stamps it when it reads the CLI - and the usage payload is compared too so a
+ * daemon that reports new numbers under an unchanged timestamp still counts as a
+ * measurement.
+ */
+function isSameSnapshot(preCall: AgentStatusResponse, postCall: AgentStatusResponse): boolean {
+    return preCall.lastUpdated === postCall.lastUpdated
+        && JSON.stringify(preCall.usage) === JSON.stringify(postCall.usage);
 }
 
 function isAgentTankTimeout(error: unknown): boolean {
@@ -252,9 +275,10 @@ async function fetchStatusBestEffort(
     agent: string,
     phase: 'pre-call' | 'post-call',
     timeoutMs?: number,
+    alias: string = agent,
 ): Promise<AgentStatusResponse | null> {
     try {
-        const status = await refreshAndGetStatus(agent, timeoutMs);
+        const status = await refreshAndGetStatus(agent, timeoutMs, alias, phase);
         logger.debug({ agent, phase, usage: status.usage }, `Agent Tank ${phase} status`);
         return status;
     } catch (err: unknown) {
@@ -273,11 +297,12 @@ function startStatusSnapshot(
     agent: string,
     phase: 'pre-call' | 'post-call',
     timeoutMs?: number,
+    alias: string = agent,
 ): StatusSnapshotHandle {
     let settled = false;
     let settledStatus: AgentStatusResponse | null = null;
 
-    const promise = fetchStatusBestEffort(agent, phase, timeoutMs).then(status => {
+    const promise = fetchStatusBestEffort(agent, phase, timeoutMs, alias).then(status => {
         settled = true;
         settledStatus = status;
         return status;
@@ -297,21 +322,26 @@ function startStatusSnapshot(
  * 3. Uses the pre-call snapshot only if it is already available when the LLM
  *    call finishes.
  * 4. Refreshes the agent again and fetches status (post-call).
- * 5. Computes the delta and extracts structured metric records.
- * 6. Returns both the execution result and the usage metrics.
+ * 5. Skips the measurement when both probes returned the same snapshot.
+ *    Bundled post-call probes await a new run with a bundled-specific timeout.
+ * 6. Computes the delta and extracts structured metric records.
+ * 7. Returns both the execution result and the usage metrics.
  *
  * If Agent Tank is disabled or a status fetch fails, the LLM call still
- * proceeds — usage tracking is best-effort and never blocks execution.
+ * proceeds — usage tracking never delays starting execution. Returning the
+ * result may wait for the bounded post-call probe.
  *
  * @param agent - The agent identifier to query (e.g. "claude", "antigravity", "codex").
  * @param executeFn - An async function that performs the LLM call and returns its result.
- * @param timeoutMs - Optional timeout for each Agent Tank HTTP request (default: 5000ms).
+ * @param timeoutMs - Optional timeout for each HTTP request; bundled mode uses AGENT_TANK_BUNDLED_TIMEOUT_MS.
+ * @param alias - Executing account alias; bundled probes require matching cached provenance.
  * @returns The execution result and usage metrics (metrics are null if tracking was skipped).
  */
 export async function executeWithUsageTracking<T>(
     agent: string,
     executeFn: () => Promise<T>,
     timeoutMs?: number,
+    alias: string = agent,
 ): Promise<UsageTrackingResult<T>> {
     if (!(await isAgentTankEnabled())) {
         logger.debug({ agent }, 'Agent Tank disabled — skipping usage tracking');
@@ -322,7 +352,7 @@ export async function executeWithUsageTracking<T>(
     // Pre-call: start Agent Tank refresh/status capture, but do not wait before
     // launching the LLM. This keeps local usage monitoring from adding latency
     // to model execution, especially for indexing analysis batches.
-    const preCallSnapshot = startStatusSnapshot(agent, 'pre-call', timeoutMs);
+    const preCallSnapshot = startStatusSnapshot(agent, 'pre-call', timeoutMs, alias);
 
     // Execute the LLM call (always runs, even if pre-call failed)
     const result = await executeFn();
@@ -339,8 +369,16 @@ export async function executeWithUsageTracking<T>(
         return { result, usageMetrics: null };
     }
 
-    const postCall = await fetchStatusBestEffort(agent, 'post-call', timeoutMs);
+    const postCall = await fetchStatusBestEffort(agent, 'post-call', timeoutMs, alias);
     if (postCall === null) {
+        return { result, usageMetrics: null };
+    }
+
+    // Both probes read the same snapshot, so there is nothing this call can be
+    // said to have consumed. Report no metrics rather than a fabricated zero.
+    if (isSameSnapshot(preCall, postCall)) {
+        logger.debug({ agent, lastUpdated: preCall.lastUpdated },
+            'Agent Tank returned the same snapshot before and after the call — recording no usage delta');
         return { result, usageMetrics: null };
     }
 

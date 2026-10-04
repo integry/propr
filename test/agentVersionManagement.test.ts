@@ -1,6 +1,9 @@
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { AGENT_DEFAULTS } from '@propr/shared';
 import {
     AGENT_IMAGE_NAME,
@@ -10,7 +13,7 @@ import {
 } from '../packages/core/src/agents/constants.js';
 import { CONTAINER_CONFIG_PATHS } from '../packages/core/src/agents/types.js';
 import { AGENT_CLI_PACKAGES, AGENT_CLI_TAGS, AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
-import { findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
+import { computeContentHash, findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
 import { clearNpmCache } from '../packages/core/src/agents/version/npmClient.js';
 
 const originalFetch = globalThis.fetch;
@@ -19,6 +22,48 @@ afterEach(() => {
     globalThis.fetch = originalFetch;
     clearNpmCache();
 });
+
+/**
+ * Run the real build script against a sandbox copy of the repository so the
+ * bundled Agent Tank version guard executes for real without reaching Docker,
+ * the notices generator or this repository's launcher manifest (`--only none`
+ * selects no image to build).
+ */
+function runBuildImagesGuard(
+    options: { agentTankVersion?: string; dockerfile?: (content: string) => string } = {}
+): { status: number | null; stdout: string; stderr: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-tank-pin-'));
+    try {
+        fs.mkdirSync(path.join(root, 'scripts'));
+        fs.mkdirSync(path.join(root, 'docker', 'launcher'), { recursive: true });
+        fs.copyFileSync('scripts/build-images.sh', path.join(root, 'scripts', 'build-images.sh'));
+        const dockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        fs.writeFileSync(
+            path.join(root, 'Dockerfile.agent'),
+            options.dockerfile ? options.dockerfile(dockerfile) : dockerfile
+        );
+        fs.writeFileSync(
+            path.join(root, 'package.json'),
+            JSON.stringify({ name: 'propr-build-guard-sandbox', version: '0.0.0-test', license: 'Apache-2.0' })
+        );
+
+        const env: NodeJS.ProcessEnv = { ...process.env, GIT_SHA: 'nogit' };
+        if (options.agentTankVersion) {
+            env.AGENT_TANK_CLI_VERSION = options.agentTankVersion;
+        } else {
+            delete env.AGENT_TANK_CLI_VERSION;
+        }
+
+        const result = spawnSync('bash', ['scripts/build-images.sh', '--only', 'none'], {
+            cwd: root,
+            encoding: 'utf8',
+            env
+        });
+        return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
 
 describe('agent version management', () => {
     test('includes OpenCode in core agent configuration constants', () => {
@@ -90,6 +135,63 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, new RegExp(`^ARG VIBE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
         assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
+    });
+
+    test('pins the bundled Agent Tank version identically in the Dockerfile and the build script', () => {
+        const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        const buildScript = fs.readFileSync('scripts/build-images.sh', 'utf8');
+
+        const pinned = agentDockerfile.match(/^ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)$/m)?.[1];
+        assert.ok(pinned, 'Dockerfile.agent must pin ARG AGENT_TANK_CLI_VERSION');
+        assert.match(buildScript, new RegExp(`^AGENT_TANK_CLI_VERSION="\\$\\{AGENT_TANK_CLI_VERSION:-${pinned}\\}"$`, 'm'));
+    });
+
+    test('changing the pinned Agent Tank version changes the generated bundle image tag', () => {
+        // Only the Dockerfile literal feeds the content hash, which is exactly
+        // why the build script default must never drift from it.
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-bundle-tag-'));
+        const dockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+        const versions = getDefaultAgentCliVersionMatrix();
+
+        fs.writeFileSync(path.join(root, 'Dockerfile.agent'), dockerfile);
+        const before = generateAgentBundleImageTag(versions, computeContentHash(root));
+
+        fs.writeFileSync(
+            path.join(root, 'Dockerfile.agent'),
+            dockerfile.replace(/ARG AGENT_TANK_CLI_VERSION=\d+\.\d+\.\d+/g, 'ARG AGENT_TANK_CLI_VERSION=9.9.9')
+        );
+        const after = generateAgentBundleImageTag(versions, computeContentHash(root));
+
+        assert.notStrictEqual(before, after);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    test('refuses to build the agent image with an Agent Tank version the Dockerfile does not pin', () => {
+        // The Agent Tank version reaches the bundle tag only through the
+        // Dockerfile literal, so an environment override would install a
+        // different binary and still produce the byte-identical tag.
+        const mismatch = runBuildImagesGuard({ agentTankVersion: '9.9.9' });
+
+        assert.notStrictEqual(mismatch.status, 0);
+        assert.match(mismatch.stderr, /AGENT_TANK_CLI_VERSION=9\.9\.9 does not match the Dockerfile\.agent pin \(\d+\.\d+\.\d+\)/);
+        assert.doesNotMatch(mismatch.stdout, /agent tag:/);
+
+        // Every stage's pin is checked, so a Dockerfile whose final-stage ARG
+        // drifts from the installing stage is rejected too - the label would
+        // otherwise advertise a version the image does not carry.
+        const drifted = runBuildImagesGuard({
+            dockerfile: content => content.replace(/ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)$/m, 'ARG AGENT_TANK_CLI_VERSION=9.9.9')
+        });
+        assert.notStrictEqual(drifted.status, 0);
+        assert.match(drifted.stderr, /does not match the Dockerfile\.agent pin/);
+
+        // The pinned version itself still builds: the guard rejects drift, not
+        // the supported way of setting the variable.
+        const pinned = runBuildImagesGuard({
+            agentTankVersion: fs.readFileSync('Dockerfile.agent', 'utf8').match(/^ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)$/m)?.[1]
+        });
+        assert.strictEqual(pinned.status, 0);
+        assert.match(pinned.stdout, /agent tag: {2}bundle-/);
     });
 
     test('defaults every coding agent task execution to 24 hours', () => {

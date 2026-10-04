@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { notificationSchema, type Notification } from '@propr/shared';
+import { notificationSchema, type Notification, type NotificationUpdatePayload } from '@propr/shared';
 import { ToastProvider } from '../components/ui/Toast';
 import InboxPage from './InboxPage';
 import {
@@ -34,6 +34,35 @@ vi.mock('../api/proprApi', () => ({
   postTaskFollowup: vi.fn(),
 }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => demoState }));
+
+const socketState = vi.hoisted(() => ({
+  isConnected: true,
+  notificationCallbacks: new Set<(payload: NotificationUpdatePayload) => void>(),
+}));
+vi.mock('../contexts/useSocket', () => ({
+  useSocket: () => ({
+    isConnected: socketState.isConnected,
+    onNotificationUpdate: (callback: (payload: NotificationUpdatePayload) => void) => {
+      socketState.notificationCallbacks.add(callback);
+      return () => socketState.notificationCallbacks.delete(callback);
+    },
+  }),
+}));
+
+/** Delivers a `notification:update` the way the server publishes it. */
+async function pushNotificationUpdate(
+  change: NotificationUpdatePayload['change'],
+  eventId?: string,
+): Promise<void> {
+  await act(async () => {
+    socketState.notificationCallbacks.forEach(callback => callback({
+      eventType: 'notification:update',
+      change,
+      eventId,
+      occurredAt: '2026-08-24T12:40:00.000Z',
+    }));
+  });
+}
 
 function item(
   id: string,
@@ -93,6 +122,8 @@ describe('Inbox page', () => {
     commitUnreadCount.mockReset();
     refreshUnreadCount.mockClear();
     demoState.isDemoMode = false;
+    socketState.isConnected = true;
+    socketState.notificationCallbacks.clear();
   });
 
   test('renders activity as one newest-first list with only System kept apart and collapsed', async () => {
@@ -200,7 +231,7 @@ describe('Inbox page', () => {
     expect(screen.queryByRole('article', { name: 'Review completed for PR #1724' })).not.toBeInTheDocument();
   });
 
-  test('offers /review and /ultrafix after a PR run and opens the pull request on click', async () => {
+  test('offers /review and /ultrafix after a PR run and links to its task with a separate GitHub chip', async () => {
     const notification = item('event-pr', 'Fix run completed for PR #1724', null, {
       kind: 'pull_request',
       severity: 'info',
@@ -216,9 +247,13 @@ describe('Inbox page', () => {
     renderInbox();
 
     const link = await screen.findByRole('link', { name: /Fix run completed for PR #1724/ });
-    expect(link).toHaveAttribute('href', 'https://github.com/integry/propr/pull/1724');
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveAttribute('href', '/tasks/task-fix');
+    expect(link).not.toHaveAttribute('target');
+    const chip = screen.getByRole('link', { name: 'PR #1724 on GitHub' });
+    expect(chip).toHaveAttribute('href', 'https://github.com/integry/propr/pull/1724');
+    expect(chip).toHaveAttribute('target', '_blank');
+    expect(chip).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(chip).toHaveClass('relative', 'z-10');
     expect(screen.getByRole('button', { name: 'Send /review to PR #1724' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Send /ultrafix to PR #1724' }));
 
@@ -226,6 +261,22 @@ describe('Inbox page', () => {
     expect(await screen.findByText(/Couldn't send \/ultrafix to PR #1724.*GitHub unavailable/)).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Fix run completed for PR #1724' })).toBeInTheDocument();
     expect(dismissNotification).not.toHaveBeenCalled();
+  });
+
+  test('uses an external row fallback only without a producer reference and marks chip opens read', async () => {
+    const notification = item('legacy-pr', 'PR ready', null, {
+      kind: 'pull_request', target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
+    vi.mocked(markNotificationRead).mockResolvedValue({ notification, unreadCount: 0 });
+    renderInbox();
+    const row = await screen.findByRole('link', { name: 'PR ready' });
+    expect(row).toHaveAttribute('href', 'https://github.com/integry/propr/pull/42');
+    expect(row).toHaveAttribute('target', '_blank');
+    expect(row).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(screen.getByRole('link', { name: 'PR #42 on GitHub' }));
+    await waitFor(() => expect(markNotificationRead).toHaveBeenCalledWith('legacy-pr'));
+    expect(screen.getByRole('article')).toBeInTheDocument();
   });
 
   test('expands a system notification in place instead of navigating', async () => {
@@ -242,6 +293,118 @@ describe('Inbox page', () => {
     fireEvent.click(card);
     expect(card).toHaveAttribute('aria-expanded', 'true');
     expect(markNotificationRead).toHaveBeenCalledWith('event-system');
+  });
+
+  test('prepends a pushed notification with exactly one read', async () => {
+    const existing = item('event-existing', 'Already here', null, {
+      occurredAt: '2026-08-24T12:00:00.000Z', createdAt: '2026-08-24T12:00:00.000Z',
+    });
+    const created = item('event-created', 'Just happened', null, {
+      occurredAt: '2026-08-24T12:30:00.000Z', createdAt: '2026-08-24T12:30:00.000Z',
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [existing], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [created, existing], unreadCount: 2, nextCursor: null });
+    renderInbox();
+    await screen.findByText('Already here');
+    expect(listNotifications).toHaveBeenCalledTimes(1);
+
+    await pushNotificationUpdate('created', 'event-created');
+
+    await screen.findByText('Just happened');
+    expect(screen.getAllByRole('article').map(article => article.getAttribute('aria-label'))).toEqual([
+      'Just happened',
+      'Already here',
+    ]);
+    expect(listNotifications).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not resurrect a card the user dismissed when the server echoes that dismissal', async () => {
+    const notification = item('event-1', 'Dismissed here', null, { actions: ['dismiss'] });
+    vi.mocked(listNotifications).mockResolvedValue({
+      notifications: [notification], unreadCount: 1, nextCursor: null,
+    });
+    vi.mocked(dismissNotification).mockResolvedValue({
+      notification: notificationSchema.parse({ ...notification, dismissedAt: '2026-08-24T12:05:00.000Z' }),
+      unreadCount: 0,
+    });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Dismissed here' }));
+    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-1'));
+    const readsAfterDismissal = vi.mocked(listNotifications).mock.calls.length;
+
+    // The server publishes our own dismissal back. The client already knows the
+    // outcome, so it neither re-reads nor puts the card back.
+    await pushNotificationUpdate('dismissed', 'event-1');
+
+    expect(screen.queryByText('Dismissed here')).not.toBeInTheDocument();
+    expect(listNotifications).toHaveBeenCalledTimes(readsAfterDismissal);
+  });
+
+  test('reconciles the whole list once when notifications are cleared elsewhere', async () => {
+    const notification = item('event-1', 'Cleared in another tab');
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [notification], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    renderInbox();
+    await screen.findByText('Cleared in another tab');
+
+    await pushNotificationUpdate('dismissed_all');
+
+    await waitFor(() => expect(screen.queryByText('Cleared in another tab')).not.toBeInTheDocument());
+    expect(listNotifications).toHaveBeenCalledTimes(2);
+  });
+
+  test('re-reads when another tab dismisses a notification this client only read', async () => {
+    const notification = item('event-1', 'System component unhealthy: redis', null, {
+      kind: 'system_failure',
+      target: { type: 'system_failure', component: 'redis' },
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [notification], unreadCount: 1, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    vi.mocked(markNotificationRead).mockResolvedValue({ notification, unreadCount: 0 });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: /System/ }));
+    fireEvent.click(screen.getByRole('button', {
+      name: /System component unhealthy: redis/, expanded: false,
+    }));
+    await waitFor(() => expect(markNotificationRead).toHaveBeenCalledWith('event-1'));
+    expect(listNotifications).toHaveBeenCalledTimes(1);
+
+    // Marking it read here says nothing about someone else dismissing it: only
+    // the echo of our own read may be ignored.
+    await pushNotificationUpdate('dismissed', 'event-1');
+
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(
+      screen.queryByText('System component unhealthy: redis'),
+    ).not.toBeInTheDocument());
+  });
+
+  test('re-reads for a change to a notification this client did not touch', async () => {
+    const mine = item('event-mine', 'Dismissed here', null, { actions: ['dismiss'] });
+    const theirs = item('event-theirs', 'Dismissed elsewhere', null, {
+      occurredAt: '2026-08-24T11:00:00.000Z', createdAt: '2026-08-24T11:00:00.000Z',
+    });
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [mine, theirs], unreadCount: 2, nextCursor: null })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    vi.mocked(dismissNotification).mockResolvedValue({
+      notification: notificationSchema.parse({ ...mine, dismissedAt: '2026-08-24T12:05:00.000Z' }),
+      unreadCount: 1,
+    });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Dismissed here' }));
+    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-mine'));
+
+    await pushNotificationUpdate('dismissed', 'event-theirs');
+
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Dismissed elsewhere')).not.toBeInTheDocument();
   });
 
   test('optimistically dismisses and restores an item advertising dismiss when the request fails', async () => {
@@ -592,6 +755,7 @@ describe('Inbox page', () => {
     fireEvent.focus(window);
     expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
     expect(screen.getByRole('alert')).toHaveTextContent('Page failed');
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(3));
     await act(async () => refreshRequest.resolve({ notifications: [notification], unreadCount: 1, nextCursor: 'cursor-1' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });

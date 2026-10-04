@@ -13,6 +13,7 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { SendResult } from 'web-push';
 import { closeConnection, type BetterSqliteConnection } from '../../core/src/db/connection.js';
+import { closeEventPublisher } from '../../core/src/utils/eventPublisher.js';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
@@ -111,7 +112,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => database.destroy());
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 async function queuedEvent(options: {
   pushEnabled?: boolean;
@@ -260,6 +266,39 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal(job.status, 'delivered');
     assert.equal(job.attempt_count, 1);
   });
+
+  for (const completionType of ['implementation', 'fix', 'ultrafix', 'merge', 'switch', 'goal', 'legacy']) {
+    test(`push opens the ${completionType} producer, including its View details action`, async () => {
+      const userId = `producer-${completionType}`;
+      await notifications.updateNotificationPreferences(userId, {
+        preferences: { pull_request: { pushEnabled: true } },
+      });
+      await notifications.upsertPushSubscription(userId, {
+        endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+        expirationTime: null, keys: { p256dh: browserPublicKey(), auth: 'A'.repeat(22) },
+      });
+      await notifications.createNotificationEvent({
+        deduplicationKey: userId, kind: 'pull_request',
+        target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+        metadata: completionType === 'legacy' ? {} : {
+          completedImplementationTaskId: `${completionType}-task`, completionType,
+          ...(completionType === 'goal' ? { goalId: 'goal-1' } : {}),
+        },
+        action: { type: 'external_link', label: 'Open PR', href: 'https://github.com/integry/propr/pull/42' },
+        title: 'PR update', body: 'Completed', recipients: [{ userId, pushEnabled: true }],
+      });
+      const payloads: string[] = [];
+      const worker = dispatcher({ sendNotification: async (_subscription, payload) => {
+        payloads.push(payload); return success;
+      } });
+      assert.equal(await worker.runOnce(), 1);
+      const payload = JSON.parse(payloads[0]);
+      const expected = completionType === 'legacy' ? 'https://github.com/integry/propr/pull/42'
+        : `https://app.example.com/${completionType === 'goal' ? 'goals/goal-1' : `tasks/${completionType}-task`}?tenant=installation-1`;
+      assert.equal(payload.deepLink, expected);
+      assert.equal(payload.actions[0].url, expected);
+    });
+  }
 
   test('keeps the indexing branch in the web-push Browse deep link', async () => {
     userSequence += 1;

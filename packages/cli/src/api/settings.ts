@@ -1,9 +1,10 @@
+import { isUsageTipsCooldownDays } from '@propr/shared';
 /**
  * System Settings API
  *
  * Functions for interacting with the ProPR backend system settings endpoints.
  * These functions provide a typed interface to view and update global system configuration
- * like worker concurrency, auto-followup thresholds, and model settings.
+ * like worker concurrency and model settings.
  */
 
 import { ApiClient, createApiClient } from "./client.js";
@@ -28,6 +29,8 @@ const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
  * These settings control global system behavior.
  */
 export interface SystemSettings {
+  usage_tips_enabled: boolean;
+  usage_tips_dismissal_cooldown_days: number;
   /**
    * Alias of the default implementation agent.
    */
@@ -59,15 +62,20 @@ export interface SystemSettings {
   planner_generation_model: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Retained for REST compatibility only. Post-implementation analysis
+   * was removed, so this setting has no effect.
    */
   auto_followup_score_threshold: number;
+
+  /** Deprecation reasons for legacy settings returned by the server. */
+  deprecated_settings?: Record<string, string>;
 
   /**
    * When enabled, the system will automatically merge the PR base branch into
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts: boolean;
+  dashboard_summary_enabled: boolean;
 
   /**
    * Global reasoning effort/level for supported GPT and Claude agents.
@@ -105,6 +113,10 @@ export interface SystemSettings {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled: boolean;
+  ultrafix_escalation_models: string[];
+  ultrafix_escalation_patience: number;
+  ultrafix_escalation_max_reasoning_levels: number;
   ultrafix_rating_goal: number;
 
   /**
@@ -154,6 +166,8 @@ export type GetSettingsResponse = SystemSettings;
  * Supports partial updates - only include fields you want to change.
  */
 export interface UpdateSettingsOptions {
+  usage_tips_enabled?: boolean;
+  usage_tips_dismissal_cooldown_days?: number;
   /**
    * Alias of the default implementation agent.
    */
@@ -185,7 +199,8 @@ export interface UpdateSettingsOptions {
   planner_generation_model?: string;
 
   /**
-   * Score threshold (0-9) for auto-followup on issues.
+   * @deprecated Legacy REST update option accepted for compatibility only.
+   * Post-implementation analysis was removed, so writing this has no effect.
    */
   auto_followup_score_threshold?: number;
 
@@ -194,6 +209,7 @@ export interface UpdateSettingsOptions {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts?: boolean;
+  dashboard_summary_enabled?: boolean;
 
   /**
    * Global reasoning effort/level for supported GPT and Claude agents.
@@ -228,6 +244,10 @@ export interface UpdateSettingsOptions {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled?: boolean;
+  ultrafix_escalation_models?: string[];
+  ultrafix_escalation_patience?: number;
+  ultrafix_escalation_max_reasoning_levels?: number;
   ultrafix_rating_goal?: number;
 
   /**
@@ -264,20 +284,22 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = keyof SystemSettings;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings'>;
 
 /**
  * List of valid setting keys for validation.
  */
 export const VALID_SETTING_KEYS: SettingKey[] = [
+  "usage_tips_enabled",
+  "usage_tips_dismissal_cooldown_days",
   "default_agent_alias",
   "worker_concurrency",
   "github_user_whitelist",
   "analysis_model_fast",
   "planner_context_model",
   "planner_generation_model",
-  "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
+  "dashboard_summary_enabled",
   "model_reasoning_level",
   "pr_review_model",
   "pr_review_prompt",
@@ -285,6 +307,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "pr_review_context_model",
   "pr_review_max_context_tokens",
   "pr_review_context_budget_percent",
+  "ultrafix_escalation_enabled",
+  "ultrafix_escalation_models",
+  "ultrafix_escalation_patience",
+  "ultrafix_escalation_max_reasoning_levels",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -310,17 +336,18 @@ export function isValidSettingKey(key: string): key is SettingKey {
  */
 export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean {
   switch (key) {
-    case "worker_concurrency":
-    case "auto_followup_score_threshold": {
+    case "usage_tips_dismissal_cooldown_days": {
+      const parsed = /^\d+$/.test(value) ? Number(value) : NaN;
+      if (!isUsageTipsCooldownDays(parsed)) throw new Error('Cooldown must be an integer from 1 to 365');
+      return parsed;
+    }
+    case "worker_concurrency": {
       if (!/^-?\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be an integer`);
       }
       const parsed = Number(value);
       if (!Number.isSafeInteger(parsed)) {
         throw new Error(`Invalid value for ${key}: must be an integer up to ${Number.MAX_SAFE_INTEGER}`);
-      }
-      if (key === "auto_followup_score_threshold" && (parsed < 0 || parsed > 9)) {
-        throw new Error(`Invalid value for ${key}: must be between 0 and 9`);
       }
       if (key === "worker_concurrency" && parsed < 1) {
         throw new Error(`Invalid value for ${key}: must be at least 1`);
@@ -337,6 +364,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_patience":
     case "ultrafix_max_cycles": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);
@@ -347,6 +375,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_max_reasoning_levels":
     case "ultrafix_pause_seconds": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
@@ -371,6 +400,16 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_models": {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed) || parsed.some(m => typeof m !== 'string' || !m.trim())) {
+        throw new Error('Escalation models must be a JSON array of nonempty model names');
+      }
+      return parsed.map(m => m.trim());
+    }
+    case "ultrafix_escalation_enabled":
+    case "usage_tips_enabled":
+    case "dashboard_summary_enabled":
     case "auto_resolve_merge_conflicts":
     case "pr_review_context_enabled": {
       const lower = value.toLowerCase();
@@ -426,7 +465,6 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
  * ```typescript
  * const settings = await getSettings();
  * console.log(`Worker concurrency: ${settings.worker_concurrency}`);
- * console.log(`Auto-followup threshold: ${settings.auto_followup_score_threshold}`);
  * ```
  */
 export async function getSettings(client?: ApiClient): Promise<GetSettingsResponse> {
@@ -452,7 +490,7 @@ export async function getSettings(client?: ApiClient): Promise<GetSettingsRespon
  * // Update multiple settings
  * await updateSettings({
  *   worker_concurrency: 10,
- *   auto_followup_score_threshold: 7
+ *   auto_resolve_merge_conflicts: true
  * });
  * ```
  */
@@ -482,8 +520,8 @@ export async function updateSettings(
  * // Update worker concurrency
  * await updateSetting("worker_concurrency", 10);
  *
- * // Update auto-followup threshold
- * await updateSetting("auto_followup_score_threshold", 7);
+ * // Update merge-conflict resolution
+ * await updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export async function updateSetting(
@@ -546,7 +584,7 @@ export async function triggerSummarizationReindexAll(
  * await settingsApi.updateSettings({ worker_concurrency: 10 });
  *
  * // Update a single setting
- * await settingsApi.updateSetting("auto_followup_score_threshold", 7);
+ * await settingsApi.updateSetting("auto_resolve_merge_conflicts", true);
  * ```
  */
 export const settingsApi = {

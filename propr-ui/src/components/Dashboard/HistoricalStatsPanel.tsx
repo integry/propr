@@ -108,7 +108,7 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
         </div>
       </SectionHeading>
 
-      {loading && <SectionSkeleton rows={2} />}
+      {loading && <SectionSkeleton rows={2} label="Loading historical stats…" />}
       {!loading && error && !data && <SectionError message="Unable to load historical stats" onRetry={reload} />}
       {data && (
         <div className="px-3 py-3">
@@ -134,7 +134,7 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
           </div>
           <DailyCompletionsChart data={data.dailyCompleted} />
           <div className="mt-2 text-right text-xs">
-            <Link to="/analytics" className="font-medium text-gray-500 transition-colors hover:text-gray-800">
+            <Link to={`/analytics?period=${period}`} className="font-medium text-gray-500 transition-colors hover:text-gray-800">
               Full analytics
             </Link>
           </div>

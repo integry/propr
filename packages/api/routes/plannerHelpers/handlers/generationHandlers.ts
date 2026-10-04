@@ -4,9 +4,11 @@
 
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, RefinementOutputError } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
 import { getRefineRepoContext } from '../repoSetup.js';
+import { refinementPlanUpdates } from '../planRevisions.js';
+import { resolveRefinementOutcome } from '../refinementOutcome.js';
 
 interface AbortGenerationDeps {
   db: Knex;
@@ -96,15 +98,18 @@ export function createRefineHandler(deps: RefineDeps) {
             originalContext: originalContext || undefined, draftId
           });
 
+          const outcome = resolveRefinementOutcome(currentPlan, result);
+
           // Store the refinement result including action and summary
           const refinementMeta = {
             action: result.action,
-            summary: result.summary,
+            summary: outcome.summary,
+            ...(outcome.merged ? { merged: true } : {}),
             timestamp: new Date().toISOString()
           };
 
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(result.plan),
+            ...refinementPlanUpdates(deps.db, result.action, outcome.plan),
             refinement_result: JSON.stringify(refinementMeta),
             status: 'review',
             updated_at: deps.db.fn.now()
@@ -113,7 +118,12 @@ export function createRefineHandler(deps: RefineDeps) {
         } catch (error) {
           console.error('[refine] Plan refinement failed', { draftId, error });
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            status: 'review', updated_at: deps.db.fn.now()
+            status: 'review',
+            ...(error instanceof RefinementOutputError ? { refinement_result: JSON.stringify({
+              status: 'failed', code: error.code, error: error.message, details: error.details,
+              timestamp: new Date().toISOString(),
+            }) } : {}),
+            updated_at: deps.db.fn.now()
           });
         }
       })();

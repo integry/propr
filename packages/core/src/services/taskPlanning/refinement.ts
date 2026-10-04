@@ -12,6 +12,14 @@ import { loadSettings } from '../../config/configManager.js';
 import { resolveConfiguredModel } from '../../config/configuredModel.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import { PlanningFailedError, getRawInputCharLimit, type MinimalLogger } from '../planning/index.js';
+import { incompletePlanItems } from './planValidation.js';
+import {
+  normalizeRefinedPlan,
+  RefinementOutputError,
+  type RefinementOutputDetails,
+} from './refinementOutput.js';
+
+export { incompletePlanItems };
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
 
 const TRUNCATION_MARKER = '\n\n…[truncated to fit the model input limit]…\n\n';
@@ -138,7 +146,8 @@ function validateRefinementResponse(
 ): RefinementResponse {
   // Handle alternative keys for plan array
   if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
-    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
+    // Never `changes`: a list of edits is not a plan.
+    const altKeys = ['tasks', 'items', 'issues'] as const;
     const responseObj = refinementResponse as unknown as Record<string, unknown>;
     for (const key of altKeys) {
       if (Array.isArray(responseObj[key])) {
@@ -168,6 +177,55 @@ function validateRefinementResponse(
   return refinementResponse;
 }
 
+function incompletePlanRepairPrompt(currentPlan: PlanItem[], instruction: string, response: string, details: RefinementOutputDetails): string {
+  return `Your previous response was not a safe complete refined plan (${details.reason}).
+
+Apply the requested changes to the current plan below and return ONLY this JSON object:
+{"action": "modified", "summary": "<what changed>", "plan": [ ... ]}
+
+The plan array must contain EVERY issue of the refined plan in full, each as {"title", "body", "implementation"}, copying unchanged issues verbatim. Do not return edit instructions such as "retain", "extend" or "unchanged". No markdown or code fences.
+
+Current plan:
+${JSON.stringify(currentPlan)}
+
+Requested change:
+${instruction}
+
+Your previous response:
+${response}`;
+}
+
+/**
+ * Asks once for the complete plan when a refinement returned edits or partial
+ * issues. Saving those would replace the plan with stubs, so if the second
+ * answer is still incomplete the refinement fails and the plan is kept.
+ */
+async function requestCompletePlan(
+  details: RefinementOutputDetails,
+  context: {
+    currentPlan: PlanItem[];
+    instruction: string;
+    response: string;
+    charLimit: number | null;
+    correlatedLogger: MinimalLogger;
+    llm: (prompt: string) => Promise<string>;
+  },
+): Promise<RefinementResponse | undefined> {
+  const { currentPlan, instruction, response, charLimit, correlatedLogger } = context;
+  correlatedLogger.warn({ details }, 'Refinement returned an invalid plan, asking for the full plan');
+  const repairPrompt = incompletePlanRepairPrompt(currentPlan, instruction, response, details);
+  if (charLimit === null || repairPrompt.length <= charLimit) {
+    try {
+      const repaired = validateRefinementResponse(parseRefinementResponse(await context.llm(repairPrompt), correlatedLogger), correlatedLogger);
+      return repaired.action === 'modified' ? repaired : { ...repaired, plan: currentPlan };
+    } catch (repairError) {
+      correlatedLogger.warn({ error: repairError instanceof Error ? repairError.message : String(repairError) }, 'Complete-plan repair failed');
+    }
+  }
+  return undefined;
+}
+
+// eslint-disable-next-line complexity -- parsing, one repair attempt, and final validation intentionally share one routed LLM session
 export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult & { estimation?: RefinePlanEstimation }> {
   const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext, draftId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -287,6 +345,48 @@ ${response}`;
 
   refinementResponse = validateRefinementResponse(refinementResponse, correlatedLogger);
 
+  // Answers and clarifying questions never change the plan, whatever came back with them.
+  if (refinementResponse.action !== 'modified') {
+    refinementResponse.plan = currentPlan;
+  }
+
+  let normalized = refinementResponse.action === 'modified'
+    ? normalizeRefinedPlan(currentPlan, refinementResponse.plan)
+    : { ok: true as const, plan: currentPlan, merged: false, operations: undefined };
+  if (!normalized.ok) {
+    const repaired = await requestCompletePlan(normalized.details, {
+      currentPlan, instruction, response, charLimit, correlatedLogger,
+      llm: prompt => runLightweightLLMAnalysis({
+        prompt,
+        model: generationModel,
+        correlationId: correlationId ? `${correlationId}-complete-plan` : 'plan-refinement-complete-plan',
+        worktreePath,
+        githubToken,
+        issueRef,
+        taskId: draftId,
+        executionType: 'plan-refinement',
+        routingSession: routingSession.fork(),
+      }),
+    });
+    if (repaired) {
+      refinementResponse = repaired;
+      normalized = refinementResponse.action === 'modified'
+        ? normalizeRefinedPlan(currentPlan, refinementResponse.plan)
+        : { ok: true as const, plan: currentPlan, merged: false, operations: undefined };
+    }
+  }
+  if (!normalized.ok) {
+    throw new RefinementOutputError(normalized.message, normalized.details);
+  }
+
+  refinementResponse.plan = normalized.plan;
+  if (normalized.merged) {
+    const mergeSummary = `Applied ${normalized.operations} edits to the existing plan.`;
+    refinementResponse.summary = refinementResponse.summary
+      ? `${mergeSummary} ${refinementResponse.summary}`
+      : mergeSummary;
+  }
+
   correlatedLogger.info({
     taskCount: refinementResponse.plan.length,
     action: refinementResponse.action,
@@ -298,6 +398,8 @@ ${response}`;
     action: refinementResponse.action,
     summary: refinementResponse.summary,
     model: generationModel,
+    merged: normalized.merged,
+    operations: normalized.operations,
     estimation: {
       estimatedDurationMs: estimation.estimatedDurationMs,
       startedAt,

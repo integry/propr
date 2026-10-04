@@ -16,6 +16,9 @@ import { up as planIssues } from '../../core/src/db/migrations/20260120000000_ad
 import { up as configs } from '../../core/src/db/migrations/20251217000000_add_system_configs.js';
 import { up as members } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
 import { up as migration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
+import { up as planRevisions } from '../../core/src/db/migrations/20260928000000_add_task_draft_plan_revisions.js';
+import { up as planRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
 import { loadMcpConfig, MCP_SCOPES } from '../mcp/config.js';
 import { McpConnect, registerMcpInstance, MCP_CONNECT_CONTRACT, type InstanceIdentity } from '../mcp/connect.js';
 import { McpStore, digest } from '../mcp/store.js';
@@ -59,7 +62,7 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
     MCP_CONNECT_TRUST: 'true', MCP_CONNECT_ISSUER: origin, PROPR_ADMIN_USERS: '', GH_INSTALLATION_ID: '1', PROPR_GH_RELAY_TOKEN: relay,
     PROPR_GH_RELAY_URL: `${origin}/v1`, PROPR_INSTANCE_ID: 'tunnel-1', PROPR_UI_TUNNEL_ENABLED: 'true',
     PROPR_UI_TUNNEL_TOKEN: 'fixture-connector-only', GITHUB_USER_WHITELIST: 'member' });
-  await initial(db); await planIssues(db); await migration(db);
+  await initial(db); await planIssues(db); await migration(db); await lifecycleMigration(db); await planRevisions(db); await planRevisionCauses(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await members(db);
   await db('instance_members').insert({ github_user_id: '777', github_username: 'member', role: 'member', source: 'local' });

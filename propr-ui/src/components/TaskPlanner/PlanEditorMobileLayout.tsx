@@ -34,6 +34,7 @@ export interface PlanEditorMobileLayoutProps {
   onBackToSetup: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onShowHistory?: () => void;
   onSetEnforcementNoticeDismissed: (value: boolean) => void;
   onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
   onDeleteTask: (taskId: string) => void;
@@ -77,6 +78,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
   onBackToSetup,
   onUndo,
   onRedo,
+  onShowHistory,
   onSetEnforcementNoticeDismissed,
   onTaskChange,
   onDeleteTask,
@@ -110,6 +112,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
         onBackToSetup={onBackToSetup}
         onUndo={onUndo}
         onRedo={onRedo}
+        onShowHistory={onShowHistory}
         isMobile={true}
         isReadOnly={isReadOnly}
       />

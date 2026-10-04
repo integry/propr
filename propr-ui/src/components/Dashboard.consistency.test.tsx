@@ -9,10 +9,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import Dashboard from './Dashboard';
 import {
+  getDashboardNarrative,
   getDashboardActive,
   getDashboardAttention,
   getDashboardOutcomes,
@@ -29,6 +30,7 @@ import {
 } from './Dashboard.fixtures';
 
 vi.mock('../api/dashboardApi', () => ({
+  getDashboardNarrative: vi.fn(),
   getDashboardAttention: vi.fn(),
   getDashboardActive: vi.fn(),
   getDashboardOutcomes: vi.fn(),
@@ -36,7 +38,13 @@ vi.mock('../api/dashboardApi', () => ({
 }));
 
 vi.mock('../contexts/useSocket', () => ({
-  useSocket: () => ({ isConnected: true, onTaskUpdate: () => () => {} }),
+  useSocket: () => ({
+    isConnected: true,
+    subscribeToActivity: () => {},
+    unsubscribeFromActivity: () => {},
+    onActivityUpdate: () => () => {},
+    onGoalUpdate: () => () => {},
+  }),
 }));
 
 vi.mock('../hooks/useSystemReadiness', () => ({
@@ -88,6 +96,7 @@ async function waitForSections() {
 describe('Dashboard consistency rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getDashboardNarrative).mockResolvedValue({ repository: 'all', enabled: true, summary: 'Work is underway. Nothing needs your attention.' });
     mockAttention.mockResolvedValue(attentionResponse([attentionItem()]));
     mockActive.mockResolvedValue(activeResponse([activeItem()]));
     mockOutcomes.mockResolvedValue(outcomesResponse([outcomeItem()]));
@@ -264,5 +273,30 @@ describe('Dashboard consistency rules', () => {
     const canvas = container.querySelector('.min-h-full') as HTMLElement;
     expect(canvas.className).toMatch(/\bpb-6\b/);
     expect(canvas.className).toMatch(/md:pb-0/);
+  });
+
+  it('announces the first read once for the whole console, not once per pane', async () => {
+    let resolveAttention: (value: ReturnType<typeof attentionResponse>) => void = () => {};
+    let resolveStats: (value: ReturnType<typeof statsResponse>) => void = () => {};
+    mockAttention.mockReturnValue(new Promise(resolve => { resolveAttention = resolve; }));
+    mockStats.mockReturnValue(new Promise(resolve => { resolveStats = resolve; }));
+
+    renderDashboard();
+
+    // Four panes reading side by side used to be four live regions, so a
+    // screen reader heard "Loading…" once per pane. The console speaks once.
+    const pageStatus = screen.getByTestId('page-loading-status');
+    await waitFor(() => expect(pageStatus).toHaveTextContent('Loading dashboard…'));
+    const skeletons = screen.getAllByTestId('section-skeleton');
+    expect(skeletons.length).toBeGreaterThan(1);
+    skeletons.forEach(skeleton => expect(skeleton).not.toHaveAttribute('role'));
+    expect(screen.getAllByRole('status').filter(status => /Loading/.test(status.textContent ?? ''))).toEqual([pageStatus]);
+
+    // One pane landing does not end the wait while another is still reading.
+    await act(async () => { resolveAttention(attentionResponse()); });
+    expect(pageStatus).toHaveTextContent('Loading dashboard…');
+
+    await act(async () => { resolveStats(statsResponse()); });
+    await waitFor(() => expect(pageStatus).toBeEmptyDOMElement());
   });
 });

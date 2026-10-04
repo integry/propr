@@ -78,9 +78,11 @@ export async function verifyCancellation({ call, client, principal, deps, agentI
     await db('task_drafts').where({ draft_id: id }).update({ status: tool === 'generate_plan' ? 'generating' : 'refining', [column]: JSON.stringify({ runId, steps: [] }) });
     // This is the persisted 202 boundary produced by the planner start handler.
     const operationId = randomUUID();
+    const acceptedAt = Date.now();
     await db('mcp_operations').insert({ id: operationId, owner_id: principal.user.id, grant_id: principal.grant.id,
       idempotency_key: randomUUID(), tool, repository, payload_hash: 'fixture', state: 'accepted',
-      result: JSON.stringify({ runId, continuation: { planId: id } }), created_at: Date.now(), updated_at: Date.now() });
+      result: JSON.stringify({ runId, continuation: { planId: id } }), lifecycle: 'accepted', accepted_at: acceptedAt,
+      artifacts: JSON.stringify({}), created_at: acceptedAt, updated_at: acceptedAt });
     let enter!: () => void, release!: () => void;
     const entered = new Promise<void>(resolve => { enter = resolve; });
     const hold = new Promise<void>(resolve => { release = resolve; });
@@ -110,9 +112,11 @@ export async function verifyCancellation({ call, client, principal, deps, agentI
     assert.equal(stale.result.error.code, 'NOT_CANCELLABLE');
     for (const outcome of ['completed', 'failed']) {
       const completedRun = randomUUID(), completedOperation = randomUUID();
+      const completedAcceptedAt = Date.now();
       await db('mcp_operations').insert({ id: completedOperation, owner_id: principal.user.id, grant_id: principal.grant.id,
         idempotency_key: randomUUID(), tool, repository, payload_hash: 'fixture', state: 'accepted',
-        result: JSON.stringify({ runId: completedRun, continuation: { planId: id } }), created_at: Date.now(), updated_at: Date.now() });
+        result: JSON.stringify({ runId: completedRun, continuation: { planId: id } }), lifecycle: 'accepted', accepted_at: completedAcceptedAt,
+        artifacts: JSON.stringify({}), created_at: completedAcceptedAt, updated_at: completedAcceptedAt });
       await db('task_drafts').where({ draft_id: id }).update({
         status: tool === 'generate_plan' && outcome === 'failed' ? 'failed' : 'review',
         [column]: JSON.stringify({ runId: completedRun, status: outcome }),

@@ -1,0 +1,62 @@
+{
+  "cliVersion": "0.9.11",
+  "status": {
+    "claude": {
+      "name": "claude",
+      "usage": {
+        "session": {
+          "label": "Current session",
+          "percent": 42,
+          "resetsInSeconds": 764
+        },
+        "weeklyAll": {
+          "label": "Current week (all models)",
+          "percent": 31,
+          "resetsInSeconds": 364364
+        }
+      },
+      "lastUpdated": "2026-09-27T12:00:00.000Z",
+      "error": null
+    },
+    "codex": {
+      "name": "codex",
+      "usage": {
+        "fiveHour": {
+          "label": "5h limit",
+          "percentLeft": 91,
+          "percentUsed": 9,
+          "resetsInSeconds": 9300
+        },
+        "weekly": {
+          "label": "Weekly limit",
+          "percentLeft": 78,
+          "percentUsed": 22,
+          "resetsInSeconds": 372000
+        }
+      },
+      "lastUpdated": "2026-09-27T12:00:01.000Z",
+      "error": null
+    },
+    "agy": {
+      "name": "agy",
+      "usage": {
+        "models": [
+          {
+            "model": "Gemini 3.8 Flash",
+            "usageLeft": 84,
+            "percentUsed": 16,
+            "cycle": "daily"
+          },
+          {
+            "model": "Claude Sonnet 4.6",
+            "usageLeft": 100,
+            "percentUsed": 0,
+            "cycle": "daily"
+          }
+        ]
+      },
+      "lastUpdated": "2026-09-27T12:00:02.000Z",
+      "error": null
+    }
+  }
+}

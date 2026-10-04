@@ -1,6 +1,7 @@
+import { parseUsageTipsSettings } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import { Settings } from './types';
-import { normalizeReviewContextBudgetPercent } from '@propr/shared';
+import { agentTankModeFromLegacyEnabled, isAgentTankMode, normalizeReviewContextBudgetPercent } from '@propr/shared';
 
 // Helper function to determine default agent alias
 function resolveDefaultAgentAlias(savedAlias: string | undefined, enabledAgents: AgentConfig[]): string {
@@ -19,8 +20,10 @@ interface SettingsApiData {
   planner_generation_model?: string;
   default_agent_alias?: string;
   github_user_whitelist?: string[];
-  auto_followup_score_threshold?: number;
+  usage_tips_enabled?: boolean;
+  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
+  dashboard_summary_enabled?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
@@ -28,6 +31,10 @@ interface SettingsApiData {
   pr_review_context_model?: string;
   pr_review_max_context_tokens?: number;
   pr_review_context_budget_percent?: number;
+  ultrafix_escalation_enabled?: boolean;
+  ultrafix_escalation_models?: string[];
+  ultrafix_escalation_patience?: number;
+  ultrafix_escalation_max_reasoning_levels?: number;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
@@ -40,8 +47,10 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     planner_context_model: settingsData.planner_context_model || '',
     planner_generation_model: settingsData.planner_generation_model || '',
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
-    auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+    usage_tips_enabled: parseUsageTipsSettings({ ...settingsData }).enabled,
+    usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ ...settingsData }).cooldownDays,
+    dashboard_summary_enabled: settingsData.dashboard_summary_enabled ?? true,
     model_reasoning_level: settingsData.model_reasoning_level || '',
     pr_review_model: settingsData.pr_review_model || '',
     pr_review_prompt: settingsData.pr_review_prompt || '',
@@ -50,6 +59,10 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     pr_review_max_context_tokens: settingsData.pr_review_max_context_tokens ?? 0,
     // Older servers omit the percentage; missing means automatic (100%).
     pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settingsData.pr_review_context_budget_percent),
+    ultrafix_escalation_enabled: settingsData.ultrafix_escalation_enabled ?? false,
+    ultrafix_escalation_models: settingsData.ultrafix_escalation_models ?? [],
+    ultrafix_escalation_patience: settingsData.ultrafix_escalation_patience ?? 3,
+    ultrafix_escalation_max_reasoning_levels: settingsData.ultrafix_escalation_max_reasoning_levels ?? 2,
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
@@ -80,6 +93,12 @@ export function parseLoadedData(results: any[]) {
       default_prompt: summarizationData.default_prompt,
       runtime: summarizationData.runtime,
     },
-    agentTankSettings: { enabled: atData.enabled || false, url: atData.url || 'http://0.0.0.0:3456' },
+    // An older backend answers with only `{ enabled, url }`; derive the mode
+    // from it so the UI never renders an undefined radio selection.
+    agentTankSettings: {
+      mode: isAgentTankMode(atData.mode) ? atData.mode : agentTankModeFromLegacyEnabled(atData.enabled),
+      enabled: atData.enabled || false,
+      url: atData.url || 'http://0.0.0.0:3456'
+    },
   };
 }

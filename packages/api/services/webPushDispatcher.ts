@@ -9,15 +9,15 @@ import webPush, {
 } from 'web-push';
 import {
   normalizeISO8601Timestamp,
+  notificationHref,
+  type JsonObject,
   parseNotificationAction,
   parseNotificationEventActions,
   parseNotificationTarget,
   parsePushSubscriptionEndpoint,
   parseTruthyEnvValue,
-  type NotificationAction,
   type NotificationKind,
   type NotificationSeverity,
-  type NotificationTarget,
 } from '@propr/shared';
 import {
   validateWebPushConfiguration,
@@ -83,6 +83,7 @@ interface LiveDeliveryRow extends ClaimedJobRow {
   severity: NotificationSeverity;
   target_json: string;
   action_json: string | null;
+  metadata_json: string | null;
   advertised_actions_json: string | null;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
@@ -263,48 +264,6 @@ export function isInNotificationQuietHours(
   }
 }
 
-function targetPath(target: NotificationTarget): string {
-  switch (target.type) {
-    case 'plan': return `/studio/${encodeURIComponent(target.draftId)}`;
-    case 'task': return `/tasks/${encodeURIComponent(target.taskId)}`;
-    case 'review': return target.taskId
-      ? `/tasks/${encodeURIComponent(target.taskId)}`
-      : '/tasks';
-    case 'indexing': {
-      const [owner, repository] = target.repository.split('/');
-      if (!owner || !repository) return '/repositories';
-      const path = `/summaries/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
-      return target.branch
-        ? `${path}?branch=${encodeURIComponent(target.branch)}`
-        : path;
-    }
-    case 'pull_request': return '/repositories';
-    case 'system_failure': return '/';
-  }
-}
-
-/**
- * Appends the indexing target's branch to a navigate href that opens the
- * target repository's summary page without an explicit branch query, so
- * explicit Browse actions keep the notification's branch. Explicit branch
- * queries, other parameters, and unrelated links pass through unchanged.
- */
-function navigateHrefWithTargetBranch(href: string, target: NotificationTarget): string {
-  if (target.type !== 'indexing' || target.branch === undefined) return href;
-  const [owner, repository] = target.repository.split('/');
-  if (!owner || !repository) return href;
-  let url: URL;
-  try {
-    url = new URL(href, 'https://propr.invalid');
-  } catch {
-    return href;
-  }
-  const summaryPath = `/summaries/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
-  if (url.pathname !== summaryPath || url.searchParams.has('branch')) return href;
-  url.searchParams.append('branch', target.branch);
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
 function absoluteUiUrl(baseValue: string, path: string): string {
   const base = new URL(baseValue);
   const result = new URL(path, base);
@@ -312,16 +271,6 @@ function absoluteUiUrl(baseValue: string, path: string): string {
     if (!result.searchParams.has(key)) result.searchParams.append(key, value);
   }
   return result.toString();
-}
-
-function notificationActionUrl(
-  action: NotificationAction,
-  target: NotificationTarget,
-  frontendUrl: string,
-): string {
-  return action.type === 'navigate'
-    ? absoluteUiUrl(frontendUrl, navigateHrefWithTargetBranch(action.href, target))
-    : action.href;
 }
 
 function planIntentUrl(
@@ -353,10 +302,13 @@ function buildSafePayload(
   const advertisedActions = row.advertised_actions_json === null
     ? []
     : parseNotificationEventActions(parseStoredJson(row.advertised_actions_json));
-  const fallbackDeepLink = absoluteUiUrl(frontendUrl, targetPath(target));
-  const deepLink = action?.type === 'navigate'
-    ? notificationActionUrl(action, target, frontendUrl)
-    : fallbackDeepLink;
+  const href = notificationHref({
+    target,
+    ...(action === null ? {} : { action }),
+    ...(row.metadata_json === null ? {} : { metadata: parseStoredJson(row.metadata_json) as JsonObject }),
+  });
+  // Do not copy installation query parameters onto an external GitHub fallback.
+  const deepLink = href.startsWith('/') ? absoluteUiUrl(frontendUrl, href) : href;
   const planActions = target.type === 'plan' ? advertisedActions.flatMap(advertised => {
     if (advertised === 'refine') {
       return [{
@@ -379,7 +331,7 @@ function buildSafePayload(
     : action === null ? [] : [{
       action: 'view',
       title: 'View details',
-      url: notificationActionUrl(action, target, frontendUrl),
+      url: deepLink,
     }];
   const summary = row.severity === 'error' || row.severity === 'warning'
     ? 'An operational alert needs your attention.'
@@ -689,7 +641,7 @@ export class WebPushDispatcher {
         'job.attempt_count', 'job.claim_token',
         'subscription.endpoint', 'subscription.p256dh_key', 'subscription.auth_key',
         'subscription.updated_at as subscription_updated_at',
-        'event.kind', 'event.severity', 'event.target_json', 'event.action_json',
+        'event.kind', 'event.severity', 'event.target_json', 'event.action_json', 'event.metadata_json',
         'event.advertised_actions_json',
         'settings.quiet_hours_start', 'settings.quiet_hours_end', 'settings.timezone',
         'settings.badge_enabled',

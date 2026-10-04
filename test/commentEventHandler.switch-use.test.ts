@@ -229,10 +229,11 @@ after(async () => {
 
 // ========== Helpers ==========
 
-// Canonical model behind the bare "opus" alias. Promoting a new default Claude
-// model retargets the alias, so the /switch and /use expectations read it from
-// here rather than repeating the id.
+// Canonical models behind the bare aliases. Promoting a new default Claude
+// model retargets an alias, so the /switch and /use expectations read them from
+// here rather than repeating the ids.
 const CANONICAL_OPUS_MODEL = 'claude-opus-5-5';
+const CANONICAL_SONNET_MODEL = 'claude-sonnet-5-5';
 
 function createMockRedis() {
     const store = new Map<string, string>();
@@ -409,7 +410,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-5']);
+        assert.deepStrictEqual(newLabels, [`llm-${CANONICAL_SONNET_MODEL}`]);
     });
 
     test('/switch without model argument warns and returns early', async () => {
@@ -492,7 +493,7 @@ describe('commentEventHandler — /switch command', () => {
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['ai-model-claude-opus-4-6']);
         // New label should use the custom prefix, not hardcoded 'llm-'
-        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-5']);
+        assert.deepStrictEqual(newLabels, [`ai-model-${CANONICAL_SONNET_MODEL}`]);
     });
 
     test('/switch with llm- prefixed argument strips prefix before resolving', async () => {
@@ -876,7 +877,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
+        assert.deepStrictEqual(jobData.requestedModels, [CANONICAL_SONNET_MODEL]);
         assert.strictEqual(jobData.commandCommentCreatedAt, event.comment.created_at);
         assert.strictEqual(jobData.commandCommentType, 'issue');
     });

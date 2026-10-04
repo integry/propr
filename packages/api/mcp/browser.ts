@@ -1,3 +1,5 @@
+import { repositoryListStyles, type RepositoryOption } from '@propr/shared/dist/repositoryPresentation.js';
+import { loadConsentRepositories, renderConsentRepositories } from './repositoryConsent.js';
 import express, { type Express, type Request, type Response } from 'express';
 import { Octokit } from '@octokit/core';
 import { loadMonitoredReposRaw } from '@propr/core';
@@ -37,14 +39,41 @@ document.querySelectorAll('[data-selection-group]').forEach(group => {
   window.addEventListener('pageshow', update);
   update();
   controls.hidden = false;
-});`;
+});
+document.querySelectorAll('[data-testid="repository-icon-image"]').forEach(image => {
+  const fallback = () => {
+    image.hidden = true;
+    image.nextElementSibling.hidden = false;
+  };
+  image.addEventListener('error', fallback);
+  if (image.complete && !image.naturalWidth) fallback();
+});
+const filter = document.querySelector('[data-repository-filter]');
+if (filter) {
+  const rows = Array.from(document.querySelectorAll('[data-repository-name]'));
+  const sections = Array.from(document.querySelectorAll('[data-repository-section]'));
+  const updateFilter = () => {
+    const query = filter.value.trim().toLowerCase();
+    rows.forEach(row => { row.hidden = !row.dataset.repositoryName.toLowerCase().includes(query); });
+    sections.forEach(section => { section.hidden = !Array.from(section.querySelectorAll('[data-repository-name]')).some(row => !row.hidden); });
+    document.querySelector('[data-repository-no-matches]').hidden = rows.some(row => !row.hidden);
+  };
+  filter.addEventListener('input', updateFilter);
+  filter.addEventListener('keydown', event => {
+    if (event.key === 'Enter') event.preventDefault();
+    if (event.key === 'Escape') { filter.value = ''; updateFilter(); }
+  });
+  window.addEventListener('pageshow', updateFilter);
+  filter.parentElement.hidden = false;
+  updateFilter();
+}`;
 
 function selectionControls(group: string): string {
   return `<div class="selection-tools" hidden><div><button type="button" class="secondary" data-selection="all" aria-label="Select all ${group}">Select all</button><button type="button" class="secondary" data-selection="clear" aria-label="Clear ${group}">Clear</button></div><small role="status" aria-live="polite" aria-atomic="true"></small></div>`;
 }
 
 // The ProPR wordmark and arrow are inlined as markup because the strict CSP on
-// these pages (default-src 'none', no img-src) forbids fetching image assets.
+// these pages restricts asset loading (consent only permits repository icons).
 const brandHeader = `<header class="brand"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true"><defs><linearGradient id="propr-arrow" x1="4" y1="20" x2="16" y2="4" gradientUnits="userSpaceOnUse"><stop stop-color="#24A3A3"/><stop offset="1" stop-color="#43D9A3"/></linearGradient></defs><circle cx="4" cy="20" r="1.7" fill="url(#propr-arrow)"/><path d="M4 20c7-1 9-7 10-14" stroke="url(#propr-arrow)" stroke-width="2.6" stroke-linecap="round"/><path d="M10 9.5 14 4.5l4 5" stroke="url(#propr-arrow)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="brand-name">Pro<b>PR</b></span><small>Connected apps</small></header>`;
 
 // Connected-apps rows follow the Studio list spec: full-bleed rows on a flat white
@@ -52,8 +81,10 @@ const brandHeader = `<header class="brand"><svg width="26" height="26" viewBox="
 // script on that page, so repository overflow uses a native <details> toggle.
 const appsStyle = `body.flat{background:#fff}body.flat main{max-width:760px;margin:0 auto;padding:8px 0;border:0;border-radius:0;box-shadow:none}.apps{list-style:none;margin:24px 0 0;padding:0;border-top:1px solid #F1F5F9}.app{border-bottom:1px solid #F1F5F9;padding:16px 0;min-width:0}.app-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.app-title{display:flex;align-items:center;gap:10px;min-width:0}.app-icon{display:flex;flex:none;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;background:#F1F5F9;color:#475569}.app h2{margin:0;font-size:14px;line-height:28px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.app-body{padding-left:38px;min-width:0}.meta{display:flex;flex-wrap:wrap;gap:2px 6px;margin:2px 0 0;font-size:12px;color:#64748B}.meta-id{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%}.label{margin:12px 0 6px;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#64748B}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none;min-width:0}.chips li{min-width:0;max-width:100%}.scope{display:inline-block;text-transform:uppercase;font-size:10px;font-weight:700;line-height:16px;letter-spacing:.025em;color:#64748B;background:#F8FAFC;padding:2px 6px;border-radius:4px}.chip{display:inline-block;max-width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:#1E293B;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:2px;padding:2px 6px}.more{margin-top:6px}.more summary{display:inline-block;cursor:pointer;list-style:none;font-size:12px;font-weight:500;color:#64748B;padding:2px 6px;border-radius:4px}.more summary::-webkit-details-marker{display:none}.more summary:hover{background:#F8FAFC;color:#0F172A}.more summary:focus-visible{outline:3px solid #24A3A3;outline-offset:2px}.more .chips{margin-top:6px}.more[open] .collapsed,.more:not([open]) .expanded{display:none}.app-head form{flex:none;margin:0}.app-head .revoke{width:auto;margin:0;padding:4px 10px;font-size:12px;font-weight:500;background:#fff;color:#334155;border:1px solid #E2E8F0;border-radius:4px;transition:background-color .15s,border-color .15s,color .15s}.app-head .revoke:hover:not(:disabled){background:#FEF2F2;border-color:#FECACA;color:#DC2626}.app-head .revoke:focus-visible{outline:3px solid #EF4444;outline-offset:2px}.empty{padding:48px 0;text-align:center;color:#94A3B8;font-size:14px}@media(max-width:480px){body.flat{padding:12px 16px}.app-body{padding-left:0}}`;
 
-export function renderMcpPage(title: string, body: string, nonce?: string, options: { flat?: boolean } = {}): string {
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · ProPR</title><style${nonce ? ` nonce="${escape(nonce)}"` : ''}>body{font:16px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#F8F9FA;color:#1F2937;margin:0;padding:24px}main{max-width:640px;margin:5vh auto;padding:32px;border:1px solid #E2E8F0;border-radius:8px;background:#fff;box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}.brand{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid #E2E8F0}.brand-name{font-size:22px;font-weight:700;color:#1F2937;letter-spacing:-.02em}.brand-name b{color:#24A3A3;font-weight:700}.brand small{margin-left:auto}h1{font-size:24px;font-weight:600;color:#111827}h2{font-size:16px;font-weight:600;color:#111827}p,li{line-height:1.6;overflow-wrap:anywhere}p{color:#4B5563}label{display:block;padding:12px;border:1px solid #E2E8F0;border-radius:6px;margin:8px 0;color:#1F2937;overflow-wrap:anywhere}label:hover{background:#F8F9FA}input{margin-right:10px;accent-color:#1D8A8A}button,a{font:inherit}button{background:#1D8A8A;color:#fff;border:1px solid transparent;border-radius:6px;padding:12px 18px;margin:12px 12px 0 0;font-weight:500;cursor:pointer}button:hover:not(:disabled){background:#167575}a{color:#1D8A8A}.secondary{background:#fff;color:#374151;border-color:#D1D5DB}.secondary:hover:not(:disabled){background:#F8F9FA}small{color:#64748B}.selection-tools:not([hidden]){display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}.selection-tools button{width:auto;margin:0 8px 0 0;min-height:44px}.selection-tools small{display:block}button:disabled{opacity:.55;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid #24A3A3;outline-offset:3px}article{border-top:1px solid #E2E8F0;margin-top:24px;padding-top:8px}@media(max-width:480px){body{padding:12px}main{margin:12px auto;padding:20px}button{width:100%}}${options.flat ? appsStyle : ''}</style>${options.flat ? '<body class="flat">' : ''}<main>${brandHeader}<h1>${escape(title)}</h1>${body}</main></html>`;
+const consentRepositoryStyle = `.repository-filter{display:block;margin-bottom:12px}.repository-filter input{box-sizing:border-box;width:100%;margin:0;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font:inherit;font-size:14px;line-height:20px}.repository-list{border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}.repository-list [hidden],.repository-filter[hidden]{display:none}.repository-filter-label{display:block;font-size:12px;color:#64748b;margin-bottom:4px}`;
+
+export function renderMcpPage(title: string, body: string, nonce?: string, options: { flat?: boolean; repositories?: boolean } = {}): string {
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · ProPR</title><style${nonce ? ` nonce="${escape(nonce)}"` : ''}>body{font:16px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#F8F9FA;color:#1F2937;margin:0;padding:24px}main{max-width:640px;margin:5vh auto;padding:32px;border:1px solid #E2E8F0;border-radius:8px;background:#fff;box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}.brand{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid #E2E8F0}.brand-name{font-size:22px;font-weight:700;color:#1F2937;letter-spacing:-.02em}.brand-name b{color:#24A3A3;font-weight:700}.brand small{margin-left:auto}h1{font-size:24px;font-weight:600;color:#111827}h2{font-size:16px;font-weight:600;color:#111827}p,li{line-height:1.6;overflow-wrap:anywhere}p{color:#4B5563}label{display:block;padding:12px;border:1px solid #E2E8F0;border-radius:6px;margin:8px 0;color:#1F2937;overflow-wrap:anywhere}label:hover{background:#F8F9FA}input{margin-right:10px;accent-color:#1D8A8A}button,a{font:inherit}button{background:#1D8A8A;color:#fff;border:1px solid transparent;border-radius:6px;padding:12px 18px;margin:12px 12px 0 0;font-weight:500;cursor:pointer}button:hover:not(:disabled){background:#167575}a{color:#1D8A8A}.secondary{background:#fff;color:#374151;border-color:#D1D5DB}.secondary:hover:not(:disabled){background:#F8F9FA}small{color:#64748B}.selection-tools:not([hidden]){display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}.selection-tools button{width:auto;margin:0 8px 0 0;min-height:44px}.selection-tools small{display:block}button:disabled{opacity:.55;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid #24A3A3;outline-offset:3px}article{border-top:1px solid #E2E8F0;margin-top:24px;padding-top:8px}@media(max-width:480px){body{padding:12px}main{margin:12px auto;padding:20px}button{width:100%}}${options.flat ? appsStyle : ''}${options.repositories ? repositoryListStyles + consentRepositoryStyle : ''}</style>${options.flat ? '<body class="flat">' : ''}<main>${brandHeader}<h1>${escape(title)}</h1>${body}</main></html>`;
 }
 
 /** Repository chips shown before the rest collapse behind a "+ N more" toggle. */
@@ -113,14 +144,21 @@ export function renderConnectedApp(grant: McpGrant, csrfField: string, activity?
     + '</div></div></li>';
 }
 
-export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides: { accessibleRepositories?: (user: GitHubUser) => Promise<string[]> } = {}): void {
+/** The session's GitHub token was rejected (revoked or expired); only a fresh browser sign-in can replace it. */
+export class GitHubReauthRequired extends Error {}
+
+export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides: { accessibleRepositories?: (user: GitHubUser) => Promise<string[]>; repositoryPresentation?: (names: string[], userId: string) => Promise<RepositoryOption[]> } = {}): void {
+  // A consent form POST cannot be replayed after sign-in, so it returns to the consent page instead.
+  const loginUrl = (req: Request): string => {
+    const target = req.method === 'POST' && req.path === '/consent' && typeof req.body?.request === 'string'
+      ? `/mcp/consent?request=${encodeURIComponent(req.body.request)}` : req.originalUrl;
+    return `/api/auth/github?redirect_to=${encodeURIComponent(oauth.config.origin + target)}`;
+  };
   app.use('/mcp', createAuthRequestRateLimiter(), express.urlencoded({ extended: false, limit: '16kb' }), (req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'DENY',
       'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
     if (isDemoMode()) { res.status(403).send('MCP grants are disabled in demo mode.'); return; }
-    if (!req.isAuthenticated() || !req.user?.accessToken) {
-      res.redirect(`/api/auth/github?redirectTo=${encodeURIComponent(oauth.config.origin + req.originalUrl)}`); return;
-    }
+    if (!req.isAuthenticated() || !req.user?.accessToken) { res.redirect(loginUrl(req)); return; }
     if (!isUserWhitelisted(req.user.username)) { res.status(403).send('Instance access denied.'); return; }
     const session = req.session as ConsentSession;
     session.mcpCsrf ||= secret();
@@ -134,7 +172,12 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
   async function repositories(req: Request): Promise<string[]> {
     if (overrides.accessibleRepositories) return overrides.accessibleRepositories(req.user!);
     const github = new Octokit({ auth: req.user!.accessToken, request: { timeout: 10000 } });
-    const { data } = await github.request('GET /user');
+    let data;
+    try { ({ data } = await github.request('GET /user')); }
+    catch (error) {
+      if ((error as { status?: number }).status === 401) throw new GitHubReauthRequired('GitHub rejected the session token');
+      throw error;
+    }
     if (String(data.id) !== req.user!.id) throw new Error('GitHub identity mismatch');
     const configured = (await loadMonitoredReposRaw()).filter(repo => repo.enabled);
     const allowed: string[] = [];
@@ -150,8 +193,9 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
     const pending = await oauth.store.get<PendingAuthorization>('pending', digest(id));
     if (!pending) { res.status(400).send(renderMcpPage('Request expired', '<p>Return to your chat client and connect again.</p>')); return; }
     const repos = await repositories(req);
+    const presentation = await (overrides.repositoryPresentation || ((names, userId) => loadConsentRepositories(names, userId, oauth.store.db)))(repos, req.user!.id);
     const nonce = secret();
-    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; form-action 'self' ${new URL(pending.params.redirectUri).origin}; frame-ancestors 'none'; base-uri 'none'`);
+    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src https://raw.githubusercontent.com; form-action 'self' ${new URL(pending.params.redirectUri).origin}; frame-ancestors 'none'; base-uri 'none'`);
     res.type('html').send(renderMcpPage('Connect an app', `
       <p><strong>${escape(pending.client.client_name || pending.client.client_id)}</strong> wants access to this ProPR instance as <strong>${escape(req.user!.username)}</strong>.</p>
       <p>Instance: ${escape(oauth.config.instanceId)}</p>
@@ -166,12 +210,12 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
         </section>
         <section role="group" aria-labelledby="repositories-heading" data-selection-group="repositories">
           <h2 id="repositories-heading">Repositories</h2>${selectionControls('repositories')}
-          ${repos.map(repo => `<label><input type="checkbox" name="repositories" value="${escape(repo)}">${escape(repo)}</label>`).join('')}
+          ${repos.length ? `<div class="repository-filter" hidden><span class="repository-filter-label" id="repository-filter-label">Filter repositories</span><input type="search" data-repository-filter aria-labelledby="repository-filter-label" placeholder="Filter repositories..." autocomplete="off"></div><div class="repository-list">${renderConsentRepositories(presentation)}<p class="propr-repo-empty" data-repository-no-matches hidden>No repositories found</p></div>` : ''}
           ${repos.length ? '' : '<p>No accessible repositories are available. At least one is required to allow access.</p>'}
         </section>
         <p><small>Return address: ${escape(pending.params.redirectUri)}</small></p>
         <button name="decision" value="approve"${repos.length ? '' : ' disabled'}>Allow selected access</button><button class="secondary" name="decision" value="deny">Deny</button>
-      </form><script nonce="${nonce}">${consentScript}</script>`, nonce));
+      </form><script nonce="${nonce}">${consentScript}</script>`, nonce, { repositories: true }));
   });
 
   app.post('/mcp/consent', async (req, res) => {
@@ -217,5 +261,15 @@ export function mountMcpBrowser(app: Express, oauth: McpOAuthProvider, overrides
     const goal = artifact.parentKind === 'goal';
     if (!await oauth.store.db(goal ? 'goals' : 'task_drafts').where({ [goal ? 'goal_id' : 'draft_id']: artifact.parentId, [goal ? 'owner_id' : 'user_id']: req.user!.id }).first()) { res.status(404).send('Artifact parent not found'); return; }
     res.set({ 'Content-Type': artifact.mimeType, 'Content-Disposition': `attachment; filename="${artifact.filename}"`, 'X-Content-Type-Options': 'nosniff' }).send(Buffer.from(artifact.data, 'base64'));
+  });
+  app.use('/mcp', (error: unknown, req: Request, res: Response, next: express.NextFunction) => {
+    if (!(error instanceof GitHubReauthRequired) || res.headersSent) { next(error); return; }
+    // Drop the dead token with the session so sign-in issues a fresh one, then resume where the user was.
+    const target = loginUrl(req);
+    console.warn('[mcp] GitHub session token rejected; redirecting to sign in again', { userId: req.user?.id });
+    req.session.destroy(destroyError => {
+      if (destroyError) console.error('[mcp] Could not destroy session after GitHub token rejection:', destroyError);
+      res.redirect(target);
+    });
   });
 }

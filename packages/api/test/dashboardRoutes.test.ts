@@ -1,3 +1,4 @@
+import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
@@ -5,16 +6,8 @@ import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
 import { MAX_WORK_ROWS } from '../routes/dashboardQueries.js';
 import {
-  NOW,
-  call,
-  clearDashboardTestDatabase,
-  createDashboardTestDatabase,
-  createTestDashboardRoutes,
-  daysAgo,
-  minutesAgo,
-  seedTask as seedTaskInto,
-  type QueueStub,
-  type TaskSeed,
+  NOW, call, clearDashboardTestDatabase, createDashboardTestDatabase, createTestDashboardRoutes,
+  daysAgo, minutesAgo, seedTask as seedTaskInto, type QueueStub, type TaskSeed,
 } from './dashboardTestHarness.js';
 
 let database: Knex;
@@ -60,11 +53,7 @@ test('summary returns four integer counts that match the active endpoint for the
 /** The task page behind a dashboard count. */
 async function taskPage(status: string, repository: string, limit = 0): Promise<{ total: number; ids: string[] }> {
   const page = await getTasksFromDb({
-    db: database,
-    status,
-    repository,
-    limit,
-    offset: 0,
+    db: database, status, repository, limit, offset: 0,
     previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
   });
   return { total: page.total, ids: (page.tasks as Array<{ id: string }>).map(task => task.id) };
@@ -201,17 +190,11 @@ test('dismissing every notification for a failed task leaves the task in attenti
   await seedTask({ taskId: 'blocked-task', issueNumber: 61, states: [{ state: 'failed', timestamp: minutesAgo(20), reason: 'Boom' }] });
   // Two inbox notifications about the same failure, for two different people.
   await database('notification_events').insert([
-    {
-      event_id: 'event-failed-1', deduplication_key: 'task-failed:blocked-task', kind: 'task_failed',
-      target_json: JSON.stringify({ type: 'task', repository: 'integry/propr', taskId: 'blocked-task', issueNumber: 61 }),
-      title: 'Task failed', body: 'Boom', occurred_at: minutesAgo(20),
-    },
-    {
-      event_id: 'event-failed-2', deduplication_key: 'task-failed:blocked-task:retry', kind: 'task_failed',
-      target_json: JSON.stringify({ type: 'task', repository: 'integry/propr', taskId: 'blocked-task', issueNumber: 61 }),
-      title: 'Task failed again', body: 'Boom', occurred_at: minutesAgo(19),
-    },
-  ]);
+    { event_id: 'event-failed-1', deduplication_key: 'task-failed:blocked-task', title: 'Task failed', occurred_at: minutesAgo(20) },
+    { event_id: 'event-failed-2', deduplication_key: 'task-failed:blocked-task:retry', title: 'Task failed again', occurred_at: minutesAgo(19) },
+  ].map(event => ({ ...event, kind: 'task_failed', body: 'Boom',
+    target_json: JSON.stringify({ type: 'task', repository: 'integry/propr', taskId: 'blocked-task', issueNumber: 61 }),
+  })));
   await database('notification_user_states').insert([
     { event_id: 'event-failed-1', user_id: 'user-1', read_at: minutesAgo(18), dismissed_at: null },
     { event_id: 'event-failed-2', user_id: 'user-1', read_at: minutesAgo(18), dismissed_at: null },
@@ -258,35 +241,21 @@ test('active reports a phase label and a live progress line, and leaves the line
   assert.deepEqual([queued[0].phase, queued[0].progressLine], ['Waiting', null]);
 });
 
-test('queue reason is null unless the backend knows why work is waiting', async () => {
-  await seedTask({ taskId: 'queued-task', issueNumber: 81, states: [{ state: 'pending', timestamp: minutesAgo(9) }] });
-
-  const idle = await call(routes({ activeCount: 0, workers: 2 }).getActive, { repository: 'all' });
-  assert.equal((idle.body.queue as { reason: string | null }).reason, null);
-
-  // Two workers of one slot each, three jobs running: capacity really is gone.
-  const busy = await call(routes({ activeCount: 3, workers: 2 }).getActive, { repository: 'all' });
-  assert.equal((busy.body.queue as { reason: string | null }).reason, 'All agents are busy');
-
-  // One active job against ten published slots is not a busy fleet, so the
-  // backend has no verified explanation to offer.
-  const spare = await call(routes({ activeCount: 1, workers: 2, capacityPerWorker: 5 }).getActive, { repository: 'all' });
-  assert.equal((spare.body.queue as { reason: string | null }).reason, null);
-
-  const exhausted = await call(routes({ activeCount: 10, workers: 2, capacityPerWorker: 5 }).getActive, { repository: 'all' });
-  assert.equal((exhausted.body.queue as { reason: string | null }).reason, 'All agents are busy');
-
-  // A live worker that publishes no capacity leaves the total unknown, and an
-  // unknown total can never be declared exhausted.
-  const unknown = await call(routes({ activeCount: 9, workers: 2, capacityPerWorker: null }).getActive, { repository: 'all' });
-  assert.equal((unknown.body.queue as { reason: string | null }).reason, null);
-
-  const paused = await call(routes({ paused: true, activeCount: 3, workers: 2 }).getActive, { repository: 'all' });
-  assert.equal((paused.body.queue as { reason: string | null }).reason, 'Queue processing is paused');
-
-  const noWorkers = await call(routes({ activeCount: 0, workers: 0 }).getActive, { repository: 'all' });
-  assert.equal((noWorkers.body.queue as { reason: string | null }).reason, 'No workers are running');
-});
+for (const { name, queue, reason } of [
+  { name: 'idle', queue: { activeCount: 0, workers: 2 }, reason: null },
+  { name: 'busy', queue: { activeCount: 3, workers: 2 }, reason: 'All agents are busy' },
+  { name: 'spare capacity', queue: { activeCount: 1, workers: 2, capacityPerWorker: 5 }, reason: null },
+  { name: 'exhausted capacity', queue: { activeCount: 10, workers: 2, capacityPerWorker: 5 }, reason: 'All agents are busy' },
+  { name: 'unknown capacity', queue: { activeCount: 9, workers: 2, capacityPerWorker: null }, reason: null },
+  { name: 'paused', queue: { paused: true, activeCount: 3, workers: 2 }, reason: 'Queue processing is paused' },
+  { name: 'no workers', queue: { activeCount: 0, workers: 0 }, reason: 'No workers are running' },
+]) {
+  test(`queue reason reflects verified worker availability: ${name}`, async () => {
+    await seedTask({ taskId: 'queued-task', issueNumber: 81, states: [{ state: 'pending', timestamp: minutesAgo(9) }] });
+    const active = await call(routes(queue).getActive, { repository: 'all' });
+    assert.equal((active.body.queue as { reason: string | null }).reason, reason);
+  });
+}
 
 test('queue reason stays null when nothing is queued', async () => {
   await seedTask({ taskId: 'only-running', issueNumber: 91, states: [{ state: 'processing', timestamp: minutesAgo(4) }] });
@@ -369,4 +338,136 @@ test('every dashboard endpoint rejects a malformed repository filter with HTTP 4
     const accepted = await call(handler, { repository: 'integry/propr' });
     assert.equal(accepted.status, 200);
   }
+});
+
+test('narrative route returns idle prose and validates the repository filter', async () => {
+  const routes = createTestDashboardRoutes(database);
+  const result = await call(routes.getNarrative);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.enabled, true);
+  assert.equal(result.body.summary, 'No work is active, and there are no recent completions.');
+  assert.equal((await call(routes.getNarrative, { repository: 'invalid repo' })).status, 400);
+});
+
+
+test('disabled narrative short-circuits data reads and model resolution', async () => {
+  const routes = createDashboardRoutes({
+    db: (() => { throw new Error('Must not query'); }) as unknown as Knex,
+    redisClient: {} as never, taskQueue: {} as never,
+    isSummaryEnabled: async () => false,
+    narrativeModel: async () => { assert.fail('Must not resolve model'); },
+  });
+  const result = await call(routes.getNarrative);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { repository: 'all', enabled: false, summary: null });
+});
+
+test('narrative route degrades a live-detail projection failure to lifecycle progress', async () => {
+  await seedTask({
+    taskId: 'unreadable-live', title: 'Keep the briefing available', issueNumber: 2574,
+    states: [{ state: 'post_processing', timestamp: minutesAgo(1) }],
+  });
+  let prompt = '';
+  const route = createDashboardRoutes({
+    db: database,
+    redisClient: {} as never,
+    taskQueue: {} as never,
+    now: () => NOW,
+    liveDetails: async () => { throw new Error('Stream unavailable'); },
+    narrativeModel: async () => ({
+      id: 'configured',
+      generate: async value => { prompt = value; return 'The task is finishing up.'; },
+    }),
+  }).getNarrative;
+
+  const result = await call(route, { repository: 'integry/propr' });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.summary, 'The task is finishing up.');
+  assert.match(prompt, /"progress":"Finishing up"/);
+});
+
+test('narrative route uses injected model, bypasses cache on refresh and degrades without HTTP errors', async () => {
+  await seedTask({
+    taskId: 'narrative-task', title: 'Cache repository icons', issueNumber: 2574,
+    states: [{ state: 'claude_execution', timestamp: minutesAgo(1) }],
+  });
+  let count = 0;
+  let fail = false;
+  let prompt = '';
+  const routes = createDashboardRoutes({
+    db: database, redisClient: {} as never, taskQueue: {} as never, now: () => NOW,
+    liveDetails: async () => ({
+      currentTask: 'Running tests',
+      todos: [
+        { status: 'completed', content: 'Implement cache' },
+        { status: 'completed', content: 'Add tests' },
+        { status: 'in_progress', content: 'Run tests' },
+        { status: 'pending', content: 'Review changes' },
+        { status: 'pending', content: 'Finish' },
+      ],
+      events: [{ type: 'tool_use', toolName: 'Bash', input: { description: 'Running dashboard tests' }, timestamp: minutesAgo(0.5) }],
+    }),
+    narrativeModel: async () => ({ id: 'configured', generate: async value => {
+      prompt = value;
+      count++;
+      if (fail) throw new Error('Provider failed');
+      return `Running work. Generation ${count}.`;
+    } }),
+  });
+  assert.equal((await call(routes.getNarrative)).body.summary, 'Running work. Generation 1.');
+  assert.match(prompt, /Cache repository icons/);
+  assert.match(prompt, /Running tests \(step 3 of 5\)/);
+  assert.doesNotMatch(prompt, /"number":2574|"reference":/);
+  await call(routes.getNarrative);
+  assert.equal(count, 1);
+  assert.equal((await call(routes.getNarrative, { refresh: 'true' })).body.summary, 'Running work. Generation 2.');
+  fail = true;
+  const failed = await call(routes.getNarrative, { refresh: 'true' });
+  assert.equal(failed.status, 200);
+  assert.equal(failed.body.summary, null);
+  assert.equal((await call(routes.getNarrative)).body.summary, 'Running work. Generation 2.');
+  const unavailable = await call(createTestDashboardRoutes(database).getNarrative);
+  assert.equal(unavailable.status, 200);
+  assert.equal(unavailable.body.summary, null);
+});
+
+
+test('happening now includes owned running goals with live progress and repository scope', async () => {
+  await seedTask({ taskId: 'ordinary', createdAt: minutesAgo(20), states: [{ state: 'processing', timestamp: minutesAgo(20) }] });
+  const cases = [
+    ['running-goal', 'owner', 'integry/propr', 'running', null, 'claude_execution'],
+    ['other-repo-goal', 'owner', 'integry/docs', 'running', null, 'processing'],
+    ['paused-goal', 'owner', 'integry/propr', 'paused', null, 'claude_execution'],
+    ['finished-goal', 'owner', 'integry/propr', 'running', 'completed', 'claude_execution'],
+    ['failed-goal', 'owner', 'integry/propr', 'running', 'failed', 'failed'],
+    ['cancelled-goal', 'owner', 'integry/propr', 'cancelled', null, 'claude_execution'],
+    ['private-goal', 'someone-else', 'integry/propr', 'running', null, 'claude_execution'],
+    ['starting-goal', 'owner', 'integry/propr', 'running', null, null],
+  ];
+  for (const [id, owner, repository, desired, result, state] of cases) {
+    if (state) await seedTask({ taskId: id!, repository: repository!, taskType: 'goal', states: [
+      { state: 'pending', timestamp: minutesAgo(10) }, { state, timestamp: minutesAgo(2) },
+    ] });
+    await database('goals').insert({ goal_id: id, owner_id: owner, repository,
+      current_task_id: id, title: id === 'running-goal' ? 'Improve dashboard reliability' : null,
+      objective: 'Investigate dashboard reliability', desired_state: desired, result_state: result,
+      created_at: minutesAgo(10), updated_at: minutesAgo(2) });
+  }
+  const dashboard = routes({}, async () => ({ currentTask: 'Checking dashboard tests' }));
+  const result = await call(dashboard.getActive, { repository: 'integry/propr' }, 'owner');
+  assert.equal(result.status, 200);
+  const items = result.body.running as Array<Record<string, unknown>>;
+  assert.deepEqual(items.map(item => item.id), ['goal:running-goal', 'goal:starting-goal', 'task:ordinary']);
+  assert.deepEqual(result.body.counts, { running: 3, queued: 0 });
+  assert.equal(items[0].goalId, 'running-goal');
+  assert.equal(items[0].taskId, 'running-goal');
+  assert.equal(items[0].taskType, 'goal');
+  assert.equal(items[0].title, 'Improve dashboard reliability');
+  assert.equal(items[0].progressLine, 'Checking dashboard tests');
+  assert.equal(items[1].title, 'Investigate dashboard reliability');
+  assert.equal(items[1].phase, 'Waiting');
+  const all = await call(dashboard.getActive, {}, 'owner');
+  assert.equal((all.body.running as unknown[]).length, 4);
+  const anonymous = await call(dashboard.getActive);
+  assert.deepEqual((anonymous.body.running as Array<{ id: string }>).map(item => item.id), ['task:ordinary']);
 });

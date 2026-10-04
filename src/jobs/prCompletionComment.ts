@@ -1,5 +1,10 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
+import {
+    type ReviewFeedbackSelection,
+    describeReviewFeedbackSelection,
+    isEmptyReviewFeedbackSelection,
+} from '@propr/shared';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
@@ -26,6 +31,8 @@ export interface CommentContext {
     undoContext?: UndoLinkContext;
     taskUrl?: string;
     consumedReviewCommentIds?: number[];
+    /** Review records this /fix run acted on; absent for non-fix workflows. */
+    addressedFeedback?: ReviewFeedbackSelection;
     visualPreviewSection?: string;
 }
 
@@ -137,13 +144,25 @@ function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: s
         || changesSummary;
 }
 
+/**
+ * The `/fix` scope line for a completion comment. Rendered as its own line
+ * rather than folded into the agent's prose, so it stays greppable and keeps
+ * blocking findings visually separate from the optional suggestions a reader
+ * must not mistake for required work.
+ */
+function buildAddressedFeedbackLine(addressed: ReviewFeedbackSelection | undefined): string {
+    if (!addressed || isEmptyReviewFeedbackSelection(addressed)) return '';
+    return `> Addressed ${describeReviewFeedbackSelection(addressed)}\n\n`;
+}
+
 export async function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, visualPreviewSection } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, addressedFeedback, visualPreviewSection } = commentContext;
+    const addressedLine = buildAddressedFeedbackLine(addressedFeedback);
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     const partial = !claudeResult.success && terminationReason !== undefined;
 
@@ -173,6 +192,7 @@ export async function buildCompletionComment(
         if (consumedReviewCommentIds && consumedReviewCommentIds.length > 0) {
             prCommentBody += `> Addressed ${consumedReviewCommentIds.length} AI review comment${consumedReviewCommentIds.length > 1 ? 's' : ''} (IDs: ${consumedReviewCommentIds.join(', ')})\n\n`;
         }
+        prCommentBody += addressedLine;
 
         const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
         if (contentToShow) {
@@ -209,6 +229,8 @@ export async function buildCompletionComment(
         return prCommentBody;
     } else {
         let noChangesBody = `ℹ️ **Analyzed the follow-up request** by ${authorsText}\n\n`;
+
+        noChangesBody += addressedLine;
 
         if (changesSummary) {
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;

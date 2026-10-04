@@ -91,6 +91,10 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         prompt: perMillion(2), completion: perMillion(10),
         cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
     },
+    'anthropic/claude-sonnet-5.5': {
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
+    },
     'anthropic/claude-sonnet-4.6': {
         prompt: perMillion(3), completion: perMillion(15),
         cacheCreation: perMillion(3.75), cacheRead: perMillion(0.3)
@@ -106,6 +110,22 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     'openai/gpt-6-astra': {
         prompt: perMillion(10), completion: perMillion(50),
         cacheCreation: perMillion(12.5), cacheRead: perMillion(1)
+    },
+    // Standard short-context rates, verified 2026-10-01:
+    // https://developers.openai.com/api/docs/pricing
+    // Sol 6.1 cached reads intentionally cost $0.10/M (5% of input),
+    // while Sol 6 cached reads cost $0.20/M (10% of input).
+    'openai/gpt-6.1-sol': {
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.1)
+    },
+    'openai/gpt-6-sol': {
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.2)
+    },
+    'openai/gpt-6-luna': {
+        prompt: perMillion(0.1), completion: perMillion(0.5),
+        cacheCreation: perMillion(0.125), cacheRead: perMillion(0.01)
     },
     'openai/gpt-5.6-sol': {
         prompt: perMillion(4), completion: perMillion(20),

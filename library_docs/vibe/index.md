@@ -7,7 +7,7 @@ project context.
 > **Scope:** This file documents ProPR-specific integration behavior — how
 > ProPR installs, configures, and invokes the Vibe CLI. It is **not**
 > authoritative upstream documentation. Settings and config paths below were
-> observed against `mistral-vibe==2.25.4` (the version pinned in
+> observed against `mistral-vibe==2.25.8` (the version pinned in
 > `Dockerfile.agent`) and may differ in other releases. Always verify against
 > your installed version with `vibe --help`.
 
@@ -23,7 +23,7 @@ project context.
 Install from PyPI with uv:
 
 ```bash
-uv tool install mistral-vibe==2.25.4
+uv tool install mistral-vibe==2.25.8
 ```
 
 ## Get started
@@ -72,12 +72,14 @@ export MISTRAL_API_KEY=your-api-key-here
 
 ## Models
 
-Vibe 2.25.4 ships one hosted model and a local llama.cpp option. ProPR catalogs
-only the hosted model by default.
+Vibe 2.25.8 ships one hosted model and a local llama.cpp option. ProPR also supplies presets for Mistral-hosted GLM 5.3 and GLM 5.2.
+Mistral Medium remains the default.
 
 | Model ID | Name | Context Window |
 |----------|------|----------------|
 | `mistral-medium-3.5` | Mistral Medium 3.5 | 256K |
+| `zai-glm-5-3` | GLM 5.3 | 1M |
+| `zai-glm-5-2` | GLM 5.2 | 1M |
 | `local` | Devstral (local) | Configured locally |
 
 ### Select a model
@@ -151,3 +153,13 @@ Or mount the credentials directory:
 ```bash
 docker run -e PROPR_AGENT_TYPE=vibe -v ~/.vibe:/home/node/.vibe propr/agent:latest
 ```
+
+
+## Research and runtime verification (2026-09-29)
+
+- [PyPI](https://pypi.org/project/mistral-vibe/2.25.8/) lists 2.25.8 as the current release; all ProPR Vibe build and runtime defaults pin it.
+- The released wheel's `vibe/core/config/vibe_schema.py` bundles `mistral-medium-3.5` (API name `mistral-vibe-cli-latest`) and `local`. It does not bundle GLM presets.
+- Mistral documents [GLM 5.3](https://docs.mistral.ai/models/zai-glm-5-3) and [GLM 5.2](https://docs.mistral.ai/models/zai-glm-5-2), both with 1M context. They are Mistral-hosted third-party models in public preview.
+- ProPR supplies the selected GLM preset through Vibe's nested `VIBE_MODELS__<model-id>` environment setting and selects it with `VIBE_ACTIVE_MODEL`. Vibe merges it with the existing configuration. Execution and read-only analysis use the same mechanism; host configuration is not modified.
+- The released CLI's `--help` does not expose the `--model` option mentioned in the online configuration guide. Use ProPR selection or configured model aliases, rather than relying on that flag.
+- `test/vibeAgent.test.ts` includes an optional contract check using the installed package, enabled by `PROPR_VIBE_PYTHON`. It verifies actual configuration resolution without inference calls. Live API inference requires an authorized Mistral account and is not covered by that offline check.

@@ -1,17 +1,50 @@
 # CI runner routing
 
 The owner chose rootless Docker isolation on gitfix.dev instead of VM migration
-for this pilot. Compatible Linux x64 checks support four workers labelled
-`[self-hosted, Linux, X64, propr-rootless]`. Four independent matrix shard jobs
-remain, one job per available worker, without a nested coordinator. Other
-eligible jobs share this pool, so simultaneous shard starts are not guaranteed.
+for this pilot. The pool has six workers labelled
+`[self-hosted, Linux, X64, propr-rootless]`; any idle worker takes the next job
+routed to it. In the intended `overflow` mode (below) compatible Linux x64
+checks run on GitHub-hosted runners and use the pool only when those are
+saturated. Four independent matrix shard jobs remain, without a nested
+coordinator. Other eligible jobs share the pool, so simultaneous shard starts
+are not guaranteed. Workers are added with the same per-user setup; the host
+firewall reserves UIDs 62001-62099 for them, so a new worker needs no rule edit.
 These PR check jobs never select the old generic `propr` label.
 
-**Leave `PROPR_ROOTLESS_PR_CHECKS` unset until the owner supplies host pilot
-evidence.** Only the explicit value `true` opts in; unset, empty or `false`
-selects GitHub-hosted runners. Set it to `false` or remove it as the operational
-off switch. This implementation does not set repository variables, provision
-host services, change GitHub permissions, merge or deploy.
+`PROPR_ROOTLESS_PR_CHECKS` selects one of three modes:
+
+| Value | Eligible Linux PR checks run on |
+| --- | --- |
+| unset, empty, `false` or anything else | GitHub-hosted runners |
+| `true` | the rootless pool, always |
+| `overflow` | GitHub-hosted runners, and the rootless pool only when hosted runners are saturated |
+
+Hosted standard runners are free for this public repository and start in
+seconds, while the pool shares one server's CPU with production, so `overflow`
+is the intended mode. `false` remains the operational off switch.
+
+### Overflow routing
+
+GitHub cannot fall back between runner types: `runs-on` names one kind of
+runner, and a queued job never moves. In `overflow` mode each of the three PR
+workflows therefore starts with a `route` job (hosted, `actions: read`) that
+runs `scripts/ci-hosted-capacity.mjs` once, before the routed jobs, and the
+shared routing expression uses the pool when it reports `overflow=true`. It
+overflows when either:
+
+- a hosted Linux job of this repository has waited 60 s or more for a runner, or
+- running hosted jobs plus this workflow's own (shards and docs: 5; build
+  check: 3; project options: 2) exceed the account limit minus a reserve of 6
+  for other repositories and the macOS/Windows desktop jobs. The limit defaults
+  to GitHub Pro's 40 concurrent jobs; set `PROPR_HOSTED_JOB_LIMIT` to change it.
+
+The decision is a snapshot, so a burst that arrives after it can still queue on
+hosted runners. The route job only selects the runner: every routed job runs
+whatever its outcome, and a failed, skipped or unreadable check keeps the work
+hosted. The trust conditions below are evaluated unchanged in every mode, so
+forks, Dependabot and non-default-branch dispatches stay hosted. The shards
+still never depend on the classifier. The standard token sees only this
+repository's jobs; the reserve covers the other repositories sharing the limit.
 
 ## Approval-based trust model
 
@@ -73,7 +106,8 @@ expected contract, not a claim that the workers are configured or validated:
   `DOCKER_CONTEXT`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH`. Job setup replaces
   HOME and Docker client config, so a saved HOME-based Docker context is not a
   reliable endpoint. `ci-rootless-preflight.sh` rejects default/remote/production
-  endpoints, checks the daemon reports rootless, and requires cgroup v2/systemd.
+  endpoints, checks the daemon reports rootless, requires cgroup v2/systemd, and
+  requires an init binary (the Redis helper starts `--init` containers).
   It does not prove socket ownership, host mount isolation or effective limits.
 - CI paths used as Docker bind sources must contain the same files at the same
   absolute path inside the runner and the daemon's host mount namespace. Map
@@ -88,8 +122,8 @@ expected contract, not a claim that the workers are configured or validated:
   this with the actual Docker version and network driver. Ordinary bridge
   networking gives the runner a different loopback and breaks this assumption.
 - Per-user cgroup limits cap the runner and sibling Docker workloads together:
-  target `CPUQuota=200%`, `MemoryHigh=6G`, `MemoryMax=8G` per worker, at most eight
-  CPU equivalents and 32 GiB across four users. Delegate the controllers needed
+  target `CPUQuota=200%`, `MemoryHigh=6G`, `MemoryMax=8G` per worker, at most twelve
+  CPU equivalents and 48 GiB across six users. Delegate the controllers needed
   for CPU, memory and PID limits. The workflow does not configure these limits.
   Redis keeps `--memory 512m --memory-swap 512m --cpus 1 --pids-limit 64`;
   lint tool containers keep `--memory 1g --memory-swap 1g --cpus 1
@@ -290,10 +324,25 @@ older attempts matching the exact owner; it preserves newer attempts and all
 other owners. An unexpected owner fails closed. Existing callers with no
 instance, including nightly, retain one container per job and attempt.
 
+Each container runs with `--init`. The container's PID namespace reparents every
+health-check process to PID 1 once its runc parent exits, and `redis-server`
+does not reap them; one check every two seconds for the length of a shard
+therefore filled `--pids-limit` with zombies and left a container the rootless
+daemon could not kill, which failed the teardown step of a shard whose tests had
+all passed. tini as PID 1 reaps them instead.
+
+Teardown (`stop`) is the only caller that tolerates a failed removal. It runs
+after the tests have decided the job's result, and no step in the job can reap a
+zombie PID, so a container whose ownership fully verifies but which the daemon
+still refuses to remove is reported as a run warning and left for host cleanup.
+Its state file is kept, so a later teardown of the same owner retries. Ownership
+violations, and failed removals during `start`, still fail.
+
 Regression tests prove `job=shard, instance=default` and
 `job=shard-default, instance=<omitted>` coexist and either stop order preserves
 the other. They also cover foreign labels, tampered state, field-boundary
-collisions, retries and resource limits using a Docker CLI double.
+collisions, retries, resource limits, `--init` and the teardown tolerance using
+a Docker CLI double.
 
 ## Coverage, required check and partial reruns
 
@@ -402,7 +451,8 @@ verified four-worker inventory and job cgroup summaries. Do not reuse timings
 from an older head as proof. **Resulting-head CI and gitfix.dev placement remain
 pending activation and a new run.**
 
-There is no automatic fallback when activated workers are busy/offline. Set
+With `true` there is no fallback when the workers are busy or offline; with
+`overflow` the pool is used only after the route job's check. Set
 `PROPR_ROOTLESS_PR_CHECKS=false` to route new jobs hosted; already queued jobs
 need cancellation/restart. For partial failures rerun failed jobs and verify
 the aggregate gate, including prior successful shard artifacts.

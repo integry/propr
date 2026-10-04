@@ -135,3 +135,52 @@ test('relay auth rejects unsupported auth types instead of silently returning an
     await relay.close();
   }
 });
+
+test('relay scopes are sent to the mint endpoint and cached separately from worker tokens', async () => {
+  const relay = await startRelay((info, res) => {
+    const body = JSON.parse(info.lastBody || '{}');
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ token: body.permissions ? 'read-token' : 'write-token',
+      permissions: body.permissions, repositories: body.repository_ids?.map((id: number) => ({ id })),
+      expires_at: new Date(Date.now() + 3_600_000).toISOString() }));
+  });
+  try {
+    const auth = createRelayAuth({ relayUrl: relay.url, relayToken: 'relay-secret' });
+    assert.equal((await auth()).token, 'write-token');
+    const scope = { permissions: { contents: 'read' }, repositoryIds: [4, 9] };
+    assert.equal((await auth(scope)).token, 'read-token');
+    assert.deepEqual(JSON.parse(relay.info.lastBody!), { permissions: scope.permissions, repository_ids: [4, 9] });
+    assert.equal((await auth()).token, 'write-token');
+    assert.equal((await auth(scope)).token, 'read-token');
+    assert.equal(relay.info.count, 2);
+  } finally { await relay.close(); }
+});
+
+test('an old relay that ignores scoped mint fields cannot leak its full token to an agent', async () => {
+  const relay = await startRelay(jsonToken('full-installation-token', 3_600_000));
+  try {
+    const auth = createRelayAuth({ relayUrl: relay.url, relayToken: 'relay-secret' });
+    await assert.rejects(auth({ permissions: { contents: 'read' } }), /did not honor scoped permissions/);
+    await assert.rejects(auth({ repositoryIds: [1] }), /did not honor the context repository restriction/);
+    assert.equal((await auth()).token, 'full-installation-token');
+  } finally { await relay.close(); }
+});
+
+test('forced container mints bypass cached and concurrent tokens without changing worker cache', async () => {
+  const relay = await startRelay((info, res) => {
+    const body = JSON.parse(info.lastBody!);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ token: `fresh-${info.count}`, expires_at: new Date(Date.now() + 3_600_000).toISOString(), permissions: body.permissions, repositories: body.repository_ids?.map((id: number) => ({ id })) }));
+  });
+  try {
+    const auth = createRelayAuth({ relayUrl: relay.url, relayToken: 'relay-secret' });
+    const scope = { permissions: { contents: 'read' }, repositoryIds: [4] };
+    const worker = await auth();
+    const cached = await auth(scope);
+    const fresh = await Promise.all([auth({ ...scope, refresh: true }), auth({ ...scope, refresh: true })]);
+    assert.equal(new Set([cached.token, ...fresh.map(value => value.token)]).size, 3);
+    assert.equal((await auth()).token, worker.token);
+    assert.equal((await auth(scope)).token, cached.token);
+    assert.equal(relay.info.count, 4);
+  } finally { await relay.close(); }
+});

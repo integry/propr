@@ -403,11 +403,10 @@ describe('SetupWizard', () => {
     expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
   });
 
-  it.each([320, 390])('keeps setup actions, including context export, reachable at %ipx', width => {
+  it.each([320, 390])('keeps the generate action reachable at %ipx', width => {
     setViewportWidth(width);
     renderSetupWizard({ context_config: {} });
 
     expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export Context' })).toBeInTheDocument();
   });
 });

@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Play } from 'lucide-react';
 import type { PublishedVisualPreview } from '@propr/shared';
 import { getRepositoryMedia } from '../../api/repositoryMediaApi';
-import { PreviewImage } from '../PreviewMedia';
+import { PreviewImage, PreviewVideo } from '../PreviewMedia';
+import PreviewLightbox from '../PreviewLightbox';
 
 export default function RepoMediaPanel({ repository }: { repository: string }) {
   const [previews, setPreviews] = useState<PublishedVisualPreview[]>([]);
@@ -10,6 +12,14 @@ export default function RepoMediaPanel({ repository }: { repository: string }) {
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
+  // The open item is tracked by url, not index: paging in more media reorders nothing, but a dropped
+  // item would otherwise slide a different preview under the reader.
+  const [openUrl, setOpenUrl] = useState<string | null>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const openIndex = openUrl === null ? -1 : previews.findIndex(preview => preview.url === openUrl);
+  useEffect(() => {
+    if (openUrl !== null && openIndex < 0) setOpenUrl(null);
+  }, [openUrl, openIndex]);
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -36,9 +46,18 @@ export default function RepoMediaPanel({ repository }: { repository: string }) {
     </div>}
     <div className="mt-5 grid min-w-0 grid-cols-[repeat(auto-fill,minmax(min(100%,240px),1fr))] gap-4">
       {previews.map(preview => <figure key={preview.url} className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-        {preview.type === 'image'
-          ? <a href={preview.url} target="_blank" rel="noopener noreferrer" aria-label={`Open preview: ${preview.title}`}><PreviewImage preview={preview} /></a>
-          : <video src={preview.url} aria-label={preview.title} controls preload="none" className="aspect-video w-full bg-slate-950" />}
+        <button type="button" aria-haspopup="dialog" aria-label={`Open preview: ${preview.title}`}
+          onClick={event => { opener.current = event.currentTarget; setOpenUrl(preview.url); }}
+          className={`relative block w-full bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-500 ${preview.type === 'image' ? 'cursor-zoom-in' : 'cursor-pointer'}`}>
+          {preview.type === 'image'
+            ? <PreviewImage preview={preview} />
+            : <>
+              <PreviewVideo preview={preview} controls={false} className="aspect-video w-full bg-slate-950 object-contain" />
+              <span aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-900/70 text-white shadow-lg"><Play className="h-6 w-6" /></span>
+              </span>
+            </>}
+        </button>
         <figcaption className="p-3"><p className="break-words text-sm font-medium text-slate-800">{preview.title}</p>
           {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{preview.description}</p>}
         </figcaption>
@@ -46,5 +65,7 @@ export default function RepoMediaPanel({ repository }: { repository: string }) {
     </div>
     {loading && <p role="status" className="py-8 text-center text-sm text-slate-500">Loading media…</p>}
     {!loading && nextOffset !== null && <button type="button" onClick={() => setOffset(nextOffset)} className="mt-5 min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700">Load more media</button>}
+    {openIndex >= 0 && <PreviewLightbox previews={previews} index={openIndex} onIndexChange={index => setOpenUrl(previews[index]?.url ?? null)}
+      onClose={() => setOpenUrl(null)} returnFocusTo={opener.current} />}
   </section>;
 }

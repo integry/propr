@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex from 'knex';
-import { AgentRegistry, closeConnection } from '@propr/core';
+import { AgentRegistry, closeConnection, closeEventPublisher, getEventPublisher } from '@propr/core';
 import { up as createGoals } from '../../core/src/db/migrations/20260902000000_create_goals.js';
 import { up as hardenGoals } from '../../core/src/db/migrations/20260902010000_harden_native_goals.js';
 import { up as addGoalCheckpoints } from '../../core/src/db/migrations/20260903000000_add_direct_goal_checkpoints.js';
@@ -11,7 +11,10 @@ import { up as addGoalCheckpointDeclarations } from '../../core/src/db/migration
 import { up as addGoalTitles } from '../../core/src/db/migrations/20260907000000_add_goal_titles.js';
 import { up as addGoalAttachments } from '../../core/src/db/migrations/20260908000000_add_goal_attachments.js';
 import { up as addGoalInputDisplayBody } from '../../core/src/db/migrations/20260923000000_add_goal_input_display_body.js';
+import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
+import { GOAL_CREATION_CONTRACT } from '@propr/shared';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
+import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 function request(userId: string, params: Record<string, string> = {}, body: unknown = {}): Request {
     return {
@@ -32,6 +35,13 @@ function response() {
 
 test('goal routes keep metadata owner-scoped and queue ordinary input on the same task/session', async () => {
     const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    const published: Array<{ goalId: string; desiredState?: string; resultState?: string; ownerId?: string }> = [];
+    const publication = mock.method(getEventPublisher(), 'publishGoalUpdate', async payload => {
+        const stored = await database('goals').where({ goal_id: payload.goalId }).first();
+        published.push({ goalId: payload.goalId, desiredState: stored?.desired_state,
+            resultState: stored?.result_state, ownerId: payload.ownerId });
+        return true;
+    });
     const queued: Array<{ name: string; data: Record<string, unknown>; options: { jobId: string } }> = [];
     const stopped: string[] = [];
     const stopAttempts = new Map<string, number>();
@@ -45,6 +55,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await addGoalTitles(database);
         await addGoalAttachments(database);
         await addGoalInputDisplayBody(database);
+        await createGoalBlockers(database);
         await database.schema.createTable('task_history', table => {
             table.increments('id');
             table.string('task_id');
@@ -64,7 +75,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         const common = {
             owner_login: 'alice', repository: 'acme/repo', title: 'Ship Reliable Goal Delivery', objective: 'Ship it',
             launch_strategy: 'direct', initial_prompt: '/goal Ship it\n\nSaved policy',
-            agent_id: 'agent-1', agent_alias: 'antigravity', agent_type: 'antigravity', requested_model: 'gpt-5.6',
+            agent_id: 'agent-1', agent_alias: 'opencode', agent_type: 'opencode', requested_model: 'gpt-5.6',
             desired_state: 'paused', run_generation: 2, run_claim: 'claim-2', session_id: 'thread-1',
             branch_name: 'goal/ship-it', worktree_path: '/worktrees/goal-1',
             pause_confirmed_at: new Date().toISOString(),
@@ -116,7 +127,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                     queued.push({ name, data, options });
                 },
             } as never,
-            redisClient: {
+            redisClient: withLiveOutputReads({
                 get: async (key: string) => key === 'agent:output:goal-task-1' ? [
                     JSON.stringify({ type: 'assistant', timestamp: '2026-09-02T20:00:00Z', message: {
                         content: [{ type: 'tool_use', name: 'TodoWrite', input: { todos: [
@@ -126,7 +137,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                     } }),
                 ].join('\n') : null,
                 del: async () => 1,
-            } as never,
+            }) as never,
             stopExecution: async taskId => {
                 stopped.push(taskId);
                 const attempt = (stopAttempts.get(taskId) ?? 0) + 1;
@@ -282,6 +293,66 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.match(storedPreviewContext.message, /VISUAL PREVIEW REQUIREMENT/);
         assert.match(storedPreviewContext.message, /Capture the completed dashboard/);
         assert.match(storedPreviewContext.message, /already-open draft PR at checkpoint boundaries/);
+        queued.length = 0;
+
+        const creation = (rechecked.state.body as { creation: typeof GOAL_CREATION_CONTRACT }).creation;
+        assert.deepEqual(creation, GOAL_CREATION_CONTRACT);
+        assert.deepEqual(creation.maxParallelTasks, { min: 1, max: 32 });
+        assert.equal(creation.ultrafix.grantsMerge, false);
+
+        const createWith = async (key: string, options: Record<string, unknown>) => {
+            const created = response();
+            const createOptionsRequest = request('owner-1', {}, {
+                repository: 'acme/repo', objective: 'Ship options', agentId: 'agent-1', model: 'gpt-5.6',
+                launchStrategy: 'direct', ...options,
+            });
+            createOptionsRequest.get = () => key;
+            await routes.create(createOptionsRequest, created.res);
+            return created.state;
+        };
+        for (const maxParallelTasks of [0, 33, 1.5]) {
+            const rejected = await createWith(`parallel-${maxParallelTasks}`, { maxParallelTasks });
+            assert.equal(rejected.status, 400, `maxParallelTasks ${maxParallelTasks}`);
+            assert.deepEqual(rejected.body, { error: 'maxParallelTasks must be an integer from 1 to 32' });
+        }
+        const rejectedUltrafix = await createWith('ultrafix-string', { ultrafix: 'yes' });
+        assert.equal(rejectedUltrafix.status, 400);
+        const unsupportedModel = await createWith('unsupported-model', { model: 'unknown-model' });
+        assert.equal(unsupportedModel.status, 400);
+        assert.equal(await database('goals').where({ create_idempotency_key: 'unsupported-model' }).first(), undefined);
+        for (const maxParallelTasks of [1, 8, 9, 32]) {
+            const accepted = await createWith(`parallel-${maxParallelTasks}`, { maxParallelTasks });
+            assert.equal(accepted.status, 201, `maxParallelTasks ${maxParallelTasks}: ${JSON.stringify(accepted.body)}`);
+            const stored = await database('goals').where({ create_idempotency_key: `parallel-${maxParallelTasks}` }).first();
+            assert.equal(stored.max_parallel_tasks, maxParallelTasks);
+        }
+
+        const ultrafixGoal = await createWith('ultrafix-enabled', { ultrafix: true, maxParallelTasks: 32 });
+        assert.equal(ultrafixGoal.status, 201);
+        const ultrafixRow = await database('goals').where({ create_idempotency_key: 'ultrafix-enabled' }).first();
+        assert.equal(Boolean(ultrafixRow.ultrafix), true);
+        const ultrafixContext = await database('goal_inputs').where({ goal_id: ultrafixRow.goal_id, kind: 'context' }).first();
+        assert.match(ultrafixContext.message, /Ultrafix policy: Enabled/);
+        assert.match(ultrafixContext.message, /Run at most 32 implementation tasks/);
+        const queuedBeforeRetry = queued.length;
+        const ultrafixRetry = await createWith('ultrafix-enabled', { ultrafix: true, maxParallelTasks: 32 });
+        assert.equal(ultrafixRetry.status, 200);
+        assert.equal((ultrafixRetry.body as { goal: { id: string } }).goal.id, ultrafixRow.goal_id);
+        const ultrafixChanged = await createWith('ultrafix-enabled', { ultrafix: false, maxParallelTasks: 32 });
+        assert.equal(ultrafixChanged.status, 409);
+        assert.equal(queued.length, queuedBeforeRetry);
+        assert.equal(await database('goals').where({ create_idempotency_key: 'ultrafix-enabled' }).count({ count: '*' }).first()
+            .then(row => Number(row?.count)), 1);
+
+        for (const [key, options] of [['ultrafix-omitted', {}], ['ultrafix-false', { ultrafix: false }]] as const) {
+            assert.equal((await createWith(key, options)).status, 201);
+            const disabledRow = await database('goals').where({ create_idempotency_key: key }).first();
+            assert.equal(Boolean(disabledRow.ultrafix), false);
+            const disabledContext = await database('goal_inputs').where({ goal_id: disabledRow.goal_id, kind: 'context' }).first();
+            assert.match(disabledContext.message, /Ultrafix policy: Disabled/);
+        }
+        // Omitted and explicit false share one payload identity.
+        assert.equal((await createWith('ultrafix-omitted', { ultrafix: false })).status, 200);
         queued.length = 0;
 
         await database('goals').where({ goal_id: 'goal-1' }).update({
@@ -456,8 +527,16 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.equal(await database('task_history').where({ task_id: 'goal-task-9' }).first(), undefined);
         assert.equal(await database('llm_executions').where({ task_id: 'goal-task-9' }).first(), undefined);
         assert.equal(await database('llm_execution_details').where({ execution_id: 'goal-execution-9' }).first(), undefined);
+        assert(published.some(event => event.desiredState === 'running'));
+        assert(published.some(event => event.desiredState === 'paused'));
+        assert(published.some(event => event.resultState === 'cancelled'));
+        assert(published.some(event => event.goalId === 'goal-9' && event.ownerId === 'owner-2'));
     } finally {
+        publication.mock.restore();
         await database.destroy();
         await closeConnection();
+        // Goal transitions now publish a push event; close the publisher's Redis
+        // client so a test process is not held open by best-effort telemetry.
+        await closeEventPublisher();
     }
 });

@@ -44,6 +44,9 @@ interface StatusRoutesDeps {
   getPublicInstanceIdentity?: () => string | Promise<string>;
 }
 
+/** The snapshot `/api/status` answers with; every field is diagnostic. */
+type StatusSnapshot = Record<string, unknown> & { timestamp: string };
+
 interface IndexingStatusQueue {
   getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
   getJobs(
@@ -252,7 +255,14 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     }
   }
 
-  async function collectStatus(): Promise<Record<string, unknown>> {
+  /**
+   * The status snapshot `/api/status` answers with.
+   *
+   * Assembled separately from the response so the health watcher can compare
+   * the same snapshot the clients read, instead of a second, divergent notion
+   * of what instance health is.
+   */
+  async function readStatusSnapshot(): Promise<StatusSnapshot> {
     const compatibility = getProprCompatibilityMetadata(!isDemoMode());
     // In demo mode, return all-green status
     if (isDemoMode()) {
@@ -280,7 +290,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       };
     }
 
-    const status: Record<string, unknown> = {
+    const status: StatusSnapshot = {
       ...compatibility,
       api: 'healthy',
       redis: 'unknown',
@@ -333,8 +343,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     status.agents = agentSnapshot.agents;
     status.claudeAuth = agentSnapshot.claudeAuth;
     status.indexing = indexing;
-    // The operational warning below is request-local; never mutate the cached
-    // summarization warning array.
+    // The operational warning below belongs to this snapshot only; never mutate
+    // the cached summarization warning array.
     const warnings = [...cachedWarnings];
     const agentRuntime = agentRegistry.getOperationalStatus?.();
     if (agentRuntime) {
@@ -348,13 +358,12 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       }
     }
     status.warnings = warnings;
-
     return status;
   }
 
   async function getStatus(req: Request, res: Response): Promise<void> {
     try {
-      const status = await collectStatus();
+      const status = await readStatusSnapshot();
       res.json(status);
       if (!isDemoMode() && projectSystemSnapshot) {
         const additionalAdministratorIds = req.user
@@ -362,7 +371,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           ? [req.user.id]
           : [];
         void projectSystemSnapshot(
-          status as Record<string, unknown> & { timestamp: string },
+          status,
           additionalAdministratorIds,
         ).catch(error => {
           console.warn('[notifications] Failed to project system health snapshot:', error);
@@ -375,10 +384,12 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   }
 
   return {
-    collectStatus,
+    collectStatus: readStatusSnapshot,
     getCompatibility,
     getDesktopDiscovery,
     getStatus,
+    readStatusSnapshot,
+    getStatusSnapshot: readStatusSnapshot,
     invalidateAgentStatusCache: agentStatusCache.invalidate,
   };
 }

@@ -13,6 +13,7 @@ const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
 interface CurrentUserBootstrapOptions {
   isDemoMode: boolean;
+  socketConnected?: boolean;
 }
 
 interface CurrentUserBootstrapResult {
@@ -36,6 +37,7 @@ interface RefreshRequest {
  */
 export const useCurrentUserBootstrap = ({
   isDemoMode,
+  socketConnected = false,
 }: CurrentUserBootstrapOptions): CurrentUserBootstrapResult => {
   const desktopRuntime = isDesktopRuntime();
   const socketConfigurationKey = useSyncExternalStore(
@@ -182,15 +184,18 @@ export const useCurrentUserBootstrap = ({
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') refreshAuthorization();
     };
-    const interval = window.setInterval(refreshAuthorization, AUTHORIZATION_REFRESH_INTERVAL_MS);
+    // The live socket revalidates its principal on the server at this cadence
+    // and reports revocation/permission changes. HTTP is the offline fallback.
+    const interval = socketConnected ? undefined
+      : window.setInterval(refreshAuthorization, AUTHORIZATION_REFRESH_INTERVAL_MS);
     window.addEventListener('focus', refreshAuthorization);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      window.clearInterval(interval);
+      if (interval !== undefined) window.clearInterval(interval);
       window.removeEventListener('focus', refreshAuthorization);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isDemoMode, refreshCurrentUser]);
+  }, [isDemoMode, refreshCurrentUser, socketConnected]);
 
   const currentScopeGeneration = scopeGenerationRef.current.generation;
   const validatedCurrentUser = validatedConfigurationKey === currentConfigurationKey

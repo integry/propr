@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { AGENT_DEFAULTS, AGENT_MODELS, ALL_MODELS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
+import { getReasoningLevelsForAgentType } from '../packages/shared/src/reasoningLevels.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
@@ -12,7 +15,7 @@ test('Mistral Medium uses the OpenRouter pricing model ID', () => {
 });
 
 test('Vibe catalog matches the current hosted model set', () => {
-    assert.deepStrictEqual(VIBE_MODELS.map(model => model.id), ['mistral-medium-3.5']);
+    assert.deepStrictEqual(VIBE_MODELS.map(model => model.id), ['mistral-medium-3.5', 'zai-glm-5-3', 'zai-glm-5-2']);
     assert.strictEqual(MODEL_INFO_MAP['devstral-small'], undefined);
 });
 
@@ -32,6 +35,23 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
     }
 });
 
+test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
+    const expectedModels = [
+        ['gpt-6.1-sol', 'llm-codex-gpt61-sol', '0.153.0'],
+        ['gpt-6-sol', 'llm-codex-gpt6-sol', '0.155.0'],
+        ['gpt-6-luna', 'llm-codex-gpt6-luna', '0.155.0'],
+    ] as const;
+
+    for (const [modelId, githubLabel, minAgentVersion] of expectedModels) {
+        assert.ok(CODEX_MODELS.some(model => model.id === modelId));
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.openRouterId, `openai/${modelId}`);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.githubLabel, githubLabel);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.minAgentVersion, minAgentVersion);
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.contextWindow, '1.05M');
+        assert.strictEqual(MODEL_INFO_MAP[modelId]?.maxTokens, 1050000);
+    }
+});
+
 test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () => {
     assert.strictEqual(CLAUDE_MODELS[0]?.id, 'claude-opus-5-5');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultModels[0], 'claude-opus-5-5');
@@ -42,10 +62,20 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.280');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.284');
 });
 
-test('Claude Fable 5.1, Opus 5, and Sonnet 5 are current Claude Code models', () => {
+test('Claude Sonnet 5.5 is the current canonical Sonnet model', () => {
+    assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-sonnet-5-5'));
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.githubLabel, 'llm-claude-sonnet55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.shortAlias, 'sonnet55');
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.openRouterId, 'anthropic/claude-sonnet-5.5');
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.contextWindow, '1M');
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.maxTokens, 1000000);
+    assert.strictEqual(MODEL_INFO_MAP['claude-sonnet-5-5']?.minAgentVersion, '2.1.284');
+});
+
+test('Claude Fable 5.1, Opus 5, and Sonnet 5 remain supported Claude Code models', () => {
     assert.ok(CLAUDE_MODELS.some(model => model.id === 'claude-fable-5-1'));
     assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.githubLabel, 'llm-claude-fable51');
     assert.strictEqual(MODEL_INFO_MAP['claude-fable-5-1']?.minAgentVersion, '2.1.257');
@@ -67,37 +97,35 @@ test('OpenCode catalog matches the current built-in free model set', () => {
     ]);
 });
 
-test('GPT-6 Astra is the preferred Codex default and Codex CLI pin supports it', () => {
+test('GPT-6 Astra is the preferred Codex default', () => {
     assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6-astra');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
     assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
-    assert.ok(
-        AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.153.1', undefined, { numeric: true }) >= 0,
-        `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.153.1`
-    );
 });
 
-test('Gemini 3.8 Flash tiers are namespaced Antigravity models with 1M limits', () => {
-    const expectedModels = [
-        ['medium', 'llm-antigravity-flash38-medium'],
-        ['high', 'llm-antigravity-flash38-high'],
-        ['low', 'llm-antigravity-flash38-low'],
-    ] as const;
-
-    for (const [tier, githubLabel] of expectedModels) {
-        const modelId = `antigravity-gemini-3.8-flash-${tier}`;
-        const model = MODEL_INFO_MAP[modelId];
-        assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
-        assert.strictEqual(model?.githubLabel, githubLabel);
-        assert.strictEqual(model?.shortAlias, `flash38-${tier}`);
-        assert.strictEqual(model?.openRouterId, 'google/gemini-3.8-flash');
-        assert.strictEqual(model?.minAgentVersion, '1.1.25');
-        assert.strictEqual(model?.contextWindow, '1M');
-        assert.strictEqual(model?.maxTokens, 1_000_000);
+test('Codex CLI defaults agree and support every catalog model', () => {
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
+    for (const { id, minAgentVersion } of CODEX_MODELS) {
+        if (!minAgentVersion) continue;
+        assert.ok(
+            AGENT_DEFAULT_VERSIONS.codex.localeCompare(minAgentVersion, undefined, { numeric: true }) >= 0,
+            `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} must be >= ${minAgentVersion} for ${id}`
+        );
     }
+});
+
+test('Gemini 3.8 Flash is one namespaced Antigravity model with 1M limits', () => {
+    const modelId = 'antigravity-gemini-3.8-flash';
+    const model = MODEL_INFO_MAP[modelId];
+    assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+    assert.strictEqual(model?.githubLabel, 'llm-antigravity-flash38');
+    assert.strictEqual(model?.shortAlias, 'flash38');
+    assert.strictEqual(model?.openRouterId, 'google/gemini-3.8-flash');
+    assert.strictEqual(model?.minAgentVersion, '1.1.25');
+    assert.strictEqual(model?.contextWindow, '1M');
+    assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
 });
 
@@ -124,4 +152,92 @@ test('long model labels use the configured agent alias', () => {
     );
     assert.ok(longAliasLabel.length <= 50);
     assert.match(longAliasLabel, /^llm-codex-account.*~/);
+});
+
+
+test('Vibe GLM models share defaults, names, labels, limits, and runtime version', () => {
+    for (const minor of ['3', '2']) {
+        const id = `zai-glm-5-${minor}`;
+        assert.ok(AGENT_DEFAULTS.vibe.defaultModels.includes(id));
+        assert.strictEqual(MODEL_INFO_MAP[id].name, `GLM 5.${minor}`);
+        assert.strictEqual(MODEL_INFO_MAP[id].githubLabel, `llm-vibe-glm5${minor}`);
+        assert.strictEqual(MODEL_INFO_MAP[id].maxTokens, 1000000);
+        assert.strictEqual(MODEL_INFO_MAP[id].minAgentVersion, '2.25.8');
+    }
+    assert.strictEqual(AGENT_DEFAULTS.vibe.defaultModels[0], 'mistral-medium-3.5');
+    assert.strictEqual(AGENT_DEFAULTS.vibe.defaultCliVersion, '2.25.8');
+    assert.strictEqual(AGENT_DEFAULT_VERSIONS.vibe, '2.25.8');
+});
+
+test('Antigravity offers one model entry with separate supported reasoning choices', () => {
+    for (const family of ['opus', 'sonnet']) {
+        const model = MODEL_INFO_MAP[`antigravity-claude-${family}-5.5`];
+        assert.ok(model);
+        assert.strictEqual(model.shortAlias, `${family}55`);
+        assert.strictEqual(model.githubLabel, `llm-antigravity-${family}55`);
+        assert.strictEqual(model.openRouterId, `anthropic/claude-${family}-5.5`);
+        assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(model.id));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', model.id), ['low', 'medium', 'high']);
+    }
+    const expected = [
+        ['antigravity-gemini-3.8-flash', 'flash38'],
+        ['antigravity-gemini-3.1-pro', 'pro'],
+        ['antigravity-claude-sonnet-5.5', 'sonnet55'],
+        ['antigravity-claude-opus-5.5', 'opus55'],
+        ['antigravity-gpt-oss-120b', 'gpt-oss-120b'],
+    ];
+    assert.deepStrictEqual(ANTIGRAVITY_MODELS.map(model => [model.id, model.shortAlias]), expected);
+    assert.deepStrictEqual(AGENT_DEFAULTS.antigravity.defaultModels, expected.map(([id]) => id));
+    for (const model of ANTIGRAVITY_MODELS) {
+        assert.equal(model.githubLabel, `llm-antigravity-${model.shortAlias}`);
+    }
+    assert.ok(!ANTIGRAVITY_MODELS.some(model => model.id.includes('4.6-thinking')));
+    assert.ok(!ANTIGRAVITY_MODELS.some(model => /-(low|medium|high)$/.test(model.id)));
+    for (const version of ['3.8']) {
+        const modelId = `antigravity-gemini-${version}-flash`;
+        assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);
+    }
+    for (const [modelId, levels] of [
+        ['antigravity-gemini-3.1-pro', ['low', 'high']],
+        ['antigravity-gpt-oss-120b', ['medium']],
+    ] as const) {
+        assert.ok(ANTIGRAVITY_MODELS.some(model => model.id === modelId));
+        assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), levels);
+    }
+});
+
+
+test('retained Flash metadata remains available outside the selectable catalog', () => {
+    for (const version of ['3.6', '3.7']) {
+        const base = `antigravity-gemini-${version}-flash`;
+        for (const models of [ANTIGRAVITY_MODELS, AGENT_MODELS.antigravity, ALL_MODELS]) {
+            assert.ok(!models.some(model => model.id === base));
+        }
+        assert.ok(!AGENT_DEFAULTS.antigravity.defaultModels.includes(base));
+        assert.equal(MODEL_INFO_MAP[base], undefined);
+        const info = getModelInfoWithAntigravityCompatibility(base);
+        assert.ok(info);
+        assert.equal(info.openRouterId, `google/gemini-${version}-flash`);
+        assert.equal(info.maxTokens, 1000000);
+        assert.equal(info.contextWindow, '1M');
+        assert.equal(info.minAgentVersion, version === '3.7' ? '1.1.12' : undefined);
+        for (const effort of ['low', 'medium', 'high']) {
+            assert.equal(getModelInfoWithAntigravityCompatibility(`${base}-${effort}`), info);
+        }
+    }
+    assert.equal(getModelInfoWithAntigravityCompatibility('antigravity-gemini-3.5-flash'), undefined);
+});
+
+test('documented Antigravity model labels agree with the selectable catalog', () => {
+    const text = readFileSync(new URL('../docs/docs/features/agents-and-models.md', import.meta.url), 'utf8');
+    const section = text.split('## Antigravity Models')[1].split('## OpenCode Models')[0];
+    const labels = [...section.matchAll(/`(llm-antigravity-[^`]+)`/g)].map(match => match[1]);
+    assert.deepStrictEqual(labels, ANTIGRAVITY_MODELS.map(model => model.githubLabel));
+    for (const name of ['daemon', 'worker-runtime']) {
+        const examples = readFileSync(new URL(`../docs/docs/architecture/${name}.md`, import.meta.url), 'utf8');
+        for (const match of examples.matchAll(/llm-antigravity-[a-z0-9.-]+/g)) {
+            assert.ok(ANTIGRAVITY_MODELS.some(model => model.githubLabel === match[0]), `${name}: ${match[0]}`);
+        }
+    }
 });

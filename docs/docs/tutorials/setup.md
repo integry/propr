@@ -48,7 +48,7 @@ Access to `/var/run/docker.sock` is root-equivalent control of the host. Limit i
 - A host that meets the [system requirements](#system-requirements)
 - Node.js 22+ for the CLI path (the `propr/launcher:latest` container alternative needs no Node.js)
 - GitHub access for the backend. By default `propr setup` enrolls the shared, hosted ProPR GitHub App through ProPR Connect; accepting the defaults handles login through the GitHub CLI (`gh`) and installation when needed. You can instead run `propr login <token>` first. Running your own GitHub App is the advanced alternative. See [GitHub Authentication](../operations/github-auth.md).
-- A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI
+- A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI (Mistral Vibe has no interactive login; it uses `~/.vibe` or `MISTRAL_API_KEY`)
 - Disk space for data, logs, and repository workspaces
 
 ## Give this to your coding agent

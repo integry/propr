@@ -2879,48 +2879,104 @@ describe('durable notification schema', { concurrency: false }, () => {
     try {
       await up(firstConnection);
       const event = await seedEventAndRecipients(firstConnection);
-      const subscription = createSubscription();
-      await firstConnection('push_subscriptions').insert(subscription);
+      // One job per state: fixed retry timestamps keep every assertion below
+      // independent of how long the runner takes between statements.
+      const pendingSubscription = createSubscription();
+      const dueRetrySubscription = createSubscription({
+        subscription_id: 'subscription-due-retry',
+      });
+      const scheduledRetrySubscription = createSubscription({
+        subscription_id: 'subscription-future-retry',
+      });
+      await firstConnection('push_subscriptions').insert([
+        pendingSubscription,
+        dueRetrySubscription,
+        scheduledRetrySubscription,
+      ]);
       await insertDeliveryJob(firstConnection, {
         jobId: 'three-state-claim-job',
         eventId: event.event_id,
-        subscriptionId: subscription.subscription_id,
+        subscriptionId: pendingSubscription.subscription_id,
+      });
+      await insertDeliveryJob(firstConnection, {
+        jobId: 'due-retry-claim-job',
+        eventId: event.event_id,
+        subscriptionId: dueRetrySubscription.subscription_id,
+      });
+      await insertDeliveryJob(firstConnection, {
+        jobId: 'future-retry-claim-job',
+        eventId: event.event_id,
+        subscriptionId: scheduledRetrySubscription.subscription_id,
       });
 
+      // Pending: claimable since creation. The short lease lapses while the
+      // rest of this test runs, which sets up the reclaim race below.
       const pendingClaim = await claimJobUsingDatabaseTime(
         firstConnection,
         'three-state-claim-job',
         'pending-worker',
+        '+0.200 seconds',
       );
       assert.strictEqual(pendingClaim.length, 1);
 
-      await firstConnection.raw(`
-        INSERT INTO push_delivery_attempts (
-          attempt_id,
-          job_id,
-          attempt_number,
-          status,
-          error_code,
-          attempted_at,
-          next_retry_at,
-          claim_token
-        ) VALUES (
-          'three-state-attempt',
-          'three-state-claim-job',
-          1,
-          'retryable',
-          'temporary',
-          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.200 seconds'),
-          'pending-worker'
-        )
-      `);
+      // Retryable and already due: the same statement claims it and stamps the
+      // claim with database time rather than with the retry schedule.
+      await claimJob(firstConnection, 'due-retry-claim-job', 'due-retry-owner');
+      await recordAttempt(firstConnection, {
+        attemptId: 'due-retry-attempt',
+        jobId: 'due-retry-claim-job',
+        attemptNumber: 1,
+        claimToken: 'due-retry-owner',
+        status: 'retryable',
+        attemptedAt: '2026-08-02T08:02:00.000Z',
+        nextRetryAt: '2026-08-02T08:03:00.000Z',
+        errorCode: 'temporary',
+      });
+      const retryableClaim = await claimJobUsingDatabaseTime(
+        secondConnection,
+        'due-retry-claim-job',
+        'retryable-worker',
+      );
+      assert.strictEqual(retryableClaim.length, 1);
+
+      // Retryable but not due yet: neither the claim view nor a worker that
+      // stamps the claim with the retry schedule may take the job early.
+      await claimJob(
+        firstConnection,
+        'future-retry-claim-job',
+        'future-retry-owner',
+      );
+      await recordAttempt(firstConnection, {
+        attemptId: 'future-retry-attempt',
+        jobId: 'future-retry-claim-job',
+        attemptNumber: 1,
+        claimToken: 'future-retry-owner',
+        status: 'retryable',
+        attemptedAt: '2026-08-02T08:02:00.000Z',
+        nextRetryAt: '2099-08-02T08:03:00.000Z',
+        errorCode: 'temporary',
+      });
       const scheduled = await firstConnection('push_delivery_jobs')
-        .where({ job_id: 'three-state-claim-job' })
+        .where({ job_id: 'future-retry-claim-job' })
         .first();
+      assert.strictEqual(scheduled.next_retry_at, '2099-08-02T08:03:00.000Z');
+      assert.strictEqual(
+        await firstConnection('push_delivery_claimable_jobs')
+          .where({ job_id: 'future-retry-claim-job' })
+          .first(),
+        undefined,
+      );
+      assert.strictEqual(
+        (await claimJobUsingDatabaseTime(
+          firstConnection,
+          'future-retry-claim-job',
+          'early-worker',
+        )).length,
+        0,
+      );
       await assert.rejects(
         firstConnection('push_delivery_jobs')
-          .where({ job_id: 'three-state-claim-job' })
+          .where({ job_id: 'future-retry-claim-job' })
           .update({
             status: 'processing',
             claim_token: 'future-time-worker',
@@ -2930,15 +2986,9 @@ describe('durable notification schema', { concurrency: false }, () => {
           }),
         /invalid push delivery job transition/,
       );
-      await new Promise((resolve) => setTimeout(resolve, 250));
 
-      const retryableClaim = await claimJobUsingDatabaseTime(
-        secondConnection,
-        'three-state-claim-job',
-        'retryable-worker',
-        '+0.200 seconds',
-      );
-      assert.strictEqual(retryableClaim.length, 1);
+      // Expired processing lease: the pending claim above has lapsed, so two
+      // competing processes race for the reclaim and exactly one wins.
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);

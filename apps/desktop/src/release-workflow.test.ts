@@ -118,9 +118,9 @@ describe('desktop trusted release workflow', () => {
       /await extractArtifact\([\s\S]*await verifyDarwinLocalPackage\([\s\S]*await signDarwinPackagedConnectApplication\(/);
   });
 
-  test('keeps pull-request packaging unsigned and completely secretless', () => {
+  test('keeps non-push validation packaging unsigned and completely secretless', () => {
     const validation = `${job('validation-version', 'package')}\n${job('package', 'finalize')}\n${job('finalize', 'preflight')}`;
-    assert.match(validation, /github\.event_name == 'pull_request'/);
+    assert.match(validation, /github\.event_name != 'push'/);
     assert.match(validation, /Prove pull-request validation is secretless/);
     assert.ok(!validation.includes('secrets.'), 'PR jobs must not reference any GitHub secret');
     assert.ok(!validation.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));

@@ -1,31 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  getSettings,
-  updateSettings,
-  getFollowupKeywords,
-  updateFollowupKeywords,
-  getFollowupIgnoreKeywords,
-  updateFollowupIgnoreKeywords,
-  getPrLabel,
-  updatePrLabel,
-  getPrimaryProcessingLabels,
-  updatePrimaryProcessingLabels,
+  getSettings, updateSettings,
+  getFollowupKeywords, updateFollowupKeywords,
+  getFollowupIgnoreKeywords, updateFollowupIgnoreKeywords,
+  getPrLabel, updatePrLabel,
+  getPrimaryProcessingLabels, updatePrimaryProcessingLabels,
   getAgents,
   getInstanceCatalog,
-  getSummarizationSettings,
-  updateSummarizationSettings,
+  getSummarizationSettings, updateSummarizationSettings,
   triggerReindexAll,
   AgentConfig,
   SummarizationSettings
 } from '../../api/proprApi';
 import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
-import {
-  getAgentTankSettings,
-  updateAgentTankSettings,
-  getAgentTankStatus
-} from '../../api/revertApi';
+import { getAgentTankSettings } from '../../api/revertApi';
 import { Settings } from './types';
 import { parseLoadedData } from './parseLoadedData';
+import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
 import type { TriggerReindexAllResponse } from '../../api/proprApi';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
@@ -68,8 +59,10 @@ export function useSettingsState() {
     planner_context_model: '',
     planner_generation_model: '',
     default_agent_alias: '',
-    auto_followup_score_threshold: 4,
     auto_resolve_merge_conflicts: false,
+    dashboard_summary_enabled: true,
+    usage_tips_enabled: true,
+    usage_tips_dismissal_cooldown_days: 45,
     model_reasoning_level: '',
     pr_review_model: '',
     pr_review_prompt: '',
@@ -77,6 +70,10 @@ export function useSettingsState() {
     pr_review_context_model: '',
     pr_review_max_context_tokens: 0,
     pr_review_context_budget_percent: DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT,
+    ultrafix_escalation_enabled: false,
+    ultrafix_escalation_models: [],
+    ultrafix_escalation_patience: 3,
+    ultrafix_escalation_max_reasoning_levels: 2,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60
@@ -90,12 +87,19 @@ export function useSettingsState() {
     fallback_agent_alias: ''
   });
   const [isReindexing, setIsReindexing] = useState(false);
-  const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
-    enabled: false,
-    url: 'http://0.0.0.0:3456'
-  });
-  const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
-  const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
+  // Reported rather than logged: a refused mode change must not leave the UI
+  // showing the mode that was clicked as though it had been saved.
+  const reportAgentTankError = useCallback((message: string | null) => {
+    setGlobalError(message);
+    if (message) setSaveStatus('error');
+  }, []);
+  const {
+    settings: agentTankSettings,
+    available: agentTankAvailable,
+    checkingStatus: agentTankCheckingStatus,
+    adopt: adoptAgentTankSettings,
+    change: handleAgentTankChange,
+  } = useAgentTankSettings(reportAgentTankError);
 
   const beginSave = useCallback((): boolean => {
     if (configurationReloadRequiredRef.current) {
@@ -153,8 +157,10 @@ export function useSettingsState() {
         planner_context_model: settingsToSave.planner_context_model,
         planner_generation_model: settingsToSave.planner_generation_model,
         default_agent_alias: settingsToSave.default_agent_alias,
-        auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
         auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
+        dashboard_summary_enabled: settingsToSave.dashboard_summary_enabled ?? true,
+        usage_tips_enabled: settingsToSave.usage_tips_enabled ?? true,
+        usage_tips_dismissal_cooldown_days: settingsToSave.usage_tips_dismissal_cooldown_days ?? 45,
         model_reasoning_level: settingsToSave.model_reasoning_level,
         pr_review_model: settingsToSave.pr_review_model,
         pr_review_prompt: settingsToSave.pr_review_prompt,
@@ -162,6 +168,10 @@ export function useSettingsState() {
         pr_review_context_model: settingsToSave.pr_review_context_model,
         pr_review_max_context_tokens: settingsToSave.pr_review_max_context_tokens,
         pr_review_context_budget_percent: settingsToSave.pr_review_context_budget_percent,
+        ultrafix_escalation_enabled: settingsToSave.ultrafix_escalation_enabled,
+        ultrafix_escalation_models: settingsToSave.ultrafix_escalation_models.filter(Boolean),
+        ultrafix_escalation_patience: settingsToSave.ultrafix_escalation_patience,
+        ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
@@ -241,7 +251,7 @@ export function useSettingsState() {
     try {
       const agentTankSettingsRequest = requireCompleteConfiguration
         ? getAgentTankSettings()
-        : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
+        : getAgentTankSettings().catch(() => ({ mode: 'disabled', enabled: false, url: 'http://0.0.0.0:3456' }));
       const [results, catalog] = await Promise.all([
         Promise.all([
           getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
@@ -262,21 +272,14 @@ export function useSettingsState() {
       setAgents(parsed.agents);
       setCatalogAgents(catalog.agents);
       setSummarizationSettings(parsed.summarizationSettings);
-      setAgentTankSettings(parsed.agentTankSettings);
-      if (parsed.agentTankSettings.enabled) {
-        setAgentTankCheckingStatus(true);
-        getAgentTankStatus()
-          .then(status => setAgentTankAvailable(status.available))
-          .catch(() => setAgentTankAvailable(false))
-          .finally(() => setAgentTankCheckingStatus(false));
-      }
+      adoptAgentTankSettings(parsed.agentTankSettings);
     } catch (err) {
       setGlobalError((err as Error).message || 'Failed to load settings');
       throw err;
     } finally {
       setLoading(false);
     }
-  }, [setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
+  }, [adoptAgentTankSettings, setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
   reloadConfigurationRef.current = () => loadData(true);
 
   // Load all configuration once, and reuse the same authoritative refresh
@@ -296,8 +299,15 @@ export function useSettingsState() {
     saveSettingsOnly(settings);
   }, [settings, saveSettingsOnly]);
 
-  const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newSettings = { ...settings, [e.target.name]: e.target.value };
+  const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
+    const value = e.target instanceof HTMLInputElement && e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    const newSettings = { ...settings, [e.target.name]: value };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
+  const handleEscalationModelsChange = useCallback((models: string[]) => {
+    const newSettings = { ...settings, ultrafix_escalation_models: models };
     setSettings(newSettings);
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
@@ -381,25 +391,6 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
-  const handleAgentTankChange = useCallback((newSettings: { enabled: boolean; url: string }) => {
-    setAgentTankSettings(newSettings);
-    setAgentTankAvailable(null);
-    updateAgentTankSettings(newSettings).catch(err => {
-      console.error('Failed to save Agent Tank settings:', err);
-    });
-    if (newSettings.enabled) {
-      setAgentTankCheckingStatus(true);
-      setTimeout(() => {
-        getAgentTankStatus()
-          .then(status => setAgentTankAvailable(status.available))
-          .catch(() => setAgentTankAvailable(false))
-          .finally(() => setAgentTankCheckingStatus(false));
-      }, 500);
-    } else {
-      setAgentTankCheckingStatus(false);
-    }
-  }, []);
-
   const handleReindexAll = useCallback(async (ignoreCooldown = false) => {
     setIsReindexing(true);
     setGlobalError(null);
@@ -429,7 +420,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,

@@ -44,3 +44,6 @@ dist-publish/
 # Electron Forge build and package output
 apps/desktop/.vite/
 apps/desktop/out/
+
+# Generated when producing the MCP-readable documentation bundle.
+docs/docs-manifest.json

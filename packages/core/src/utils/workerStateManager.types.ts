@@ -1,3 +1,5 @@
+export type TaskTerminalReason = 'timed_out' | 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed' | 'cancelled_by_user' | 'pr_merged';
+
 export const TaskStates = {
     PENDING: 'pending',
     PROCESSING: 'processing',
@@ -62,6 +64,7 @@ export interface TaskStateData {
     attempts: number;
     history: HistoryEntry[];
     lastError?: LastError;
+    terminalReason?: TaskTerminalReason;
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
@@ -95,7 +98,10 @@ export interface CancellationMetadata {
 }
 
 export interface UpdateMetadata {
+    terminalReason?: TaskTerminalReason;
     isRetry?: boolean;
+    /** The failed attempt's queued retry was removed, so its withdrawal must be recorded. */
+    withdrawnQueuedRetry?: boolean;
     error?: {
         message: string;
         category?: string;
@@ -131,4 +137,12 @@ export interface WorkerStateManagerOptions {
     redis?: Record<string, unknown>;
     keyPrefix?: string;
     stateExpiry?: number;
+}
+
+/** Queue handoffs are bookkeeping, not a withdrawal of the user's request. */
+export function isBookkeepingCancellation(task: Pick<TaskStateData, 'state' | 'terminalReason' | 'history'>): boolean {
+    if (task.state !== TaskStates.CANCELLED || task.terminalReason) return false;
+    const entry = task.history?.at(-1);
+    return ['requeued', 'rescheduled'].includes(String(entry?.metadata?.jobResultStatus))
+        || /^Task job (requeued|rescheduled)(:|$)/.test(entry?.reason ?? '');
 }

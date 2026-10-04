@@ -14,7 +14,9 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - Agent credentials mounted from a ProPR-managed per-agent directory or a configured existing host directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
-- `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
+- `--security-opt no-new-privileges`, `--cap-add CHOWN` (Vibe omits it), and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
+- Memory, CPU, and process limits from `AGENT_CONTAINER_MEMORY_LIMIT` (default `6g`), `AGENT_CONTAINER_CPU_LIMIT` (default: available CPUs, capped at 4), and `AGENT_CONTAINER_PIDS_LIMIT` (default `512`)
+- For every agent except Vibe, the host's `/tmp/git-processor` directory (all clones and worktrees) mounted at the same path so git works in the linked worktree
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
 
 All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js 22, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. The image uses Node.js 22 to satisfy current agent CLI engine requirements. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
@@ -44,12 +46,12 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 | Agent | Timeout variable | Default | Loop variable | Default |
 | --- | --- | ---: | --- | ---: |
 | Claude Code | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | `CLAUDE_MAX_TURNS` | `1000` |
-| Codex | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | `CODEX_MAX_TURNS` | `1000` |
+| Codex | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | Antigravity | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | OpenCode | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | Mistral Vibe | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | `VIBE_MAX_TURNS` | `1000` |
 
-These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Planner keyword extraction and semantic relevance scoring default to 30 minutes per call and can be adjusted with `CONTEXT_ANALYSIS_TIMEOUT_MS`.
+These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Planner keyword extraction and semantic relevance scoring default to 60 minutes per call and can be adjusted with `CONTEXT_ANALYSIS_TIMEOUT_MS`.
 
 When an implementation run reaches its execution timeout or maximum turn limit, ProPR preserves any workspace changes produced before the interruption. If changes exist, it commits and pushes them, opens the issue PR or updates the existing follow-up PR, and marks the result as potentially incomplete with the agent's last available summary and explicit remaining-work guidance. Other execution errors still fail normally, and an interrupted run with no changes has nothing to publish.
 
@@ -60,8 +62,8 @@ When tuning these values, consider repository size, task complexity, provider ra
 The runtime should preserve these boundaries:
 
 - Keep git finalization outside the agent.
-- Mount only the workspace and required credential directories.
-- Avoid broad host filesystem mounts.
+- Mount only the workspace, the shared git directory, and required credential directories.
+- Avoid further host filesystem mounts. The shared git directory already exposes every cloned repository to the agent, so separate repositories with different trust levels onto separate stacks.
 - Keep credential directories scoped to the deployment user.
 - Monitor container CPU, memory, and duration.
 - Treat `--dangerously-*` CLI flags as acceptable only because Docker is the outer isolation boundary.
@@ -131,7 +133,7 @@ The entrypoint checks for `/home/node/.claude/.credentials.json`, creates expect
 For implementation tasks, the worker invokes Claude Code with the prompt on stdin:
 
 ```bash
-claude -p - [--model <id>] --max-turns N --output-format stream-json --verbose --dangerously-skip-permissions
+claude -p - --no-session-persistence [--model <id>] --max-turns N --output-format stream-json --verbose --dangerously-skip-permissions
 ```
 
 `--max-turns` comes from `CLAUDE_MAX_TURNS`. The worker captures Claude's stream JSON output, session ID, conversation log, and token usage when available.
@@ -145,7 +147,6 @@ Common settings:
 ```bash
 HOST_CODEX_DIR=/home/your-user/.codex
 CODEX_TIMEOUT_MS=86400000
-CODEX_MAX_TURNS=1000
 CODEX_STREAM_TRANSPORT=websocket
 CODEX_STREAM_IDLE_TIMEOUT_MS=1800000
 CODEX_STREAM_MAX_RETRIES=5
@@ -154,7 +155,7 @@ CODEX_STREAM_MAX_RETRIES=5
 The entrypoint checks for `/home/node/.codex/config.toml`, prepares `sessions` and `rules`, and avoids recursively changing bind-mounted workspace ownership. Codex runs as:
 
 ```bash
-codex exec --json --dangerously-bypass-approvals-and-sandbox --config features.multi_agent=false --skip-git-repo-check --cd /home/node/workspace -
+codex exec --ephemeral --json --dangerously-bypass-approvals-and-sandbox --config features.multi_agent=false --skip-git-repo-check --cd /home/node/workspace -
 ```
 
 When a model is selected, ProPR adds `--model <id>`. By default, ProPR selects a WebSocket-capable OpenAI provider with a 30-minute stream idle timeout so long, quiet turns are not pinned to a single HTTP response body. Set `CODEX_STREAM_TRANSPORT=sse` when WebSockets are unavailable or `CODEX_STREAM_TRANSPORT=inherit` to preserve a custom provider from the mounted Codex configuration. Codex emits NDJSON events that ProPR parses into logs, result text, session metadata, and token usage; reconnect notices remain visible without making a later successful turn fail.

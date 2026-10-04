@@ -59,6 +59,34 @@ export async function isCancelCiDuringFollowupEnabledForRepository(
 }
 
 /**
+ * Check runs that never block automation for a repository (see
+ * RepoToMonitor.nonBlockingChecks). Branch-specific entries share a repository
+ * name, so every entry's list counts. An unreadable configuration yields none:
+ * every check keeps blocking until it can be read.
+ */
+export async function getNonBlockingChecksForRepository(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<string[]> {
+    const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
+    try {
+        const patterns: string[] = [];
+        for (const candidate of await loadConfiguredRepos()) {
+            if (candidate.name.trim().toLowerCase() !== repository) continue;
+            for (const entry of candidate.nonBlockingChecks ?? []) {
+                const pattern = String(entry ?? '').trim();
+                if (pattern && !patterns.some(existing => existing.toLowerCase() === pattern.toLowerCase())) patterns.push(pattern);
+            }
+        }
+        return patterns;
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load non-blocking checks; every check keeps blocking');
+        return [];
+    }
+}
+
+/**
  * The validation workflows an operator selected for a repository, which are the
  * only workflows follow-up CI cancellation may ever cancel. Branch-specific
  * entries share a repository name, so every entry's selection counts.

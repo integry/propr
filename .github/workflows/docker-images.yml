@@ -278,6 +278,15 @@ jobs:
           AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
         run: ./scripts/verify-antigravity-image.sh
 
+      # Bundled Agent Tank mode runs the CLI inside this image, so the release
+      # has to prove it returns real usage - not just that the binary is there.
+      # Antigravity is the provider this runner is authenticated for.
+      - name: Verify authenticated bundled Agent Tank usage from packaged agent image
+        env:
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
+          AGENT_TANK_PROVIDERS: agy
+        run: ./scripts/verify-agent-tank-image.sh
+
       - name: Validate serialized SQLite startup with packaged images
         env:
           APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}

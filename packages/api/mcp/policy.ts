@@ -5,6 +5,7 @@ import type { GitHubUser } from '../authTypes.js';
 import { resolveInstanceAuthorization, type InstanceAuthorization, type InstancePermission } from '../authorization.js';
 import { isUserWhitelisted } from '../userWhitelist.js';
 import { refreshStoredGitHubCredential } from '../authGithubTokens.js';
+import { githubUserGrantService, type GitHubUserGrantService } from '../githubUserGrantService.js';
 import { McpConnect, MCP_CONNECT_CONTRACT, instanceAudience } from './connect.js';
 import { McpError, MCP_SCOPES, type McpConfig, type McpScope } from './config.js';
 import { McpOAuthProvider, type McpGrant } from './oauth.js';
@@ -20,7 +21,12 @@ export interface McpPrincipal {
 
 export class McpPolicy {
   private readonly jwks;
-  constructor(readonly oauth: McpOAuthProvider, readonly config: McpConfig) {
+  constructor(
+    readonly oauth: McpOAuthProvider,
+    readonly config: McpConfig,
+    // The browser's GitHub grant; see sharedCredential().
+    private readonly userGrants: Pick<GitHubUserGrantService, 'resolve'> = githubUserGrantService,
+  ) {
     this.jwks = config.connect ? createRemoteJWKSet(new URL(config.connect.jwks), { timeoutDuration: 5000, cooldownDuration: 30_000 }) : undefined;
   }
 
@@ -40,23 +46,8 @@ export class McpPolicy {
       }
       scopes = grant.scopes;
     }
-    let user = await this.oauth.store.get<GitHubUser>('credential', grant.ownerId);
-    if (!user?.accessToken) throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'Sign in through the browser to authorize GitHub access.', 401);
-    if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now() + 30_000) {
-      user = await this.refreshCredential(user);
-    }
-    let github = new Octokit({ auth: user.accessToken, request: { timeout: 10_000 } });
-    let identity;
-    try { identity = (await github.request('GET /user')).data; }
-    catch (error) {
-      if (grant.membershipSource !== 'connect' || (error as { status?: number }).status !== 401) {
-        throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'GitHub authorization is unavailable; sign in again.', 401);
-      }
-      user = await this.renewConnectCredential(bearer, grant, user);
-      github = new Octokit({ auth: user.accessToken, request: { timeout: 10_000 } });
-      try { identity = (await github.request('GET /user')).data; }
-      catch { throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'GitHub authorization is unavailable; reconnect the app.', 401); }
-    }
+    const { github, identity, user: verifiedUser } = await this.verifiedGitHubCredential(bearer, grant);
+    let user = verifiedUser;
     if (String(identity.id) !== grant.ownerId || !isUserWhitelisted(identity.login)) throw new McpError('ACCESS_REVOKED', 'Current instance access denied.', 403);
     user = { ...user, username: identity.login, login: identity.login };
     const authorization = await resolveInstanceAuthorization(user, this.oauth.store.db);
@@ -64,6 +55,67 @@ export class McpPolicy {
       throw new McpError('ACCESS_REVOKED', 'Instance membership was revoked.', 403);
     }
     return { user, authorization, grant, scopes, github };
+  }
+
+  /** The owner's GitHub credential, renewed when needed and verified with GitHub. */
+  private async verifiedGitHubCredential(bearer: string, grant: McpGrant): Promise<{ user: GitHubUser; github: Octokit; identity: { id: number; login: string } }> {
+    let user = await this.oauth.store.get<GitHubUser>('credential', grant.ownerId);
+    if (!user?.accessToken) throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'Sign in through the browser to authorize GitHub access.', 401);
+    const shared = await this.sharedCredential(user);
+    if (shared) user = shared;
+    else if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now() + 30_000) {
+      user = await this.refreshCredential(user);
+    }
+    let github = new Octokit({ auth: user.accessToken, request: { timeout: 10_000 } });
+    let identity;
+    try { identity = (await github.request('GET /user')).data; }
+    catch (error) {
+      if ((error as { status?: number }).status !== 401) {
+        throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'GitHub authorization is unavailable; sign in again.', 401);
+      }
+      // GitHub can revoke a token before its stated expiry; reuse a newer
+      // shared token or renew the rejected token once.
+      const renewed = shared ? await this.sharedCredential(user, true) : null;
+      if (renewed) user = renewed;
+      else if (grant.membershipSource === 'connect') user = await this.renewConnectCredential(bearer, grant, user);
+      else throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'GitHub authorization is unavailable; sign in again.', 401);
+      github = new Octokit({ auth: user.accessToken, request: { timeout: 10_000 } });
+      try { identity = (await github.request('GET /user')).data; }
+      catch { throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'GitHub authorization is unavailable; reconnect the app.', 401); }
+    }
+    return { user, github, identity };
+  }
+
+  /**
+   * The GitHub credential from the browser's shared grant, which owns the
+   * rotating token pair. GitHub refresh tokens are single use, so MCP must not
+   * refresh a copy of its own: after the browser rotated the pair, that copy's
+   * refresh token is spent and every MCP call failed until the next sign-in.
+   * The shared service refreshes once for all callers. Returns null when this
+   * user has no usable shared grant (for example a Connect-issued credential),
+   * leaving MCP's own credential in charge.
+   */
+  private async sharedCredential(user: GitHubUser, forceRefresh = false): Promise<GitHubUser | null> {
+    let shared = await this.userGrants.resolve(user.id);
+    // A delayed 401 can arrive after another caller has rotated the grant.
+    // Refresh only if that rejected token is still current, before any copy write.
+    if (forceRefresh && shared.status === 'active' && shared.accessToken === user.accessToken) {
+      shared = await this.userGrants.resolve(user.id, true);
+    }
+    if (shared.status === 'temporarily_unavailable') throw new McpError('GITHUB_UNAVAILABLE', 'GitHub authorization refresh is temporarily unavailable.', 503);
+    if (shared.status !== 'active') return null;
+    const current: GitHubUser = {
+      ...user,
+      accessToken: shared.accessToken,
+      refreshToken: shared.refreshToken,
+      tokenExpiresAt: shared.tokenExpiresAt,
+      refreshTokenExpiresAt: shared.refreshTokenExpiresAt,
+    };
+    if (current.accessToken !== user.accessToken || current.refreshToken !== user.refreshToken || current.tokenExpiresAt !== user.tokenExpiresAt) {
+      // Keep MCP's copy current for code that reads it directly.
+      await this.oauth.store.put('credential', user.id, current);
+    }
+    return current;
   }
 
   private async renewConnectCredential(bearer: string, grant: McpGrant, user: GitHubUser): Promise<GitHubUser> {

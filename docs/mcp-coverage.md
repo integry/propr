@@ -5,12 +5,8 @@ modules. `tools/list` filters capabilities by the authenticated grant and
 current administrator permissions. All listed tools have implementations;
 there is no generic REST or shell execution tool.
 
-Core [PR #2291](https://github.com/integry/propr/pull/2291) remains the coordinating
-epic for [routing PR #180](https://github.com/integry/propr-routing/pull/180) and
-[site PR #90](https://github.com/integry/propr-site/pull/90). Routing PR #180 is merged at `1fcf82fd1a843fbdf199d79b8f92843dc74a89e0`.
 The catalog covers the supported backend workflows below, including non-secret
-configuration. Live provider/host acceptance and independent root verification
-remain separate gates.
+configuration. Live provider and chat-host acceptance are separate from this catalog.
 
 ## Product-operation mapping
 
@@ -21,26 +17,35 @@ remain separate gates.
 | Exact/fuzzy reference lookup | `resolve_reference`; ambiguous names return candidates |
 | Cross-repository “what is happening now” | `get_current_activity`; running tasks, active goals, plans being generated, queued work and blockers waiting on a human, for every repository in the grant at once. Optional exact `repository`; `includeRoutine` keeps filtered Inbox noise; `activity` resource |
 | “What has been done recently” | `get_recent_activity`; one merged newest-first timeline of terminal tasks, opened/merged pull requests, finished goals, published plans, reviews, ultrafix loops and blocking notifications. `sinceMinutes` or `since`/`until`, default 60 minutes and at most seven days; `activity/recent` resource |
-| Draft list/read/create/update/delete | `list_plans`, `get_plan`, `create_plan`, `update_plan`, `delete_plan` |
-| Generate/refine a plan | `generate_plan`, `refine_plan` |
-| Publish GitHub issues | `publish_plan`; publication does not start implementation |
-| Selected issues, model, epic, bounded ultrafix and explicit auto-merge | `implement_plan` |
-| Plan scheduling | `pause_plan`, `resume_plan` |
-| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `list_goal_inputs`, `get_agent_activity`, `send_goal_input`; `list_goals` takes an optional `repository` and a `state` filter (`active`/`completed`/`failed`/`all`), `get_goal` adds newest narration, task progress, checkpoint state, `pendingInput` and the pull requests the goal produced, and `send_goal_input` takes a `kind` (`instruction` or `question`) that distinguishes the request without changing the single durable goal input this backend persists |
+| Task/PR work overview | `get_work_overview`; running, recent or all task summaries joined to bounded current PR head, review, checks, merge state, newest ProPR review and ultrafix state, using one aliased GraphQL call per repository |
+| Draft list/read/create/update/delete | `list_plans`, `get_plan`, `create_plan`, `update_plan`, `delete_plan`; `list_plans` takes an optional `status` filter (`active`, any persisted plan status such as `draft`/`generating`/`refining`/`review`/`approved`/`executed`/`executing`/`pr_created`/`merged`/`failed`, or `all`, the default), applied in the query so `offset`/`limit` page the filtered set. `delete_plan` removes idle (`draft`/`review`/`approved`) and terminal (`failed`/`merged`) plans; its `expectedRevision` is an optional guard that is rejected with `STALE_REVISION` only when stale, and a plan that is generating, refining or executing is refused with `PLAN_NOT_DELETABLE`. `mcp_revision` (returned by `get_plan`) is an MCP-internal optimistic-concurrency token, not a user-facing number, and is not shown in the web UI |
+| Plan revision history | `list_plan_revisions`, `get_plan_revision`, `restore_plan_revision`; every replaced plan is kept (up to 50 per plan), revisions expose their persisted cause (`generation`, `refinement`, `manual_edit`, `restore`, `rename` or `unknown`), and a restore requires the exact `expectedRevision` and is refused for published or busy plans |
+| Generate/refine a plan | `generate_plan`, `refine_plan`; refinement output is schema-validated before replacement and an invalid result remains observable as `REFINEMENT_OUTPUT_INVALID` without destroying the prior plan |
+| Propose what to work on next (web UI **Improve** tab) | `generate_repository_improvements`; same inputs and category validation as `POST /api/repos/improvements` (`categories` and/or `customPrompt`, optional `branch`, `referenceRepository`, `model`, `contextLevel`). Returns an `accepted` receipt immediately; generation runs in the background and `get_operation` reports `running`, then `completed` with `result.suggestions` (`{ title, description }`) and `estimatedDurationMs`/`actualDurationMs`/`isHistoricalEstimate`, or `failed` with `IMPROVEMENTS_OUTPUT_INVALID`. A generation that does not settle within 30 minutes is reported `unknown` with `IMPROVEMENTS_OUTCOME_UNAVAILABLE`. Nothing is written to GitHub |
+| Publish GitHub issues | `publish_plan`; publication does not start implementation. A recoverable partial publication stays inspectable and requires a fresh receipt with `resume: true`, which adopts marked issues before creating missing ones |
+| Selected issues, model, epic, bounded ultrafix and explicit auto-merge | `implement_plan`: epics default to sequential selected issues in publication order; `epicExecution: "parallel"` restores fan-out; `epicAdvanceOn: "merged"` (default) or `"terminal"` controls advancement. Sequential mode requires one model. |
+| Plan scheduling | `pause_plan` holds the next queued issue; `resume_plan` starts the held queue head. `get_plan.epicQueue` and `get_operation.targetState.epicQueue` expose issues, cursor, head, status, advanceOn and blockedReason; closed/failed heads block merged-only queues until fixed and merged. Receipts remain accepted until queue completion. |
+| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `list_goal_inputs`, `list_goal_attention`, `get_agent_activity`, `send_goal_input`; `list_goals` takes an optional `repository` and a `state` filter (`active`/`completed`/`failed`/`all`), `get_goal` adds newest narration, task progress, checkpoint state, `pendingInput`, the open blockers in `goal.attention` and the pull requests the goal produced, `list_goal_attention` lists only goals waiting on the operator (repository-filtered and bounded), and `send_goal_input` takes a `kind` (`instruction` or `question`) that distinguishes the request without changing the single durable goal input this backend persists |
 | Goal controls/model changes | `pause_goal`, `resume_goal`, `cancel_goal`, `set_goal_model` |
-| Start one-off work through a new GitHub issue | `create_task`, `get_task_submission`, `retry_task_submission`; ordinary issue execution without a plan or goal |
+| Start one-off work through a new GitHub issue | `create_task`, `get_task_submission`, `list_task_submissions`, `retry_task_submission`; ordinary issue execution without a plan or goal. Submission progress distinguishes issue creation, queueing, running and terminal task/PR state. `create_task` takes the same bounded `runUltrafix`/`ultrafixGoal`/`ultrafixMaxCycles` and `autoMerge` options as `implement_plan` (an omitted `ultrafixGoal` resolves to the instance `ultrafix_rating_goal` at call time), applied as the shared `ultrafix` and `auto-merge` issue labels |
 | Task progress, narrated agent activity, history and bounded execution logs | `list_tasks`, `get_task`, `get_agent_activity`, `get_task_events`, `get_task_logs`; `list_tasks` takes an optional `repository` and the same `state` filter, and `get_task` adds recent events, newest narration, execution timing, `changesSummary` counts and its linked pull request |
 | File changes and followup | `get_task_changes`, `send_task_followup` |
-| Task/operation cancellation and receipts | `cancel_task`, `get_operation`, `cancel_operation` |
+| Task/operation cancellation and receipts | `cancel_task`, `get_operation`, `list_operations`, `cancel_operation`; durable lifecycle, timestamps, artifacts, progress and sanitized structured failures. `list_operations` is a bounded receipt index with repository/tool/lifecycle/time filters; refresh one result with `get_operation` |
+| Structured failure diagnosis | Every tool failure returns the shared `error` envelope: stable `code`, safe `message`, `stage`, `retryable`, `status`, optional bounded `details`, and optional sanitized `cause`. Mutations with uncertain external effects persist `OUTCOME_UNKNOWN` instead of claiming rollback or safe replay |
 | Delete inactive task history | `delete_task`; bulk cleanup uses explicit individual handles |
 | Pull request inventory across the grant | `list_pull_requests`; newest-first, with ProPR task/goal/plan correlation, `openedWithinMinutes`/`updatedWithinMinutes` recency filters, an optional newest comment and `propr.ultrafixActive`. Omit `repository` to cover the grant; `repositories/{owner}/{repo}/pulls` resource |
-| Ordinary PR follow-up comment | `comment_on_pull_request`; exact `expectedHead`, natural-language message only. A message that starts a slash command is rejected with `USE_EXPLICIT_TOOL` |
+| Ordinary PR follow-up comment | `comment_on_pull_request`; optional `expectedHead`, natural-language message only. An omitted head is resolved by the server and every receipt reports `resolvedHead`/`headSource`. A message that starts a slash command is rejected with `USE_EXPLICIT_TOOL` |
 | PR model routing by managed label | `set_pull_request_model`; converges the labels the repository already defines onto exactly one enabled agent model. No label is ever created |
-| Stopping an ultrafix loop | `stop_ultrafix`; removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
-| PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; exact comment/F# selection, reviewed head, partial coverage and consumed findings |
-| Update branch (`/merge`) | `update_pull_request_branch` |
-| Guarded PR merge | `merge_pull_request` |
+| Starting or re-arming an ultrafix loop | `start_ultrafix`; requires `expectedHead` and rejects a moved head with `STALE_HEAD`. Posts the same `/ultrafix` command a hand-typed comment does, whose intake re-adds the `ultrafix` label and starts the loop. Optional `ultrafixGoal`/`ultrafixMaxCycles` default to the instance `ultrafix_rating_goal`/`ultrafix_max_cycles`. Listed under execute scope and additionally requires review scope; returns a durable receipt tracked like `run_ultrafix` |
+| Stopping an ultrafix loop | `stop_ultrafix`; requires `expectedHead` because a moved head may contain a human fix the loop should still review. Removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
+| PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; the three append-only commands accept optional `expectedHead` and report `resolvedHead`/`headSource`, plus exact comment and F#/S# selection (merge blockers required, named suggestions optional), reviewed head, partial coverage and consumed records. `review_pull_request` takes an optional `model` alias or list of aliases; each is validated against enabled models, fans out one independent `/review <model>` per model at the same head, returns one `reviews` receipt per model and never changes the PR's model labels |
+| Update branch (`/merge`) | `update_pull_request_branch`; `expectedHead` is required to avoid updating code the caller has not seen |
+| Guarded PR merge | `merge_pull_request`; `expectedHead` is required to avoid merging code the caller has not seen |
 | Preview/revert a PR commit | `get_pull_request_revert_preview`, `revert_pull_request_commit`; exact commit, comment and head |
+| Published visual evidence | `list_visual_previews`, `get_visual_preview`; list exact task/PR preview metadata, then fetch bounded/downscaled image content. Videos remain metadata-only; `repositories/{owner}/{repo}/previews/{previewId}` resource |
+| Comment image attachments | `get_comment_attachment`; fetch one `github.com/user-attachments` image embedded in an issue/PR comment (or description) through the caller's GitHub access as bounded/downscaled image content, independent of ProPR managed preview storage. Discover attachments from `get_pull_request_discussion` comment `attachments`. Videos remain metadata-only |
+| Bundled product documentation | `list_docs`, `search_docs`, `get_doc`; stable paths, bounded section/chunk reads, normalized redacted content and `docs/{path}` resource. The MCP guide is `mcp/guide` |
+| Configuration discovery | `find_setting`; structured UI/MCP/CLI/environment reachability, permissions, restart requirements and browser/environment-only boundaries |
 | Indexed overview/tree/path/search/freshness | `get_repository_context` |
 | Indexing launch/cancellation | `index_repository`, `stop_repository_indexing`; explicit repository/branch |
 | Repository TODO CRUD/category CRUD | `list_todos`, `get_todo`, `create_todo`, `update_todo`, `delete_todo`, `list_todo_categories`, `create_todo_category`, `update_todo_category`, `delete_todo_category` |
@@ -50,11 +55,12 @@ remain separate gates.
 | Notification preferences, categories and quiet hours | `get_notification_preferences`, `update_notification_preferences`, `set_notification_category_preferences` |
 | Bounded plan/goal attachments and owned upload artifacts | `upload_attachment`, `get_artifact`, `get_attachment`; authenticated download links, no remote URL download |
 | Execution/model settings | `get_execution_settings`, `update_execution_settings` |
+| GitHub trigger users, blocklist and exempt bots | `get_trigger_access_configuration`, `update_trigger_access_configuration`; environment-owned values are read-only |
 | Repository configuration | `get_repository_configuration`, `create_repository_configuration`, `update_repository_configuration`, `remove_repository_configuration` (branch/alias/enabled/CI followup/follow-up CI cancellation and its selected validation workflows/visual preview policy); instance permission and explicit repository grant required |
 | Direct agent configuration | `get_agent_configuration`, `create_agent_configuration`, `update_agent_configuration`, `remove_agent_configuration`; actual types/models, alias, enablement, model labels/reasoning, CLI versions; new agents start disabled for secure login |
 | Synthetic-agent composition | `create_synthetic_agent`, `update_synthetic_agent`, `remove_synthetic_agent`; pool models/members, strategy, priority and usage thresholds; existing reference/default guards |
 | Advanced indexing policy | `get_indexing_configuration`, `update_indexing_configuration`; primary/fallback alias:model, prompt, enablement and runtime cooldown state |
-| Provider policy | `get_provider_policy`, `update_provider_policy`, `get_provider_status`, `get_provider_usage`, `refresh_provider_usage`, `detect_provider_service`; Agent Tank service origin and enablement, no credential entry |
+| Provider policy | `get_provider_policy`, `update_provider_policy`, `get_provider_status`, `get_provider_usage`, `refresh_provider_usage`, `detect_provider_service`; Agent Tank integration mode (`disabled`/`bundled`/`external`) and, for external, the service origin; no credential entry |
 | Execution/review/context | `get_execution_settings`, `update_execution_settings`; worker concurrency, analysis/planner models, review model/prompt/context enablement/model/budget, reasoning and bounded ultrafix defaults |
 | Workflow labels and keywords | `get_`/`update_` tools for `followup_keywords`, `followup_ignore_keywords`, `primary_processing_labels`, `pr_label`, `ai_primary_tag` |
 | Runtime package configuration/build | `get_runtime_configuration`, `update_runtime_configuration` |
@@ -63,6 +69,13 @@ remain separate gates.
 | MCP access observability | Durable `mcp_access_log` row per tool call, resource read, prompt fetch and authentication failure; `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`, both behind the existing `instance.manage_settings` permission; last-used and 24-hour request counts per connected app on `/mcp/apps`. Only names, identifiers, counts, sizes and outcomes are stored, and no MCP tool reads the log |
 | GitHub credentials, provider login, agent secrets, push subscription | Browser settings/login links from connection/setup; never collect secrets through tools |
 | Deployment/release | Existing operator CLI/scripts only. No corresponding deployment backend was found; no fictitious deployment tool is advertised. `deploy` is reserved and confers no operation by itself. |
+
+## Settings reachability
+
+The generated [Where Each Setting Lives](./docs/operations/settings-locations.md)
+page is the single source of truth for UI, MCP, CLI, and environment locations.
+MCP clients can query the same structured catalog with `find_setting`, including
+settings that are intentionally browser-only or environment-only.
 
 ## Implementation checklist
 
@@ -122,8 +135,7 @@ remain separate gates.
   implementation → followup → review/fix → guarded merge. Local tests do not
   provision Docker agents, spend provider credits or merge real PRs.
 - [ ] Live GitHub login, ChatGPT/Claude OAuth and host voice sessions.
-- [x] Companion PRs linked above; pinned routing/core integration runs locally.
-- [ ] Final site capability reconciliation and root verification of both companion heads.
+- [x] Paired Connect gateway/core integration runs locally against an authorized routing checkout.
 - [ ] Live tunnel unavailability/version mismatch/cancellation/streaming
   verification against the deployed gateway. The expected mapping is in
   `mcp-connect-contract.md`; the gateway is not part of this checkout.
@@ -156,127 +168,39 @@ resolve an uncertain submission when its task appears. PR command receipts link
 to tasks by their exact triggering comment in persisted job data, expose posted
 review result IDs/URLs, and report the resulting current PR head. Ultrafix polls
 the associated work epoch through loop completion; a newer loop cannot satisfy
-an earlier receipt. Missing intake becomes `unknown` after two minutes instead
-of remaining accepted forever; later polling can still find the task.
+an earlier receipt. A PR command receipt whose comment no worker has picked up
+within ten minutes reports `unknown` with a `COMMAND_NOT_PICKED_UP` failure
+instead of remaining accepted forever; a later poll that finds the task still
+adopts it.
 
 `get_pull_request_discussion` pages GitHub issue comments (maximum 20 per page),
-returns 4096-character body chunks and parsed F# findings (current IDs honor the
-worker’s seven-day age limit, known head and consumption state), and supports exact
-comment/task lookup. New reviews persist reviewed head and task identity in the
+returns 4096-character body chunks and parsed F# findings and S# suggestions
+(`currentFindingIds` and `currentSuggestionIds` honor the worker’s seven-day age
+limit, known head and consumption state; `selectableFindingIds` and
+`selectableSuggestionIds` drop the head condition, as `/fix` does), and supports exact
+comment/task lookup. A comment embedding GitHub user attachments lists them under
+`attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
+`get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
 existing review marker; legacy reviews explicitly report an unknown head.
-`fix_review_findings` requires `reviewCommentId` and explicit `findingIds`, rejects
-consumed IDs and known stale heads, and does not turn optional suggestions into
-fix scope. Comment content remains untrusted data.
+`fix_review_findings` requires `reviewCommentId` and at least one identifier
+across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
+follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed
+or mismatched identifiers by name. A review of an older head is re-anchored onto
+the current head rather than rejected: records whose cited files were all
+deleted since the review, with no surviving file gaining lines the code could
+have moved into, are reported in `skipped` and left out, the rest are
+posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
+report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
+on a mismatch. A suggestion is
+in fix scope only because it was named, and naming one never relaxes a merge
+blocker. Comment content remains untrusted data.
 
 Uncertain external side effects remain `unknown` and require inspecting the
 target. They are never reported as rolled back or blindly retried. In
 particular, a partly published plan remains busy with persisted created issue
 links. Cancelling a receipt cannot undo already published issues or comments.
 
-## Prior Connect integration follow-up evidence (at 6147abc)
-
-Run on 2026-09-10 with Node **v22.23.1**. Source identities:
-
-- Core base: `ec8043b1ebc29d9a024476990895241c1256c1e4`, plus this **uncommitted**
-  PR #2291 follow-up. The system owns the eventual commit.
-- Core implementation/fixture SHA-256 reported by the runner:
-  `ac4c403ac844fb0c3ed47025b347b34a615016908dfca285edbf622fce44a89b`.
-  The runner defines and reports the hashed source set; this identifies the
-  working implementation without pretending the old commit contains these fixes.
-- Routing archive: `0c8ca02044c88b181395ca8e15425c0821e588e4`, unmodified source.
-- Published SDKs actually loaded: server/node/client **2.0.0**, legacy SDK
-  **1.30.0**. Routing dependencies come from that archive's lockfile.
-
-Exact commands and final results:
-
-```sh
-MCP_ROUTING_REPOSITORY=/tmp/git-processor/clones/integry/propr-routing npm run test:mcp:connect
-# 1 integration scenario passed, 0 failed, 0 skipped (4.664 s test process).
-
-npm run test:mcp
-# 12 passed, 0 failed, 0 skipped.
-
-MCP_CAPTURE_PREVIEWS=true npm run test:mcp:browser
-# 1 passed, 0 failed, 0 skipped; Chromium desktop/mobile consent captures.
-
-node scripts/run-test-suite.mjs packages/api/test/connectAuth.test.ts packages/api/test/authGithubTokens.test.ts packages/api/test/instanceAuthorization.test.ts packages/api/test/routeAuthorization.test.ts packages/api/test/oauthState.test.ts
-# 5 files, 45 tests passed; 0 failed (12.2 s).
-
-npm run typecheck
-npm run typecheck -w @propr/api
-npm run build
-# All passed.
-
-npx eslint --config packages/api/eslint.config.js packages/api/mcp/connect.ts packages/api/mcp/config.ts packages/api/mcp/policy.ts packages/api/mcp/oauth.ts packages/api/mcp/browser.ts packages/api/mcp/clients.ts packages/api/mcp/server.ts packages/api/mcp/tools.ts packages/api/test/mcpConnectIntegration.test.ts packages/api/test/fixtures/routingD1.ts packages/api/test/mcpOAuth.test.ts packages/api/test/mcpOperations.test.ts packages/api/test/mcpDelegation.test.ts packages/api/test/mcpBrowser.test.ts scripts/mcp-connect-register.ts
-# 0 errors, 9 complexity/parameter-count/nesting warnings.
-```
-
-For another operator, replace `MCP_ROUTING_REPOSITORY` with their routing Git
-checkout containing the pinned commit. The runner makes a temporary Git archive,
-installs with `npm ci --ignore-scripts --workspaces=false --no-audit --no-fund`,
-and bundles `src/index.ts`, including the real relay authenticator, OAuth
-server, MCP gateway and existing credential redemption endpoint. It prints
-source identities and retains a `commits.json` in its temporary fixture directory.
-The generic test runner skips the dedicated cross-repository case without its
-fixture environment. Required PR CI now invokes the dedicated runner explicitly
-as described below; that invocation cannot skip. The historical run had no skips.
-
-The integration traverses actual production core `mountMcp`, `McpPolicy`,
-`McpConnect`, `McpOAuthProvider`, tool catalog, plan handler, operation ledger,
-resource and prompt implementations. Both public SDK clients reach core through
-routing. There is no replacement policy, synthetic core principal, or invented
-MCP gateway. The only infrastructure adapters are routing's existing unused
-DurableObject base stub, a D1 API adapter executing the actual routing schema/SQL
-and transactional batches on SQLite, local tunnel DNS mapping to core's HTTP
-listener, and canned GitHub `/user`/repository responses. Unrecognized network
-requests fail. Core uses a temporary SQLite file and real relevant migrations;
-a second connection reopens it to verify persisted drafts.
-
-Passing assertions cover:
-
-- Persisted key creation and repeat registration through core's actual operator
-  setup function; current tunnel/installation binding, wrong relay/tunnel denial,
-  encrypted private-key storage and one-use registration assertions.
-- Public discovery of all scopes; DCR, S256 PKCE/consent, bad verifier and code
-  replay rejection; granted subsets and no GitHub credentials in public tokens.
-- Both SDK eras: tool/resource/prompt discovery, actual `get_connection`,
-  `create_plan`, duplicate mutation receipts, plan resource reads and prompts;
-  two persisted core draft mutations, no provider work or GitHub publication.
-- Exact claim types/audience/resource/key binding, online validation on each
-  invocation, proof hash/audience/freshness, `pia_mcp_` issuance and real atomic
-  redemption; encrypted core storage, consumed-code denial and renewal of a
-  stale stored GitHub credential after browser consent.
-- Wrong signed instance/installation/key/scope/repository, wrong proof key/hash,
-  untrusted resource hint, malformed/discrepant validation responses, online
-  service outage, tunnel outage, version mismatch, core malformed-JSON response
-  marking, and both SDKs' real notification/transport behavior.
-- Current local membership removal, Connect membership removal, public and
-  direct-to-core revocation denial, and non-revival after membership restoration,
-  tunnel deletion/restoration or registration key replacement/restoration.
-- Separate direct tests preserve independent OAuth/GitHub refresh, reject CIMD
-  malformed arrays/preferences, support plural/legacy/omitted public-method
-  metadata, and reject assertions, code-scope overrides and refresh escalation.
-  The browser test selects read-only access and rejects forged consent escalation.
-
-The first paired run exposed an additional real incompatibility: empty legacy
-202 notifications lacked a content type and became an incompatible body stream
-at the gateway. Core now marks them JSON; the final paired test passes unchanged
-routing code. No routing implementation change is needed for this pinned gate.
-The exact documentation follow-up for root to dispatch is recorded at the end
-of [the contract](mcp-connect-contract.md).
-
-This evidence is local integration, not Cloudflare runtime/deployment, real
-GitHub login, live host OAuth, real provider/Docker execution, or complete chat
-coverage. Routing's own Workers-runtime suite and root's independent full-chat
-coverage review remain complementary gates. Site PR #90 still needs capability
-reconciliation. Attempts to refresh current companion PR metadata with
-`gh pr view 180 --repo integry/propr-routing --json number,state,headRefOid,url`
-and the corresponding site PR #90 command returned **HTTP 401**; the linked PRs
-and pinned routing commit came from the supplied request and local Git objects.
-No production configuration was altered; no provider credits were spent; no
-real target was merged; no new companion task, PR, commit or deployment was made.
-
-## Full-chat follow-up verification and required CI
+## Verification in CI
 
 The public core repository's required `Build & Lint Check` → `Validate Changes`
 job builds shared/core/CLI dependencies, installs Playwright Chromium, and runs
@@ -286,65 +210,30 @@ identity, concurrency, and real TLS browser consent/revocation. Any failure
 fails the existing required job; missing Chromium is a failure, not a skip.
 They require no private checkout, extra token, or permission change.
 
-**Core CI is not paired gateway coverage.** Actual cross-repository paired CI
-belongs in the **private** routing repository (companion
-[routing issue #186](https://github.com/integry/propr-routing/issues/186), delegated
-separately by root). Its existing `GITHUB_TOKEN` can check out routing and the
-public core commit. The private job must check out the exact core candidate SHA,
-pass its routing candidate's full SHA as `MCP_ROUTING_REVISION`, and run core's
-unchanged actual Worker/core harness with `MCP_ROUTING_REPOSITORY` pointing to
-that authorized checkout. Do not upload its private source archive/bundle to
-core or vendor routing implementation into this public repository.
-
-Before merging either companion change, root must require passing **private
-paired evidence for both exact candidate commits**, plus core's required checks
-and hosted CodeQL on the system-generated core commit. A local paired pass or
-core-only CI pass does not satisfy that private CI gate. This task does not
-implement or claim completion of the separately delegated routing workflow.
-
-Manual verification defaults to routing's merged implementation at
-`1fcf82fd1a843fbdf199d79b8f92843dc74a89e0`. An explicit full lowercase 40-character
-`MCP_ROUTING_REVISION` overrides it; abbreviations, refs, revision expressions,
-missing objects and non-commit objects are rejected before extraction/install.
-The harness verifies exact commit identity, disables Git replacement objects,
-archives that commit locally, installs its own dependency lockfile and reports
-`routingHead`, its lockfile SHA-256, `coreHead`, the core implementation digest
-and SDK versions. The archive is temporary private runtime data, never a public
-artifact. To refresh manual verification, fetch an authorized routing checkout,
-select the reviewed full SHA, run the paired command and record both identities
-and its result. Update the default pin only after merged routing evidence is
-reviewed; private candidate CI must always pass its candidate explicitly.
+Paired gateway coverage runs against the separately maintained Connect routing service and is not
+part of core CI.
 
 For local paired verification:
 
 ```sh
 npm run test:prepare
 npm run test:mcp
-MCP_ROUTING_REPOSITORY=/path/to/propr-routing npm run test:mcp:connect
+MCP_ROUTING_REPOSITORY=/path/to/routing-checkout npm run test:mcp:connect  # requires an authorized routing checkout
 npx playwright install --with-deps chromium
 npm run test:mcp:browser
 npm run build
 npm run typecheck -w @propr/api
 ```
 
-The new concurrency regression pauses an MCP adapter after loading its snapshot,
+The concurrency regression pauses an MCP adapter after loading its snapshot,
 lets a second repository/agent mutation persist, then resumes the first and
 verifies a conflict plus preservation of the second edit. Workflow regressions
 keep the original task completed while the new task advances, exercise queue
 uncertainty/failure, and persist posted reviews/F# findings before selecting and
 observing a fix. No live agent credits, merges, deployments or permission changes
-are part of these tests. Root still owns independent verification and merge.
+are part of these tests.
 
-Historical local verification of the preceding follow-up (2026-09-10): 13 MCP tests,
-the paired Connect scenario and Chromium consent test passed without skips;
-288 fast unit tests and eight related configuration/review/authorization test
-files passed. Full build, API typecheck, changed-code ESLint and workflow
-`actionlint` passed. The previous CI correction at `420aad1bf` and Connect
-implementation at `6147abc9b` are the base of this worktree. The CodeQL workflow is unchanged; its hosted result must be checked on the system’s
-resulting commit (the CodeQL CLI is not installed in this implementation image).
-
-
-## Cancellation and security follow-up (2026-09-11)
+## Cancellation and security behavior
 
 Cancellation receipts remain `accepted` while the goal only has
 `desired_state='cancelled'`, the task only has an abort signal, or a planner abort
@@ -373,32 +262,10 @@ recognizes the package constructor and maps that node into routing order. No
 query is disabled or dismissed; runtime rejection still precedes body parsing
 and client lookup. The existing Secure-cookie TLS browser fixture is preserved.
 
-These edits start from core `c6b5ee96a6bce023b8d680ff937b534dc08b7330` and preserve
-its queued review/fix/ultrafix command-identity regressions. Hosted alert #126
-inspection returned HTTP 403 (`Resource not accessible by integration`) in this
-implementation environment, and the CodeQL CLI is unavailable. Consequently no
-hosted CodeQL pass is claimed: inspect the normal CodeQL workflow and alerts
-#126/#127 on the resulting system-generated commit before merge. No commit,
-merge, deployment, added credential, or companion task was created here.
+## Operator surface limits
 
-
-Local validation of this working tree: 14 MCP tests, two browser/security tests,
-26 planner lifecycle/abort/proxy-limit tests, dependency builds, full TypeScript
-build, API typecheck, changed-file ESLint and workflow actionlint passed without
-skips. The actual paired harness passed both with the default merged routing
-SHA and with explicit `MCP_ROUTING_REVISION=0c8ca02044c88b181395ca8e15425c0821e588e4`
-(the previously reviewed routing PR head), demonstrating candidate selection.
-These are local results on uncommitted core changes; the paired runner reports
-the base `coreHead` plus an implementation digest. They are not hosted CI results
-for the future system-generated commit.
-
-
-## Operator surface reconciliation (2026-09-25)
-
-The rows above were re-read against `packages/api/mcp/` on the epic branch rather
-than against any earlier specification: every tool name, argument, resource URI
-and prompt named here exists in `tools.ts`, `toolsActivity.ts`,
-`toolsPullRequests.ts`, `goalTaskDetail.ts`, `pullRequestInventory.ts`,
+Every tool name, argument, resource URI and prompt named above exists in `tools.ts`,
+`toolsActivity.ts`, `toolsPullRequests.ts`, `goalTaskDetail.ts`, `pullRequestInventory.ts`,
 `accessLog.ts` and `server.ts`. `docs/mcp.md` carries the operator walkthrough.
 
 What this surface deliberately does **not** claim:
@@ -441,8 +308,10 @@ What this surface deliberately does **not** claim:
   is never dropped.
 - **Pull request titles, labels and comment prose remain untrusted data.**
   `comment_on_pull_request` posts ordinary prose only and rejects a message that
-  starts a slash command with `USE_EXPLICIT_TOOL`, so scope and head
-  preconditions are always checked by the dedicated command tool.
+  starts a slash command with `USE_EXPLICIT_TOOL`, so scope and optional head
+  preconditions are checked by the dedicated command tool. Append-only PR
+  commands resolve an omitted head from their single PR read, return
+  `resolvedHead`/`headSource`, and put that resolved SHA in their marker.
 - **The access log deliberately stores no argument or payload content.** One row
   per tool call, resource read, prompt fetch and authentication failure records
   the surface, the name, the grant and client identity, the repository, scope,
@@ -461,24 +330,12 @@ What this surface deliberately does **not** claim:
   **Logs** group next to **LLM Log**; the entry and the page require the same
   `instance.manage_settings` permission. See `docs/docs/features/web-ui.md`.
 
-Local validation of this working tree:
+## Observable surface verification
 
-```sh
-npm run test:mcp
-# 99 tests passed, 0 failed, 0 skipped (including the new end-to-end
-# packages/api/test/mcpOperatorSurface.test.ts).
-
-npm run typecheck -w @propr/api
-npm run build
-# Both passed.
-
-npx eslint --config packages/api/eslint.config.js packages/api/test/mcpOperatorSurface.test.ts
-# 0 errors, 0 warnings.
-```
-
-The new regression drives the real tool catalog, schemas, authorization,
-persistence and access recording against in-memory SQLite with the repository's
-existing migrations. The GitHub API, the configured repository list and the
-agent registry are the only fixtures: no live GitHub, no provider credits, no
-real merge, and no production configuration was changed. These are local
-results, not hosted CI results for the resulting commit.
+The regression at `packages/api/test/mcpObservableSurface.test.ts` covers the
+receipt/error, work overview, plan recovery, docs, preview and
+configuration-discovery surface using the production catalog, policy, schemas,
+operation ledger, docs index and SQLite migrations. GitHub, queue/dispatch,
+Redis compatibility and preview-media fetches are the external fixtures. It
+also extracts every backticked `^[a-z_]+$` token in `docs/mcp.md` and requires it
+to be an admin-visible catalog tool or a named non-tool token.

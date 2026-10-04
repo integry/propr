@@ -46,6 +46,59 @@ export const SURFACES = Object.freeze([
 ]);
 
 /**
+ * Surfaces whose checks are slow, platform-bound and exercise one product (the
+ * packaged desktop app). A pull request selects them only for changes that
+ * clearly affect that product: their own path rules, the desktop-owned CI files
+ * below, desktop dependency changes in the lockfile, or the `desktop-ci` label.
+ * Every other broad change leaves them to the nightly run, which validates
+ * everything. Non-pull-request events and a failed resolution still select them.
+ */
+export const ON_DEMAND_SURFACES = Object.freeze(['desktop']);
+
+/** Pull request label that selects every on-demand surface. */
+export const DESKTOP_CI_LABEL = 'desktop-ci';
+
+/**
+ * Broad paths that define how the desktop checks run, so changing one must run
+ * them: the desktop workflows, the workflow hosting the native Electron job,
+ * and this selector with the action that calls it.
+ */
+const DESKTOP_OWNED_BROAD_PATHS = [
+    /^\.github\/workflows\/desktop-[^/]+\.ya?ml$/,
+    /^\.github\/workflows\/pr-test-on-label\.yml$/,
+    /^\.github\/actions\/classify-changes\//,
+    /^scripts\/ci-change-classification\.mjs$/,
+];
+
+const LOCKFILE_PATTERN = /(^|\/)package-lock\.json$/;
+
+/** Lockfile entries the packaged desktop app is built from. */
+const DESKTOP_LOCKFILE_ENTRY = /^apps\/desktop(\/|$)|(^|\/)node_modules\/(electron|electron-[^/]+|@electron\/[^/]+|@electron-forge\/[^/]+)$/;
+
+/**
+ * Whether a lockfile change touches what the desktop app is built from. An
+ * unreadable side is treated as affecting it.
+ */
+export function lockfileAffectsDesktop(baseText, headText) {
+    let base;
+    let head;
+    try {
+        base = JSON.parse(baseText ?? '');
+        head = JSON.parse(headText ?? '');
+    } catch {
+        return true;
+    }
+    const basePackages = isPlainObject(base?.packages) ? base.packages : null;
+    const headPackages = isPlainObject(head?.packages) ? head.packages : null;
+    if (!basePackages || !headPackages) return true;
+    const keys = new Set([...Object.keys(basePackages), ...Object.keys(headPackages)]);
+    for (const key of keys) {
+        if (DESKTOP_LOCKFILE_ENTRY.test(key) && !deepEqual(basePackages[key], headPackages[key])) return true;
+    }
+    return false;
+}
+
+/**
  * Paths whose blast radius this policy refuses to reason about. Anything here
  * selects every surface, including the classifier and the workflows that call
  * it: a selector must never be able to suppress its own validation.
@@ -93,8 +146,8 @@ const PATH_RULES = [
     },
     {
         pattern: /^packages\/shared\//,
-        surfaces: ['core', 'api', 'core_package', 'ui', 'cli', 'connect', 'desktop'],
-        rule: '@propr/shared runtime, consumed by every surface',
+        surfaces: ['core', 'api', 'core_package', 'ui', 'cli', 'connect'],
+        rule: '@propr/shared runtime, consumed by every surface (the packaged desktop app is validated nightly)',
     },
     {
         pattern: /^packages\/client\//,
@@ -113,8 +166,8 @@ const PATH_RULES = [
     },
     {
         pattern: /^propr-ui\//,
-        surfaces: ['ui', 'desktop'],
-        rule: 'renderer shared with the packaged desktop app',
+        surfaces: ['ui'],
+        rule: 'web UI renderer (the packaged desktop app that embeds it is validated nightly)',
     },
     {
         pattern: /^src\//,
@@ -263,7 +316,10 @@ export function classifyManifest({ path, status, baseText, headText }) {
 
 function classifyPath(path) {
     for (const { pattern, rule } of BROAD_RULES) {
-        if (pattern.test(path)) return { broad: true, surfaces: [], rule };
+        if (pattern.test(path)) {
+            const desktopOwned = DESKTOP_OWNED_BROAD_PATHS.some(owned => owned.test(path));
+            return { broad: true, surfaces: desktopOwned ? [...ON_DEMAND_SURFACES] : [], rule };
+        }
     }
     for (const { pattern, surfaces, rule } of PATH_RULES) {
         if (pattern.test(path)) {
@@ -283,8 +339,9 @@ function classifyPath(path) {
  * @param {Record<string, {base: string|null, head: string|null}>} input.manifests
  * @param {string} input.eventName
  * @param {string[]} input.notes  Resolution notes to surface in the reasons.
+ * @param {string[]} input.labels Pull request labels; `desktop-ci` selects the on-demand surfaces.
  */
-export function classifyChanges({ files = [], manifests = {}, eventName = 'pull_request', notes = [] } = {}) {
+export function classifyChanges({ files = [], manifests = {}, eventName = 'pull_request', notes = [], labels = [] } = {}) {
     const surfaces = emptySurfaces();
     const selectedFiles = Object.fromEntries(SURFACES.map(surface => [surface, []]));
     const corePackageSourceFiles = [];
@@ -298,6 +355,17 @@ export function classifyChanges({ files = [], manifests = {}, eventName = 'pull_
     };
 
     for (const note of notes) reasons.push({ path: null, decision: 'note', detail: note });
+
+    // A broad pull request change validates every surface except the on-demand
+    // ones, which run for their own changes, the label, or the nightly run.
+    const selectBroad = () => {
+        broad = true;
+        for (const surface of SURFACES) if (!ON_DEMAND_SURFACES.includes(surface)) surfaces[surface] = true;
+    };
+    if (labels.includes(DESKTOP_CI_LABEL)) {
+        for (const surface of ON_DEMAND_SURFACES) surfaces[surface] = true;
+        reasons.push({ path: null, decision: ON_DEMAND_SURFACES.join(', '), detail: `the pull request has the '${DESKTOP_CI_LABEL}' label` });
+    }
 
     if (eventName !== 'pull_request') {
         selectAll(`event '${eventName}' is not a pull request, so every surface is validated`);
@@ -322,14 +390,23 @@ export function classifyChanges({ files = [], manifests = {}, eventName = 'pull_
                 baseText: contents.base,
                 headText: contents.head,
             });
-            result = { broad: manifest.broad, surfaces: manifest.surfaces, rule: manifest.detail };
+            // A workspace manifest belongs to its package: a desktop-bundled
+            // package's manifest still selects the desktop surface.
+            const owned = manifest.broad ? packageRuleSurfaces(path).filter(surface => ON_DEMAND_SURFACES.includes(surface)) : [];
+            result = { broad: manifest.broad, surfaces: [...new Set([...manifest.surfaces, ...owned])], rule: manifest.detail };
         } else {
             result = classifyPath(path);
+            if (LOCKFILE_PATTERN.test(path)) {
+                const contents = manifests[path] ?? {};
+                const desktop = lockfileAffectsDesktop(contents.base, contents.head);
+                result = {
+                    ...result,
+                    surfaces: desktop ? [...ON_DEMAND_SURFACES] : [],
+                    rule: `${result.rule}${desktop ? ', including desktop dependencies' : ', no desktop dependency changed'}`,
+                };
+            }
         }
-        if (result.broad) {
-            broad = true;
-            for (const surface of SURFACES) surfaces[surface] = true;
-        }
+        if (result.broad) selectBroad();
         for (const surface of result.surfaces) {
             if (!SURFACES.includes(surface)) {
                 selectAll(`rule for ${path} named the unknown surface '${surface}'`);
@@ -383,10 +460,18 @@ function surfaceMatches(surface, file, manifests) {
             baseText: contents.base,
             headText: contents.head,
         });
+        if (ON_DEMAND_SURFACES.includes(surface)) return manifest.surfaces.includes(surface) || packageRuleSurfaces(path).includes(surface);
         return manifest.broad || manifest.surfaces.includes(surface);
     }
     const result = classifyPath(path);
+    if (ON_DEMAND_SURFACES.includes(surface)) return result.surfaces.includes(surface) || LOCKFILE_PATTERN.test(path);
     return result.broad || result.surfaces.includes(surface);
+}
+
+/** Surfaces of the package a path belongs to, by the path rules. */
+function packageRuleSurfaces(path) {
+    const rule = PATH_RULES.find(({ pattern }) => pattern.test(path));
+    return rule ? rule.surfaces : [];
 }
 
 /** A classification that selects everything because resolution failed. */
@@ -557,7 +642,7 @@ export function resolveChanges({ repository, baseSha, headSha, allowFetch = true
         return result.ok ? result.stdout : null;
     };
     for (const file of files) {
-        if (!MANIFEST_PATTERN.test(file.path) || manifests[file.path]) continue;
+        if (!(MANIFEST_PATTERN.test(file.path) || LOCKFILE_PATTERN.test(file.path)) || manifests[file.path]) continue;
         manifests[file.path] = { base: read(mergeBase, file.path), head: read(headSha, file.path) };
     }
 
@@ -565,7 +650,7 @@ export function resolveChanges({ repository, baseSha, headSha, allowFetch = true
 }
 
 /** Collapse a rename pair back into a single record per path for reporting. */
-export function classifyRepository({ repository, baseSha, headSha, eventName, allowFetch = true }) {
+export function classifyRepository({ repository, baseSha, headSha, eventName, allowFetch = true, labels = [] }) {
     const notes = [];
     try {
         const resolved = resolveChanges({ repository, baseSha, headSha, allowFetch, notes });
@@ -575,6 +660,7 @@ export function classifyRepository({ repository, baseSha, headSha, eventName, al
             manifests: resolved.manifests,
             eventName,
             notes,
+            labels,
         });
     } catch (error) {
         return fallbackClassification(
@@ -651,11 +737,24 @@ function parseArguments(argv) {
             case '--summary': options.summary = true; break;
             case '--require-resolution': options.requireResolution = true; break;
             case '--no-fetch': options.allowFetch = false; break;
+            case '--label': (options.labels ??= []).push(next()); break;
             default:
                 throw new ClassificationError(`unknown argument ${argument}`);
         }
     }
     return options;
+}
+
+/** Labels of the pull request in the triggering event, if there is one. */
+export function pullRequestLabels(eventPath) {
+    if (!eventPath) return [];
+    try {
+        const event = JSON.parse(readFileSync(eventPath, 'utf8'));
+        const labels = event?.pull_request?.labels;
+        return Array.isArray(labels) ? labels.map(label => label?.name).filter(name => typeof name === 'string') : [];
+    } catch {
+        return [];
+    }
 }
 
 export function main(argv = process.argv.slice(2), environment = process.env) {
@@ -669,6 +768,7 @@ export function main(argv = process.argv.slice(2), environment = process.env) {
             headSha: options.head,
             eventName: options.event,
             allowFetch: options.allowFetch,
+            labels: [...(options.labels ?? []), ...pullRequestLabels(environment.GITHUB_EVENT_PATH)],
         });
     } catch (error) {
         // The arguments may not have parsed at all, so honour the reporting

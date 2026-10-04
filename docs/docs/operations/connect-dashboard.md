@@ -32,7 +32,7 @@ Plus installations can provision a managed hosted-UI tunnel: Connect creates the
 When you suspect the hosted side rather than your stack:
 
 - `https://webhook.propr.dev/health` returns `{ "ok": true }` when the relay worker is up.
-- `propr status` (and `propr remote-status`) report your stack's routing connection and, when enabled, tunnel reachability.
+- `propr remote-status` reports your stack's routing connection; `propr status` reports tunnel reachability when a tunnel is configured.
 - `propr tunnel verify` checks the tunnel end to end.
 - The Deliveries page shows whether GitHub events are arriving and being acknowledged — a growing failed-deliveries count with a healthy stack points at connectivity between the two.
 

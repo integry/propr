@@ -60,6 +60,25 @@ For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until 
 
 Full syntax, parameters, and trigger rules for every command are in [PR Comment Commands](./pr-commands.md).
 
+## Withdrawing Work
+
+Closing a PR without merging cancels queued and running follow-up, review and
+Ultrafix work for that PR, with terminal reason `cancelled_pr_closed`. Its Ultrafix
+loop is cleared. Polling checks active and queued PRs each cycle, and workers
+recheck the live PR before starting, so missed webhooks cannot start work on a
+closed PR. Cancellation uses the same stop mechanism as the task view and
+`propr task stop`; cancelled attempts are never automatically retried.
+
+Closing the source issue or removing its processing trigger cancels only that
+issue's implementation work. Existing PRs and their independent follow-ups remain
+open. Removing a model label does not cancel work. See
+[task state and terminal reasons](../architecture/worker.md#cancellation-and-terminal-reasons)
+for reason codes and issue state labels.
+
+## Automatic Follow-Up For Failed CI
+
+**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.
+
 ## Cancelling Obsolete Checks During Follow-Up
 
 While a follow-up implements, the checks running on the commit it is about to replace are already obsolete, and on a busy repository they keep runners occupied for work nobody will read. GitHub's own `cancel-in-progress` concurrency only helps once a replacement workflow starts, which is after the new commit is pushed.
@@ -76,5 +95,25 @@ The repository setting **Cancel CI while follow-up implementation is in progress
 - Every step for one pull request — starting, sweeping, restoring and releasing — runs while holding a shared database lease, so two workers can never act on the same pull request at once and no run is ever cancelled after a restart has begun. A pull request another worker is already handling is left alone and picked up by the next reconciliation.
 
 Prerequisite: the GitHub App installation needs **Actions: Read and write**. With read-only Actions access the option is inert — the attempt is logged as a permission error and implementation continues with CI untouched. If access is lost after checks were already cancelled, the obligation to restart them survives and is honoured as soon as the access is granted back. Fork contributions that ProPR publishes to a continuation pull request are handled through that continuation; runs GitHub does not associate with a pull request are left alone.
+
+### Closed pull requests
+
+The same opt-in cancellation policy also applies when a pull request closes or
+merges. A worker reconciles the recorded closure and cancels selected queued or
+running validation for that PR head. It rechecks whether the head is still under
+review before cancelling, so reopening a PR protects its validation. These are
+cancellations, never successful-check results.
+
+## Checks That Never Block Automation
+
+Some checks are worth running but should not decide whether ProPR moves a pull request forward, for example slow packaging or platform checks that occasionally fail on hosted runners. List them under **Checks that never block automation** (Repositories → repository → Automation). Each entry is a check run name, matched case-insensitively; `*` matches any text, so `Validate unsigned * package` covers every platform leg.
+
+A failure of a listed check:
+
+- does not hold back auto-merge or ultrafix continuation;
+- does not start an automatic failed-CI follow-up;
+- is shown to reviews as neutral and marked *(non-blocking)*, not as a failure of the change.
+
+GitHub still shows the check and its result. Unlisted checks keep blocking, and if the repository configuration cannot be read, every check blocks.
 
 {/* VIDEO PLACEHOLDER: Record a 45-second clip: post a natural follow-up comment on a ProPR-created PR, show the task appearing in the Web UI task list, then return to the PR to show the new commit and the completion comment. Show the completion comment's expandable slash-command block as the key moment. */}

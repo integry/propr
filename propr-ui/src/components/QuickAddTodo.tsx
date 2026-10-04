@@ -9,9 +9,10 @@ interface QuickAddTodoProps {
   externalOpen?: boolean;
   onExternalOpenHandled?: () => void;
   disabled?: boolean;
+  layout?: 'popover' | 'inline';
 }
 
-const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled, disabled = false }) => {
+const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpenHandled, disabled = false, layout = 'popover' }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
@@ -19,13 +20,13 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [createdRepository, setCreatedRepository] = useState('');
   const [categories, setCategories] = useState<RepoTodoCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
   const [lastUsedCategory, setLastUsedCategory] = useState<Record<string, string>>({});
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const categoryDropdownRef = useRef<HTMLDivElement>(null);
 
   // Infer active repo from URL path
@@ -58,13 +59,6 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     }
   }, [inferRepoFromUrl, selectedRepo]);
 
-  // Focus textarea when popover opens
-  useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => textareaRef.current?.focus(), 100);
-    }
-  }, [isOpen]);
-
   // Handle external open trigger (keyboard shortcut)
   useEffect(() => {
     if (externalOpen && !isOpen && !disabled) {
@@ -87,12 +81,14 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
   // Load categories when selected repo changes
   useEffect(() => {
+    let cancelled = false;
     if (!selectedRepo) {
       setCategories([]);
       setSelectedCategoryId(null);
       return;
     }
     getCategories(selectedRepo).then(cats => {
+      if (cancelled) return;
       setCategories(cats);
       // Use last used category for this repo, or default to uncategorized
       const lastUsed = lastUsedCategory[selectedRepo];
@@ -102,9 +98,11 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
         setSelectedCategoryId(null);
       }
     }).catch(() => {
+      if (cancelled) return;
       setCategories([]);
       setSelectedCategoryId(null);
     });
+    return () => { cancelled = true; };
   }, [selectedRepo, lastUsedCategory]);
 
   // Click outside category dropdown to close it
@@ -123,6 +121,16 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     setShowSuccess(false);
   };
 
+  const handleAddAnother = () => {
+    resetForm();
+    setSelectedRepo(createdRepository);
+    setSelectedCategoryId(null);
+    setCategoryDropdownOpen(false);
+    setLastUsedCategory({});
+    // RepositorySelector remounts with the form and validates the repository
+    // against the latest available list, applying the normal fallback if needed.
+  };
+
   const handleSubmit = async () => {
     if (!content.trim() || !selectedRepo || isSubmitting || disabled) return;
     setIsSubmitting(true);
@@ -136,13 +144,11 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
       if (selectedCategoryId) {
         setLastUsedCategory(prev => ({ ...prev, [selectedRepo]: selectedCategoryId }));
       }
+      setCreatedRepository(selectedRepo);
       setShowSuccess(true);
-      setTimeout(() => {
-        setIsOpen(false);
-        resetForm();
-        setIsSubmitting(false);
-      }, 1200);
     } catch {
+      // Keep the form available for retry.
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -163,27 +169,42 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
         }}
         disabled={disabled}
         title={disabled ? 'Demo mode is read-only' : 'Quick add to-do'}
-        className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className={layout === 'inline'
+          ? 'flex min-h-12 w-full items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed'
+          : 'flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'}
         aria-label="Quick add to-do"
       >
         <ListPlus className="w-4 h-4" />
-        <span className="hidden lg:inline">To-Do</span>
+        <span className={layout === 'inline' ? '' : 'hidden lg:inline'}>To-Do</span>
       </button>
 
       {/* Popover */}
       {isOpen && (
         <div
-          className="desktop-toolbar-popover absolute right-0 top-full z-50 mt-1 w-[320px] border border-slate-200 bg-white shadow-xl"
-          style={{ minWidth: '320px' }}
+          className={layout === 'inline'
+            ? 'mt-2 border border-slate-200 bg-white'
+            : 'desktop-toolbar-popover absolute right-0 top-full z-50 mt-1 w-[320px] min-w-[320px] border border-slate-200 bg-white shadow-xl'}
         >
           {showSuccess ? (
             /* Success State */
-            <div className="flex flex-col items-center justify-center py-8 gap-2">
-              <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center">
-                <Check className="w-5 h-5 text-green-600" />
+            <>
+              <div className="flex flex-col items-center justify-center py-8 gap-2">
+                <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center">
+                  <Check className="w-5 h-5 text-green-600" />
+                </div>
+                <span className="text-sm font-medium text-green-700">To-Do added</span>
               </div>
-              <span className="text-sm font-medium text-green-700">To-Do added</span>
-            </div>
+              <div className="px-3 pb-3">
+                <button
+                  type="button"
+                  onClick={handleAddAnother}
+                  disabled={disabled}
+                  className="w-full px-3 py-2 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Add another
+                </button>
+              </div>
+            </>
           ) : (
             /* Form */
             <div className="p-3 space-y-3">
@@ -198,7 +219,7 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
 
               {/* Textarea */}
               <textarea
-                ref={textareaRef}
+                autoFocus
                 value={content}
                 onChange={e => setContent(e.target.value)}
                 placeholder="Describe your idea..."

@@ -3,6 +3,15 @@ import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
 import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare } from 'lucide-react';
 import { formatReviewPromptOverview } from './reviewPromptOverview';
+import { HISTORY_TRUNCATED_NOTICE } from './liveDetailsMerge';
+import {
+  CheckpointLogEntry,
+} from './CheckpointLogEntry';
+import {
+  prepareCheckpointEvents,
+  type CheckpointOutcome,
+  type PreparedThinkingLogEvent,
+} from './checkpointLog';
 
 // Simple thought type detection based on content
 const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
@@ -28,6 +37,10 @@ interface ThinkingLogProps {
   highlightedTodoId?: string | null;
   /** Surfaces that own the "Implementation log" utility header themselves (and the controls beside it) opt out of this one. */
   showHeader?: boolean;
+  /** Earlier output was discarded by the server, so the oldest messages may be missing. */
+  historyTruncated?: boolean;
+  /** Durable worker state for the newest agent checkpoint declaration, when the payload matches. */
+  checkpointOutcome?: CheckpointOutcome | null;
 }
 
 // Get category display info for gutter-style output
@@ -114,7 +127,7 @@ const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
 );
 
 interface TerminalLogEntryProps {
-  event: ThinkingLogEvent;
+  event: PreparedThinkingLogEvent;
   todoContext?: string;
   isHighlighted?: boolean;
 }
@@ -122,6 +135,11 @@ interface TerminalLogEntryProps {
 const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext, isHighlighted }) => {
   if (event.type === 'user_input') {
     return <UserMessageEntry event={event} />;
+  }
+
+  const checkpoint = event.checkpoint;
+  if (checkpoint) {
+    return <CheckpointLogEntry event={event} checkpoint={checkpoint} />;
   }
 
   const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
@@ -175,7 +193,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
 interface ThoughtGroupProps {
   title: string;
-  events: ThinkingLogEvent[];
+  events: PreparedThinkingLogEvent[];
   isCompleted: boolean;
   todoId?: string;
   isHighlighted?: boolean;
@@ -223,12 +241,23 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, showHeader = true }) => {
+const ThinkingLog: React.FC<ThinkingLogProps> = ({
+  events,
+  todos = [],
+  highlightedTodoId,
+  showHeader = true,
+  historyTruncated = false,
+  checkpointOutcome,
+}) => {
+  const preparedEvents = useMemo(() => {
+    return prepareCheckpointEvents(events, checkpointOutcome);
+  }, [checkpointOutcome, events]);
+
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
       // No todos, just show all events ungrouped
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // For now, create logical groups based on event timing and todo completion
@@ -240,22 +269,22 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     // If we have events but no clear grouping, show them in a single group
     if (completedTodos.length === 0 && !inProgressTodo) {
-      return [{ title: 'Initial Analysis', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Initial Analysis', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // Simple strategy: split events roughly equally among completed todos + current
     const totalGroups = completedTodos.length + (inProgressTodo ? 1 : 0);
 
-    if (totalGroups === 0 || events.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+    if (totalGroups === 0 || preparedEvents.length === 0) {
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
-    const eventsPerGroup = Math.ceil(events.length / totalGroups);
+    const eventsPerGroup = Math.ceil(preparedEvents.length / totalGroups);
 
     completedTodos.forEach((todo, idx) => {
       const start = idx * eventsPerGroup;
-      const end = Math.min(start + eventsPerGroup, events.length);
-      const groupEvents = events.slice(start, end);
+      const end = Math.min(start + eventsPerGroup, preparedEvents.length);
+      const groupEvents = preparedEvents.slice(start, end);
 
       if (groupEvents.length > 0) {
         groups.push({
@@ -269,7 +298,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     if (inProgressTodo) {
       const start = completedTodos.length * eventsPerGroup;
-      const groupEvents = events.slice(start);
+      const groupEvents = preparedEvents.slice(start);
 
       if (groupEvents.length > 0) {
         groups.push({
@@ -283,11 +312,11 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
     // If no groups were created, show all events
     if (groups.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
+      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     return groups;
-  }, [events, todos]);
+  }, [preparedEvents, todos]);
 
   if (events.length === 0) {
     return null;
@@ -305,6 +334,12 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
             {events.length}
           </div>
         </div>
+      )}
+
+      {historyTruncated && (
+        <p role="note" className="mb-3 text-xs text-slate-500">
+          {HISTORY_TRUNCATED_NOTICE} The oldest messages may be missing.
+        </p>
       )}
 
       {/* Grouped Events - terminal style log feed */}

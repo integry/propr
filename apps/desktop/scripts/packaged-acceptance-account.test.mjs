@@ -242,6 +242,21 @@ for (const failure of ['malformed-account', 'denied-admission', 'cancelled-confi
   });
 }
 
+test('acceptance notification badge reads satisfy the shared unread-count contract after pairing', linuxFixtureOptions, async () => {
+  const f = await setup('ready');
+  try {
+    await f.service.pair(f.profile);
+    // Exercise both the initial badge read and the live reconciliation read.
+    for (let read = 0; read < 2; read++) {
+      const response = await fetch(`${f.fixture.origin}/api/notifications/unread-count`, {
+        headers: { Authorization: `Bearer ${f.fixture.INSTANCE_TOKEN}`, Origin: shared.DESKTOP_RENDERER_ORIGIN },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(shared.notificationUnreadCountResponseSchema.parse(await response.json()), { unreadCount: 0 });
+    }
+  } finally { await f.close(); }
+});
+
 test('acceptance identity routes reject inactive tokens, wrong custody and malformed confirmation requests', linuxFixtureOptions, async () => {
   const f = await setup('ready');
   const bearer = { Authorization: `Bearer ${f.fixture.INSTANCE_TOKEN}` };

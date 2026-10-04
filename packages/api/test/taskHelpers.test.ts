@@ -26,6 +26,7 @@ async function createDatabase(): Promise<Knex> {
     table.text('final_result');
     table.integer('issue_number');
     table.integer('pr_number');
+    table.string('commit_hash');
   });
   await database.schema.createTable('task_history', table => {
     table.increments('history_id').primary();
@@ -66,7 +67,7 @@ test('task pages preserve filters and enrich only unique task identities', async
   await database('tasks').insert([
     {
       task_id: 'newest', repository: 'acme/widget', task_type: 'issue', model_name: 'gpt',
-      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z',
+      issue_number: 12, created_at: '2026-09-14T05:00:00.000Z', commit_hash: 'abc1234def',
       initial_job_data: JSON.stringify({ title: 'Needle performance work' }),
     },
     {
@@ -124,13 +125,15 @@ test('task pages preserve filters and enrich only unique task identities', async
 
   const newest = (all.tasks as Array<Record<string, unknown>>)[0];
   assert.equal(newest.planIssueStatus, 'merged');
-  assert.equal(newest.critiqueScore, null);
+  assert.ok(!('critiqueScore' in newest));
   assert.equal(newest.processedAt, '2026-09-14T05:01:00.000Z');
   assert.equal(newest.completedAt, '2026-09-14T05:03:00.000Z');
+  assert.equal(newest.commitHash, 'abc1234def');
   const tied = (all.tasks as Array<Record<string, unknown>>)[1];
   assert.equal(tied.status, 'failed');
   assert.equal(tied.failedReason, 'first tie');
-  assert.equal((all.tasks as Array<Record<string, unknown>>)[2].critiqueScore, 8.5);
+  assert.equal(tied.commitHash, null);
+  assert.ok((all.tasks as Array<Record<string, unknown>>).every(task => !('critiqueScore' in task)));
 
   const openReview = await getTasksFromDb({
     db: database, status: 'all', repository: 'all', limit: 10, offset: 0,
@@ -169,7 +172,8 @@ test('presentation enrichment queries are constrained to the selected page', asy
   database.on('query', event => queries.push({ sql: event.sql, bindings: event.bindings ?? [] }));
   await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 1, offset: 0 });
 
-  assert.equal(queries.length, 6);
+  assert.equal(queries.length, 5);
+  assert.ok(queries.every(query => !/analysis_report/i.test(query.sql)));
   assert.doesNotMatch(queries[0].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   assert.doesNotMatch(queries[1].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   for (const query of queries.slice(2)) {
@@ -291,4 +295,22 @@ test('lifecycle filters map UI labels onto the worker states stored in history',
     created_at: hoursAgo(6), updated_at: hoursAgo(5),
   });
   assert.deepEqual((await idsFor('attention')).ids, ['completed-task', 'blocked-task']);
+});
+
+test('task count covering index preserves repository lookups and rolls back', async () => {
+  const database = await createDatabase();
+  const migration = await import('../../core/src/db/migrations/20260929000000_cover_task_list_counts.js');
+  await database.schema.alterTable('tasks', table => table.index('repository'));
+  await migration.up(database);
+  for (const suffix of ['', " AND t.repository = 'acme/widget'"]) {
+    const plan = await database.raw(`EXPLAIN QUERY PLAN
+      SELECT count(*) FROM tasks t
+      WHERE (t.task_type IS NULL OR t.task_type <> 'goal')
+        AND EXISTS (SELECT 1 FROM task_history h WHERE h.task_id = t.task_id) ${suffix}`) as Array<{ detail: string }>;
+    assert.ok(plan.some(row => row.detail.includes('COVERING INDEX tasks_repository_type_identity_index')));
+  }
+  await migration.down(database);
+  const indexes = await database.raw("PRAGMA index_list('tasks')") as Array<{ name: string }>;
+  assert.ok(indexes.some(row => row.name === 'tasks_repository_index'));
+  assert.ok(!indexes.some(row => row.name === 'tasks_repository_type_identity_index'));
 });

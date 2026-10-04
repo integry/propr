@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- install, offline navigation, and notification cases share the worker VM harness */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import vm from 'node:vm';
@@ -11,6 +12,7 @@ interface WorkerHarness {
   shownNotifications: Array<{ title: string; options: Record<string, unknown> }>;
   badgeCounts: number[];
   networkRequests: string[];
+  setOffline(offline: boolean): void;
   setWindows(windows: Array<Record<string, unknown>>): void;
 }
 
@@ -39,18 +41,20 @@ function createHarness(): WorkerHarness {
   const badgeCounts: number[] = [];
   const networkRequests: string[] = [];
   let windows: Array<Record<string, unknown>> = [];
+  let offline = false;
+  const cacheKey = (request: RequestInfo) => typeof request === 'string' ? request : request.url;
   const cacheEntries = new Map<string, Response>();
   const cache = {
-    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(String(request))),
+    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(cacheKey(request))),
     put: vi.fn(async (request: RequestInfo, value: Response) => {
-      cacheEntries.set(String(request), value);
+      cacheEntries.set(cacheKey(request), value);
     }),
   };
   const caches = {
     open: vi.fn(async () => cache),
     keys: vi.fn(async () => ['unrelated-cache', 'propr-shell-old']),
     delete: vi.fn(async () => true),
-    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(String(request))),
+    match: vi.fn(async (request: RequestInfo) => cacheEntries.get(cacheKey(request))),
   };
   const scope = Object.assign(new MockServiceWorkerGlobalScope(), {
     location: { origin: 'https://app.example.com' },
@@ -77,6 +81,7 @@ function createHarness(): WorkerHarness {
   const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
     networkRequests.push(request instanceof Request ? request.url : String(request));
     const url = request instanceof Request ? request.url : String(request);
+    if (offline) throw new Error('offline');
     const pathname = new URL(url, 'https://app.example.com').pathname;
     if (pathname === '/' || pathname === '/index.html') {
       return response(`<!doctype html>
@@ -117,6 +122,7 @@ function createHarness(): WorkerHarness {
     shownNotifications,
     badgeCounts,
     networkRequests,
+    setOffline(value) { offline = value; },
     setWindows(nextWindows) { windows = nextWindows; },
   };
 }
@@ -186,14 +192,29 @@ describe('PWA service worker', () => {
 
     expect(harness.networkRequests).toEqual(expect.arrayContaining([
       'https://app.example.com/',
-      'https://app.example.com/index.html',
       'https://app.example.com/assets/app-abc.js',
       'https://app.example.com/assets/vendor-def.js',
       'https://app.example.com/assets/app-abc.css',
       'https://app.example.com/assets/lazy-route.js',
     ]));
+    expect(harness.networkRequests).not.toContain('https://app.example.com/index.html');
+    expect(new Set(harness.networkRequests).size).toBe(harness.networkRequests.length);
     expect(harness.networkRequests).not.toContain('https://attacker.example/external.js');
     expect(harness.networkRequests).not.toContain('https://app.example.com/config.js');
+  });
+
+  test('serves the canonical document offline without fetching the redirected index alias', async () => {
+    const harness = createHarness();
+    const install = waitableEvent({});
+    harness.listeners.get('install')?.(install.event);
+    await install.completion();
+    harness.setOffline(true);
+    const result = await dispatchFetch(harness, {
+      method: 'GET', mode: 'navigate', url: 'https://app.example.com/tasks',
+    }) as Response;
+    expect(result.status).toBe(200);
+    expect(await result.text()).toContain('/assets/app-abc.js');
+    expect(harness.networkRequests).not.toContain('https://app.example.com/index.html');
   });
 
   test.each([
@@ -262,7 +283,7 @@ describe('PWA service worker', () => {
     expect(harness.badgeCounts).toEqual([7]);
   });
 
-  test('focuses and navigates an existing PWA window for same-origin deep links', async () => {
+  test.each(['/tasks/task-1', '/goals/goal-1', '/studio/plan-1'])('focuses and navigates an existing PWA window for %s', async path => {
     const harness = createHarness();
     const focus = vi.fn(async () => undefined);
     const navigate = vi.fn(async () => ({ focus }));
@@ -271,13 +292,13 @@ describe('PWA service worker', () => {
       navigate,
       focus: vi.fn(async () => undefined),
     }]);
-    const notification = { data: { deepLink: '/tasks/task-1', unreadCount: 2 }, close: vi.fn() };
+    const notification = { data: { deepLink: path, unreadCount: 2 }, close: vi.fn() };
     const click = waitableEvent({ notification, action: '' });
 
     harness.listeners.get('notificationclick')?.(click.event);
     await click.completion();
 
-    expect(navigate).toHaveBeenCalledWith('https://app.example.com/tasks/task-1');
+    expect(navigate).toHaveBeenCalledWith(`https://app.example.com${path}`);
     expect(focus).toHaveBeenCalled();
     expect(harness.openedUrls).toEqual([]);
     expect(harness.badgeCounts).toEqual([1]);

@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
@@ -33,7 +34,7 @@ import {
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
-import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import {
@@ -83,6 +84,15 @@ export function resolveAnalysisOutcome(claudeOutput: ClaudeOutput, stderr: strin
     return { isSuccess: false, errorDetail };
 }
 
+/** Logs when the answer came from several messages rather than the final one. */
+function warnIfAnswerContinued(claudeOutput: ClaudeOutput, analysisText: string, context: { agentAlias: string; model: string }): void {
+    const resultLength = (claudeOutput.finalResult?.result || '').trim().length;
+    if (resultLength > 0 && analysisText.length > resultLength) {
+        logger.warn({ ...context, resultLength, responseLength: analysisText.length },
+            'Claude continued its answer across messages; using the whole answer rather than the final message');
+    }
+}
+
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
@@ -100,7 +110,7 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
+            onSessionId, onContainerId, tools, environment, taskId, prNumber, reasoningLevel,
             executionMode = 'task', metadata
         } = options;
 
@@ -126,8 +136,9 @@ export class ClaudeAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
-            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
+                worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel
             });
@@ -138,7 +149,9 @@ export class ClaudeAgent implements Agent {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
                     streamToRedis: true, preserveOutputOnTimeout: true
-                })
+                }),
+                undefined,
+                this.config.alias
             );
 
             const executionTime = Date.now() - startTime;
@@ -193,7 +206,7 @@ export class ClaudeAgent implements Agent {
      */
     private async executeNativeGoal(options: AgentTaskOptions, model: string): Promise<AgentExecutionResult> {
         const {
-            worktreePath, issueRef, githubToken, systemPrompt, tools, environment, taskId,
+            worktreePath, issueRef, systemPrompt, tools, environment, taskId,
             reasoningLevel, resumeSessionId,
         } = options;
         const startTime = Date.now();
@@ -208,15 +221,18 @@ export class ClaudeAgent implements Agent {
             // An identity persisted before the provider wrote its first
             // transcript record has nothing to resume; start it under that id.
             const resumable = Boolean(resumeSessionId) && await claudeSessionTranscriptExists(transcriptPath);
-            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath, githubToken, modelName: model, issueNumber: issueRef.number,
-                systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
-                ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
-            });
+            const buildGoalDockerArgs = async () => {
+                const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+                return buildDockerArgs(this.config, this.maxTurns, {
+                    worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,
+                    systemPrompt, tools, environment, taskId,
+                    reasoningLevel: effectiveReasoningLevel, executionMode: 'goal',
+                    ...(resumable ? { resumeSessionId: sessionId } : { sessionId }),
+                });
+            };
             const response = await executeClaudeNativeGoal(
                 { ...options, resumeSessionId: resumable ? sessionId : undefined },
-                { dockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
+                { buildDockerArgs: buildGoalDockerArgs, sessionId, transcriptPath, model, timeoutMs: this.timeoutMs },
             );
             if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
@@ -258,7 +274,7 @@ export class ClaudeAgent implements Agent {
                 useConfiguredReasoningLevel
             );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '',
+                worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path),
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: analysisWorkspace.tools, taskId, executionType,
                 readOnlyWorkspace: analysisWorkspace.readOnly,
@@ -271,7 +287,8 @@ export class ClaudeAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
                 }),
-                ANALYSIS_AGENT_TANK_TIMEOUT_MS
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS,
+                this.config.alias
             );
 
             const executionTimeMs = Date.now() - startTime;
@@ -290,6 +307,7 @@ export class ClaudeAgent implements Agent {
             const outcome = resolveAnalysisOutcome(claudeOutput, result.stderr);
             if (outcome.isSuccess) {
                 const analysisText = getClaudeAnalysisText(claudeOutput);
+                warnIfAnswerContinued(claudeOutput, analysisText, { agentAlias: this.config.alias, model: effectiveModel });
                 logger.info({
                     agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel,
                     executionTimeMs, reportedTokens: claudeOutput.tokenUsage, correctedTokens: correctedTokenUsage,
@@ -377,20 +395,18 @@ export class ClaudeAgent implements Agent {
 
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         await persistLlmLog(createLlmLogFromAnalysis({
-            executionType: 'implementation', modelUsed, executionTimeMs: executionTime,
+            ...resolveTaskLogAttribution(metadata, buildTaskWorkRef(taskId, issueRef.number, repository, prNumber), { isRetry, retryReason, conversationId: claudeOutput.conversationId }), modelUsed, executionTimeMs: executionTime,
             success: claudeOutput.success,
             tokenUsage: correctedTokenUsage,
             error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
             sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId, repository,
             agentAlias: this.config.alias,
             reasoningLevel,
-            metadata: { ...metadata, isRetry, retryReason, conversationId: claudeOutput.conversationId },
             usageMetrics: usageMetrics ? {
                 preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,
                 delta: usageMetrics.delta, timestamp: usageMetrics.timestamp, agent: usageMetrics.agent
             } : undefined,
             usageMetricRecords: usageMetrics?.records,
-            workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),
         }));
     }
 }

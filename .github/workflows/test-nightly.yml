@@ -227,3 +227,65 @@ jobs:
       - name: Stop isolated Redis
         if: always()
         run: ./scripts/ci-redis.sh stop
+
+  # Pull requests skip the desktop checks unless they touch the desktop app, so
+  # the nightly run is where every change reaches them.
+  native-electron:
+    name: Nightly Native Electron (hosted)
+    # The self-hosted runner does not provide the native sandbox/session contract.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build workspace packages
+        run: npm run test:prepare
+
+      - name: Run native Electron units without skipping
+        env:
+          NODE_ENV: test
+          PROPR_REQUIRE_NATIVE_ELECTRON: '1'
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(grep -l 'prepareNativeElectronTest(' apps/desktop/scripts/*.test.mjs | grep -v '/electron-native-test-setup\.test\.mjs$')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No native Electron test units were found." >&2
+            exit 1
+          fi
+          printf 'Native Electron unit: %s\n' "${files[@]}"
+          node scripts/run-test-suite.mjs "${files[@]}"
+
+  # Called, never dispatched: the release workflow is not dispatchable. Its
+  # release jobs declare `contents: write` and only run for desktop tags; the
+  # validation jobs stay read-only through its own `contents: read`.
+  desktop-package:
+    name: Nightly desktop package
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-release-guard.yml
+
+  desktop-connect:
+    name: Nightly Packaged Connect
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-connect-discovery-guard.yml

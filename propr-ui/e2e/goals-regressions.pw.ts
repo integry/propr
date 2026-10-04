@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
 
 const timestamp = '2026-09-10T00:00:00.000Z';
 
@@ -37,7 +38,21 @@ const catalog = {
   ],
 };
 
+const checkpointDeclaration = JSON.stringify({
+  checkpointReady: true,
+  message: 'feat(goals): publish stable dashboard slice',
+  include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
+  exclude: ['src/follow-up.ts'],
+  summary: 'The responsive dashboard and its focused coverage are ready.',
+});
+
+const earlierCheckpointDeclaration = JSON.stringify({
+  checkpointReady: true,
+  message: 'feat(goals): publish dashboard foundation',
+});
+
 async function stubGoalApis(page: Page): Promise<void> {
+  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     const { pathname } = url;
@@ -73,6 +88,34 @@ async function stubGoalApis(page: Page): Promise<void> {
         artifactStats: { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 },
         liveSummary: { ...goal.liveSummary, currentTask: null, todos: [] },
       }] } });
+      return;
+    }
+    if (pathname === '/api/goals/goal-1') {
+      await route.fulfill({ json: { goal: {
+        ...goal,
+        launchStrategy: 'direct',
+        checkpoint: {
+          intervalMinutes: 15, count: 2, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
+          latest: {
+            kind: 'agent', state: 'completed', message: 'feat(goals): publish stable dashboard slice',
+            summary: 'The responsive dashboard and its focused coverage are ready.',
+            include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
+            exclude: ['src/follow-up.ts'], commitSha: 'abc1234', error: null,
+          },
+        },
+      } } });
+      return;
+    }
+    if (pathname === '/api/task/goal-task-1/live-details') {
+      await route.fulfill({ json: {
+        events: [
+          { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
+          { id: 'checkpoint-0', type: 'thought', content: earlierCheckpointDeclaration, timestamp: '2026-09-10T00:01:00.000Z' },
+          { id: 'checkpoint-1', type: 'thought', content: `Stable dashboard work is **ready for review**.\n\`\`\`json\n${checkpointDeclaration}\n\`\`\``, timestamp: '2026-09-10T00:01:30.000Z' },
+          { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
+        ],
+        todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
+      } });
       return;
     }
     if (pathname === '/api/tasks') {
@@ -120,6 +163,8 @@ async function rowHeights(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
+  await page.clock.install({ time: Date.parse(timestamp) + 120_000 });
   await stubGoalApis(page);
 });
 
@@ -147,16 +192,20 @@ test('keeps the goal work queue within the available 1024px desktop content widt
   const wideDimensions = await contentWidths(page);
   expect(wideDimensions.queueScrollWidth).toBeLessThanOrEqual(wideDimensions.queueClientWidth);
   expect(wideDimensions.mainScrollWidth).toBeLessThanOrEqual(wideDimensions.mainClientWidth);
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    await page.screenshot({ path: '../.propr/previews/goals-queue.png', animations: 'disabled' });
+  }
 });
 
 test('dismisses the repository picker before the dirty goal creator on Escape', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await page.goto('/goals');
-  await page.getByRole('button', { name: 'New goal' }).click();
+  await page.getByRole('button', { name: 'New Goal', exact: true }).click();
 
   const creator = page.getByRole('dialog', { name: 'Start a goal' });
   await expect(creator).toBeVisible();
-  await creator.getByLabel('Objective').fill('Preserve this browser-tested draft');
+  await creator.getByLabel('Prompt').fill('Preserve this browser-tested draft');
   await creator.getByRole('button', { name: /acme.*web/i }).click();
   const repositoryFilter = creator.getByPlaceholder('Filter repositories...');
   await expect(repositoryFilter).toBeFocused();
@@ -170,6 +219,72 @@ test('dismisses the repository picker before the dirty goal creator on Escape', 
 
   await expect(repositoryFilter).toBeHidden();
   await expect(creator).toBeVisible();
-  await expect(creator.getByLabel('Objective')).toHaveValue('Preserve this browser-tested draft');
+  await expect(creator.getByLabel('Prompt')).toHaveValue('Preserve this browser-tested draft');
   expect(discardPrompts).toBe(0);
 });
+
+test('highlights checkpoint declarations in the readable goal log', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/goals/goal-1');
+
+  const checkpoints = page.getByTestId('goal-checkpoint-event');
+  await expect(checkpoints).toHaveCount(2);
+  const earlierCheckpoint = checkpoints.filter({ hasText: 'feat(goals): publish dashboard foundation' });
+  const latestCheckpoint = checkpoints.filter({ hasText: 'feat(goals): publish stable dashboard slice' });
+  await expect(earlierCheckpoint.getByText('Checkpoint request')).toBeVisible();
+  await expect(earlierCheckpoint.getByText('Checkpoint requested')).toHaveCount(0);
+  await expect(latestCheckpoint.getByText('CHECKPOINT', { exact: true })).toBeVisible();
+  await expect(latestCheckpoint.getByText('Stable dashboard work is', { exact: false })).toBeVisible();
+  await expect(latestCheckpoint.getByText('Checkpoint published')).toBeVisible();
+  await expect(latestCheckpoint.getByText('3 included · 1 excluded')).toBeVisible();
+  await expect(latestCheckpoint.getByText('abc1234')).toBeVisible();
+  await expect(page.getByText(checkpointDeclaration)).toHaveCount(0);
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    const implementationLog = page.getByRole('heading', { name: 'Implementation log' })
+      .locator('..').locator('..').locator('..');
+    await implementationLog.screenshot({ path: '../.propr/previews/goal-checkpoint-log.png', animations: 'disabled' });
+  }
+});
+
+for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height: 960 }, mobile: { width: 390, height: 844 } })) {
+  test(`goal creation uses collapsed session settings and docked attachments on ${device}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/goals?new=1');
+    const dialog = page.getByRole('dialog', { name: 'Start a goal' });
+    const prompt = dialog.getByLabel('Prompt', { exact: true });
+    await expect(prompt).toBeFocused();
+    await expect(dialog.getByLabel('Agent', { exact: true })).toBeHidden();
+    await prompt.fill('Ship the customer analytics dashboard with accessible filters and responsive charts.');
+    await dialog.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'dashboard-requirements.txt', mimeType: 'text/plain', buffer: Buffer.from('Support keyboard navigation and mobile layouts.') });
+    await expect(dialog.getByText('dashboard-requirements.txt')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Start goal' })).toBeEnabled();
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      const { mkdir } = await import('node:fs/promises');
+      await mkdir('../.propr/previews', { recursive: true });
+      await page.screenshot({ path: `../.propr/previews/new-goal-${device}.png`, animations: 'disabled' });
+    }
+    await dialog.locator('summary').click();
+    await expect(dialog.getByLabel('Agent', { exact: true })).toBeVisible();
+    await dialog.getByLabel('Maximum parallel tasks').fill('5');
+    await dialog.getByLabel('Agent orchestrates through ProPR').check();
+    await expect(dialog.getByLabel('Checkpoint target cadence', { exact: true })).toHaveCount(0);
+    await expect(dialog.locator('summary')).toHaveText('Advanced Options');
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await page.screenshot({ path: `../.propr/previews/new-goal-options-${device}.png`, animations: 'disabled' });
+    }
+    await dialog.locator('summary').click();
+    await expect(dialog.locator('summary')).toContainText('5 parallel tasks · Orchestrate');
+    const submit = page.waitForRequest(request => new URL(request.url()).pathname === '/api/goals' && request.method() === 'POST');
+    await page.route('**/api/goals', route => route.request().method() === 'POST'
+      ? route.fulfill({ status: 503, json: { error: 'Preview submission unavailable' } })
+      : route.fallback());
+    await dialog.getByRole('button', { name: 'Start goal' }).click();
+    const request = await submit;
+    expect(request.postData()).toContain('Ship the customer analytics dashboard');
+    expect(request.postData()).toContain('orchestrate');
+    expect(request.postData()).toContain('dashboard-requirements.txt');
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(prompt).toHaveValue('Ship the customer analytics dashboard with accessible filters and responsive charts.');
+  });
+}

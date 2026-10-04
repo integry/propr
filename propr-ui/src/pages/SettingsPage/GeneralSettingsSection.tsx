@@ -1,11 +1,15 @@
 import React from 'react';
 import { SettingsCheckboxField, SettingsField, SettingsSection } from './SettingsLayout';
+import { buildAllModelOptions, type ModelSelectionAgent } from './modelSelectionHelpers';
 import { SETTINGS_CONTROL } from './settingsStyles';
 
 interface GeneralSettings {
   worker_concurrency: string;
-  auto_followup_score_threshold: number;
   auto_resolve_merge_conflicts: boolean;
+  ultrafix_escalation_enabled: boolean;
+  ultrafix_escalation_models: string[];
+  ultrafix_escalation_patience: number;
+  ultrafix_escalation_max_reasoning_levels: number;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;
@@ -14,6 +18,8 @@ interface GeneralSettings {
 interface GeneralSettingsSectionProps {
   settings: GeneralSettings;
   onSettingChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void;
+  modelAgents: ModelSelectionAgent[];
+  onEscalationModelsChange: (models: string[]) => void;
   onBlur?: () => void;
   className?: string;
 }
@@ -22,8 +28,12 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   settings,
   onSettingChange,
   onBlur,
+  modelAgents,
+  onEscalationModelsChange,
   className
 }) => {
+  const modelOptions = buildAllModelOptions(modelAgents);
+  const models = settings.ultrafix_escalation_models;
   return (
     <div className={`space-y-10 ${className || ''}`}>
       <SettingsSection title="Processing">
@@ -42,32 +52,6 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             placeholder="2"
             className={SETTINGS_CONTROL}
           />
-        </SettingsField>
-
-        <SettingsField
-          label="Auto-Followup Score Threshold"
-          htmlFor="auto_followup_score_threshold"
-          helperText="Post a retry follow-up when critique score is at or below this threshold. Set to 0 to disable."
-        >
-          <select
-            id="auto_followup_score_threshold"
-            name="auto_followup_score_threshold"
-            value={settings.auto_followup_score_threshold}
-            onChange={onSettingChange}
-            onBlur={onBlur}
-            className={SETTINGS_CONTROL}
-          >
-            <option value={0}>Disabled</option>
-            <option value={1}>1 (Very Low)</option>
-            <option value={2}>2</option>
-            <option value={3}>3</option>
-            <option value={4}>4 (Default)</option>
-            <option value={5}>5</option>
-            <option value={6}>6</option>
-            <option value={7}>7</option>
-            <option value={8}>8</option>
-            <option value={9}>9 (High)</option>
-          </select>
         </SettingsField>
 
         <SettingsCheckboxField
@@ -153,6 +137,55 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             className={SETTINGS_CONTROL}
           />
         </SettingsField>
+
+        <SettingsCheckboxField
+          id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
+          label="Automatic Escalation"
+          helperText="When scores stall, raise reasoning effort, then switch models. E.g. medium → high, then next model."
+          checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
+        />
+        {settings.ultrafix_escalation_enabled && (
+          <>
+            <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
+              helperText="Tried in order after the current model. Unavailable or usage-exhausted models are skipped.">
+              <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2">
+                {models.map((model, index) => (
+                  <div key={index} className="contents">
+                    <span className="text-sm text-gray-500">{index + 1}.</span>
+                    <select id={`ultrafix_escalation_model_${index}`} aria-label={`Escalation model ${index + 1}`}
+                      value={model} className={`${SETTINGS_CONTROL} min-w-0`}
+                      onChange={event => onEscalationModelsChange(models.map((value, i) => i === index ? event.target.value : value))}>
+                      {!modelOptions.some(option => option.value === model) && <option value={model}>{model} (unavailable)</option>}
+                      {modelOptions.map(option => <option key={option.value} value={option.value}>
+                        {option.label}{option.enabled ? '' : ' (disabled)'}
+                      </option>)}
+                    </select>
+                    <button type="button" aria-label={`Remove escalation model ${index + 1}`}
+                      onClick={() => onEscalationModelsChange(models.filter((_, i) => i !== index))}
+                      className="text-sm text-gray-600 hover:text-gray-900">Remove</button>
+                  </div>
+                ))}
+                <select id="ultrafix_escalation_model_add" aria-label="Add escalation model" value="" className={`${SETTINGS_CONTROL} col-start-2 min-w-0`}
+                  onChange={event => { if (event.target.value) onEscalationModelsChange([...models, event.target.value]); }}>
+                  <option value="">Add escalation model…</option>
+                  {modelOptions.map(option => <option key={option.value} value={option.value}>
+                    {option.label}{option.enabled ? '' : ' (disabled)'}
+                  </option>)}
+                </select>
+              </div>
+            </SettingsField>
+            <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
+              helperText="Reviews without a new best score before escalating. E.g. 2: best 6/10, then 6 and 5 → escalate.">
+              <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
+                value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+            </SettingsField>
+            <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
+              helperText="Effort increases per model before switching. E.g. 2: low → medium → high → next model. 0 switches right away.">
+              <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
+                value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
+            </SettingsField>
+          </>
+        )}
       </SettingsSection>
     </div>
   );

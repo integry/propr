@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore }
 import type { Socket } from '@propr/client';
 import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
+import { useActivitySocketSurface } from './useActivitySocketSurface';
 import {
   getDesktopConnectionScope,
   getDesktopSocketConfigurationKey,
@@ -19,6 +20,8 @@ import {
 
 interface SocketProviderProps {
   children: React.ReactNode;
+  onConnectionChange?: (connected: boolean) => void;
+  onAuthenticationError?: () => Promise<void>;
   disabled?: boolean;
   disableReasons?: SocketProviderDisableReasons;
 }
@@ -43,16 +46,24 @@ const refreshDesktopActiveWork = (): void => {
 
 export const SocketProvider: React.FC<SocketProviderProps> = ({
   children,
+  onConnectionChange,
+  onAuthenticationError,
   disabled = false,
   disableReasons = noDisableReasons,
 }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const authenticationErrorRef = useRef(onAuthenticationError);
+  authenticationErrorRef.current = onAuthenticationError;
+  useEffect(() => { onConnectionChange?.(isConnected); }, [isConnected, onConnectionChange]);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
   const draftUpdateCallbacksRef = useRef<Set<(payload: DraftUpdatePayload) => void>>(new Set());
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const activitySurface = useActivitySocketSurface();
+  const { attach, handleConnected, handleDisconnected } = activitySurface;
+  const onGoalUpdate = activitySurface.subscriptions.onGoalUpdate;
   const socketConfigurationKey = useSyncExternalStore(
     subscribeDesktopConnectionScope,
     getDesktopSocketConfigurationKey,
@@ -81,6 +92,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       });
       setSocket(null);
       setIsConnected(false);
+      handleDisconnected();
       return;
     }
 
@@ -94,9 +106,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       });
       setSocket(null);
       setIsConnected(false);
+      handleDisconnected();
       return;
     }
     setIsConnected(false);
+    handleDisconnected();
     reportPackagedAcceptanceRendererLifecycle('socket-effect-ready', {
       providerDisabled: false,
       desktopRuntime: Boolean(isDesktopRuntime()),
@@ -138,6 +152,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       if (!isCurrentScope()) return;
       console.log('[SocketContext] Connected to WebSocket server');
       setIsConnected(true);
+      handleConnected(newSocket);
       refreshDesktopActiveWork();
     };
 
@@ -145,12 +160,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       if (!isCurrentScope()) return;
       console.log('[SocketContext] Disconnected from WebSocket server:', reason);
       setIsConnected(false);
+      handleDisconnected();
       refreshDesktopActiveWork();
     };
 
     const connectionError = (error: Error) => {
       if (!isCurrentScope()) return;
       setIsConnected(false);
+      handleDisconnected();
       refreshDesktopActiveWork();
       console.error('[SocketContext] Connection error:', error.message);
       const code = (error as Error & { data?: { code?: string } }).data?.code;
@@ -158,7 +175,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     };
 
     const authenticationError = (value: { code?: string } | undefined) => {
-      handleAuthenticationCode(value?.code, true);
+      if (!isCurrentScope()) return;
+      if (isDesktopRuntime()) {
+        handleAuthenticationCode(value?.code, true);
+      } else {
+        // The server disconnects a stale principal. Refresh session state before
+        // reconnecting with changed permissions; revoked sessions stay closed.
+        void authenticationErrorRef.current?.().then(() => {
+          if (isCurrentScope() && value?.code === 'AUTHORIZATION_CHANGED') newSocket.connect();
+        }).catch(() => undefined);
+      }
     };
 
     newSocket.on('connect', connected);
@@ -208,6 +234,8 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     newSocket.on(INDEXING_UPDATE, indexingUpdated);
     newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
+    const detachActivitySurface = attach(newSocket, isCurrentScope);
+    const detachGoalRefresh = onGoalUpdate(refreshDesktopActiveWork);
 
     setSocket(newSocket);
     reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
@@ -223,6 +251,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
       setIsConnected(false);
+      // The activity subscriber count is deliberately kept: those components
+      // are still mounted, and the replacement socket rejoins on its connect.
+      handleDisconnected();
       disposed = true;
       newSocket.off('connect', connected);
       newSocket.off('disconnect', disconnected);
@@ -233,9 +264,12 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
       newSocket.off(INDEXING_UPDATE, indexingUpdated);
       newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
+      detachGoalRefresh();
+      detachActivitySurface();
       newSocket.disconnect();
     };
   }, [
+    attach, handleConnected, handleDisconnected, onGoalUpdate,
     currentUserAbsent,
     currentUserLoading,
     demoMode,
@@ -383,6 +417,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     onIndexingUpdate,
     onQueueStatsUpdate,
     onTaskLiveUpdate,
+    // The activity surface owns the reference-counted room and its four
+    // registries; the provider only hands them to consumers.
+    ...activitySurface.subscriptions,
   };
 
   return (

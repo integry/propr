@@ -1,20 +1,35 @@
+import { isUsageTipsCooldownDays } from '@propr/shared';
 import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
+  usage_tips_enabled?: unknown;
+  usage_tips_dismissal_cooldown_days?: unknown;
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
+  dashboard_summary_enabled?: unknown;
   model_reasoning_level?: unknown;
   pr_review_model?: unknown;
+  ultrafix_escalation_enabled?: unknown;
+  ultrafix_escalation_models?: unknown;
+  ultrafix_escalation_patience?: unknown;
+  ultrafix_escalation_max_reasoning_levels?: unknown;
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
 }
 
 export type SettingSaveName =
+  | 'usage_tips_enabled'
+  | 'usage_tips_dismissal_cooldown_days'
   | 'auto_followup_score_threshold'
   | 'auto_resolve_merge_conflicts'
+  | 'dashboard_summary_enabled'
   | 'model_reasoning_level'
   | 'pr_review_model'
+  | 'ultrafix_escalation_enabled'
+  | 'ultrafix_escalation_models'
+  | 'ultrafix_escalation_patience'
+  | 'ultrafix_escalation_max_reasoning_levels'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds';
@@ -42,9 +57,34 @@ async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; va
   return { value: val };
 }
 
-export async function extractSettingSaves(fields: SettingFields): Promise<{ error?: string; saves: LabeledSaveDescriptor[]; normalized: Record<string, unknown> }> {
+interface SettingSavesResult {
+  error?: string;
+  saves: LabeledSaveDescriptor[];
+  normalized: Record<string, unknown>;
+}
+
+function extractUsageTipSettingSaves(fields: SettingFields): SettingSavesResult {
   const saves: LabeledSaveDescriptor[] = [];
   const normalized: Record<string, unknown> = {};
+
+  if (fields.usage_tips_enabled !== undefined) {
+    if (typeof fields.usage_tips_enabled !== 'boolean') return { error: 'usage_tips_enabled must be a boolean', saves: [], normalized };
+    normalized.usage_tips_enabled = fields.usage_tips_enabled;
+    saves.push({ name: 'usage_tips_enabled' });
+  }
+  if (fields.usage_tips_dismissal_cooldown_days !== undefined) {
+    if (!isUsageTipsCooldownDays(fields.usage_tips_dismissal_cooldown_days)) return { error: 'usage_tips_dismissal_cooldown_days must be an integer from 1 to 365', saves: [], normalized };
+    normalized.usage_tips_dismissal_cooldown_days = fields.usage_tips_dismissal_cooldown_days;
+    saves.push({ name: 'usage_tips_dismissal_cooldown_days' });
+  }
+
+  return { saves, normalized };
+}
+
+export async function extractSettingSaves(fields: SettingFields): Promise<SettingSavesResult> {
+  const result = extractUsageTipSettingSaves(fields);
+  if (result.error) return result;
+  const { saves, normalized } = result;
 
   if (fields.auto_followup_score_threshold !== undefined) {
     const v = validateStrictInt(fields.auto_followup_score_threshold, 0, 9);
@@ -57,6 +97,12 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
     normalized.auto_resolve_merge_conflicts = fields.auto_resolve_merge_conflicts;
     saves.push({ name: 'auto_resolve_merge_conflicts' });
+  }
+
+  if (fields.dashboard_summary_enabled !== undefined) {
+    if (typeof fields.dashboard_summary_enabled !== 'boolean') return { error: 'dashboard_summary_enabled must be a boolean', saves: [], normalized };
+    normalized.dashboard_summary_enabled = fields.dashboard_summary_enabled;
+    saves.push({ name: 'dashboard_summary_enabled' });
   }
 
   if (fields.model_reasoning_level !== undefined) {
@@ -94,5 +140,57 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  return extractEscalationSettingSaves(fields, result);
+}
+
+async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
+  const { saves, normalized } = result;
+  if (fields.ultrafix_escalation_enabled !== undefined) {
+    if (typeof fields.ultrafix_escalation_enabled !== 'boolean') return { error: 'ultrafix_escalation_enabled must be a boolean', saves: [], normalized };
+    normalized.ultrafix_escalation_enabled = fields.ultrafix_escalation_enabled;
+    saves.push({ name: 'ultrafix_escalation_enabled' });
+  }
+  for (const [name, min] of [['ultrafix_escalation_patience', 1], ['ultrafix_escalation_max_reasoning_levels', 0]] as const) {
+    if (fields[name] === undefined) continue;
+    const value = validateStrictInt(fields[name], min, Infinity);
+    if (value === null) return { error: `${name} must be a safe integer >= ${min}`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
+  }
+  if (fields.ultrafix_escalation_models !== undefined) {
+    const models = fields.ultrafix_escalation_models;
+    if (!Array.isArray(models) || models.some(m => typeof m !== 'string' || !m.trim())) return { error: 'ultrafix_escalation_models must be an ordered array of nonempty model names', saves: [], normalized };
+    for (const model of models) {
+      const result = await validatePrReviewModel(model);
+      if (result.error) return { error: result.error.replaceAll('pr_review_model', 'ultrafix_escalation_models'), saves: [], normalized };
+    }
+    normalized.ultrafix_escalation_models = [...new Set(models.map(m => m.trim()))];
+    saves.push({ name: 'ultrafix_escalation_models' });
+  }
+
   return { saves, normalized };
+}
+
+interface IntegerSettingConfig {
+  name: string;
+  value: unknown;
+  defaultValue: number;
+  minimum: number;
+  maximum?: number;
+}
+interface InvalidIntegerSetting {
+  name: string;
+  value: unknown;
+}
+
+function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
+  if (value === undefined || value === null) return null;
+  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
+  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
+}
+export function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
+  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
+  if (parsed !== null) return { value: parsed };
+  if (value === undefined || value === null) return { value: defaultValue };
+  return { value: defaultValue, invalid: { name, value } };
 }

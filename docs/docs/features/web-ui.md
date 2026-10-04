@@ -1,39 +1,29 @@
 # Web UI Guide
 
-The ProPR Web UI is where you configure repositories and agents, plan and launch work, watch tasks run, and review costs and capacity. It is the same surface used in the [live demo](https://demo.propr.dev) and runs on port `5173` by default (open it with `propr ui`).
-
-This page is a tour of what each screen does. For how the UI is wired to the backend — ports, OAuth, WebSockets, deployment — see the [Web UI Integration Guide](../operations/web-ui-integration.md). For the terminal equivalent of most of these actions, see the [ProPR CLI](./propr-cli.md).
+The ProPR Web UI configures repositories and agents, launches work, and shows progress and usage. Open it with `propr ui`. For ports, authentication and deployment, see [Web UI integration](../operations/web-ui-integration.md); for terminal workflows, see the [CLI](./propr-cli.md).
 
 ## Navigation And Chrome
 
-Two persistent elements frame every page.
+The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
 
-**Sidebar (left).** The primary navigation: **Dashboard**, **Plans**, **Tasks**, **Repositories**, **Coding Agents**, **Analytics**, **Logs** (a collapsible group holding **LLM Log** and, for operators with `instance.manage_settings`, **MCP Log**), and **Settings**. Tasks and Plans show live count badges, and an amber dot flags setup gaps (no repositories, no agents, or no tasks yet). Below the navigation, the [Agent Tank](../operations/agent-tank.md) usage section shows live per-provider capacity bars when the integration is enabled. The footer shows the running version and copyright.
+The header includes search (`Cmd/Ctrl+K`), activity/review controls, quick add to-do (`Alt+T`) and system health. **New Task** is the default creation action. It becomes **New Plan** in Plans/Planner Studio and **New Goal** in Goals; the adjacent menu offers the other two actions. See [Launching work](./launching-work.md) to choose between them. After quick add confirms **To-Do added**, choose **Add another** to enter the next item without closing the popover. Desktop puts application information in **About ProPR** rather than the sidebar footer.
 
-**Header (top).** A global **search** (focus with `Cmd/Ctrl+K`) spans tasks, plans, and repositories. To its right: an **AI activity monitor** (how many tasks are running now), an **active plans** dropdown, a **tasks awaiting review** dropdown grouped by repo/PR/issue, a **quick add to-do** popover (`Alt+T`), a **New Plan** button, a **system health** indicator that opens a status modal (daemon, workers, Redis, GitHub auth, indexing, and per-agent health), and your GitHub profile with sign-out.
-
-**Voice briefing (lower right).** The on-demand control fetches a text snapshot of parallel or long-running work and can ask the browser to speak it. It does not keep a call or background listener open. Spoken commands use a fixed grammar, and stop or follow-up actions require a separate confirmation. See [Voice Briefings](./voice-briefings.md) for the command reference, privacy boundary, costs, and mobile limitations.
-
-When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only access and all mutating actions are disabled. The synthetic demo identity has member-level operational access; installation-only Settings, Coding Agents, trusted-runtime, and Access controls are hidden.
-
-{/* SCREENSHOT PLACEHOLDER (P1): Capture the full app shell — left sidebar (nav + Agent Tank usage + version footer) and the global header (search, activity monitor, New Plan, system health, profile) — with the Dashboard behind it. */}
+Voice briefings are experimental and off by default. Enable them in Settings to show the on-demand launcher; see [Voice briefings](./voice-briefings.md). Demo mode is read-only and hides installation administration.
 
 ## Dashboard
 
-The landing page (`/`) answers "what needs my attention right now" in four panes under a single 36px toolbar. The toolbar carries only the page name on the left and the repository filter on the right — the same filtering pattern as Plans, Goals, and Tasks — and the panes attach directly to its bottom rule. There is no separate row of counts: the pane headings and the queue summary already show them.
+The landing page (`/`) shows a short activity summary above four areas:
 
-1. **Needs attention** — the three newest blockers and pending decisions — including runs that failed and were not recovered — each with its reason, repository and issue/PR reference, how long it has been waiting, and one primary action. The action is a single fixed-width verb (`Open` or `Review`) so every button in the column shares one left edge; what is being opened or reviewed is named in the button's accessible label. With nothing to attend to, the panel leaves the desktop layout entirely and mobile shows a single quiet line.
-2. **Happening now** — compact rows for work in flight, newest first, with elapsed time and a live sub-phase line on every row. The line is the agent's current plan step, or else its latest action (`Editing Dashboard.tsx`, `Running npm test`), or else the setup or publishing phase. At the end of the line are the step count from the agent's own plan (`step 3/7`) and when it last produced output (`last output 18 mins ago`), so a quiet run shows up without a spinner and without being labelled stalled. Five rows expand inline to the rest, ordering stays stable while tasks run (new work appears on top), and a compact queue summary below says how much is waiting and why when the backend knows.
-3. **Completed** — a flat feed of finished work, newest first, with a title filter in its header. Failures are listed under Needs attention instead, and cancelled or skipped runs are not listed. A row shows what the run produced when it recorded something ("2 issues found: …" for a review), never a bare "completed successfully". Only reviews carry a score, drawn as the fixed-width quality pill (`[ ● 9 ]`, `[ ◆ 7 ]`); the out-of-ten scale is announced to assistive technology rather than printed as `/10`, which would put variable-width glyphs outside the badge and make the right rail shift between rows.
-4. **Historical stats** — Completed, Success rate, and Recorded spend over seven or thirty days, plus a small daily-completions chart that marks only the day still in progress. Data the instance cannot report renders as "—", never as zero.
+- **Needs attention** collects failed work and decisions awaiting review. Open the linked entity to resolve the blocker; an empty queue shows an all-clear line.
+- **Happening now** shows running tasks and goals, current activity, elapsed time and last output. Queue information explains waiting work when the server knows the reason.
+- **Completed** groups results by the work they belong to. Expand an entry to inspect its individual runs and review results; use the title filter to narrow the feed.
+- **Historical stats** shows completions, success rate and recorded spend for seven or thirty days. Unavailable measurements display “—”.
 
-Wherever a row shows a task title, the task type (`Issue`, `Fix`, `Review`, `Follow-up`…) is drawn as a badge in front of it, and the title itself drops the type prefix, the PR number and the model tag the run was queued with.
+The repository filter applies across the dashboard and stays in the URL. Activity summaries describe recent work; [usage tips](./usage-tips.md) link to relevant documentation. Live updates keep the last available data during a connection interruption. **Analytics** (`/analytics`) contains broader activity, repository and model reporting. A timeframe selector in its header (last 24 hours, 7 days, 30 days, 90 days, 12 months or all time; 30 days by default) scopes every section at once and stays in the URL as `?period=`. The dashboard's **Full analytics** link opens it with the period the dashboard is showing. The page shows totals for the period (tasks, success rate, tokens and spend), daily activity, per-repository performance, a per-model breakdown of tasks, tokens and cost, the task status mix, and token consumption split into input and output with the spend per million tokens. Select a repository row to open its tasks (or its failure count to open just the failed ones), or a model row to open its LLM log; those lists are not limited to the selected period. Analytics always covers every repository, so the toolbar shows the repository scope locked to **All Repos**.
 
-The dashboard is a split-pane console rather than a set of cards. No section draws its own box: the two columns are separated by one continuous vertical rule that runs the full height of the canvas, sub-sections are separated by edge-to-edge horizontal rules, and every pane header is the same height so the rules in the two columns land on the same pixel. Technical entities (repository names, issue and PR references) are monospace chips that always name their type, with the repository drawn without its owner — the filter above the console already establishes the workspace, and one screen must not spell the same repository two ways, and colour is reserved for work in progress, blockers and failures — completed and merged work stays neutral.
+![Current dashboard with grouped work navigation, activity summary, attention items, running tasks and completed results](/img/screenshots/0.9.0/dashboard.png)
 
-A single repository filter applies to every section and is kept in the URL, so it survives navigation and a reload. The sections refresh live over WebSocket; if the connection drops, the last known rows stay on screen until it returns, without a status line reporting on the socket. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it.
-
-**Analytics** (`/analytics`) holds the fuller reporting view — daily activity, task status distribution, the Repository Breakdown, and Top Models — because the dashboard benefits more from space for ongoing work. For where each number comes from and how to read it, see [Metrics](../operations/metrics.md).
+Screenshots in this guide use deterministic example data rendered by the current application.
 
 ## Plans And Planner Studio
 
@@ -58,16 +48,15 @@ Planner Studio is covered step by step in the [Planner Studio tutorial](../tutor
 
 These records are the heart of ProPR's observability — see [Observability And Control](./observability.md). To undo a committed change, the **Revert** flow (`/revert`) previews the target commit and the resulting HEAD before running a signed revert.
 
+## Goals and Inbox
+
+**Goals** (`/goals`) shows continuing objectives and opens the console for progress, artifacts and corrective inputs. See [Goals](./goals.md) for native execution and lifecycle controls. **Inbox** (`/inbox`) links notifications to the work requiring your attention; [Inbox and notifications](./inbox.md) explains personal and repository preferences.
+
 ## Repositories
 
-**Repositories** (`/repositories`) manages the repos ProPR monitors — add, alias, set a base branch, enable/disable, configure [visual previews](./visual-previews.md), reindex, hide, or delete. Visual preview controls select image/video evidence and optional capture instructions for each repository. The selected repository opens a panel with four tabs:
+**Repositories** (`/repositories`) lists monitored repositories. Select one to open its workspace, or add another monitored repository with the repository controls. The workspace includes **Chat**, **Improve**, **Browse**, **To-Dos**, media and settings controls. Repository settings include branch selection, automation, [visual previews](./visual-previews.md) and **Notifications**. Turning notifications off suppresses future repository Inbox/push events without stopping automation or deleting old notifications.
 
-- **Chat** — converse with the indexed repository;
-- **Improve** — generate categorized improvement suggestions;
-- **Browse** — the file tree with AI-generated summaries (also reachable at `/summaries`);
-- **To-dos** — the repository's to-do list by category (the header's quick-add writes here).
-
-See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration](./branch-config.md) for what indexing and branch settings drive.
+A repository's **New task** shortcut or a selected to-do's **Run task** action prefills [task launch](./launching-work.md). Browse follows the configured branch. See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration](./branch-config.md).
 
 ## Coding Agents
 
@@ -103,13 +92,14 @@ for the operator walkthrough and the log's filters.
 
 ## Settings
 
-**Settings** (`/settings`) is administrator-only, auto-saves, and is organized in two columns.
+**Settings** (`/settings`) uses a contained form with tabs. Administrators see **AI & Models**, **Automation**, **Integrations** and **Notifications**. Members can access their personal notification and experimental voice preferences.
 
-**AI engine configuration:** model roles (fast analysis, planner context, planner generation, default agent alias, PR review, and summarization), the knowledge-base reindex control, and the **LLM Usage Tracking** ([Agent Tank](../operations/agent-tank.md)) toggle and URL.
+- **AI & Models** configures implementation, planning, review and summarization roles.
+- **Automation** configures trigger users/labels, follow-up keywords, concurrency and review/merge rules.
+- **Integrations** contains Agent Tank, runtime packages, [MCP server and connected apps](./mcp.md), visual preview uploads, managed storage and experimental voice controls.
+- **Notifications** configures personal Inbox/push categories, quiet hours and browser subscription. See [Inbox and push](./inbox.md).
 
-**Automation rules:** the GitHub user whitelist, primary processing labels, the PR label, follow-up keywords and ignore keywords, worker concurrency, the auto-follow-up score threshold, auto-resolve merge conflicts, and the Ultrafix rating goal / max cycles / pause settings.
-
-These map onto [Agents And Models](./agents-and-models.md), [PR Follow-up](./pr-followup.md), the [Ultrafix commands](./pr-commands.md), and [Execution Safety](./execution-safety.md).
+![Settings AI and Models tab showing implementation and planning model controls in a single column](/img/screenshots/0.9.0/settings.png)
 
 ## Access
 
@@ -119,7 +109,18 @@ Role assignments do not edit the GitHub trigger whitelist. Configure allowed log
 
 ## Live Updates And Shortcuts
 
-The UI subscribes to socket.io events, so the dashboard, task list, task detail, and plan generation update without a refresh. Keyboard shortcuts: `Cmd/Ctrl+K` focuses global search, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
+The UI subscribes to socket.io events, so the dashboard, task list, task detail, and plan generation update without a refresh. The websocket is the normal path for every live surface — including the parts of the app shell that are on screen no matter which page you are on:
+
+| What updates | When it updates | Event |
+| --- | --- | --- |
+| Header activity monitor, active plans, tasks awaiting review | a task, plan or queue change is published | `task:update`, `draft:update`, `queue:stats:update`, `activity:update` |
+| System health indicator and status modal | a daemon, worker, Redis, GitHub-authentication or coding-agent state changes, a repository index starts, finishes or fails, or agent capacity moves (per-file indexing progress is ignored) | `activity:update` (health, indexing, usage), `usage:update` |
+| Inbox list and its unread badge | a notification is created, read or dismissed — including in another tab, or by a server-side cleanup such as a merged pull request | `notification:update` |
+| Agent Tank usage bars | a provider quota changes | `usage:update` |
+
+Polling is the fallback for a client whose websocket is unavailable, not the normal path: while the socket is connected and nothing is happening, an open tab issues no requests of its own. A hidden or backgrounded tab does no work either, and reconciles once when you come back to it — as does a tab whose socket dropped and reconnected. The Agent Tank **Refresh usage** button still asks the backend to re-probe the providers on demand.
+
+Keyboard shortcuts: `Cmd/Ctrl+K` focuses global search, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
 
 
 ## Visual preview settings

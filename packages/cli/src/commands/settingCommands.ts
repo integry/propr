@@ -47,14 +47,16 @@ function formatValue(value: unknown): string {
  */
 function getSettingDescription(key: SettingKey): string {
   const descriptions: Record<SettingKey, string> = {
+    usage_tips_enabled: "Show daily documentation tips on the dashboard",
+    usage_tips_dismissal_cooldown_days: "Base dismissal cooldown (1–365 days; changes recalculate existing cooldowns)",
     default_agent_alias: "Alias of the default implementation agent",
     worker_concurrency: "Number of concurrent workers for processing tasks",
     github_user_whitelist: "GitHub usernames allowed to use the system",
-    analysis_model_fast: "Model for fast analysis operations",
+    analysis_model_fast: "Used by /review to gather repository context before the review",
     planner_context_model: "Model for planner context generation",
     planner_generation_model: "Model for planner generation",
-    auto_followup_score_threshold: "Score threshold (0-9) for auto-followup",
     auto_resolve_merge_conflicts: "Automatically resolve merge conflicts",
+    dashboard_summary_enabled: "Enable AI-generated dashboard activity summaries",
     model_reasoning_level: "Reasoning level for GPT and Claude agents (empty = agent default)",
     pr_review_model: "Model for full PR reviews",
     pr_review_prompt: "Override for the PR review prompt guidance (empty = built-in default)",
@@ -62,6 +64,10 @@ function getSettingDescription(key: SettingKey): string {
     pr_review_context_model: "Model for read-only PR review context scouting",
     pr_review_max_context_tokens: "Legacy absolute PR review input token cap (0 = none; lower of cap and budget applies)",
     pr_review_context_budget_percent: "Review context budget: % of each reviewer's safe input capacity (10-100, steps of 10)",
+    ultrafix_escalation_enabled: 'Enable automatic Ultrafix reasoning and model escalation (true/false)',
+    ultrafix_escalation_models: 'Ordered escalation models as a JSON array of model IDs or agent:model pairs',
+    ultrafix_escalation_patience: 'Stalled reviews before each escalation step (positive integer)',
+    ultrafix_escalation_max_reasoning_levels: 'Maximum reasoning increases per model (0 for direct model handoff)',
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
@@ -164,8 +170,9 @@ export async function getAllDisplaySettings(
       await getExtraConfigSetting(key, getter),
     ] as const)
   );
+  const { auto_followup_score_threshold: _retiredThreshold, ...currentSettings } = settings;
   const displaySettings: DisplaySettings = {
-    ...settings,
+    ...currentSettings,
     ...Object.fromEntries(
       extras
         .filter((result): result is PromiseFulfilledResult<readonly [ExtraConfigKey, unknown]> => result.status === "fulfilled")
@@ -334,7 +341,6 @@ ${formatExtraConfigKeysHelp()}
 
 Examples:
   $ propr setting update worker_concurrency 10
-  $ propr setting update auto_followup_score_threshold 7
   $ propr setting update github_user_whitelist "user1,user2,user3"
   $ propr setting update followup-keywords "!propr,propr"
   $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022

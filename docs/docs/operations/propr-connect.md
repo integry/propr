@@ -85,6 +85,7 @@ The acknowledgement may also carry a machine-readable `reason` (such as `unsuppo
 ```json
 {
   "type": "ack",
+  "sequence": 42,
   "deliveryId": "…",
   "status": "ignored",
   "reason": "user_not_allowed",
@@ -98,7 +99,7 @@ This contract keeps policy local, adds no preflight latency or new request path,
 
 ### Seats And Limits
 
-A seat is a distinct developer whose GitHub activity starts ProPR work through the installation in a billing cycle — dashboard browsing costs nothing. `github-actions[bot]` and the ProPR bot are seat-exempt; other bot accounts consume a seat like any developer if you whitelist them to trigger work. The free Community tier includes 3 seats. When the limit is reached, developers already seated this cycle keep working; a *new* developer's triggers are acknowledged as `blocked` with `limit_reached`, a soft-block comment is posted on the originating issue or PR, and the delivery appears in the history — add Plus seats from the Connect dashboard to unblock them.
+A seat is a distinct developer whose GitHub activity starts ProPR work through the installation in a billing cycle — dashboard browsing costs nothing. Automation bots never consume a seat: `github-actions[bot]`, `github-advanced-security[bot]`, `copilot-pull-request-reviewer[bot]`, `dependabot[bot]`, `renovate[bot]`, and the ProPR bot. Other bot accounts consume a seat like any developer if you whitelist them to trigger work. The free Community tier includes 3 seats. When the limit is reached, developers already seated this cycle keep working; a *new* developer's triggers are acknowledged as `blocked` with `limit_reached`, a soft-block comment is posted on the originating issue or PR, and the delivery appears in the history — add Plus seats from the Connect dashboard to unblock them.
 
 ## Hosted UI Tunnel Flow
 
@@ -212,9 +213,6 @@ source to Git. Temporary staged evidence is cleaned up after publication.
 Run `npm run test:visual-previews` from the repository root. This builds the shared
 packages and runs deterministic mocked Connect/GitHub coverage, API/settings
 checks, publication and log-redaction checks, and runtime-directory regression
-tests. It requires no live Connect storage credentials. The same command runs on
-pull requests in CI; the normal full test suite also discovers these tests.
-
-Keep the epic integration PR targeting `2280-epic-create-a-j2x` open for maintainer
-review. Validation must not merge the epic into `main`; only maintainers explicitly
-authorize that release step. The release test job has read-only repository access.
+tests. It requires no live Connect storage credentials. CI does not run this
+command separately: the full test suite that runs on every pull request
+discovers the same tests.

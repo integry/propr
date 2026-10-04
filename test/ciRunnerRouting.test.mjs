@@ -125,6 +125,10 @@ case "$command" in
     ;;
   rm)
     name="\${@: -1}"; [[ "$name" == id-* ]] || exit 9; name="\${name#id-}"
+    if [[ -n "\${FAKE_UNREMOVABLE:-}" ]]; then
+      echo "Error response from daemon: cannot remove container \"$name\": could not kill container: container PID 1 is zombie and can not be killed" >&2
+      exit 1
+    fi
     rm -f "$state/$name"
     echo "rm $name" >> "$state/.log"
     ;;
@@ -359,6 +363,49 @@ describe('scripts/ci-redis.sh shared-host isolation', () => {
         assert.deepEqual(docker.containers(), [name, other].sort());
     });
 
+    test('reports an owned container the daemon cannot remove instead of failing teardown', () => {
+        const docker = createFakeDocker();
+        const env = { CI_REDIS_INSTANCE: 'shard-4' };
+        const name = startRedis(docker, env);
+        const result = runRedis(docker, 'stop', { ...env, FAKE_UNREMOVABLE: 'true', GITHUB_ACTIONS: 'true' });
+        // The shard's tests have already decided the job result, and no step in
+        // the job can reap a zombie PID, so teardown reports and continues.
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stderr, /is zombie and can not be killed/);
+        assert.match(result.stderr, new RegExp(`Docker could not remove ${name}`));
+        assert.match(result.stdout, new RegExp(`^::warning::Leaked CI Redis container ${name}:`, 'm'));
+        assert.deepEqual(docker.containers(), [name]);
+        assert.deepEqual(docker.removals(), []);
+        // The state file still records it, so a later teardown retries instead
+        // of reporting the name as already gone.
+        const retry = runRedis(docker, 'stop', env);
+        assert.equal(retry.status, 0, retry.stderr);
+        assert.deepEqual(docker.containers(), []);
+        assert.deepEqual(docker.removals(), [name]);
+    });
+
+    test('still fails start and ownership violations when a removal is refused', () => {
+        const docker = createFakeDocker();
+        // A leftover container of this caller's own name blocks the retry, so a
+        // start that cannot remove it must not continue.
+        const blocked = runRedis(docker, 'start', { FAKE_RUN_FAILURES: '1', FAKE_UNREMOVABLE: 'true' });
+        assert.notEqual(blocked.status, 0);
+        assert.match(blocked.stderr, /is zombie and can not be killed/);
+        assert.doesNotMatch(blocked.stderr, /leaving it for host cleanup/);
+        assert.deepEqual(docker.containers(), [redisName(docker, {})]);
+
+        // Teardown tolerance covers only the daemon's refusal, never a
+        // container this caller does not own.
+        const other = createFakeDocker();
+        const name = startRedis(other, {});
+        const file = join(other.state, name);
+        writeFileSync(file, readFileSync(file, 'utf8').replace('propr.ci.redis=true', 'propr.ci.redis=false'));
+        const refused = runRedis(other, 'stop', { FAKE_UNREMOVABLE: 'true' });
+        assert.equal(refused.status, 1, refused.stderr);
+        assert.match(refused.stderr, /Refusing to remove/);
+        assert.deepEqual(other.containers(), [name]);
+    });
+
     test('rejects invalid instances, attempts and Docker limits', () => {
         const docker = createFakeDocker();
         for (const env of [
@@ -378,6 +425,9 @@ describe('scripts/ci-redis.sh shared-host isolation', () => {
         assert.equal(option('--cpus'), '1');
         assert.equal(option('--pids-limit'), '64');
         assert.equal(option('--publish'), '127.0.0.1::6379');
+        // tini as PID 1 reaps the reparented health-check processes that would
+        // otherwise fill --pids-limit and leave an unkillable container.
+        assert.ok(args.includes('--init'));
         const overridden = docker.runArguments(startRedis(docker, { CI_REDIS_INSTANCE: 'limits', CI_REDIS_MEMORY: '1g', CI_REDIS_CPUS: '0.5' }));
         assert.equal(overridden[overridden.indexOf('--memory') + 1], '1g');
         assert.equal(overridden[overridden.indexOf('--cpus') + 1], '0.5');
@@ -430,12 +480,15 @@ describe('PR check routing', () => {
             assert.doesNotMatch(expression, /PROPR_SELF_HOSTED_PR_ACCESS_VERIFIED|PROPR_SELF_HOSTED_PR_CHECKS|"propr"/);
         }
         assert.equal(new Set(expressions).size, 1, 'all routing uses the same conditions');
-        const evaluate = new Function('vars', 'github', 'fromJSON', 'format', `return ${expressions[0]}`);
+        const evaluate = new Function('vars', 'github', 'needs', 'fromJSON', 'format', `return ${expressions[0]}`);
         const github = {
             actor: 'maintainer', repository: 'integry/propr', event_name: 'pull_request', ref: 'refs/pull/2466/merge',
             event: { repository: { default_branch: 'main' }, pull_request: { user: { login: 'maintainer' }, head: { repo: { full_name: 'integry/propr' } } } },
         };
         const enabled = { PROPR_ROOTLESS_PR_CHECKS: 'true' };
+        const overflow = { PROPR_ROOTLESS_PR_CHECKS: 'overflow' };
+        const saturated = { route: { result: 'success', outputs: { overflow: 'true' } } };
+        const available = { route: { result: 'success', outputs: { overflow: 'false' } } };
         const cases = [
             [enabled, github, true],
             [{}, github, false],
@@ -455,25 +508,65 @@ describe('PR check routing', () => {
             [enabled, { ...github, event_name: 'pull_request_target' }, false],
             [enabled, { ...github, event_name: 'schedule' }, false],
         ];
-        for (const [vars, context, selfHosted] of cases) {
-            assert.deepEqual(evaluate(vars, context, JSON.parse, (pattern, value) => pattern.replace('{0}', value)),
-                selfHosted ? ['self-hosted', 'Linux', 'X64', 'propr-rootless'] : ['ubuntu-latest'], JSON.stringify({ vars, context }));
+        // Overflow mode uses the pool only when the route job saw saturated
+        // hosted runners; anything else, including a failed or skipped route,
+        // stays hosted. The trust conditions apply unchanged.
+        const overflowCases = [
+            [overflow, github, saturated, true],
+            [overflow, github, available, false],
+            [overflow, github, { route: { result: 'failure', outputs: {} } }, false],
+            [overflow, github, { route: { result: 'skipped', outputs: {} } }, false],
+            [overflow, { ...github, actor: 'dependabot[bot]' }, saturated, false],
+            [overflow, { ...github, event: { pull_request: { user: { login: 'contributor' }, head: { repo: { full_name: 'fork/propr' } } } } }, saturated, false],
+            [overflow, { ...github, event_name: 'workflow_dispatch', ref: 'refs/heads/unreviewed' }, saturated, false],
+            [{ PROPR_ROOTLESS_PR_CHECKS: 'false' }, github, saturated, false],
+            [{}, github, saturated, false],
+            [enabled, github, available, true],
+        ];
+        for (const [vars, context, needs, selfHosted] of [...cases.map(([vars, context, selfHosted]) => [vars, context, {}, selfHosted]), ...overflowCases]) {
+            assert.deepEqual(evaluate(vars, context, needs, JSON.parse, (pattern, value) => pattern.replace('{0}', value)),
+                selfHosted ? ['self-hosted', 'Linux', 'X64', 'propr-rootless'] : ['ubuntu-latest'], JSON.stringify({ vars, context, needs }));
         }
     });
 
+    test('selects overflow runners once per workflow without ever blocking the routed jobs', () => {
+        const workflows = { 'pr-test-on-label.yml': ['5', ['shard', 'docs']], 'pr-build-check.yml': ['3', ['validate', 'cli-node-matrix']], 'cli-node-compatibility.yml': ['2', ['project-options']] };
+        const routes = [];
+        for (const [file, [planned, jobs]] of Object.entries(workflows)) {
+            const workflow = readWorkflow(file);
+            const route = jobBlock(workflow, 'route');
+            assert.match(route, /\n {4}if: \$\{\{ vars\.PROPR_ROOTLESS_PR_CHECKS == 'overflow' \}\}\n/, `${file} checks capacity only in overflow mode`);
+            assert.match(route, /\n {4}runs-on: ubuntu-latest\n/, file);
+            assert.match(route, /permissions:\n\s+contents: read\n\s+actions: read\n\s+outputs:/, `${file} reads Actions data only`);
+            assert.match(route, /persist-credentials: false/, file);
+            assert.match(route, /run: node scripts\/ci-hosted-capacity\.mjs\n/, file);
+            assert.match(route, new RegExp(`PROPR_PLANNED_HOSTED_JOBS: '${planned}'\n`), `${file} plans its ${jobs.length === 1 ? 'matrix' : 'routed'} jobs`);
+            assert.doesNotMatch(route, /secrets\./, file);
+            // Compare the job itself, not comments that precede the next job.
+            const job = route.slice(0, route.indexOf('run: node scripts/ci-hosted-capacity.mjs'));
+            routes.push(job.replace(/PROPR_PLANNED_HOSTED_JOBS: '\d+'/, ''));
+            for (const job of jobs) {
+                const block = jobBlock(workflow, job);
+                assert.match(block, /\n {4}needs: (?:route|\[[^\]]*\broute\b[^\]]*\])\n/, `${file} ${job} reads the route decision`);
+                assert.match(block, /\n {4}if: (?:>-\n\s+)?\$\{\{ !cancelled\(\)/, `${file} ${job} runs whatever the route outcome`);
+            }
+        }
+        assert.equal(new Set(routes).size, 1, 'every workflow selects runners the same way');
+    });
+
     test('keeps four independent shard jobs and a separate docs job', () => {
-        assert.deepEqual(jobNames(fullSuite), ['classify', 'shard', 'docs', 'native-electron', 'test', 'comment']);
+        assert.deepEqual(jobNames(fullSuite), ['classify', 'route', 'shard', 'docs', 'native-electron', 'test', 'comment']);
         const shard = jobBlock(fullSuite, 'shard');
         assert.match(shard, /matrix:\n\s+shard: \[1, 2, 3, 4\]\n/);
         for (const job of ['shard', 'docs']) {
             assert.match(jobBlock(fullSuite, job), /runs-on: \$\{\{ fromJSON\(/, `${job} supports both routes`);
         }
-        assert.match(shard, /\n {4}if: \$\{\{ github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft \}\}\n/, 'shards run for ready PRs and dispatches');
+        assert.match(shard, /\n {4}if: \$\{\{ !cancelled\(\) && \(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\) \}\}\n/, 'shards run for ready PRs and dispatches');
         // The docs job keeps the same draft handling and is additionally
         // gated on the shared classifier; test/ciFullSuiteSelection.test.mjs
         // evaluates the full condition.
         assert.match(jobBlock(fullSuite, 'docs'), /\n {10}\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\) &&\n/);
-        for (const job of ['classify', 'native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-latest\n/);
+        for (const job of ['classify', 'route', 'native-electron', 'test', 'comment']) assert.match(jobBlock(fullSuite, job), /\n {4}runs-on: ubuntu-latest\n/);
         assert.doesNotMatch(fullSuite, /run-local-shards|LOCAL_SHARD/, 'no nested local shard coordinator');
         assert.ok(!existsSync(join(REPOSITORY, 'scripts', 'run-local-shards.mjs')));
         assert.doesNotMatch(fullSuite, /pull_request_target/);
@@ -530,10 +623,31 @@ describe('PR check routing', () => {
             cwd: REPOSITORY,
             encoding: 'utf8',
         }).stdout.trim().split('\n');
-        assert.deepEqual(units, [
-            'apps/desktop/scripts/electron-frame-semantics.test.mjs',
-            'apps/desktop/scripts/electron-pairing-zstd.test.mjs',
-        ]);
+        // Every desktop unit that opts into the native harness must reach this job,
+        // so the expectation is discovered from the repository rather than pinned to
+        // a list that a new native probe would silently fall out of.
+        const nativeSetupUnit = 'apps/desktop/scripts/electron-native-test-setup.test.mjs';
+        const nativeUnits = readdirSync(join(REPOSITORY, 'apps', 'desktop', 'scripts'))
+            .filter(name => name.endsWith('.test.mjs'))
+            .map(name => `apps/desktop/scripts/${name}`)
+            .filter(unit => readFileSync(join(REPOSITORY, unit), 'utf8').includes('prepareNativeElectronTest('))
+            .sort();
+        // The harness's own unit exercises prepareNativeElectronTest with injected
+        // platforms instead of launching Electron, so it stays on the shard route.
+        assert.ok(nativeUnits.includes(nativeSetupUnit), 'the native harness unit is discoverable');
+        const expected = nativeUnits.filter(unit => unit !== nativeSetupUnit);
+        assert.ok(expected.length >= 2, 'the native Electron probes are discovered');
+        // The existing probes and published-preview coverage must be among them:
+        // a discovery expression that matched nothing real would otherwise
+        // agree with an empty derivation.
+        for (const probe of [
+            'electron-frame-semantics.test.mjs',
+            'electron-pairing-zstd.test.mjs',
+            'published-preview-electron.test.mjs',
+        ]) {
+            assert.ok(expected.includes(`apps/desktop/scripts/${probe}`), `${probe} drives Electron natively`);
+        }
+        assert.deepEqual([...units].sort(), expected);
         assert.match(run, /node scripts\/run-test-suite\.mjs "\$\{files\[@\]\}"/);
         // The workflow-level shard count must not reach this unsharded run.
         assert.match(electron, /PROPR_TEST_SHARD_COUNT: ''\n/);
@@ -680,6 +794,7 @@ describe('PR check routing', () => {
             comment: 'ubuntu-latest',
             // Selection and its fail-closed aggregate are cheap hosted jobs.
             classify: 'ubuntu-latest',
+            route: 'ubuntu-latest',
             'compatibility-guard': 'ubuntu-latest',
         };
         assert.deepEqual(jobNames(buildCheck).sort(), [...Object.keys(expected), 'validate', 'cli-node-matrix'].sort());
@@ -780,6 +895,7 @@ set -eu
 case "$*" in
   *SecurityOptions*) echo "\${FAKE_SECURITY-name=rootless}" ;;
   *CgroupVersion*) echo "\${FAKE_CGROUPS-2/systemd}" ;;
+  *InitBinary*) echo "\${FAKE_INIT_BINARY-docker-init}" ;;
   *) exit 90 ;;
 esac
 `);
@@ -815,7 +931,8 @@ esac
             { DOCKER_HOST: 'unix:///run/docker.sock' }, { DOCKER_HOST: 'tcp://localhost:2375' },
             { DOCKER_CONTEXT: 'production' }, { DOCKER_TLS_VERIFY: '1' },
             { FAKE_SECURITY: 'name=seccomp' }, { FAKE_CGROUPS: '2/none' },
-            { FAKE_CGROUPS: '1/systemd' }, { GITHUB_WORKSPACE: '/nonexistent-propr-workspace' },
+            { FAKE_CGROUPS: '1/systemd' }, { FAKE_INIT_BINARY: '' },
+            { GITHUB_WORKSPACE: '/nonexistent-propr-workspace' },
         ]) {
             const result = preflight(overrides);
             assert.notEqual(result.status, 0, JSON.stringify(overrides));

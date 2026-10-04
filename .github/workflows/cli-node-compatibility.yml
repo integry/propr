@@ -33,14 +33,45 @@ jobs:
         id: classify
         uses: ./.github/actions/classify-changes
 
+  # Chooses hosted or rootless runners for this run when
+  # PROPR_ROOTLESS_PR_CHECKS=overflow and is skipped otherwise. Its outcome
+  # never blocks the checks: a skipped or failed route leaves them hosted.
+  # See docs/ci-runners.md.
+  route:
+    name: Select PR check runners
+    if: ${{ vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      overflow: ${{ steps.capacity.outputs.overflow }}
+    steps:
+      - name: Checkout capacity script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: scripts/ci-hosted-capacity.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check hosted runner capacity
+        id: capacity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Hosted jobs this workflow routes; they count against the limit.
+          PROPR_PLANNED_HOSTED_JOBS: '2'
+          PROPR_HOSTED_JOB_LIMIT: ${{ vars.PROPR_HOSTED_JOB_LIMIT }}
+        run: node scripts/ci-hosted-capacity.mjs
+
   project-options:
     name: Project options (Node ${{ matrix.node-version }})
-    needs: classify
+    needs: [classify, route]
     # Only an explicit `false` skips. A failed, cancelled or missing decision
     # leaves the output empty, which runs the matrix.
     if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     strategy:
       fail-fast: false
       matrix:

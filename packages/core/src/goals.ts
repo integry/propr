@@ -1,19 +1,31 @@
 import type { VisualPreviewSettings } from './config/configManager.js';
 import { buildVisualPreviewPrompt } from './services/visualPreviewService.js';
+import {
+    DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    GOAL_LAUNCH_STRATEGIES,
+    MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    parseGoalCheckpointDeclaration,
+} from '@propr/shared';
+import type { GoalCheckpointDeclaration, GoalLaunchStrategy, RejectedGoalCheckpointDeclaration } from '@propr/shared';
+
+export {
+    DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    GOAL_LAUNCH_STRATEGIES,
+    MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+    parseGoalCheckpointDeclaration,
+};
+export type { GoalCheckpointDeclaration, GoalLaunchStrategy, RejectedGoalCheckpointDeclaration };
 
 export type GoalDesiredState = 'running' | 'paused' | 'cancelled';
 export type GoalResultState = 'completed' | 'failed' | 'cancelled';
-export const GOAL_LAUNCH_STRATEGIES = ['direct', 'orchestrate'] as const;
-export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
 export const GOAL_CONTINUE_INPUT = 'ProPR has acknowledged any checkpoint request from the previous turn. Continue working toward the goal.';
 export const NATIVE_GOAL_COMMAND_PREFIX = '/goal ';
 export const CODEX_GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
 export const CODEX_GOAL_USER_OBJECTIVE_MAX_LENGTH = CODEX_GOAL_OBJECTIVE_MAX_LENGTH
     - Array.from(NATIVE_GOAL_COMMAND_PREFIX).length;
-export const DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES = 15;
-export const MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES = 5;
-export const MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES = 120;
 
 /** Claude Code rejects `/goal` conditions longer than this many UTF-16 units. */
 export const CLAUDE_GOAL_CONDITION_MAX_LENGTH = 4_000;
@@ -23,7 +35,7 @@ export const CLAUDE_GOAL_CONDITION_MAX_LENGTH = 4_000;
  * goal loop, and ProPR steers input, checkpoints, pause, and cancel into the
  * running session instead of stopping and resuming whole invocations.
  */
-const NATIVE_GOAL_AGENT_TYPES: ReadonlySet<string> = new Set(['codex', 'claude']);
+const NATIVE_GOAL_AGENT_TYPES: ReadonlySet<string> = new Set(['codex', 'claude', 'antigravity']);
 
 export function hasNativeGoalControl(agentType: string | null | undefined): boolean {
     return Boolean(agentType && NATIVE_GOAL_AGENT_TYPES.has(agentType));
@@ -131,122 +143,6 @@ export function buildNativeGoalContext(options: NativeGoalPromptOptions): string
         ? 'Goal preview timing: Use your discretion about when coherent visual evidence is ready. Generate or refresh it before a checkpoint whenever an in-progress preview would be useful; ProPR publishes current preview files to the already-open draft PR at checkpoint boundaries.'
         : 'Goal preview timing: Use your discretion about when coherent visual evidence is ready. ProPR publishes current preview files after the final goal PR is identified.';
     return `${context}${visualPreviewPrompt}\n${timingPolicy}`;
-}
-
-export interface GoalCheckpointDeclaration {
-    checkpointReady: true;
-    message: string;
-    include?: string[];
-    exclude?: string[];
-    summary?: string;
-}
-
-export interface RejectedGoalCheckpointDeclaration {
-    checkpointReady: true;
-    rejected: true;
-    error: string;
-    message?: string;
-    include?: string[];
-    exclude?: string[];
-    summary?: string;
-}
-
-function jsonObjects(text: string): unknown[] {
-    const values: unknown[] = [];
-    let start = -1;
-    let depth = 0;
-    let quoted = false;
-    let escaped = false;
-    for (let index = 0; index < text.length; index += 1) {
-        const character = text[index];
-        if (start < 0) {
-            if (character === '{') {
-                start = index;
-                depth = 1;
-            }
-            continue;
-        }
-        if (quoted) {
-            if (escaped) escaped = false;
-            else if (character === '\\') escaped = true;
-            else if (character === '"') quoted = false;
-            continue;
-        }
-        if (character === '"') quoted = true;
-        else if (character === '{') depth += 1;
-        else if (character === '}') {
-            depth -= 1;
-            if (depth === 0) {
-                try { values.push(JSON.parse(text.slice(start, index + 1))); } catch { /* ignore non-JSON prose */ }
-                start = -1;
-            }
-        }
-    }
-    return values;
-}
-
-function optionalPaths(value: unknown, field: 'include' | 'exclude'): string[] | undefined {
-    if (value == null) return undefined;
-    if (!Array.isArray(value) || value.length === 0 || value.length > 1_000
-        || value.some(item => typeof item !== 'string' || !item.trim())) {
-        throw new Error(`Checkpoint ${field} must be a non-empty array of at most 1000 file paths when provided`);
-    }
-    const paths = [...new Set(value as string[])];
-    const invalid = paths.find(file => file.trim() !== file || file.includes('\\') || file.includes('\0')
-        || file.includes('\n') || file.includes('\r') || file.startsWith('/')
-        || file.split('/').some(part => part === '' || part === '.' || part === '..' || part === '.git'));
-    if (invalid) {
-        throw new Error(`Checkpoint ${field} path must be a normalized repository-relative file: ${JSON.stringify(invalid)}`);
-    }
-    return paths;
-}
-
-function rejectedDeclaration(candidate: Record<string, unknown>, error: unknown): RejectedGoalCheckpointDeclaration {
-    const stringPaths = (value: unknown): string[] | undefined => Array.isArray(value)
-        && value.every(item => typeof item === 'string') ? value as string[] : undefined;
-    return {
-        checkpointReady: true,
-        rejected: true,
-        error: (error as Error).message,
-        ...(typeof candidate.message === 'string' ? { message: candidate.message.trim() } : {}),
-        ...(stringPaths(candidate.include) ? { include: stringPaths(candidate.include) } : {}),
-        ...(stringPaths(candidate.exclude) ? { exclude: stringPaths(candidate.exclude) } : {}),
-        ...(typeof candidate.summary === 'string' ? { summary: candidate.summary.trim() } : {}),
-    };
-}
-
-/** Parse the last structured checkpoint declaration in an agent's turn output. */
-export function parseGoalCheckpointDeclaration(
-    text: string | undefined,
-): GoalCheckpointDeclaration | RejectedGoalCheckpointDeclaration | null {
-    if (!text) return null;
-    const candidate = jsonObjects(text).reverse().find(value => {
-        return Boolean(value && typeof value === 'object'
-            && (value as Record<string, unknown>).checkpointReady === true);
-    }) as Record<string, unknown> | undefined;
-    if (!candidate) return null;
-    try {
-        if (typeof candidate.message !== 'string' || !candidate.message.trim() || candidate.message.length > 500) {
-            throw new Error('Checkpoint message must be a non-empty string of at most 500 characters');
-        }
-        if (candidate.summary != null
-            && (typeof candidate.summary !== 'string' || !candidate.summary.trim() || candidate.summary.length > 4_000)) {
-            throw new Error('Checkpoint summary must be a non-empty string of at most 4000 characters when provided');
-        }
-        const include = optionalPaths(candidate.include, 'include');
-        const exclude = optionalPaths(candidate.exclude, 'exclude');
-        const overlap = include?.find(file => exclude?.includes(file));
-        if (overlap) throw new Error(`Checkpoint file cannot be both included and excluded: ${overlap}`);
-        return {
-            checkpointReady: true,
-            message: candidate.message.trim(),
-            ...(include ? { include } : {}),
-            ...(exclude ? { exclude } : {}),
-            ...(typeof candidate.summary === 'string' ? { summary: candidate.summary.trim() } : {}),
-        };
-    } catch (error) {
-        return rejectedDeclaration(candidate, error);
-    }
 }
 
 export function goalJobId(goalId: string, generation: number): string {

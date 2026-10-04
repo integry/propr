@@ -1,4 +1,4 @@
-import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
+import { trustedPreviewMedia, type GoalAttention, type PublishedVisualPreview } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface GoalCapability {
@@ -68,6 +68,8 @@ export interface Goal {
   resultState: 'completed' | 'failed' | 'cancelled' | null;
   failureReason: string | null;
   pausePending: boolean;
+  /** What the goal needs from its operator; the same projection MCP `get_goal` and the attention listing read. */
+  attention?: GoalAttention;
   control: { requestGeneration: number; acknowledgedGeneration: number; pending: boolean };
   taskId: string;
   sessionId: string | null;
@@ -151,8 +153,12 @@ const multipartMutation = (payload: unknown, files: readonly File[]): RequestIni
 
 export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
-export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
-export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
+// The reads accept a signal so a push-driven caller can cut off a request whose
+// scope has already moved on (a different repository filter, another goal).
+export const listGoals = async (options: { signal?: AbortSignal } = {}) =>
+  request<{ goals: Goal[] }>('/api/goals', { signal: options.signal });
+export const getGoal = async (id: string, options: { signal?: AbortSignal } = {}) =>
+  request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`, { signal: options.signal });
 export const getGoalVisualPreviews = async (id: string) => {
   const response = await request<{ previews?: unknown[]; unavailable?: boolean }>(`/api/goals/${encodeURIComponent(id)}/previews`);
   return { previews: trustedPreviewMedia(response.previews), ...(response.unavailable === true ? { unavailable: true } : {}) };

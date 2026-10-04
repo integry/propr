@@ -24,6 +24,9 @@ import {
   recoverStaleRefinement,
   withAuthCheck,
   createValidateContextRepositoryHandler,
+  createListPlanRevisionsHandler,
+  createGetPlanRevisionHandler,
+  createRestorePlanRevisionHandler,
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
@@ -67,7 +70,7 @@ const upload = multer({
 export const attachmentUpload = upload.single('file');
 export const goalAttachmentUpload = upload.array('files', 10);
 
-interface PlannerRoutesDeps { db: Knex; }
+interface PlannerRoutesDeps { db: Knex; enqueueEpics?: boolean; }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
@@ -228,7 +231,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const { plan_json, context_config, status, name, chat_history, initial_prompt } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
-      if (plan_json !== undefined) updateData.plan_json = JSON.stringify(plan_json);
+      if (plan_json !== undefined) {
+        const serializedPlan = JSON.stringify(plan_json);
+        updateData.plan_json = serializedPlan;
+        updateData.plan_cause = db!.raw(
+          'CASE WHEN ?? = ? THEN ?? ELSE ? END',
+          ['plan_json', serializedPlan, 'plan_cause', 'manual_edit']
+        );
+      }
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
       if (name !== undefined) updateData.name = name;
@@ -289,10 +299,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   const getAttachmentContent = withAuthCheck(db, createGetAttachmentContentHandler({ verifyOwnership: ownershipVerifier }));
+  const listPlanRevisions = withAuthCheck(db, createListPlanRevisionsHandler({ db, verifyOwnership: ownershipVerifier }));
+  const getPlanRevision = withAuthCheck(db, createGetPlanRevisionHandler({ db, verifyOwnership: ownershipVerifier }));
+  const restorePlanRevision = withAuthCheck(db, createRestorePlanRevisionHandler({ db, verifyOwnership: ownershipVerifier }));
   const getRepositoryInfo = withAuthCheck(db, createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier }));
   const downloadContext = withAuthCheck(db, createDownloadContextHandler({ verifyOwnership: ownershipVerifier }));
   const getIssues = withAuthCheck(db, createGetIssuesHandler({ verifyOwnership: ownershipVerifier }));
-  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }, { enqueueEpics: deps.enqueueEpics }));
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
@@ -356,5 +369,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     resetDraftToSetup, getIssues, implementIssue, updateIssue,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
     pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
+    listPlanRevisions, getPlanRevision, restorePlanRevision,
   };
 }

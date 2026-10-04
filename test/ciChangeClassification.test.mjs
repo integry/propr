@@ -5,11 +5,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, describe, test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import {
     CONNECT_PROOF_FILES,
     NARROW_ROOT_TEST_SCRIPTS,
     SURFACES,
+    ON_DEMAND_SURFACES,
+    DESKTOP_CI_LABEL,
+    lockfileAffectsDesktop,
+    pullRequestLabels,
     classifyChanges,
     classifyManifest,
     classifyRepository,
@@ -128,7 +133,8 @@ describe('path classification', () => {
     });
 
     test('shared runtime, client, CLI, renderer and desktop changes activate downstream consumers', () => {
-        assert.equal(classifyPaths(['packages/shared/src/index.ts']).surfaces.desktop, true);
+        // Shared runtime and renderer changes leave the packaged desktop app to the nightly run.
+        assert.equal(classifyPaths(['packages/shared/src/index.ts']).surfaces.desktop, false);
         assert.equal(classifyPaths(['packages/shared/src/index.ts']).surfaces.ui, true);
         assert.equal(classifyPaths(['packages/shared/src/index.ts']).surfaces.api, true);
         assert.deepEqual(selected(classifyPaths(['packages/client/src/index.ts'])).sort(),
@@ -137,8 +143,7 @@ describe('path classification', () => {
             ['cli', 'connect', 'desktop']);
         assert.deepEqual(selected(classifyPaths(['packages/local-setup/src/index.ts'])).sort(),
             ['cli', 'connect', 'desktop']);
-        // A shared renderer change still requires the packaged desktop tests.
-        assert.deepEqual(selected(classifyPaths(['propr-ui/src/App.tsx'])).sort(), ['desktop', 'ui']);
+        assert.deepEqual(selected(classifyPaths(['propr-ui/src/App.tsx'])), ['ui']);
         assert.deepEqual(selected(classifyPaths(['apps/desktop/src/main.ts'])), ['desktop']);
         assert.deepEqual(selected(classifyPaths(['docs/guide.md'])), ['docs']);
         assert.deepEqual(selected(classifyPaths(['src/worker.ts'])), ['core']);
@@ -156,28 +161,33 @@ describe('path classification', () => {
         assert.deepEqual(decision.core_package_source_files, ['packages/core/src/service.ts']);
     });
 
-    for (const [path, why] of [
-        ['.github/workflows/pr-build-check.yml', 'workflow'],
-        ['.github/actions/classify-changes/action.yml', 'composite action'],
-        ['scripts/ci-change-classification.mjs', 'the classifier itself'],
-        ['test/ciChangeClassification.test.mjs', 'the classifier test'],
-        ['package-lock.json', 'lockfile'],
-        ['propr-ui/package-lock.json', 'workspace lockfile'],
-        ['.nvmrc', 'toolchain'],
-        ['tsconfig.json', 'shared toolchain configuration'],
-        ['eslint.config.js', 'shared toolchain configuration'],
-        ['Dockerfile.agent', 'image definition'],
-        ['docker-compose.yml', 'compose stack'],
-        ['.propr/setup.sh', 'repository automation'],
-        ['config/anything.json', 'deployment configuration'],
-        ['apps/some-new-app/index.ts', 'an unrecognised application'],
-        ['weird/unknown.txt', 'an unrecognised path'],
-        ['packages/brand-new/index.ts', 'an unrecognised workspace'],
+    // Broad changes validate every surface except the on-demand desktop checks,
+    // which run only when the change defines them (or cannot be ruled out).
+    for (const [path, why, desktop] of [
+        ['.github/workflows/pr-build-check.yml', 'workflow', false],
+        ['.github/workflows/desktop-release-guard.yml', 'desktop workflow', true],
+        ['.github/workflows/desktop-connect-discovery-guard.yml', 'desktop workflow', true],
+        ['.github/workflows/pr-test-on-label.yml', 'the workflow hosting the native Electron job', true],
+        ['.github/actions/classify-changes/action.yml', 'composite action', true],
+        ['scripts/ci-change-classification.mjs', 'the classifier itself', true],
+        ['test/ciChangeClassification.test.mjs', 'the classifier test', false],
+        ['package-lock.json', 'unreadable lockfile', true],
+        ['propr-ui/package-lock.json', 'unreadable workspace lockfile', true],
+        ['.nvmrc', 'toolchain', false],
+        ['tsconfig.json', 'shared toolchain configuration', false],
+        ['eslint.config.js', 'shared toolchain configuration', false],
+        ['Dockerfile.agent', 'image definition', false],
+        ['docker-compose.yml', 'compose stack', false],
+        ['.propr/setup.sh', 'repository automation', false],
+        ['config/anything.json', 'deployment configuration', false],
+        ['apps/some-new-app/index.ts', 'an unrecognised application', false],
+        ['weird/unknown.txt', 'an unrecognised path', false],
+        ['packages/brand-new/index.ts', 'an unrecognised workspace', false],
     ]) {
-        test(`${why} change (${path}) selects every surface`, () => {
+        test(`${why} change (${path}) selects every surface${desktop ? '' : ' except desktop'}`, () => {
             const decision = classifyPaths([path]);
             assert.equal(decision.broad, true, `${path} must be broad`);
-            assert.deepEqual(selected(decision), [...SURFACES]);
+            assert.deepEqual(selected(decision), SURFACES.filter(surface => desktop || !ON_DEMAND_SURFACES.includes(surface)));
         });
     }
 
@@ -349,6 +359,65 @@ describe('manifest classification', () => {
     test('a manifest with no recorded contents selects every surface', () => {
         const decision = classifyPaths(['package.json']);
         assert.equal(decision.broad, true);
+    });
+});
+
+// --- on-demand desktop surface ---------------------------------------------
+
+describe('on-demand desktop checks', () => {
+    const lockfile = packages => serialize({ name: 'propr', lockfileVersion: 3, packages });
+
+    test('the desktop-ci label selects the desktop checks for any change', () => {
+        const decision = classifyChanges({ files: changed(['propr-ui/src/App.tsx']), labels: [DESKTOP_CI_LABEL] });
+        assert.deepEqual(selected(decision).sort(), ['desktop', 'ui']);
+        assert.ok(decision.reasons.some(reason => reason.detail.includes(DESKTOP_CI_LABEL)));
+        assert.equal(classifyChanges({ files: changed(['propr-ui/src/App.tsx']), labels: ['bug'] }).surfaces.desktop, false);
+    });
+
+    test('a lockfile change selects the desktop checks only when desktop dependencies change', () => {
+        const base = { '': { name: 'propr' }, 'node_modules/react': { version: '19.0.0' }, 'node_modules/electron': { version: '38.0.0' }, 'apps/desktop': { dependencies: { a: '1' } } };
+        const unrelated = { ...base, 'node_modules/react': { version: '19.1.0' } };
+        const electron = { ...base, 'node_modules/electron': { version: '38.1.0' } };
+        const desktopDependency = { ...base, 'apps/desktop': { dependencies: { a: '2' } } };
+        const scoped = { ...base, 'node_modules/@electron/get': { version: '4.0.0' } };
+        assert.equal(lockfileAffectsDesktop(lockfile(base), lockfile(unrelated)), false);
+        assert.equal(lockfileAffectsDesktop(lockfile(base), lockfile(electron)), true);
+        assert.equal(lockfileAffectsDesktop(lockfile(base), lockfile(desktopDependency)), true);
+        assert.equal(lockfileAffectsDesktop(lockfile(base), lockfile(scoped)), true);
+        assert.equal(lockfileAffectsDesktop(null, lockfile(base)), true, 'an unreadable side is never ruled out');
+
+        const decide = head => classifyChanges({
+            files: changed(['package-lock.json']),
+            manifests: { 'package-lock.json': { base: lockfile(base), head: lockfile(head) } },
+        });
+        const routine = decide(unrelated);
+        assert.equal(routine.broad, true);
+        assert.equal(routine.surfaces.desktop, false);
+        assert.equal(routine.surfaces.api, true);
+        assert.equal(decide(electron).surfaces.desktop, true);
+    });
+
+    test('a desktop-bundled package manifest still selects the desktop checks', () => {
+        for (const path of ['apps/desktop/package.json', 'packages/cli/package.json', 'packages/client/package.json']) {
+            const decision = classifyChanges({
+                files: changed([path]),
+                manifests: { [path]: { base: serialize({ name: 'x', version: '1.0.0' }), head: serialize({ name: 'x', version: '1.0.1' }) } },
+            });
+            assert.equal(decision.surfaces.desktop, true, path);
+        }
+        const shared = classifyChanges({
+            files: changed(['packages/shared/package.json']),
+            manifests: { 'packages/shared/package.json': { base: serialize({ name: 'x', version: '1.0.0' }), head: serialize({ name: 'x', version: '1.0.1' }) } },
+        });
+        assert.equal(shared.surfaces.desktop, false);
+    });
+
+    test('pull request labels are read from the triggering event', () => {
+        const eventPath = join(freshDirectory('event'), 'event.json');
+        writeFileSync(eventPath, JSON.stringify({ pull_request: { labels: [{ name: DESKTOP_CI_LABEL }, { name: 'bug' }] } }));
+        assert.deepEqual(pullRequestLabels(eventPath), [DESKTOP_CI_LABEL, 'bug']);
+        assert.deepEqual(pullRequestLabels(undefined), []);
+        assert.deepEqual(pullRequestLabels(join(scratch, 'missing.json')), []);
     });
 });
 
@@ -731,6 +800,77 @@ describe('workflow wiring', () => {
         assert.ok(action.includes('scripts/ci-change-classification.mjs'));
     });
 
+    test('desktop checks run on demand: the label request and the nightly run call them', () => {
+        // The unsigned validation includes scheduled and manually dispatched nightly runs.
+        for (const job of ['validation-version', 'renderer-axe-boundary', 'package', 'finalize']) {
+            const block = jobBlock(desktopRelease, job);
+            assert.ok(block.includes("github.event_name != 'push'"), `${job} runs for every event except a push`);
+        }
+        const releaseTrigger = desktopRelease.slice(desktopRelease.indexOf('on:'), desktopRelease.indexOf('permissions:'));
+        assert.match(releaseTrigger, /workflow_call:/);
+        assert.doesNotMatch(desktopRelease, /workflow_dispatch:/, 'a production release must never be dispatchable');
+        for (const workflow of [desktopRelease, desktopConnect]) {
+            const trigger = workflow.slice(workflow.indexOf('on:'), workflow.indexOf('permissions:'));
+            assert.match(trigger, /workflow_call:/);
+            // A per-PR concurrency group would let any label change cancel a real run.
+            assert.doesNotMatch(trigger, /labeled/);
+        }
+
+        const request = readWorkflow('desktop-ci-request.yml');
+        assert.match(request, /types: \[labeled\]/);
+        for (const [job, workflow] of [['desktop-package', 'desktop-release-guard.yml'], ['desktop-connect', 'desktop-connect-discovery-guard.yml']]) {
+            const block = jobBlock(request, job);
+            assert.ok(block.includes(`uses: ./.github/workflows/${workflow}`));
+            assert.ok(block.includes(`github.event.label.name == '${DESKTOP_CI_LABEL}'`));
+            assert.ok(block.includes('github.event.pull_request.head.repo.full_name == github.repository'));
+            assert.doesNotMatch(block, /secrets:/, 'no secrets reach a pull request call');
+        }
+
+        const nightly = readWorkflow('test-nightly.yml');
+        assert.match(nightly, /schedule:/);
+        assert.match(nightly, /workflow_dispatch:/);
+        assert.ok(jobBlock(nightly, 'desktop-package').includes('uses: ./.github/workflows/desktop-release-guard.yml'));
+        assert.ok(jobBlock(nightly, 'desktop-connect').includes('uses: ./.github/workflows/desktop-connect-discovery-guard.yml'));
+        assert.ok(jobBlock(nightly, 'native-electron').includes("PROPR_REQUIRE_NATIVE_ELECTRON: '1'"));
+    });
+
+    for (const eventName of ['pull_request', 'schedule', 'workflow_dispatch', 'push']) {
+        test(`unsigned desktop job conditions handle ${eventName}`, () => {
+            for (const job of ['validation-version', 'renderer-axe-boundary', 'package', 'finalize']) {
+                const condition = jobBlock(desktopRelease, job).match(/\n    if: (?:>-\n\s*)?\$\{\{([\s\S]*?)\}\}/)?.[1];
+                assert.ok(condition, `${job} has a job-level condition`);
+                // These conditions use the JS-compatible boolean subset of Actions expressions.
+                const expression = condition.replace(/needs\.([\w-]+)/g, 'needs["$1"]');
+                for (const desktop of ['true', 'false', '']) {
+                    for (const cancelled of [false, true]) {
+                        const actual = runInNewContext(expression, {
+                            github: { event_name: eventName, ref_type: eventName === 'push' ? 'tag' : 'branch' },
+                            cancelled: () => cancelled,
+                            needs: {
+                                // Non-PR calls skip classification and expose an empty output.
+                                classify: { outputs: { desktop } },
+                                'validation-version': { result: 'success' },
+                                'renderer-axe-boundary': { result: 'success' },
+                            },
+                        });
+                        assert.equal(actual,
+                            !cancelled && eventName !== 'push' && (job === 'finalize' || desktop !== 'false'),
+                            `${job}: event=${eventName}, desktop=${JSON.stringify(desktop)}, cancelled=${cancelled}`);
+                    }
+                }
+            }
+        });
+    }
+
+    test('the full suite gate accepts the on-demand desktop skip even for a broad change', () => {
+        const gate = jobBlock(fullSuite, 'test');
+        assert.match(gate, /on_demand_gated "Hosted native Electron units"/);
+        const onDemand = gate.slice(gate.indexOf('on_demand_gated() {'), gate.indexOf('# A matrix result'));
+        assert.ok(!onDemand.includes('CLASSIFY_BROAD'), 'a broad change may still leave the desktop checks to the nightly run');
+        assert.ok(onDemand.includes('"${EVENT_NAME:-}" = pull_request'), 'only a pull request may skip them');
+        assert.ok(onDemand.includes('"${CLASSIFY_STATUS:-}" = ok'), 'a fallback classification still requires them');
+    });
+
     test('gated jobs skip only on an explicit false and keep run cancellation', () => {
         const gated = [
             [buildCheck, 'cli-node-matrix', 'cli'],
@@ -776,7 +916,7 @@ describe('workflow wiring', () => {
         // test/ciFullSuiteSelection.test.mjs; this pins the wiring.
         const shard = jobBlock(fullSuite, 'shard');
         assert.ok(!shard.includes('classify'), 'backend shards must stay unconditional');
-        assert.ok(!/\n {4}needs:/.test(shard), 'backend shards must not wait for the classifier');
+        assert.ok(/\n {4}needs: route\n/.test(shard), 'backend shards wait only for runner selection, never for the classifier');
         assert.ok(jobBlock(fullSuite, 'classify').includes("if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}"),
             'manual dispatch never consults the classifier');
         assert.ok(fullSuite.includes('--verify-shard-summaries'),
@@ -872,6 +1012,25 @@ describe('gate semantics', () => {
 
     const finalizeGate = extractRunBlock(
         jobBlock(desktopRelease, 'finalize'), 'Resolve desktop packaging applicability');
+
+    test('nightly desktop finalization requires validation when classification was skipped', () => {
+        const nightly = {
+            CLASSIFY_RESULT: 'skipped',
+            CLASSIFY_STATUS: '',
+            DESKTOP_DECISION: '',
+            VERSION_RESULT: 'success',
+            PACKAGE_RESULT: 'success',
+        };
+        const passed = runGate(finalizeGate, nightly);
+        assert.equal(passed.status, 0, passed.stdout);
+        assert.match(passed.outputs, /applicable=true/);
+        for (const key of ['VERSION_RESULT', 'PACKAGE_RESULT']) {
+            for (const result of ['failure', 'cancelled', 'skipped', '']) {
+                assert.equal(runGate(finalizeGate, { ...nightly, [key]: result }).status, 1,
+                    `${key}=${JSON.stringify(result)} must fail nightly validation`);
+            }
+        }
+    });
 
     test('the desktop finalize gate distinguishes inapplicable from failed or missing', () => {
         const inapplicable = runGate(finalizeGate, {

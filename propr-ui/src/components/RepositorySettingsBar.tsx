@@ -1,4 +1,5 @@
-import { formatWorkflowInput, parseWorkflowInput } from './workflowSelectionInput';
+import { formatWorkflowInput, parseWorkflowInput, toggleWorkflowSelection, workflowMatchesEntry } from './workflowSelectionInput';
+import { useRepoWorkflows, type RepoWorkflowsState } from '../hooks/useRepoWorkflows';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { Link } from 'react-router-dom';
 import React, { useEffect, useState } from 'react';
@@ -39,6 +40,73 @@ const AutoCiFollowupControl: React.FC<{
   );
 };
 
+const DetectedWorkflows: React.FC<{
+  repoName: string;
+  state: RepoWorkflowsState;
+  selection: string[];
+  onChange: (selection: string[]) => void;
+}> = ({ repoName, state, selection, onChange }) => {
+  if (state.status === 'loading' && state.workflows.length === 0) {
+    return <p role="status" className="text-slate-500">Loading workflows from GitHub…</p>;
+  }
+  if (state.status === 'error') {
+    return <p role="status" className="text-slate-500">Could not load this repository&apos;s workflows from GitHub. Enter them below instead.</p>;
+  }
+  if (state.status !== 'loaded') return null;
+
+  const unmatched = selection.filter(entry => !state.workflows.some(workflow => workflowMatchesEntry(workflow, entry)));
+  if (state.workflows.length === 0 && unmatched.length === 0) {
+    return <p role="status" className="text-slate-500">No active workflow files found in this repository.</p>;
+  }
+  return (
+    <fieldset className="min-w-0">
+      <legend className="mb-1">Workflows in {repoName}</legend>
+      <ul className="flex flex-col gap-1" aria-label={`Workflows in ${repoName}`}>
+        {state.workflows.map(workflow => {
+          const checked = selection.some(entry => workflowMatchesEntry(workflow, entry));
+          // Only pull request runs are ever cancelled, so a workflow that never runs for one cannot be newly selected.
+          const inert = workflow.pullRequest === false && !checked;
+          return (
+            <li key={workflow.id}>
+              <label className={`flex min-w-0 items-start gap-2 ${inert ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-teal-600"
+                  checked={checked}
+                  disabled={inert}
+                  onChange={(event) => onChange(toggleWorkflowSelection(selection, workflow, event.target.checked))}
+                />
+                <span className="min-w-0">
+                  <span className="block text-slate-700">{workflow.name}</span>
+                  <span className="block break-all text-slate-500">
+                    <code>{workflow.file}</code>
+                    {' · '}
+                    {workflow.triggers === null ? 'triggers unknown'
+                      : workflow.pullRequest ? `runs on ${workflow.triggers.join(', ')}`
+                        : `does not run on pull requests (${workflow.triggers.join(', ') || 'no triggers'})`}
+                  </span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {unmatched.length > 0 && (
+        <div role="alert" className="mt-1 text-amber-700">
+          <p>Not found in this repository, so never cancelled: {formatWorkflowInput(unmatched)}.</p>
+          <button
+            type="button"
+            className="mt-1 underline"
+            onClick={() => onChange(selection.filter(entry => !unmatched.includes(entry)))}
+          >
+            Remove unavailable selections
+          </button>
+        </div>
+      )}
+    </fieldset>
+  );
+};
+
 const CancelCiDuringFollowupControl: React.FC<{
   repo: MonitoredRepo;
   onToggle: (repoId: string) => void;
@@ -53,9 +121,11 @@ const CancelCiDuringFollowupControl: React.FC<{
 
   useEffect(() => setWorkflows(storedSelection), [repo.id, storedSelection]);
 
+  const enabled = repo.cancelCiDuringFollowup === true;
+  const detected = useRepoWorkflows(repo.name, enabled && !isReadOnly);
+
   if (isReadOnly) return null;
 
-  const enabled = repo.cancelCiDuringFollowup === true;
   const commitWorkflows = () => {
     if (workflows === storedSelection) return;
     const next = parseWorkflowInput(workflows);
@@ -71,7 +141,7 @@ const CancelCiDuringFollowupControl: React.FC<{
       >
         <span className="min-w-0">
           <span className="block">Cancel CI while follow-up implementation is in progress</span>
-          <span className="mt-1 block text-slate-500">Only the validation workflows you select below are cancelled on the commit ProPR is about to replace. Every other workflow, deployments and previews included, keeps running. If you select nothing here, the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback applies instead, and only what it lists is cancelled. Checks start again on the new commit, or resume on the current one if no commit is produced.</span>
+          <span className="mt-1 block text-slate-500">Only the validation workflows you select below are cancelled on the commit ProPR is about to replace. Every other workflow, deployments and previews included, keeps running. If you select nothing here, the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback applies instead, and only what it lists is cancelled. Checks start again on the new commit, or resume on the current one if no commit is produced. The same workflows are also cancelled when a pull request is merged or closed while they are still queued or running.</span>
         </span>
         <input
           type="checkbox"
@@ -85,6 +155,12 @@ const CancelCiDuringFollowupControl: React.FC<{
 
       {enabled && (
         <div className="ml-4 mt-1 mb-2 flex min-w-0 flex-col items-stretch gap-1 border-l-2 border-slate-200 pl-4">
+          <DetectedWorkflows
+            repoName={repo.name}
+            state={detected}
+            selection={parseWorkflowInput(workflows) ?? selected}
+            onChange={(next) => { setWorkflows(formatWorkflowInput(next)); onUpdateWorkflows(repo.id, next); }}
+          />
           <label className="block w-full min-w-0">
             <span className="mb-1 block">Validation workflows to cancel</span>
             <textarea
@@ -104,7 +180,7 @@ const CancelCiDuringFollowupControl: React.FC<{
           {parseWorkflowInput(workflows) === null && <p role="alert">Close quoted workflow names and separate them with commas. Changes have not been saved.</p>}
           {selected.length === 0 ? (
             <p role="status" className="text-amber-700">
-              No workflows selected for this repository, so the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback decides what is cancelled: whatever it lists is cancelled here, and nothing is cancelled when your operator left it unset. Select the workflows to cancel by file name, path or the name shown on the pull request — for example <code>pr-build-check.yml</code>.
+              No workflows selected for this repository, so the instance-wide <code>CANCEL_CI_FOLLOWUP_WORKFLOWS</code> fallback decides what is cancelled: whatever it lists is cancelled here, and nothing is cancelled when your operator left it unset. Select the validation workflows to cancel above.
             </p>
           ) : (
             <p role="status" className="text-slate-500">
@@ -113,6 +189,44 @@ const CancelCiDuringFollowupControl: React.FC<{
           )}
         </div>
       )}
+    </div>
+  );
+};
+
+const NonBlockingChecksControl: React.FC<{
+  repo: MonitoredRepo;
+  onUpdate: (repoId: string, checks: string[]) => void;
+}> = ({ repo, onUpdate }) => {
+  const stored = repo.nonBlockingChecks ?? [];
+  // Compared by value so a poll that re-renders the bar keeps unsaved typing.
+  const storedText = formatWorkflowInput(stored);
+  const [text, setText] = useState(storedText);
+  useEffect(() => setText(storedText), [repo.id, storedText]);
+  const parsed = parseWorkflowInput(text);
+  const commit = () => {
+    if (text === storedText || parsed === null) return;
+    if (parsed.join('\u0000').toLowerCase() !== stored.join('\u0000').toLowerCase()) onUpdate(repo.id, parsed);
+  };
+
+  return (
+    <div className="w-full min-w-0 py-2 text-xs text-slate-600" onClick={(event) => event.stopPropagation()}>
+      <label className="block w-full min-w-0">
+        <span className="block">Checks that never block automation</span>
+        <span className="mt-1 mb-1 block text-slate-500">Failures of these check runs never hold back auto-merge or ultrafix and never start a failed-CI follow-up. GitHub still shows them. Use <code>*</code> to match any text, for example <code>Validate unsigned * package</code>.</span>
+        <textarea
+          rows={2}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.blur(); } }}
+          aria-invalid={parsed === null}
+          maxLength={4000}
+          aria-label={`Checks that never block automation for ${repo.name}`}
+          className="min-w-0 w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-400"
+          placeholder="Packaged Connect*, Validate unsigned * package"
+        />
+      </label>
+      {parsed === null && <p role="alert">Close quoted check names and separate them with commas. Changes have not been saved.</p>}
     </div>
   );
 };
@@ -129,6 +243,7 @@ interface RepositorySettingsBarProps {
   onToggleAutoCiFollowup: (repoId: string) => void;
   onToggleCancelCiDuringFollowup: (repoId: string) => void;
   onUpdateCancelCiWorkflows: (repoId: string, workflows: string[]) => void;
+  onUpdateNonBlockingChecks?: (repoId: string, checks: string[]) => void;
   onToggleNotifications: (repoId: string) => void;
   onUpdateVisualPreview: (repoId: string, settings: RepositoryVisualPreviewSettings) => void;
   isReadOnly: boolean;
@@ -136,7 +251,7 @@ interface RepositorySettingsBarProps {
 
 export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
   repo, indexingStatus, onToggle, onRemove, onStopIndexing, onReindex,
-  onToggleStar, onToggleHidden, onToggleAutoCiFollowup, onToggleCancelCiDuringFollowup, onUpdateCancelCiWorkflows,
+  onToggleStar, onToggleHidden, onToggleAutoCiFollowup, onToggleCancelCiDuringFollowup, onUpdateCancelCiWorkflows, onUpdateNonBlockingChecks,
   onToggleNotifications, onUpdateVisualPreview, isReadOnly,
 }) => {
   const { isDemoMode } = useDemoMode();
@@ -208,6 +323,7 @@ export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
                 onUpdateWorkflows={onUpdateCancelCiWorkflows}
                 isReadOnly={isReadOnly}
               />
+              {onUpdateNonBlockingChecks && <NonBlockingChecksControl key={`non-blocking-${repo.id}`} repo={repo} onUpdate={onUpdateNonBlockingChecks} />}
               <RepositoryVisualPreviewControl key={repo.id} repo={repo} onUpdate={onUpdateVisualPreview} isReadOnly={isReadOnly} />
             </div>
           </div>

@@ -28,9 +28,18 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     isPartial: false,
 }));
 let labelTransitionActive = false;
+let escalationEnabled = false;
 
 await mock.module('@propr/core', {
     namedExports: {
+        AgentRegistry: {},
+        logger: { info: () => {} },
+        loadUltrafixEscalationSettings: async () => ({ enabled: escalationEnabled, models: [], patience: 3, maxReasoningLevels: 2 }),
+        loadModelReasoningLevel: async () => '',
+        resolveAgentModelReasoningLevel: () => undefined,
+        resolveRuntimeModelReasoningLevel: () => null,
+        resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),
+    resolveConfiguredModel: async (model: string) => model,
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         generateCorrelationId: mock.fn(() => 'next-correlation-id'),
         getAuthenticatedOctokit: mock.fn(async () => ({ request: mockOctokitRequest })),
@@ -74,6 +83,8 @@ const {
 } = await import('../src/jobs/ultrafixLoopContinuation.js');
 const {
     loadDeferredContinuation,
+    saveState,
+    loadState,
     startLoop,
 } = await import('../src/jobs/ultrafixOrchestrationService.js');
 
@@ -254,4 +265,95 @@ describe('Ultrafix continuation entry point', () => {
         assert.match(result.reason, /partial diff coverage/i);
         assert.equal(mockEnableAutoMerge.mock.callCount(), 0);
     });
+    test('state lost after record decides reason and outcome from one epoch read', async () => {
+        const { getUltrafixStateKey } = await import('../src/jobs/ultrafixOrchestrationService.js');
+        const { getUltrafixAutomaticWorkEpochKey } = await import('../src/jobs/ultrafixAutomaticWorkEpoch.js');
+        const stateKey = getUltrafixStateKey('acme', 'web', 45);
+        const epochKey = getUltrafixAutomaticWorkEpochKey('acme', 'web', 45);
+
+        const run = async (moveEpochAfterLoad: boolean) => {
+            const redis = createMockRedis();
+            await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 45, goal: 8 }, false);
+            let stateReads = 0;
+            let epochReadsAfterLoss = 0;
+            const originalGet = redis.get.bind(redis);
+            redis.get = async (key: string) => {
+                if (key === stateKey) {
+                    stateReads += 1;
+                    // The first read serves continuation's own load; the record
+                    // step then finds the state gone (cleared by a concurrent stop).
+                    if (stateReads > 1) {
+                        if (moveEpochAfterLoad) await redis.set(epochKey, '1');
+                        return null;
+                    }
+                }
+                if (key === epochKey && stateReads > 1) epochReadsAfterLoss += 1;
+                return originalGet(key);
+            };
+            const result = await continueUltrafixLoop({
+                owner: 'acme',
+                repo: 'web',
+                pullRequestNumber: 45,
+                completedAction: 'review',
+                ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+                redisClient: redis as never,
+                correlatedLogger: logger as never,
+                correlationId: 'lost-state-correlation-id',
+                currentJobId: 'completed-review-job',
+            });
+            return { result, epochReadsAfterLoss };
+        };
+
+        const lost = await run(false);
+        assert.equal(lost.result.continued, false);
+        assert.equal(lost.result.reason, 'state_lost_after_record');
+        assert.equal(lost.result.outcome, 'failed');
+        assert.equal(lost.epochReadsAfterLoss, 1, 'reason and outcome derive from a single epoch read');
+
+        const superseded = await run(true);
+        assert.equal(superseded.result.continued, false);
+        assert.equal(superseded.result.reason, 'ultrafix_superseded');
+        assert.equal(superseded.result.outcome, 'stopped');
+        assert.equal(superseded.epochReadsAfterLoss, 1);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+});
+
+
+test('reaching the final model keeps the loop running with its current execution', async () => {
+    escalationEnabled = true;
+    const redis = createMockRedis();
+    const { state } = await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 90, goal: 9, maxCycles: 20 }, false);
+    state.escalation = {
+        models: ['base'], patience: 1, maxReasoningLevels: 0, modelIndex: 0,
+        current: { model: 'base', levels: ['low', 'high'], effort: 'low' },
+        climbs: 0, bestScore: 8, stalledReviews: 0, exhausted: false,
+    };
+    await saveState(redis as never, state);
+    const before = mockOctokitRequest.mock.callCount();
+    const result = await continueUltrafixLoop({
+        owner: 'acme', repo: 'web', pullRequestNumber: 90, completedAction: 'review',
+        ultrafixMeta: { mode: 'ultrafix', goal: 9, instructions: '' },
+        redisClient: redis as never, correlatedLogger: logger as never,
+        correlationId: 'exhaustion', currentReviewCommentIds: [101], currentReviewResultCount: 1,
+    });
+    assert.equal(result.continued, true);
+    const saved = await loadState(redis as never, 'acme', 'web', 90);
+    assert.equal(saved?.active, true);
+    assert.equal(saved?.escalation?.exhausted, false);
+    assert.equal(saved?.escalation?.modelIndex, 0);
+    assert.deepEqual(saved?.escalation?.current, state.escalation.current);
+    const comments = mockOctokitRequest.mock.calls.slice(before).filter(call => call.arguments[0].startsWith('POST'));
+    assert.equal(comments.length, 0);
+    assert.equal(mockQueueAdd.mock.callCount(), 1);
+});
+
+test('disabled escalation leaves persisted review state byte-for-byte unchanged', async () => {
+    escalationEnabled = false;
+    const redis = createMockRedis();
+    const { state } = await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 91 }, false);
+    const before = JSON.stringify(state);
+    const { recordUltrafixEscalationReview } = await import('../src/jobs/ultrafixEscalation.js');
+    await recordUltrafixEscalationReview(redis as never, state, 6);
+    assert.equal(JSON.stringify(await loadState(redis as never, 'acme', 'web', 91)), before);
 });

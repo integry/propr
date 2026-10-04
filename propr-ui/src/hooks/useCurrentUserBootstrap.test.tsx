@@ -378,3 +378,17 @@ describe('desktop current-user bootstrap', () => {
     expect(connectSocket).toHaveBeenCalledOnce();
   });
 });
+
+it('uses server authorization checks while connected and HTTP checks while disconnected', async () => {
+  vi.useFakeTimers();
+  getCurrentUser.mockResolvedValue(user);
+  const { rerender } = renderHook(({ connected }) => useCurrentUserBootstrap({
+    isDemoMode: false, socketConnected: connected,
+  }), { initialProps: { connected: true } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(360_000); });
+  expect(getCurrentUser).toHaveBeenCalledTimes(1);
+  rerender({ connected: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(getCurrentUser).toHaveBeenCalledTimes(2);
+  vi.useRealTimers();
+});

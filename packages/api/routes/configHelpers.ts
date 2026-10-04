@@ -6,10 +6,17 @@ export { extractSettingSaves, type LabeledSaveDescriptor, type SettingSaveName }
 
 export const SETTINGS_CONFIG_LOCK_KEY = 'config:settings:lock';
 export const SPECIALIZED_SETTING_NAMES = [
+  'usage_tips_enabled',
+  'usage_tips_dismissal_cooldown_days',
   'auto_followup_score_threshold',
   'auto_resolve_merge_conflicts',
+  'dashboard_summary_enabled',
   'model_reasoning_level',
   'pr_review_model',
+  'ultrafix_escalation_enabled',
+  'ultrafix_escalation_models',
+  'ultrafix_escalation_patience',
+  'ultrafix_escalation_max_reasoning_levels',
   'ultrafix_rating_goal',
   'ultrafix_max_cycles',
   'ultrafix_pause_seconds'

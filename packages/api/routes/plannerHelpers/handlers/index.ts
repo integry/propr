@@ -6,3 +6,4 @@ export { createPreviewContextHandler, createGetContextStatsHandler, createDownlo
 export { createUploadAttachmentHandler, createDeleteAttachmentHandler, createGetAttachmentContentHandler } from './attachmentHandlers.js';
 export { createGetRepositoryInfoHandler, createValidateContextRepositoryHandler } from './repositoryHandlers.js';
 export { createAbortGenerationHandler, createRefineHandler } from './generationHandlers.js';
+export { createListPlanRevisionsHandler, createGetPlanRevisionHandler, createRestorePlanRevisionHandler } from './revisionHandlers.js';

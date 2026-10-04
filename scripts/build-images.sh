@@ -28,13 +28,19 @@ cd "$REPO_ROOT"
 
 # --- Config -------------------------------------------------------------------
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
-CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.280}"
-CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.154.0}"
+CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.284}"
+CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.160.0}"
 ANTIGRAVITY_CLI_VERSION="${ANTIGRAVITY_CLI_VERSION:-1.2.4}"
 ANTIGRAVITY_CLI_RELEASE_ID="${ANTIGRAVITY_CLI_RELEASE_ID:-6085322963025920}"
 ANTIGRAVITY_CLI_SHA512="${ANTIGRAVITY_CLI_SHA512:-5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897}"
 OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-1.18.31}"
-VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-2.25.4}"
+VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-2.25.8}"
+# Keep this default identical to the ARG default in Dockerfile.agent: only the
+# Dockerfile literal participates in the agent bundle content hash, so a
+# mismatch here would ship a different Agent Tank build under an existing tag.
+# `assert_agent_tank_version_matches_pin` enforces that, including for an
+# environment override, rather than trusting the convention.
+AGENT_TANK_CLI_VERSION="${AGENT_TANK_CLI_VERSION:-0.9.11}"
 PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
@@ -48,6 +54,7 @@ IMAGE_LICENSES="${IMAGE_LICENSES:-$PACKAGE_LICENSE}"
 AGENT_BUNDLE_CONTENT_FILES=(
   Dockerfile.agent
   scripts/agent-entrypoint.sh
+  scripts/agent-tank-runtime.mjs
   scripts/claude-entrypoint.sh
   scripts/codex-entrypoint.sh
   scripts/antigravity-entrypoint.sh
@@ -60,6 +67,35 @@ AGENT_BUNDLE_CONTENT_FILES=(
   NOTICE
   THIRD_PARTY_LICENSES.md
 )
+
+# The bundled Agent Tank version reaches the agent bundle tag only through the
+# `ARG AGENT_TANK_CLI_VERSION` literal in Dockerfile.agent, via the content hash
+# above - unlike the agent CLI versions, it is not part of the version matrix,
+# and the runtime tag generator (packages/core/src/agents/version) does not know
+# about it at all. An override therefore installs a different Agent Tank binary
+# and stamps a different image label while producing the byte-identical tag, so
+# existing installs would keep a different binary under a supposedly
+# version-specific tag. Refuse to build rather than publish that.
+assert_agent_tank_version_matches_pin() {
+  local -a pins=()
+  while IFS= read -r pin; do pins+=("$pin"); done \
+    < <(sed -n 's/^ARG AGENT_TANK_CLI_VERSION=\([^[:space:]]\{1,\}\)$/\1/p' Dockerfile.agent)
+
+  if [[ ${#pins[@]} -eq 0 ]]; then
+    echo "Dockerfile.agent must pin ARG AGENT_TANK_CLI_VERSION." >&2
+    exit 1
+  fi
+
+  for pin in "${pins[@]}"; do
+    if [[ "$pin" != "$AGENT_TANK_CLI_VERSION" ]]; then
+      echo "AGENT_TANK_CLI_VERSION=$AGENT_TANK_CLI_VERSION does not match the Dockerfile.agent pin ($pin)." >&2
+      echo "The bundled Agent Tank version only reaches the agent bundle tag through that Dockerfile literal," >&2
+      echo "so building with an override would ship a different Agent Tank binary under an unchanged tag." >&2
+      echo "Bump ARG AGENT_TANK_CLI_VERSION in Dockerfile.agent (every stage) and the default in this script instead." >&2
+      exit 1
+    fi
+  done
+}
 
 resolve_agent_bundle_tag() {
   CLAUDE_CLI_VERSION="$CLAUDE_CLI_VERSION" \
@@ -546,6 +582,9 @@ build_image() {
   fi
 
   case "$name" in
+    app)
+      build_args+=("--build-arg" "GIT_SHA=$GIT_SHA")
+      ;;
     agent)
       build_args+=(
         "--build-arg" "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION"
@@ -555,6 +594,7 @@ build_image() {
         "--build-arg" "ANTIGRAVITY_CLI_SHA512=$ANTIGRAVITY_CLI_SHA512"
         "--build-arg" "OPENCODE_CLI_VERSION=$OPENCODE_CLI_VERSION"
         "--build-arg" "VIBE_CLI_VERSION=$VIBE_CLI_VERSION"
+        "--build-arg" "AGENT_TANK_CLI_VERSION=$AGENT_TANK_CLI_VERSION"
       )
       ;;
   esac
@@ -587,6 +627,7 @@ build_image() {
 }
 
 # --- Main ---------------------------------------------------------------------
+assert_agent_tank_version_matches_pin
 AGENT_BUNDLE_TAG="$(resolve_agent_bundle_tag)"
 RELEASE_IMAGES=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
 

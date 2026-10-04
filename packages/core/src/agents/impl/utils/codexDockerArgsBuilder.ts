@@ -1,4 +1,4 @@
-import path from 'node:path';
+import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import logger from '../../../utils/logger.js';
 import type { AgentConfig } from '../../types.js';
 import {
@@ -102,6 +102,7 @@ function buildEnvironmentVariableArgs(
 export interface CodexDockerArgsParams {
     worktreePath: string;
     githubToken: string;
+    gitMountArgs?: string[];
     modelName?: string;
     issueNumber: number;
     jsonOutput?: boolean;
@@ -162,11 +163,10 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const dockerImage = config.dockerImage;
     const configPath = resolveCodexConfigPath(config.configPath);
     assertCodexConfigPathAvailable(configPath);
-    const workerOwnedGoalGit = params.executionMode === 'goal'
-        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+    const workerOwnedGit = !agentOwnsGit(params);
     const envVars = buildEnvironmentVariableArgs(
         [config.envVars, environment],
-        repositoryInspection || workerOwnedGoalGit,
+        true,
     );
     const streamConfig = resolveCodexStreamConfig({
         ...process.env,
@@ -187,18 +187,14 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(workerOwnedGoalGit
-            ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
-            : []),
-        ...(repositoryInspection ? [] : [
-            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
-        ]),
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace)),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-        ...(repositoryInspection || workerOwnedGoalGit
+        ...(repositoryInspection
             ? []
             : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
+        ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace',
         dockerImage,
         ...buildCodexCliArgs(params, streamConfig),

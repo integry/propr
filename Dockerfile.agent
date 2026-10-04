@@ -105,7 +105,7 @@ WORKDIR /home/node/workspace
 
 
 FROM agent-base AS claude-cli
-ARG CLAUDE_CLI_VERSION=2.1.280
+ARG CLAUDE_CLI_VERSION=2.1.284
 USER root
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
     && npm cache clean --force \
@@ -114,7 +114,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.154.0
+ARG CODEX_CLI_VERSION=0.160.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -137,7 +137,10 @@ RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
 
 
 FROM agent-base AS vibe-cli
-ARG VIBE_CLI_VERSION=2.25.4
+ARG VIBE_CLI_VERSION=2.25.8
+# mistral-vibe only publishes cp312 wheels; Debian bookworm's system python3 is 3.11,
+# so have uv fetch a managed interpreter into UV_PYTHON_INSTALL_DIR (/opt/uv/python).
+ARG VIBE_PYTHON_VERSION=3.12
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
@@ -147,11 +150,26 @@ RUN case "${VIBE_CLI_VERSION}" in \
         *"@"*|*"://"*|*.whl|*.tar.gz) vibe_install_spec="${VIBE_CLI_VERSION}" ;; \
         *) vibe_install_spec="mistral-vibe==${VIBE_CLI_VERSION}" ;; \
     esac \
-    && uv tool install "${vibe_install_spec}" \
+    && uv tool install --python "${VIBE_PYTHON_VERSION}" "${vibe_install_spec}" \
     && chmod -R a+rX /opt/uv \
     && uv cache clean \
     && vibe --version \
     && if [ ! -e /usr/local/bin/vibe-acp ]; then ln -s /usr/local/bin/vibe /usr/local/bin/vibe-acp; fi
+
+
+FROM agent-base AS agent-tank-cli
+# Pinned here, not in CI: this literal is part of the Dockerfile content that
+# feeds the agent bundle content hash, so bumping it produces a new image tag.
+# An env-only override in CI would NOT change the tag and would silently ship a
+# different binary under an existing tag - do not do that.
+ARG AGENT_TANK_CLI_VERSION=0.9.11
+USER root
+# node-pty compiles against the toolchain already present in agent-base
+# (build-essential + python3), which is why this needs no extra apt packages.
+RUN npm install -g "agent-tank@${AGENT_TANK_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && agent-tank --version
 
 
 FROM agent-base AS antigravity-cli
@@ -191,23 +209,26 @@ RUN set -eu; \
 
 
 FROM agent-base AS final
-ARG CLAUDE_CLI_VERSION=2.1.280
-ARG CODEX_CLI_VERSION=0.154.0
+ARG CLAUDE_CLI_VERSION=2.1.284
+ARG CODEX_CLI_VERSION=0.160.0
 ARG ANTIGRAVITY_CLI_VERSION=1.2.4
 ARG OPENCODE_CLI_VERSION=1.18.31
-ARG VIBE_CLI_VERSION=2.25.4
+ARG VIBE_CLI_VERSION=2.25.8
+ARG AGENT_TANK_CLI_VERSION=0.9.11
 
 LABEL dev.propr.agent-bundle="true" \
       dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
       dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
       dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
       dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
-      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}"
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
+      dev.propr.agent-tank.version="${AGENT_TANK_CLI_VERSION}"
 
 USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
 COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=agent-tank-cli /usr/local/lib/node_modules/agent-tank /usr/local/lib/node_modules/agent-tank
 COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
@@ -223,6 +244,7 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
 
 COPY --chown=node:node \
     scripts/agent-entrypoint.sh \
+    scripts/agent-tank-runtime.mjs \
     scripts/claude-entrypoint.sh \
     scripts/codex-entrypoint.sh \
     scripts/antigravity-entrypoint.sh \
@@ -241,6 +263,7 @@ RUN set -eu; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
     && link_npm_bin opencode-ai opencode \
+    && link_npm_bin agent-tank agent-tank \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
     && chmod +x \
         /home/node/agent-entrypoint.sh \
@@ -255,7 +278,8 @@ RUN set -eu; \
     && codex --version \
     && opencode --version \
     && vibe --version \
-    && agy --version
+    && agy --version \
+    && agent-tank --version
 
 USER node
 RUN git config --global user.name "ProPR Agent Bot" \

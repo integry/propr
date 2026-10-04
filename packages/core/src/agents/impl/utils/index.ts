@@ -31,6 +31,7 @@ export {
 
 export {
     getClaudeAnalysisText,
+    getFinalAnswerText,
     type PersistLogsParams
 } from './claudeOutputHelpers.js';
 

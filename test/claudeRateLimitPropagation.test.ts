@@ -1,6 +1,9 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert';
 import { parseStreamJsonOutput, UsageLimitError } from '../packages/core/src/claude/claudeHelpers.ts';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(() => closeConnection());
 
 test('parseStreamJsonOutput propagates UsageLimitError for assistant rate_limit payload', () => {
     const executionResult = {

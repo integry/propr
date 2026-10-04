@@ -1,24 +1,48 @@
+/* eslint-disable max-lines -- the Redis relay, its rooms and the per-event broadcasters are one transport boundary */
+import { ShellActivityBroadcaster } from './shellActivityBroadcaster.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
-import type { WorkerStateManagerOptions } from '@propr/core';
+import { goalActivityState, type WorkerStateManagerOptions } from '@propr/core';
 import {
   REDIS_CHANNELS,
+  GOAL_UPDATE, isActivityTimestamp, isActivityUpdatePayload, isGoalUpdatePayload, isTerminalActivityChange,
+  isShellActivityUpdatePayload, isShellNotificationUpdatePayload, isShellUsageUpdatePayload,
+  isUsageUpdatePayload,
+  type GoalUpdatePayload,
   TASK_UPDATE,
   DRAFT_UPDATE,
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  ACTIVITY_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
+  type ActivityUpdatePayload,
   type EventPayload,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
   type QueueStatsUpdatePayload
 } from '@propr/shared';
+import type {
+  ActivityChange, ActivityDomain, ActivityUpdatePayload as ScopedActivityUpdatePayload,
+  NotificationUpdatePayload as RecipientListNotificationUpdate, UsageUpdatePayload as ScopedUsageUpdatePayload,
+} from '@propr/shared/dist/activityEvents.js';
+import {
+  activityFromDraftUpdate,
+  activityFromIndexingUpdate,
+  activityFromQueueStatsUpdate,
+  activityFromTaskUpdate,
+  isAttentionTaskState,
+} from './activityEvents.js';
+import { ActivityBroadcaster, ACTIVITY_ROOM as BROADCAST_ACTIVITY_ROOM } from './activityBroadcast.js';
 import { QueueBroadcaster } from './queueBroadcaster.js';
 import { TaskWatcherManager } from './taskWatcher.js';
 import {
@@ -26,11 +50,17 @@ import {
   type SocketAuthenticationOptions,
 } from './socketAuthentication.js';
 import {
-  INSTANCE_OPERATIONAL_ROOM,
+  INSTANCE_OPERATIONAL_ROOM, ACTIVITY_ROOM, activityUserRoom,
   SocketSubscriptionManager,
   taskRoom,
   userRoom,
 } from './socketSubscriptions.js';
+import {
+  admitTaskRevision,
+  DEFAULT_TASK_STATE_EXPIRY_SECONDS,
+  loadDurableTaskRevision,
+  type TaskRevisionCacheEntry,
+} from './taskRevisionOrdering.js';
 import type { NotificationProjectionSink } from './notificationBackgroundProtocol.js';
 
 /** CORS origin validation function type compatible with Socket.IO */
@@ -39,6 +69,7 @@ type CorsOriginFunction = (origin: string | undefined, callback: CorsOriginCallb
 
 /** Dependencies for queue stats broadcasting */
 export interface QueueDependencies {
+  readSystemStatus?: () => Promise<Record<string, unknown>>;
   taskQueue: Queue;
   redisClient: RedisClientType;
   db: Knex;
@@ -46,54 +77,11 @@ export interface QueueDependencies {
   notificationProjection?: NotificationProjectionSink;
 }
 
-const DEFAULT_TASK_STATE_EXPIRY_SECONDS = 7 * 24 * 3600;
-
-export interface TaskRevisionCacheEntry {
-  version: number;
-  expiresAt: number;
-}
-
-export function readCachedTaskRevision(
-  entry: TaskRevisionCacheEntry | undefined,
-  now = Date.now(),
-): number | undefined {
-  return entry && entry.expiresAt > now ? entry.version : undefined;
-}
-
-export function shouldBroadcastTaskUpdate(
-  latestVersion: number | undefined,
-  incomingVersion: number | undefined,
-  allowSeededEquality = false,
-): boolean {
-  if (incomingVersion !== undefined
-    && (!Number.isSafeInteger(incomingVersion) || incomingVersion < 0)) return false;
-  if (latestVersion === undefined) return true;
-  if (incomingVersion === undefined) return false;
-  return incomingVersion > latestVersion
-    || (allowSeededEquality && incomingVersion === latestVersion);
-}
-
-export async function loadDurableTaskRevision(
-  get: (key: string) => Promise<string | null>,
-  taskId: string,
-  options: Pick<WorkerStateManagerOptions, 'keyPrefix'> = {},
-): Promise<number | undefined> {
-  const stateValue = await get(`${options.keyPrefix ?? 'worker:state:'}${taskId}`);
-  const isValidRevision = (value: number): boolean => (
-    Number.isSafeInteger(value) && value >= 0
-  );
-  let stateRevision = Number.NaN;
-  if (stateValue) {
-    try {
-      const parsed = JSON.parse(stateValue) as { version?: unknown };
-      stateRevision = typeof parsed.version === 'number' && isValidRevision(parsed.version)
-        ? parsed.version
-        : Number.NaN;
-    } catch {
-      // A malformed/partially-written state cannot seed event ordering.
-    }
-  }
-  return isValidRevision(stateRevision) ? stateRevision : undefined;
+function shouldRefreshGoalForTask(payload: TaskUpdatePayload): boolean {
+  // Tool-call heartbeats do not change goal resources. Terminal frames still
+  // reconcile the goal, whose result may have just been committed.
+  return payload.state !== payload.previousState
+    || ['completed', 'failed', 'cancelled'].includes(payload.state);
 }
 
 /**
@@ -109,7 +97,9 @@ export class SocketService {
   private io: SocketIOServer;
   private subscriber: InstanceType<typeof Redis>;
   private isSubscribed = false;
+  private shellBroadcaster: ShellActivityBroadcaster | null = null;
   private queueBroadcaster: QueueBroadcaster | null = null;
+  private activityBroadcaster: ActivityBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private subscriptionManager: SocketSubscriptionManager;
   private queueDeps: QueueDependencies | null = null;
@@ -163,11 +153,29 @@ export class SocketService {
    */
   initQueueFeatures(deps: QueueDependencies): void {
     this.queueDeps = deps;
+    this.shellBroadcaster = new ShellActivityBroadcaster(this.io, deps.readSystemStatus);
+    this.shellBroadcaster.start();
     this.taskWatcherManager.setDeps({ redisClient: deps.redisClient, db: deps.db });
     this.queueBroadcaster = new QueueBroadcaster(this.io, deps.taskQueue);
     this.queueBroadcaster.init();
     this.notificationProjection = deps.notificationProjection ?? null;
     console.log('[SocketService] Queue features initialized');
+  }
+
+  /**
+   * Derives the general activity surface from the producer events this service
+   * already subscribes to, so 'a task changed' and 'activity happened' cannot
+   * drift apart, and so no second Redis subscription has to be opened and torn
+   * down for it. Resolved on first use because it needs nothing but this
+   * service's own Socket.IO server.
+   */
+  private get activity(): ActivityBroadcaster {
+    // Use the target branch's opt-in rooms with the PR's validated derivation.
+    this.activityBroadcaster ??= new ActivityBroadcaster({
+      to: room => this.io.to(room === BROADCAST_ACTIVITY_ROOM ? ACTIVITY_ROOM
+        : room.startsWith('user:') ? activityUserRoom(room.slice('user:'.length)) : room),
+    });
+    return this.activityBroadcaster;
   }
 
   /**
@@ -187,13 +195,8 @@ export class SocketService {
     if (this.isSubscribed) return;
 
     try {
-      await this.subscriber.subscribe(
-        REDIS_CHANNELS.TASKS,
-        REDIS_CHANNELS.DRAFTS,
-        REDIS_CHANNELS.INDEXING,
-        REDIS_CHANNELS.LIVE_DETAILS,
-        REDIS_CHANNELS.QUEUE_STATS
-      );
+      // Every declared channel, so adding one to the contract is enough.
+      await this.subscriber.subscribe(...Object.values(REDIS_CHANNELS));
       this.isSubscribed = true;
       console.log('[SocketService] Subscribed to Redis channels:', Object.values(REDIS_CHANNELS));
 
@@ -213,8 +216,42 @@ export class SocketService {
   /**
    * Handle incoming events from Redis and broadcast to WebSocket clients
    */
-  private handleEvent(_channel: string, payload: EventPayload): void {
+  private handleEvent(_channel: string, payload: EventPayload | RecipientListNotificationUpdate): void {
     switch (payload.eventType) {
+      // Two published activity formats reach this relay - the envelope's
+      // `entityId` shape and the shell surfaces' `subjectId` shape - and either
+      // is re-emitted to browsers, so each is validated whole against its own
+      // contract first. The format a frame claims decides which contract it has
+      // to satisfy, so supporting the second one does not let an envelope
+      // publisher omit a field the envelope requires. Filling the envelope's
+      // missing fields downstream is normalization, not validation: a frame with
+      // a malformed timestamp, an unknown domain or change, a scope no consumer
+      // can filter on, or a `terminal` flag that disagrees with its own change
+      // is dropped here rather than forwarded.
+      case ACTIVITY_UPDATE:
+        if ('entityId' in payload
+          ? isActivityUpdatePayload(payload)
+          : isShellActivityUpdatePayload(payload)) this.broadcastPushEvent(payload);
+        else this.dropMalformedFrame(ACTIVITY_UPDATE);
+        break;
+      case GOAL_UPDATE:
+        void this.handleGoalUpdate(payload).catch(error => console.error('Goal broadcast failed:', error));
+        break;
+      case NOTIFICATION_UPDATE:
+        if ('recipientIds' in payload) this.activity.notificationUpdated(payload);
+        else if (isShellNotificationUpdatePayload(payload)) this.broadcastPushEvent(payload);
+        else this.dropMalformedFrame(NOTIFICATION_UPDATE);
+        break;
+      // Same rule for the two usage formats: a trigger naming a `source` is held
+      // to the envelope's capacity readings, and the shell trigger's optional
+      // `provider` is checked in its place. Either way the timestamp has to be
+      // one a consumer can order by.
+      case USAGE_UPDATE:
+        if ('source' in payload
+          ? isUsageUpdatePayload(payload)
+          : isShellUsageUpdatePayload(payload)) this.broadcastPushEvent(payload);
+        else this.dropMalformedFrame(USAGE_UPDATE);
+        break;
       case TASK_UPDATE:
         this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
@@ -233,6 +270,58 @@ export class SocketService {
       default:
         console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
     }
+  }
+
+  /**
+   * A publish that does not satisfy any accepted format for its event is
+   * reported and dropped: forwarding half a contract is what turns one bad
+   * publish into a consumer acting on a change that never happened.
+   */
+  private dropMalformedFrame(eventType: string): void {
+    console.warn(`[SocketService] Dropped malformed ${eventType} frame`);
+  }
+
+  private broadcastActivity(frame: {
+    domain: ActivityDomain;
+    entityId: string;
+    repository: string | null;
+    change: ActivityChange;
+    /** Defaults to the public activity room; private subjects pass their own. */
+    room?: string;
+    /** Defaults to now; a producer that timestamped the change passes its own. */
+    occurredAt?: string;
+    details?: Partial<ActivityUpdatePayload>;
+  }): void {
+    const { domain, entityId, repository, change, room = ACTIVITY_ROOM, details = {} } = frame;
+    this.io.to(room).emit(ACTIVITY_UPDATE, { ...details, eventType: ACTIVITY_UPDATE, domain, entityId,
+      repository, change, terminal: isTerminalActivityChange(change),
+      occurredAt: frame.occurredAt ?? new Date().toISOString() });
+  }
+
+  private async handleGoalUpdate(
+    payload: Partial<GoalUpdatePayload> & { goalId: string; ownerId?: string },
+  ): Promise<void> {
+    if (!this.queueDeps || typeof payload.goalId !== 'string' || !payload.goalId
+      || !isActivityTimestamp(payload.occurredAt)) return;
+    // Rich transition frames must satisfy the PR contract. Bare invalidations
+    // from checkpoint/session writers are resolved from the committed goal row.
+    if (payload.state !== undefined && !isGoalUpdatePayload(payload)) return;
+    const goal = await this.queueDeps.db('goals').where({ goal_id: payload.goalId }).first();
+    const ownerId = goal?.owner_id ?? payload.ownerId;
+    if (typeof ownerId !== 'string' || !ownerId) return;
+    const frame: GoalUpdatePayload = {
+      eventType: GOAL_UPDATE,
+      goalId: payload.goalId,
+      repository: goal?.repository ?? payload.repository,
+      state: payload.state ?? (goal ? goalActivityState(goal) : 'cancelled'),
+      occurredAt: payload.occurredAt,
+      desiredState: goal?.desired_state,
+      resultState: goal?.result_state,
+      currentTaskId: payload.currentTaskId ?? goal?.current_task_id,
+      ...(payload.revision === undefined ? {} : { revision: payload.revision }),
+    };
+    // Both the goal frame and its derived activity have the same private audience.
+    new ActivityBroadcaster({ to: () => this.io.to(activityUserRoom(ownerId)) }).goalUpdated(frame);
   }
 
   private enqueueTaskUpdate(payload: TaskUpdatePayload): void {
@@ -267,51 +356,52 @@ export class SocketService {
     this.draftUpdateTails.set(payload.draftId, current);
   }
 
+  /** Durable revision baseline for a task, or undefined when no store is wired. */
+  private async seedDurableTaskRevision(taskId: string): Promise<number | undefined> {
+    const deps = this.queueDeps;
+    if (!deps) return undefined;
+    return loadDurableTaskRevision(key => deps.redisClient.get(key), taskId, deps.workerStateOptions);
+  }
+
+  // One task frame fans out to its room, the activity envelope, private goal
+  // tasks and the notification projection.
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
-    const now = Date.now();
-    const cachedRevision = this.taskRevisions.get(payload.taskId);
-    let latestVersion = readCachedTaskRevision(cachedRevision, now);
-    if (cachedRevision && latestVersion === undefined) this.taskRevisions.delete(payload.taskId);
-    let allowSeededEquality = false;
-    if (latestVersion === undefined && payload.version !== undefined && this.queueDeps) {
-      try {
-        latestVersion = await loadDurableTaskRevision(
-          key => this.queueDeps!.redisClient.get(key),
-          payload.taskId,
-          this.queueDeps.workerStateOptions,
-        );
-        allowSeededEquality = latestVersion !== undefined;
-      } catch (error) {
-        console.error(`[SocketService] Failed to seed task revision for ${payload.taskId}:`, error);
-        // A versioned pub/sub event is already self-ordering. Accept it as the
-        // live baseline when durable state is transiently unavailable rather
-        // than silently dropping the only update clients may receive.
-        if (payload.version === undefined) return;
-        latestVersion = undefined;
-      }
-    }
-    // During rolling upgrades, legacy events may be accepted until a
-    // versioned producer establishes the ordered stream for this task.
-    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version, allowSeededEquality)) return;
-    if (payload.version !== undefined) {
-      const stateExpirySeconds = Math.max(
-        1,
-        this.queueDeps?.workerStateOptions?.stateExpiry ?? DEFAULT_TASK_STATE_EXPIRY_SECONDS,
-      );
-      this.taskRevisions.delete(payload.taskId);
-      this.taskRevisions.set(payload.taskId, {
-        version: payload.version,
-        expiresAt: now + stateExpirySeconds * 1000,
-      });
-      if (this.taskRevisions.size > 10_000) {
-        const oldestTaskId = this.taskRevisions.keys().next().value;
-        if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);
-      }
-    }
+    const admitted = await admitTaskRevision({
+      cache: this.taskRevisions,
+      taskId: payload.taskId,
+      version: payload.version,
+      seed: taskId => this.seedDurableTaskRevision(taskId),
+      stateExpirySeconds: () => this.queueDeps?.workerStateOptions?.stateExpiry
+        ?? DEFAULT_TASK_STATE_EXPIRY_SECONDS,
+    });
+    if (!admitted) return;
     this.io
       .to(INSTANCE_OPERATIONAL_ROOM)
       .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
+    // Derived after the ordering gate above, so a replayed or out-of-order task
+    // event cannot produce an activity frame the task feed itself rejected.
+    if (payload.taskId.startsWith('goal-')) {
+      const goal = shouldRefreshGoalForTask(payload) && this.queueDeps && await this.queueDeps.db('goals')
+        .where({ current_task_id: payload.taskId }).first('goal_id');
+      if (goal) await this.handleGoalUpdate({
+        eventType: GOAL_UPDATE, goalId: goal.goal_id,
+        repository: payload.repository ?? undefined, occurredAt: payload.timestamp,
+      });
+    } else if (payload.state !== payload.previousState || payload.metadata?.issueRefUpdated) {
+      // A task waiting on a human is `blocked`, not `progressed`: the dashboard
+      // summary, its attention pane and the header's attention count all
+      // declare that interest, and nothing else in the envelope tells them a
+      // run stopped for a person rather than moving along.
+      const change: ActivityChange = payload.state === 'completed' ? 'completed'
+        : payload.state === 'failed' ? 'failed'
+        : payload.state === 'cancelled' ? 'cancelled'
+        : payload.state === 'pending' || payload.state === 'queued' ? 'created'
+        : isAttentionTaskState(payload.state) ? 'blocked'
+        : payload.previousState === 'pending' || !payload.previousState ? 'started' : 'progressed';
+      this.broadcastActivity({ domain: 'task', entityId: payload.taskId,
+        repository: payload.repository ?? null, change, details: activityFromTaskUpdate(payload) });
+    }
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
     if (this.notificationProjection) {
       await this.notificationProjection.projectTaskUpdate(payload);
@@ -340,6 +430,27 @@ export class SocketService {
       .to(userRoom(ownerId))
       .emit(DRAFT_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
+    // Every draft update reaches the owner's activity room, not just the ones
+    // that moved the draft's status: a consumer that reacts to plan activity at
+    // all has no other way to learn a generation run is progressing. The change
+    // stays in the envelope's vocabulary so the frame satisfies the wire
+    // contract every consumer validates against, while `details` carries the
+    // shell surfaces' fields derived from the same payload.
+    this.broadcastActivity({
+      domain: 'plan',
+      entityId: payload.draftId,
+      // Draft updates carry no repository; a consumer filtering by repository
+      // resolves it from the draft it already reads rather than a guess here.
+      repository: null,
+      // `review` is the one draft status a person has to act on.
+      change: payload.draftStatus === 'review' ? 'blocked'
+        : payload.draftStatus === 'failed' ? 'failed'
+          : payload.draftStatus === 'merged' ? 'completed'
+            : 'progressed',
+      room: activityUserRoom(ownerId),
+      occurredAt: payload.timestamp,
+      details: activityFromDraftUpdate(payload) ?? undefined,
+    });
     if (this.notificationProjection) {
       await this.notificationProjection.projectDraftUpdate(payload);
     }
@@ -349,6 +460,7 @@ export class SocketService {
     this.io.to(`indexing:${payload.repository}`).emit(INDEXING_UPDATE, payload);
     this.io.to('indexing:updates').emit(INDEXING_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${INDEXING_UPDATE} for repository ${payload.repository}, phase: ${payload.phase}`);
+    this.broadcastPushEvent(activityFromIndexingUpdate(payload));
     if (this.notificationProjection) {
       void this.notificationProjection.projectIndexingUpdate(payload).catch(error => {
         console.error(`[SocketService] Failed to project indexing update for ${payload.repository}:`, error);
@@ -364,6 +476,42 @@ export class SocketService {
   private handleQueueStatsUpdate(payload: QueueStatsUpdatePayload): void {
     this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${QUEUE_STATS_UPDATE}`);
+    this.broadcastPushEvent(activityFromQueueStatsUpdate(payload));
+  }
+
+  /**
+   * Broadcast a push event to the room allowed to see it.
+   *
+   * Activity and usage reach clients subscribed to instance activity;
+   * notifications reach only their recipients. Consumers declare an interest
+   * rather than subscribing per resource,
+   * so this is the one place a new producer has to reach to become visible.
+   */
+  broadcastPushEvent(
+    payload: ActivityUpdatePayload | ScopedActivityUpdatePayload
+      | NotificationUpdatePayload | RecipientListNotificationUpdate | UsageUpdatePayload | ScopedUsageUpdatePayload,
+  ): void {
+    if (payload.eventType === USAGE_UPDATE
+      || (payload.eventType === ACTIVITY_UPDATE && ['health', 'system', 'indexing'].includes(payload.domain))) {
+      void this.shellBroadcaster?.sample();
+    }
+    if (payload.eventType === NOTIFICATION_UPDATE) {
+      const { recipientIds, recipientId, ...frame } = payload as NotificationUpdatePayload & Partial<RecipientListNotificationUpdate>;
+      const recipients = Array.isArray(recipientIds) ? recipientIds : recipientId ? [recipientId] : [];
+      for (const id of new Set(recipients)) {
+        if (typeof id === 'string' && id) this.io.to(activityUserRoom(id)).emit(NOTIFICATION_UPDATE, frame);
+      }
+      return;
+    }
+    this.io.to(ACTIVITY_ROOM).emit(payload.eventType, payload.eventType === ACTIVITY_UPDATE
+      ? { ...payload, entityId: 'entityId' in payload ? payload.entityId : payload.subjectId ?? payload.domain,
+        repository: payload.repository ?? null }
+      : payload);
+  }
+
+  /** Whether any client is connected to this instance, i.e. anyone to tell. */
+  hasConnectedClients(): boolean {
+    return this.io.sockets.sockets.size > 0;
   }
 
   /** Get the Socket.IO server instance */
@@ -384,7 +532,7 @@ export class SocketService {
 
   /** Broadcast queue stats update (can be called externally) */
   async emitQueueStatsUpdate(payload: QueueStatsUpdatePayload): Promise<void> {
-    this.io.to('queue:stats').emit(QUEUE_STATS_UPDATE, payload);
+    this.handleQueueStatsUpdate(payload);
   }
 
   /** Check if there are clients subscribed to a specific task's live updates */
@@ -402,6 +550,7 @@ export class SocketService {
   /** Clean up resources on shutdown */
   async close(): Promise<void> {
     try {
+      this.shellBroadcaster?.close();
       if (this.queueBroadcaster) {
         await this.queueBroadcaster.close();
         this.queueBroadcaster = null;

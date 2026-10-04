@@ -250,6 +250,45 @@ export function buildTaskWorkRef(
   };
 }
 
+const LOG_ATTRIBUTION_KEY = 'proprLogAttribution';
+
+export interface TaskLogAttribution {
+  executionType: ExecutionType;
+  workRef: WorkReference;
+}
+
+/**
+ * Marks an agent task that is not issue implementation, such as writing or
+ * repairing a plan in a scratch workspace, so its execution log is recorded
+ * as that work. Carried in the task metadata every agent already passes to
+ * its execution log.
+ */
+export function withTaskLogAttribution(
+  metadata: Record<string, unknown> | undefined,
+  attribution: TaskLogAttribution,
+): Record<string, unknown> {
+  return { ...metadata, [LOG_ATTRIBUTION_KEY]: attribution };
+}
+
+/**
+ * Execution type, work reference and metadata for an agent task's log, ready
+ * to spread into the log entry: implementation work unless the task was
+ * attributed otherwise. `extraMetadata` is merged over the task metadata.
+ */
+export function resolveTaskLogAttribution(
+  metadata: Record<string, unknown> | undefined,
+  defaultWorkRef: WorkReference,
+  extraMetadata: Record<string, unknown> = {},
+): { executionType: ExecutionType; workRef: WorkReference; metadata: Record<string, unknown> } {
+  const { [LOG_ATTRIBUTION_KEY]: attribution, ...rest } = metadata ?? {};
+  const override = attribution as TaskLogAttribution | undefined;
+  return {
+    executionType: override?.executionType ?? 'implementation',
+    workRef: override?.workRef ?? defaultWorkRef,
+    metadata: { ...rest, ...extraMetadata },
+  };
+}
+
 /**
  * Builds a WorkReference for analysis calls based on execution type and task context.
  */

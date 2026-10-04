@@ -16,19 +16,35 @@ import { up as initial } from '../../core/src/db/migrations/20251216000000_initi
 import { up as planIssues } from '../../core/src/db/migrations/20260120000000_add_plan_issues.js';
 import { up as planIssueTasks } from '../../core/src/db/migrations/20260121000000_add_task_id_to_plan_issues.js';
 import { up as taskPullRequests } from '../../core/src/db/migrations/20260216000000_add_pr_number_to_tasks.js';
+import { up as pullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
+import { up as taskSubmissions } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
+import { up as submissionIdentity } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
+import { up as taskFinalResult } from '../../core/src/db/migrations/20260925000000_add_final_result_to_tasks.js';
+import { up as planRevisions } from '../../core/src/db/migrations/20260928000000_add_task_draft_plan_revisions.js';
+import { up as planRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
+import { up as epicExecutionQueues } from '../../core/src/db/migrations/20261003000000_add_epic_execution_queues.js';
+import { up as epicQueueFinalization } from '../../core/src/db/migrations/20261003010000_add_epic_queue_finalization.js';
+import { up as epicQueueUseEpic } from '../../core/src/db/migrations/20261003020000_add_epic_queue_use_epic.js';
+import { up as epicQueueParallel } from '../../core/src/db/migrations/20261003030000_add_epic_queue_parallel.js';
 import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { McpError } from '../mcp/config.js';
 import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
 import { buildMcpServer } from '../mcp/server.js';
 import { createToolCatalog, executeTool, type ToolDeps } from '../mcp/tools.js';
+import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 after(async () => closeConnection());
 
 test('both official SDK protocol eras execute real draft/revision/publication/task transitions over the same HTTP endpoint', async () => {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-  await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await mcpMigration(db);
+  await initial(db); await planIssues(db); await planIssueTasks(db); await taskPullRequests(db); await pullRequestState(db);
+  await mcpMigration(db);
+  await lifecycleMigration(db); await taskSubmissions(db); await submissionIdentity(db); await taskFinalResult(db);
+  await planRevisions(db); await planRevisionCauses(db);
+  await epicExecutionQueues(db); await epicQueueFinalization(db); await epicQueueUseEpic(db); await epicQueueParallel(db);
   await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
   await db.schema.createTable('goals', table => {
     table.string('goal_id'); table.string('owner_id'); table.string('repository'); table.string('current_task_id');
@@ -46,7 +62,7 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
       assert.equal(route, 'POST /repos/{owner}/{repo}/issues');
       githubIssues.push(payload); return { data: { number: githubIssues.length, title: payload.title, html_url: `https://github.com/acme/repo/issues/${githubIssues.length}` } };
     } } as never };
-  const deps: ToolDeps = { db, policy, taskQueue: {} as never, redisClient: { get: async () => null } as never, runtimeBuildQueue: {} as never };
+  const deps: ToolDeps = { db, policy, taskQueue: {} as never, redisClient: withLiveOutputReads({ get: async () => null }) as never, runtimeBuildQueue: {} as never };
   const catalog = createToolCatalog(deps);
   const app = express(); app.use(express.json());
   const wire: Array<{ method: string; version?: string }> = [];
@@ -85,6 +101,7 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         const id = create.data.result.planId;
         const duplicate = await call('create_plan', args); assert.equal(duplicate.data.operationId, create.data.operationId);
         const get = await call('get_plan', { repository: 'acme/repo', planId: id }); assert.equal(get.data.status, 'draft');
+        assert.equal(get.data.epicQueue, null);
         const updated = await call('update_plan', { repository: 'acme/repo', planId: id, expectedRevision: 0, name: 'Reviewed reliability', idempotencyKey: `update-plan-${modern}` });
         assert.equal(updated.data.result.revision, 1);
         const stale = await call('update_plan', { repository: 'acme/repo', planId: id, expectedRevision: 0, name: 'Stale overwrite', idempotencyKey: `stale-plan-${modern}` });
@@ -96,6 +113,16 @@ test('both official SDK protocol eras execute real draft/revision/publication/ta
         const resource = await client.readResource({ uri: `propr://instances/test-instance/plans/${id}` }); assert.equal(resource.contents.length, 1);
         await db('tasks').insert({ task_id: `task-${modern}`, repository: 'acme/repo', task_type: 'issue', issue_number: 1 });
         await db('task_history').insert({ task_id: `task-${modern}`, state: 'processing' });
+        const submissionId = modern ? '00000000-0000-4000-8000-000000000001' : '00000000-0000-4000-8000-000000000002';
+        const submissionIssue = modern ? 1 : 2;
+        await db('task_submissions').insert({ id: submissionId, user_id: '123', submission_key: `submission-${modern}`,
+          payload_hash: `hash-${modern}`, repository: 'acme/repo', payload: '{}', state: 'queued', issue_number: submissionIssue,
+          issue_url: `https://github.com/acme/repo/issues/${submissionIssue}`, task_id: `task-${modern}`, latest_task_id: `task-${modern}`,
+          dispatch_complete: true });
+        const submissionResource = await client.readResource({ uri: `propr://instances/test-instance/submissions/${submissionId}` });
+        const submissionData = JSON.parse((submissionResource.contents[0] as { text: string }).text).data;
+        assert.equal(submissionData.progress.stage, 'running');
+        assert.equal(submissionData.progress.task.id, `task-${modern}`);
         let task = await call('get_task', { repository: 'acme/repo', taskId: `task-${modern}` }); assert.equal(task.data.latestEvent.state, 'processing');
         await db('task_history').insert({ task_id: `task-${modern}`, state: 'completed' });
         task = await call('get_task', { repository: 'acme/repo', taskId: `task-${modern}` }); assert.equal(task.data.latestEvent.state, 'completed');
@@ -275,4 +302,67 @@ test('MCP task, goal and plan lists paginate in deterministic newest-first order
     order_index: 0, created_at: newest, updated_at: newest,
   });
 
+});
+
+test('list_plans filters plan status inside the query and paginates the filtered set', async t => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  t.after(() => db.destroy());
+  await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+
+  const repository = 'acme/repo';
+  // Distinct creation timestamps keep newest-first page boundaries deterministic.
+  const fixtures = [
+    { draft_id: 'plan-review-newest', status: 'review', created_at: '2026-09-01 12:00:05' },
+    { draft_id: 'plan-merged', status: 'merged', created_at: '2026-09-01 12:00:04' },
+    { draft_id: 'plan-review-middle', status: 'review', created_at: '2026-09-01 12:00:03' },
+    { draft_id: 'plan-executing', status: 'executing', created_at: '2026-09-01 12:00:02' },
+    { draft_id: 'plan-review-oldest', status: 'review', created_at: '2026-09-01 12:00:01' },
+    { draft_id: 'plan-failed', status: 'failed', created_at: '2026-09-01 12:00:00' },
+  ];
+  await db('task_drafts').insert(fixtures.map(fixture => ({ user_id: '123', repository, mcp_revision: 0, updated_at: fixture.created_at, ...fixture })));
+  // Another owner's matching plan must never appear in a filtered page.
+  await db('task_drafts').insert({ draft_id: 'plan-other-owner', user_id: '999', repository, status: 'review',
+    mcp_revision: 0, created_at: '2026-09-01 12:00:06', updated_at: '2026-09-01 12:00:06' });
+
+  const deps: ToolDeps = { db, policy: {} as McpPolicy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
+  const tool = createToolCatalog(deps).find(candidate => candidate.name === 'list_plans')!;
+  const principal = { user: { id: '123' } } as McpPrincipal;
+  const list = async (args: Record<string, unknown>) => {
+    const result = await tool.run({ principal, args: tool.schema.parse({ repository, ...args }) });
+    assert.equal(result.status, 200);
+    const data = result.data as { plans: Array<{ draft_id: string; status: string }>; nextOffset: number | null };
+    return { ids: data.plans.map(plan => plan.draft_id), statuses: data.plans.map(plan => plan.status), nextOffset: data.nextOffset };
+  };
+
+  // The default stays every plan, so existing callers see the pre-filter page.
+  const unfiltered = await list({ limit: 100 });
+  assert.deepEqual(unfiltered.ids, fixtures.map(fixture => fixture.draft_id));
+  assert.equal(unfiltered.nextOffset, null);
+  assert.deepEqual((await list({ limit: 100, status: 'all' })).ids, unfiltered.ids);
+
+  const review = await list({ status: 'review', limit: 100 });
+  assert.deepEqual(review.ids, ['plan-review-newest', 'plan-review-middle', 'plan-review-oldest']);
+  assert.deepEqual(review.statuses, ['review', 'review', 'review']);
+  assert.equal(review.nextOffset, null);
+
+  // Paging walks the filtered rows: page one must not spend its limit on merged
+  // or executing plans that the filter already excluded.
+  const firstPage = await list({ status: 'review', limit: 2 });
+  assert.deepEqual(firstPage.ids, ['plan-review-newest', 'plan-review-middle']);
+  assert.equal(firstPage.nextOffset, 2);
+  const secondPage = await list({ status: 'review', offset: firstPage.nextOffset!, limit: 2 });
+  assert.deepEqual(secondPage.ids, ['plan-review-oldest']);
+  assert.equal(secondPage.nextOffset, null);
+
+  // active is everything that has not merged or failed, including a plan whose
+  // status column was never written.
+  await db('task_drafts').insert({ draft_id: 'plan-null-status', user_id: '123', repository, status: null,
+    mcp_revision: 0, created_at: '2026-08-01 12:00:00', updated_at: '2026-08-01 12:00:00' });
+  assert.deepEqual((await list({ status: 'active', limit: 100 })).ids,
+    ['plan-review-newest', 'plan-review-middle', 'plan-executing', 'plan-review-oldest', 'plan-null-status']);
+  assert.deepEqual((await list({ status: 'merged', limit: 100 })).ids, ['plan-merged']);
+  assert.deepEqual((await list({ status: 'failed', limit: 100 })).ids, ['plan-failed']);
+  assert.deepEqual((await list({ status: 'pr_created', limit: 100 })).ids, []);
+  assert.equal(tool.schema.safeParse({ repository, status: 'in_review' }).success, false);
+  assert.equal(tool.schema.parse({ repository }).status, 'all');
 });

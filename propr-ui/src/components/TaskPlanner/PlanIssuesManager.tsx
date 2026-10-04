@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronUp, CheckCircle, AlertCircle } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
+import { ListSkeleton } from '../ui/Skeleton';
 import SequentialWarningDialog from './SequentialWarningDialog';
 import { usePlanIssuesManager } from './usePlanIssuesManager';
 import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
@@ -231,10 +232,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-8 text-gray-500">
-        <Loader2 className="animate-spin mr-2" size={20} />
-        <span>Loading issues...</span>
-      </div>
+      <ListSkeleton rows={4} layout="row" label="Loading issues…" className="py-3" data-testid="plan-issues-skeleton" />
     );
   }
 

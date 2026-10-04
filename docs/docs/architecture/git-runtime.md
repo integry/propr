@@ -34,7 +34,7 @@ GIT_SHALLOW_CLONE_DEPTH=
 
 Retry behavior for transient git failures is hard-coded (exponential backoff in `retryHandler.ts`) and is not environment-configurable.
 
-For image-based installs, paths should point inside the ProPR containers and be backed by the host directory passed to the launcher through `PROPR_REPOS_DIR`.
+For image-based installs, keep the defaults. The launcher mounts the host's `/tmp/git-processor` into the ProPR containers at the same path, and agent containers bind-mount worktrees by that path, so clones and worktrees must stay under `/tmp/git-processor`.
 
 ## Directory Setup
 
@@ -45,7 +45,7 @@ mkdir -p /tmp/git-processor/{clones,worktrees}
 chmod 755 /tmp/git-processor
 ```
 
-Image-based installs usually do not require this manual step because the launcher mounts the runtime repository directory into the containers.
+Image-based installs usually do not require this manual step because the launcher mounts `/tmp/git-processor` from the host into the containers.
 
 ## Worktree Operations
 

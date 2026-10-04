@@ -13,6 +13,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import Dashboard from './Dashboard';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
 import {
+  getDashboardNarrative,
   getDashboardActive,
   getDashboardAttention,
   getDashboardOutcomes,
@@ -21,6 +22,8 @@ import {
 } from '../api/dashboardApi';
 import {
   CURRENT_DAY_FILL,
+  SETTLED_DAY_FILL,
+  dailyBarFill,
   dailyPointFill,
   utcToday,
 } from './Dashboard/chartPalette';
@@ -36,6 +39,7 @@ import {
 } from './Dashboard.fixtures';
 
 vi.mock('../api/dashboardApi', () => ({
+  getDashboardNarrative: vi.fn(),
   getDashboardSummary: vi.fn(),
   getDashboardAttention: vi.fn(),
   getDashboardActive: vi.fn(),
@@ -44,7 +48,13 @@ vi.mock('../api/dashboardApi', () => ({
 }));
 
 vi.mock('../contexts/useSocket', () => ({
-  useSocket: () => ({ isConnected: true, onTaskUpdate: () => () => {} }),
+  useSocket: () => ({
+    isConnected: true,
+    subscribeToActivity: () => {},
+    unsubscribeFromActivity: () => {},
+    onActivityUpdate: () => () => {},
+    onGoalUpdate: () => () => {},
+  }),
 }));
 
 vi.mock('../hooks/useSystemReadiness', () => ({
@@ -104,6 +114,7 @@ async function waitForSections() {
 describe('Dashboard studio design rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getDashboardNarrative).mockResolvedValue({ repository: 'all', enabled: true, summary: 'Work is underway. Nothing needs your attention.' });
     mockSummary.mockResolvedValue(summaryResponse());
     mockAttention.mockResolvedValue(attentionResponse());
     mockActive.mockResolvedValue(activeResponse([activeItem()]));
@@ -205,6 +216,13 @@ describe('Dashboard studio design rules', () => {
     expect(dailyPointFill('2020-01-01', today)).toBeNull();
   });
 
+  it('draws past days of a daily bar chart in neutral slate and only today in teal', () => {
+    const today = utcToday();
+    expect(dailyBarFill(today, today)).toBe(CURRENT_DAY_FILL);
+    expect(dailyBarFill('2026-09-17', today)).toBe(SETTLED_DAY_FILL);
+    expect(SETTLED_DAY_FILL).toBe('#CBD5E1');
+  });
+
   it('spends no row on a page bar: the filter sits in the global toolbar and the console starts at the top', async () => {
     const headerSlot = document.createElement('div');
     document.body.appendChild(headerSlot);
@@ -237,7 +255,9 @@ describe('Dashboard studio design rules', () => {
     expect(within(scopeBar).getByRole('button', { name: /All Repos/ })).toHaveClass('w-full', 'justify-center');
 
     // The split pane follows directly, with no margin above it.
-    const panes = scopeBar.nextElementSibling as HTMLElement | null;
+    const summary = screen.getByTestId('dashboard-summary');
+    expect(scopeBar.nextElementSibling).toBe(summary);
+    const panes = summary.nextElementSibling as HTMLElement | null;
     expect(panes).toContainElement(screen.getByTestId('happening-now-section'));
     expect(panes?.className).not.toMatch(/(?:^|\s)(?:[a-z]+:)?(?:m[ty]?|pt|py)-/);
     headerSlot.remove();

@@ -11,7 +11,8 @@ for the existing REST API are not MCP access tokens. See the
 ## Components
 
 - **api**: Express.js backend API with GitHub OAuth authentication
-- **client**: React frontend built with Vite and Tailwind CSS
+- **propr-ui**: React frontend built with Vite and Tailwind CSS
+- **@propr/client**: shared client contracts and transport utilities
 
 ## Setup
 
@@ -62,6 +63,8 @@ To run the API in development mode:
 - **Queue Statistics**: Monitor task queue metrics
 - **Activity Log**: Track recent system activities
 - **Performance Metrics**: View processing times and throughput
+
+User workflows for [tasks](../../docs/docs/features/launching-work.md), [goals](../../docs/docs/features/goals.md), [notifications](../../docs/docs/features/inbox.md) and [MCP](../../docs/docs/features/mcp.md) are covered in the docs site.
 
 ## API Endpoints
 

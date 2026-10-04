@@ -6,9 +6,11 @@ import { recordPlannerStop } from './executionStop.js';
 
 import { Knex } from 'knex';
 import { Redis } from 'ioredis';
-import { buildPlannerAbortSignalKey, refinePlan, runWithPlannerAbortContext } from '@propr/core';
+import { buildPlannerAbortSignalKey, refinePlan, RefinementOutputError, runWithPlannerAbortContext } from '@propr/core';
 import type { Plan } from '@propr/core';
 import { getRefineRepoContext } from './repoSetup.js';
+import { refinementPlanUpdates } from './planRevisions.js';
+import { resolveRefinementOutcome } from './refinementOutcome.js';
 
 export interface BackgroundRefinementOptions {
   db: Knex;
@@ -89,6 +91,7 @@ async function persistActiveRefinement(
  * Persists the refined plan, or a failure record the UI can surface, unless
  * the user aborted the refinement in the meantime.
  */
+// eslint-disable-next-line complexity -- abort fencing and success/failure CAS persistence intentionally remain one lifecycle
 export async function runBackgroundRefinement(
   options: BackgroundRefinementOptions,
   dependencies: BackgroundRefinementDependencies = {},
@@ -126,6 +129,7 @@ export async function runBackgroundRefinement(
       draftId,
       generationModel
     }));
+    const outcome = resolveRefinementOutcome(currentPlan, result);
 
     // Check if aborted before saving result (race condition protection)
     if (await checkAborted()) {
@@ -138,8 +142,9 @@ export async function runBackgroundRefinement(
       runId,
       status: 'completed',
       action: result.action,
-      summary: result.summary,
+      summary: outcome.summary,
       model: result.model,
+      ...(outcome.merged ? { merged: true } : {}),
       timestamp: new Date().toISOString(),
       // Include estimation data from the LLM call
       estimatedDuration: result.estimation?.estimatedDurationMs,
@@ -151,7 +156,7 @@ export async function runBackgroundRefinement(
     console.log('[refine] Storing refinement result', { draftId, refinementMeta });
 
     const persisted = await persistActiveRefinement(db, draftId, runId, {
-      plan_json: JSON.stringify(result.plan),
+      ...refinementPlanUpdates(db, result.action, outcome.plan),
       refinement_result: JSON.stringify(refinementMeta),
       status: 'review',
     });
@@ -182,6 +187,7 @@ export async function runBackgroundRefinement(
     const failureMeta = {
       runId,
       status: 'failed',
+      ...(error instanceof RefinementOutputError ? { code: error.code, details: error.details } : {}),
       error: errorMessage,
       model: generationModel,
       timestamp: new Date().toISOString()

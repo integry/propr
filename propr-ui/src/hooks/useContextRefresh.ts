@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
+import { useLiveRefreshScheduler } from './useLiveRefreshScheduler';
 import { simulateContextLevel, compareSourceConfig, DEFAULT_MODEL_MAX_TOKENS, type SourceConfig } from './contextRefreshUtils';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
@@ -269,16 +270,24 @@ export function useContextRefresh({ draftId, config, onBranchError, autoRefresh 
     }
   }, [draftId, clearCountdown, onBranchError, markPreviewComplete, settlePreview]);
 
+  const schedulePendingPreview = useLiveRefreshScheduler({
+    isConnected,
+    scopeKey: `${draftId}:${pendingPreviewRequestId ?? ''}`,
+    fallbackPollMs: 5_000,
+    // A missed completion must not leave an interactive preview waiting for
+    // minutes. Most previews finish from push before this safety read fires.
+    connectedPollMs: 30_000,
+    refresh: async () => {
+      if (draftId && preview.isLoading && pendingPreviewRequestId) {
+        await loadCompletedPreview(pendingPreviewRequestId);
+      }
+    },
+  });
+
   useEffect(() => {
     if (!draftId || !preview.isLoading || !pendingPreviewRequestId) return;
-
-    loadCompletedPreview(pendingPreviewRequestId).catch(() => { /* Keep waiting for socket or next poll. */ });
-    const interval = setInterval(() => {
-      loadCompletedPreview(pendingPreviewRequestId).catch(() => { /* Keep waiting for socket or next poll. */ });
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [draftId, preview.isLoading, pendingPreviewRequestId, loadCompletedPreview]);
+    void schedulePendingPreview.refreshNow().catch(() => { /* Retry on push or reconciliation. */ });
+  }, [draftId, preview.isLoading, pendingPreviewRequestId, schedulePendingPreview]);
 
   useEffect(() => {
     if (!draftId || !preview.isLoading || !pendingPreviewRequestId || !isConnected) return;
@@ -299,7 +308,7 @@ export function useContextRefresh({ draftId, config, onBranchError, autoRefresh 
       }
       if (payload.status !== 'completed') return;
       if (payload.data?.previewRequestId !== pendingPreviewRequestId) return;
-      loadCompletedPreview(pendingPreviewRequestId).catch((error) => {
+      schedulePendingPreview.refreshNow().catch((error) => {
         setPreview(prev => ({ ...prev, isLoading: false, error: (error as Error).message || 'Failed to load completed preview' }));
         settlePreview(false);
       });
@@ -309,7 +318,7 @@ export function useContextRefresh({ draftId, config, onBranchError, autoRefresh 
       unsubscribeFromDraft(draftId);
       unsubscribe();
     };
-  }, [draftId, preview.isLoading, pendingPreviewRequestId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, loadCompletedPreview, settlePreview]);
+  }, [draftId, preview.isLoading, pendingPreviewRequestId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, schedulePendingPreview, settlePreview]);
 
   const startCountdown = useCallback(() => {
     clearCountdown();

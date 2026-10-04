@@ -7,15 +7,20 @@ export { clearUltrafixStateForLabelRemoval, withUltrafixLabelTransition } from '
 export type { UltrafixLabelRemovalResult } from './utils/ultrafixLabelTransition.js';
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
-export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, shouldEnqueueExecutionAnalysis } from './utils/llmMetrics.js';
+export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
-export { WorkerStateManager, getStateManager, closeStateManager, TaskStates } from './utils/workerStateManager.js';
+export { WorkerStateManager, getStateManager, closeStateManager, TaskStates, isBookkeepingCancellation } from './utils/workerStateManager.js';
 export { taskStateExpectation } from './utils/workerStateTransition.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
-export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';
-export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, TaskStateExpectation, TaskStatePublicationResult, TaskStateUpdateResult, UpdateMetadata, TaskResult, ResumableTaskInfo, NonTerminalTaskScanResult, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
+export {
+  getEventPublisher,
+  closeEventPublisher,
+  publishNotificationUpdateThroughRedis,
+  EventPublisher
+} from './utils/eventPublisher.js';
+export type { TaskTerminalReason, TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, TaskStateExpectation, TaskStatePublicationResult, TaskStateUpdateResult, UpdateMetadata, TaskResult, ResumableTaskInfo, NonTerminalTaskScanResult, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
@@ -97,13 +102,10 @@ export type { MergeOutcome, MergeResult, MergeBaseIntoBranchOptions } from './gi
 
 export {
     issueQueue,
-    analysisQueue,
     indexingQueue,
     getIssueQueue,
-    getAnalysisQueue,
     getIndexingQueue,
     GITHUB_ISSUE_QUEUE_NAME,
-    ANALYSIS_QUEUE_NAME,
     INDEXING_QUEUE_NAME,
     COMMENT_BATCH_DELAY_MS,
     createWorker,
@@ -113,7 +115,6 @@ export type {
     IssueJobData,
     CommentJobData,
     TaskImportJobData,
-    AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
@@ -132,6 +133,7 @@ export type {
 export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export * from './webhook/ciFailureFollowup.js';
+export * from './webhook/closedPullRequestCi.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
@@ -141,7 +143,6 @@ export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, Conn
 // and are intentionally NOT part of the package's public API. Tests import them
 // directly from ./intake/routingWebSocketProtocol.js.
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltrafixDeps } from './webhook/commentEventHandler.js';
-export { triggerNextPendingIssue } from './webhook/planIssueTrigger.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
@@ -156,7 +157,6 @@ export {
 } from './webhook/statusMachine.js';
 export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/statusMachine.js';
 
-export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
@@ -164,8 +164,9 @@ export { generateContext, generateAdditionalContext, ContextTokenLimitError, Sec
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/context/index.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
-export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
+export { generatePlan, refinePlan, normalizeRefinedPlan, RefinementOutputError, REFINEMENT_OUTPUT_INVALID, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
+export type { IncompleteRefinedTask, NormalizedRefinedPlan, RefinementOutputDetails, RefinementOutputFailureReason } from './services/taskPlanningService.js';
 export { parseExistingContextConfig } from './services/planning/previewUtils.js';
 export { pauseDraft, resumeDraft, isDraftPaused, getDraftPauseState } from './services/taskPlanning/draftPauseResume.js';
 export type { PauseResumeResult } from './services/taskPlanning/draftPauseResume.js';
@@ -285,8 +286,8 @@ export type {
     AgentRuntimePackageSearchResult,
     AgentRuntimePackageSource
 } from './agents/runtime/agentRuntimePackageCatalog.js';
-export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
-export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
+export { generateClaudePrompt } from './claude/prompts/promptGenerator.js';
+export type { IssueLabel, IssueUser, IssueComment, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
 // Codex helpers exports
 export { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from './codex/codexHelpers.js';
@@ -297,6 +298,7 @@ export {
     getAntigravityAnalysisText,
     parseAntigravityJsonl,
 } from './agents/impl/utils/antigravityOutputParser.js';
+export { splitAntigravityInvocations } from './agents/impl/utils/antigravityInvocations.js';
 export type {
     AntigravityOutputEvent,
     AntigravityParsedOutput,
@@ -313,6 +315,7 @@ export {
     getRepos,
     isMonitoredRepository, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
     getCancelCiDuringFollowupWorkflowsForRepository,
+    getNonBlockingChecksForRepository,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,
@@ -363,10 +366,29 @@ export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 export {
     toAgentTankAgent,
     toProprAgent,
+    hasAgentTankStatuses,
+    hasUsableAgentTankStatuses,
+    isUsableAgentTankStatus,
     normalizeAgentTankStatus,
-    normalizeAgentTankAgents
+    normalizeAgentTankAgents,
+    getStatusForAlias as getAgentTankStatusForAlias,
+    getAllStatuses as getAgentTankStatuses,
+    agentTankUsageFingerprint,
+    observeAgentTankUsage,
+    observeAgentTankUsageSnapshot,
+    resetAgentTankUsageTracking
 } from './services/agentTankService.js';
 export type { AgentStatusResponse } from './services/agentTankService.js';
+export {
+    buildBundledAgentTankConfig,
+    canRunBundledAgentTank,
+    parseBundledAgentTankOutput,
+    refreshBundledStatuses,
+    getCachedBundledStatuses,
+    getBundledStatusesForDelta,
+    getBundledStatusForAlias,
+    clearBundledAgentTankCache
+} from './services/agentTankBundledRunner.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {
@@ -454,7 +476,7 @@ export {
     getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
-export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions, NotificationSourceActivityIdentity } from './services/notificationService.js';
+export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, DismissedNotificationReceipt, NotificationListOptions, NotificationServiceOptions, NotificationSourceActivityIdentity, NotificationUpdatePublisher } from './services/notificationService.js';
 export { DEFAULT_NOTIFICATION_LIST_LIMIT, MAX_NOTIFICATION_LIST_LIMIT, NotificationQueryValidationError, parseNotificationListLimit, encodeNotificationCursor, decodeNotificationCursor } from './services/notificationPagination.js';
 export type { NotificationCursor } from './services/notificationPagination.js';
 
@@ -472,3 +494,11 @@ export * from './services/previewStorage/v1.js';
 export { createManagedPreviewStorageClient } from './services/previewStorage/runtime.js';
 export * from './services/taskSubmissionService.js';
 export * from './services/taskSubmissionRetry.js';
+export { LIVE_OUTPUT_MAX_BYTES, LIVE_OUTPUT_TTL_SECONDS, liveOutputKey, liveOutputMetaKey, writeLiveOutput, LiveOutputLog, type LiveOutputWriteMode } from './agents/impl/utils/liveOutputLog.js';
+export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingChecks.js';
+
+export * from './services/usageTips/index.js';
+
+export * from './services/taskCancellation.js';
+export * from './services/taskIntent.js';
+export * from './services/taskPlanning/epicExecutionQueue.js';

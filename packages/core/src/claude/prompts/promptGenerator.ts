@@ -39,21 +39,6 @@ export interface ConversationLogEntry {
     is_error?: boolean;
 }
 
-export interface ExecutionAnalysisResult {
-    efficiency_score: number;
-    efficiency_notes: string;
-    tool_usage_summary: {
-        most_used_tools: string[];
-        tool_appropriateness: string;
-    };
-    error_analysis: string;
-    prompt_quality_score: number;
-    prompt_improvements: string;
-    implementation_critique: string;
-    implementation_critique_score: number;
-    recommendations: string[];
-}
-
 export interface GenerateClaudePromptOptions {
     issueRef: IssueRef;
     branchName?: string | null;
@@ -168,71 +153,4 @@ Here is the user's request:
 ---
 ${taskDescription}
 ---`;
-}
-
-export function generateExecutionAnalysisPrompt(
-    originalPrompt: string,
-    conversationLog: ConversationLogEntry[],
-    model: string,
-    localDiff: string | null
-): string {
-    const conversationSummary = conversationLog.map((entry, index) => {
-        const eventType = entry.event_type || 'unknown';
-        const content = entry.content ? entry.content.substring(0, 500) : 'N/A';
-        const toolName = entry.tool_name || 'N/A';
-        const isError = entry.is_error || false;
-
-        return `[${index + 1}] Type: ${eventType}, Tool: ${toolName}, Error: ${isError}, Content Preview: ${content}...`;
-    }).join('\n');
-
-    let analysisPrompt = `You are an expert AI assistant analyzing the execution of another AI assistant's work on a coding task.
-
-**ORIGINAL TASK PROMPT:**
-${originalPrompt}
-
-**CONVERSATION LOG (${conversationLog.length} total events):**
-${conversationSummary}`;
-
-    if (localDiff) {
-        analysisPrompt += `\n\n**COMMIT DIFF:**
-Here is the full commit data (including diff) for the implementation.
-<commit_diff>
-${localDiff}
-</commit_diff>`;
-    }
-
-    analysisPrompt += `\n\n**YOUR TASK:**
-Analyze this execution and provide a structured report covering:
-
-1. **Efficiency Assessment:** How efficiently did the AI handle this task? Were there unnecessary steps or redundant actions?
-2. **Tool Usage Analysis:** Which tools were used most frequently? Were they used appropriately?
-3. **Error Analysis:** Were there any errors or failures? If so, how were they handled?
-4. **Prompt Quality:** How well did the original prompt guide the AI? Could it be improved?
-5. **Implementation Critique:** ${localDiff ? 'YOU MUST include this section. Perform a brief code review of the diff found within the commit data. Analyze its correctness, how well it implements the solution, and identify any potential bugs or improvements.' : 'State "No local commit diff was available for this execution."'}
-6. **Recommendations:** Suggest 2-3 specific improvements for similar future tasks.
-
-**OUTPUT FORMAT:**
-Provide your analysis in JSON format:
-{
-  "efficiency_score": <1-10>,
-  "efficiency_notes": "<brief assessment>",
-  "tool_usage_summary": {
-    "most_used_tools": ["tool1", "tool2"],
-    "tool_appropriateness": "<assessment>"
-  },
-  "error_analysis": "<summary of errors if any>",
-  "prompt_quality_score": <1-10>,
-  "prompt_improvements": "<suggestions>",
-  "implementation_critique": "<code review of the commit diff>",
-  "implementation_critique_score": <1-10>,
-  "recommendations": [
-    "<recommendation 1>",
-    "<recommendation 2>",
-    "<recommendation 3>"
-  ]
-}
-
-Respond ONLY with the JSON object, no other text.`;
-
-    return analysisPrompt;
 }

@@ -1,6 +1,7 @@
 import type { ConversationEvent } from '@propr/shared';
 import { parseClaudeOutputToConversationResult } from '../routes/liveDetailsCodexParser.js';
 import { detectStoredOutputFormat } from '../routes/liveDetailsStoredOutputFormat.js';
+import { selectLiveEvents } from './liveEventSelection.js';
 import {
   parseRedisOutput,
   type NativeGoalProjection,
@@ -8,11 +9,13 @@ import {
   type RedisOutputParseOptions,
 } from './redisOutputParser.js';
 
-/** Matches the conversation-file watcher budget so live payloads stay bounded. */
-const MAX_LIVE_EVENTS = 100;
 
 export interface AgentStreamParseOptions extends RedisOutputParseOptions {
-  /** Activity callers paginate narration after filtering the complete stream. */
+  /**
+   * Keep every readable event but only the most recent raw ones (see
+   * selectLiveEvents). Activity callers paginate narration after filtering the
+   * complete stream and pass false.
+   */
   limitEvents?: boolean;
 }
 
@@ -41,7 +44,7 @@ function projectClaudeStreamOutput(output: string, options: AgentStreamParseOpti
   const result = parseClaudeOutputToConversationResult(stampedLines.join('\n'));
   const events = result.events as unknown as ConversationEvent[];
   return {
-    events: options.limitEvents !== false && events.length > MAX_LIVE_EVENTS ? events.slice(-MAX_LIVE_EVENTS) : events,
+    events: options.limitEvents !== false ? selectLiveEvents(events).events : events,
     todos: result.todos,
     currentTask: result.currentTask,
     tokenUsage: result.tokenUsage,
@@ -50,11 +53,40 @@ function projectClaudeStreamOutput(output: string, options: AgentStreamParseOpti
   };
 }
 
-interface ClaudeNativeGoalRecord {
+export interface ClaudeNativeGoalRecord {
   objective?: unknown;
   status?: unknown;
   setAt?: unknown;
   updatedAt?: unknown;
+}
+
+/** A `propr_native_goal` snapshot record, or null for any other line. */
+export function claudeNativeGoalRecord(line: string): ClaudeNativeGoalRecord | null {
+  if (!line.includes('"propr_native_goal"')) return null;
+  let envelope: { type?: string; subtype?: string; goal?: ClaudeNativeGoalRecord };
+  try { envelope = JSON.parse(line) as typeof envelope; } catch { return null; }
+  const goal = envelope.goal;
+  if (envelope.type !== 'system' || envelope.subtype !== 'propr_native_goal') return null;
+  if (typeof goal?.objective !== 'string' || typeof goal.status !== 'string') return null;
+  return goal;
+}
+
+export function projectClaudeNativeGoalRecord(
+  goal: ClaudeNativeGoalRecord,
+  tokenUsage: ReturnType<typeof parseClaudeOutputToConversationResult>['tokenUsage'],
+): NativeGoalProjection {
+  const setAt = Number(goal.setAt);
+  const until = goal.status === 'active' ? Date.now() : Number(goal.updatedAt);
+  return {
+    objective: goal.objective as string,
+    status: goal.status as string,
+    tokenBudget: null,
+    tokensUsed: tokenUsage
+      ? tokenUsage.input_tokens + tokenUsage.output_tokens
+        + tokenUsage.cache_creation_input_tokens + tokenUsage.cache_read_input_tokens
+      : 0,
+    timeUsedSeconds: Number.isFinite(setAt) && Number.isFinite(until) ? Math.max(0, Math.round((until - setAt) / 1000)) : 0,
+  };
 }
 
 /**
@@ -67,24 +99,8 @@ function projectClaudeNativeGoal(
   tokenUsage: ReturnType<typeof parseClaudeOutputToConversationResult>['tokenUsage'],
 ): NativeGoalProjection | null {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index].includes('"propr_native_goal"')) continue;
-    let envelope: { type?: string; subtype?: string; goal?: ClaudeNativeGoalRecord };
-    try { envelope = JSON.parse(lines[index]) as typeof envelope; } catch { continue; }
-    const goal = envelope.goal;
-    if (envelope.type !== 'system' || envelope.subtype !== 'propr_native_goal') continue;
-    if (typeof goal?.objective !== 'string' || typeof goal.status !== 'string') continue;
-    const setAt = Number(goal.setAt);
-    const until = goal.status === 'active' ? Date.now() : Number(goal.updatedAt);
-    return {
-      objective: goal.objective,
-      status: goal.status,
-      tokenBudget: null,
-      tokensUsed: tokenUsage
-        ? tokenUsage.input_tokens + tokenUsage.output_tokens
-          + tokenUsage.cache_creation_input_tokens + tokenUsage.cache_read_input_tokens
-        : 0,
-      timeUsedSeconds: Number.isFinite(setAt) && Number.isFinite(until) ? Math.max(0, Math.round((until - setAt) / 1000)) : 0,
-    };
+    const goal = claudeNativeGoalRecord(lines[index]);
+    if (goal) return projectClaudeNativeGoalRecord(goal, tokenUsage);
   }
   return null;
 }

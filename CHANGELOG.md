@@ -9,136 +9,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **MCP operator surface**: a connected agent can now run an instance rather than
-  only read and write one object at a time. `get_current_activity` answers "what
-  is happening right now" across every repository in the grant — running tasks,
-  active goals, plans being generated, queued work and the blockers waiting on a
-  human — and `get_recent_activity` merges one newest-first timeline of what
-  finished in a window of up to seven days, with routine Inbox noise filtered
-  out. `list_goals` and `list_tasks` take an optional `repository` and a `state`
-  filter, `get_goal` and `get_task` answer current activity and completed
-  progress in one call, and `list_goal_inputs` shows the corrections already sent
-  to a running goal. `list_pull_requests` inventories pull requests across the
-  grant with the ProPR task, goal and plan that produced each one;
-  `comment_on_pull_request` sends an ordinary follow-up at an exact head,
-  `set_pull_request_model` reroutes a PR by converging the managed `llm-*` labels
-  the repository already defines, and `stop_ultrafix` clears the ultrafix circuit
-  breaker so the loop starts no further cycle — a cycle already running may still
-  finish, and the receipt says so. Every MCP tool call, resource read, prompt
-  fetch and authentication failure is recorded in a new durable access log, read
-  by administrators through `GET /api/admin/mcp/logs` and
-  `/api/admin/mcp/logs/stats` (both behind `instance.manage_settings`) and
-  summarized per connected app on `/mcp/apps`; the log stores names, identities,
-  outcomes, sizes and durations, never tool arguments or payload content. See
-  [docs/mcp.md](docs/mcp.md) and [docs/mcp-coverage.md](docs/mcp-coverage.md).
-- **Cancel CI while follow-up implementation is in progress**: a new per-repository
-  option (Repositories → Automation, off by default, also available through
-  `POST /api/config/repos`) cancels the queued and running GitHub Actions
-  validation of the exact pull request head a follow-up is about to replace, once
-  that follow-up is authorized and actually implementing. Eligibility is never
-  inferred: only the workflows an operator selected next to the option — by file
-  name, path, display name or numeric workflow ID, matched exactly — are ever
-  cancelled, so a workflow that deploys under a name like `Build` or `CI` keeps
-  running, and an empty selection leaves the decision to the documented
-  environment fallback, which the settings screen discloses. A selection that
-  cannot be read at all is not an empty one: nothing is cancelled for that
-  repository until it can be read again. Instances
-  configured outside the Web UI can set `CANCEL_CI_FOLLOWUP_WORKFLOWS` as a
-  fallback for repositories with no selection of their own. Runs of other pull
-  requests and other revisions are never touched. Each run is recorded before its
-  cancel request is sent, so a crash or a lost response cannot leave CI cancelled
-  without a restart obligation, and neither a denied retry nor a refused restart
-  discards an obligation: a refused or repeatedly failing restart keeps its runs
-  recorded until the restart is confirmed, the pull request closes or the head is
-  obsolete. Starting, sweeping, restoring and releasing one pull
-  request all run under a shared database lease, so workers cannot interleave and
-  no run is cancelled after its restart began. A replacement commit gets its
-  normal CI; a run that ends without one has its cancelled checks restarted for
-  the still-current head, including after a worker restart. Requires the GitHub
-  App installation to have Actions "Read and write"; without it the option is
-  inert and logged.
-- **Claude Opus 5.5**: added to the Claude model catalog (`llm-claude-opus55`, 1M
-  context) and made the default Claude model and the target of the plain `opus`
-  alias. The bundled Claude Code CLI moves to 2.1.280, which is the first release
-  that serves Opus 5.5. Claude agents still defaulting to Opus 5 are migrated to
-  Opus 5.5 on startup; deliberate picks in other tiers are left alone.
-- **Per-repository notifications**: Repositories → Settings now has a
-  **Notifications** toggle that stops Inbox and push notifications for plan, task,
-  review, pull request, and indexing activity in that repository while automation
-  keeps running. The setting is on by default, shared by every branch entry of the
-  repository, and available through `POST /api/config/repos`, the MCP
-  `update_repository_configuration` tool, and `propr repo add|toggle
-  --no-notifications`. System-health notifications are unaffected, and existing
-  notifications stay in the Inbox.
+- **Goal blockers**: goals that need you — a confirmed pause, or an explicit
+  provider question or approval — now appear as durable, evidence-backed
+  blockers in the goal console, the goal list, the dashboard's attention list,
+  `get_goal` (`goal.attention`), the new MCP `list_goal_attention`,
+  `get_current_activity` and `propr goal attention`. Each names its prompt or
+  reason, when it was observed and the supported action that resolves it.
+  A lone Codex App Server question is answered with the next goal input; approvals
+  are reported but never approved by ProPR. Claude and Antigravity expose no
+  structured question or approval signal, so only pauses are reported for them.
+  `pendingInput.waitingForOperator` is now true for any open blocker, with
+  `reason` set to `provider_question` or `provider_approval` alongside the
+  existing `paused_awaiting_resume_or_input`.
+
+- **Sequential MCP epics**: `implement_plan` now queues exactly the selected
+  issues in publication order for `useEpic: true`, starts one model on the head,
+  and advances durably after merge. Optional `epicAdvanceOn: "terminal"` also
+  advances on closed/failed issues; the default records a `blockedReason` until
+  a blocked head is fixed and merged. Pause/resume holds and releases the next
+  issue, and worker reconciliation repairs missed advancement and dispatch.
+  Results and plan/operation reads expose queue progress; receipts stay
+  accepted until completion. `epicExecution: "parallel"` restores fan-out and
+  multi-model comparisons, and still labels the epic PR once every issue is done.
+  A head closed with its unmerged PR resumes when that PR is reopened and merged. Existing idempotency hashes are preserved. UI, CLI
+  and API **Implement Epic** and non-epic auto-merge requests feed the same
+  queue with `terminal` advancement, so a failed issue still continues the
+  plan. Plans already running at upgrade have no queue; restart them from
+  their next pending issue.
+- **Review fix selection**: `/fix all` requests every pending merge blocker and
+  optional suggestion. Review comments include a copyable `/fix F# S#` command
+  containing their published records for editing an explicit selection.
+- **Analytics timeframe**: one selector in the Analytics header scopes the
+  activity, task status, repository and model sections to the last 24 hours,
+  7 days, 30 days (default), 90 days, 12 months or all time. The choice is kept
+  in the URL as `?period=`. `GET /api/stats/tasks`, `/api/stats/repositories`
+  and `/api/stats/overview` accept the same optional `period` parameter and
+  behave as before without it.
+- **Analytics layout**: the page is one console instead of four cards: a
+  totals band (tasks, success rate, tokens, spend) over a split pane with
+  daily activity bars and repository performance on the left, and the
+  per-model table (tasks, tokens, cost), task status and token consumption
+  (input against output, spend per million tokens) on the right. Past days'
+  activity bars are neutral slate and only today's is teal; the chart's scale
+  carries a midline, and every day that has room is labelled under its bar
+  (weekday over day for a week). Repository rows open the Tasks list filtered
+  to that repository, a failure count opens its failed tasks, and model rows
+  open the LLM log for that model. The toolbar shows the repository scope as a locked
+  `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
+  of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
+
+## [0.9.0] - 2026-09-29
+
+Release preparation covering v0.8.15 through base commit `c2de30509`. This section
+records delivered source changes; it does not announce published packages, images,
+desktop installers or a release tag. See the [coverage audit](docs/release-0.9.0-audit.md).
+
+### Added
+
+- **Goals and native execution**: launch long-running objectives with Codex or
+  Claude Code, follow their progress and artifacts, and send corrective inputs.
+  Pause/resume/cancel controls and capability-aware input delivery preserve work
+  across execution boundaries. Goal timelines show operator corrections verbatim.
+- **New Task**: launch a single instruction against a repository without planning
+  a multi-issue project. Repository and to-do shortcuts prefill the request; the
+  resulting issue, task and pull request remain traceable.
+- **Plan revision history**: inspect saved plan snapshots and restore a prior
+  version. Refinement retains the complete plan; file-based generation validates
+  every issue before accepting output, with guarded syntax repair when needed.
+- **Inbox, PWA and Web Push**: install the web app, opt into browser notifications,
+  choose personal categories and quiet hours, and suppress repository notifications
+  without stopping automation. Inbox opens the relevant task, plan or goal and
+  supports paging and synchronized dismissal.
+- **Authenticated MCP**: administrators enable the server and bound its scopes;
+  users consent to repositories and manage connected apps. Operator tools cover
+  current/recent activity, goals and corrective inputs, plans, tasks, PRs and
+  review control. Status filters and a payload-free administrative access log
+  make activity easier to inspect. One-off MCP tasks support explicit Ultrafix
+  and auto-merge options with the corresponding scopes.
+- **Desktop application**: browser-approved pairing, saved accounts and instances,
+  local setup, connection diagnostics, native menus and notifications, and separate
+  application/runtime version displays. Linux/macOS packaging and Linux preview
+  verification are present; distribution remains subject to the documented release
+  gates, and Windows package validation remains paused.
+- **Visual previews**: repository capture settings, GitHub attachments, optional
+  Plus managed originals, task/goal galleries and zoomable image viewing. Private
+  PR images use authenticated media access in web and desktop.
+- **Synthetic pools**: virtual models route among direct agent/model members using
+  priority tiers, usage limits, scheduling and failover.
 
 ### Changed
 
-- **Rebuilt dashboard**: the home page now answers "what needs my attention right
-  now" in five sections — a summary strip of four clickable counts, **Needs
-  attention**, **Happening now**, **Recent outcomes**, and **Historical stats** —
-  with live work taking the main column. A single repository filter applies to every
-  section and is kept in the URL, ordering stays stable while tasks run, and a
-  dropped socket keeps the last known rows on screen under a
-  "Reconnecting · Last updated …" line. Unavailable data renders as "—" rather than
-  as zero, and cost is labelled **Recorded spend**. The Repository Breakdown, Top
-  Models, activity and status-distribution charts moved to a new **Analytics**
-  page (`/analytics`).
-
-  The page is laid out as a split-pane console following the Studio guidelines
-  rather than as cards on a tinted background. No section draws its own box: the
-  two columns are separated by one continuous vertical rule that runs the full
-  height of the canvas, sub-sections are separated by edge-to-edge horizontal
-  rules, and every pane header shares one height so the rules in the two columns
-  land on the same pixel. The summary counts sit in a 40px sub-toolbar anchored
-  above the panes. Repository slugs and issue/PR references are monospace code
-  chips that always name their entity type (`Issue #118`, `PR #2481`); a
-  recorded quality score uses the fixed-width pill (`[ ● 9 ]`) with the
-  out-of-ten scale announced rather than printed; each attention item carries a
-  single fixed-width verb (`Open`, `Review`) so the action column has one left
-  edge; and colour is reserved for work in progress, blockers and failures —
-  completed and merged work is neutral, and the historical chart greys out every
-  settled day.
-
-- **Voice Briefings are opt-in everywhere**: the experimental feature is now off by
-  default in the browser, the installed PWA, and the desktop app. Enable
-  **Voice briefings · Experimental** in Settings (under *Integrations* for
-  administrators, in personal settings for members) to show the launcher. While it is
-  off, no voice entry point renders, no `/api/voice/*` request is issued, and no
-  speech or microphone API is touched. Browser and PWA users who used Voice Briefings
-  before this release must opt in once per account, instance, and device; existing
-  desktop opt-ins are preserved.
-- **Claude Opus 5 and Opus 4.8 are legacy models**: both now sit behind the
-  *Show legacy models* fold on Coding Agents, leaving Opus 5.5, Fable 5.1, and
-  Sonnet 5 in the Claude agent's current list, and neither is offered as a
-  recommended model for plan generation or PR review. They remain fully
-  selectable, and agents already configured with them keep running them.
+- **Navigation and dashboard**: The primary creation action follows the page: New Task by default,
+  New Plan in Plans/Planner Studio and New Goal in Goals. Quick add to-do offers
+  Add another after saving. Work and system navigation are grouped;
+  Goals, repository settings and connected apps have revised layouts. The dashboard
+  shows Needs attention, Happening now, Completed and Historical stats, with a
+  repository filter, activity summaries and documentation-derived usage tips.
+  Broader reporting lives in Analytics.
+- **Live activity**: push-driven refresh, hidden-tab reconciliation, append-based
+  logs, cached/coalesced reads and bounded output reduce polling and rendering work.
+- **Review commands**: `/fix F20 S3 S5` can select findings and optional suggestions
+  together; unknown or malformed identifiers reject the whole selection. `F#` and
+  `S#` sequences persist independently per PR. Suggestions remain optional and do
+  not extend Ultrafix or change score gates. Multiline instructions are preserved.
+- **CI cancellation**: an opt-in repository setting cancels only explicitly selected
+  workflows on the exact PR head being replaced. Interrupted/no-change follow-ups
+  retain restart obligations; closed PR cleanup uses the same opt-in policy.
+  Per-repository non-blocking check patterns keep selected checks from delaying
+  ProPR automation while preserving their visible GitHub results.
+- **Agent models**: Claude Opus 5.5 and Sonnet 5.5 join the catalog; Opus 5.5 is the
+  default Claude model. Older models remain selectable behind the legacy fold.
+  Claude Code is bundled at 2.1.284; agent configuration, runtime authentication
+  and Agent Tank integration have been refreshed.
+- **Voice briefings**: experimental and off by default; enable per account,
+  instance and device in Settings.
+- **Security and operations**: durable instance roles, scoped repository access,
+  guarded agent runtimes and desktop network/credential boundaries; improved
+  health signals, rootless CI worker routing and change-aware validation.
 
 ### Fixed
 
-- **"database is locked" errors**: a query that raced another process for
-  SQLite's write lock failed the whole operation — a running goal could die on a
-  heartbeat update. Every query on the shared database now waits on an
-  asynchronous timer and retries with jittered backoff while the lock is held,
-  including statements inside transactions. Transactions open with
-  `BEGIN IMMEDIATE`, so the race for the write lock is settled by a replayable
-  statement before the transaction callback runs; a callback itself is replayed
-  only when the caller declares it safe with `replayableTransaction()`, because a
-  rollback undoes its SQL and not its other effects. Retrying is bounded by a
-  wall-clock budget that caps the backoff, the driver's own blocking wait and any
-  retry nested inside a retried transaction, so a query can still not take longer
-  than SQLite's own `busy_timeout`. Each attempt blocks for at most its share of
-  that budget, so a lock held for the full timeout is retried rather than
-  spending the budget on one blocked attempt. Tune with `SQLITE_RETRY_MAX_ATTEMPTS`,
-  `SQLITE_RETRY_BASE_DELAY_MS`, `SQLITE_RETRY_MAX_DELAY_MS`,
-  `SQLITE_RETRY_MAX_TOTAL_MS`, `SQLITE_RETRY_IMMEDIATE_TRANSACTIONS=0`, and
-  `SQLITE_RETRY_TRANSACTIONS=1`.
-
-- **Cost for alias-configured agents**: an agent whose model is stored as an alias
-  (`fable`, `fable51`, `opus55`, ...) priced its runs against OpenRouter's generic
-  rates instead of the provider's published API rates, because the pricing lookup
-  only matched canonical model IDs. The lookup now resolves aliases first, so a
-  Fable 5 or Fable 5.1 run is costed at the Fable rates ($10/$50 per MTok, with
-  Fable 5.1's $0.25/MTok cache reads) however the model was named.
+- Bounded SQLite lock retries and explicit transaction replay rules protect
+  concurrent workers and goal heartbeat writes.
+- Durable task reconciliation, worktree cleanup before lock release, follow-up
+  retries, fork PR handling and merged-PR completion avoid lost or repeated work.
+- Plan prompt autosave, full-plan refinement, title preservation and partial
+  generation rejection prevent silent loss of planning content.
+- Private preview diagnostics, notification cleanup, live logs, partial indexing
+  retries, model-aware review concurrency and alias-aware usage pricing.
 
 ## [0.8.15] - 2026-08-15
 
@@ -500,6 +498,8 @@ ProPR 0.8.15 is the first public release.
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[Unreleased]: https://github.com/integry/propr/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/integry/propr/compare/v0.8.15...v0.9.0
 [0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
 [0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13

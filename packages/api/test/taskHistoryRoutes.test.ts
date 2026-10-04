@@ -201,6 +201,35 @@ test('task history emits HTML-significant values as escaped JSON wire bytes', as
   assert.equal(body.history[0].metadata.nested.previewPath, '[local preview omitted]');
 });
 
+test('task history preserves its boolean ultrafix flag for legacy and numbered cycle metadata', async () => {
+  const database = await createHistoryDatabase();
+  try {
+    await database('tasks').insert(['legacy', 'numbered', 'invalid'].map(taskId => ({
+      task_id: taskId, repository: 'acme/repo', task_type: 'issue', issue_number: 42,
+      initial_job_data: JSON.stringify({ title: taskId }),
+    })));
+    await database('task_history').insert([
+      { task_id: 'legacy', state: 'completed', timestamp: '2026-09-29T00:00:00.000Z', metadata: JSON.stringify({ ultrafixCycle: true }) },
+      { task_id: 'numbered', state: 'completed', timestamp: '2026-09-29T00:00:00.000Z', metadata: JSON.stringify({ ultrafixCycle: 2 }) },
+      { task_id: 'invalid', state: 'completed', timestamp: '2026-09-29T00:00:00.000Z', metadata: JSON.stringify({ ultrafixCycle: 0 }) },
+    ]);
+    const routes = createTaskHistoryRoutes({
+      db: database, redisClient: { get: async () => null } as unknown as RedisClientType, taskQueue: {} as never,
+    });
+
+    for (const taskId of ['legacy', 'numbered']) {
+      const recorder = responseRecorder();
+      await routes.getTaskHistory({ params: { taskId } } as unknown as FlatRequest, recorder.response);
+      assert.equal((recorder.body() as { taskInfo: { ultrafixCycle?: boolean } }).taskInfo.ultrafixCycle, true);
+    }
+    const invalid = responseRecorder();
+    await routes.getTaskHistory({ params: { taskId: 'invalid' } } as unknown as FlatRequest, invalid.response);
+    assert.equal('ultrafixCycle' in (invalid.body() as { taskInfo: object }).taskInfo, false);
+  } finally {
+    await database.destroy();
+  }
+});
+
 test('task history returns run-scoped preview media and omits it for runs without previews', async () => {
   const database = await createHistoryDatabase();
   const asset = (id: string) => `https://github.com/user-attachments/assets/${id}`;

@@ -2,8 +2,9 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, mock, test } from 'node:test';
 import type { Knex } from 'knex';
-import { closeConnection, NotificationService } from '@propr/core';
-import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
+import { closeConnection, closeEventPublisher, NotificationService } from '@propr/core';
+import { notificationHref, DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
+import { up as backfillEntityReferences } from '../../core/src/db/migrations/20260928120000_backfill_notification_entity_references.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 import {
   countNotificationEvents, countUndismissedNotificationReceipts,
@@ -28,9 +29,129 @@ afterEach(async () => {
   await database.destroy();
 });
 
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 describe('notification lifecycle projection', { concurrency: false }, () => {
+  test('does not notify for pending or deferred reviews, including recovered completions', async () => {
+    const completions = [
+      { deferred: true, recoveryReason: 'ultrafix_waiting_for_exact_head_checks' },
+      { deferred: true },
+      { recoveryReason: 'ultrafix_waiting_for_exact_head_checks' },
+      { finalizedBy: 'bullmq_completed', jobResultStatus: 'skipped',
+        jobResultReason: 'ultrafix_waiting_for_exact_head_checks' },
+    ];
+    for (const [index, metadata] of completions.entries()) {
+      const taskId = `deferred-review-${index}`;
+      await database('tasks').insert({
+        task_id: taskId, repository: 'integry/propr', pr_number: 42,
+        task_type: index === 1 ? 'review' : 'pr-comment',
+        initial_job_data: JSON.stringify({ commandMode: 'review', pullRequestNumber: 42 }),
+      });
+      await database('task_history').insert({
+        task_id: taskId, state: 'completed', timestamp: iso(2_000),
+        metadata: JSON.stringify({ ...metadata,
+          notificationRecap: 'Review deferred until the continuation pull request passes its exact-head checks.' }),
+      });
+      for (const [offset, state] of ['queued', 'processing', 'completed'].entries()) {
+        await projection.projectTaskUpdate({
+          eventType: TASK_UPDATE, taskId, state, timestamp: iso(offset * 1_000),
+        });
+      }
+    }
+
+    assert.equal(await countNotificationEvents(database), 0);
+    assert.equal(await database('notification_user_states').count('* as count').first()
+      .then(row => Number(row?.count)), 0);
+    const activities = await database('notification_source_activity').select('status');
+    assert.equal(activities.length, completions.length);
+    assert.ok(activities.every(activity => activity.status === 'completed'));
+    clock += 20_000;
+    await projection.detectStalledActivities();
+    assert.equal(await countNotificationEvents(database), 0);
+  });
+
+  test('classifies a completed review using the initial command mode when history omits it', async () => {
+    await database('tasks').insert({
+      task_id: 'completed-review', repository: 'integry/propr', pr_number: 42,
+      task_type: 'pr-comment',
+      initial_job_data: JSON.stringify({ commandMode: 'review', pullRequestNumber: 42 }),
+    });
+    await database('task_history').insert({
+      task_id: 'completed-review', state: 'completed', timestamp: iso(),
+      metadata: JSON.stringify({ notificationRecap: 'Score 9/10 · 0 issues found' }),
+    });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'completed-review', state: 'completed', timestamp: iso(),
+    });
+    const events = await database('notification_events').select('kind', 'title', 'body');
+    assert.deepEqual(events, [{
+      kind: 'review', title: 'Review completed for PR #42', body: 'Score 9/10 · 0 issues found',
+    }]);
+  });
+
+  test('stores the goal destination for completed, failed, and stalled goal tasks', async () => {
+    for (const state of ['completed', 'failed', 'processing']) {
+      await database('tasks').insert({
+        task_id: `goal-task-${state}`, repository: 'integry/propr', task_type: 'goal',
+        pr_number: state === 'completed' ? 42 : null,
+        initial_job_data: JSON.stringify({ goalId: `goal-${state}` }),
+      });
+      await projection.projectTaskUpdate({
+        eventType: TASK_UPDATE, taskId: `goal-task-${state}`, state, timestamp: iso(),
+      });
+    }
+    clock += 20_000;
+    await projection.detectStalledActivities();
+    const service = new NotificationService({ database });
+    const { notifications } = await service.listNotifications('admin-user');
+    assert.equal(notifications.length, 3);
+    assert.deepEqual(notifications.map(notificationHref).sort(), [
+      '/goals/goal-completed', '/goals/goal-failed', '/goals/goal-processing',
+    ]);
+  });
+
+  test('backfills only unambiguous producer references and preserves receipt state and immutability', async () => {
+    const service = new NotificationService({ database, now: () => new Date(clock) });
+    const addTask = async ({ id, repository, pr, at, type = 'issue' }: {
+      id: string; repository: string; pr: number; at: string; type?: string;
+    }) => {
+      await database('tasks').insert({ task_id: id, repository, pr_number: pr, task_type: type,
+        initial_job_data: JSON.stringify(type === 'goal' ? { goalId: 'saved-goal' } : {}) });
+      await database('task_history').insert({ task_id: id, state: 'completed', timestamp: at });
+    };
+    await addTask({ id: 'fix-original', repository: 'integry/propr', pr: 42, at: iso() });
+    await addTask({ id: 'fix-later', repository: 'integry/propr', pr: 42, at: iso(1_000) });
+    await addTask({ id: 'other-repository', repository: 'other/propr', pr: 42, at: iso() });
+    await addTask({ id: 'review-original', repository: 'integry/propr', pr: 42, at: iso(), type: 'review' });
+    await addTask({ id: 'ambiguous-1', repository: 'integry/propr', pr: 43, at: iso() });
+    await addTask({ id: 'ambiguous-2', repository: 'integry/propr', pr: 43, at: iso() });
+    await addTask({ id: 'goal-task', repository: 'integry/propr', pr: 44, at: iso(), type: 'goal' });
+    for (const [id, prNumber, kind] of [
+      ['fix', 42, 'pull_request'], ['review', 42, 'review'],
+      ['ambiguous', 43, 'pull_request'], ['missing', 45, 'pull_request'], ['goal', 44, 'pull_request'],
+    ] as const) {
+      await service.createNotificationEvent({
+        id, deduplicationKey: id, kind, target: { type: kind, repository: 'integry/propr', prNumber },
+        title: id, body: 'Complete', occurredAt: iso(), recipients: ['admin-user'],
+      });
+    }
+    await service.markNotificationRead('admin-user', 'fix');
+    await backfillEntityReferences(database);
+    await backfillEntityReferences(database);
+    const { notifications } = await service.listNotifications('admin-user');
+    assert.deepEqual(Object.fromEntries(notifications.map(n => [n.id, notificationHref(n)])), {
+      fix: '/tasks/fix-original', review: '/tasks/review-original', goal: '/goals/saved-goal',
+      ambiguous: 'https://github.com/integry/propr/pull/43', missing: 'https://github.com/integry/propr/pull/45',
+    });
+    assert.ok(notifications.find(n => n.id === 'fix')?.readAt);
+    await assert.rejects(database('notification_events').where({ event_id: 'fix' }).update({ title: 'changed' }), /immutable/);
+  });
+
   test('creates exactly one plan-ready event for the draft owner', async () => {
     await database('task_drafts').insert({
       draft_id: 'draft-1', user_id: 'draft-owner', repository: 'integry/propr',
@@ -726,3 +847,45 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     assert.deepEqual(warnings, ['[NotificationProjection] Failed to project draft publication']);
   });
 });
+
+for (const [reason, explanation] of [
+  ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],
+  ['cancelled_label_removed', 'Cancelled because the processing trigger label was removed.'],
+  ['cancelled_pr_closed', 'Cancelled because the pull request was closed without merging.'],
+  ['cancelled_by_user', 'Cancelled by a user.'],
+  ['timed_out', 'The task exceeded its time limit.'],
+  ['pr_merged', 'The pull request was merged.'],
+]) {
+  test(`Inbox explains ${reason} in human-readable text`, async () => {
+    await database('tasks').insert({ task_id: 'withdrawn', repository: 'integry/propr', issue_number: 42, task_type: 'issue' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'withdrawn', state: reason === 'timed_out' ? 'failed' : 'cancelled', timestamp: iso(),
+      metadata: { terminalReason: reason },
+    });
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].body, explanation);
+    assert.equal(notifications[0].severity, reason === 'timed_out' ? 'error' : 'info');
+    if (reason !== 'timed_out') assert.ok(!notifications[0].actions.includes('retry' as never));
+  });
+}
+
+for (const terminalReason of [undefined, '', 'unknown_internal_code', 'cancelled_collision_attempt_recovery', 'timed_out']) {
+  test(`Inbox ignores bookkeeping cancellation with terminal reason ${terminalReason}`, async () => {
+    await database('tasks').insert({ task_id: 'rescheduled', repository: 'integry/propr', pr_number: 42, task_type: 'pr-comment' });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'processing', timestamp: iso(),
+    });
+    for (const offset of [1000, 2000]) {
+      await projection.projectTaskUpdate({
+        eventType: TASK_UPDATE, taskId: 'rescheduled', state: 'cancelled', timestamp: iso(offset),
+        metadata: terminalReason === undefined ? {} : { terminalReason },
+      });
+    }
+    const { notifications } = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.equal(notifications.length, 0);
+    // Filtering the notification must still resolve activity tracking.
+    const activity = await database('notification_source_activity').where({ activity_type: 'task', activity_key: 'rescheduled' }).first();
+    assert.equal(activity.status, 'cancelled');
+  });
+}

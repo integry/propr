@@ -174,7 +174,9 @@ export async function finishUltrafixLoop(input: {
         if (!goalReached) {
             const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
             const cleanPartialReview = cleanReviewMissedGoal && isPartial;
-            const manualReason = cleanPartialReview
+            const manualReason = state.escalation?.exhausted
+                ? 'All available escalation models and reasoning levels stalled. Manual review and merge are now required.'
+                : cleanPartialReview
                 ? 'The latest review had partial diff coverage, so it cannot establish merge readiness. Manual review and merge are now required.'
                 : cleanReviewMissedGoal
                 ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
@@ -207,6 +209,9 @@ export async function finishUltrafixLoop(input: {
         reason: decisionReason,
         score: latestScore,
         cycleCount: state.cycleCount,
+        outcome: goalReached ? 'goal_reached' : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted',
+        goal: state.goal,
+        maxCycles: state.maxCycles,
     };
 }
 

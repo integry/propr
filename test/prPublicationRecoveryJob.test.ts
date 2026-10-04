@@ -82,6 +82,7 @@ const stateManager = {
 await database.schema.createTable('tasks', table => { table.string('task_id'); table.string('commit_hash'); });
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
 await mock.module('@propr/core', { namedExports: {
+    preventWithdrawnJob: async () => null,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
     logger: { ...log, withCorrelation: () => log },
     getStateManager: () => stateManager,
@@ -248,7 +249,11 @@ const modules: Record<string, Record<string, unknown>> = {
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
     prCommentAgentUtils: { generateSummaryTitle: async () => 'Saved subtitle', resolveAndExecuteAgent: async ({ worktreePath, prompt }: { worktreePath: string; prompt: string }) => { events.push('agent'); prompts.push(prompt); await afterAgentExecution?.(); if (produced.length) assert.equal(git(worktreePath, 'rev-parse', 'HEAD'), expectedAgentHead ?? produced[0]); await writeFile(path.join(worktreePath, 'implementation.txt'), `execution ${prompts.length}\n`); return { claudeResult: { success: !partialResult, summary: 'Saved agent summary', sessionId: 'saved-session', model: 'saved-model' }, agentType: 'test' }; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
-    reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }) },
+    reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }), selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
+    // Escalation policy is exercised separately; publication keeps the resolved execution unchanged.
+    ultrafixEscalation: {
+        resolveUltrafixFixExecution: async ({ model, effort }: { model: string | null | undefined; effort?: string }) => ({ model, effort }),
+    },
     ultrafixOrchestrationService: {
         retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); },
         saveDeferredContinuation: async (_redis: unknown, deferred: typeof deferredReviews[number]) => { deferredReviews.push(deferred); },

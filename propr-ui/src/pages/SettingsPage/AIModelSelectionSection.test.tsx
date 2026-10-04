@@ -55,6 +55,10 @@ describe('AIModelSelectionSection', () => {
       />
     );
 
+    expect(screen.getByText('Fast Analysis Model')).toBeInTheDocument();
+    expect(screen.getByText('Used by /review to gather repository context before the review.')).toBeInTheDocument();
+    expect(screen.queryByText('Post-Implementation Analysis Model')).not.toBeInTheDocument();
+
     const options = within(screen.getByLabelText('Reasoning Level'))
       .getAllByRole('option')
       .map(option => option.textContent);
@@ -70,6 +74,27 @@ describe('AIModelSelectionSection', () => {
       'Ultracode (Claude only) — GitHub: level-ultracode',
       'Auto (Claude only) — GitHub: level-auto'
     ]);
+  });
+
+  it('defaults the dashboard summary on and sends checkbox changes through settings', () => {
+    const change = vi.fn();
+    render(<AIModelSelectionSection
+      settings={{ analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
+        default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
+        pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0,
+        pr_review_context_budget_percent: 100 }}
+      summarizationSettings={{ enabled: true, agent_alias: '' }} agents={[]}
+      onSettingChange={change} onReviewPromptChange={vi.fn()} onReviewPromptBlur={vi.fn()}
+      onReviewContextEnabledChange={vi.fn()} onReviewContextBudgetPercentChange={vi.fn()}
+      onReviewContextBudgetPercentCommit={vi.fn()} onRemoveLegacyReviewCap={vi.fn()}
+      onSummarizationModelChange={vi.fn()} onSummarizationFallbackModelChange={vi.fn()}
+      onDefaultAgentChange={vi.fn()}
+    />);
+    const checkbox = screen.getByRole('checkbox', { name: /Dashboard summary/ });
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    expect(change).toHaveBeenCalledTimes(1);
+    expect(change.mock.calls[0][0].target.name).toBe('dashboard_summary_enabled');
   });
 
   it('can disable related-code context gathering', () => {

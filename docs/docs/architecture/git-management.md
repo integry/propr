@@ -53,7 +53,7 @@ Branches are generated with task and model information so the result can be trac
 For example:
 
 ```text
-142/claude-opus5-fix-empty-state-20260612-0915-a3f2
+142/claude-opus-5-5-fix-empty-state-20260612-0915-a3f
 ```
 
 The name combines:
@@ -68,8 +68,8 @@ The name combines:
 Repositories can use different default branches. ProPR resolves branch settings in this order:
 
 1. Repository-specific configuration (Web UI, or the `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` environment variable)
-2. Global fallback branch (`GIT_FALLBACK_BRANCH`, default `main`)
-3. Repository provider default, where available
+2. Repository provider default (GitHub API, then the clone's remote `HEAD`)
+3. Global fallback branch (`GIT_FALLBACK_BRANCH`, default `main`), then common names such as `master` and `develop` that exist on the remote
 
 Planner Studio and issue automation should use the configured repository entry rather than asking each user to type branch names manually.
 

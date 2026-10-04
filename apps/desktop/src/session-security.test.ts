@@ -23,6 +23,11 @@ const RENDERER_URL = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 const ACTIVE_ORIGIN = 'http://127.0.0.2:41731';
 const TOKEN = `propr_it_${'T'.repeat(43)}`;
 const IDENTITY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PUBLIC_ATTACHMENT = 'https://github.com/user-attachments/assets/bfd3845c-0e36-42a1-a193-a58f2f368f1d';
+const PUBLIC_ATTACHMENT_REDIRECT = 'https://github-production-user-asset-6210df.s3.amazonaws.com/829273/659411478-bfd3845c-0e36-42a1-a193-a58f2f368f1d.png'
+  + '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20260926%2Fus-east-1%2Fs3%2Faws4_request'
+  + '&X-Amz-Date=20260926T160427Z&X-Amz-Expires=300'
+  + `&X-Amz-Signature=${'a'.repeat(64)}&X-Amz-SignedHeaders=host&response-content-type=image%2Fpng`;
 
 const encryption: EncryptionProvider = {
   isEncryptionAvailable: () => true,
@@ -269,11 +274,33 @@ describe('production desktop session security', () => {
       ), {
         requestHeaders: { Accept: 'image/avif,image/webp' },
       });
+      for (const url of [PUBLIC_ATTACHMENT, PUBLIC_ATTACHMENT_REDIRECT]) {
+        assert.deepEqual(await intercepted(url, {
+          Accept: 'image/avif,image/webp,image/png',
+          Authorization: 'Bearer renderer-controlled',
+          Cookie: 'instance=must-not-cross',
+        }, mainRenderer.id, 'image'), {
+          requestHeaders: { Accept: 'image/avif,image/webp,image/png' },
+        }, url);
+      }
       for (const [url, resourceType] of [
         ['https://avatars.githubusercontent.com/u/583231?v=4', 'xhr'],
         ['https://evil.example.test/avatar.png', 'image'],
         ['https://avatars.githubusercontent.com.evil.example.test/avatar.png', 'image'],
         ['http://avatars.githubusercontent.com/u/583231?v=4', 'image'],
+        [PUBLIC_ATTACHMENT, 'xhr'],
+        [`${PUBLIC_ATTACHMENT}?download=1`, 'image'],
+        ['https://github.com.evil.example.test/user-attachments/assets/bfd3845c', 'image'],
+        ['https://github.com:444/user-attachments/assets/bfd3845c', 'image'],
+        ['http://github.com/user-attachments/assets/bfd3845c', 'image'],
+        ['wss://github.com/user-attachments/assets/bfd3845c', 'image'],
+        ['https://private-user-images.githubusercontent.com/829273/private.png?jwt=private-attachment', 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT.replace('.s3.amazonaws.com', '.s3.amazonaws.com.evil.example.test'), 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT.replace('https://', 'http://'), 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT.replace('https://', 'wss://'), 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT.replace('.s3.amazonaws.com/', '.s3.amazonaws.com:444/'), 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT.replace(/&X-Amz-Signature=[^&]+/, ''), 'image'],
+        [PUBLIC_ATTACHMENT_REDIRECT, 'media'],
       ] as const) {
         assert.deepEqual(await intercepted(url, {
           Authorization: 'Bearer renderer-controlled',
@@ -329,6 +356,15 @@ describe('production desktop session security', () => {
       connectClaimCurrent = false;
       assert.equal(check(), false);
       assert.deepEqual(await intercepted(`${ACTIVE_ORIGIN}/api/auth/user`, scopeHeaders), { cancel: true });
+      assert.deepEqual(await intercepted(PUBLIC_ATTACHMENT, {
+        Authorization: 'Bearer renderer-controlled',
+        Cookie: 'instance=must-not-cross',
+      }, mainRenderer.id, 'image'), { requestHeaders: {} });
+      assert.deepEqual(await intercepted(PUBLIC_ATTACHMENT, {
+        Authorization: 'Bearer renderer-controlled',
+        Cookie: 'instance=must-not-cross',
+        [DESKTOP_TRANSPORT_SCOPE_HEADER]: activated.transportScope,
+      }, mainRenderer.id, 'image'), { cancel: true });
       connectClaimCurrent = true;
       assert.equal(check(), true);
       destroyed = true;
@@ -351,6 +387,18 @@ describe('production desktop session security', () => {
       ), {
         requestHeaders: { Accept: 'image/avif,image/webp' },
       });
+      for (const url of [PUBLIC_ATTACHMENT, PUBLIC_ATTACHMENT_REDIRECT]) {
+        assert.deepEqual(await intercepted(url, {
+          Accept: 'image/avif,image/webp,image/png',
+          Authorization: 'Bearer renderer-controlled',
+          Cookie: 'instance=must-not-cross',
+        }, mainRenderer.id, 'image'), {
+          requestHeaders: { Accept: 'image/avif,image/webp,image/png' },
+        });
+      }
+      assert.deepEqual(await intercepted(PUBLIC_ATTACHMENT, {
+        [DESKTOP_TRANSPORT_SCOPE_HEADER]: activated.transportScope,
+      }, mainRenderer.id, 'image'), { cancel: true });
       assert.deepEqual(await intercepted(`${ACTIVE_ORIGIN}/api/side-effect`, {
         Authorization: 'Bearer renderer-controlled',
         Cookie: 'renderer=must-not-cross',

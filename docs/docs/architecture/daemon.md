@@ -14,7 +14,7 @@ The daemon handles:
 
 - Monitoring configured repositories
 - Detecting eligible issues or events
-- Resolving processing labels and model labels
+- Resolving processing labels
 - Avoiding duplicate work
 - Creating queue jobs
 - Recording intake state
@@ -29,7 +29,7 @@ It should stay lightweight. The daemon decides what should be processed; workers
     <div className="propr-flow__connector">↓</div>
     <div className="propr-flow__node"><span className="propr-flow__title">Find eligible issues or PR events</span></div>
     <div className="propr-flow__connector">↓</div>
-    <div className="propr-flow__node"><span className="propr-flow__title">Resolve labels, repository config, and models</span></div>
+    <div className="propr-flow__node"><span className="propr-flow__title">Resolve trigger labels and repository config</span></div>
     <div className="propr-flow__connector">↓</div>
     <div className="propr-flow__node"><span className="propr-flow__title">Skip work already processing or completed</span></div>
     <div className="propr-flow__connector">↓</div>
@@ -62,7 +62,6 @@ The daemon checks:
 - Open issues with primary processing labels
 - PR comments that should trigger follow-up work
 - State labels that show whether work is already running or complete
-- Model labels that request a specific agent/model pair
 
 ## Label Detection
 
@@ -82,40 +81,38 @@ AI-done
 AI-failed-*   # e.g. AI-failed-post-processing, set when a phase fails
 ```
 
-Model labels route work to configured models. They are matched against `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`):
+Model labels route work to configured models; the worker's dispatch step resolves them. They are matched against `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`):
 
 ```text
 llm-claude-opus5
 llm-codex-gpt56-sol
-llm-antigravity-pro-high
-llm-antigravity-opus46-thinking
+llm-antigravity-pro
+llm-antigravity-opus55
 ```
 
-If an issue carries a trigger label but no model label, the daemon falls back to the deployment default model (`DEFAULT_MODEL_NAME`). The exact model labels available in a deployment come from AI Agents in the Web UI.
+Antigravity uses one catalog entry and base label per model. Configure reasoning effort separately through a per-model override in AI Agents, a `level-low` / `level-medium` / `level-high` issue label, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; without either, the closest supported effort to the system preference is used. Flash and Claude support low / medium / high, Pro supports low / high, and GPT-OSS uses medium.
+
+If an issue carries a trigger label but no model label, ProPR falls back to the deployment default model (`DEFAULT_CLAUDE_MODEL`, or the catalog default when unset). The exact model labels available in a deployment come from AI Agents in the Web UI.
 
 Reasoning level labels override the global `model_reasoning_level` setting for one issue. They match `level-low`, `level-medium`, `level-high`, `level-xhigh`, `level-max`, `level-ultra`, `level-ultracode`, or `level-auto`, case-insensitively. If multiple valid reasoning labels are present on the same item, ProPR chooses the highest-priority level in this order: `ultracode`, `ultra`, `max`, `xhigh`, `high`, `medium`, `low`, `auto`; additional valid reasoning labels are logged as a warning. For PR follow-ups, a reasoning label directly on the PR takes precedence over any reasoning label on its linked issue. Reasoning labels do not expand the job matrix, so an issue with multiple `base-*` or `llm-*` labels still creates the same number of jobs, with the selected reasoning level stamped onto each child job.
 
 ## Job Creation
 
-When the daemon finds eligible work, it creates BullMQ jobs in Redis containing:
-
-- Repository owner/name
-- Issue or PR number
-- Trigger type
-- Base branch context
-- Selected model or model label
-- Optional per-issue reasoning level override
-- Correlation metadata for logs and task records
-
-For multi-model issue processing, the daemon creates one job per model label so each result can be tracked independently. Each job gets a deterministic ID:
+When the daemon finds an eligible issue, it creates one parent `processGitHubIssue` job in Redis containing the repository owner/name, issue number, triggering label, triggering user, and correlation metadata. The parent job ID is deterministic:
 
 ```text
-issue-<owner>-<repo>-<number>-<agent>-<model>
+issue-<owner>-<repo>-<number>
+```
+
+A worker runs the parent job as a dispatcher: it reads the issue's current labels, resolves the `base-*` and `llm-*` labels and any reasoning level override, and enqueues one child job per base branch × model so each result can be tracked independently. Child jobs also get deterministic IDs:
+
+```text
+issue-<owner>-<repo>-<number>-<agent>-<model>-<base-branch>
 ```
 
 ## Deduplication
 
-Deterministic job IDs are the primary deduplication mechanism: enqueueing the same issue/agent/model combination again is a no-op while the original job exists. The daemon also checks state labels and task state before enqueueing, which prevents repeated processing when polling sees the same issue across multiple cycles, or when a webhook event arrives for an issue that is already being processed.
+Deterministic job IDs are the primary deduplication mechanism: enqueueing the same issue, or the same issue/agent/model/base combination, again is a no-op while the original job exists. The daemon also checks state labels and task state before enqueueing, which prevents repeated processing when polling sees the same issue across multiple cycles, or when a webhook event arrives for an issue that is already being processed.
 
 ## Relationship To Workers
 
@@ -135,7 +132,7 @@ POLLING_INTERVAL_MS=60000
 # Label configuration
 PRIMARY_PROCESSING_LABELS=AI,propr
 MODEL_LABEL_PATTERN=^llm-(.+)$
-DEFAULT_MODEL_NAME=<model-id-used-when-no-llm-label-is-present>
+DEFAULT_CLAUDE_MODEL=<model-id-used-when-no-llm-label-is-present>
 
 # Event intake mode: routing_websocket (default), polling, or direct_webhook.
 # GH_WEBHOOK_SECRET applies only to direct_webhook (your own GitHub App).

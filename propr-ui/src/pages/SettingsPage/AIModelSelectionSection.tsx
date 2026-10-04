@@ -15,10 +15,11 @@ import {
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 import ReviewContextSettings from './ReviewContextSettings';
 import { pathWithActiveHostedTunnelFlow } from '../../config/runtimeConfig';
-import { SettingsField, SettingsSection } from './SettingsLayout';
+import { SettingsCheckboxField, SettingsField, SettingsSection } from './SettingsLayout';
 import { SETTINGS_CONTROL } from './settingsStyles';
 
 interface AIModelSelectionSettings {
+  dashboard_summary_enabled?: boolean;
   analysis_model_fast: string;
   planner_context_model: string;
   planner_generation_model: string;
@@ -38,7 +39,7 @@ interface AIModelSelectionSectionProps {
   agents: AgentConfig[];
   /** Operational direct and synthetic agents exposed by the instance catalog. */
   catalogAgents?: InstanceCatalogAgent[];
-  onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onSettingChange: (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => void;
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
   onReviewContextEnabledChange: (enabled: boolean) => void;
@@ -209,7 +210,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         <SettingsField
           label="Summarization Model"
           htmlFor="summarization_model"
-          helperText="Used to generate file and directory summaries for semantic search."
+          helperText="Used for repository indexing and the dashboard activity summary."
         >
           {hasEnabledAgents ? (
             <select
@@ -229,6 +230,15 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <NoAgentsMessage label="enabled agents" />
           )}
         </SettingsField>
+
+        <SettingsCheckboxField
+          id="dashboard_summary_enabled"
+          name="dashboard_summary_enabled"
+          label="Dashboard summary"
+          helperText="Summarize current activity using the summarization model above."
+          checked={settings.dashboard_summary_enabled ?? true}
+          onChange={(event) => onSettingChange(event)}
+        />
 
         <SettingsField
           label="Summarization Fallback Model"
@@ -315,9 +325,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Post-Implementation Analysis Model"
+          label="Fast Analysis Model"
           htmlFor="analysis_model_fast"
-          helperText="Analyzes the agent run, prompt, and diff after implementation. This is not used for PR review."
+          helperText="Used by /review to gather repository context before the review."
         >
           {hasAgents ? (
             <select

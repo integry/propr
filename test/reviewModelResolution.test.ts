@@ -67,10 +67,10 @@ await mock.module('@propr/core', {
 
 // Import AFTER mocking
 const { resolveReviewAssignments } = await import('../src/jobs/prCommentReviewJob.ts');
-const { reserveActionableFindingRange } = await import('../src/jobs/reviewFindingNumberAllocator.ts');
+const { reserveReviewRecordRange } = await import('../src/jobs/reviewFindingNumberAllocator.ts');
 const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendingComments.ts');
 
-test('reserveActionableFindingRange atomically assigns non-overlapping PR-wide ranges', async () => {
+test('reserveReviewRecordRange atomically assigns non-overlapping PR-wide ranges per record kind', async () => {
     const sequences = new Map<string, number>();
     const evalCalls: Array<{ key: string; observedHighest: number; rangeSize: number }> = [];
     const redisClient = {
@@ -90,22 +90,29 @@ test('reserveActionableFindingRange atomically assigns non-overlapping PR-wide r
     const issueRef = { repoOwner: 'Integry', repoName: 'ProPR', pullRequestNumber: 1763 };
 
     const [firstRangeStart, secondRangeStart] = await Promise.all([
-        reserveActionableFindingRange(redisClient as any, issueRef, 4, 2),
-        reserveActionableFindingRange(redisClient as any, issueRef, 4, 3),
+        reserveReviewRecordRange(redisClient as any, issueRef, { kind: 'finding', observedNextNumber: 4, recordCount: 2 }),
+        reserveReviewRecordRange(redisClient as any, issueRef, { kind: 'finding', observedNextNumber: 4, recordCount: 3 }),
     ]);
-    const reconciledRangeStart = await reserveActionableFindingRange(
+    const reconciledRangeStart = await reserveReviewRecordRange(
         redisClient as any,
         { ...issueRef, repoOwner: 'INTEGRY', repoName: 'propr' },
-        12,
-        1,
+        { kind: 'finding', observedNextNumber: 12, recordCount: 1 },
     );
+    // Suggestions advance on their own key, so the blocker reservations above
+    // never consume an S# and the first suggestion range still starts at 2.
+    const suggestionRange = { kind: 'suggestion' as const, observedNextNumber: 2 };
+    const suggestionRangeStart = await reserveReviewRecordRange(redisClient as any, issueRef, { ...suggestionRange, recordCount: 3 });
+    const nextSuggestionRangeStart = await reserveReviewRecordRange(redisClient as any, issueRef, { ...suggestionRange, recordCount: 1 });
 
     assert.deepStrictEqual([firstRangeStart, secondRangeStart], [4, 6]);
     assert.strictEqual(reconciledRangeStart, 12);
+    assert.deepStrictEqual([suggestionRangeStart, nextSuggestionRangeStart], [2, 5]);
     assert.deepStrictEqual(evalCalls, [
         { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 3, rangeSize: 2 },
         { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 3, rangeSize: 3 },
         { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 11, rangeSize: 1 },
+        { key: 'review-suggestion-sequence:integry:propr:1763', observedHighest: 1, rangeSize: 3 },
+        { key: 'review-suggestion-sequence:integry:propr:1763', observedHighest: 1, rangeSize: 1 },
     ]);
 });
 

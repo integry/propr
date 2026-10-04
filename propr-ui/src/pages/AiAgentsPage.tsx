@@ -10,6 +10,7 @@ import {
   AgentConfig
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
+import { useAgentHealth } from './SettingsPage/useAgentHealth';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
@@ -35,6 +36,7 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
   const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
   const agentsReloadRequiredRef = useRef(false);
+  const agentHealth = useAgentHealth(agents, agentsLoading || isDemoMode);
   const [syntheticAgents, setSyntheticAgents] = useState<SyntheticAgentConfig[]>([]);
   const [syntheticLoading, setSyntheticLoading] = useState(true);
   const [syntheticSaving, setSyntheticSaving] = useState(false);
@@ -238,6 +240,7 @@ const AiAgentsPage: React.FC = () => {
       </div>
       {configView === 'direct' ? <AgentsListSection
         agents={agents}
+        agentHealth={agentHealth}
         loading={agentsLoading}
         saving={agentsSaving}
         error={agentsError}
@@ -333,7 +336,10 @@ const AiAgentsPage: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="h-full overflow-y-auto bg-white overscroll-contain">
+          <div
+            className="h-full overflow-y-auto bg-white overscroll-contain"
+            data-testid="ai-agents-mobile-configuration-scroll"
+          >
             <div className="px-4 py-4">
               {renderConfiguration('mobile')}
             </div>

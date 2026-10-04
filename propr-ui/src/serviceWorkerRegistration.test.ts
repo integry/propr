@@ -76,6 +76,17 @@ describe('service worker registration', () => {
     }
   });
 
+  test('shares simultaneous page-load and push-provider registrations', async () => {
+    const current = environment();
+    let complete!: (value: ServiceWorkerRegistration) => void;
+    const registration = {} as ServiceWorkerRegistration;
+    vi.mocked(current.serviceWorker!.register).mockReturnValue(new Promise(resolve => { complete = resolve; }));
+    const requests = [registerServiceWorker(current), getOrRegisterServiceWorker(current), registerServiceWorker(current)];
+    expect(current.serviceWorker!.register).toHaveBeenCalledOnce();
+    complete(registration);
+    expect(await Promise.all(requests)).toEqual([registration, registration, registration]);
+  });
+
   test('contains registration failures and leaves the application usable', async () => {
     const current = environment({
       serviceWorker: {

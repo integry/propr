@@ -92,14 +92,14 @@ export const REVIEW_OUTPUT_TOKEN_RESERVE = 32000;
 /** Conservative window for a model the routed runtime does not know. */
 export const REVIEW_FALLBACK_CONTEXT_WINDOW = 200000;
 
-// Claude Code 2.1.280 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
+// Claude Code 2.1.284 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
 // catalog: models flagged `native_1m` run with a 1,000,000-token window; the
 // other models run with the runtime's 200,000-token default unless the model
 // name carries the `[1m]` suffix. ProPR does not add that suffix, and
 // CLAUDE_CODE_DISABLE_1M_CONTEXT forces the 200,000-token window.
 const CLAUDE_CODE_NATIVE_1M_MODELS = new Set([
   'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5',
-  'claude-sonnet-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5', 'claude-mythos-5-1',
+  'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5', 'claude-mythos-5-1',
 ]);
 const CLAUDE_CODE_200K_MODELS = new Set([
   'claude-3-5-haiku', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-haiku-4-5',
@@ -112,7 +112,7 @@ const CLAUDE_CODE_DEFAULT_WINDOW = 200000;
 // window before auto-compacting a session.
 const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 
-// Codex CLI 0.154.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
+// Codex CLI 0.160.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
 // models.json: every listed model has a default `context_window` of 272,000
 // even where the provider advertises a larger model maximum (GPT-6 Astra lists
 // `max_context_window` 872,000 and the ProPR catalog 1,050,000). The larger
@@ -120,6 +120,9 @@ const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 // the runtime default is the verified capacity.
 const CODEX_RUNTIME_WINDOWS: Record<string, number> = {
   'gpt-6-astra': 272000,
+  'gpt-6.1-sol': 272000,
+  'gpt-6-sol': 272000,
+  'gpt-6-luna': 272000,
   'gpt-5.6-sol': 272000,
   'gpt-5.6-terra': 272000,
   'gpt-5.6-luna': 272000,

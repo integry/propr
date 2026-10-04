@@ -241,6 +241,7 @@ export interface PlanEditorDesktopLayoutProps {
   onBackToSetup: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onShowHistory?: () => void;
   onDismissEnforcementNotice: () => void;
   onTaskChange: PlanRefinementState['updateTask'];
   onDeleteTask: (taskId: string) => void;
@@ -282,6 +283,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
   onBackToSetup,
   onUndo,
   onRedo,
+  onShowHistory,
   onDismissEnforcementNotice,
   onTaskChange,
   onDeleteTask,
@@ -312,6 +314,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
       onBackToSetup={onBackToSetup}
       onUndo={onUndo}
       onRedo={onRedo}
+      onShowHistory={onShowHistory}
       isReadOnly={isReadOnly}
     />
 

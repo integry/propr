@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle } from 'lucide-react';
+import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
 
@@ -100,6 +100,7 @@ export interface PlanEditorHeaderProps {
   onBackToSetup: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onShowHistory?: () => void;
   isMobile?: boolean;
   isReadOnly?: boolean;
 }
@@ -128,6 +129,7 @@ const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
   onBackToSetup,
   onUndo,
   onRedo,
+  onShowHistory,
   isReadOnly = false
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
@@ -156,6 +158,15 @@ const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
           >
             <Redo2 size={16} className="text-gray-600" />
           </button>
+          {onShowHistory && (
+            <button
+              onClick={onShowHistory}
+              className="p-1.5 rounded hover:bg-gray-200 transition-colors"
+              title="Plan history"
+            >
+              <History size={16} className="text-gray-600" />
+            </button>
+          )}
           <button
             onClick={onBackToSetup}
             disabled={actionDisabled}
@@ -204,6 +215,7 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   onBackToSetup,
   onUndo,
   onRedo,
+  onShowHistory,
   isReadOnly = false
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
@@ -279,6 +291,15 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
           >
             <Redo2 size={18} className="text-gray-600" />
           </button>
+          {onShowHistory && (
+            <button
+              onClick={onShowHistory}
+              className="p-2 rounded hover:bg-gray-200 transition-colors"
+              title="Plan history"
+            >
+              <History size={18} className="text-gray-600" />
+            </button>
+          )}
         </div>
       </div>
     </div>

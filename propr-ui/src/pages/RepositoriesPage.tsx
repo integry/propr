@@ -26,7 +26,7 @@ const RepositoriesPage: React.FC = () => {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
-    handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows,
+    handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks,
     handleToggleNotifications, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
@@ -107,6 +107,7 @@ const RepositoriesPage: React.FC = () => {
       onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
       onToggleCancelCiDuringFollowup={handleToggleCancelCiDuringFollowup}
       onUpdateCancelCiWorkflows={handleUpdateCancelCiWorkflows}
+      onUpdateNonBlockingChecks={handleUpdateNonBlockingChecks}
       onToggleNotifications={handleToggleNotifications}
       onUpdateVisualPreview={handleUpdateVisualPreview}
       isReadOnly={isReadOnly}

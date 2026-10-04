@@ -1,4 +1,10 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
+import {
+  AGENT_TANK_LEGACY_BACKEND_MESSAGE,
+  buildAgentTankSettingsRequest,
+  supportsAgentTankModes,
+  type AgentTankMode,
+} from '@propr/shared';
 import type { SummarizationSettings } from './proprTypes';
 
 export type { SummarizationSettings };
@@ -78,8 +84,8 @@ export const triggerReindexAll = async (ignoreCooldown = false): Promise<Trigger
 };
 
 // Agent Tank settings API
-export interface AgentTankSettingsResponse { enabled: boolean; url: string; }
-export interface AgentTankStatusResponse { available: boolean; reason?: string; }
+export interface AgentTankSettingsResponse { mode?: AgentTankMode; enabled: boolean; url: string; }
+export interface AgentTankStatusResponse { available: boolean; mode?: AgentTankMode; reason?: string; }
 
 export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, { credentials: 'include' });
@@ -87,10 +93,25 @@ export const getAgentTankSettings = async (): Promise<AgentTankSettingsResponse>
   return response.json();
 };
 
-export const updateAgentTankSettings = async (settings: { enabled: boolean; url: string }): Promise<void> => {
+/**
+ * Refuse a write this backend cannot express instead of letting it answer
+ * `{ success: true }` for something else.
+ *
+ * Only `bundled` needs the check: `external` and `disabled` both survive a
+ * pre-mode backend because the request body carries the derived `enabled`
+ * flag those backends read.
+ */
+const assertModeSupported = async (mode: AgentTankMode): Promise<void> => {
+  if (mode !== 'bundled') return;
+  if (supportsAgentTankModes(await getAgentTankSettings())) return;
+  throw new Error(AGENT_TANK_LEGACY_BACKEND_MESSAGE);
+};
+
+export const updateAgentTankSettings = async (settings: { mode: AgentTankMode; url: string }): Promise<void> => {
+  await assertModeSupported(settings.mode);
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings), credentials: 'include'
+    body: JSON.stringify(buildAgentTankSettingsRequest(settings.mode, settings.url)), credentials: 'include'
   });
   await handleApiResponse(response);
 };
@@ -133,8 +154,13 @@ export interface AgentTankUsageResponse {
   error?: string;
 }
 
-export const getAgentTankUsage = async (): Promise<AgentTankUsageResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/usage`, { credentials: 'include' });
+export const getAgentTankUsage = async (
+  options: { signal?: AbortSignal } = {}
+): Promise<AgentTankUsageResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank/usage`, {
+    credentials: 'include',
+    signal: options.signal,
+  });
   await handleApiResponse(response);
   return response.json();
 };
@@ -150,6 +176,8 @@ export const refreshAgentTank = async (): Promise<{ success: boolean; error?: st
 
 export interface AgentTankDetectResponse {
   detected: boolean;
+  /** Which mode the banner should offer: bundled needs no url. */
+  mode?: AgentTankMode;
   url?: string;
   reason?: string;
 }
@@ -160,11 +188,12 @@ export const detectAgentTank = async (): Promise<AgentTankDetectResponse> => {
   return response.json();
 };
 
-export const enableAgentTank = async (url: string): Promise<{ success: boolean }> => {
+export const enableAgentTank = async (mode: AgentTankMode, url?: string): Promise<{ success: boolean }> => {
+  await assertModeSupported(mode);
   const response = await apiFetch(`${API_BASE_URL}/api/config/agent-tank`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled: true, url }),
+    body: JSON.stringify(buildAgentTankSettingsRequest(mode, url)),
     credentials: 'include'
   });
   await handleApiResponse(response);

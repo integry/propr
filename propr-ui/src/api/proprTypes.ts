@@ -77,11 +77,6 @@ export interface StatusResponse {
   connectAccount?: unknown;
 }
 
-export interface TaskAnalysisResponse {
-  analysis: unknown | null;
-  message?: string;
-}
-
 export interface QueueStats {
   active: number;
   activeGoals?: number;
@@ -126,6 +121,8 @@ export interface MonitoredRepo {
   cancelCiDuringFollowup?: boolean;
   /** Exactly which validation workflows that option may cancel: file names, paths, display names or IDs. Empty cancels nothing. */
   cancelCiDuringFollowupWorkflows?: string[];
+  /** Check run names (`*` matches any text) that never block ProPR's CI-driven automation. */
+  nonBlockingChecks?: string[];
   /** Whether Inbox and push notifications are generated for this repository. Missing values are on. */
   notificationsEnabled?: boolean;
   /** Generated media to embed in PRs when a change has a visible result. */
@@ -149,6 +146,20 @@ export interface RepoConfigResponse {
 export interface RepoBranchesResponse {
   branches: string[];
   defaultBranch: string;
+}
+
+export interface RepoWorkflow {
+  id: number;
+  name: string;
+  path: string;
+  file: string;
+  /** Events from the workflow file's `on:` key; null when GitHub did not return a readable file. */
+  triggers: string[] | null;
+  pullRequest: boolean | null;
+}
+
+export interface RepoWorkflowsResponse {
+  workflows: RepoWorkflow[];
 }
 
 export interface StopExecutionResponse {
@@ -190,7 +201,11 @@ export interface SystemSettings {
   analysis_model_fast?: string;
   planner_context_model?: string;
   planner_generation_model?: string;
+  /** @deprecated REST compatibility only; this setting has no effect. */
   auto_followup_score_threshold?: number;
+  deprecated_settings?: Record<string, string>;
+  usage_tips_enabled?: boolean;
+  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;

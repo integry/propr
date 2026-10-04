@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Zap,
   BookMarked,
   Bot,
   ChevronDown,
@@ -26,6 +25,8 @@ import type { CurrentUser } from '../api/proprTypes';
 import { userHasPermission } from '../contexts/AuthContext';
 import AgentTankSidebar from './AgentTankSidebar';
 import UserAvatar from './UserAvatar';
+import QuickAddTodo from './QuickAddTodo';
+import { getCreationActions } from './creationActions';
 
 interface MobileBottomNavigationProps {
   user: CurrentUser | null;
@@ -38,6 +39,8 @@ interface MobileBottomNavigationProps {
 const focusableSelector = [
   'a[href]',
   'button:not([disabled])',
+  'input:not([disabled])',
+  'textarea:not([disabled])',
   'details > summary',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
@@ -46,14 +49,14 @@ const pathMatches = (pathname: string, path: string): boolean =>
   pathname === path || pathname.startsWith(`${path}/`);
 
 const getNavigationState = (pathname: string) => {
-  const newPlan = pathname === '/tasks/new';
+  const newTask = pathname === '/tasks/new';
   return {
     inbox: pathMatches(pathname, '/inbox'),
     dashboard: pathname === '/',
-    newPlan,
+    newTask,
     repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
-    more: (pathMatches(pathname, '/tasks') && !newPlan) || pathMatches(pathname, '/plans') ||
-      (pathMatches(pathname, '/studio') && !newPlan) ||
+    more: (pathMatches(pathname, '/tasks') && !newTask) || pathMatches(pathname, '/plans') ||
+      (pathMatches(pathname, '/studio') && !newTask) ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
       pathMatches(pathname, '/mcp-logs') ||
       pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
@@ -61,8 +64,6 @@ const getNavigationState = (pathname: string) => {
 };
 
 const getMoreItems = (user: CurrentUser | null) => [
-  { label: 'New Plan', to: '/studio/new', icon: ScrollText },
-  { label: 'New Goal', to: '/goals?new=1', icon: Target },
   { label: 'Tasks', to: '/tasks', icon: ListTodo },
   { label: 'Plans', to: '/plans', icon: ScrollText },
   { label: 'Goals', to: '/goals', icon: Target },
@@ -220,6 +221,8 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   }, [closeMore, isMoreOpen]);
 
   const active = getNavigationState(location.pathname);
+  const { primary, secondary } = getCreationActions(location.pathname);
+  const isCreating = `${location.pathname}${location.search}` === primary.to;
 
   const unreadBadge = unreadCount !== null && unreadCount > 0 ? (
     <span className="absolute right-0 top-0 inline-flex min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[9px] font-bold leading-4 text-white">
@@ -227,7 +230,7 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
     </span>
   ) : undefined;
 
-  const moreItems = getMoreItems(user);
+  const moreItems = [...secondary, ...getMoreItems(user)];
 
   return (
     <>
@@ -261,12 +264,22 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
             </div>
 
             <nav aria-label="More navigation" className="grid grid-cols-2 gap-2 p-3">
+              <div className="col-span-2">
+                <QuickAddTodo layout="inline" disabled={isDemoMode} />
+              </div>
               {moreItems.map(item => (
                 <Link
                   key={item.to}
                   to={item.to}
-                  onClick={() => closeMore(false)}
-                  className="flex min-h-12 items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  aria-disabled={isDemoMode && 'id' in item ? true : undefined}
+                  onClick={event => {
+                    if (isDemoMode && 'id' in item) {
+                      event.preventDefault();
+                      return;
+                    }
+                    closeMore(false);
+                  }}
+                  className="flex min-h-12 items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors aria-disabled:cursor-not-allowed aria-disabled:opacity-50 hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
                   <item.icon className="h-5 w-5 text-slate-500" aria-hidden="true" />
                   {item.label}
@@ -340,19 +353,19 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
         <button
           type="button"
           onClick={() => {
-            if (!isDemoMode) navigate('/tasks/new');
+            if (!isDemoMode) navigate(primary.to);
           }}
           disabled={isDemoMode}
-          aria-current={active.newPlan ? 'page' : undefined}
-          aria-label={isDemoMode ? 'New Task unavailable in demo mode' : 'New Task'}
+          aria-current={isCreating ? 'page' : undefined}
+          aria-label={isDemoMode ? `${primary.label} unavailable in demo mode` : primary.label}
           className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:text-slate-400 ${
-            active.newPlan ? 'text-primary-800' : 'text-primary-700'
+            isCreating ? 'text-primary-800' : 'text-primary-700'
           }`}
         >
           <span className={`flex h-8 w-9 items-center justify-center rounded-lg ${isDemoMode ? 'bg-slate-200' : 'bg-primary-600 text-white shadow-sm'}`}>
-            <Zap className="h-4 w-4" aria-hidden="true" />
+            <primary.icon className="h-4 w-4" aria-hidden="true" />
           </span>
-          <span className="truncate">New Task</span>
+          <span className="truncate">{primary.label}</span>
         </button>
         <MobileNavLink
           to="/repositories"

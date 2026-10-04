@@ -7,7 +7,7 @@
 # What this validates:
 #   - Images boot (no missing files, Dockerfile commands work end-to-end)
 #   - TypeScript build output is runnable (no import path errors)
-#   - Native modules load (better-sqlite3 works on alpine musl)
+#   - Native modules load (better-sqlite3 and sharp work in the app image)
 #   - API server binds and responds to /health
 #   - Workers connect to Redis without crashing
 #
@@ -180,6 +180,22 @@ for image in "$APP_TAG" "$UI_TAG" "$DOCS_TAG" "$AGENT_TAG" "$LAUNCHER_TAG"; do
   fi
 done
 
+docker run --rm --entrypoint node "$APP_TAG" -e '
+  const fs = require("node:fs");
+  const manifestPath = "/app/docs/docs-manifest.json";
+  if (!fs.existsSync(manifestPath)) throw new Error("app image is missing docs/docs-manifest.json");
+  if (!fs.existsSync("/app/docs/docs/features/pr-commands.md")) throw new Error("app image is missing bundled Markdown pages");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const appPackage = JSON.parse(fs.readFileSync("/usr/src/app/package.json", "utf8"));
+  const apiPackage = JSON.parse(fs.readFileSync("/usr/src/app/packages/api/package.json", "utf8"));
+  const sharp = require("sharp");
+  if (!sharp.versions?.vips) throw new Error("sharp did not load its native image-processing runtime");
+  if (manifest.version !== appPackage.version || manifest.version !== apiPackage.version) {
+    throw new Error(`docs manifest version ${manifest.version} does not match app ${appPackage.version} and API ${apiPackage.version}`);
+  }
+' >/dev/null
+echo "✓ app contains version-matched MCP documentation"
+
 wait_for_http() {
   local label="$1" url="$2" body
   echo "▸ waiting for $label on $url"
@@ -314,11 +330,17 @@ check_ui_api_configuration
 # --- Agent and launcher artifact checks ------------------------------------
 docker run --rm "$AGENT_TAG" sh -c '
   set -eu
-  for executable in claude codex agy opencode vibe git gh rg python3; do
+  for executable in claude codex agy opencode vibe agent-tank git gh rg python3; do
     command -v "$executable" >/dev/null
   done
 ' >/dev/null
 echo "✓ agent runtime exposes every bundled CLI"
+
+# Bundled Agent Tank runs through the shared entrypoint's agent-tank branch,
+# which must not hand it a provider entrypoint. This is the unauthenticated half
+# of that check; scripts/verify-agent-tank-image.sh drives real usage through it.
+docker run --rm --network none -e PROPR_AGENT_TYPE=agent-tank "$AGENT_TAG" agent-tank --version >/dev/null
+echo "✓ agent-tank runs through the entrypoint without a provider entrypoint"
 
 # Exercise GitHub CLI through every normal agent entrypoint. Merely checking
 # command -v is insufficient because each entrypoint places gh-wrapper first in

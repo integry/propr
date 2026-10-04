@@ -686,30 +686,117 @@ describe('native staged artifact lifecycle authority', () => {
     assert.doesNotMatch(inspect(aggregate), /secret\.invalid/);
   });
 
-  test('re-probes a lagging LaunchServices removal for the full bounded window', async () => {
-    const applicationRoot = '/private/copied/ProPR Desktop.app';
-    // Each -dump answer costs seconds on a loaded runner, so the window is a
-    // deadline: a slow probe must not spend the budget the removal needs.
+  test('lets a slow complete LaunchServices dump prove absence within the overall budget', async () => {
     let clock = 0;
     let dumps = 0;
-    const authority = new LaunchServicesAuthority(applicationRoot, {}, {
-      runCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }),
-      scanCommand: async (_file, _args, _options, matchesLine) => {
+    const authority = new LaunchServicesAuthority('/private/copied/ProPR Desktop.app', {}, {
+      runCommand: async () => ({}),
+      scanCommand: async (_file, _args, { timeout }) => {
         dumps += 1;
-        clock += 9_000;
-        return { matched: matchesLine(`\tpath: ${applicationRoot}`) };
+        clock += Math.min(timeout, 45_000);
+        if (timeout < 45_000) throw new NativeLifecycleCommandFailure('COMMAND_DEADLINE');
+        return { matched: false };
       },
       wait: async milliseconds => { clock += milliseconds; },
       now: () => clock,
     });
     authority.registered = true;
 
-    await assert.rejects(authority.assertGone(), error => error instanceof LaunchServicesAbsenceFailure);
+    await authority.assertGone();
+
+    assert.equal(authority.registered, false);
+    assert.equal(dumps, 1);
+    assert.equal(clock, 45_000);
+  });
+
+  test('charges failed probes, waits, and repeated removal against the next dump budget', async () => {
+    let clock = 0;
+    const timeouts = [];
+    const authority = new LaunchServicesAuthority('/private/copied/ProPR Desktop.app', {}, {
+      runCommand: async () => { clock += 5_000; },
+      scanCommand: async (_file, _args, { timeout }) => {
+        timeouts.push(timeout);
+        if (timeouts.length === 1) {
+          clock += 20_000;
+          throw new NativeLifecycleCommandFailure('COMMAND_FAILED');
+        }
+        clock += 40_000;
+        return { matched: timeouts.length === 2 };
+      },
+      wait: async milliseconds => { clock += milliseconds; },
+      now: () => clock,
+      // Keep the remaining budget below the per-dump cap after the first probe.
+      absenceBudgetMs: 120_000,
+    });
+    authority.registered = true;
+
+    await authority.assertGone();
+
+    assert.equal(authority.registered, false);
+    assert.deepEqual(timeouts, [120_000, 94_000, 48_000]);
+    assert.equal(clock, 112_000);
+  });
+
+  test('fails a dump that exhausts the proof budget without claiming absence', async () => {
+    let clock = 0;
+    let dumps = 0;
+    const authority = new LaunchServicesAuthority('/private/copied/ProPR Desktop.app', {}, {
+      runCommand: async () => ({}),
+      scanCommand: async (_file, _args, { timeout }) => {
+        dumps += 1;
+        clock += timeout;
+        throw new NativeLifecycleCommandFailure('COMMAND_DEADLINE');
+      },
+      wait: async milliseconds => { clock += milliseconds; },
+      now: () => clock,
+      // One dump must exhaust this fixture's budget, unlike the production window.
+      absenceBudgetMs: 120_000,
+    });
+    authority.registered = true;
+
+    await assert.rejects(authority.assertGone(), error => (
+      error instanceof LaunchServicesAbsenceFailure && error.resultClass === 'COMMAND_DEADLINE'
+    ));
+
+    assert.equal(authority.registered, true);
+    assert.equal(dumps, 1);
+    assert.equal(clock, 120_000);
+  });
+
+  test('re-probes a lagging LaunchServices removal for the full bounded window', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    // Each -dump answer costs seconds on a loaded runner, so the window is a
+    // deadline: a slow probe must not spend the budget the removal needs.
+    const probeFor = dumpCost => {
+      let clock = 0;
+      let dumps = 0;
+      const authority = new LaunchServicesAuthority(applicationRoot, {}, {
+        runCommand: async () => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }),
+        scanCommand: async (_file, _args, _options, matchesLine) => {
+          dumps += 1;
+          clock += dumpCost;
+          return { matched: matchesLine(`\tpath: ${applicationRoot}`) };
+        },
+        wait: async milliseconds => { clock += milliseconds; },
+        now: () => clock,
+      });
+      authority.registered = true;
+      return { authority, dumps: () => dumps, clock: () => clock };
+    };
+
+    const loaded = probeFor(9_000);
+    await assert.rejects(loaded.authority.assertGone(), error => error instanceof LaunchServicesAbsenceFailure);
 
     // A probe count of ten would have declared the record stale at ninety-nine
     // seconds, well inside the window the removal is allowed to take.
-    assert.equal(dumps, 13);
-    assert.ok(clock >= 120_000);
+    assert.equal(loaded.dumps(), 25);
+    assert.ok(loaded.clock() >= 240_000);
+
+    // A dump that runs to its own absolute deadline must not be the whole
+    // proof: the window still has room for a second complete dump after it.
+    const exhausting = probeFor(120_000);
+    await assert.rejects(exhausting.authority.assertGone(), error => error instanceof LaunchServicesAbsenceFailure);
+    assert.equal(exhausting.dumps(), 2);
   });
 
   test('re-probes LaunchServices until a lagging unregister is reflected in the dump', async () => {
@@ -997,6 +1084,60 @@ describe('native staged artifact lifecycle authority', () => {
       ),
       error => error instanceof NativeLifecycleCommandFailure && error.resultClass === 'COMMAND_DEADLINE',
     );
+  });
+
+  test('bounds a dump by silence rather than by how long it takes to stream', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    const matchesLine = line => launchServicesRecordMatchesApplication(line, applicationRoot);
+    const record = JSON.stringify(`\tpath: ${applicationRoot}\n`);
+    // A darwin-x64 runner walked the LaunchServices database for longer than
+    // the flat thirty-second cap this replaces, which killed four consecutive
+    // dumps and failed the postcondition with COMMAND_DEADLINE. A dump that is
+    // still emitting records keeps its deadline alive however long it runs.
+    assert.deepEqual(
+      await scanCommandLinesForMatch(
+        process.execPath,
+        ['-e', 'let emitted = 0;'
+          + 'const timer = setInterval(() => {'
+          + "  process.stdout.write('\\tpath: /Applications/Other.app\\n');"
+          + `  if ((emitted += 1) === 12) { clearInterval(timer); process.stdout.write(${record}); }`
+          + '}, 40);'],
+        { timeout: 30_000, stallTimeout: 400 },
+        matchesLine,
+      ),
+      { matched: true },
+    );
+
+    // Silence is what ends the probe: a dump that answered once and then stopped
+    // is still classified as a deadline rather than read as absence.
+    await assert.rejects(
+      scanCommandLinesForMatch(
+        process.execPath,
+        ['-e', "process.stdout.write('\\tpath: /Applications/Other.app\\n');"
+          + 'setInterval(() => {}, 1000);'],
+        { timeout: 30_000, stallTimeout: 150 },
+        matchesLine,
+      ),
+      error => error instanceof NativeLifecycleCommandFailure && error.resultClass === 'COMMAND_DEADLINE',
+    );
+  });
+
+  test('probes the LaunchServices dump under both a stall and an absolute deadline', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    let probeOptions;
+    const authority = new LaunchServicesAuthority(applicationRoot, { FIXED: 'environment' }, {
+      scanCommand: async (_file, _args, options) => {
+        probeOptions = options;
+        return { matched: false };
+      },
+    });
+
+    assert.equal(await authority.isListed(), false);
+    assert.deepEqual(probeOptions, {
+      env: { FIXED: 'environment' },
+      timeout: 120_000,
+      stallTimeout: 30_000,
+    });
   });
 
   test('registers before dispatching through the exact copied macOS application path', async () => {

@@ -150,7 +150,7 @@ export interface PromptOptions {
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
     const environmentRepairInstructions = getFixEnvironmentRepairInstructions(commandMode);
     const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
@@ -161,10 +161,10 @@ ${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
 ${commentHistory}${originalTaskSpec ? `**Immutable Original PR Objective:**\n${originalTaskSpec}\n` : ''}
 
 **CRITICAL INSTRUCTIONS:**
-- You are in directory: ${worktreeInfo.worktreePath}
+- Work in /home/node/workspace, the writable repository mount inside your container. Use this directory for all file edits and verification commands.
 - Analyze the existing code on this branch and the comment history provided above.
 ${reviewCommentsSection
-        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, actionable F# records are the complete implementation scope. Suggestions cannot be selected by /fix and require a separate ordinary follow-up request.\n- If no actionable finding is selected, do not modify files.\n- Do not infer work from prior review prose, scores, or suggestion IDs.'
+        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, the listed records are the complete implementation scope. An S# suggestion record is listed only because it was explicitly requested; implement it without letting it widen, substitute for, or relax the correction required by any F# record.\n- If no record is listed, do not modify files.\n- Do not infer work from prior review prose, scores, or unlisted record IDs.'
         : '- Implement ONLY the changes requested in the **New Request(s)** section.'}
 - Treat the original PR objective as immutable context, not as permission to expand the requested work.
 - DO NOT commit your changes - the system will handle the commit for you
@@ -244,6 +244,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
     const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
 
+    if ((await options.stateManager.getTaskState(options.taskId))?.state === TaskStates.CANCELLED) return;
     const retryComments = options.retryComments ?? job.data.comments ?? [];
     const durableRetryJobId = await schedulePRCommentUsageLimitRetry(
         job,
@@ -252,6 +253,10 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
         Math.max(0, delay),
     );
 
+    if ((await options.stateManager.getTaskState(options.taskId))?.state === TaskStates.CANCELLED) {
+        await (await issueQueue.getJob(durableRetryJobId))?.remove();
+        return;
+    }
     if (octokit) {
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -265,20 +270,31 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
 
 }
 
-async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
+function ultrafixTerminalMetadata(job: Job<CommentJobData>, outcome: 'stopped' | 'failed'): Record<string, unknown> | undefined {
+    if (!job.data.ultrafixMeta) return undefined;
+    return {
+        ultrafixOutcome: outcome,
+        ultrafixGoal: job.data.ultrafixMeta.goal,
+        ultrafixMaxCycles: job.data.ultrafixMeta.maxCycles,
+    };
+}
+
+async function handleUserCancellation(job: Job<CommentJobData>, options: JobErrorOptions, errorMessage: string): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
-    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
+    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage },
+        historyMetadata: ultrafixTerminalMetadata(job, 'stopped') });
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger, publicationStatus: options.publicationStatus });
     }
 }
 
-async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
+async function handleGenericError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
     const sanitizedMessage = sanitizeErrorMessage(error.message);
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage },
+        historyMetadata: ultrafixTerminalMetadata(job, 'failed') });
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -321,9 +337,9 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     if (isUsageLimit) {
         await handleUsageLimitError(error as UsageLimitError, job, options);
     } else if (isUserCancelled) {
-        await handleUserCancellation(options, error.message);
+        await handleUserCancellation(job, options, error.message);
     } else {
-        await handleGenericError(error, options);
+        await handleGenericError(error, job, options);
     }
 }
 
@@ -348,10 +364,9 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     await releaseFollowupCiSuspensionsForTask({ taskId: options.taskId }, { octokit: options.octokit, log: correlatedLogger })
         .catch(error => correlatedLogger.warn({ taskId: options.taskId, error: (error as Error).message }, 'Failed to release follow-up CI suspension; reconciliation will retry it'));
 
-    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug('Released PR processing lock');
-    }
-
+    // The worktree still holds the PR branch until it is removed, and git lets a
+    // branch be checked out only once: the next job for this PR must not get the
+    // lease while that removal is still running.
     if (localRepoPath && worktreeInfo) {
         try {
             await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: true });
@@ -360,10 +375,19 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         }
     }
 
+    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
+        correlatedLogger.debug('Released PR processing lock');
+    }
+
     try {
         const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
         const remainingPendingComments = await redisClient.llen(pendingCommentsKey);
         if (remainingPendingComments > 0) {
+            // A user stop ends this attempt, not independent comments waiting behind it.
+            // Read after the pending-list lookup so a closure during that await is observed.
+            const terminalState = await options.stateManager.getTaskState(options.taskId);
+            if (terminalState?.terminalReason === 'cancelled_pr_closed') return;
+
             correlatedLogger.info({ pullRequestNumber, pendingCount: remainingPendingComments }, 'Found pending comments that arrived during processing, queuing follow-up job');
 
             const followUpJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${Date.now()}`;

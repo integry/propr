@@ -1,3 +1,4 @@
+import { UsageTipsSettingsSection } from './UsageTipsSettingsSection';
 import React from 'react';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import GeneralSettingsSection from './GeneralSettingsSection';
@@ -55,6 +56,7 @@ const AdminSettingsPage: React.FC = () => {
     setNewIgnoreKeyword,
     triggerSettingsSave,
     handleModelSelectionChange,
+    handleEscalationModelsChange,
     handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit,
     handleRemoveLegacyReviewCap,
@@ -78,7 +80,7 @@ const AdminSettingsPage: React.FC = () => {
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
     let value: string | number | boolean;
-    const numericFields = ['auto_followup_score_threshold', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    const numericFields = ['ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
     if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
@@ -87,7 +89,7 @@ const AdminSettingsPage: React.FC = () => {
       const parsed = Number(raw);
       if (!Number.isSafeInteger(parsed)) return;
       value = parsed;
-    } else if (settingName === 'auto_resolve_merge_conflicts') {
+    } else if (settingName === 'ultrafix_escalation_enabled' || settingName === 'auto_resolve_merge_conflicts' || settingName === 'usage_tips_enabled') {
       value = (event.target as HTMLInputElement).checked;
     } else {
       value = event.target.value;
@@ -107,10 +109,11 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'model-selection',
       category: 'models',
-      searchText: 'model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
+      searchText: 'dashboard summary model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
       content: (
         <AIModelSelectionSection
           settings={{
+            dashboard_summary_enabled: settings.dashboard_summary_enabled,
             analysis_model_fast: settings.analysis_model_fast,
             planner_context_model: settings.planner_context_model,
             planner_generation_model: settings.planner_generation_model,
@@ -153,15 +156,26 @@ const AdminSettingsPage: React.FC = () => {
       )
     },
     {
+      id: 'usage-tips',
+      category: 'automation',
+      searchText: 'usage tips documentation dismissal cooldown days',
+      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
+    },
+    {
       id: 'general-configuration',
       category: 'automation',
-      searchText: 'general configuration processing worker concurrency auto followup score threshold resolve merge conflicts ultrafix rating goal maximum cycles pause seconds',
+      searchText: 'general configuration processing worker concurrency resolve merge conflicts ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
       content: (
         <GeneralSettingsSection
+          modelAgents={catalogAgents?.length ? catalogAgents : agents}
+          onEscalationModelsChange={handleEscalationModelsChange}
           settings={{
             worker_concurrency: settings.worker_concurrency,
-            auto_followup_score_threshold: settings.auto_followup_score_threshold,
             auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
+            ultrafix_escalation_enabled: settings.ultrafix_escalation_enabled,
+            ultrafix_escalation_models: settings.ultrafix_escalation_models,
+            ultrafix_escalation_patience: settings.ultrafix_escalation_patience,
+            ultrafix_escalation_max_reasoning_levels: settings.ultrafix_escalation_max_reasoning_levels,
             ultrafix_rating_goal: settings.ultrafix_rating_goal,
             ultrafix_max_cycles: settings.ultrafix_max_cycles,
             ultrafix_pause_seconds: settings.ultrafix_pause_seconds
@@ -263,7 +277,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'agent-tank',
       category: 'integrations',
-      searchText: 'LLM usage tracking Agent Tank daemon URL rate limit Claude Antigravity Codex CLI connection',
+      searchText: 'LLM usage tracking Agent Tank daemon URL rate limit Claude Antigravity Codex CLI connection mode bundled external disabled',
       content: (
         <AgentTankSection
           settings={agentTankSettings}

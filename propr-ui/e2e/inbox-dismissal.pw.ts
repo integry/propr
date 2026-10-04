@@ -354,3 +354,48 @@ test('a preview image that fails to load leaves no placeholder beside the comman
   await expect(ready.getByRole('group', { name: 'Published visual previews' })).toBeHidden();
   await expect(ready.getByRole('img', { name: /image unavailable/ })).toHaveCount(0);
 });
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`notification rows open ProPR and PR chips open GitHub at ${viewport.width}px`, async ({ page, context }) => {
+    await page.setViewportSize(viewport);
+    const ready = {
+      ...notifications[1], id: 'ready-82', title: 'Make notification destinations consistent',
+      body: 'Implementation is ready for review.', readAt: null,
+      target: { type: 'pull_request', repository: 'integry/propr', prNumber: 82 },
+      metadata: { completedImplementationTaskId: 'implementation-82', completionType: 'implementation' },
+      action: pullRequestLink(82),
+    };
+    const items = [ready, ...notifications];
+    await stubInbox(page, items);
+    const reads: string[] = [];
+    await page.route('**/api/notifications/*/read', route => {
+      const id = new URL(route.request().url()).pathname.split('/').at(-2)!;
+      reads.push(id);
+      const item = items.find(item => item.id === id)!;
+      return route.fulfill({ json: { notification: { ...item, readAt: new Date().toISOString() }, unreadCount: 0 } });
+    });
+    await context.route('https://github.com/integry/propr/pull/*', route => route.fulfill({ body: '' }));
+    await page.goto('/inbox');
+    const row = page.getByRole('article', { name: ready.title });
+    await expect(row.getByRole('heading').getByRole('link')).toHaveAttribute('href', '/tasks/implementation-82');
+    const fix = page.getByRole('article').filter({ hasText: 'Fixed 2 review findings in 3 files' });
+    await expect(fix.getByRole('heading').getByRole('link')).toHaveAttribute('href', '/tasks/fix-task-81');
+    const chip = row.getByRole('link', { name: 'PR #82 on GitHub' });
+    await chip.focus();
+    await capture(page, `inbox-entity-links-${viewport.width}.png`);
+    const popupPromise = page.waitForEvent('popup');
+    await chip.click();
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL('https://github.com/integry/propr/pull/82');
+    await expect(page).toHaveURL(/\/inbox$/);
+    await expect.poll(() => reads).toContain('ready-82');
+    await popup.close();
+    // A click on the summary exercises the stretched title overlay. Keep a
+    // document marker to distinguish client navigation from a full page load.
+    await page.evaluate(() => { document.documentElement.dataset.navigationTest = 'preserved'; });
+    const box = (await row.locator('p').boundingBox())!;
+    await page.mouse.click(box.x + 20, box.y + box.height / 2);
+    await expect(page).toHaveURL(/\/tasks\/implementation-82$/);
+    expect(await page.evaluate(() => document.documentElement.dataset.navigationTest)).toBe('preserved');
+  });
+}

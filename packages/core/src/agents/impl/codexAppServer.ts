@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess } from '../agentGitAccess.js';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -76,14 +77,17 @@ export async function executeCodexAppServerGoal(
     const model = cleanModelName(options.model || config.defaultModel);
     const control = options.goalControl;
     if (!control || !options.nativeGoalObjective) throw new Error('Codex native goal execution requires durable goal controls and an objective');
+    const ownership = getExecutionOwnershipContext();
+    const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+    if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const dockerArgs = buildCodexAppServerDockerArgs(config, {
         worktreePath: options.worktreePath,
-        githubToken: options.githubToken,
+        githubToken,
+        gitMountArgs,
         issueNumber: options.issueRef.number,
         environment: options.environment,
         taskId: options.taskId,
     });
-    const ownership = getExecutionOwnershipContext();
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
     const abort = (): void => { child.kill('SIGTERM'); };

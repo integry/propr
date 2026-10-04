@@ -7,8 +7,8 @@ import { calculateReviewCost, resolveReviewerBudget, type ReviewBudgetSettings }
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
 import type { PreparedPRDiff } from './prDiffFormatting.js';
 import { ReviewTokenEstimator, type ReviewTokenStatsCache } from './reviewTokenEstimator.js';
-import { buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
+import { buildReviewErrorComment, type ReviewRecordStartNumbers } from './reviewCommentFormatter.js';
+import { buildReviewCommentWithReservedRecordRanges } from './reviewFindingNumberAllocator.js';
 
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
 const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
@@ -30,6 +30,7 @@ export interface ReviewResult {
     error?: string;
     prompt?: string;
     findingCount?: number;
+    suggestionCount?: number;
 }
 
 export interface RunReviewsContext {
@@ -51,6 +52,7 @@ export interface RunReviewsContext {
     tokenStats: ReviewTokenStatsCache;
     changedFilePaths: string[];
     findingStartNumber: number;
+    suggestionStartNumber: number;
     redisClient: Redis;
     fileContents: string;
     relatedContext: string;
@@ -150,7 +152,7 @@ export async function runSingleReview(
         }, 'Review analysis completed');
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+        const { reviewCommentBody, findingCount, suggestionCount } = await buildReviewCommentWithReservedRecordRanges(
             assignment, analysisResult, taskUrl, {
                 reviewedHead: ctx.reviewedHead, taskId,
                 omittedDiffFiles: [
@@ -167,6 +169,7 @@ export async function runSingleReview(
                 changedFilePaths: ctx.changedFilePaths,
                 redisClient: ctx.redisClient, issueRef: { repoOwner, repoName, pullRequestNumber },
                 observedNextFindingNumber: ctx.findingStartNumber,
+                observedNextSuggestionNumber: ctx.suggestionStartNumber,
             },
         );
 
@@ -174,7 +177,7 @@ export async function runSingleReview(
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
-        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount };
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount, suggestionCount };
     } catch (reviewError) {
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
@@ -225,20 +228,24 @@ export async function routeReviewAssignments(
 }
 
 export async function runReviewRoutingOutcomes(
-    routingOutcomes: ReviewRoutingOutcome[], reviewCtx: RunReviewsContext, firstFindingNumber: number,
+    routingOutcomes: ReviewRoutingOutcome[], reviewCtx: RunReviewsContext, startNumbers: ReviewRecordStartNumbers,
 ): Promise<ReviewResult[]> {
     const reviewResults: ReviewResult[] = [];
-    let nextFindingNumber = firstFindingNumber;
+    let nextFindingNumber = startNumbers.firstFindingNumber;
+    let nextSuggestionNumber = startNumbers.firstSuggestionNumber;
     for (const outcome of routingOutcomes) {
         if (outcome.status === 'failed') {
             reviewResults.push(outcome.result);
             continue;
         }
         const result = await runSingleReview(outcome.assignment, {
-            ...reviewCtx, findingStartNumber: nextFindingNumber,
+            ...reviewCtx, findingStartNumber: nextFindingNumber, suggestionStartNumber: nextSuggestionNumber,
         });
         reviewResults.push(result);
+        // Reviewers of one job publish in turn, so each continues both sequences
+        // where the previous reviewer's comment stopped.
         nextFindingNumber += result.findingCount ?? 0;
+        nextSuggestionNumber += result.suggestionCount ?? 0;
     }
     return reviewResults;
 }

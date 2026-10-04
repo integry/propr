@@ -1,5 +1,10 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { closeConnection, db } from '@propr/core';
+import {
+  closeConnection,
+  closeEventPublisher,
+  db,
+  publishNotificationUpdateThroughRedis,
+} from '@propr/core';
 import type {
   NotificationBackgroundOperation,
   NotificationBackgroundRequest,
@@ -33,7 +38,10 @@ const { NotificationProjectionService } = projectionModule;
 const { WebPushDispatcher } = dispatcherModule;
 
 const background = await createBackgroundDatabase(db);
-const projection = new NotificationProjectionService({ database: background.database });
+const projection = new NotificationProjectionService({
+  database: background.database,
+  publishNotificationUpdate: publishNotificationUpdateThroughRedis,
+});
 projection.startStalledDetector();
 
 let dispatcher: InstanceType<typeof WebPushDispatcher> | undefined;
@@ -97,6 +105,8 @@ async function close(id: number): Promise<void> {
   projection.close();
   await dispatcherClose;
   await background.close();
+  // This thread's own publisher connection; closing it lets the worker exit.
+  await closeEventPublisher();
   await closeConnection();
   respond({ type: 'result', id, ok: true });
   port.close();

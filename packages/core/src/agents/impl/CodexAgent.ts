@@ -1,3 +1,4 @@
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
@@ -13,7 +14,7 @@ import {
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
-import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
@@ -46,7 +47,7 @@ export class CodexAgent implements Agent {
         if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
+            onSessionId, onContainerId, environment, taskId, prNumber, reasoningLevel,
             executionMode = 'task', resumeSessionId, metadata } = options;
 
         const startTime = Date.now();
@@ -65,8 +66,9 @@ export class CodexAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const dockerArgs = this.buildDockerArgs({
-                worktreePath, githubToken, modelName: effectiveModel,
+                worktreePath, githubToken, gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });
@@ -83,7 +85,9 @@ export class CodexAgent implements Agent {
                     taskId,
                     streamToRedis: true,
                     preserveOutputOnTimeout: true
-                })
+                }),
+                undefined,
+                this.config.alias
             );
 
             const executionTime = Date.now() - startTime;
@@ -164,16 +168,14 @@ export class CodexAgent implements Agent {
         const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata } = params;
         await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt: params.prompt, issueRef, model: modelUsed, isRetry, retryReason });
         const logEntry = createLlmLogFromAnalysis({
-            executionType: 'implementation', modelUsed,
+            ...resolveTaskLogAttribution(metadata, buildTaskWorkRef(taskId, issueRef.number, repo, prNumber), { isRetry, retryReason, conversationId: parsedOutput.conversationId }), modelUsed,
             executionTimeMs: executionTime, success: response.success,
             tokenUsage: parsedOutput.tokenUsage,
             error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
             sessionId: parsedOutput.sessionId, draftId: taskId,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             agentAlias: this.config.alias, reasoningLevel: response.reasoningLevel,
-            metadata: { ...metadata, isRetry, retryReason, conversationId: parsedOutput.conversationId },
             ...this.formatUsageMetrics(usageMetrics),
-            workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
         });
         await persistLlmLog(logEntry);
     }
@@ -236,7 +238,7 @@ export class CodexAgent implements Agent {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
-                githubToken: process.env.GITHUB_TOKEN || '',
+                ...await prepareAnalysisGitAccess(options, analysisWorkspace),
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel,
                 readOnlyWorkspace: !!readOnlyWorkspacePath,
@@ -248,7 +250,8 @@ export class CodexAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
                 }),
-                ANALYSIS_AGENT_TANK_TIMEOUT_MS
+                ANALYSIS_AGENT_TANK_TIMEOUT_MS,
+                this.config.alias
             );
 
             const executionTimeMs = Date.now() - startTime;

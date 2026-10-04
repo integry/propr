@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'node:child_process';
 import { VibeAgent, getMistralApiKeyFromSettings, parseVibeConversationLog, parseVibeOutput, readLatestVibeSessionTokenUsage } from '../packages/core/src/agents/impl/VibeAgent.js';
 import { executeDockerCommand } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } from '../packages/core/src/agents/impl/utils/vibeAgentHelpers.js';
@@ -545,5 +546,77 @@ describe('Docker command stdin delivery', () => {
 
         assert.strictEqual(result.exitCode, 0);
         assert.strictEqual(result.stdout, 'prompt from stdin');
+    });
+});
+
+
+test('GLM selection supplies a Mistral preset for execution and read-only analysis', () => {
+    withRestoredEnv(() => {
+        process.env.MISTRAL_API_KEY = 'test-key';
+        for (const modelName of ['zai-glm-5-3', 'zai-glm-5-2']) {
+            for (const mode of ['execute', 'analysis'] as const) {
+                const args = buildArgs(createAgent(), { modelName, mode });
+                assert.ok(args.includes(`VIBE_ACTIVE_MODEL=${modelName}`));
+                const prefix = `VIBE_MODELS__${modelName}=`;
+                const preset = JSON.parse(args.find(arg => arg.startsWith(prefix))!.slice(prefix.length));
+                assert.strictEqual(preset.name, modelName);
+                assert.strictEqual(preset.alias, modelName);
+                assert.strictEqual(preset.provider, 'mistral');
+                assert.strictEqual(preset.thinking, 'high');
+                assert.ok(!args.some(arg => arg.includes('test-key')));
+            }
+        }
+        assert.ok(!buildArgs(createAgent()).some(arg => arg.startsWith('VIBE_MODELS__')));
+    });
+});
+
+
+// Optional contract check against the actual pinned PyPI package (no API calls).
+// PROPR_VIBE_PYTHON=/path/to/venv/bin/python npx tsx --test test/vibeAgent.test.ts
+// Install mistral-vibe==2.25.8 in that venv first.
+test('installed Vibe resolves Docker model overrides and preserves user models', {
+    skip: !process.env.PROPR_VIBE_PYTHON,
+}, () => {
+    withRestoredEnv(() => {
+        process.env.MISTRAL_API_KEY = 'test-key';
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-contract-'));
+        try {
+            fs.writeFileSync(path.join(home, 'config.toml'),
+                'active_model = "local"\n[[models]]\nname = "private-model"\nprovider = "llamacpp"\nalias = "private"\n');
+            for (const modelName of ['mistral-medium-3.5', 'zai-glm-5-3', 'zai-glm-5-2']) {
+                const args = buildArgs(createAgent(), { modelName, mode: 'analysis' });
+                const env = { ...process.env, VIBE_HOME: home };
+                for (let i = 0; i < args.length - 1; i++) {
+                    if (args[i] !== '-e') continue;
+                    const entry = args[++i];
+                    const separator = entry.indexOf('=');
+                    if (entry.startsWith('VIBE_ACTIVE_MODEL=') || entry.startsWith('VIBE_MODELS__')) {
+                        env[entry.slice(0, separator)] = entry.slice(separator + 1);
+                    }
+                }
+                const result = spawnSync(process.env.PROPR_VIBE_PYTHON!, ['-c', `
+import asyncio, json
+from importlib.metadata import version
+from vibe.core.config.harness_files import init_harness_files_manager
+from vibe.core.config.default_orchestrator import build_default_orchestrator
+assert version("mistral-vibe") == "2.25.8"
+init_harness_files_manager("user")
+async def main():
+    config = (await build_default_orchestrator()).config
+    model = config.get_active_model()
+    assert "private" in config.models and "local" in config.models
+    assert config.get_provider_for_model(model).api_key_env_var == "MISTRAL_API_KEY"
+    print(json.dumps({"alias": model.alias, "name": model.name, "provider": model.provider}))
+asyncio.run(main())
+`], { env, encoding: 'utf8' });
+                assert.equal(result.status, 0, result.stderr);
+                const selected = JSON.parse(result.stdout);
+                assert.equal(selected.alias, modelName);
+                assert.equal(selected.provider, 'mistral');
+                assert.equal(selected.name, modelName === 'mistral-medium-3.5' ? 'mistral-vibe-cli-latest' : modelName);
+            }
+        } finally {
+            fs.rmSync(home, { recursive: true, force: true });
+        }
     });
 });

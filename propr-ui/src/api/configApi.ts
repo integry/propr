@@ -1,8 +1,10 @@
+import { USAGE_TIPS_SETTINGS_CHANGED } from './usageTipsApi';
 import type {
   AgentConfig,
   MonitoredRepo,
   RepoBranchesResponse,
   RepoConfigResponse,
+  RepoWorkflowsResponse,
   SystemSettings,
 } from './proprTypes';
 import type { SyntheticAgentConfig } from '@propr/shared';
@@ -61,6 +63,8 @@ export const updateRepoConfig = (repos: MonitoredRepo[]): Promise<RepoConfigUpda
 export const getAvailableGithubRepos = (): Promise<GithubReposResponse> => getJson('/api/github/repos');
 export const getRepoBranches = (owner: string, repo: string): Promise<RepoBranchesResponse> =>
   getJson(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+export const getRepoWorkflows = (owner: string, repo: string): Promise<RepoWorkflowsResponse> =>
+  getJson(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/workflows`);
 export const getSettings = (): Promise<SystemSettings> => getJson('/api/config/settings');
 
 export interface ConfigUpdateResponse {
@@ -69,8 +73,13 @@ export interface ConfigUpdateResponse {
   warnings?: string[];
 }
 
-export const updateSettings = (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> =>
-  postJson('/api/config/settings', { settings });
+export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
+  const result = await postJson<ConfigUpdateResponse>('/api/config/settings', { settings });
+  if ('usage_tips_enabled' in settings || 'usage_tips_dismissal_cooldown_days' in settings) {
+    window.dispatchEvent(new Event(USAGE_TIPS_SETTINGS_CHANGED));
+  }
+  return result;
+};
 export const getFollowupKeywords = (): Promise<FollowupKeywordsResponse> => getJson('/api/config/followup-keywords');
 export const updateFollowupKeywords = (keywords: string[]): Promise<ConfigWriteResponse<FollowupKeywordsResponse>> =>
   postJson('/api/config/followup-keywords', { followup_keywords: keywords });

@@ -35,12 +35,12 @@ Small, specific issues produce better PRs than broad requests.
 ## Start The Run
 
 1. Add the processing label to the issue (for example `AI`).
-2. Optionally add a model label such as `llm-claude-opus5` or `llm-antigravity-pro-high`. Adding several model labels produces one run, branch, and PR per model.
+2. Optionally add a model label such as `llm-claude-opus5` or `llm-antigravity-pro`. Adding several model labels produces one run, branch, and PR per model.
 3. Optionally add `base-<branch>` (for example `base-develop`) to target a non-default base branch.
 4. Open the ProPR Web UI.
 5. Watch the task record.
 
-ProPR picks up the label through its configured event intake mode — by default it receives the event near-immediately over the routing WebSocket; with `GITHUB_EVENT_INTAKE_MODE=polling` it is detected on the next polling cycle (every 60 seconds by default), and with `direct_webhook` it arrives as GitHub delivers it. As the run progresses, ProPR replaces the trigger label with state labels: `<trigger>-processing` while running, then `<trigger>-done` on success or a `<trigger>-failed-*` label on failure.
+ProPR picks up the label through its configured event intake mode — by default it receives the event near-immediately over the routing WebSocket; with `GITHUB_EVENT_INTAKE_MODE=polling` it is detected on the next polling cycle (every 60 seconds by default), and with `direct_webhook` it arrives as GitHub delivers it. As the run progresses, ProPR adds state labels alongside the trigger label: `<trigger>-processing` while running, then `<trigger>-done` on success or a `<trigger>-failed-*` label on failure.
 
 The task record shows the selected repository, branch, model, status, logs, and resulting PR.
 

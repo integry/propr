@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { up } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
 import { McpOAuthProvider, validatePublicTokenRequest } from '../mcp/oauth.js';
 import { McpStore } from '../mcp/store.js';
 import { loadMcpConfig, type McpConfig } from '../mcp/config.js';
@@ -20,6 +21,7 @@ async function fixture() {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await db.schema.createTable('task_drafts', table => { table.string('draft_id').primary(); table.string('name'); });
   await up(db);
+  await lifecycleMigration(db);
   const config: McpConfig = { origin: 'https://instance.example', resource: 'https://instance.example/api/mcp', instanceId: 'instance-123', encryptionKey: randomBytes(32) };
   const store = new McpStore(db, config.encryptionKey);
   const oauth = new McpOAuthProvider(store, config);

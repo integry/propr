@@ -38,15 +38,46 @@ jobs:
         id: classify
         uses: ./.github/actions/classify-changes
 
+  # Chooses hosted or rootless runners for this run when
+  # PROPR_ROOTLESS_PR_CHECKS=overflow and is skipped otherwise. Its outcome
+  # never blocks the checks: a skipped or failed route leaves them hosted.
+  # See docs/ci-runners.md.
+  route:
+    name: Select PR check runners
+    if: ${{ vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      overflow: ${{ steps.capacity.outputs.overflow }}
+    steps:
+      - name: Checkout capacity script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: scripts/ci-hosted-capacity.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check hosted runner capacity
+        id: capacity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Hosted jobs this workflow routes; they count against the limit.
+          PROPR_PLANNED_HOSTED_JOBS: '3'
+          PROPR_HOSTED_JOB_LIMIT: ${{ vars.PROPR_HOSTED_JOB_LIMIT }}
+        run: node scripts/ci-hosted-capacity.mjs
+
   cli-node-matrix:
     name: CLI Agent Skill (Node ${{ matrix.node }})
-    needs: classify
+    needs: [classify, route]
     # Only an explicit `false` skips. A failed, cancelled or missing decision
     # leaves the output empty, which runs the job. `!cancelled()` keeps
     # superseded-run cancellation intact.
     if: ${{ !cancelled() && needs.classify.outputs.cli != 'false' }}
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -199,7 +230,11 @@ jobs:
           NON_ROOT
 
       - name: Install dependencies as non-root
-        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
+        # Retry interrupted registry downloads; permanent install errors still
+        # fail immediately. Keep the installer and retries under the node user.
+        run: >-
+          runuser --user node -- env HOME=/home/node
+          node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts
 
       - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
         run: |
@@ -406,8 +441,12 @@ jobs:
 
   validate:
     name: Validate Changes
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # `route` only picks the runner; `!cancelled()` runs validation whether it
+    # succeeded, failed or was skipped.
+    needs: route
+    if: ${{ !cancelled() }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     env:
       ACTIONLINT_IMAGE: rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
     permissions:
@@ -518,6 +557,7 @@ jobs:
               scripts/smoke-test-images.sh \
               scripts/smoke-test-preview-runtime-images.sh \
               scripts/smoke-test-sqlite-startup.sh \
+              scripts/verify-agent-tank-image.sh \
               scripts/verify-antigravity-image.sh
           } > >(tee -a build_log.txt) 2>&1
 

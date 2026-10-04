@@ -1,0 +1,160 @@
+export interface SettingEntry {
+  id: string;
+  label: string;
+  description?: string;
+  aliases: string[];
+  scope: 'instance' | 'repository' | 'user' | 'environment';
+  ui?: string;
+  mcp?: { read?: string; write?: string };
+  cli?: string;
+  env?: string[];
+  restartRequired?: boolean;
+  mcpStatus: 'read_write' | 'read_only' | 'browser_only' | 'environment_only';
+  reason?: string;
+  docs?: string;
+}
+
+const configurationReference = 'operations/configuration-reference';
+const execution = (
+  id: string, label: string, ui: string, aliases: string[] = [], env?: string[],
+): SettingEntry => ({ // eslint-disable-line max-params -- Positional fields keep catalog rows compact and consistently ordered.
+  id, label, aliases, scope: 'instance', ui,
+  mcp: { read: 'get_execution_settings', write: 'update_execution_settings' },
+  cli: `propr setting update ${aliases.find(alias => alias.includes('_')) ?? id.split('.').at(-1)} <value>`, env,
+  mcpStatus: 'read_write', ...(env ? { docs: configurationReference } : {}),
+});
+const environment = (
+  id: string, label: string, env: string[], aliases: string[] = [], reason = 'This value is configured only in the deployment environment.',
+): SettingEntry => ({ // eslint-disable-line max-params -- Positional fields keep catalog rows compact and consistently ordered.
+  id, label, aliases, scope: 'environment', env, restartRequired: true,
+  mcpStatus: 'environment_only', reason, docs: configurationReference,
+});
+
+/** Stable, non-secret location metadata for every supported UI/MCP setting and documented environment group. */
+export const SETTINGS_CATALOG: SettingEntry[] = [
+  execution('automation.usage_tips_enabled', 'Usage tips', 'Settings → Automation → Usage tips', ['usage tips enabled']),
+  execution('automation.usage_tips_dismissal_cooldown_days', 'Usage tip dismissal cooldown', 'Settings → Automation → Usage tips', ['tip cooldown days']),
+  execution('models.default_agent_alias', 'Default coding agent', 'Settings → Models → Model selection', ['default_agent_alias', 'default agent']),
+  execution('automation.worker_concurrency', 'Worker concurrency', 'Settings → Automation → General configuration', ['parallel jobs', 'worker_concurrency'], ['WORKER_CONCURRENCY']),
+  {
+    id: 'trigger.user_allowlist', label: 'Allowed GitHub users', aliases: ['user whitelist', 'github_user_whitelist', 'trigger allowlist'], scope: 'instance',
+    ui: 'Settings → Automation → GitHub User Whitelist', mcp: { read: 'get_trigger_access_configuration', write: 'update_trigger_access_configuration' },
+    cli: 'propr setting update github_user_whitelist <csv>', env: ['GITHUB_USER_WHITELIST'], mcpStatus: 'read_write', docs: configurationReference,
+  },
+  {
+    id: 'trigger.bot_allowlist', label: 'Allowed bot accounts', aliases: ['bot whitelist', 'exempt bots', 'github_bot_whitelist', 'bot allowlist'], scope: 'instance',
+    ui: 'Settings → Automation → Access', mcp: { read: 'get_trigger_access_configuration', write: 'update_trigger_access_configuration' },
+    cli: 'propr setting update github_user_whitelist <csv>', env: ['GITHUB_USER_WHITELIST'], mcpStatus: 'read_write', docs: configurationReference,
+  },
+  {
+    id: 'trigger.user_denylist', label: 'Blocked GitHub users', aliases: ['user blacklist', 'github_user_blacklist', 'trigger deny list'], scope: 'environment',
+    mcp: { read: 'get_trigger_access_configuration' }, env: ['GITHUB_USER_BLACKLIST'], restartRequired: true, mcpStatus: 'read_only',
+    reason: 'The environment-owned deny list is intentionally read-only in MCP.', docs: configurationReference,
+  },
+  { ...execution('models.analysis_model_fast', 'Fast analysis model', 'Settings → Models → Model selection', ['analysis_model_fast'], ['ANALYSIS_MODEL_FAST']), description: 'Used by /review to gather repository context before the review.' },
+  execution('models.planner_context_model', 'Planner context model', 'Settings → Models → Model selection', ['planner_context_model'], ['PLANNER_CONTEXT_MODEL']),
+  execution('models.planner_generation_model', 'Planner generation model', 'Settings → Models → Model selection', ['planner_generation_model'], ['PLANNER_GENERATION_MODEL']),
+  execution('automation.auto_resolve_merge_conflicts', 'Automatic merge-conflict resolution', 'Settings → Automation → General configuration', ['auto_resolve_merge_conflicts']),
+  execution('models.dashboard_summary_enabled', 'Dashboard AI summaries', 'Settings → Models → Model selection', ['dashboard_summary_enabled']),
+  execution('models.model_reasoning_level', 'Model reasoning level', 'Settings → Models → Model selection', ['model_reasoning_level']),
+  execution('review.model', 'Pull request review model', 'Settings → Models → PR review', ['pr_review_model']),
+  execution('review.prompt', 'Pull request review prompt', 'Settings → Models → PR review', ['pr_review_prompt']),
+  execution('review.context_enabled', 'Pull request review context', 'Settings → Models → PR review context', ['pr_review_context_enabled']),
+  execution('review.context_model', 'Pull request review context model', 'Settings → Models → PR review context', ['pr_review_context_model']),
+  execution('review.max_context_tokens', 'Pull request review legacy context cap', 'Settings → Models → PR review context', ['pr_review_max_context_tokens']),
+  execution('review.context_budget_percent', 'Pull request review context budget', 'Settings → Models → PR review context', ['pr_review_context_budget_percent']),
+  execution('ultrafix.escalation.enabled', 'Ultrafix automatic escalation', 'Settings → Automation → General configuration', ['ultrafix_escalation_enabled']),
+  execution('ultrafix.escalation.models', 'Ultrafix escalation models', 'Settings → Automation → General configuration', ['ultrafix_escalation_models']),
+  execution('ultrafix.escalation.patience', 'Ultrafix escalation patience', 'Settings → Automation → General configuration', ['ultrafix_escalation_patience']),
+  execution('ultrafix.escalation.max_reasoning_levels', 'Ultrafix reasoning increases per model', 'Settings → Automation → General configuration', ['ultrafix_escalation_max_reasoning_levels']),
+  execution('ultrafix.rating_goal', 'Ultrafix rating goal', 'Settings → Automation → General configuration', ['ultrafix_rating_goal']),
+  execution('ultrafix.max_cycles', 'Ultrafix maximum cycles', 'Settings → Automation → General configuration', ['ultrafix_max_cycles']),
+  execution('ultrafix.pause_seconds', 'Ultrafix pause', 'Settings → Automation → General configuration', ['ultrafix_pause_seconds']),
+  { id: 'workflow.pr_label', label: 'Pull request label', aliases: ['pr_label', 'created PR label'], scope: 'instance', ui: 'Settings → Automation → PR label', mcp: { read: 'get_pr_label', write: 'update_pr_label' }, cli: 'propr setting update pr-label <label>', env: ['PR_LABEL'], mcpStatus: 'read_write', docs: configurationReference },
+  { id: 'workflow.ai_primary_tag', label: 'AI primary tag', aliases: ['ai_primary_tag', 'primary AI label'], scope: 'instance', mcp: { read: 'get_ai_primary_tag', write: 'update_ai_primary_tag' }, cli: 'propr setting update ai-primary-tag <tag>', env: ['AI_PRIMARY_TAG'], mcpStatus: 'read_write' },
+  { id: 'workflow.primary_processing_labels', label: 'Primary processing labels', aliases: ['primary_processing_labels', 'trigger labels'], scope: 'instance', ui: 'Settings → Automation → Primary processing labels', mcp: { read: 'get_primary_processing_labels', write: 'update_primary_processing_labels' }, cli: 'propr setting update primary-processing-labels <csv>', env: ['PRIMARY_PROCESSING_LABELS'], mcpStatus: 'read_write', docs: configurationReference },
+  { id: 'workflow.followup_keywords', label: 'Follow-up keywords', aliases: ['followup_keywords', 'PR followup triggers'], scope: 'instance', ui: 'Settings → Automation → Follow-up keywords', mcp: { read: 'get_followup_keywords', write: 'update_followup_keywords' }, cli: 'propr setting update followup-keywords <csv>', env: ['PR_FOLLOWUP_TRIGGER_KEYWORDS'], mcpStatus: 'read_write', docs: configurationReference },
+  { id: 'workflow.followup_ignore_keywords', label: 'Follow-up ignore keywords', aliases: ['followup_ignore_keywords', 'ignored followup keywords'], scope: 'instance', ui: 'Settings → Automation → PR follow-up ignore keywords', mcp: { read: 'get_followup_ignore_keywords', write: 'update_followup_ignore_keywords' }, mcpStatus: 'read_write' },
+  { id: 'indexing.configuration', label: 'Knowledge-base indexing policy', aliases: ['indexing policy', 'summarization settings'], scope: 'instance', ui: 'Settings → Models → Knowledge base', mcp: { read: 'get_indexing_configuration', write: 'update_indexing_configuration' }, mcpStatus: 'read_write' },
+  { id: 'providers.agent_tank_policy', label: 'Agent Tank policy', aliases: ['provider policy', 'agent tank settings'], scope: 'instance', ui: 'Settings → Integrations → Agent Tank', mcp: { read: 'get_provider_policy', write: 'update_provider_policy' }, mcpStatus: 'read_write' },
+  { id: 'agents.configuration', label: 'Direct coding agent configuration', aliases: ['direct agents', 'agent models'], scope: 'instance', ui: 'Settings → Models → Coding agents', mcp: { read: 'get_agent_configuration', write: 'update_agent_configuration' }, cli: 'propr setup', mcpStatus: 'read_write' },
+  { id: 'agents.synthetic_configuration', label: 'Synthetic-agent composition', aliases: ['synthetic agents'], scope: 'instance', ui: 'Settings → Models → Coding agents', mcp: { read: 'get_agent_configuration', write: 'update_synthetic_agent' }, cli: 'propr agent pool apply <file>', mcpStatus: 'read_write' },
+  { id: 'agents.runtime_packages', label: 'Agent runtime packages', aliases: ['runtime configuration', 'npm packages'], scope: 'instance', ui: 'Settings → Integrations → Agent runtime packages', mcp: { read: 'get_runtime_configuration', write: 'update_runtime_configuration' }, mcpStatus: 'read_write' },
+  { id: 'repository.configuration', label: 'Repository identity and configuration', aliases: ['repository branch', 'repository alias', 'repository enabled'], scope: 'repository', ui: 'Repositories → Configuration', mcp: { read: 'get_repository_configuration', write: 'update_repository_configuration' }, cli: 'propr setup', env: ['GITHUB_REPOS_TO_MONITOR'], mcpStatus: 'read_write', docs: configurationReference },
+  { id: 'repository.automation', label: 'Repository automation policy', aliases: ['failed CI follow-up', 'cancel CI', 'non-blocking checks'], scope: 'repository', ui: 'Repositories → Automation', mcp: { read: 'get_repository_configuration', write: 'update_repository_configuration' }, env: ['CANCEL_CI_FOLLOWUP_WORKFLOWS'], mcpStatus: 'read_write', docs: configurationReference },
+  { id: 'repository.notifications', label: 'Repository notifications', aliases: ['repo notifications'], scope: 'repository', ui: 'Repositories → Notifications', mcp: { read: 'get_repository_configuration', write: 'update_repository_configuration' }, mcpStatus: 'read_write' },
+  { id: 'repository.visual_previews', label: 'Repository visual preview policy', aliases: ['preview policy', 'image and video previews'], scope: 'repository', ui: 'Repositories → Visual previews', mcp: { read: 'get_repository_configuration', write: 'update_repository_configuration' }, mcpStatus: 'read_write' },
+  { id: 'notifications.preferences', label: 'Notification preferences and quiet hours', aliases: ['quiet hours', 'push categories', 'badge preferences'], scope: 'user', ui: 'Settings → Notifications', mcp: { read: 'get_notification_preferences', write: 'update_notification_preferences' }, mcpStatus: 'read_write' },
+  { id: 'notifications.device_capabilities', label: 'Voice and desktop notification preferences', aliases: ['voice preferences', 'desktop notifications'], scope: 'user', ui: 'Settings → Notifications', mcpStatus: 'browser_only', reason: 'These are device-local browser or desktop capabilities.' },
+  { id: 'credentials.visual_preview_token', label: 'Visual preview upload token', aliases: ['visual preview token', 'preview PAT', 'GITHUB_VISUAL_PREVIEW_TOKEN'], scope: 'instance', ui: 'Settings → Integrations → Visual previews', env: ['GITHUB_VISUAL_PREVIEW_TOKEN'], restartRequired: true, mcpStatus: 'browser_only', reason: 'This is credential entry, so MCP never reads or writes its value.', docs: configurationReference },
+  { id: 'credentials.agent_providers', label: 'Agent and provider credentials', aliases: ['agent secrets', 'provider login', 'credential paths'], scope: 'instance', ui: 'Settings → Models → Coding agents', cli: 'propr setup', mcpStatus: 'browser_only', reason: 'Secret entry and host credential paths are never exposed to MCP.' },
+  { id: 'credentials.preview_storage', label: 'Managed preview storage credentials', aliases: ['preview storage secret', 'storage credentials'], scope: 'instance', ui: 'Settings → Integrations → Managed preview storage', mcpStatus: 'browser_only', reason: 'This setting contains storage credentials and host trust configuration.' },
+  { id: 'mcp.server', label: 'MCP server identity and authorization', aliases: ['MCP enablement', 'MCP origin', 'MCP scope ceiling', 'MCP encryption'], scope: 'instance', ui: 'Settings → Integrations → MCP server', env: ['MCP_ENABLED', 'MCP_PUBLIC_ORIGIN', 'MCP_INSTANCE_ID', 'MCP_ENCRYPTION_KEY', 'MCP_SCOPE_CEILING'], restartRequired: true, mcpStatus: 'browser_only', reason: 'These values change the authentication boundary or server identity used by MCP itself.' },
+
+  environment('github.auth_mode', 'GitHub authentication mode', ['GH_AUTH_MODE'], ['app relay demo']),
+  environment('github.relay', 'GitHub relay connection', ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN'], ['relay URL', 'relay credential']),
+  environment('github.app_identity', 'GitHub App identity', ['GH_INSTALLATION_ID', 'GH_APP_ID'], ['installation id', 'app id']),
+  environment('github.private_key_paths', 'GitHub App private-key paths', ['GH_PRIVATE_KEY_PATH', 'HOST_GH_PRIVATE_KEY'], ['pem path', 'host private key'], 'These credential paths must be configured on the host and are never exposed to MCP.'),
+  environment('github.oauth', 'GitHub OAuth application', ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL'], ['OAuth client', 'login callback'], 'OAuth credentials are secret deployment configuration.'),
+  environment('security.credential_encryption', 'Credential encryption key', ['PROPR_CREDENTIAL_ENCRYPTION_KEY'], ['preview credential encryption']),
+  environment('security.session', 'Browser session secret', ['SESSION_SECRET'], ['cookie signing secret']),
+  environment('security.bearer_auth', 'CLI bearer authentication', ['ENABLE_BEARER_AUTH'], ['bearer auth']),
+  environment('deployment.demo_mode', 'Demo mode', ['PROPR_DEMO_MODE'], ['read-only demo']),
+  environment('network.published_ports', 'Published API and UI ports', ['API_PORT', 'UI_PORT'], ['Docker port bindings']),
+  environment('network.api_listener', 'Dashboard API listener', ['DASHBOARD_API_PORT', 'DASHBOARD_API_HOST'], ['API host', 'API listen port']),
+  environment('network.public_urls', 'Public frontend and API URLs', ['FRONTEND_URL', 'API_PUBLIC_URL'], ['browser origin', 'public API URL']),
+  environment('network.cookie_domain', 'Session cookie domain', ['COOKIE_DOMAIN'], ['cookie host']),
+  environment('network.auth_redirect_hosts', 'Allowed authentication redirect hosts', ['AUTH_REDIRECT_ALLOWED_HOSTS'], ['preview redirect allowlist']),
+  environment('web_push.vapid_subject', 'Web Push VAPID subject', ['WEB_PUSH_VAPID_SUBJECT'], ['push contact']),
+  environment('web_push.vapid_keys', 'Web Push VAPID keys', ['WEB_PUSH_VAPID_PUBLIC_KEY', 'WEB_PUSH_VAPID_PRIVATE_KEY'], ['push signing keys']),
+  environment('web_push.enabled', 'Web Push enablement', ['WEB_PUSH_ENABLED'], ['disable web push']),
+  environment('web_push.dispatch', 'Web Push dispatch tuning', ['WEB_PUSH_DISPATCH_INTERVAL_MS', 'WEB_PUSH_DISPATCH_BATCH_SIZE'], ['push batch interval']),
+  environment('web_push.delivery', 'Web Push delivery lease and timeout', ['WEB_PUSH_DELIVERY_LEASE_MS', 'WEB_PUSH_REQUEST_TIMEOUT_MS'], ['push request timeout']),
+  environment('web_push.ttl', 'Web Push message lifetime', ['WEB_PUSH_TTL_SECONDS'], ['push TTL']),
+  environment('web_push.attempts', 'Web Push maximum attempts', ['WEB_PUSH_MAX_ATTEMPTS'], ['push retries']),
+  environment('web_push.retry', 'Web Push retry schedule', ['WEB_PUSH_RETRY_BASE_MS', 'WEB_PUSH_RETRY_CAP_MS'], ['push backoff']),
+  environment('web_push.insecure_local', 'Insecure local Web Push', ['PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH'], ['local push enrollment']),
+  environment('rate_limits.api', 'API rate limit', ['PROPR_API_RATE_LIMIT_MAX', 'PROPR_API_RATE_LIMIT_WINDOW_MS'], ['API quota']),
+  environment('rate_limits.auth', 'Authentication rate limit', ['PROPR_AUTH_RATE_LIMIT_MAX', 'PROPR_AUTH_RATE_LIMIT_WINDOW_MS'], ['OAuth quota']),
+  environment('rate_limits.webhook', 'Webhook rate limit', ['PROPR_WEBHOOK_RATE_LIMIT_MAX', 'PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS'], ['webhook quota']),
+  environment('network.trusted_proxies', 'Trusted proxy peers', ['PROPR_TRUSTED_PROXY_PEERS'], ['forwarded headers']),
+  environment('logging.level', 'Log level', ['LOG_LEVEL'], ['log verbosity']),
+  environment('runtime.node_environment', 'Node environment', ['NODE_ENV'], ['production mode']),
+  environment('storage.database', 'SQLite database path', ['DB_FILENAME'], ['database filename']),
+  environment('events.intake_mode', 'GitHub event intake mode', ['GITHUB_EVENT_INTAKE_MODE'], ['routing websocket', 'polling', 'direct webhook']),
+  environment('events.routing', 'Routing WebSocket connection', ['PROPR_ROUTING_URL', 'PROPR_ROUTING_WS_PING_INTERVAL_MS', 'PROPR_ROUTING_WS_PONG_TIMEOUT_MS'], ['routing URL', 'WebSocket keepalive']),
+  environment('events.polling_interval', 'GitHub polling interval', ['POLLING_INTERVAL_MS'], ['poll period']),
+  environment('events.webhook_secret', 'GitHub webhook secret', ['GH_WEBHOOK_SECRET'], ['webhook signing secret']),
+  environment('events.config_repository', 'Legacy configuration repository', ['CONFIG_REPO'], ['config repo']),
+  environment('events.bot_username', 'GitHub bot username', ['GITHUB_BOT_USERNAME'], ['bot identity']),
+  environment('access.bootstrap_admins', 'Bootstrap administrators', ['PROPR_ADMIN_USERS'], ['admin users', 'break glass admins']),
+  environment('events.label_timeline_pages', 'Label-applier timeline page limit', ['LABEL_APPLIER_TIMELINE_MAX_PAGES'], ['label timeline scan']),
+  environment('agents.container_image', 'Default agent container image', ['AGENT_DOCKER_IMAGE'], ['agent Docker image']),
+  environment('agents.container_resources', 'Agent container resource limits', ['AGENT_CONTAINER_MEMORY_LIMIT', 'AGENT_CONTAINER_CPU_LIMIT', 'AGENT_CONTAINER_PIDS_LIMIT'], ['agent memory', 'agent CPU', 'agent pids']),
+  environment('agents.managed_credentials_directory', 'Managed agent credentials directory', ['PROPR_MANAGED_CREDENTIALS_DIR'], ['managed accounts path']),
+  environment('agents.claude', 'Claude configuration and turn limit', ['CLAUDE_CONFIG_PATH', 'CLAUDE_MAX_TURNS'], ['Claude config', 'Claude turns']),
+  environment('agents.timeouts', 'Agent task timeouts', ['CLAUDE_TIMEOUT_MS', 'CODEX_TIMEOUT_MS', 'ANTIGRAVITY_TIMEOUT_MS', 'OPENCODE_TIMEOUT_MS', 'VIBE_TIMEOUT_MS'], ['agent timeout', 'Codex timeout', 'Claude timeout']),
+  environment('agents.codex_stream', 'Codex stream transport and retry policy', ['CODEX_STREAM_TRANSPORT', 'CODEX_STREAM_IDLE_TIMEOUT_MS', 'CODEX_STREAM_MAX_RETRIES'], ['Codex websocket', 'Codex idle timeout']),
+  environment('agents.context_analysis_timeout', 'Context analysis timeout', ['CONTEXT_ANALYSIS_TIMEOUT_MS'], ['planner analysis timeout']),
+  environment('planning.generation', 'Plan generation mode and workspace', ['PROPR_PLAN_GENERATION_MODE', 'PROPR_PLAN_WORKSPACE_ROOT'], ['plan files', 'plan workspace']),
+  environment('agents.vibe', 'Vibe configuration and turn limit', ['VIBE_MAX_TURNS', 'VIBE_CONFIG_PATH', 'MISTRAL_API_KEY'], ['Vibe config', 'Mistral credential']),
+  environment('agents.host_credentials', 'Host agent credential directories', ['HOST_CLAUDE_DIR', 'HOST_CODEX_DIR', 'HOST_ANTIGRAVITY_DIR', 'HOST_VIBE_DIR', 'HOST_OPENCODE_XDG_DIR', 'HOST_OPENCODE_DATA_DIR'], ['host credential paths']),
+  environment('agents.vibe_prompt_cache', 'Vibe prompt cache directories', ['VIBE_PROMPT_CACHE_DIR', 'HOST_VIBE_PROMPT_CACHE_DIR'], ['Vibe prompt files']),
+  environment('queue.redis', 'Redis queue connection', ['REDIS_HOST', 'REDIS_PORT'], ['Redis host', 'Redis port']),
+  environment('queue.redis_publish', 'Development Redis published port', ['REDIS_EXTERNAL_BIND_HOST', 'REDIS_EXTERNAL_PORT'], ['external Redis bind']),
+  environment('queue.issue_queue', 'Issue-processing queue name', ['GITHUB_ISSUE_QUEUE_NAME'], ['BullMQ queue']),
+  environment('queue.comment_batch_delay', 'Comment batch delay', ['COMMENT_BATCH_DELAY_MS'], ['comment batching']),
+  environment('indexing.fallback_threshold', 'Summarization fallback promotion threshold', ['SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD'], ['fallback quota failures']),
+  environment('indexing.quota_cooldown', 'Summarization quota cooldown', ['SUMMARIZATION_QUOTA_COOLDOWN_MS'], ['indexing cooldown']),
+  environment('security.system_tasks', 'System task signing policy', ['SYSTEM_TASK_SECRET', 'SYSTEM_TASK_TOKEN_MAX_AGE_MS'], ['revert token', 'system task token']),
+  environment('git.workspace_paths', 'Git clone and worktree paths', ['GIT_CLONES_BASE_PATH', 'GIT_WORKTREES_BASE_PATH'], ['clone directory', 'worktree directory']),
+  environment('git.default_branch', 'Default Git branch', ['GIT_DEFAULT_BRANCH'], ['base branch']),
+  environment('git.shallow_clone', 'Git shallow-clone depth', ['GIT_SHALLOW_CLONE_DEPTH'], ['clone depth']),
+  environment('tunnel.connection', 'Hosted UI tunnel credential and enablement', ['PROPR_UI_TUNNEL_TOKEN', 'PROPR_UI_TUNNEL_ENABLED'], ['Cloudflare tunnel token']),
+  environment('tunnel.public_identity', 'Hosted UI tunnel identity and URL', ['PROPR_INSTANCE_ID', 'PROPR_UI_PUBLIC_API_URL'], ['tunnel instance id']),
+  environment('tunnel.cloudflared_image', 'Cloudflared image', ['PROPR_CLOUDFLARED_IMAGE'], ['tunnel image']),
+  environment('providers.agent_tank_fallback', 'Agent Tank environment fallback', ['AGENT_TANK_URL'], ['provider service URL']),
+  environment('providers.agent_tank_timeout', 'Agent Tank request timeout', ['ANALYSIS_AGENT_TANK_TIMEOUT_MS'], ['provider status timeout']),
+  environment('advanced.deprecated_webhooks', 'Deprecated webhook switch', ['ENABLE_GITHUB_WEBHOOKS'], ['legacy webhook setting'], 'This deprecated variable should be removed; use GITHUB_EVENT_INTAKE_MODE instead.'),
+  environment('advanced.preview_environment', 'PR preview environment files', ['STAGING_ENV_FILE', 'STAGING_DB_PATH'], ['staging env', 'staging database']),
+];

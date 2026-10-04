@@ -19,7 +19,7 @@ authentication capabilities:
 {
   "schemaVersion": 1,
   "product": "ProPR",
-  "version": "0.8.15",
+  "version": "0.9.0",
   "apiCompatibility": "2026-06-27",
   "uiCompatibility": "2026-06-27",
   "canonicalEndpoint": "https://t-abc123.propr.dev",
@@ -81,16 +81,30 @@ discovery and identity contract.
    `{"deviceSecret":"..."}`. The secret is in the JSON body, never a URL or
    header that an intermediary normally logs. A pending request returns `202`
    with `{"status":"pending","interval":5}`.
-5. The first valid poll after approval returns `200` with
-   `{"status":"complete","token":"propr_it_...","tokenType":"Bearer","expiresAt":null}`.
-   The polling grant is consumed in the same transaction that creates the token;
-   subsequent polls return `409 PAIRING_ALREADY_CONSUMED`. If the success response
-   is lost, begin a new pairing rather than retrying for the credential.
+5. The first valid poll after approval returns `200` with a provisional
+   credential:
+   `{"status":"provisional","token":"propr_it_...","tokenType":"Bearer","activationTicket":"...","activationExpiresAt":"...",...}`,
+   plus the pairing's `instanceId`, `origin`, `scope`, and
+   `credentialGeneration` binding. A provisional token authenticates nothing.
+   Repeating the poll before activation returns the same token and ticket, so a
+   lost response can be recovered.
+6. After storing the token securely, the trusted process sends
+   `POST /api/desktop/pairings/{pairingId}/activate` with `deviceSecret`,
+   `activationTicket`, and the same binding fields. A `200` response
+   `{"status":"active","receipt":"...","activatedAt":"...","expiresAt":null}`
+   makes the token usable and consumes the pairing; repeating the same
+   activation returns the same receipt. Activation must happen within two
+   minutes of the first provisional poll and before the pairing expires. To
+   abandon a provisioned credential instead, send the same body to
+   `POST /api/desktop/pairings/{pairingId}/cancel`. Once a pairing is consumed,
+   further polls return `409 PAIRING_ALREADY_CONSUMED` (or
+   `410 PAIRING_CANCELLED` after a cancel).
 
 Pairings expire after ten minutes. An unknown ID or wrong secret returns the
 same `404 PAIRING_NOT_FOUND`; an expired request returns `410 PAIRING_EXPIRED`.
-Start and poll routes have separate IP quotas. Clients must honor HTTP `429` and
-`Retry-After` and must stop at `expiresAt`.
+Start and poll routes have separate IP quotas; activate and cancel share the
+poll quota. Clients must honor HTTP `429` and `Retry-After` and must stop at
+`expiresAt`.
 
 ## Using and storing the token
 
@@ -126,7 +140,7 @@ cleaned hourly after a short retention period used for stable client errors.
 ## Token management
 
 Both routes require any accepted authentication method and operate only on the
-authenticated user's tokens:
+authenticated user's activated tokens:
 
 - `GET /api/desktop/tokens` returns `{ "tokens": [...] }` with `id`, `name`,
   `tokenHint`, `createdAt`, `lastUsedAt`, `expiresAt`, and `revokedAt`. It never
@@ -134,6 +148,11 @@ authenticated user's tokens:
 - `DELETE /api/desktop/tokens/{tokenId}` returns `204` after revoking an active
   owned token. Unknown, already-revoked, and other users' IDs all return
   `404 TOKEN_NOT_FOUND`.
+
+A desktop client can also revoke its own credential with
+`DELETE /api/desktop/tokens/current`, presenting the token as the bearer
+credential and its credential generation in the
+`X-ProPR-Desktop-Revocation-Binding` header; it returns `204` on success.
 
 Pairing start, approval, token issuance, and revocation write audit rows and
 structured logs containing IDs and the display name only. Device secrets,

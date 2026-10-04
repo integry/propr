@@ -8,6 +8,9 @@ name: Packaged Connect Discovery Guard
 on:
   pull_request:
   workflow_dispatch:
+  # Pull requests run this only when they touch the desktop app. The
+  # `desktop-ci` label request and the Tier 3 nightly run call it.
+  workflow_call:
 
 permissions:
   contents: read

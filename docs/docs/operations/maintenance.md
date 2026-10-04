@@ -95,7 +95,7 @@ docker logs -f propr-api
 Other locations:
 
 - The host `logs/` directory (`PROPR_LOGS_DIR`) is mounted into the service containers at `/usr/src/app/logs`.
-- Agent session logs are written under `/tmp/claude-logs` (mounted into worker, analysis, and API containers), and are surfaced per task in the Web UI task detail view and through the `/api/execution/...` endpoints.
+- Agent session logs are written under `/tmp/claude-logs` on the host (shared with the worker containers and the agent containers they start), and are surfaced per task in the Web UI task detail view and through the `/api/execution/...` endpoints.
 - Per-LLM-call records are stored in the SQLite `llm_logs` table and shown on the LLM Log page; see [Metrics](./metrics.md).
 - Set `LOG_LEVEL=debug` in `.env` for more verbose service logs.
 
@@ -105,20 +105,20 @@ Back up:
 
 - The SQLite database (`data/propr.sqlite`, including `-wal`/`-shm` files) — the primary application state. Copy it while the stack is stopped, or use `sqlite3 propr.sqlite ".backup backup.sqlite"` for a consistent snapshot of a live database (WAL mode is enabled)
 - Production `.env` and the GitHub App private key (or the secret source that produces them)
-- ProPR's managed agent credential root if you use direct login (`~/.propr/agent-credentials` for native/Compose installs or `PROPR_DATA_DIR/agent-credentials` for the launcher)
+- ProPR's managed agent credential root if you use direct login (`~/.propr/agent-credentials` for CLI-started, native and Compose installs, or `PROPR_DATA_DIR/agent-credentials` for the launcher container)
 - The `propr-redis-data` Docker volume if you want queue state and sessions to survive a restore
 - Logs, if you need history
 
-`repos/` is a working area: clones are re-created on demand and worktrees are per-task, so it needs no backup. Do not back up only `repos/` and `logs/` — they do not contain the application state. The runtime directory these paths live in is described in [Deployment → Runtime Directory Layout](./deployment.md#runtime-directory-layout).
+Git clones and worktrees (under `/tmp/git-processor` by default) are a working area: clones are re-created on demand and worktrees are per-task, so they need no backup. Do not back up only `repos/` and `logs/` — they do not contain the application state. The runtime directory these paths live in is described in [Deployment → Runtime Directory Layout](./deployment.md#runtime-directory-layout).
 
 ## Repository And Worktree Cleanup
 
-ProPR keeps Git state under `repos/`:
+ProPR keeps Git state under `/tmp/git-processor` on the host. The launcher mounts that path at the same location in every service container, so agent containers can bind-mount worktrees by their host path:
 
-- `repos/clones/` — cached clones, one per monitored repository (`GIT_CLONES_BASE_PATH`)
-- `repos/worktrees/` — per-task worktrees (`GIT_WORKTREES_BASE_PATH`)
+- `/tmp/git-processor/clones/` — cached clones, one per monitored repository (`GIT_CLONES_BASE_PATH`)
+- `/tmp/git-processor/worktrees/` — per-task worktrees (`GIT_WORKTREES_BASE_PATH`)
 
-Worktrees are removed automatically after each task finishes (controlled by `WORKTREE_RETENTION_STRATEGY`, default `always_delete`; failed-task worktrees may be retained briefly with a `.retention-info.json` marker for inspection). If disk usage grows from leftover state, stop the stack and delete stale entries under `repos/worktrees/`; cached clones can also be deleted and are re-created on the next task for that repository.
+Worktrees are removed automatically after each task finishes (controlled by `WORKTREE_RETENTION_STRATEGY`, default `always_delete`; failed-task worktrees may be retained briefly with a `.retention-info.json` marker for inspection). If disk usage grows from leftover state, stop the stack and delete stale entries under the worktrees directory; cached clones can also be deleted and are re-created on the next task for that repository.
 
 ## Common Issues
 
@@ -191,8 +191,8 @@ To remove ProPR from a host completely:
    rm -rf /srv/propr     # or your propr-deploy directory
    ```
 
-   Launcher-managed agent credentials are already below `data/`. For a native
-   or Compose install that used direct agent login, separately remove
+   Launcher-container agent credentials are already below `data/`. For a
+   CLI-started, native, or Compose install that used direct agent login, separately remove
    `~/.propr/agent-credentials` after backing up or revoking those provider
    accounts; do not remove the rest of `~/.propr` unless you also intend to
    discard other CLI state.

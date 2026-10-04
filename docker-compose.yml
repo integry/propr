@@ -25,6 +25,7 @@
 # This compose file is intended for development environments.
 services:
   redis:
+    restart: unless-stopped
     image: redis:alpine
     ports:
       # Expose Redis for PR preview environments to share sessions
@@ -39,6 +40,7 @@ services:
       - propr-net
 
   daemon:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -68,6 +70,7 @@ services:
       - propr-net
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -119,45 +122,8 @@ services:
     networks:
       - propr-net
 
-  analysis-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.node
-    init: true
-    command: npm run analysis-worker
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./logs:/usr/src/app/logs
-      - ./data:/usr/src/app/data
-      - /tmp/git-processor:/tmp/git-processor:ro
-      # Vibe prompt cache — mounted by default for consistency with worker.
-      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts:rw
-      - /tmp/claude-logs:/tmp/claude-logs:ro
-      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
-      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
-      - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
-      - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
-      - /var/run/docker.sock:/var/run/docker.sock
-    env_file:
-      - .env
-    environment:
-      - CLAUDE_CONFIG_PATH=${HOME:?HOME must be set}/.claude
-      - CODEX_CONFIG_PATH=${HOME:?HOME must be set}/.codex
-      - ANTIGRAVITY_CONFIG_PATH=${HOME:?HOME must be set}/.gemini
-      # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
-      - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
-      - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
-      - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
-      - PROPR_CONTAINERIZED=1
-    depends_on:
-      redis:
-        condition: service_started
-    networks:
-      - propr-net
-
   indexing-worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -201,6 +167,7 @@ services:
       - propr-net
 
   web-ui:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: propr-ui/Dockerfile
@@ -214,6 +181,7 @@ services:
       - propr-net
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.node

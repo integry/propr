@@ -5,19 +5,20 @@ import { isNotificationPreviewEligible, type Notification } from '@propr/shared'
 import {
   ChevronDown,
   Inbox,
-  Loader2,
   RefreshCw,
   WifiOff,
   X,
 } from 'lucide-react';
 import NotificationActions from '../components/Inbox/NotificationActions';
 import { ReferenceChip } from '../components/TaskList/ReferenceChips';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import {
   formatRelativeTime,
   notificationDisplayTitle,
   notificationHref,
   notificationKindLabel,
   notificationReference,
+  notificationPullRequestUrl,
   notificationRepository,
   notificationStatus,
   repositoryParts,
@@ -189,6 +190,7 @@ export const InboxCard: React.FC<{
   const swipe = useSwipeToDismiss(canDismiss, dismiss);
   const inPlace = expandsInPlace(notification);
   const reference = notificationReference(notification);
+  const pullRequestUrl = notificationPullRequestUrl(notification);
   // The title link stretches over the whole row; commands and dismiss sit above it.
   const targetClass = 'text-left after:absolute after:inset-0 after:content-[""] focus:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-teal-500';
   const title = notificationDisplayTitle(notification);
@@ -247,7 +249,14 @@ export const InboxCard: React.FC<{
             {reference && (
               <>
                 <span className="hidden sm:inline"><Dot /></span>
-                <span className="flex-none"><ReferenceChip title={reference.title}>{reference.label}</ReferenceChip></span>
+                {pullRequestUrl ? (
+                  <a href={pullRequestUrl} target="_blank" rel="noopener noreferrer"
+                    onClick={() => onOpen(notification.id)}
+                    className="relative z-10 flex-none rounded-sm hover:underline focus-visible:outline-teal-500"
+                    aria-label={`${reference.label} on GitHub`}>
+                    <ReferenceChip title={reference.title}>{reference.label}</ReferenceChip>
+                  </a>
+                ) : <span className="flex-none"><ReferenceChip title={reference.title}>{reference.label}</ReferenceChip></span>}
               </>
             )}
             <span className="hidden sm:inline"><Dot /></span>
@@ -345,22 +354,31 @@ export const InboxBanners: React.FC<{
   );
 };
 
+/** What a state says when the read gave no message of its own. Loading is a skeleton and says nothing here. */
+const INBOX_STATE_FALLBACK: Record<'empty' | 'error' | 'offline', string> = {
+  empty: 'New operational updates will appear here.',
+  error: 'Your notifications could not be read. Try again in a moment.',
+  offline: 'Reconnect to see your latest notifications.',
+};
+
 export const InboxState: React.FC<{
   kind: 'loading' | 'empty' | 'error' | 'offline';
   message?: string;
   onRefresh: () => void;
 }> = ({ kind, message, onRefresh }) => {
-  const loading = kind === 'loading';
+  if (kind === 'loading') {
+    return <ListSkeleton rows={6} layout="row" label="Loading Inbox…" className="px-4 py-3 sm:px-6" data-testid="inbox-skeleton" />;
+  }
   return (
     <div className="flex min-h-[55vh] flex-col items-center justify-center bg-white px-5 py-10 text-center">
-      {loading ? <Loader2 className="h-8 w-8 animate-spin text-teal-600" /> : <Inbox className="h-9 w-9 text-slate-300" />}
+      <Inbox className="h-9 w-9 text-slate-300" />
       <h2 className="mt-4 text-base font-semibold text-slate-800">
-        {kind === 'empty' ? 'You’re all caught up' : kind === 'offline' ? 'Inbox unavailable offline' : kind === 'error' ? 'Couldn’t load your Inbox' : 'Loading Inbox'}
+        {kind === 'empty' ? 'You’re all caught up' : kind === 'offline' ? 'Inbox unavailable offline' : 'Couldn’t load your Inbox'}
       </h2>
       <p className="mt-1 max-w-sm text-sm leading-5 text-slate-500">
-        {message ?? (kind === 'empty' ? 'New operational updates will appear here.' : 'Fetching your latest notifications…')}
+        {message || INBOX_STATE_FALLBACK[kind]}
       </p>
-      {!loading && kind !== 'empty' && (
+      {kind !== 'empty' && (
         <button type="button" onClick={onRefresh} className="mt-5 inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700">
           <RefreshCw className="h-4 w-4" /> Try again
         </button>

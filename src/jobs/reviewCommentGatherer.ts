@@ -190,6 +190,9 @@ export async function gatherUnprocessedReviewComments(
         const actionableFindings = parsedReview.actionableFindings.filter(finding =>
             !processedFindings.has(findingConsumptionKey(comment.id, 'F', finding.id)),
         );
+        // Suggestions can be requested explicitly by identifier, so an already
+        // requested one is filtered out exactly like a consumed finding. It is
+        // still never selected by default (see resolveReviewFeedback).
         const suggestions = parsedReview.suggestions.filter(suggestion =>
             !processedFindings.has(findingConsumptionKey(comment.id, 'S', suggestion.id)),
         );
@@ -230,6 +233,12 @@ export function extractReviewScore(body: string): number | null {
 
 /**
  * Return the pending review state for orchestration (e.g. /ultrafix).
+ *
+ * `hasPendingReview` counts blocking work only, on purpose. The ultrafix loop
+ * reads it to decide whether another cycle is owed, and counting non-blocking
+ * suggestions here would let one optional follow-up keep an automatic loop
+ * running to its cycle limit. Suggestions are deliberately absent from this
+ * predicate and from the score it reports; do not "fix" this by including them.
  *
  * This is a convenience wrapper around `gatherUnprocessedReviewComments` that
  * also validates the completed job's entire result set when comment IDs are
@@ -282,7 +291,10 @@ export async function getPendingReviewState(
 
 /**
  * Mark individual selected records as consumed. This preserves unselected F#
- * blockers in the same review for a later `/fix F#` invocation.
+ * blockers in the same review for a later `/fix F#` invocation, and records the
+ * S# suggestions a run was explicitly asked for so a repeated `/fix S#` is not
+ * treated as a fresh request. Consumption of a suggestion is bookkeeping only:
+ * it never gates anything, because `getPendingReviewState` counts findings.
  */
 export async function markReviewFindingsProcessed(
     comments: AIReviewComment[],

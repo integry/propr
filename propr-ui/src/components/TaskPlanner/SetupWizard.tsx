@@ -199,7 +199,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
             <button
               onClick={handleExportContext}
               disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm ml-auto"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm ml-auto"
               title="Export context as XML"
             >
               {contextExport.isExporting ? (

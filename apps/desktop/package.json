@@ -1,7 +1,7 @@
 {
   "name": "@propr/desktop",
   "productName": "ProPR Desktop",
-  "version": "0.8.15",
+  "version": "0.9.0",
   "private": true,
   "description": "Secure ProPR desktop application",
   "author": "Unchained Development OÜ / Rinalds Uzkalns",

@@ -1,0 +1,21 @@
+import { describe, expect, it } from 'vitest';
+import { getCreationActions } from './creationActions';
+
+describe('route creation actions', () => {
+  it.each([
+    ['/plans', 'plan'], ['/plans/', 'plan'], ['/plans/plan-1', 'plan'],
+    ['/studio', 'plan'], ['/studio/new', 'plan'], ['/studio/draft-1', 'plan'],
+    ['/goals', 'goal'], ['/goals/', 'goal'], ['/goals/goal-1', 'goal'],
+    ['/Goals/goal-1', 'goal'],
+    ['/', 'task'], ['/tasks', 'task'], ['/tasks/new', 'task'],
+    ['/tasks/task-1', 'task'], ['/repositories', 'task'],
+    ['/repositories/acme/goals', 'task'], ['/settings', 'task'],
+    ['/plans-other', 'task'], ['/studio-other', 'task'], ['/goals-other', 'task'],
+  ])('%s selects %s and offers the other two actions', (pathname, expected) => {
+    const { primary, secondary } = getCreationActions(pathname);
+    expect(primary.id).toBe(expected);
+    expect(secondary.map(action => action.id)).toEqual(
+      ['task', 'plan', 'goal'].filter(id => id !== expected),
+    );
+  });
+});

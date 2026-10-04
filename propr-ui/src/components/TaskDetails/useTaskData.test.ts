@@ -1,16 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveDetails } from './types';
-import {
-  mergeIncrementalLiveDetails,
-  normalizeLiveTodos,
-  useTaskData,
-  type IncrementalTaskLiveUpdatePayload,
-} from './useTaskData';
+import { useTaskLiveData } from './useTaskLiveData';
+import { mergeIncrementalLiveDetails, normalizeLiveTodos, useTaskData, type IncrementalTaskLiveUpdatePayload, applyTaskLiveUpdate, capLiveEvents, mergeFullLiveDetails } from './useTaskData';
 
 const apiMocks = vi.hoisted(() => ({
   getTaskHistory: vi.fn(),
-  getTaskAnalysis: vi.fn(),
   getTaskLiveDetails: vi.fn(),
   stopTaskExecution: vi.fn(),
   deleteTask: vi.fn(),
@@ -169,7 +164,6 @@ describe('task detail history refreshes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     apiMocks.getTaskHistory.mockResolvedValue({ history: [], taskInfo: null, usageMetricRecords: [] });
     apiMocks.getTaskLiveDetails.mockResolvedValue({ events: [], todos: [], currentTask: null });
-    apiMocks.getTaskAnalysis.mockResolvedValue({ analysis: null });
   });
 
   afterEach(() => {
@@ -240,5 +234,200 @@ describe('task detail history refreshes', () => {
       { id: 'new-event', type: 'thought', content: 'new socket log' },
     ]);
     expect(result.current.liveDetails.currentTask).toBe('new state');
+  });
+});
+
+it('does not let disconnect cleanup authorize an HTTP read older than socket content', async () => {
+  vi.clearAllMocks();
+  socketMocks.isConnected = true;
+  apiMocks.getTaskHistory.mockResolvedValue({ history: [], taskInfo: null });
+  const persisted = deferred<LiveDetails>();
+  apiMocks.getTaskLiveDetails.mockReturnValue(persisted.promise);
+  const { result, rerender, unmount } = renderHook(() => useTaskData('task'));
+  await act(async () => {});
+  act(() => socketMocks.liveUpdateHandler?.({ taskId: 'task', events: [{ id: 'a', type: 'thought', content: 'Checking the parser' }] }));
+  socketMocks.isConnected = false;
+  rerender();
+  await act(async () => {
+    persisted.resolve({ events: [{ id: 'a', type: 'thought', content: 'Checking' }], todos: [], currentTask: null });
+    await persisted.promise;
+  });
+  expect(result.current.liveDetails.events[0].content).toBe('Checking the parser');
+  unmount();
+  socketMocks.isConnected = true;
+});
+
+describe('long live logs', () => {
+  const thought = (id: string, content = id) => ({ id, type: 'thought', content });
+  const tool = (id: string) => ({ id, type: 'tool_use', toolName: 'Bash' });
+
+  it('keeps every readable event and only the most recent raw events', () => {
+    const events = Array.from({ length: 700 }, (_, index) => (index % 7 === 0 ? thought(`t${index}`) : tool(`r${index}`)));
+    const capped = capLiveEvents(events as never, 500);
+    expect(capped.events.filter(event => event.type === 'thought')).toHaveLength(100);
+    expect(capped.events.filter(event => event.type !== 'thought')).toHaveLength(500);
+    expect(capped.dropped).toBe(100);
+    expect(capped.events.at(-1)?.id).toBe('r699');
+  });
+
+  it('replaces an event whose content grew under the same ID instead of duplicating it', () => {
+    const previous = { events: [thought('a', 'Checking')], todos: [], currentTask: null };
+    const merged = mergeIncrementalLiveDetails(previous as never, { taskId: 'task-1', events: [thought('a', 'Checking the parser'), tool('b')] } as never);
+    expect(merged.events.map(event => [event.id, event.content])).toEqual([['a', 'Checking the parser'], ['b', undefined]]);
+  });
+
+  it('lets a full-state read set the order while keeping newer socket events after it', () => {
+    const previous = { events: [thought('a'), tool('b'), tool('c')], todos: [], currentTask: null };
+    const merged = mergeFullLiveDetails(previous as never, { events: [thought('earlier'), thought('a'), tool('b')], todos: [], currentTask: null, omittedEventCount: 3 } as never);
+    expect(merged.events.map(event => event.id)).toEqual(['earlier', 'a', 'b', 'c']);
+    expect(merged.omittedEventCount).toBe(3);
+  });
+
+  it('treats a socket payload with omittedEventCount as full state and others as increments', () => {
+    const previous = { events: [thought('a')], todos: [], currentTask: null };
+    const increment = applyTaskLiveUpdate(previous as never, { taskId: 'task-1', events: [tool('b')] } as never);
+    expect(increment.events.map(event => event.id)).toEqual(['a', 'b']);
+    const nextExecution = applyTaskLiveUpdate(increment, { taskId: 'task-1', events: [thought('x')], todos: [], currentTask: null, tokenUsage: null, omittedEventCount: 0 } as never);
+    expect(nextExecution.events.map(event => event.id)).toEqual(['x']);
+  });
+});
+
+
+describe('full live history retention', () => {
+  const event = (epoch: number, index: number) => ({ id: `live:task:redis:${epoch}:${index}:0`, type: 'thought' as const, content: `Step ${index}`, timestamp: '2026-08-03T00:00:00.000Z' });
+  const details = (events: LiveDetails['events']): LiveDetails => ({ events, todos: [], currentTask: null });
+
+  it('retains readable prefixes, missing middle events, and suffixes on HTTP and socket full reads', () => {
+    const previous = details([event(1, 0), event(1, 1), event(1, 2), event(1, 3), event(1, 4)]);
+    const full = details([event(1, 1), event(1, 3)]);
+    expect(mergeFullLiveDetails(previous, full).events).toEqual(previous.events);
+    expect(applyTaskLiveUpdate(previous, { taskId: 'task', events: [event(1, 1), event(1, 3)], todos: [], currentTask: null, omittedEventCount: 0 }).events).toEqual(previous.events);
+  });
+
+  it('uses execution identity even when trimming leaves no shared event', () => {
+    const previous = details([event(1, 0)]);
+    expect(mergeFullLiveDetails(previous, details([event(1, 1)])).events).toEqual([event(1, 0), event(1, 1)]);
+    expect(mergeFullLiveDetails(previous, details([event(2, 1)])).events).toEqual([event(2, 1)]);
+  });
+});
+
+describe('goal live refresh races', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    socketMocks.isConnected = true;
+    socketMocks.liveUpdateHandler = null;
+    apiMocks.getTaskLiveDetails.mockResolvedValue({ events: [], todos: [], currentTask: null });
+  });
+
+  it('uses push while connected, polls only offline, and reconciles reconnect and visibility', async () => {
+    vi.useFakeTimers();
+    const { rerender, unmount } = renderHook(() => useTaskLiveData('task', 5_000));
+    try {
+      await act(async () => {});
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(1);
+      socketMocks.isConnected = false;
+      rerender();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_100); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(2);
+      socketMocks.isConnected = true;
+      rerender();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(3);
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(3);
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(4);
+    } finally {
+      unmount();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not overlap disconnected fallback reads', async () => {
+    vi.useFakeTimers();
+    socketMocks.isConnected = false;
+    const pending = deferred<LiveDetails>();
+    apiMocks.getTaskLiveDetails.mockReturnValueOnce(pending.promise);
+    const { unmount } = renderHook(() => useTaskLiveData('task', 5_000));
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_100); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(1);
+      await act(async () => { pending.resolve({ events: [], todos: [], currentTask: null }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(apiMocks.getTaskLiveDetails).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves grown messages and metadata received during a pending read while adding snapshot history', async () => {
+    const read = deferred<LiveDetails>();
+    apiMocks.getTaskLiveDetails.mockReturnValue(read.promise);
+    const { result, unmount } = renderHook(() => useTaskLiveData('task', 0));
+    act(() => socketMocks.liveUpdateHandler?.({
+      taskId: 'task', events: [{ id: 'a', type: 'thought', content: 'Checking the parser' }],
+      todos: [], currentTask: null, tokenUsage: { input_tokens: 20, output_tokens: 10 },
+    }));
+    await act(async () => {
+      read.resolve({ events: [{ id: 'history', type: 'thought', content: 'Earlier history' }, { id: 'a', type: 'thought', content: 'Checking' }],
+        todos: [{ id: 'old', content: 'Old todo', status: 'pending' }], currentTask: 'Old task', tokenUsage: { input_tokens: 10, output_tokens: 2 } });
+      await read.promise;
+    });
+    expect(result.current.liveDetails.events.map(event => event.content)).toEqual(['Earlier history', 'Checking the parser']);
+    expect(result.current.liveDetails.todos).toEqual([]);
+    expect(result.current.liveDetails.currentTask).toBeNull();
+    expect(result.current.liveDetails.tokenUsage?.input_tokens).toBe(20);
+    unmount();
+  });
+
+  it('preserves an execution reset received during the HTTP read', async () => {
+    const read = deferred<LiveDetails>();
+    apiMocks.getTaskLiveDetails.mockReturnValue(read.promise);
+    const { result, unmount } = renderHook(() => useTaskLiveData('task', 0));
+    const events = [{ id: 'live:task:redis:2:0:0', type: 'thought' as const, content: 'New execution' }];
+    act(() => socketMocks.liveUpdateHandler?.({ taskId: 'task', events, todos: [], currentTask: null, omittedEventCount: 0 }));
+    await act(async () => {
+      read.resolve({ events: [{ id: 'live:task:redis:1:0:0', type: 'thought', content: 'Old execution' }], todos: [], currentTask: null });
+      await read.promise;
+    });
+    expect(result.current.liveDetails.events).toEqual(events);
+    unmount();
+  });
+
+  it('ignores an older HTTP response when refreshes complete out of order', async () => {
+    const older = deferred<LiveDetails>();
+    apiMocks.getTaskLiveDetails.mockReturnValueOnce(older.promise);
+    const { result, unmount } = renderHook(() => useTaskLiveData('task', 0));
+    const newest: LiveDetails = { events: [{ id: 'a', type: 'thought', content: 'Newer HTTP state' }], todos: [], currentTask: null };
+    apiMocks.getTaskLiveDetails.mockResolvedValue(newest);
+    await act(async () => { await result.current.refreshLiveDetails(); });
+    await act(async () => {
+      older.resolve({ ...newest, events: [{ id: 'a', type: 'thought', content: 'Older HTTP state' }] });
+      await older.promise;
+    });
+    expect(result.current.liveDetails.events).toEqual(newest.events);
+    unmount();
+  });
+
+  it('ignores responses for the previous task', async () => {
+    const oldRead = deferred<LiveDetails>();
+    apiMocks.getTaskLiveDetails.mockReturnValueOnce(oldRead.promise);
+    const { result, rerender, unmount } = renderHook(({ task }) => useTaskLiveData(task, 0), { initialProps: { task: 'old' } });
+    await act(async () => { await result.current.refreshLiveDetails(); });
+    rerender({ task: 'new' });
+    act(() => socketMocks.liveUpdateHandler?.({ taskId: 'new', events: [{ id: 'new', type: 'thought', content: 'New task' }] }));
+    await act(async () => {
+      oldRead.resolve({ events: [{ id: 'old', type: 'thought', content: 'Old task' }], todos: [], currentTask: null });
+      await oldRead.promise;
+    });
+    expect(result.current.liveDetails.events.map(event => event.id)).toEqual(['new']);
+    unmount();
   });
 });

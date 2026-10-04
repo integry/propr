@@ -88,16 +88,18 @@ The optional dispatcher interval, batch, lease, request-timeout, TTL, attempt, a
 retry variables are listed in [Configuration Reference](./configuration-reference.md).
 After configuration changes, run `propr check` and `propr start --restart`.
 
+For everyday Inbox actions and repository suppression, see [Inbox and notifications](../features/inbox.md).
+
 ## Install and enable notifications
 
-In a supported desktop or Android browser, install ProPR from the browser's install control, open the installed app, then go to **Settings → Personal notifications → Enable on this browser**. Permission is requested only from that button click. Enable Push for the desired categories after the browser is subscribed.
+In a supported desktop or Android browser, install ProPR from the browser's install control, open the installed app, then go to **Settings → Notifications → Personal notifications → Enable on this browser**. Permission is requested only from that button click. Enable Push for the desired categories after the browser is subscribed.
 
 On **iOS or iPadOS 16.4 and later**, Web Push is available only to a Home Screen web app:
 
 1. Open the ProPR UI in Safari.
 2. Open **Share**, choose **Add to Home Screen**, and confirm.
 3. Launch ProPR from its new Home Screen icon, not the original Safari tab.
-4. Sign in, open **Settings → Personal notifications**, and choose **Enable on this browser**.
+4. Sign in, open **Settings → Notifications → Personal notifications**, and choose **Enable on this browser**.
 5. Accept the system notification prompt, then enable the desired Push categories.
 
 Apple describes the platform behavior in [Web Push for Web Apps on iOS and iPadOS](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/). A permission prompt cannot be triggered silently; it must follow the user's action. If permission is denied, ProPR cannot ask again until it is allowed in browser/site or OS notification settings.
@@ -189,28 +191,5 @@ Badge presentation and support vary by browser, operating system, launcher, and 
 
 See [Troubleshooting](./troubleshooting.md#hosted-ui-tunnel-not-working) for full tunnel diagnostics.
 
-## Release verification checklist
-
-Use a test user and a real HTTPS staging origin. Repeat subscription and delivery on every supported target; a desktop result does not validate mobile installation behavior.
-
-1. **Static PWA contract:** load `/manifest.webmanifest`; verify name, `start_url`, scope, display mode, and every icon returns `200`. Confirm the browser reports the app installable.
-2. **Worker:** verify `/service-worker.js` is `200`, JavaScript (not HTML), uses the required cache header, registers at scope `/`, activates, and controls a reloaded page. Confirm `/config.js` is `no-store` and contains the expected API origin without secrets.
-3. **VAPID capability:** run `propr check`; authenticated `GET /api/notifications/config` must report Push configured and return the expected public key. Confirm neither API responses nor logs contain the private key.
-4. **Subscription creation:** press Enable from Settings, grant permission, and verify a browser Push subscription is created and `GET /api/notifications/push-subscriptions` lists an active subscription for that user/browser.
-5. **Delivery:** enable one Push category, put the app in the background, trigger a real event in that category (for example a test task completion), and verify one visible notification arrives. Check API delivery logs/audit state for success.
-6. **Deep link and actions:** click the notification body and each advertised action. Verify ProPR focuses or opens at the intended task, plan, pull request, or Inbox target, without an open redirect.
-7. **Badge:** enable the badge preference, create unread notifications, and compare the displayed badge with the Inbox count (counts above 99 display as 99). Mark a notification read/dismiss it and verify the badge decreases or clears where supported.
-8. **Recovery:** revoke permission and verify the denied guidance; re-allow and resubscribe. Revoke/unsubscribe a test endpoint and verify the UI can create a fresh subscription.
-9. **Origin/tunnel:** for self-hosting, verify worker/manifest/config all come from the configured UI origin and calls target `API_PUBLIC_URL`. For hosted mode, verify PWA assets come only from `app.propr.dev`, calls target the selected `t-<id>.propr.dev`, and `propr tunnel verify` passes.
-
-Record results for this minimum matrix:
-
-| Target | Required checks |
-|---|---|
-| Chromium desktop (current Chrome and/or Edge) | Install, worker update, permission, subscription, delivery, deep link, badge where supported |
-| Android (current Chrome) | Add/install PWA, background delivery, tap deep link/action, launcher badge behavior |
-| iOS and iPadOS 16.4+ (current Safari/WebKit) | Share → Add to Home Screen, launch from icon, user-gesture permission, background delivery, deep link, badge behavior |
-| Desktop Firefox | Worker, permission, subscription, delivery, deep link; record badge as unsupported if absent |
-| Desktop Safari on current macOS | Install/add app as supported by that release, permission, delivery, deep link, badge behavior |
-
-A release is not verified until manifest, worker, VAPID capability, subscription creation, delivery, deep linking, and badge-count behavior (or an explicitly recorded unsupported badge platform) have all been observed.
+The release-verification checklist for PWA installation, Web Push delivery and badges lives in the repository's
+`docs/voice-and-push-release-verification.md`.

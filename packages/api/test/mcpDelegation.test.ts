@@ -5,6 +5,7 @@ import { generateKeyPair, exportJWK, SignJWT, decodeJwt, calculateJwkThumbprint 
 import knex from 'knex';
 import { closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
+import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
 import { McpStore, digest } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { MCP_CONNECT_CONTRACT } from '../mcp/connect.js';
@@ -18,6 +19,7 @@ test('signed hosted delegation enforces issuer/audience/instance, current grant 
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await db.schema.createTable('task_drafts', table => table.string('draft_id').primary());
   await up(db);
+  await lifecycleMigration(db);
   await db.schema.createTable('instance_members', table => { table.string('github_user_id').primary(); table.string('role'); table.string('source'); });
   await db('instance_members').insert({ github_user_id: '123', role: 'member', source: 'local' });
   const key = await generateKeyPair('ES256');

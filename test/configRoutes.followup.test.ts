@@ -25,6 +25,7 @@ describe('config route follow-up helpers', () => {
     let currentAgents: Array<Record<string, unknown>>;
     let currentAutoFollowup = 4;
     let currentAutoResolveMergeConflicts = false;
+    let currentDashboardSummaryEnabled = true;
     let currentPrReviewModel = '';
     let currentUltrafixRatingGoal = 7;
     let currentUltrafixMaxCycles = 5;
@@ -39,6 +40,7 @@ describe('config route follow-up helpers', () => {
                 let stagedAgents = structuredClone(currentAgents);
                 let stagedAutoFollowup = currentAutoFollowup;
                 let stagedAutoResolve = currentAutoResolveMergeConflicts;
+                let stagedDashboardSummary = currentDashboardSummaryEnabled;
                 let stagedPrReviewModel = currentPrReviewModel;
                 let stagedUltrafixGoal = currentUltrafixRatingGoal;
                 let stagedUltrafixCycles = currentUltrafixMaxCycles;
@@ -55,6 +57,7 @@ describe('config route follow-up helpers', () => {
                                     else if (row.key === 'agents') stagedAgents = value as Array<Record<string, unknown>>;
                                     else if (row.key === 'auto_followup_score_threshold') stagedAutoFollowup = value as number;
                                     else if (row.key === 'auto_resolve_merge_conflicts') stagedAutoResolve = value as boolean;
+                                    else if (row.key === 'dashboard_summary_enabled') stagedDashboardSummary = value as boolean;
                                     else if (row.key === 'pr_review_model') stagedPrReviewModel = value as string;
                                     else if (row.key === 'ultrafix_rating_goal') stagedUltrafixGoal = value as number;
                                     else if (row.key === 'ultrafix_max_cycles') stagedUltrafixCycles = value as number;
@@ -69,6 +72,7 @@ describe('config route follow-up helpers', () => {
                             currentAgents = stagedAgents;
                             currentAutoFollowup = stagedAutoFollowup;
                             currentAutoResolveMergeConflicts = stagedAutoResolve;
+                            currentDashboardSummaryEnabled = stagedDashboardSummary;
                             currentPrReviewModel = stagedPrReviewModel;
                             currentUltrafixRatingGoal = stagedUltrafixGoal;
                             currentUltrafixMaxCycles = stagedUltrafixCycles;
@@ -97,12 +101,31 @@ describe('config route follow-up helpers', () => {
         ];
         currentAutoFollowup = 4;
         currentAutoResolveMergeConflicts = false;
+        currentDashboardSummaryEnabled = true;
         currentPrReviewModel = '';
         currentUltrafixRatingGoal = 7;
         currentUltrafixMaxCycles = 5;
         currentUltrafixPauseSeconds = 60;
         failAutoFollowupSave = false;
         configWriteFailure = null;
+    });
+
+    test('dashboard summary setting persists atomically and rejects non-booleans', async () => {
+        const configStore = {
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
+        };
+        const save = (value: unknown) => saveSettingsWithRollback({
+            settings: { dashboard_summary_enabled: value }, configStore,
+            database: createTestDatabase(), publishConfigUpdate: async () => {},
+        });
+        assert.strictEqual((await save(false)).status, 200);
+        assert.strictEqual(currentDashboardSummaryEnabled, false);
+        assert.strictEqual((await save('true')).status, 400);
+        assert.strictEqual(currentDashboardSummaryEnabled, false);
+        assert.strictEqual((await save(true)).status, 200);
+        assert.strictEqual(currentDashboardSummaryEnabled, true);
+        assert.strictEqual(currentSettings.keep, 'unchanged');
     });
 
     test('resolveConfigStore preserves the production namespace when no overrides are injected', () => {
@@ -1090,10 +1113,12 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                getConfig: async <T,>(_key: string, fallback: T) => fallback,
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1122,12 +1147,22 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 7,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
+            usage_tips_enabled: true,
+            usage_tips_dismissal_cooldown_days: 45,
+            dashboard_summary_enabled: true,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1164,10 +1199,12 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                getConfig: async <T,>(_key: string, fallback: T) => fallback,
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1196,12 +1233,22 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 120000,
             pr_review_context_budget_percent: 40,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: true,
+            usage_tips_enabled: true,
+            usage_tips_dismissal_cooldown_days: 45,
+            dashboard_summary_enabled: true,
             model_reasoning_level: '',
             pr_review_model: 'review-model',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1227,10 +1274,12 @@ describe('config route follow-up helpers', () => {
                 loadModelReasoningLevel: async () => '',
                 loadAutoFollowupScoreThreshold: autoFollowupMock,
                 loadAutoResolveMergeConflicts: autoResolveMock,
+                getConfig: async <T,>(_key: string, fallback: T) => fallback,
                 loadPrReviewModel: prReviewModelMock,
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
         const res = {
@@ -1262,12 +1311,22 @@ describe('config route follow-up helpers', () => {
             pr_review_max_context_tokens: 0,
             pr_review_context_budget_percent: 100,
             auto_followup_score_threshold: 4,
+            deprecated_settings: {
+                auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+            },
             auto_resolve_merge_conflicts: false,
+            usage_tips_enabled: true,
+            usage_tips_dismissal_cooldown_days: 45,
+            dashboard_summary_enabled: true,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            ultrafix_escalation_enabled: false,
+            ultrafix_escalation_models: [],
+            ultrafix_escalation_patience: 3,
+            ultrafix_escalation_max_reasoning_levels: 2,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
             },
@@ -2926,10 +2985,12 @@ describe('config route follow-up helpers', () => {
                     loadModelReasoningLevel: async () => '',
                     loadAutoFollowupScoreThreshold: loadAutoFollowupScoreThresholdMock,
                     loadAutoResolveMergeConflicts: loadAutoResolveMergeConflictsMock,
+                    getConfig: async <T,>(_key: string, fallback: T) => fallback,
                     loadPrReviewModel: loadPrReviewModelMock,
                     loadUltrafixRatingGoal: loadUltrafixRatingGoalMock,
                     loadUltrafixMaxCycles: loadUltrafixMaxCyclesMock,
                     loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
+                    loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
                 },
             });
             const res = {
@@ -2958,12 +3019,22 @@ describe('config route follow-up helpers', () => {
                 pr_review_max_context_tokens: 0,
                 pr_review_context_budget_percent: 100,
                 auto_followup_score_threshold: 4,
+                deprecated_settings: {
+                    auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.',
+                },
                 auto_resolve_merge_conflicts: false,
+                usage_tips_enabled: true,
+                usage_tips_dismissal_cooldown_days: 45,
+                dashboard_summary_enabled: true,
                 model_reasoning_level: '',
                 pr_review_model: 'review-model',
                 ultrafix_rating_goal: 7,
                 ultrafix_max_cycles: 5,
                 ultrafix_pause_seconds: 60,
+                ultrafix_escalation_enabled: false,
+                ultrafix_escalation_models: [],
+                ultrafix_escalation_patience: 3,
+                ultrafix_escalation_max_reasoning_levels: 2,
             });
         } finally {
             if (previousPlannerContextModel === undefined) {

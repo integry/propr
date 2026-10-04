@@ -280,15 +280,18 @@ const linkedAbortController = (signals: readonly AbortSignal[]): {
   };
 };
 
-const requestOrigin = (value: string): { origin: string; pathname: string; url: URL } | null => {
+const requestOrigin = (value: string): {
+  origin: string; pathname: string; requestProtocol: string; url: URL;
+} | null => {
   try {
     const httpValue = value.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
     const url = new URL(value);
+    const requestProtocol = url.protocol;
     if (url.protocol === 'ws:') url.protocol = 'http:';
     if (url.protocol === 'wss:') url.protocol = 'https:';
     if (url.username || url.password || !['http:', 'https:'].includes(url.protocol)) return null;
     if (canonicalProprHttpUrlOrigin(httpValue) !== url.origin) return null;
-    return { origin: url.origin, pathname: url.pathname, url };
+    return { origin: url.origin, pathname: url.pathname, requestProtocol, url };
   } catch {
     return null;
   }
@@ -296,15 +299,65 @@ const requestOrigin = (value: string): { origin: string; pathname: string; url: 
 
 const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
 const PUBLIC_GITHUB_AVATAR_HOST = 'avatars.githubusercontent.com';
+const PUBLIC_GITHUB_ATTACHMENT_HOST = 'github.com';
+const PUBLIC_GITHUB_ATTACHMENT_CDN_HOST = 'github-production-user-asset-6210df.s3.amazonaws.com';
+const PUBLIC_GITHUB_ATTACHMENT_PATH = /^\/user-attachments\/assets\/[A-Za-z0-9_-]+$/;
+const PUBLIC_GITHUB_ATTACHMENT_CDN_PATH = /^\/\d+\/\d+-[A-Za-z0-9_-]+\.(avif|gif|jpe?g|png|svg|webp)$/i;
 
 const isPublicGitHubAvatarRequest = (
   target: ReturnType<typeof requestOrigin>,
   resourceType: string | undefined,
 ): boolean => target !== null
-  && target.url.protocol === 'https:'
+  && target.requestProtocol === 'https:'
   && target.url.hostname === PUBLIC_GITHUB_AVATAR_HOST
   && target.url.port === ''
   && resourceType?.toLowerCase() === 'image';
+
+const singleQueryValue = (url: URL, key: string): string | null => {
+  const values = url.searchParams.getAll(key);
+  return values.length === 1 ? values[0] : null;
+};
+
+/**
+ * GitHub's public attachment endpoint redirects images to one dedicated S3
+ * bucket. Admit only that signed, short-lived image shape; private attachment
+ * hosts and generic GitHub/AWS traffic remain outside the renderer boundary.
+ */
+const isPublicGitHubAttachmentRequest = (
+  target: ReturnType<typeof requestOrigin>,
+  resourceType: string | undefined,
+): boolean => {
+  if (!target || target.requestProtocol !== 'https:' || target.url.port !== ''
+    || resourceType?.toLowerCase() !== 'image') return false;
+  if (target.url.hostname === PUBLIC_GITHUB_ATTACHMENT_HOST) {
+    return !target.url.search && !target.url.hash
+      && PUBLIC_GITHUB_ATTACHMENT_PATH.test(target.url.pathname);
+  }
+  if (target.url.hostname !== PUBLIC_GITHUB_ATTACHMENT_CDN_HOST || target.url.hash) return false;
+  const path = PUBLIC_GITHUB_ATTACHMENT_CDN_PATH.exec(target.url.pathname);
+  if (!path) return false;
+  const allowedKeys = new Set([
+    'X-Amz-Algorithm', 'X-Amz-Credential', 'X-Amz-Date', 'X-Amz-Expires',
+    'X-Amz-Signature', 'X-Amz-SignedHeaders', 'response-content-type',
+  ]);
+  const keys = [...target.url.searchParams.keys()];
+  if (keys.length !== allowedKeys.size || keys.some(key => !allowedKeys.has(key))) return false;
+  const algorithm = singleQueryValue(target.url, 'X-Amz-Algorithm');
+  const credential = singleQueryValue(target.url, 'X-Amz-Credential');
+  const date = singleQueryValue(target.url, 'X-Amz-Date');
+  const expires = singleQueryValue(target.url, 'X-Amz-Expires');
+  const signature = singleQueryValue(target.url, 'X-Amz-Signature');
+  const signedHeaders = singleQueryValue(target.url, 'X-Amz-SignedHeaders');
+  const contentType = singleQueryValue(target.url, 'response-content-type');
+  if (algorithm !== 'AWS4-HMAC-SHA256'
+    || !credential || !/^[A-Z0-9]+\/\d{8}\/[a-z0-9-]+\/s3\/aws4_request$/.test(credential)
+    || !date || !/^\d{8}T\d{6}Z$/.test(date)
+    || !expires || !/^\d{1,5}$/.test(expires) || Number(expires) < 1 || Number(expires) > 86_400
+    || !signature || !/^[a-f0-9]{64}$/i.test(signature)
+    || signedHeaders !== 'host' || !contentType) return false;
+  const extension = path[1].toLowerCase().replace(/^jpe?g$/, 'jpeg').replace('svg', 'svg+xml');
+  return contentType.toLowerCase() === `image/${extension}`;
+};
 
 const currentUserScopeGeneration = (url: URL): {
   count: 0 | 1 | 2;
@@ -1593,13 +1646,14 @@ export class DesktopCredentialService {
     // Chromium can cache Local Network Access after activation is discarded.
     // The live main renderer must therefore remain pinned to the exact current
     // origin even for sanitized traffic that does not carry a transport scope,
-    // apart from this exact credentialless public-image exception.
-    const publicGitHubAvatarRequest = !markedRestRequest
+    // apart from these exact credentialless public-image exceptions.
+    const publicGitHubImageRequest = !markedRestRequest
       && !isSocketCandidate
-      && isPublicGitHubAvatarRequest(target, details.resourceType);
+      && (isPublicGitHubAvatarRequest(target, details.resourceType)
+        || isPublicGitHubAttachmentRequest(target, details.resourceType));
     if (details.rendererOwned === true && target
       && (!activeIsCurrent || target.origin !== active.origin)
-      && !publicGitHubAvatarRequest) {
+      && !publicGitHubImageRequest) {
       reportHandshake(false, !active ? 'no-active-binding' : !activeIsCurrent ? 'stale-generation' : 'wrong-origin');
       reportCurrentUser(false, !active ? 'no-active-binding' : !activeIsCurrent ? 'stale-generation' : 'wrong-origin');
       return { cancel: true };

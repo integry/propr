@@ -1,19 +1,20 @@
 import type { Logger } from 'pino';
 import {
+    getEpicExecutionQueue,
+    findIssueSubmission,
     findPlanIssueByRepoAndNumber,
     generateCompletionComment,
     getAuthenticatedOctokit,
-    getPrimaryProcessingLabels,
     linkPRToPlanIssue,
     processCommentEvent,
     safeUpdateLabels,
     updatePlanIssueStatus,
     PlanIssueStatus,
-    getPlanIssuesByDraft,
     db,
     type CommentEventConfig,
     type ClaudeCodeResponse,
     type IssueJobData,
+    type SubmissionPayload,
 } from '@propr/core';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -92,11 +93,77 @@ async function resolveEffectiveUltrafixSettings(planIssue: {
     };
 }
 
+const NO_ULTRAFIX = { runUltrafix: false, goal: null, maxCycles: null } as const;
+
+/**
+ * A directly submitted task's opt-in is applied as the shared `ultrafix` label,
+ * so the label owns the request and the stored payload only supplies its bounds.
+ * Reading the label again at pull request time is what lets a user withdraw the
+ * request while the agent runs, after the job's issue snapshot was taken.
+ */
+async function resolveCurrentSourceIssueLabels(
+    issueRef: IssueJobData,
+    snapshotLabels: ReadonlyArray<{ name: string }>,
+    correlatedLogger: Logger,
+): Promise<ReadonlyArray<{ name: string }>> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: issueRef.repoOwner,
+            repo: issueRef.repoName,
+            issue_number: issueRef.number,
+        });
+        const labels = response.data?.labels as Array<{ name?: string } | string> | undefined;
+        if (!Array.isArray(labels)) return snapshotLabels;
+        return labels
+            .map((label) => ({ name: typeof label === 'string' ? label : label?.name ?? '' }))
+            .filter((label) => label.name.length > 0);
+    } catch (error) {
+        // Without fresh evidence of a withdrawal the submitted request still stands.
+        correlatedLogger.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message,
+        }, 'Could not re-read source issue labels, using the labels from the start of the run');
+        return snapshotLabels;
+    }
+}
+
+/**
+ * A directly submitted task carries its own Ultrafix choice, so its bounds come
+ * from the submission the way a planned issue's come from Planner settings. The
+ * shared `ultrafix` label carries the opt-in itself, so removing it withdraws the
+ * request no matter what the stored payload says.
+ */
+async function resolveSubmissionUltrafixSettings(
+    issueRef: IssueJobData,
+    sourceIssueLabels: ReadonlyArray<{ name: string }>,
+    correlatedLogger: Logger,
+): Promise<{ runUltrafix: boolean; goal: number | null; maxCycles: number | null }> {
+    if (!sourceIssueLabels.some((label) => label.name === 'ultrafix')) return NO_ULTRAFIX;
+    try {
+        const submission = await findIssueSubmission(issueRef);
+        if (!submission) return NO_ULTRAFIX;
+        const payload = JSON.parse(submission.payload) as SubmissionPayload;
+        if (payload.runUltrafix !== true) return NO_ULTRAFIX;
+        return {
+            runUltrafix: true,
+            goal: sanitizeUltrafixGoal(payload.ultrafixGoal),
+            maxCycles: sanitizeUltrafixMaxCycles(payload.ultrafixMaxCycles),
+        };
+    } catch (error) {
+        correlatedLogger.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message,
+        }, 'Could not read submitted task ultrafix settings');
+        return NO_ULTRAFIX;
+    }
+}
+
 function buildSystemUltrafixComment(goal: number | null, maxCycles: number | null): string {
     const parts = ['/ultrafix'];
     if (goal != null) parts.push(`goal=${goal}`);
     if (maxCycles != null) parts.push(`max=${maxCycles}`);
-    return `${parts.join(' ')}\nTriggered automatically by Planner execution settings.`;
+    return `${parts.join(' ')}\nTriggered automatically by the requested execution settings.`;
 }
 
 function createCommentConfig(): CommentEventConfig {
@@ -161,7 +228,11 @@ export async function triggerSystemUltrafix(options: {
     correlatedLogger.info({ prNumber, goal: sanitizedGoal, maxCycles: sanitizedMaxCycles }, 'Triggered system ultrafix for PR');
 }
 
-async function triggerNextPlanIssueIfNeeded(
+/**
+ * Records a no-change auto-merge completion. The status write notifies the plan's
+ * execution queue, which alone selects and starts any successor.
+ */
+async function markNoChangePlanIssueMerged(
     issueRef: IssueJobData,
     currentIssueData: { data: { labels: Array<{ name: string }> } },
     log: Logger,
@@ -170,60 +241,22 @@ async function triggerNextPlanIssueIfNeeded(
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
         if (!planIssue || !planIssue.draft_id) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping next issue trigger');
+            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping plan status update');
             return;
         }
 
         const labels = currentIssueData.data.labels.map((label) => label.name);
-        if (!labels.includes('auto-merge')) {
-            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping next issue trigger');
+        const queue = await getEpicExecutionQueue(planIssue.draft_id);
+        const queued = queue?.status === 'active' && queue.issues.includes(issueRef.number);
+        if (!labels.includes('auto-merge') && !queued) {
+            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping plan status update');
             return;
         }
 
         await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.MERGED);
         log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
-
-        const planIssues = await getPlanIssuesByDraft(planIssue.draft_id);
-        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
-        const inProgressIssues = planIssues.filter(
-            (issue) => inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number,
-        );
-        if (inProgressIssues.length > 0) {
-            log.debug({
-                draftId: planIssue.draft_id,
-                inProgressIssues: inProgressIssues.map((issue) => ({
-                    number: issue.issue_number,
-                    status: issue.status,
-                })),
-            }, 'Skipping next issue trigger - there are issues still in progress');
-            return;
-        }
-
-        const nextPending = planIssues.find((issue) => issue.status === 'pending');
-        if (!nextPending) {
-            log.debug({ draftId: planIssue.draft_id }, 'No more pending issues in plan');
-            return;
-        }
-
-        const epicLabel = labels.find((label) => label.startsWith('base-'));
-        const labelsToAdd = [getPrimaryProcessingLabels()[0] || 'AI', 'auto-merge'];
-        if (epicLabel) labelsToAdd.push(epicLabel);
-
-        log.info({
-            draftId: planIssue.draft_id,
-            nextIssueNumber: nextPending.issue_number,
-            labels: labelsToAdd,
-        }, 'Triggering next pending issue in plan (no-changes case)');
-
-        const octokit = await getAuthenticatedOctokit();
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: nextPending.issue_number,
-            labels: labelsToAdd,
-        });
     } catch (error) {
-        log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to trigger next pending issue');
+        log.warn({ issueNumber: issueRef.number, error: (error as Error).message }, 'Failed to mark no-change plan issue as merged');
     }
 }
 
@@ -265,7 +298,7 @@ export async function handleNoCodeChanges(options: {
         body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
     });
 
-    await triggerNextPlanIssueIfNeeded(issueRef, currentIssueData, correlatedLogger);
+    await markNoChangePlanIssueMerged(issueRef, currentIssueData, correlatedLogger);
     return { success: true, pr: null, updatedLabels: [AI_DONE_TAG] };
 }
 
@@ -280,14 +313,19 @@ export async function handleCreatedPlanIssuePR(options: {
     await linkPRToPlanIssue(repository, issueRef.number, prNumber);
     correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue');
 
-    const hasAutoMergeLabel = currentIssueData.data.labels.some((label) => label.name === 'auto-merge');
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+    // A directly submitted task states every opt-in through the shared labels, so
+    // its automation reads them as they stand now rather than as the run began.
+    const sourceIssueLabels = planIssue
+        ? currentIssueData.data.labels
+        : await resolveCurrentSourceIssueLabels(issueRef, currentIssueData.data.labels, correlatedLogger);
+    const hasAutoMergeLabel = sourceIssueLabels.some((label) => label.name === 'auto-merge');
     const effectiveUltrafix = planIssue
         ? await resolveEffectiveUltrafixSettings(planIssue)
-        : { runUltrafix: false, goal: null, maxCycles: null };
+        : await resolveSubmissionUltrafixSettings(issueRef, sourceIssueLabels, correlatedLogger);
 
     const ultrafixTrigger = resolveImplementationPrUltrafixTrigger(
-        currentIssueData.data.labels,
+        sourceIssueLabels,
         effectiveUltrafix,
     );
 

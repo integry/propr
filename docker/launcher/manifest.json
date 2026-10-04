@@ -1,12 +1,12 @@
 {
-  "version": "0.8.15",
-  "git_sha": "bf98253a2821ffbb1ed1a31890d3a548dc42c3c1",
+  "version": "0.9.0",
+  "git_sha": "c2de30509ff42718972209cce0bbc31e9f40e1fb",
   "registry": "propr",
   "images": {
-    "app": "propr/app:0.8.15",
-    "ui": "propr/ui:0.8.15",
-    "docs": "propr/docs:0.8.15",
-    "agent": "propr/agent:0.8.15",
+    "app": "propr/app:0.9.0",
+    "ui": "propr/ui:0.9.0",
+    "docs": "propr/docs:0.9.0",
+    "agent": "propr/agent:0.9.0",
     "redis": "redis:7-alpine",
     "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }

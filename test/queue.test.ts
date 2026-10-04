@@ -81,13 +81,13 @@ test('createWorker creates a worker with correct configuration', async () => {
     assert.ok(eventNames.includes('stalled'));
 });
 
-test('shutdownQueue closes queue and Redis connection', async () => {
+test('shutdownQueue closes issue and indexing queues and Redis connection', async () => {
     mockQueue.close.mock.resetCalls();
     mockRedis.quit.mock.resetCalls();
     
     await shutdownQueue();
     
-    assert.strictEqual(mockQueue.close.mock.calls.length, 3);
+    assert.strictEqual(mockQueue.close.mock.calls.length, 2);
     assert.strictEqual(mockRedis.quit.mock.calls.length, 1);
 });
 

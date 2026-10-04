@@ -152,6 +152,11 @@ test('a failed mutation is recorded with its own outcome, on the first attempt a
   const mutation = (name: string, run: McpTool['run']): McpTool => ({ name, description: 'fixture', scope: 'read', schema, run });
   const denied = mutation('denied_fixture', async () => { throw new McpError('REPOSITORY_FORBIDDEN', 'Denied', 403); });
   const broken = mutation('broken_fixture', async () => { throw new Error('fixture failure'); });
+  const mcpToken = 'propr_mcp_abcdefghijklmnopqrstuvwxyz';
+  const githubRejected = mutation('github_rejected_fixture', async () => { throw Object.assign(new Error('request failed'), {
+    name: 'HttpError', status: 422,
+    response: { status: 422, headers: {}, data: { message: 'Validation Failed', errors: [{ message: `Rejected credential ${mcpToken}` }] } },
+  }); });
   const queued = mutation('queued_fixture', async () => ({ status: 202, data: { state: 'queued' } }));
 
   const args = { repository: 'acme/repo', idempotencyKey: 'mutation-fixture-1' };
@@ -160,13 +165,25 @@ test('a failed mutation is recorded with its own outcome, on the first attempt a
   const replayed = await executeTool(denied, args, principal(), deps);
   assert.equal((replayed.data as { operationId: string }).operationId, (receipt.data as { operationId: string }).operationId);
   await executeTool(broken, { ...args, idempotencyKey: 'mutation-fixture-2' }, principal(), deps);
-  await executeTool(queued, { ...args, idempotencyKey: 'mutation-fixture-3' }, principal(), deps);
+  const githubArgs = { ...args, idempotencyKey: 'mutation-fixture-3' };
+  const githubReceipt = await executeTool(githubRejected, githubArgs, principal(), deps);
+  assert.equal((githubReceipt.data as { state: string }).state, 'unknown');
+  assert.ok(!JSON.stringify(githubReceipt).includes(mcpToken));
+  const operationId = (githubReceipt.data as { operationId: string }).operationId;
+  const persisted = await deps.db('mcp_operations').where({ id: operationId }).first('result');
+  assert.ok(!String(persisted?.result).includes(mcpToken));
+  assert.match(String(persisted?.result), /Rejected credential \[REDACTED\]/);
+  const githubReplay = await executeTool(githubRejected, githubArgs, principal(), deps);
+  assert.equal((githubReplay.data as { operationId: string }).operationId, operationId);
+  await executeTool(queued, { ...args, idempotencyKey: 'mutation-fixture-4' }, principal(), deps);
 
   const recorded = await rows(deps.db);
   assert.deepEqual(recorded.map(row => [row.name, row.outcome, row.error_code, row.status]), [
     ['denied_fixture', 'denied', 'REPOSITORY_FORBIDDEN', 403],
     ['denied_fixture', 'denied', 'REPOSITORY_FORBIDDEN', 400],
-    ['broken_fixture', 'error', 'INTERNAL_ERROR', 500],
+    ['broken_fixture', 'error', 'OUTCOME_UNKNOWN', 500],
+    ['github_rejected_fixture', 'error', 'OUTCOME_UNKNOWN', 422],
+    ['github_rejected_fixture', 'error', 'OUTCOME_UNKNOWN', 500],
     ['queued_fixture', 'success', null, 200],
   ]);
   // Each row still carries the durable handle an operator follows.

@@ -1,3 +1,4 @@
+import { ANTIGRAVITY_COMPATIBILITY_ALIASES, antigravitySupportedModel } from '../agents/impl/antigravityModelIds.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
@@ -36,7 +37,7 @@ async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | n
                 if (customLabel && customLabel.toLowerCase() === lowerLabel) {
                     return {
                         agentAlias: agent.config.alias,
-                        model: modelId
+                        model: resolveModelAlias(modelId)
                     };
                 }
             }
@@ -80,6 +81,11 @@ function findAgentByType(agentType: AgentType, agents: { config: AgentConfig }[]
 }
 
 function resolveByGithubLabel(fullLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const compatibility = ANTIGRAVITY_COMPATIBILITY_ALIASES[fullLabel.replace(/^llm-/, '')];
+    if (compatibility) {
+        const agent = findAgentByType('antigravity', agents);
+        return { agentAlias: agent?.config.alias || 'antigravity', model: compatibility };
+    }
     for (const modelInfo of ALL_MODELS) {
         if (modelInfo.githubLabel.toLowerCase() === fullLabel) {
             const agentType = getAgentTypeFromModel(modelInfo.id);
@@ -167,6 +173,9 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
     const supportedModel = agent.config.supportedModels.find(m =>
         candidateModels.some(candidate => m.toLowerCase() === candidate.toLowerCase())
     );
+    if (agent.config.type === 'antigravity' && antigravitySupportedModel(agent.config, resolvedModel)) {
+        return { agentAlias: agent.config.alias, model: resolvedModel };
+    }
     if (supportedModel) {
         return { agentAlias: agent.config.alias, model: supportedModel };
     }
@@ -430,9 +439,7 @@ async function resolveReviewModels(requestedLabels: string[]): Promise<ReviewAss
 
         // Check that the resolved model is in the agent's supported models
         // (resolveLlmLabel step 5 fallback can produce arbitrary model strings)
-        const modelSupported = agent.config.supportedModels.some(
-            m => m.toLowerCase() === resolution.model.toLowerCase()
-        );
+        const modelSupported = antigravitySupportedModel(agent.config, resolution.model);
         if (!modelSupported) {
             unresolvedTokens.push(label);
             continue;

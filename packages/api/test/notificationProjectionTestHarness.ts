@@ -1,15 +1,22 @@
 import knex, { type Knex } from 'knex';
 import { NotificationService } from '@propr/core';
+import { NOTIFICATION_UPDATE } from '@propr/shared';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { up as addSystemFailureState } from '../../core/src/db/migrations/20260829000000_add_notification_system_failure_state.js';
 import { up as addPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
-import { NotificationProjectionService } from '../services/notificationProjectionService.js';
+import {
+  NotificationProjectionService,
+  type RecipientNotificationUpdate,
+} from '../services/notificationProjectionService.js';
 
 export interface NotificationProjectionTestHarness {
   database: Knex;
   projection: NotificationProjectionService;
+  notifications: NotificationService;
+  /** Everything the projection told the recipients' open Inboxes, in order. */
+  published: RecipientNotificationUpdate[];
 }
 
 export interface ActiveNotificationReceipt {
@@ -71,9 +78,19 @@ export async function createNotificationProjectionTestHarness(
   await addAdvertisedActions(database);
   await addSystemFailureState(database);
   await addPullRequestState(database);
+  const published: RecipientNotificationUpdate[] = [];
+  const notifications = new NotificationService({
+    database, now,
+    publishUpdate: async payload => {
+      for (const recipientId of payload.recipientIds ?? []) {
+        published.push({ ...payload, eventType: NOTIFICATION_UPDATE, recipientId });
+      }
+    },
+  });
   const projection = new NotificationProjectionService({
     database,
-    notificationService: new NotificationService({ database, now }),
+    notificationService: notifications,
+    publishNotificationUpdate: payload => { published.push(payload); },
     now,
     stalledAfterMs: 10_000,
   });
@@ -81,7 +98,7 @@ export async function createNotificationProjectionTestHarness(
     { github_user_id: 'admin-user', role: 'admin' },
     { github_user_id: 'member-user', role: 'member' },
   ]);
-  return { database, projection };
+  return { database, projection, notifications, published };
 }
 
 export async function listActiveNotificationReceipts(

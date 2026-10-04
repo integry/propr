@@ -30,6 +30,8 @@ function item(overrides: Record<string, unknown>): Notification {
   });
 }
 
+type LinkCase = [string, Record<string, unknown>, Record<string, unknown>, string];
+
 describe('Inbox notification presentation', () => {
   test('covers every event kind with a visible label and keeps only system updates apart', () => {
     const notifications = [
@@ -134,8 +136,8 @@ describe('Inbox notification presentation', () => {
       .toBe('Merge completed');
   });
 
-  test('prefers server actions and derives stable fallback destinations', () => {
-    expect(notificationHref(item({ action: { type: 'navigate', label: 'Open', href: '/plans' } }))).toBe('/plans');
+  test('prefers stored entities and derives stable fallback destinations', () => {
+    expect(notificationHref(item({ action: { type: 'navigate', label: 'Open', href: '/plans' } }))).toBe('/tasks/task-1');
     expect(notificationHref(item({}))).toBe('/tasks/task-1');
     expect(notificationHref(item({
       kind: 'indexing',
@@ -146,6 +148,29 @@ describe('Inbox notification presentation', () => {
       target: { type: 'indexing', repository: 'integry/propr' },
       action: { type: 'navigate', label: 'Browse', href: '/summaries/integry/propr?branch=feature%2Fui' },
     }))).toBe('/summaries/integry/propr?branch=feature%2Fui');
+  });
+
+  test.each<LinkCase>([
+    ['plan', { type: 'plan', repository: 'i/p', draftId: 'plan/1' }, {}, '/studio/plan%2F1'],
+    ['task', { type: 'task', repository: 'i/p', taskId: 'task/1' }, {}, '/tasks/task%2F1'],
+    ['review', { type: 'review', repository: 'i/p', prNumber: 42, taskId: 'review-1' }, {}, '/tasks/review-1'],
+    ['pull_request', { type: 'pull_request', repository: 'i/p', prNumber: 42 }, { completedImplementationTaskId: 'implementation-1' }, '/tasks/implementation-1'],
+    ...['fix', 'ultrafix', 'merge', 'switch'].map<LinkCase>(completionType => [
+      'pull_request', { type: 'pull_request', repository: 'i/p', prNumber: 42 },
+      { completedImplementationTaskId: `${completionType}-1`, completionType }, `/tasks/${completionType}-1`,
+    ]),
+    ['task', { type: 'task', repository: 'i/p', taskId: 'goal-task' }, { goalId: 'goal/1' }, '/goals/goal%2F1'],
+    ['pull_request', { type: 'pull_request', repository: 'i/p', prNumber: 42 }, { goalId: 'goal-1', completedImplementationTaskId: 'goal-task' }, '/goals/goal-1'],
+    ['indexing', { type: 'indexing', repository: 'i/p' }, {}, '/summaries/i/p'],
+    ['system_failure', { type: 'system_failure', component: 'redis' }, {}, '/'],
+    ['review', { type: 'review', repository: 'i/p', prNumber: 42 }, {}, 'https://github.com/i/p/pull/42'],
+    ['pull_request', { type: 'pull_request', repository: 'i/p', prNumber: 42 }, {}, 'https://github.com/i/p/pull/42'],
+  ])('resolves %s from its producer references', (kind, target, metadata, expected) => {
+    expect(notificationHref(item({ kind, target, metadata }))).toBe(expected);
+    // An advertised GitHub action must never override an entity reference.
+    expect(notificationHref(item({ kind, target, metadata, action: {
+      type: 'external_link', label: 'Open PR', href: 'https://github.com/i/p/pull/42',
+    } }))).toBe(expected);
   });
 
   test('carries the indexing branch into branchless Browse actions', () => {

@@ -4,6 +4,7 @@ import React, { Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
+import { SocketBootstrap } from './contexts/SocketBootstrap'
 import { SocketProvider } from './contexts/SocketProvider'
 import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
@@ -149,6 +150,7 @@ export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname
 );
 
 const AppContent: React.FC = () => {
+  const [socketConnected, setSocketConnected] = useState(false);
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   const {
     currentUser,
@@ -156,7 +158,7 @@ const AppContent: React.FC = () => {
     currentUserLoading,
     isInitialLoading,
     refreshCurrentUser,
-  } = useCurrentUserBootstrap({ isDemoMode });
+  } = useCurrentUserBootstrap({ isDemoMode, socketConnected });
 
   useEffect(() => {
     preloadInitialRouteChunk(currentUiPathname());
@@ -210,7 +212,7 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    <Route path="/tasks/new" element={<Layout><NewTaskPage /></Layout>} />
+                    <Route path="/tasks/new" element={<Layout><TasksPage /><NewTaskPage /></Layout>} />
                     <Route
                       path="/tasks/:taskId"
                       element={
@@ -329,10 +331,15 @@ const AppContent: React.FC = () => {
   };
   return (
     <SocketProvider
+      onConnectionChange={setSocketConnected}
+      onAuthenticationError={refreshCurrentUser}
       disabled={Object.values(disableReasons).some(Boolean)}
       disableReasons={disableReasons}
     >
-      {content}
+      <SocketBootstrap disabled={Object.values(disableReasons).some(Boolean)}
+        identity={currentUser?.id ?? 'anonymous'} fallback={<LoadingSpinner />}>
+        {content}
+      </SocketBootstrap>
     </SocketProvider>
   );
 };

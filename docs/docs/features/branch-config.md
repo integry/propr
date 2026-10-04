@@ -25,7 +25,7 @@ That issue run targets `release/2026`.
 
 Multiple `base-<branch>` labels create one run per base branch. Combined with multiple `llm-*` model labels, ProPR fans out one job per base × model combination.
 
-If no `base-<branch>` label is present, ProPR detects the default branch for the repository (see resolution order below).
+If no `base-<branch>` label is present, the run targets the repository's default branch as reported by GitHub. If the requested base branch does not exist on the remote, ProPR falls back to default-branch detection (see resolution order below).
 
 ## Default Branch Resolution Order
 
@@ -69,4 +69,5 @@ Check:
 
 - The variable name matches the owner and repo (uppercased, non-alphanumeric characters replaced by `_`).
 - The branch exists on the remote — a configured branch that does not exist is skipped and detection falls through to the GitHub API.
+- The run has no explicit base branch. Labeled issues without a `base-<branch>` label use GitHub's default branch directly and consult the override only when that branch is missing on the remote.
 - The relevant containers were restarted after `.env` changed.

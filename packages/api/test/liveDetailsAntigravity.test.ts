@@ -142,10 +142,102 @@ test('Antigravity 1.1.12 stream text remains visible through live details', asyn
   });
 });
 
+test('an Antigravity goal stream with only its init envelope is marked as awaiting narration', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const [init] = fs.readFileSync(new URL('../../core/test/fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8').split('\n');
+
+  const parsed = parseStoredOutputContent(`${init}\n`);
+
+  assert.equal(parsed.format, 'antigravity');
+  assert.equal(parsed.parsed, null);
+  // Live projections hide it; a finished task that died here keeps its raw output.
+  assert.equal(parsed.awaitingNarration, true);
+  assert.ok(parsed.rawFallback);
+});
+
+test('a live Antigravity goal awaiting narration projects nothing, and raw output once it is finished', async () => {
+  const { projectTaskLiveDetails } = await import('../routes/liveDetailsRoutes.js');
+  const { withLiveOutputReads } = await import('./liveOutputRedisFake.js');
+  const { createActivityDatabase } = await import('./fixtures/mcpAgentActivity.js');
+  const db = await createActivityDatabase();
+  const [init] = fs.readFileSync(new URL('../../core/test/fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8').split('\n');
+  const project = async (state: string) => {
+    const redisClient = withLiveOutputReads({
+      get: async (key: string) => key === 'agent:output:goal-task'
+        ? `${init}\n`
+        : key === 'worker:state:goal-task' ? JSON.stringify({ history: [{ state }] }) : null,
+    });
+    return projectTaskLiveDetails(redisClient as never, db, 'goal-task');
+  };
+
+  try {
+    assert.equal(await project('claude_execution'), null);
+    assert.equal((await project('failed'))?.events[0]?.rawFallback, true);
+    // The persisted goal records fall back the same way once Redis has nothing.
+    await db('task_history').insert({ task_id: 'goal-task', state: 'claude_execution', timestamp: '2026-10-01T00:00:00.000Z',
+      metadata: JSON.stringify({ goalOutputRecords: [init] }) });
+    const empty = withLiveOutputReads({ get: async () => null });
+    assert.equal(await projectTaskLiveDetails(empty as never, db, 'goal-task'), null);
+  } finally {
+    await db.destroy();
+  }
+});
+
+test('Antigravity terminal errors without narration keep their raw fallback', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const output = [
+    JSON.stringify({ event: 'init', conversation_id: 'agy-goal', init: { model: 'gemini-3.8-flash-medium' } }),
+    JSON.stringify({ event: 'result', result: { conversation_id: 'agy-goal', status: 'ERROR', response: '' } }),
+  ].join('\n');
+
+  const parsed = parseStoredOutputContent(output);
+
+  assert.equal(parsed.parsed, null);
+  assert.ok(parsed.rawFallback);
+});
+
+test('a native goal stream renders narration from every resumed invocation of its conversation', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const init = JSON.stringify({ event: 'init', conversation_id: 'agy-goal', init: { model: 'gemini-3.8-flash-medium' } });
+  const step = (index: number, text: string, input: number) => JSON.stringify({ event: 'step_update', step_update: {
+    conversation_id: 'agy-goal', step_index: index, state: 'DONE', step_type: 'agent_response', text_delta: text,
+    usage: { input_tokens: input, output_tokens: 1 },
+  } });
+  // result.usage is cumulative over the conversation; step usage is per call.
+  const result = (input: number) => JSON.stringify({ event: 'result', result: {
+    conversation_id: 'agy-goal', status: 'ERROR', response: '', num_turns: 1, usage: { input_tokens: input, output_tokens: 1 },
+  } });
+  const output = [
+    'entrypoint banner', init, step(1, 'Adding subtract.', 100), result(100),
+    init, step(3, 'Applying the operator correction.', 40), JSON.stringify({ event: 'result', result: {
+      conversation_id: 'agy-goal', status: 'SUCCESS', response: 'Applying the operator correction.', num_turns: 2, usage: { input_tokens: 140, output_tokens: 2 },
+    } }),
+  ].join('\n');
+
+  const parsed = parseStoredOutputContent(output);
+
+  assert.equal(parsed.format, 'antigravity');
+  assert.deepEqual(parsed.parsed?.events.map(event => event.content), ['Adding subtract.', 'Applying the operator correction.']);
+  assert.equal(parsed.parsed?.tokenUsage?.input_tokens, 140);
+});
+
+test('a single resumed Antigravity invocation reports its own step usage, not the cumulative result', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const output = [
+    JSON.stringify({ event: 'init', conversation_id: 'agy-goal', init: { model: 'gemini-3.8-flash-medium' } }),
+    JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-goal', step_index: 7, state: 'DONE',
+      step_type: 'agent_response', text_delta: 'Resumed.', usage: { input_tokens: 40, output_tokens: 1 } } }),
+    JSON.stringify({ event: 'result', result: { conversation_id: 'agy-goal', status: 'SUCCESS', response: 'Resumed.',
+      num_turns: 3, usage: { input_tokens: 140, output_tokens: 3 } } }),
+  ].join('\n');
+
+  assert.equal(parseStoredOutputContent(output).parsed?.tokenUsage?.input_tokens, 40);
+});
+
 test('stored output detection and live-details rendering consume Antigravity stream arrays', async () => {
   const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
   const output = JSON.stringify([
-    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.7-flash-medium' } },
+    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.8-flash-medium' } },
     { event: 'step_update', step_update: { conversation_id: 'conversation-array', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
     { event: 'result', result: { conversation_id: 'conversation-array', status: 'SUCCESS', response: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
   ]);

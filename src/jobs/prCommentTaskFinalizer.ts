@@ -1,3 +1,4 @@
+import { formatTaskTerminalReason } from '@propr/shared';
 import {
     TaskStates,
     taskStateExpectation,
@@ -63,6 +64,8 @@ function completedResultRecap(status: string | undefined, reason: string | undef
     if (reason === 'ultrafix_waiting_for_exact_head_checks') {
         return 'Review deferred until the continuation pull request passes its exact-head checks.';
     }
+    if (reason === 'pull_request_merged') return 'Skipped the pull request follow-up because the pull request was already merged.';
+    if (reason === 'pull_request_closed') return 'Skipped the pull request follow-up because the pull request was closed.';
     if (status === 'partial') return 'Published the partial pull request follow-up result.';
     if (status === 'skipped') return 'Skipped the pull request follow-up because no further work was needed.';
     return 'Completed the pull request follow-up.';
@@ -99,6 +102,13 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 },
             };
         case 'cancelled':
+            return {
+                state: TaskStates.CANCELLED,
+                metadata: {
+                    reason: formatTaskTerminalReason(reason ?? ''),
+                    historyMetadata: { ...historyMetadata, cancellationReason: reason },
+                },
+            };
         case 'requeued':
         case 'rescheduled':
             return {

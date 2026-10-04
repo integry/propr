@@ -1,5 +1,10 @@
+import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
+import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
+import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
+import { getConfig } from '@propr/core';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
+import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 /* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
@@ -252,6 +257,7 @@ let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let invalidateStatusAgentCache: (() => void) | undefined;
+let dashboardReads: DashboardReadService | undefined;
 let notificationBackground: NotificationBackgroundService | undefined;
 let webPushDispatcherConfigured = false;
 let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
@@ -299,6 +305,8 @@ async function initRedis(): Promise<void> {
   console.log('Connected to Redis');
 }
 
+let readSystemStatus: (() => Promise<Record<string, unknown>>) | undefined;
+
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({
     redisClient,
@@ -310,6 +318,15 @@ function setupRoutes(): void {
     }),
   });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
+  readSystemStatus = async () => {
+    const snapshot = await statusRoutes.getStatusSnapshot();
+    // Health notifications must keep advancing when connected clients consume
+    // snapshots and no longer call the HTTP route that also projects them.
+    void notificationBackground?.projectSystemSnapshot(snapshot, []).catch(error => {
+      console.warn('Failed to project pushed system health notifications:', error);
+    });
+    return snapshot;
+  };
   invalidateStatusAgentCache = statusRoutes.invalidateAgentStatusCache;
   const desktopAuthRoutes = createDesktopAuthRoutes();
   // INTENTIONALLY UNAUTHENTICATED: compatibility/discovery and the bounded
@@ -341,6 +358,7 @@ function setupRoutes(): void {
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
   app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const repositoryMediaRoutes = createRepositoryMediaRoutes({ db });
+  const previewMediaRoutes = createPreviewMediaRoutes();
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -356,13 +374,14 @@ function setupRoutes(): void {
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
   const statsRoutes = createStatsRoutes({ db });
-  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue });
+  const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', true)) !== false });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const usageTipsRoutes = createUsageTipsRoutes();
   const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured, resolvedWebPushConfiguration });
   const voiceBriefingService = createVoiceBriefingService({
     database: db,
@@ -386,29 +405,35 @@ function setupRoutes(): void {
   const operationalRoutes: RouteEntry[] = [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit], ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get], ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
-    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['get', '/api/goals/attention', goalRoutes.attention], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/detail', goalRoutes.detail], ['get', '/api/goals/:goalId/inputs', goalRoutes.inputs], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
     ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
-    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
+    ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
     ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/task/:taskId/cancel', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
-    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
+    ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/github/repos/:owner/:repo/workflows', githubRoutes.getWorkflows], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
     ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft], ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
     ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo], ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
     ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue], ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue], ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
     ['post', '/api/planner/preview', plannerRoutes.previewContext], ['post', '/api/planner/preview/context', plannerRoutes.downloadContext], ['post', '/api/planner/generate', plannerRoutes.generate], ['post', '/api/planner/abort', plannerRoutes.abortGeneration],
     ['post', '/api/planner/refine', plannerRoutes.refine], ['post', '/api/planner/abort-refinement', plannerRoutes.abortRefinement], ['post', '/api/planner/finalize', plannerRoutes.finalize], ['post', '/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup],
+    ['get', '/api/planner/drafts/:id/revisions', plannerRoutes.listPlanRevisions],
+    ['get', '/api/planner/drafts/:id/revisions/:revisionId', plannerRoutes.getPlanRevision],
+    ['post', '/api/planner/drafts/:id/revisions/:revisionId/restore', plannerRoutes.restorePlanRevision],
     ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
     ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
     ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/stats/dashboard', statsRoutes.getDashboardStats],
-    ['get', '/api/dashboard/summary', dashboardRoutes.getSummary], ['get', '/api/dashboard/attention', dashboardRoutes.getAttention], ['get', '/api/dashboard/active', dashboardRoutes.getActive], ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
+    ['get', '/api/usage-tips', usageTipsRoutes.get], ['post', '/api/usage-tips/dismiss', usageTipsRoutes.dismiss],
+    ['get', '/api/dashboard/narrative', dashboardRoutes.getNarrative], ['get', '/api/dashboard/summary', dashboardRoutes.getSummary], ['get', '/api/dashboard/attention', dashboardRoutes.getAttention], ['get', '/api/dashboard/active', dashboardRoutes.getActive], ['get', '/api/dashboard/outcomes', dashboardRoutes.getOutcomes],
     ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
     ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree], ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
     ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
     ['get', '/api/voice/capabilities', voiceRoutes.getCapabilities], ['get', '/api/voice/briefing', voiceRoutes.getBriefing],
     ['get', '/api/repos/media', repositoryMediaRoutes.getMedia],
+    ['get', '/api/preview-media/pulls/:owner/:repo/:number/:assetId', previewMediaRoutes.getPullMedia],
+    ['get', '/api/preview-media/comments/:owner/:repo/:number/:assetId', previewMediaRoutes.getCommentMedia],
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
@@ -550,6 +575,7 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
+    dashboardReads = await startDashboardReadService(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
@@ -617,6 +643,7 @@ async function start(): Promise<void> {
       });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({
+        readSystemStatus,
         taskQueue, redisClient, db,
         notificationProjection: notificationBackground,
       });
@@ -656,6 +683,7 @@ async function start(): Promise<void> {
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
       const shutdownTasks: ShutdownTask[] = [
+        { name: 'dashboard read service', close: () => dashboardReads?.close() ?? Promise.resolve() },
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },

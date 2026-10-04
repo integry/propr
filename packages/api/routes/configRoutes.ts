@@ -1,4 +1,6 @@
-import { assertConfigRevision } from './configRevision.js';
+import { getIntegerSettingOrDefault } from './configSettings.js';
+import { parseUsageTipsSettings } from '@propr/shared';
+import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
@@ -14,13 +16,7 @@ import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
 import { normalizeRepoConfig, preserveRepoSettings } from './configRepoValidation.js';
 import { loadReposWithAttachmentCapacity } from './configRoutesRepos.js';
-
-interface ConfigRoutesDeps {
-  redisClient: RedisClientType;
-  configStore?: Partial<typeof configManager>;
-  database?: Pick<Knex, 'transaction'>;
-  agentPreparationDeps?: Partial<AgentPreparationDeps>;
-}
+interface ConfigRoutesDeps { redisClient: RedisClientType; configStore?: Partial<typeof configManager>; database?: Pick<Knex, 'transaction'>; agentPreparationDeps?: Partial<AgentPreparationDeps>; }
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
   pickValue: (body: Record<string, unknown>) => unknown;
@@ -38,30 +34,6 @@ const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
 const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
-interface IntegerSettingConfig {
-  name: string;
-  value: unknown;
-  defaultValue: number;
-  minimum: number;
-  maximum?: number;
-}
-interface InvalidIntegerSetting {
-  name: string;
-  value: unknown;
-}
-
-function parseStoredIntegerSetting(value: unknown, minimum: number, maximum: number = Number.MAX_SAFE_INTEGER): number | null {
-  if (value === undefined || value === null) return null;
-  const candidate = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value.trim()) : value;
-  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
-}
-function getIntegerSettingOrDefault({ name, value, defaultValue, minimum, maximum = Number.MAX_SAFE_INTEGER }: IntegerSettingConfig): { value: number; invalid?: InvalidIntegerSetting } {
-  const parsed = parseStoredIntegerSetting(value, minimum, maximum);
-  if (parsed !== null) return { value: parsed };
-  if (value === undefined || value === null) return { value: defaultValue };
-  return { value: defaultValue, invalid: { name, value } };
-}
-
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) return `${fieldName} must be an array of strings`;
   return value;
@@ -140,15 +112,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
-  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
-    {
-      redisClient,
-      configStore,
-      publishConfigUpdate,
-      logActivityHelper,
-      refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
-    },
-  );
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes({
+    redisClient,
+    configStore,
+    publishConfigUpdate,
+    logActivityHelper,
+    refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
+  });
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -283,9 +253,21 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         pr_review_context_model: typeof settings.pr_review_context_model === 'string' ? settings.pr_review_context_model : '',
         ...reviewContextBudgetSettingsResponse(settings),
         auto_followup_score_threshold: autoFollowup.value,
+        deprecated_settings: {
+          auto_followup_score_threshold: 'Deprecated: retained for REST compatibility only; post-implementation analysis was removed and this setting has no effect.'
+        },
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
+        usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
+        usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ usage_tips_dismissal_cooldown_days: await configStore.getConfig('usage_tips_dismissal_cooldown_days', 45) }).cooldownDays,
+        dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', true)) !== false,
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
+        ...await configStore.loadUltrafixEscalationSettings().then(escalation => ({
+          ultrafix_escalation_enabled: escalation.enabled,
+          ultrafix_escalation_models: escalation.models,
+          ultrafix_escalation_patience: escalation.patience,
+          ultrafix_escalation_max_reasoning_levels: escalation.maxReasoningLevels,
+        })),
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
@@ -328,6 +310,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      if (bodyValidation.value.expectedRevision !== undefined && 'github_user_whitelist' in settingsValidation.value) assertConfigRevision(bodyValidation.value.expectedRevision, effectiveGithubUserWhitelist(await configStore.loadSettings() as Record<string, unknown>));
       await validateDefaultAgentSetting(settingsValidation.value, configStore);
       return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });

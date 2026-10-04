@@ -85,10 +85,10 @@ propr init stack               # creates .env + data/ logs/ repos/, detects agen
 
 `propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). The template defaults to the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`).
 
-**2. Configure GitHub access in `.env`.** On the default path, run `propr relay enroll` from the stack directory — it opens the GitHub OAuth flow to prove your identity and writes the relay/routing credentials and `GH_INSTALLATION_ID` straight into `.env`, with no GitHub App or private key of your own. Running your own GitHub App is the advanced alternative (App permissions, `GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`); [GitHub Authentication](../operations/github-auth.md) covers both modes in full.
+**2. Configure GitHub access in `.env`.** On the default path, install the shared ProPR GitHub App on your repositories, then run `propr login` and `propr relay enroll` from the stack directory — enrollment proves your identity with the GitHub token from `propr login` and writes the relay/routing credentials and `GH_INSTALLATION_ID` straight into `.env`, with no GitHub App or private key of your own. Running your own GitHub App is the advanced alternative (App permissions, `GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`); [GitHub Authentication](../operations/github-auth.md) covers both modes in full.
 
-:::caution[Own-App path: use `HOST_GH_PRIVATE_KEY` with the CLI]
-For `propr start`, point `HOST_GH_PRIVATE_KEY` at the `.pem` on the host (the CLI mounts it). `GH_PRIVATE_KEY_PATH` is the in-container path used only by the [launcher alternative](#alternative-launcher-container-without-the-cli); mixing the two is a common migration mistake.
+:::caution[Own-App path: use `HOST_GH_PRIVATE_KEY`]
+Point `HOST_GH_PRIVATE_KEY` at the `.pem` on the host. Both `propr start` and the [launcher alternative](#alternative-launcher-container-without-the-cli) bind-mount it into the app containers and set `GH_PRIVATE_KEY_PATH` for you. A hand-set `GH_PRIVATE_KEY_PATH` must resolve inside the app containers (for example a key staged under `data/`), so a host path or a path inside the launcher container does not work there.
 :::
 
 If you take the own-App path, register the App with these repository permissions and install it on every repository ProPR should process:
@@ -106,18 +106,20 @@ If you take the own-App path, register the App with these repository permissions
 ```bash
 DASHBOARD_API_PORT=4000
 FRONTEND_URL=http://localhost:5173
-GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
-GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
-GH_OAUTH_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
 SESSION_SECRET=generate-a-strong-secret-here
 
 PRIMARY_PROCESSING_LABELS=AI,propr
 GITHUB_BOT_USERNAME=your_bot_username
 
-GIT_CLONES_BASE_PATH=/app/repos/clones
-GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
+GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
 GIT_DEFAULT_BRANCH=main
-DB_FILENAME=/app/data/propr.sqlite
+DB_FILENAME=./data/propr.sqlite
+
+# Custom GitHub web login only; relay-enrolled stacks sign in through Connect.
+# GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
+# GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
+# GH_OAUTH_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
 ```
 
 Issue intake defaults to the hosted App's WebSocket routing: events stream to ProPR over an outbound WebSocket with near-immediate delivery, so there is no inbound public URL to expose. Polling and your own GitHub App webhook remain available as advanced intake options — see [Server Setup](./setup-server.md#github-event-intake) and [Deployment](../operations/deployment.md#issue-intake-modes).
@@ -141,10 +143,10 @@ propr-deploy/
 ├── your-app-private-key.pem    # own-GitHub-App path only; absent on the default relay path
 ├── data/                       # SQLite database and persistent state
 ├── logs/                       # service logs
-└── repos/
-    ├── clones/                 # full repository clones
-    └── worktrees/              # per-task Git worktrees
+└── repos/                      # repository mount for the worker
 ```
+
+Repository clones and per-task worktrees live outside this folder: by default under `/tmp/git-processor/clones` and `/tmp/git-processor/worktrees` on the host (`GIT_CLONES_BASE_PATH`, `GIT_WORKTREES_BASE_PATH`), a path the stack and agent containers mount at the same location.
 
 ## Verify It Works
 

@@ -53,3 +53,10 @@ Every run leaves a task record you can inspect later.
 - [CLI workflows](./cli-workflows.md): source-development, validation, image, and maintenance commands for developing and operating ProPR itself. The end-user `propr` CLI is documented separately in [ProPR CLI](./propr-cli.md).
 
 Next: follow the [issue-to-PR walkthrough](../tutorials/end-to-end-workflow.md), or go straight to the [PR command reference](./pr-commands.md).
+
+## Additional ways to work
+
+- [Launch a task](./launching-work.md) directly from an instruction or repository to-do.
+- [Run a goal](./goals.md) and steer its native coding-agent session.
+- [Use Inbox and push](./inbox.md) to follow work across devices.
+- [Connect an MCP client](./mcp.md) with scoped repository consent.

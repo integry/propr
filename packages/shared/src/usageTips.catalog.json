@@ -1,0 +1,236 @@
+[
+  {
+    "id": "pr-review",
+    "kind": "corrective",
+    "topic": "review",
+    "title": "Try /review",
+    "body": "Use /review when you want AI review comments on the PR.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#review",
+    "signalHints": [
+      "review",
+      "tasks"
+    ]
+  },
+  {
+    "id": "pr-fix",
+    "kind": "corrective",
+    "topic": "fix",
+    "title": "Try /fix",
+    "body": "Use /fix when you want to apply a /review's findings, or named suggestions.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#fix",
+    "signalHints": [
+      "fix",
+      "tasks"
+    ]
+  },
+  {
+    "id": "pr-switch",
+    "kind": "corrective",
+    "topic": "switch",
+    "title": "Try /switch",
+    "body": "Use /switch when you want future PR work to use a different model.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#switch",
+    "signalHints": [
+      "switch",
+      "tasks"
+    ]
+  },
+  {
+    "id": "pr-use",
+    "kind": "corrective",
+    "topic": "use",
+    "title": "Try /use",
+    "body": "Use /use when you want one immediate follow-up run with a temporary model.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#use",
+    "signalHints": [
+      "use",
+      "tasks"
+    ]
+  },
+  {
+    "id": "pr-ultrafix",
+    "kind": "corrective",
+    "topic": "ultrafix",
+    "title": "Try /ultrafix",
+    "body": "Use /ultrafix when you want an automated review-fix loop.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#ultrafix",
+    "signalHints": [
+      "ultrafix",
+      "tasks"
+    ]
+  },
+  {
+    "id": "pr-merge",
+    "kind": "corrective",
+    "topic": "merge",
+    "title": "Try /merge",
+    "body": "Use /merge when you want the base branch merged into the PR branch.",
+    "docPath": "docs/docs/features/pr-commands.md",
+    "docUrl": "https://docs.propr.dev/features/pr-commands#merge",
+    "signalHints": [
+      "merge",
+      "tasks"
+    ]
+  },
+  {
+    "id": "goals-launch",
+    "kind": "corrective",
+    "topic": "goals",
+    "title": "Choose how to launch a goal",
+    "body": "Goals support two launch strategies: Agent implements directly opens a draft PR and commits changes at checkpoints; Agent orchestrates through ProPR lets the agent decompose work, create issues, and start and monitor their implementation. Use Goals for an ongoing objective and Planner Studio when you want to inspect and refine a plan before running it.",
+    "docPath": "docs/docs/features/usage-tips.md",
+    "docUrl": "https://docs.propr.dev/features/usage-tips#goals-and-launch-strategies",
+    "signalHints": [
+      "goals",
+      "oneOffTasks"
+    ]
+  },
+  {
+    "id": "planner-studio",
+    "kind": "corrective",
+    "topic": "plans",
+    "title": "Plan before implementation",
+    "body": "ProPR is designed to put structure in front of agent runs. Instead of sending a vague issue straight to a coding agent, use Planner Studio to create a draft, gather context, review the plan, refine it, and approve the work when it is ready.",
+    "docPath": "docs/docs/features/planning.md",
+    "docUrl": "https://docs.propr.dev/features/planning",
+    "signalHints": [
+      "plans",
+      "oneOffTasks"
+    ]
+  },
+  {
+    "id": "repository-todos",
+    "kind": "corrective",
+    "topic": "todos",
+    "title": "Keep repository to-dos",
+    "body": "The To-Dos tab turns ongoing maintenance ideas into trackable work. Todos are organized into categories, can be reordered by drag-and-drop, searched, edited, completed, and restored after completion.",
+    "docPath": "docs/docs/features/repository-knowledge.md",
+    "docUrl": "https://docs.propr.dev/features/repository-knowledge#repository-todos",
+    "signalHints": [
+      "todos",
+      "tasks"
+    ]
+  },
+  {
+    "id": "indexing-options",
+    "kind": "corrective",
+    "topic": "indexing",
+    "title": "Tune repository indexing",
+    "body": "Summarization runs through a configurable agent and model, with an optional fallback model and quota-aware retry: when the primary model hits a provider quota, ProPR records a cooldown and switches to the fallback so indexing keeps progressing instead of failing.",
+    "docPath": "docs/docs/features/repository-knowledge.md",
+    "docUrl": "https://docs.propr.dev/features/repository-knowledge#indexing-and-summaries",
+    "signalHints": [
+      "indexingFailures",
+      "indexingSlow"
+    ]
+  },
+  {
+    "id": "agent-model-selection",
+    "kind": "corrective",
+    "topic": "routing",
+    "title": "Choose agents and models per phase",
+    "body": "ProPR runs coding work through configurable agents. Each agent is a CLI tool packaged in its own Docker image, with an isolated credential directory mounted into that image. Models are addressed by stable ProPR model IDs that work everywhere a model can be chosen: issue labels, the Web UI, the CLI (-a/-m), and PR commands (/switch, /use, /review <model>).",
+    "docPath": "docs/docs/features/agents-and-models.md",
+    "docUrl": "https://docs.propr.dev/features/agents-and-models",
+    "signalHints": [
+      "distinctAgents",
+      "distinctModels"
+    ]
+  },
+  {
+    "id": "agent-tank",
+    "kind": "corrective",
+    "topic": "tank",
+    "title": "Monitor provider usage with Agent Tank",
+    "body": "Agent Tank is a separate, optional local tool that monitors the usage limits of your AI coding agent CLIs. ProPR integrates with it to show live provider capacity in the Web UI and to record per-call usage deltas alongside every LLM log entry.",
+    "docPath": "docs/docs/operations/agent-tank.md",
+    "docUrl": "https://docs.propr.dev/operations/agent-tank",
+    "signalHints": [
+      "tankEnabled",
+      "tankRecords"
+    ]
+  },
+  {
+    "id": "notification-inbox",
+    "kind": "corrective",
+    "topic": "inbox",
+    "title": "Keep track of work in your inbox",
+    "body": "The Show an unread-count badge on the installed app preference asks the browser's Badging API to show the Inbox unread count, capped at 99. Push receipt and foreground Inbox refresh both update it; reading or dismissing notifications reduces or clears it.",
+    "docPath": "docs/docs/operations/pwa-web-push.md",
+    "docUrl": "https://docs.propr.dev/operations/pwa-web-push#badges-are-progressive-enhancement",
+    "signalHints": [
+      "inboxActions",
+      "notifications"
+    ]
+  },
+  {
+    "id": "mcp-access",
+    "kind": "corrective",
+    "topic": "mcp",
+    "title": "Connect tools through MCP",
+    "body": "This is the flow the operator surface is built for: find out what is happening, drill into one piece of work, act on its pull request, and check afterwards what the connected app actually did.",
+    "docPath": "docs/mcp.md",
+    "docUrl": "https://docs.propr.dev/features/web-ui#mcp-access-log",
+    "signalHints": [
+      "mcpEnabled",
+      "mcpGrants"
+    ]
+  },
+  {
+    "id": "mcp-chat-control",
+    "kind": "discovery",
+    "topic": "mcp",
+    "title": "Run ProPR from your chat assistant",
+    "body": "Connect a chat assistant to ProPR through MCP to inspect running work, start tasks, and act on pull requests without leaving the conversation.",
+    "docPath": "docs/docs/features/mcp-chat.md",
+    "docUrl": "https://docs.propr.dev/features/mcp-chat",
+    "signalHints": [
+      "mcpUsage",
+      "tasks"
+    ]
+  },
+  {
+    "id": "visual-previews",
+    "kind": "discovery",
+    "topic": "previews",
+    "title": "See visual previews on pull requests",
+    "body": "Visual previews let a ProPR implementation show its user-visible result directly in the generated pull request.",
+    "docPath": "docs/docs/features/visual-previews.md",
+    "docUrl": "https://docs.propr.dev/features/visual-previews",
+    "signalHints": [
+      "visualPreviewRepos",
+      "tasks"
+    ]
+  },
+  {
+    "id": "repository-chat",
+    "kind": "discovery",
+    "topic": "chat",
+    "title": "Ask questions about your repository",
+    "body": "The Chat tab lets you ask questions about a repository.",
+    "docPath": "docs/docs/features/repository-knowledge.md",
+    "docUrl": "https://docs.propr.dev/features/repository-knowledge#repository-chat",
+    "signalHints": [
+      "repoChatMessages",
+      "tasks"
+    ]
+  },
+  {
+    "id": "epic-auto-merge",
+    "kind": "discovery",
+    "topic": "epic",
+    "title": "Run a plan with Epic mode",
+    "body": "Enable Epic mode with auto-merge so planned issues run one after another, each PR merging before the next issue starts",
+    "docPath": "docs/docs/features/planning.md",
+    "docUrl": "https://docs.propr.dev/features/planning#running-from-a-plan",
+    "signalHints": [
+      "epicPlans",
+      "plans"
+    ]
+  }
+]

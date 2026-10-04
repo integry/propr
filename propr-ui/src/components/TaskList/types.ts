@@ -18,18 +18,8 @@ export interface Task {
   model?: string | null;
   llmProvider?: string | null;
   planIssueStatus?: string | null;
-  critiqueScore?: number | null;
-}
-
-export type TaskType = 'new-issue' | 'followup' | 'pr-workflow' | 'unknown';
-
-export interface TaskTypeInfo {
-  type: TaskType;
-  cleanTitle: string;
-  /** Workflow verb for PR-scoped tasks (Fix, Review, Follow-up, Ultrafix, Merge). */
-  workflowLabel?: string;
-  /** Pull request number parsed from a PR-scoped task title. */
-  workflowPrNumber?: number;
+  failedReason?: string | null;
+  commitHash?: string | null;
 }
 
 export interface TaskListProps {

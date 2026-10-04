@@ -37,11 +37,11 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
  * These are used when cliVersionType is 'default'.
  */
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
-    claude: '2.1.280',
-    codex: '0.154.0',
+    claude: '2.1.284',
+    codex: '0.160.0',
     antigravity: '1.2.4',
     opencode: '1.18.31',
-    vibe: '2.25.4'
+    vibe: '2.25.8'
 };
 
 /** The single repository used for every managed agent execution. */
@@ -54,6 +54,7 @@ export { AGENT_IMAGE_NAME };
 export const AGENT_BUNDLE_CONTENT_FILES = [
     'Dockerfile.agent',
     'scripts/agent-entrypoint.sh',
+    'scripts/agent-tank-runtime.mjs',
     'scripts/claude-entrypoint.sh',
     'scripts/codex-entrypoint.sh',
     'scripts/antigravity-entrypoint.sh',

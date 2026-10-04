@@ -27,14 +27,30 @@ export {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
+  ACTIVITY_UPDATE,
+  NOTIFICATION_UPDATE,
+  USAGE_UPDATE,
   REDIS_CHANNELS,
+  SHELL_ACTIVITY_DOMAINS,
+  SHELL_ACTIVITY_CHANGES,
+  isTerminalShellActivityChange,
+  isShellActivityUpdatePayload,
+  isShellNotificationUpdatePayload,
+  isShellUsageUpdatePayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type PlanStepUpdatePayload,
   type IndexingPhase,
   type IndexingUpdatePayload,
   type TaskLiveUpdatePayload,
+  type LiveOutputPosition,
   type QueueStatsUpdatePayload,
+  type ActivityDomain,
+  type ActivityChange,
+  type ActivityUpdatePayload,
+  type NotificationChange,
+  type NotificationUpdatePayload,
+  type UsageUpdatePayload,
   type ConversationEvent,
   type TodoItem,
   type TokenUsageInfo,
@@ -45,6 +61,38 @@ export {
   type StepStatus,
   type DraftUpdateGenerationTrace,
 } from './events.js';
+
+// The general activity push surface. Exported from the barrel so the core
+// publishers, the API broadcaster and the UI socket provider all compile
+// against one definition of the wire format.
+//
+// The event names and the payload types this module shares with `events.ts`
+// (`ACTIVITY_UPDATE`, `NOTIFICATION_UPDATE`, `USAGE_UPDATE` and their
+// `*Payload`/`Activity*`/`Notification*` types) are exported from `events.js`
+// above: the barrel can only own one meaning per name, and the shell surfaces'
+// variants are the ones every existing consumer imports unqualified. The event
+// names are the same string constants in both modules, so a producer publishing
+// against either one addresses the same channel. A consumer that needs the
+// envelope-shaped payloads imports them from `@propr/shared/dist/activityEvents.js`
+// directly, as the socket service, the event publisher and the UI hooks do.
+export {
+  GOAL_UPDATE,
+  ACTIVITY_DOMAINS,
+  ACTIVITY_CHANGES,
+  GOAL_ACTIVITY_STATES,
+  NOTIFICATION_CHANGES,
+  USAGE_SOURCES,
+  isActivityTimestamp,
+  isActivityUpdatePayload,
+  isGoalUpdatePayload,
+  isNotificationUpdatePayload,
+  isTerminalActivityChange,
+  isUsageUpdatePayload,
+  type GoalActivityState,
+  type GoalUpdatePayload,
+  type GoalUpdateTriggerPayload,
+  type UsageSource,
+} from './activityEvents.js';
 
 // Export usage configuration and metrics types
 export {
@@ -256,6 +304,10 @@ export {
   type ReviewInputCeilingLimit,
 } from './reviewContextBudget.js';
 
+// One identifier grammar for /fix selections, shared by the worker's comment
+// parser and the MCP tool's array validator so the two cannot drift.
+export * from './reviewFeedbackIds.js';
+
 // Export the owner/repo slug parser shared by the CLI and API
 export { parseProjectSlug } from './projectSlug.js';
 
@@ -266,6 +318,7 @@ export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
 export {
   TASK_LIFECYCLE_STATES,
   ACTIVE_TASK_LIFECYCLE_STATES,
+  formatTaskTerminalReason,
   type TaskLifecycleState,
 } from './taskLifecycle.js';
 
@@ -464,3 +517,30 @@ export * from './visualPreviewCapacity.js';
 export * from './previewStorage/v1.js';
 
 export * from './publishedVisualPreviews.js';
+
+// Export the Agent Tank integration mode vocabulary shared by core, the API,
+// the CLI and the UI so the three states cannot drift between surfaces.
+export {
+  AGENT_TANK_LEGACY_BACKEND_MESSAGE,
+  AGENT_TANK_MODES,
+  DEFAULT_AGENT_TANK_MODE,
+  agentTankModeFromLegacyEnabled,
+  buildAgentTankSettingsRequest,
+  isAgentTankMode,
+  normalizeAgentTankMode,
+  supportsAgentTankModes,
+  type AgentTankMode,
+} from './agentTank.js';
+
+export * from './usageTips.js';
+export * from './notificationLinks.js';
+
+export * from './githubAppManifest.js';
+export * from './analyticsTimeframe.js';
+
+// Browser-safe checkpoint parsing shared by goal workers and readable timelines.
+export * from './goalCheckpoints.js';
+export * from './goalCreation.js';
+
+export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility } from './antigravityCompatibility.js';
+export * from './goalBlockers.js';

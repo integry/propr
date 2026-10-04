@@ -43,6 +43,23 @@ describe('useLiveRefreshScheduler', () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
+  it('serializes safety reads with pending work and retains a trailing reconciliation', async () => {
+    const pending = deferred();
+    const refresh = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useLiveRefreshScheduler({
+      isConnected: true, refresh, connectedPollMs: 300_000,
+    }));
+    act(() => { void result.current.refreshNow(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_100); });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve());
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
   it('coordinates an immediate initial read with live invalidations', async () => {
     const initial = deferred();
     const refresh = vi.fn()

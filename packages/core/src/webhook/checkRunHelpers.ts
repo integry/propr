@@ -4,6 +4,8 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { db } from '../db/connection.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
+import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 
 export interface MergePROptions {
     owner: string;
@@ -298,7 +300,12 @@ export async function getCheckRunsStatus(owner: string, repoName: string, ref: s
  * Always queries both the check-runs API and the legacy commit status API
  * so repos that publish both signal types are handled correctly.
  */
-export async function areAllChecksPassing(owner: string, repoName: string, ref: string): Promise<boolean> {
+export async function areAllChecksPassing(
+    owner: string,
+    repoName: string,
+    ref: string,
+    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+): Promise<boolean> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -335,7 +342,13 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
             );
         }
 
-        const allCheckRunsPass = checkRuns.length === 0 || checkRuns.every(
+        // Checks the repository marked non-blocking never hold automation back,
+        // but they still count as CI signal below.
+        const nonBlockingChecks = await loadNonBlockingChecks(owner, repoName);
+        const blockingCheckRuns = checkRuns.filter(
+            (run: { name?: string }) => !isNonBlockingCheck(run.name, nonBlockingChecks),
+        );
+        const allCheckRunsPass = blockingCheckRuns.length === 0 || blockingCheckRuns.every(
             (run: { status: string; conclusion: string | null }) =>
                 run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
         );
@@ -352,6 +365,7 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
             repoName,
             ref,
             totalCheckRuns: checkRuns.length,
+            nonBlockingCheckRuns: checkRuns.length - blockingCheckRuns.length,
             commitStatus: commitStatus.state,
             statusContexts: commitStatus.totalCount,
             hasCheckSignal,

@@ -18,19 +18,38 @@ const renderPage = () => render(<MemoryRouter initialEntries={[{ pathname: '/tas
 
 beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined); vi.mocked(submissions.listTaskSnapshots).mockResolvedValue([]); });
 describe('New Task issue launcher', () => {
+  it('opens a modal with collapsed settings and no promotional cards', async () => {
+    renderPage();
+    expect(screen.getByRole('dialog', { name: 'New task' })).toBeInTheDocument();
+    expect(screen.getByText('Advanced Options').closest('details')).not.toHaveAttribute('open');
+    expect(screen.queryByRole('link', { name: /New Plan|New Goal/ })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toHaveFocus());
+  });
+
+  it('protects edited input on dismissal and returns to tasks on cancel', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Keep this request' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Keep this request');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    confirm.mockRestore();
+  });
+
   it('retains the issue and request on failure, retries that submission, then opens the ordinary task', async () => {
     vi.mocked(submissions.submitTask).mockResolvedValue(pending);
     vi.mocked(submissions.retryTaskSubmission).mockResolvedValue({ ...pending, state: 'queued', error: null, taskId: 'ordinary-issue-task' });
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Fix invoice dates');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
     fireEvent.click(run);
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open issue #42' })).toHaveAttribute('href', pending.issueUrl);
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View issue #42' })).toHaveAttribute('href', pending.issueUrl);
     const [key, payload] = vi.mocked(submissions.submitTask).mock.calls[0];
     expect(payload).toMatchObject({ repository: 'acme/billing', instruction: 'Fix invoice dates', todoIds: ['todo-1'] });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry submission' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent' }));
     expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks/ordinary-issue-task');
     expect(submissions.retryTaskSubmission).toHaveBeenCalledWith(key);
     expect(submissions.submitTask).toHaveBeenCalledTimes(1);
@@ -38,13 +57,49 @@ describe('New Task issue launcher', () => {
     expect(planner.createDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/What's done|Continue|Pause goal/)).not.toBeInTheDocument();
   });
+  it('shows submission progress on the button and a partial failure as one warning', async () => {
+    let resolve!: (value: submissions.TaskSubmission) => void;
+    vi.mocked(submissions.submitTask).mockReturnValue(new Promise(done => { resolve = done; }));
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    expect(await screen.findByRole('button', { name: 'Submitting…' })).toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    await act(async () => resolve(pending));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Issue #42 created, but agent failed to queue');
+    expect(alert).toHaveTextContent('Queue unavailable');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start over opens a new request/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start over' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Retry agent' })).toBeEnabled();
+  });
+  it('closes a partial failure without keeping its local retry state', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+    renderPage();
+    const run = await screen.findByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    const close = await screen.findByRole('button', { name: 'Close' });
+    const key = vi.mocked(submissions.submitTask).mock.calls[0][0];
+    fireEvent.click(close);
+    expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    expect(submissions.taskSnapshotStorage).toHaveBeenCalledWith(`${API_BASE_URL}:alice`, key, null);
+    expect(sessionStorage.getItem(`task-active-submission:${API_BASE_URL}:alice`)).toBeNull();
+    expect(submissions.retryTaskSubmission).not.toHaveBeenCalled();
+  });
   it('recovers the same identity after reload without resubmitting an issue', async () => {
     sessionStorage.setItem(`task-active-submission:${API_BASE_URL}:alice`, 'saved-key');
     vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue({ key: 'saved-key', payload: { repository: 'acme/billing', instruction: 'Saved request' }, files: [] });
     vi.mocked(submissions.getTaskSubmission).mockResolvedValue(pending);
     renderPage();
-    expect(await screen.findByText('Could not start task')).toBeInTheDocument();
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Saved request');
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Saved request');
     expect(submissions.getTaskSubmission).toHaveBeenCalledWith('saved-key');
     expect(submissions.submitTask).not.toHaveBeenCalled();
   });
@@ -74,21 +129,47 @@ describe('New Task issue launcher', () => {
     fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
     expect(screen.getByRole('button', { name: 'Run task' })).toBeEnabled();
   });
-  it.each(['prepared', 'failed'] as const)('allows a %s submission to be abandoned and a new identity submitted', async state => {
-    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, ...(state === 'prepared' ? { issueNumber: null, issueUrl: null } : {}) });
+  it('remembers the last used repository, agent, and model once the issue is created', async () => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'issue_created', error: null });
+    renderPage();
+    await screen.findByRole('option', { name: 'issue-only' });
+    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'issue-only' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'model-1' } });
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(`task-routing:${API_BASE_URL}:alice`) || '{}'))
+      .toEqual({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+  });
+  it('preselects the remembered repository and drops it when no longer available', async () => {
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
+    const { unmount } = render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'model-1' })).toBeInTheDocument());
+    expect(screen.getByLabelText('Repository')).toHaveValue('acme/billing');
+    expect(screen.getByLabelText('Agent')).toHaveValue('issue-only');
+    expect(screen.getByLabelText('Model')).toHaveValue('model-1');
+    unmount();
+    localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/retired' }));
+    render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Fix invoice dates' } });
+    await waitFor(() => expect(screen.getByRole('option', { name: 'issue-only' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Run task' })).toBeDisabled();
+  });
+  it.each(['prepared', 'failed'] as const)('allows a %s submission without an issue to be abandoned and a new identity submitted', async state => {
+    vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state, issueNumber: null, issueUrl: null });
     renderPage();
     const run = await screen.findByRole('button', { name: 'Run task' });
     await waitFor(() => expect(run).toBeEnabled());
     fireEvent.click(run);
     const reset = await screen.findByRole('button', { name: state === 'prepared' ? 'Edit request' : 'Start over' });
     await waitFor(() => expect(reset).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toBeDisabled();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
     const oldKey = vi.mocked(submissions.submitTask).mock.calls[0][0];
     fireEvent.click(reset);
-    await waitFor(() => expect(screen.getByLabelText('Instruction')).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toBeEnabled());
     expect(submissions.taskSnapshotStorage).toHaveBeenCalledWith(`${API_BASE_URL}:alice`, oldKey, null);
-    expect(screen.getByLabelText('Instruction')).toHaveValue(state === 'prepared' ? 'Fix invoice dates' : '');
-    fireEvent.change(screen.getByLabelText('Instruction'), { target: { value: 'Corrected invoice request' } });
+    expect(screen.getByLabelText('Prompt')).toHaveValue(state === 'prepared' ? 'Fix invoice dates' : '');
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Corrected invoice request' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
     await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(2));
     expect(vi.mocked(submissions.submitTask).mock.calls[1][0]).not.toBe(oldKey);
@@ -110,7 +191,7 @@ describe('New Task issue launcher', () => {
     await waitFor(() => expect(submissions.retryTaskSubmission).toHaveBeenCalledWith(key));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start over' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
-    await waitFor(() => expect(screen.getByLabelText('Instruction')).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText('Prompt')).toBeEnabled());
     expect(submissions.taskSnapshotStorage).not.toHaveBeenCalledWith(`${API_BASE_URL}:alice`, key, null);
   });
 
@@ -133,7 +214,7 @@ describe('New Task issue launcher', () => {
     const original = vi.mocked(submissions.submitTask).mock.calls[0];
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
     expect(await screen.findByRole('region', { name: 'Unresolved submissions' })).toHaveTextContent('Fix invoice dates');
-    fireEvent.change(screen.getByLabelText('Instruction'), { target: { value: 'Another request' } });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Another request' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
     await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start over' })).toBeEnabled());
@@ -144,7 +225,7 @@ describe('New Task issue launcher', () => {
     const reopen = await screen.findAllByRole('button', { name: 'Reopen submission' });
     fireEvent.click(reopen[0]);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Retry submission' })).toBeEnabled());
-    expect(screen.getByLabelText('Instruction')).toHaveValue('Fix invoice dates');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
     expect(screen.getByText('invoice.txt')).toBeInTheDocument();
     expect(submissions.getTaskSubmission).toHaveBeenLastCalledWith(original[0]);
     vi.mocked(submissions.submitTask).mockResolvedValue({ ...pending, state: 'queued', taskId: 'recovered-task', error: null });

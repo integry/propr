@@ -26,6 +26,12 @@ security="$(docker info --format '{{range .SecurityOptions}}{{println .}}{{end}}
 [[ "$security" == *name=rootless* ]] || fail 'Docker daemon does not report rootless mode'
 cgroups="$(docker info --format '{{.CgroupVersion}}/{{.CgroupDriver}}')"
 [[ "$cgroups" == '2/systemd' ]] || fail 'rootless resource limits require cgroup v2 with systemd'
+# The Redis helper runs its container with --init so tini reaps the health-check
+# processes the container's PID namespace reparents to PID 1. A daemon without an
+# init binary would instead fail every shard's Redis start with an opaque OCI
+# error, so name the missing prerequisite here.
+init_binary="$(docker info --format '{{.InitBinary}}')"
+[[ -n "$init_binary" ]] || fail 'rootless daemon reports no init binary; --init containers cannot start'
 
 # The socket remains explicit after HOME and DOCKER_CONFIG move to job state.
 # Only successful validation enables the always() Redis cleanup on this daemon.

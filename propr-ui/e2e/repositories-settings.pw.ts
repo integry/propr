@@ -157,7 +157,7 @@ test('shows and updates shared settings while preserving the selected branch', a
   const previews = settings.getByRole('checkbox', { name: 'Visual previews for integry/propr', exact: true });
   await expect(autoCi).toBeChecked();
   await expect(previews).toBeChecked();
-  await expect(settings.getByRole('textbox')).toHaveValue(sharedPreview.instructions);
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue(sharedPreview.instructions);
   await expect(settings.getByRole('button', { name: 'Videos', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(settings.getByRole('button', { name: 'Images', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await expect(settings.getByText('release', { exact: true })).toBeVisible();
@@ -249,7 +249,7 @@ test('keeps navigation compact and saves settings for the selected repository', 
   await expect.poll(api.chatLoads).toBeGreaterThan(0);
   const initialChatLoads = api.chatLoads();
   await settings.getByText('Auto CI follow-up', { exact: true }).click();
-  await settings.getByRole('textbox').fill('Capture separate desktop and mobile views.');
+  await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture separate desktop and mobile views.');
   await settings.getByRole('button', { name: 'Videos', exact: true }).click();
   await expect.poll(() => api.writes.at(-1)?.[0].visualPreview).toEqual({
     enabled: true, types: ['image', 'video'], instructions: 'Capture separate desktop and mobile views.',
@@ -261,17 +261,17 @@ test('keeps navigation compact and saves settings for the selected repository', 
 
   await sdk.click();
   const sdkSettings = page.getByRole('region', { name: 'Settings for integry/integration-sdk', exact: true });
-  await expect(sdkSettings.getByRole('textbox')).toHaveCount(0);
+  await expect(sdkSettings.getByRole('textbox', { name: 'Visual preview instructions for integry/integration-sdk', exact: true })).toHaveCount(0);
   await sdkSettings.getByText('Visual previews', { exact: true }).click();
-  await expect(sdkSettings.getByRole('textbox')).toHaveValue('');
+  await expect(sdkSettings.getByRole('textbox', { name: 'Visual preview instructions for integry/integration-sdk', exact: true })).toHaveValue('');
   await propr.click();
-  await expect(settings.getByRole('textbox')).toHaveValue('Capture separate desktop and mobile views.');
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue('Capture separate desktop and mobile views.');
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(settings).toHaveCount(0);
   await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Reindex repository', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(settings.getByRole('textbox')).toHaveValue('Capture separate desktop and mobile views.');
+  await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue('Capture separate desktop and mobile views.');
   await page.mouse.move(1400, 850);
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir('../.propr/previews', { recursive: true });
@@ -291,7 +291,7 @@ for (const width of [320, 390]) {
     }
     await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
     const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
-    await expect(settings.getByRole('textbox')).toBeVisible();
+    await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toBeVisible();
     for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Settings']) {
       const tab = page.getByRole('button', { name, exact: true });
       await expect(tab).toBeInViewport({ ratio: 1 });
@@ -301,12 +301,12 @@ for (const width of [320, 390]) {
     }
     const tabStrip = page.getByRole('button', { name: 'Settings', exact: true }).locator('../..');
     expect(await tabStrip.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-    await settings.getByRole('textbox').fill('Capture the mobile navigation.');
+    await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture the mobile navigation.');
     await settings.getByText('Auto CI follow-up', { exact: true }).click();
     await expect.poll(() => api.writes.at(-1)?.[0].autoFollowupOnFailedCi).toBe(true);
     await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-    const box = (await settings.getByRole('textbox').boundingBox())!;
+    const box = (await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).boundingBox())!;
     expect(box.x + box.width).toBeLessThanOrEqual(width);
     if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
       await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-mobile.png' });

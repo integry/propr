@@ -10,6 +10,7 @@
 import React, { createContext, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Check,
   CornerDownRight,
   Eye,
   GitMerge,
@@ -22,6 +23,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { RepositoryIcon } from '../RepositoryIcon';
+import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { isExternalHref } from './sectionState';
 
@@ -243,12 +245,9 @@ export const SectionError: React.FC<{ message: string; onRetry: () => void }> = 
   </div>
 );
 
-export const SectionSkeleton: React.FC<{ rows?: number }> = ({ rows = 3 }) => (
-  <div className="animate-pulse space-y-2 px-3 py-3" data-testid="section-skeleton">
-    {Array.from({ length: rows }, (_, index) => (
-      <div key={index} className="h-10 rounded-sm bg-slate-100" />
-    ))}
-  </div>
+/** A section's first read, drawn under its real heading so the column never jumps. */
+export const SectionSkeleton: React.FC<{ rows?: number; label?: string }> = ({ rows = 3, label = 'Loading…' }) => (
+  <ListSkeleton rows={rows} layout="row" label={label} className="px-3 py-3" data-testid="section-skeleton" />
 );
 
 /**
@@ -312,6 +311,9 @@ export const RowMetaLines: React.FC<{
  */
 const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
   review: Eye,
+  verify: Check,
+  ci: RotateCw,
+  test: RotateCw,
   fix: Wrench,
   ultrafix: Zap,
   implement: Sparkles,
@@ -331,12 +333,15 @@ const WORK_TYPE_ICONS: Record<string, LucideIcon> = {
  * so it cannot be mistaken for the repository chip or the identifier on the
  * line above.
  */
-export const WorkTypeBadge: React.FC<{ type: string }> = ({ type }) => {
-  const Icon = WORK_TYPE_ICONS[type.toLowerCase()];
+export const WorkTypeBadge: React.FC<{ type: string; compact?: boolean }> = ({ type, compact = false }) => {
+  const kind = type.toLowerCase();
+  const Icon = WORK_TYPE_ICONS[kind];
+  const tone = kind === 'review' ? 'text-slate-500'
+    : kind === 'verify' || kind === 'ci' ? 'text-slate-400' : 'text-slate-600';
   return (
     <span
       data-testid="work-type-badge"
-      className="mr-2 inline-flex -translate-y-px items-center gap-1 whitespace-nowrap align-middle text-[10px] font-bold uppercase leading-4 tracking-wider text-slate-600"
+      className={`inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-bold uppercase leading-4 ${compact ? `w-20 shrink-0 font-mono ${tone}` : 'mr-2 -translate-y-px align-middle tracking-wider text-slate-600'}`}
     >
       {Icon && <Icon className="h-3 w-3 flex-none" strokeWidth={2.25} aria-hidden="true" />}
       {type}

@@ -36,9 +36,9 @@ ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr
 <details>
 <summary><strong>More screenshots</strong> — Planner Studio, dashboard, AI review</summary>
 <br />
-<p align="center"><img src="media/readme-planner.png" alt="Planner Studio: a prompt over a chosen repository with context scope and cost estimate before generation." width="720" /></p>
-<p align="center"><img src="media/readme-dashboard.png" alt="The dashboard: recent task activity, success rate, cost, 30-day activity chart, and task-status breakdown." width="720" /></p>
-<p align="center"><img src="media/readme-review.png" alt="An AI code review posted on a GitHub pull request: overall evaluation and severity-grouped findings." width="720" /></p>
+<p align="center"><img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Current Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" /></p>
+<p align="center"><img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="Current dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" /></p>
+<p align="center"><img src="media/readme-review.png" alt="Historical GitHub review example. Current reviews use numbered F findings and S suggestions." width="720" /></p>
 </details>
 
 ProPR is a set of stages you can adopt independently — use one or all:
@@ -48,7 +48,13 @@ ProPR is a set of stages you can adopt independently — use one or all:
 - **Review & fix** — drive existing PRs with slash commands (`/review`, `/fix`, `/ultrafix`, model routing)
 - **Operate** — monitor tasks, costs, logs, and agent capacity from the Web UI
 
+The GitHub PR and review images above are historical examples; the dashboard and Planner Studio captures show the 0.9.0 source UI with safe fixture data. Current review selection uses [F# and S# identifiers](docs/docs/features/pr-commands.md#fix).
+
 ## Highlights
+
+- **[Tasks and goals](docs/docs/features/launching-work.md)**: start a single instruction or steer a long-running native agent session with corrective inputs.
+- **[Inbox and push](docs/docs/features/inbox.md)**: follow work across browser, installed PWA and desktop, with personal and repository notification controls.
+- **[MCP connections](docs/docs/features/mcp.md)**: authorize connected apps and use scoped tools for activity, plans, goals, tasks and PRs.
 
 - **Multi-agent**: Claude Code, OpenAI Codex, Google Antigravity, OpenCode, and Mistral Vibe — all first-class, selectable per issue
 - **Label-based model routing**: pick the agent/model per issue with `llm-<agent>-<model>` labels; multiple labels fan out into parallel jobs
@@ -114,8 +120,8 @@ Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
 - `llm-claude-fable51` — Claude Fable 5.1
 - `llm-codex-astra` — Codex GPT-6 Astra
 - `llm-opencode-big-pickle` — OpenCode Big Pickle
-- `llm-antigravity-flash38-high` — Antigravity Gemini 3.8 Flash High
-- `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
+- `llm-antigravity-flash38` — Antigravity Gemini 3.8 Flash
+- `llm-antigravity-opus55` — Antigravity Claude Opus 5.5 (reasoning effort selected separately)
 
 Multiple model labels on one issue create one independent job (and branch) per model. Add a `base-<branch>` label to target a non-default branch.
 
@@ -141,6 +147,9 @@ State labels are derived from the trigger label, so an issue labeled `AI` moves 
 | Server setup | https://docs.propr.dev/docs/tutorials/setup-server |
 | Secure VPS deployment | https://docs.propr.dev/docs/tutorials/setup-vps |
 | Daily usage | https://docs.propr.dev/docs/tutorials/usage |
+| Tasks and goals | [Launch work](docs/docs/features/launching-work.md) · [Goals](docs/docs/features/goals.md) |
+| Inbox and notifications | [Guide](docs/docs/features/inbox.md) |
+| 0.9.0 preparation | [Changelog](CHANGELOG.md) · [Coverage audit](docs/release-0.9.0-audit.md) |
 | Planner Studio | https://docs.propr.dev/docs/tutorials/planner-studio |
 | Desktop application | [apps/desktop/README.md](apps/desktop/README.md) |
 | CLI reference | https://docs.propr.dev/docs/features/propr-cli |

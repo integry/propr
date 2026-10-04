@@ -1,3 +1,4 @@
+import type { Knex } from 'knex';
 import { Request, Response } from 'express';
 import { db, logger } from '@propr/core';
 
@@ -16,10 +17,10 @@ export interface UserRepoPreferences {
 /**
  * Get user repo preferences from database.
  */
-async function getUserRepoPrefs(userId: string): Promise<UserRepoPreferences> {
+export async function getUserRepoPrefs(userId: string, database: Knex = db): Promise<UserRepoPreferences> {
   try {
     const key = `user_repo_prefs_${userId}`;
-    const result = await db('system_configs').where({ key }).first();
+    const result = await database('system_configs').where({ key }).first();
     if (result && result.value !== undefined && result.value !== null) {
       return typeof result.value === 'string' ? JSON.parse(result.value) : result.value;
     }

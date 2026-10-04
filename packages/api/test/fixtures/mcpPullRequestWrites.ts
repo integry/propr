@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the pull-request write scenarios share one stateful GitHub fixture */
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import type { McpPrincipal } from '../../mcp/policy.js';
@@ -17,6 +18,9 @@ export type Args = Record<string, any>; // eslint-disable-line @typescript-eslin
  */
 export function leaseRedis() {
   const leases = new Map<string, { token: string; expiresAt: number }>();
+  // Record-level consumption the worker writes and `projectDiscussionComment`
+  // reads, so a consumed suggestion can be exercised without a live Redis.
+  const consumedRecords = new Set<string>();
   let clock = 0;
   const held = (key: string) => {
     const lease = leases.get(key);
@@ -24,13 +28,18 @@ export function leaseRedis() {
     return leases.get(key);
   };
   return {
-    get: async () => null, sMembers: async () => [],
+    get: async () => null,
+    sMembers: async (key: string) => (key.endsWith(':findings') ? [...consumedRecords] : []),
+    /** Mark one `<commentId>:F|S:<id>` record consumed, as a finished /fix run would. */
+    consume: (record: string) => { consumedRecords.add(record); },
     set: async (key: string, value: string, options?: { NX?: boolean; PX?: number }) => {
       if (options?.NX && held(key)) return null;
       leases.set(key, { token: value, expiresAt: options?.PX ? clock + options.PX : Infinity });
       return 'OK';
     },
     eval: async (script: string, { keys, arguments: [token, ttl] }: { keys: string[]; arguments: string[] }) => {
+      // The live-output reader's atomic read: no agent output in this fixture.
+      if (keys[0].startsWith('agent:output:')) return ['0', 'legacy', '0', '', '0', '', '0'];
       const lease = held(keys[0]);
       if (lease?.token !== token) return 0;
       if (script.includes('pexpire')) lease.expiresAt = clock + Number(ttl);
@@ -43,7 +52,7 @@ export function leaseRedis() {
 
 export type LeaseRedis = ReturnType<typeof leaseRedis>;
 
-interface WriteFixture {
+export interface WriteFixture {
   t: TestContext;
   call: (name: string, args: Args, actor?: McpPrincipal) => Promise<Args>;
   mutate: (name: string, args: Args, actor?: McpPrincipal) => Promise<Args>;
@@ -51,13 +60,17 @@ interface WriteFixture {
   findPullRequest: (repository: string, number: number) => PullRequestFixture;
   restCalls: Array<{ route: string; args: Args }>;
   comments: CommentFixture[];
+  /** Files changed between two heads, keyed by `from...to`, as GitHub's compare endpoint reports them. */
+  comparisons: Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>;
+  /** Every file path at a commit, keyed by its SHA, as GitHub's recursive tree endpoint reports them. */
+  trees: Map<string, string[]>;
   redis: LeaseRedis;
 }
 
 type GitHubRequest = (route: string, args: Args) => Promise<unknown>;
 
 /** Run `hook` once, before the next GitHub request to `route` is answered. */
-function interceptRest(principal: McpPrincipal, route: string, hook: () => Promise<void>): void {
+export function interceptRest(principal: McpPrincipal, route: string, hook: () => Promise<void>): void {
   const github = principal.github as unknown as { request: GitHubRequest };
   const next = github.request;
   let pending = true;
@@ -71,6 +84,49 @@ function interceptRest(principal: McpPrincipal, route: string, hook: () => Promi
 }
 
 /**
+ * A published review at head `a…a` offering two merge blockers (F20, F21) and
+ * five follow-ups (S30…S34), which is what a `/fix` selection is validated
+ * against. Both namespaces continue a PR-wide sequence rather than restarting at
+ * 1 in each comment, so selecting S32 and S34 exercises a mid-list selection of
+ * suggestions a previous review already numbered past.
+ */
+export function fixtureReviewBody(head: string): string {
+  return [
+    '## 🔍 AI Code Review — Fixture',
+    '',
+    '## Overall Evaluation',
+    'Two blockers and five follow-ups.',
+    '## Merge blockers',
+    'Every finding below was introduced by this PR and must be resolved before merging.',
+    '',
+    '### F20: 🔴 Preserve concurrent updates',
+    '- **Required behavior:** Preserve unrelated changes.',
+    '- **Evidence:** src/config.ts:10 — the snapshot write replaces the stale list.',
+    '- **Minimum fix:** Reject stale revisions.',
+    '',
+    '### F21: 🔴 Release the renewed lease',
+    '- **Required behavior:** A released lease must be reacquirable.',
+    '- **Evidence:** src/lease.ts:40 — release compares the old token.',
+    '- **Minimum fix:** Compare against the renewed token.',
+    '## Suggestions',
+    'These are optional follow-ups and are not sent to `/fix`.',
+    '### S30: 🟢 Add a cancellation audit log',
+    'An audit trail would make operator overlap easier to diagnose.',
+    '### S31: 🟢 Document the retry budget',
+    'The budget is only described in the code.',
+    '### S32: 🟢 Extract the retry helper',
+    'The retry block is duplicated in two callers.',
+    '### S33: 🟢 Name the lease constants',
+    'The magic numbers are hard to follow.',
+    '### S34: 🟢 Add a metrics counter',
+    'Operators cannot see how often the path runs.',
+    '## Score',
+    'Score: 6/10',
+    `<!-- propr:ai-review model="fixture" head="${head}" -->`,
+  ].join('\n');
+}
+
+/**
  * The write half of the pull request surface: commenting, model routing and the
  * ultrafix circuit breaker. It shares the caller's GitHub fixture, so the label
  * state each subtest leaves behind is the state the next one reads.
@@ -78,8 +134,9 @@ function interceptRest(principal: McpPrincipal, route: string, hook: () => Promi
 export async function verifyPullRequestWrites(
   { t, call, mutate, principal, findPullRequest, restCalls, comments, redis }: WriteFixture,
 ): Promise<void> {
-  await t.test('comment_on_pull_request rejects slash commands and enforces the expected head', async () => {
+  await t.test('comment_on_pull_request resolves an omitted head and enforces a supplied head', async () => {
     const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const pullReads = () => restCalls.filter(item => item.route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}').length;
     const command = await mutate('comment_on_pull_request', { ...pull, message: '/ultrafix goal=9' });
     assert.equal(command.state, 'failed');
     assert.equal(command.result.error.code, 'USE_EXPLICIT_TOOL');
@@ -87,16 +144,54 @@ export async function verifyPullRequestWrites(
     assert.equal(embedded.result.error.code, 'USE_EXPLICIT_TOOL');
     const stale = await mutate('comment_on_pull_request', { ...pull, expectedHead: 'f'.repeat(40), message: 'Cover transient errors too.' });
     assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.deepEqual(stale.result.error.details, { expectedHead: 'f'.repeat(40), currentHead: 'a'.repeat(40) });
+    const beforeCallerRead = pullReads();
     const posted = await mutate('comment_on_pull_request', { ...pull, message: 'Cover transient errors too.' });
+    assert.equal(pullReads() - beforeCallerRead, 1, 'a caller-pinned comment reads the pull request once');
     assert.equal(posted.state, 'posted');
     assert.equal(posted.result.expectedHead, 'a'.repeat(40));
+    assert.equal(posted.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(posted.result.headSource, 'caller');
     assert.equal(posted.result.pullRequest, 42);
     assert.ok(posted.result.url.includes('#issuecomment-'));
     const stored = comments.find(comment => comment.id === posted.result.commentId)!;
     assert.ok(stored.body.startsWith('Cover transient errors too.'));
+    assert.ok(stored.body.endsWith(`head:${'a'.repeat(40)} -->`));
     assert.ok(!/^\s*\//m.test(stored.body.split('<!--')[0]));
+
+    const beforeServerRead = pullReads();
+    const beforeServerPost = comments.length;
+    const resolved = await mutate('comment_on_pull_request', {
+      repository: pull.repository, pullRequest: pull.pullRequest, message: 'Use the current revision.',
+    });
+    assert.equal(pullReads() - beforeServerRead, 1, 'a server-resolved comment reads the pull request once');
+    assert.equal(comments.length - beforeServerPost, 1, 'a server-resolved comment posts once');
+    assert.equal(resolved.state, 'posted');
+    assert.equal(resolved.result.expectedHead, undefined);
+    assert.equal(resolved.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(resolved.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${'a'.repeat(40)} -->`));
     // The slash-command attempts must not have reached GitHub.
     assert.ok(!comments.some(comment => comment.body.startsWith('/')));
+  });
+
+  await t.test('review and ultrafix receipts report the resolved head source', async () => {
+    const base = { repository: 'acme/repo', pullRequest: 42 };
+    const review = await mutate('review_pull_request', base);
+    assert.equal(review.state, 'posted');
+    assert.equal(review.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(review.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${'a'.repeat(40)} -->`));
+
+    const ultrafix = await mutate('run_ultrafix', { ...base, expectedHead: 'a'.repeat(40) });
+    assert.equal(ultrafix.state, 'posted');
+    assert.equal(ultrafix.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(ultrafix.result.headSource, 'caller');
+    const stale = await mutate('run_ultrafix', { ...base, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.deepEqual(stale.result.error.details, { expectedHead: 'f'.repeat(40), currentHead: 'a'.repeat(40) });
   });
 
   await t.test('set_pull_request_model converges on exactly one managed model label', async () => {
@@ -152,7 +247,7 @@ export async function verifyPullRequestWrites(
     const closed = await mutate('set_pull_request_model', { ...pull, model: 'claude-sonnet-5' });
     live.state = 'OPEN';
     assert.equal(closed.state, 'failed');
-    assert.equal(closed.result.error.code, 'PRECONDITION_FAILED');
+    assert.equal(closed.result.error.code, 'PULL_REQUEST_CLOSED');
     assert.equal(writes(), baseline, 'no label may be written after the precondition changed');
     assert.deepEqual(live.labels, before);
   });
@@ -188,6 +283,46 @@ export async function verifyPullRequestWrites(
     assert.equal(restCalls.filter(item => item.route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}' && item.args.name === 'ultrafix').length, deletions);
     const stale = await mutate('stop_ultrafix', { ...pull, expectedHead: 'f'.repeat(40) });
     assert.equal(stale.result.error.code, 'STALE_HEAD');
+  });
+
+  await t.test('start_ultrafix re-arms the loop through the /ultrafix command at a pinned head', async () => {
+    const { saveUltrafixRatingGoal, saveUltrafixMaxCycles } = await import('@propr/core');
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const withoutReview = { ...principal, scopes: principal.scopes.filter(scope => scope !== 'review') } as McpPrincipal;
+    const posted = () => comments.filter(comment => comment.repository === 'acme/repo' && comment.pullRequest === 42 && comment.body.startsWith('/ultrafix')).length;
+    const before = posted();
+    const refused = await mutate('start_ultrafix', pull, withoutReview);
+    assert.equal(refused.result.error.code, 'INSUFFICIENT_SCOPE');
+    const stale = await mutate('start_ultrafix', { ...pull, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    assert.equal(posted(), before, 'a refused start must post nothing');
+
+    // Omitted bounds track the instance settings, including after they change.
+    await saveUltrafixRatingGoal(8);
+    await saveUltrafixMaxCycles(4);
+    const started = await mutate('start_ultrafix', pull);
+    assert.equal(started.state, 'posted');
+    assert.equal(started.lifecycle.state, 'accepted');
+    assert.equal(started.result.goal, 8);
+    assert.equal(started.result.maxCycles, 4);
+    assert.equal(started.result.resolvedHead, 'a'.repeat(40));
+    assert.equal(started.result.headSource, 'caller');
+    assert.equal(started.result.wasActive, false);
+    assert.equal(started.result.circuitBreaker, 'requested');
+    const body = comments.at(-1)!.body;
+    assert.match(body, /^\/ultrafix goal=8 max=4\n\n<!-- propr-mcp:[^;]+; head:a{40} -->$/);
+    assert.equal(started.result.commentId, comments.at(-1)!.id);
+    // The /ultrafix intake owns the label; the tool never writes it directly.
+    assert.ok(!restCalls.some(item => item.route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels' && (item.args.labels as string[]).includes('ultrafix')));
+
+    await saveUltrafixRatingGoal(6);
+    assert.equal((await mutate('start_ultrafix', pull)).result.goal, 6);
+    const explicit = await mutate('start_ultrafix', { ...pull, ultrafixGoal: 10, ultrafixMaxCycles: 2 });
+    assert.equal(explicit.result.goal, 10);
+    assert.equal(explicit.result.maxCycles, 2);
+    assert.ok(comments.at(-1)!.body.startsWith('/ultrafix goal=10 max=2\n'));
+    await saveUltrafixRatingGoal(8);
   });
 
   await t.test('a truncated label list leaves the ultrafix breaker undetermined', async () => {
@@ -266,5 +401,99 @@ export async function verifyPullRequestWrites(
     assert.equal(routed.state, 'completed');
     assert.deepEqual(routed.result.removedLabels, ['llm-claude-sonnet-5']);
     assert.deepEqual(findPullRequest('acme/repo', 42).labels.filter(name => name.startsWith('llm-')), ['llm-claude-opus-5']);
+  });
+
+  await t.test('fix_review_findings selects findings and suggestions together, or names what it rejected', async () => {
+    const head = 'a'.repeat(40);
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: head };
+    const reviewCommentId = 960;
+    comments.push({ id: reviewCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]',
+      createdAt: new Date().toISOString(), body: fixtureReviewBody(head) });
+    const staleCommentId = 961;
+    comments.push({ id: staleCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]',
+      createdAt: new Date().toISOString(), body: fixtureReviewBody('b'.repeat(40)) });
+    const plainCommentId = comments.find(comment => comment.id === 101)!.id;
+    const posted = () => comments.filter(comment => comment.body.startsWith('/fix')).length;
+
+    // Both namespaces are projected for selection, from the same consumed set.
+    const inspected = await call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, commentId: reviewCommentId });
+    assert.deepEqual(inspected.comments[0].review.currentFindingIds, ['F20', 'F21']);
+    assert.deepEqual(inspected.comments[0].review.currentSuggestionIds, ['S30', 'S31', 'S32', 'S33', 'S34']);
+
+    // Backward compatibility: a findings-only request posts what it always did.
+    const findingsOnly = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F20'] });
+    assert.equal(findingsOnly.state, 'posted', JSON.stringify(findingsOnly));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F20');
+    assert.deepEqual(findingsOnly.result.findingIds, ['F20']);
+    assert.deepEqual(findingsOnly.result.suggestionIds, []);
+    assert.equal(findingsOnly.result.resolvedHead, head);
+    assert.equal(findingsOnly.result.headSource, 'caller');
+    // Head unchanged since the review: nothing to re-anchor, nothing skipped.
+    assert.equal(findingsOnly.result.reviewedHead, head);
+    assert.equal(findingsOnly.result.reanchored, false);
+    assert.equal(findingsOnly.result.comparison, 'same_head');
+    assert.deepEqual(findingsOnly.result.applied, [{ id: 'F20', kind: 'finding', touchedPaths: [] }]);
+    assert.deepEqual(findingsOnly.result.skipped, []);
+
+    // Both namespaces, mixed and lower case on input, canonical on the wire,
+    // with the caller's instructions carried through unchanged below the command.
+    const mixed = await mutate('fix_review_findings', {
+      ...pull, reviewCommentId, findingIds: ['f20'], suggestionIds: ['s32', 's34'],
+      instructions: 'Keep the public helper signature unchanged.',
+    });
+    assert.equal(mixed.state, 'posted', JSON.stringify(mixed));
+    const mixedBody = comments.at(-1)!.body;
+    assert.equal(mixedBody.split('\n')[0], '/fix F20 S32 S34');
+    assert.ok(mixedBody.includes('\n\nKeep the public helper signature unchanged.\n\n<!-- propr-mcp:'));
+    assert.deepEqual(mixed.result.findingIds, ['F20']);
+    assert.deepEqual(mixed.result.suggestionIds, ['S32', 'S34']);
+
+    // Suggestions alone are a complete request.
+    const suggestionsOnly = await mutate('fix_review_findings', {
+      repository: pull.repository, pullRequest: pull.pullRequest, reviewCommentId, suggestionIds: ['S30'],
+    });
+    assert.equal(suggestionsOnly.state, 'posted', JSON.stringify(suggestionsOnly));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix S30');
+    assert.equal(suggestionsOnly.result.resolvedHead, head);
+    assert.equal(suggestionsOnly.result.headSource, 'server');
+    assert.ok(comments.at(-1)!.body.endsWith(`head:${head} -->`));
+
+    const before = posted();
+    const empty = await mutate('fix_review_findings', { ...pull, reviewCommentId });
+    assert.equal(empty.state, 'failed');
+    assert.equal(empty.result.error.code, 'MISSING_INPUT');
+    const bothEmpty = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: [], suggestionIds: [] });
+    assert.equal(bothEmpty.result.error.code, 'MISSING_INPUT');
+
+    // An identifier the review does not offer is named, never dropped.
+    const unknown = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F99'], suggestionIds: ['S9'] });
+    assert.equal(unknown.state, 'failed');
+    assert.equal(unknown.result.error.code, 'STALE_FINDINGS');
+    assert.ok(unknown.result.error.message.includes('F99'), unknown.result.error.message);
+    assert.ok(unknown.result.error.message.includes('S9'), unknown.result.error.message);
+    assert.ok(unknown.result.error.message.includes('F20, F21'), unknown.result.error.message);
+    assert.ok(unknown.result.error.message.includes('S30, S31, S32, S33, S34'), unknown.result.error.message);
+
+    // A suggestion an earlier run already implemented is no longer selectable.
+    redis.consume(`${reviewCommentId}:S:S31`);
+    const consumed = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S31'] });
+    assert.equal(consumed.result.error.code, 'STALE_FINDINGS');
+    assert.ok(consumed.result.error.message.includes('S31'), consumed.result.error.message);
+
+    // A namespace mismatch is refused by the schema before anything is posted.
+    await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['S32'] }));
+    await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['F20'] }));
+    await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F0'] }));
+
+    // The head preconditions are unchanged.
+    const staleHead = await mutate('fix_review_findings', { ...pull, expectedHead: 'f'.repeat(40), reviewCommentId, findingIds: ['F20'] });
+    assert.equal(staleHead.result.error.code, 'STALE_HEAD');
+    // A caller pinning the head is still protected against a review of an older one.
+    const pinnedOlder = await mutate('fix_review_findings', { ...pull, expectedHead: 'b'.repeat(40), reviewCommentId: staleCommentId, findingIds: ['F20'] });
+    assert.equal(pinnedOlder.result.error.code, 'STALE_HEAD');
+    const notAReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: plainCommentId, findingIds: ['F20'] });
+    assert.equal(notAReview.result.error.code, 'STALE_FINDINGS');
+
+    assert.equal(posted(), before, 'no rejected selection may reach GitHub');
   });
 }

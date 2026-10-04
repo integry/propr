@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef } from 'react';
 
+/** Best-effort publications can be lost even while the browser stays connected. */
+export const CONNECTED_RECONCILE_MS = 5 * 60_000;
+
 interface LiveRefreshSchedulerOptions {
   isConnected: boolean;
   refresh: () => unknown | Promise<unknown>;
   coalesceMs?: number;
   fallbackPollMs?: number;
+  /** Opt in for push-driven projections whose publications are best effort. */
+  connectedPollMs?: number;
   /**
    * Identifies the data being refreshed. Pending work from an old scope is
    * discarded when, for example, a detail route navigates to another task.
@@ -14,7 +19,7 @@ interface LiveRefreshSchedulerOptions {
 
 export interface LiveRefreshScheduler {
   (): void;
-  /** Run an initial or user-requested refresh without the coalescing delay. */
+  /** Refresh without the coalescing delay, deferring hidden-tab work until visible. */
   refreshNow: () => Promise<void>;
 }
 
@@ -28,6 +33,7 @@ export function useLiveRefreshScheduler({
   refresh,
   coalesceMs = 100,
   fallbackPollMs = 30_000,
+  connectedPollMs,
   scopeKey,
 }: LiveRefreshSchedulerOptions): LiveRefreshScheduler {
   const documentIsHidden = () => document.visibilityState === 'hidden';
@@ -56,6 +62,8 @@ export function useLiveRefreshScheduler({
 
     pendingRef.current = false;
     const promise = Promise.resolve().then(async () => {
+      if (!mountedRef.current || generation !== generationRef.current) return;
+      if (documentIsHidden()) { pendingRef.current = true; return; }
       await refreshRef.current();
     });
     inFlightRef.current = { generation, promise };
@@ -100,7 +108,7 @@ export function useLiveRefreshScheduler({
       if (existing?.generation === generation) await existing.promise;
       if (!mountedRef.current || generation !== generationRef.current) return;
       clearTimer();
-      if (pendingRef.current) await runRefresh(generation);
+      if (pendingRef.current && !documentIsHidden()) await runRefresh(generation);
     })();
     immediateRef.current = { generation, promise };
     void promise.finally(() => {
@@ -149,6 +157,14 @@ export function useLiveRefreshScheduler({
       window.removeEventListener('focus', recoverVisible);
     };
   }, [fallbackPollMs, schedule]);
+
+  useEffect(() => {
+    if (!connectedPollMs) return;
+    const safety = window.setInterval(() => {
+      if (connectedRef.current && !documentIsHidden()) schedule();
+    }, connectedPollMs);
+    return () => window.clearInterval(safety);
+  }, [connectedPollMs, schedule]);
 
   const scheduler = schedule as LiveRefreshScheduler;
   scheduler.refreshNow = refreshNow;

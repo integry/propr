@@ -6,6 +6,18 @@ same URL using `createMcpHandler({ legacy: 'stateless' })` and one catalog.
 There is no session-global selected instance. MCP authentication is separate
 from the existing GitHub-bearer API middleware.
 
+## Enable through Settings
+
+Administrators can open **Settings → Integrations → MCP Server**, confirm enablement
+and choose a scope ceiling. With `MCP_ENABLED` unset, this UI-managed path derives
+an HTTPS origin from `MCP_PUBLIC_ORIGIN`, `API_PUBLIC_URL` or the GitHub callback,
+and derives its encryption key from `MCP_ENCRYPTION_KEY` or the existing credential,
+system-task or session secret chain. It persists an instance identity. Preserve
+these secrets across restarts. A changed key turns MCP off (**Reconnect required**)
+until an administrator revokes all connections; clients then reconnect.
+`MCP_ENABLED=false` forces MCP off; `true` selects the explicit environment-managed
+setup below. See the [illustrated connection guide](docs/features/mcp.md).
+
 ## Direct instance setup
 
 Configure an ordinary working ProPR instance, including GitHub browser OAuth,
@@ -43,7 +55,7 @@ Discovery endpoints:
 Use the exact `https://your-instance.example/api/mcp` as the OAuth `resource`
 in authorization, code exchange and refresh. Public clients use
 authorization-code + S256 PKCE. Codes last 60 seconds and are consumed
-transactionally. Access tokens last five minutes. Refresh tokens rotate;
+transactionally. Access tokens last 15 minutes. Refresh tokens rotate;
 reuse revokes the entire 30-day grant, including newly rotated access tokens.
 GitHub credentials are separately encrypted server-side and never returned
 to clients. Instance membership, allowlist and repository access are checked
@@ -57,10 +69,24 @@ issue and starts the ordinary issue implementation workflow immediately, without
 a plan or goal. Repository write access is required. Optional `agentAlias` and
 `model` select supported routing; otherwise instance defaults apply.
 
+Optional automation matches `implement_plan`. `runUltrafix` (review scope) runs
+the review/fix loop on the resulting pull request as soon as it opens, bounded by
+`ultrafixGoal` (1-10, defaults to the instance `ultrafix_rating_goal`) and
+`ultrafixMaxCycles` (1-10, default 3); both bounds apply only when `runUltrafix`
+is true. An omitted `ultrafixGoal` is resolved from the instance setting when
+the call is made, so it always matches what the Settings page shows; the same
+holds for `implement_plan`, `run_ultrafix` (`goal`) and `start_ultrafix`. `autoMerge` (merge scope) merges
+the pull request once it is ready. Both opt-ins are applied as the shared
+`ultrafix` and `auto-merge` issue labels, so removing a label stops the
+automation exactly as it does for planned work.
+
 ```json
 {
   "repository": "owner/repo",
   "instruction": "Fix the invoice date format",
+  "runUltrafix": true,
+  "ultrafixGoal": 8,
+  "ultrafixMaxCycles": 3,
   "idempotencyKey": "invoice-date-fix-001"
 }
 ```
@@ -119,9 +145,10 @@ been exercised by the local fixture tests.
 
 ## Connect instance registration
 
-Core [PR #2291](https://github.com/integry/propr/pull/2291) coordinates
-[routing PR #180](https://github.com/integry/propr-routing/pull/180) and
-[site PR #90](https://github.com/integry/propr-site/pull/90).
+Connect lets public clients reach an instance through the hosted ProPR Connect
+gateway at `https://mcp.propr.dev`. That hosted gateway is not yet publicly
+available; this section describes the instance side, which is implemented.
+Connect trust requires the environment-managed setup (`MCP_ENABLED=true`).
 Direct OAuth works independently of Connect trust. Hosted access uses the
 [implemented Connect contract](mcp-connect-contract.md).
 
@@ -166,8 +193,8 @@ Direct OAuth works independently of Connect trust. Hosted access uses the
    `MCP_INSTANCE_ID` cannot overwrite an existing identity.
 5. Restart the API with the matching configuration. Add each intended user
    through the existing Access settings and configure the allowed repositories.
-   Connect membership alone does not create local access. Connect a public
-   client to `https://mcp.propr.dev/mcp`, then explicitly select its installation,
+   Connect membership alone does not create local access. Once the hosted
+   gateway is available, connect a public client to `https://mcp.propr.dev/mcp`, then explicitly select its installation,
    requested permissions and repositories in the Connect browser consent flow.
    GitHub credential handoff happens server-to-server on the first request.
 
@@ -183,7 +210,6 @@ The existing managed tunnel routes `/api/*`, which covers delegated MCP. It does
 not automatically expose direct `/.well-known`, `/authorize`, `/mcp/consent`, etc.
 To offer **direct OAuth through a domain**, use the complete reverse-proxy routes
 listed in direct setup; public Connect clients use Connect's discovery/consent.
-No production configuration was changed by this PR.
 
 ## Tools and ordinary workflows
 
@@ -192,8 +218,8 @@ The [capability matrix](mcp-coverage.md) maps supported operations to tools.
 permissions. Scope families are `read`, `plan`, `publish`, `execute`, `review`,
 `merge`, `deploy`, `manage`; scopes never grant extra GitHub or instance access.
 Repository restrictions are explicit lists. Administrative tools additionally
-require the existing `instance.manage_settings`, `instance.manage_agents` or
-`instance.manage_runtime` permission. Goal and plan ownership is preserved.
+require the existing `instance.manage_settings`, `instance.manage_agents`,
+`instance.manage_runtime` or `instance.manage_members` permission. Goal and plan ownership is preserved.
 Ordinary repository task history follows the existing shared repository model;
 native goal tasks remain private and can only be mutated through goal controls.
 
@@ -203,18 +229,184 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 `propr-planned` label. `implement_plan` requires selected issue numbers and
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
+
+`generate_repository_improvements` answers "what should we work on next?"
+with the same generator as the web UI **Improve** tab. Pass `categories`
+(`code-quality`, `performance`, `security`, `testing`, `documentation`,
+`architecture`, `new-features`, `tech-debt`, `ux-ui`, `scalability`) and/or a
+non-blank `customPrompt`, plus optional `branch`, `referenceRepository` (also
+checked against your grant), `model` and `contextLevel` (0–100, default 50).
+It needs `plan` scope and returns an `accepted` receipt without waiting for
+the model. Poll `get_operation`: the lifecycle moves to `running`, then
+`completed` with `result.suggestions` (`{ title, description }`),
+`result.metadata` and the `estimatedDurationMs`/`actualDurationMs`/
+`isHistoricalEstimate` timings, or `failed` with a structured error such as
+`IMPROVEMENTS_OUTPUT_INVALID`. Generation runs in the API process; a receipt
+that has not settled after 30 minutes (for example after a restart) becomes
+`unknown` with `IMPROVEMENTS_OUTCOME_UNAVAILABLE`, and a new key starts a new
+generation. Suggestions are not saved anywhere else; turn the ones you want
+into work with `create_task`, `create_plan` or `create_goal`.
+
+`create_goal` accepts the same creation contract as the goal API and web UI;
+`get_goal_capabilities` returns it as `creation` beside the supported agents
+and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
+is an integer from 1 to 32 and defaults to 1 over MCP (the API and UI leave it
+unset when omitted). `checkpointIntervalMinutes` is 5–120 (default 15) and is
+rejected for orchestrated goals. `ultrafix: true` asks the goal agent to run
+Ultrafix before delivery; omitted or `false` keeps it disabled. Ultrafix never
+merges, never expands repository access and does not change the final
+draft-PR delivery; `create_goal` still needs `execute` scope and repository
+access, and merging still requires `merge_pull_request` with merge scope. An
+unsupported agent/model, an invalid strategy/cadence combination or an
+inaccessible repository is rejected before any work starts.
 `/merge` means updating a PR branch; `merge_pull_request` separately requires
 the exact head and satisfied checks/reviews/branch protection.
 
+With `implement_plan` and `useEpic: true`, `epicExecution` defaults to
+`"sequential"`. Exactly the selected issue numbers run in publication order
+(`plan_issues.id`), regardless of their order in the request. The first issue
+starts immediately; the rest are durably queued. Sequential epics accept one
+model per issue. `epicExecution: "parallel"` restores the previous fan-out,
+including comparisons with up to four models. A parallel epic still records a
+queue that starts nothing; once all of its issues are merged or closed, it
+labels the epic PR for completion, like a sequential epic. A parallel epic is
+rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
+ignore these epic execution options.
+
+`epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
+successor. A closed head (including a failed task reconciled to closed) leaves
+the queue active and records a human-readable `blockedReason`. If the head was
+closed because its PR was closed without merging, reopening, fixing and merging
+that PR releases the queue. A source issue you closed by hand stays closed. Choose
+`epicAdvanceOn: "terminal"` to advance on any core terminal issue status
+(currently merged or closed). Issues already in an eligible terminal state
+are skipped. `pause_plan` holds the next issue, and `resume_plan` starts the
+held head. Periodic recovery repairs missed advances and retries a head still
+pending fifteen minutes after dispatch. Unselected pending issues never
+start through this queue.
+
+The web UI, CLI and REST API feed the same queue. **Implement Epic** queues
+every remaining pending issue; a non-epic implementation with auto-merge
+queues the remaining pending issues behind the one it starts. Both advance
+like `epicAdvanceOn: "terminal"`, so a failed or closed issue does not stop
+the plan. A finished non-epic queue never labels an epic PR, even if the plan
+ran as an epic earlier.
+Non-epic MCP calls start only their selected issues. No other path advances a
+plan: a plan already running when you upgrade has no queue, so once its
+current issue finishes, start the next pending issue again (with **Implement
+Epic** for an epic).
+
+The implementation result includes `executionMode`, `advanceOn`, `started`
+and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
+expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
+(null when no queue exists). A parallel epic's queue also reports
+`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
+queue is completed; dispatching the first issue or opening its PR does not
+complete the operation. Queue status is `active`, `completed` or `cancelled`.
+Both new arguments are optional, so omitting them preserves existing
+idempotency receipt hashes.
+
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
-across retries of the same action. Reusing a key with different arguments
+across retries of the same action, and repeat the same arguments exactly.
+Omitting an optional argument and supplying it are different payloads. Reusing a key with different arguments
 returns `IDEMPOTENCY_CONFLICT`. Receipts survive restarts; `get_operation`
 returns accepted/completed/failed/running/unknown plus available target state.
 An interrupted or uncertain external operation is not blindly replayed.
 Inspect the target before using a new key. Publication marks a draft busy
 before issuing GitHub requests; partial publication remains inspectable in
 `plan_issues` and the draft, with marker comments identifying the operation.
+A publication cut off by a server restart leaves its draft claimed as `active`.
+The publishing attempt renews that claim before each issue and aborts an issue
+request that outlives the renewal by one minute, so `publish_plan` with
+`resume: true` and a new key takes the claim over once it has gone unrenewed
+for two minutes, adopting marked issues before creating missing ones. An
+earlier resume fails with `PRECONDITION_FAILED` and `details.claimLapsesAt`.
 Automatic recovery of uncertain external effects is not implemented.
+
+## Errors
+
+Every tool failure uses one structured `error` envelope. `code` is the stable,
+machine-readable reason; `message` is a safe operator explanation; `stage`
+identifies where the failure occurred; `retryable` says whether repeating the
+same request can reasonably succeed without changing its inputs; and `status`
+is the corresponding HTTP-style status. `details` contains bounded diagnostic
+state such as a failed merge precondition or current pull-request snapshot.
+`cause`, when present, is the sanitized lower-level `{ code, message }` that
+caused the higher-level workflow error.
+
+`stage` is one of `validation`, `authorization`, `precondition`, `github`,
+`transport`, `database`, `queue`, `workflow`, `internal`, or `null` when no
+more precise boundary is known. A retryable error is not an instruction to
+retry immediately: respect `retryAfterSeconds`, re-read any mutable target and
+reuse the original `idempotencyKey` only for the exact same action and inputs.
+A non-retryable error usually needs changed input, authorization, configuration
+or target state.
+
+For mutations, a connection or server failure can happen after an external
+side effect. Such a receipt is `unknown` with `error.code: "OUTCOME_UNKNOWN"`
+and a sanitized `cause` describing the original failure. It is deliberately
+not retryable: inspect the receipt's artifacts and the target in GitHub or
+ProPR before deciding whether a new action is safe. A failure raised while a
+mutation is still reading (for example the pull request or merge-state read
+before a merge) issued no write, so it is reported with its ordinary code and
+`retryable` flag instead.
+
+Stable codes introduced by the observable operator surface are:
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_INPUT` | Arguments failed schema or semantic validation. |
+| `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
+| `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
+| `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
+| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
+| `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
+| `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |
+| `PUBLISH_PARTIAL` | Some publication effect may exist; inspect the saved publication state and resume explicitly. |
+| `PULL_REQUEST_ALREADY_MERGED`, `PULL_REQUEST_CLOSED`, `PULL_REQUEST_DRAFT` | The pull-request lifecycle does not permit the requested action. |
+| `CHECKS_FAILING`, `CHECKS_PENDING`, `REVIEW_REQUIRED`, `CHANGES_REQUESTED`, `BRANCH_BEHIND_BASE`, `MERGE_CONFLICT`, `BRANCH_PROTECTION_BLOCKED`, `MERGE_STATE_UNKNOWN`, `MERGE_REJECTED` | A specific guarded-merge precondition or GitHub merge decision blocked the merge. |
+| `COMMAND_NOT_PICKED_UP` | Event intake did not associate the posted command with a worker before the bounded deadline. |
+| `ULTRAFIX_CYCLE_FAILED` | A tracked ultrafix cycle ended in failure. |
+| `REFINEMENT_OUTPUT_INVALID` | Planner refinement ended without a valid replacement plan. |
+| `DOCS_UNAVAILABLE`, `DOC_NOT_FOUND` | Bundled documentation is unavailable or the stable path does not exist. |
+| `PREVIEW_NOT_FOUND`, `PREVIEW_NOT_RENDERABLE`, `PREVIEW_TOO_LARGE` | Preview evidence is absent, is metadata-only/invalid, or cannot fit the MCP response bound. |
+| `SETTING_ENVIRONMENT_MANAGED` | A setting is controlled by deployment environment and is read-only through MCP. |
+| `CONFIRMATION_REQUIRED` | The requested configuration change needs its explicit safety confirmation flag. |
+
+## Did it actually happen? Following a receipt
+
+Every mutation returns an `operationId`. Follow it with `get_operation` until
+its `lifecycle.state` is terminal. Lifecycle states are `accepted` (durably
+recorded), `running` (backend work observed), `completed`, `failed`,
+`cancelled`, and `unknown` (the outcome cannot yet be proved). Tool-specific
+top-level states such as `queued` or `posted` add context but do not mean the
+work completed.
+
+The lifecycle includes `acceptedAt`, `startedAt` and `finishedAt` timestamps,
+plus stable `artifacts` such as submission, task, comment and pull-request
+identities. Its `progress` is tool-specific. For `run_ultrafix` and `start_ultrafix`, progress names
+the goal, maximum cycles, current `cycle`, phase, last score, per-cycle review
+and fix task IDs, and terminal outcome (`goal_reached`, `cycles_exhausted`,
+`stopped` or `failed`). The lifecycle summary distinguishes reaching the goal
+from merely exhausting the allowed cycles.
+
+If the handle is no longer in the conversation, use `list_operations`. It is a
+bounded, newest-first receipt index and does not itself refresh backend
+trackers. For example, “what did I start in the last hour?” is:
+
+```json
+{ "sinceMinutes": 60, "limit": 20 }
+```
+
+To find one kind of work, add an exact tool filter:
+
+```json
+{ "sinceMinutes": 60, "tool": "run_ultrafix", "limit": 20 }
+```
+
+Each result includes `refreshWith: "get_operation"`; call that tool with the
+selected `operationId` when current backend progress is needed.
 
 Poll at the returned interval (normally three seconds); never unboundedly
 poll in one request. `cancel_operation`, `cancel_goal` and `cancel_task`
@@ -233,6 +425,12 @@ No tool downloads arbitrary remote URLs. Secret entry and browser push/login
 flows stay in the browser. Tool responses are bounded at 256 KiB and redact
 credential fields and recognizable token strings.
 
+`list_plans` takes an optional `status` filter alongside `offset`/`limit`:
+`active` (every plan that has not merged or failed), any persisted plan status
+(`draft`, `generating`, `refining`, `review`, `approved`, `executed`,
+`executing`, `pr_created`, `merged`, `failed`) or `all`, the default. The filter
+runs in the query, so `offset` and `limit` page the filtered set.
+
 List tools return bounded summaries rather than requiring one read per item.
 Task and goal entries include a concise title/summary, agent and model, linked
 pull request state, lifecycle timestamps, elapsed milliseconds, and a failure
@@ -245,8 +443,9 @@ corresponding `get_*` tool without inflating large list pages.
 defaults to the 20 most recent entries and returns newest-first, timestamped
 pages with `nextOffset` for older narration. Each entry is whitespace-normalized
 and capped at 500 characters. The feed includes assistant progress commentary
-and a separate current-focus value when available; provider reasoning, raw
+and a separate current-focus value when available; raw provider reasoning, raw
 protocol envelopes, tool inputs, and tool results are excluded.
+`includeReasoningSummaries: true` opts in to Codex app-server reasoning summaries.
 
 ## Operating an instance from a chat client
 
@@ -269,6 +468,19 @@ on a human: failed tasks, a goal paused with no result, and blocking Inbox
 cards. Routine notification noise is filtered out; `includeRoutine: true` keeps
 it. A repository the credential can no longer read is skipped, and
 `repositoriesTruncated` reports that the fan-out hit its 20-repository bound.
+
+When the question is specifically about implementation work and the pull
+requests it produced, `get_work_overview` is the shorter starting point. It
+joins each task to current head, review, checks, mergeability, newest ProPR
+review and ultrafix state with one bounded GraphQL request per repository:
+
+```json
+{ "state": "active", "limit": 20, "includeChecks": true }
+```
+
+Use `state: "recent"` with `sinceMinutes`, or `state: "all"`, when completed
+work belongs in the answer. `githubLookups` reports the requested/completed
+enrichment count and whether the bounded lookup was truncated.
 
 For what already finished, `get_recent_activity` merges one newest-first
 timeline — terminal tasks, opened and merged pull requests, finished goals,
@@ -294,8 +506,9 @@ One read then gives the depth:
 `get_goal` returns the existing goal projection plus `currentActivity`
 (`currentFocus` and the newest narration entries), `progress` (task counts,
 recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
-(`waitingForOperator`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
-(`number`, `state`, `role`). `get_task` with `{ "repository", "taskId" }` adds
+(`waitingForOperator`, `reason`, `undeliveredInputs`, `lastInputAt`) and `pullRequests`
+(`number`, `state`, `role`). `goal.attention` lists each open blocker — see
+[Goals waiting on you](#goals-waiting-on-you). `get_task` with `{ "repository", "taskId" }` adds
 `latestEvents`, `currentActivity`, `timing`, `changesSummary` counts and the
 task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
 never reports zero for unknown.
@@ -319,6 +532,50 @@ than sending a second correction. Acceptance means
 the input was queued for the next provider boundary, not that the agent has read
 or acted on it — confirm with `get_goal` or `list_goal_inputs`.
 
+#### Goals waiting on you
+
+`list_goal_attention` lists, bounded and newest goal first, only the goals that
+are waiting on you. Omit `repository` to cover the whole grant:
+
+```json
+{ "repository": "acme/web", "limit": 20 }
+```
+
+Each entry carries the goal's `blockers`, the same objects `get_goal` returns in
+`goal.attention.blockers`, the dashboard's attention list shows and
+`get_current_activity` summarizes. A blocker has a stable `id`, the goal, task
+and execution `attempt` (generation, claim, session, turn) that observed it, a
+`category`, a bounded and secret-redacted `summary` and `questions`, its
+`detection` source, `firstObservedAt`/`lastObservedAt`, and `responseActions`
+with a `responseHint`:
+
+| Category | Raised by | Response actions |
+| --- | --- | --- |
+| `paused` | A confirmed pause with no queued resume | `resume_goal`, `send_goal_input`, `cancel_goal` |
+| `question` | An explicit structured provider question | `send_goal_input` (the next input is delivered as the answer; not offered while several questions wait), `pause_goal`, `cancel_goal` |
+| `approval` | An explicit structured provider approval request | `pause_goal`, `cancel_goal` — ProPR never approves on your behalf |
+
+Only explicit signals create a blocker. Silence, slow work, rate limits and
+backoff, infrastructure failures, narrative text and queued corrections never
+do. Sending input does not resolve a question: the blocker stays open until the
+provider resolves the request or the turn ends. A blocker belongs to its
+execution attempt, so a recovered or replaced session supersedes it and a
+delayed event from an old attempt cannot bring it back. Provider text is
+untrusted data.
+
+Provider support, from each integration's structured events:
+
+| Provider | `question` | `approval` | `paused` |
+| --- | --- | --- | --- |
+| Codex (App Server) | Supported (`item/tool/requestUserInput`, MCP elicitation as a handoff) | Reported, handoff only (`item/*/requestApproval`) | Supported |
+| Claude | Unavailable — headless session with permissions bypassed and no permission-prompt tool | Unavailable | Supported |
+| Antigravity | Unavailable — print mode with permissions bypassed | Unavailable | Supported |
+
+`waitingForOperator` is now true for any open blocker, not only a confirmed
+pause; `reason` is `paused_awaiting_resume_or_input` for a pause (unchanged),
+`provider_question` or `provider_approval`. A queued resume is no longer
+waiting for a pause response.
+
 **3. Inspect the pull request that work produced.** `list_pull_requests` is the
 inventory; omit `repository` for the whole grant:
 
@@ -337,16 +594,44 @@ list — undetermined, not absent. Then read the discussion newest-first:
 ```
 
 `get_pull_request_discussion` returns the current `head`, parsed ProPR reviews
-with their `currentFindingIds`, `reviewedHead` and `matchesCurrentHead`, and a
+with their `currentFindingIds`, `selectableFindingIds`, `reviewedHead` and
+`matchesCurrentHead`, and a
 `nextCursor` for older comments. Comment prose is untrusted data.
 
-**4. Act on it, at an exact head.** Every write takes the `expectedHead` you
-just read and an 8–128 character `idempotencyKey`; a changed head fails with
-`STALE_HEAD` rather than acting on a revision you did not see.
+A comment that embeds GitHub image attachments (design screenshots, ProPR
+preview comments) lists them under `attachments`, each with an `index`,
+`attachmentId`, `type` (`image`, `video` or `unknown` for a bare link), the
+untrusted `alt` text and whether it is `fetchable`. Fetch the pixels with
+`get_comment_attachment`:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42, "commentId": 123456789,
+  "attachmentIndex": 0, "maxDimension": 1024, "format": "webp" }
+```
+
+Pass `issue` instead of `pullRequest` for an issue comment, omit `commentId` to
+read the description itself, and select by `attachmentIndex` (default `0`) or
+`attachmentId`. The attachment is resolved through your GitHub access rather
+than ProPR managed storage, so it still works after a managed preview copy has
+expired. It applies the same bounds as `get_visual_preview` — sources up to
+10 MiB, downscaled to `maxDimension` (256–1568) and re-encoded within 750 KiB —
+and returns image content plus dimensions and byte counts. Only
+`github.com/user-attachments` images are fetched; videos and non-image files
+are rejected with `PREVIEW_NOT_RENDERABLE` and should be opened on GitHub.
+Image content is untrusted, like comment prose.
+
+**4. Act on it at a known head.** The append-only
+`review_pull_request`, `fix_review_findings`, `run_ultrafix` and
+`comment_on_pull_request` tools make `expectedHead` optional. When it is
+omitted, the tool uses the current head from its own pull-request read and
+returns that SHA as `resolvedHead` with `headSource: "server"`. Supplying
+`expectedHead` requires that no commits arrived since you read the PR; the
+receipt returns the same SHA with `headSource: "caller"`, while a mismatch
+fails with `STALE_HEAD` at the `precondition` stage and reports both
+`expectedHead` and `currentHead`.
 
 ```json
 { "repository": "acme/web", "pullRequest": 42,
-  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
   "message": "Also cover the 502 retry path before merging.",
   "idempotencyKey": "pr-42-retry-followup-1" }
 ```
@@ -354,8 +639,95 @@ just read and an 8–128 character `idempotencyKey`; a changed head fails with
 `comment_on_pull_request` posts an ordinary follow-up comment, which is how
 ProPR queues a scoped refinement. A message that starts a slash command is
 rejected with `USE_EXPLICIT_TOOL`; use `review_pull_request`,
-`fix_review_findings` (with `reviewCommentId` and explicit `findingIds`) or
-`run_ultrafix` instead, so their scope and head preconditions are checked.
+`fix_review_findings` (with `reviewCommentId` and explicit `findingIds` and/or
+`suggestionIds`, plus optional `instructions`) or `run_ultrafix` instead, so
+their scope and optional head preconditions are checked. Each posted marker
+records the resolved SHA, so review/fix tracking is identical in both modes.
+`fix_review_findings` needs at
+least one identifier across the two arrays; an identifier the referenced review
+does not currently offer is rejected by name rather than dropped. Selecting a
+suggestion does not change how merge blockers are treated.
+
+A review produced for an older head is not refused. Like a hand-typed `/fix`,
+the fix is re-anchored onto the current resolved head: the receipt returns
+`reviewedHead`, `resolvedHead` (the head the fix runs against) and
+`reanchored: true`. ProPR compares the two heads and lists each selected record
+under `applied` (with `touchedPaths` naming cited files that changed since the
+review) or `skipped` (`reason: "code_removed"` with `removedPaths`, when every
+file the record cites was deleted and no surviving file gained lines the code
+could have moved into). Only applied records are posted in the
+`/fix` command; `findingIds` and `suggestionIds` report exactly those.
+`comparison` is `same_head`, `compared`, or `unavailable` when the changes since
+the review could not be read (for example after a force-push), in which case
+every record is posted. The call fails with `STALE_FINDINGS` only when no
+selected record still applies, with the skipped records in `details`. To refuse
+a moved head outright, pass `expectedHead`: a mismatch is still `STALE_HEAD`.
+Retries must preserve whether `expectedHead` was omitted or supplied; changing
+that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
+
+`review_pull_request` takes an optional `model`. Omit it to review with the
+model the PR is already routed to. Pass one alias (any name `list_models`
+accepts, such as `gpt-6-fable`) to request that model's review, or a list of
+up to 8 aliases to fan out one independent review per model in a single call.
+That is the same as posting one `/review <model>` comment per model on GitHub,
+which `instructions` cannot do because it rejects slash commands:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "model": ["gpt-6-fable", "gpt-6-astra"],
+  "idempotencyKey": "pr-42-review-fable-astra-1" }
+```
+
+Every alias is resolved against the enabled agent models before anything is
+posted. If any alias is unknown or disabled the whole call fails with
+`UNKNOWN_MODEL`. If two aliases resolve to the same agent model it fails with
+`DUPLICATE_MODEL`. In both cases no review is posted, and
+`details.rejectedModels` lists each rejected alias with its own `code` and
+`message`. A rejected model is never dropped or swapped for a fallback. A model
+review never touches the PR's `llm-*` labels, so it neither re-routes the PR
+nor changes which model later default reviews use. Use
+`set_pull_request_model` for that.
+
+With `model`, the receipt carries a `reviews` array, one entry per requested
+model in request order:
+
+```json
+{ "state": "posted", "resolvedHead": "6f1c…f607", "headSource": "caller",
+  "reviews": [
+    { "model": "gpt-6-fable", "agentAlias": "codex", "resolvedModel": "gpt-6-fable",
+      "commentId": 9001, "url": "https://github.com/acme/web/pull/42#issuecomment-9001",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" },
+    { "model": "gpt-6-astra", "agentAlias": "codex", "resolvedModel": "gpt-6-astra",
+      "commentId": 9002, "url": "https://github.com/acme/web/pull/42#issuecomment-9002",
+      "expectedHead": "6f1c…f607", "resolvedHead": "6f1c…f607", "headSource": "caller", "state": "posted" } ] }
+```
+
+A single model also returns the usual flat `commentId`, `url`, `model`,
+`agentAlias` and `resolvedModel`. Every review in a fan-out is pinned to the
+same head: the first one uses the head check above, and each later one reads
+the PR again and must find it still open at that head. If a push or close
+happens part-way, the models already posted stay posted. The rest are reported
+with `state: "not_posted"` and an `error` (for example `STALE_HEAD` with
+`expectedHead`/`currentHead`), and nothing is posted for them. If a later
+comment fails to post, that model is reported as `rejected` when GitHub refused
+it (nothing was posted) or `unknown` when it may have posted. Check the PR for an
+`unknown` model before you request it again; it is never retried for you. Every
+model after it is `not_posted`, and the reviews already posted are still
+returned. The operation receipt then follows each posted comment separately,
+even when only one was posted. Each `reviews` entry gains the `taskId` and
+`taskState` of the task that picked it up. The lifecycle artifacts list
+`commentIds` (or `commentId` when only one comment was posted) and `taskIds`. The operation completes once every
+posted review has finished. It fails with `REVIEW_FAILED` only when all of
+them failed, and it becomes `unknown` if a review is never picked up.
+Account-level limits, such as a model the provider account cannot run, show up
+as that model's failed review rather than as a rejection at call time.
+
+The state-changing `merge_pull_request`, `update_pull_request_branch`,
+`start_ultrafix`, `stop_ultrafix`, `set_pull_request_model` and
+`revert_pull_request_commit` tools still require `expectedHead`. The pin
+prevents them from acting on unseen code; for `start_ultrafix` and
+`stop_ultrafix`, a moved head may contain a fix the loop should still see.
 
 `set_pull_request_model` routes the PR to exactly one enabled model by
 converging the managed `llm-*` labels the repository already defines:
@@ -377,12 +749,81 @@ request labels again before retrying.
 
 `stop_ultrafix` clears the ultrafix circuit breaker by removing the `ultrafix`
 label, so the loop starts no further cycle. It is listed under execute scope,
-additionally requires review scope, and takes the same
-`expectedHead`/`idempotencyKey`. Its receipt reports `wasActive` and
+additionally requires review scope, and requires
+`expectedHead` plus `idempotencyKey`. Its receipt reports `wasActive` and
 `circuitBreaker: "cleared"` and says plainly that a cycle already running may
 still finish — inspect the pull request to confirm.
 
-**5. Read the MCP log.** Every one of the calls above left exactly one row in
+`start_ultrafix` is its counterpart: it re-arms the loop on an open pull request
+without anyone typing `/ultrafix` in GitHub. It takes the same `repository`,
+`pullRequest`, required `expectedHead` and `idempotencyKey`, plus optional
+`ultrafixGoal` and `ultrafixMaxCycles` that default to the instance
+`ultrafix_rating_goal` and `ultrafix_max_cycles`. A moved head fails with
+`STALE_HEAD` before anything is posted. The tool posts the same `/ultrafix`
+command a hand-typed comment does, so the normal intake re-adds the `ultrafix`
+label and starts the loop exactly as it would from GitHub. It is listed under
+execute scope and additionally requires review scope.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "idempotencyKey": "pr-42-ultrafix-restart-1" }
+```
+
+The receipt reports the resolved `goal` and `maxCycles`, the posted
+`commentId`, `wasActive` (whether the label was already present) and
+`circuitBreaker: "requested"`. Follow it with `get_operation`; its lifecycle and
+progress are the same as `run_ultrafix`, and `stop_ultrafix` marks it as
+stopping.
+
+**5. Follow a one-off task.** After `create_task`, keep both the returned
+`operationId` and `submissionId`. The submission view explains the handoff from
+GitHub issue creation to worker execution:
+
+```json
+{ "repository": "acme/web", "submissionId": "9ab36d7e-11c5-4f83-8dd4-986f9a2237c1" }
+```
+
+`get_task_submission.progress.stage` advances through `submitted`,
+`issue_created`, `queued`, `running` and a terminal `completed`, `failed` or
+`cancelled` stage. Its progress includes the issue, associated task, pull
+request and a concise next action. Follow the mutation itself with
+`get_operation`; only its terminal lifecycle proves the launch receipt's
+backend outcome.
+
+**6. Look at the result.** Preview evidence is discovered from one exact task
+or pull request:
+
+```json
+{ "repository": "acme/web", "pullRequest": 42 }
+```
+
+Call `list_visual_previews`, then pass an image result's `previewId` to
+`get_visual_preview` with an optional `maxDimension` and `format`. The latter
+returns bounded image content plus dimensions and byte counts. Video previews
+are metadata-only in MCP and should be opened on the linked GitHub pull request.
+An empty list with `previewsEnabled: false` means preview publication is not
+enabled for that repository, not that an image fetch failed. When the managed
+original of a published preview has expired, fetch the image embedded in the
+preview comment with `get_comment_attachment` instead.
+
+**7. Ask ProPR about itself.** Use `search_docs` for product behavior and
+operator procedures, then pass the stable result `path` and optional `section`
+to `get_doc`. Use `list_docs` to browse pages; this guide is `mcp/guide`.
+
+```json
+{ "query": "ultrafix progress", "limit": 5 }
+```
+
+For configuration reachability, `find_setting` answers where a setting lives,
+whether MCP can read or change it, required permissions/scopes, and whether a
+restart is needed:
+
+```json
+{ "query": "bot whitelist" }
+```
+
+**8. Read the MCP log.** Every one of the calls above left exactly one row in
 the durable MCP access log, including the denials. An administrator with the
 `instance.manage_settings` instance permission reads them:
 
@@ -407,11 +848,13 @@ shows the same activity per app as a last-used time and a 24-hour request count.
 ## Resources, prompts, text and voice
 
 Resource URIs use `propr://instances/{instance_id}/`: `connection`,
-`repositories`, `models`, `activity`, `activity/recent`, `plans/{id}`,
+`repositories`, `models`, `notifications`, `notifications/{id}`, `activity`,
+`activity/recent`, `plans/{id}`,
 `goals/{id}`, `tasks/{id}`, `changes/{task_id}`, `repositories/{owner}/{repo}`,
 `repositories/{owner}/{repo}/pulls`,
-`repositories/{owner}/{repo}/pulls/{number}`, `artifacts/{id}` and
-`{plans|goals}/{parent_id}/attachments/{id}`. `activity` and `activity/recent`
+`repositories/{owner}/{repo}/pulls/{number}`, `submissions/{id}`,
+`repositories/{owner}/{repo}/previews/{previewId}`, `docs/{path}`,
+`artifacts/{id}` and `{plans|goals}/{parent_id}/attachments/{id}`. `activity` and `activity/recent`
 read `get_current_activity` and `get_recent_activity` with their defaults.
 Reads invoke the same tool guards. Links never confer access. Tools provide
 the same essential data without relying on a host's resource UI.
@@ -442,7 +885,11 @@ operation, activity digest, goal/task depth, pull request surface and access log
 tests, including the end-to-end operator-surface regression in
 `packages/api/test/mcpOperatorSurface.test.ts`, which drives one session from
 `get_current_activity` through the goal, task and pull request behind it to the
-access rows it leaves. `npm run test:mcp:browser` additionally needs Playwright and
+access rows it leaves. The combined observable-surface regression in
+`packages/api/test/mcpObservableSurface.test.ts` follows a one-off task and
+ultrafix receipt through completion, exercises overview, merge/publication
+failures, docs, settings and previews, and checks documented tool names against
+the admin catalog. `npm run test:mcp:browser` additionally needs Playwright and
 Chromium (`CHROMIUM_PATH`, default `/usr/bin/chromium`). Set
 `MCP_CAPTURE_PREVIEWS=true` only when capturing changed UI evidence.
 
@@ -492,9 +939,3 @@ partial publication/implementation, an operator must reconcile the receipt,
 GitHub markers, issue labels and queue state before explicitly recovering it.
 No deployment, auto-merge activation or production migration was performed.
 
-
-The Connect follow-up also runs both actual repositories at the pinned routing
-commit, including registration, public OAuth, both SDK eras and proof-bound
-credential handoff. Exact commands/results and the remaining full-chat gates
-are in [the follow-up evidence](mcp-coverage.md#connect-integration-follow-up-evidence).
-Earlier test counts above describe the original PR baseline, not the follow-up.

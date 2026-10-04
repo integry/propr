@@ -20,6 +20,7 @@ import {
     closeConnection,
     type BetterSqliteConnection
 } from '../packages/core/src/db/connection.js';
+import { closeEventPublisher } from '../packages/core/src/utils/eventPublisher.js';
 
 const timestamp = '2026-08-02T08:00:00.000Z';
 function generatedP256dhKey(privateKeyValue: number): string {
@@ -123,7 +124,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => database.destroy());
-after(async () => closeConnection());
+after(async () => {
+    await closeConnection();
+    // Notification writes now publish a push event; close the publisher's Redis
+    // client so a test process is not held open by best-effort telemetry.
+    await closeEventPublisher();
+});
 
 describe('notification preference API migration', { concurrency: false }, () => {
     test('preserves pre-existing unrelated foreign-key violations', async () => {

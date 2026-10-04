@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from 'pino';
+import { recordUltrafixEscalationReview } from './ultrafixEscalation.js';
 import type { Redis } from 'ioredis';
 import {
     generateCorrelationId,
@@ -25,6 +26,7 @@ import {
     clearDeferredContinuationIfCurrent,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixOrchestrationService.js';
+import type { UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
@@ -81,6 +83,9 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
+    outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+    goal?: number;
+    maxCycles?: number;
 }
 
 async function deferNextAction(
@@ -111,12 +116,9 @@ async function deferNextAction(
         'Ultrafix loop: deferred continuation — waiting for readiness',
     );
     return {
-        continued: false,
+        continued: false, deferred: true,
         reason: `deferred: ${reasons.join(', ')}`,
-        nextAction,
-        score: latestScore,
-        cycleCount,
-        deferred: true,
+        nextAction, score: latestScore, cycleCount,
     };
 }
 
@@ -140,11 +142,8 @@ async function enqueueCurrentNextAction(
     if (!cleared) return { continued: false, reason: 'ultrafix_superseded' };
     await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000);
     return {
-        continued: true,
-        reason: decisionReason,
-        nextAction,
-        score: latestScore,
-        cycleCount,
+        continued: true, reason: decisionReason,
+        nextAction, score: latestScore, cycleCount,
     };
 }
 
@@ -207,6 +206,28 @@ async function collectReviewOutput(
     }
 }
 
+async function applyReviewEscalation(
+    params: UltrafixContinuationParams,
+    state: UltrafixLoopState,
+    review: Awaited<ReturnType<typeof collectReviewOutput>>,
+    decision: ReturnType<typeof determineNextAction>,
+): Promise<UltrafixLoopState | null> {
+    const { completedAction, redisClient } = params;
+    const { latestScore, reviewStatus, isPartial } = review;
+    // Existing goal, coverage, invalid-output, and overall cycle limits take precedence.
+    if (completedAction === 'review' && latestScore !== null && !isPartial
+        && reviewStatus !== 'invalid' && decision.action !== null) {
+        const escalatedState = await recordUltrafixEscalationReview(redisClient, state, latestScore);
+        if (!escalatedState) return null;
+        state = escalatedState;
+        if (state.escalation?.exhausted) {
+            decision.action = null;
+            decision.reason = 'Escalation exhausted: all available models and reasoning levels stalled';
+        }
+    }
+    return state;
+}
+
 /**
  * Main continuation entry point. Call after a review or fix step completes
  * to decide whether to continue the ultrafix loop.
@@ -227,7 +248,7 @@ export async function continueUltrafixLoop(
         { owner, repo, pr: pullRequestNumber },
         workEpoch,
     )) {
-        return { continued: false, reason: 'ultrafix_superseded' };
+        return { continued: false, reason: 'ultrafix_superseded', outcome: 'stopped' };
     }
 
     // 1. Load current loop state
@@ -241,22 +262,25 @@ export async function continueUltrafixLoop(
         return {
             continued: false,
             reason: state && stateWorkEpoch !== workEpoch ? 'ultrafix_superseded' : 'no_active_loop',
+            outcome: 'stopped',
         };
     }
 
     // 2. Record the completed action
-    const updatedState = await recordAction(redisClient, {
+    let updatedState = await recordAction(redisClient, {
         owner, repo, pr: pullRequestNumber, action: completedAction, workEpoch,
     });
     if (!updatedState) {
-        return {
-            continued: false,
-            reason: await isUltrafixAutomaticWorkCurrent(
-                redisClient,
-                { owner, repo, pr: pullRequestNumber },
-                workEpoch,
-            ) ? 'state_lost_after_record' : 'ultrafix_superseded',
-        };
+        // One epoch read decides both fields, so they cannot disagree when the
+        // epoch moves between two separate Redis reads.
+        const stillCurrent = await isUltrafixAutomaticWorkCurrent(
+            redisClient,
+            { owner, repo, pr: pullRequestNumber },
+            workEpoch,
+        );
+        return stillCurrent
+            ? { continued: false, reason: 'state_lost_after_record', outcome: 'failed' }
+            : { continued: false, reason: 'ultrafix_superseded', outcome: 'stopped' };
     }
 
     correlatedLogger.info(
@@ -279,7 +303,8 @@ export async function continueUltrafixLoop(
             { owner, repo, pr: pullRequestNumber },
             workEpoch,
         );
-        return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
+        return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount,
+            outcome: 'stopped', goal: updatedState.goal, maxCycles: updatedState.maxCycles };
     }
 
     // 4. Get the latest review score
@@ -287,6 +312,8 @@ export async function continueUltrafixLoop(
 
     // 5. Determine next action
     const decision = determineNextAction(updatedState, latestScore, reviewStatus, isPartial);
+    updatedState = await applyReviewEscalation(params, updatedState, { latestScore, reviewStatus, isPartial }, decision);
+    if (!updatedState) return { continued: false, reason: 'ultrafix_superseded' };
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore, isPartial },
         'Ultrafix loop: next action decision',
@@ -317,11 +344,8 @@ export async function continueUltrafixLoop(
 
     if (!readiness.ready) {
         return deferNextAction({
-            params,
-            nextAction: decision.action,
-            reasons: readiness.reasons,
-            latestScore,
-            cycleCount: updatedState.cycleCount,
+            params, nextAction: decision.action,
+            reasons: readiness.reasons, latestScore, cycleCount: updatedState.cycleCount,
         });
     }
 

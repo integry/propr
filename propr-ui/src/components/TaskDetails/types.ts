@@ -1,4 +1,4 @@
-import type { PublishedVisualPreview } from '@propr/shared';
+import type { LiveOutputPosition, PublishedVisualPreview } from '@propr/shared';
 
 export interface TokenUsage {
   input_tokens?: number | null;
@@ -22,6 +22,7 @@ export interface UsageMetrics {
 }
 
 export interface HistoryItemMetadata {
+  terminalReason?: string;
   model?: string;
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };
@@ -30,13 +31,15 @@ export interface HistoryItemMetadata {
   tokenUsage?: TokenUsage;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   consumedReviewCommentIds?: number[];
-  ultrafixCycle?: boolean;
+  /** Legacy entries store `true`; current entries store the 1-based cycle number. */
+  ultrafixCycle?: boolean | number;
   ultrafixGoal?: number;
   ultrafixCycleCount?: number;
   ultrafixMaxCycles?: number;
   ultrafixScore?: number;
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
+  ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
   syntheticRouting?: {
     virtualAgentAlias?: string;
     virtualModel?: string;
@@ -71,6 +74,7 @@ export interface TaskInfo {
   model?: string;
   llmProvider?: string;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];
 }
@@ -138,22 +142,10 @@ export interface LiveDetails {
   todos: TodoItem[];
   currentTask: string | null;
   tokenUsage?: TokenUsage | null;
-}
-
-export interface AnalysisData {
-  report?: string;
-  analysis?: string;
-  content?: string;
-  error?: string;
-}
-
-export type AnalysisApiData = {
-  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
-};
-
-export interface ParsedAnalysis {
-  recommendations?: string[];
-  error_analysis?: string;
-  implementation_critique?: string;
-  efficiency_notes?: string;
+  /** Raw terminal events of this execution not held here; readable events are never left out. */
+  omittedEventCount?: number;
+  /** The server discarded earlier output of this execution; neither `events` nor `omittedEventCount` accounts for it. */
+  historyTruncated?: boolean;
+  /** Where in the live output log this state was read (see `LiveOutputPosition`). */
+  liveOutputPosition?: LiveOutputPosition;
 }

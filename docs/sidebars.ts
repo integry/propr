@@ -60,7 +60,12 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Core Workflow',
       items: [
+        'features/launching-work',
+        'features/goals',
         'features/planning',
+        'features/inbox',
+        'features/mcp',
+        'features/usage-tips',
         'features/work-splitting',
         'features/execution-safety',
         'features/observability',
@@ -72,6 +77,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/pr-followup',
         'features/pr-commands',
+        'features/mcp-chat',
         'features/visual-previews',
       ],
     },
@@ -120,6 +126,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'architecture/worker-runtime',
             'architecture/git-runtime',
+            'architecture/preview-storage-relay',
           ],
         },
       ],
@@ -138,6 +145,7 @@ const sidebars: SidebarsConfig = {
         'operations/desktop-pairing',
         'operations/pwa-web-push',
         'operations/configuration-reference',
+        'operations/settings-locations',
         'operations/metrics',
         'operations/agent-tank',
         'operations/maintenance',

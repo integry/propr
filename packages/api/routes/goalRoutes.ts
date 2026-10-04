@@ -6,11 +6,9 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
+  getEventPublisher,
   GOAL_CONTINUE_INPUT,
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  GOAL_LAUNCH_STRATEGIES,
-  MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
-  MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   buildNativeGoalCommand,
   buildNativeGoalContext,
   hasNativeGoalControl,
@@ -18,6 +16,9 @@ import {
   nativeGoalPromptValidationError,
   generateGoalTitle,
   getAuthenticatedOctokit,
+  goalActivityState,
+  publishGoalActivity,
+  publishGoalTransition,
   goalTitleFallback,
   goalJobId,
   loadRepositoryVisualPreviewSettings,
@@ -30,9 +31,19 @@ import {
   type MulterFile,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import { GOAL_CREATION_CONTRACT, validateGoalCreationOptions } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
+import {
+  GOAL_LIST_STATES,
+  applyGoalLifecycleFilter,
+  inspectGoalDetail,
+  isGoalListState,
+  type GoalListState,
+} from '../services/goalReadProjection.js';
+import { goalInputPage } from '../mcp/goalTaskDetail.js';
+import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
@@ -60,7 +71,6 @@ interface GoalRoutesDeps {
   getOctokit?: typeof getAuthenticatedOctokit;
 }
 
-const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const cannedInputs = {
   done: "What's done?",
   left: "What's left?",
@@ -157,29 +167,6 @@ async function findOwnedGoal(db: Knex, req: Request, res: Response): Promise<Goa
   return row ?? null;
 }
 
-function validateCreateBody(body: Record<string, unknown>): string | null {
-  if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
-  if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
-  if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
-  if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
-  if (typeof body.model !== 'string' || !body.model) return 'model is required';
-  if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
-  if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
-  if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
-  return validateCreateCheckpointInterval(body);
-}
-
-function validateCreateCheckpointInterval(body: Record<string, unknown>): string | null {
-  if (body.checkpointIntervalMinutes == null) return null;
-  if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
-  if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
-    || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
-    || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
-    return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
-  }
-  return null;
-}
-
 function buildCreateIdentity(
   body: Record<string, unknown>,
   attachmentIdentity: readonly Record<string, unknown>[] = [],
@@ -221,6 +208,41 @@ async function findExistingGoalCreation(options: {
   return existing ?? null;
 }
 
+function queryValue(query: Record<string, unknown>, name: string): string | undefined {
+  const value = query[name];
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parsePage(
+  query: Record<string, unknown>,
+  bounds: { defaultLimit: number; maxLimit: number },
+): { offset: number; limit: number } | { error: string } {
+  const rawOffset = queryValue(query, 'offset');
+  const rawLimit = queryValue(query, 'limit');
+  const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+  const limit = rawLimit === undefined ? bounds.defaultLimit : Number(rawLimit);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) return { error: 'offset must be an integer from 0 to 100000' };
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > bounds.maxLimit) return { error: `limit must be an integer from 1 to ${bounds.maxLimit}` };
+  return { offset, limit };
+}
+
+const GOAL_LIST_MAX_LIMIT = 200;
+const GOAL_LIST_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function parseGoalListQuery(query: Record<string, unknown>): {
+  repository?: string; state?: GoalListState; offset: number; limit: number; paginated: boolean;
+} | { error: string } {
+  const repository = queryValue(query, 'repository');
+  if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) return { error: 'repository must be in owner/repo format' };
+  const state = queryValue(query, 'state');
+  if (state !== undefined && !isGoalListState(state)) return { error: `state must be one of ${GOAL_LIST_STATES.join(', ')}` };
+  const page = parsePage(query, { defaultLimit: GOAL_LIST_MAX_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
+  if ('error' in page) return page;
+  const paginated = queryValue(query, 'offset') !== undefined || queryValue(query, 'limit') !== undefined;
+  return { repository, state: state === 'all' ? undefined : state, ...page, paginated };
+}
+
 type AgentSelection = { agent: Agent } | { error: string; status: number };
 
 async function resolveCreationAgent(
@@ -256,6 +278,32 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const cleanupTemporaryUploads = deps.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const loadVisualPreviewSettings = deps.loadVisualPreviewSettings ?? loadRepositoryVisualPreviewSettings;
   const getOctokit = deps.getOctokit ?? getAuthenticatedOctokit;
+
+  /**
+   * Answer a control request with the goal it produced, announcing the
+   * transition first.
+   *
+   * Published from the handler that persisted the change rather than from a
+   * sweep. Lifecycle transitions carry their normalized state; other control
+   * changes invalidate the projection so inputs and model changes appear too.
+   * Idempotent requests return before this helper. A Redis outage degrades to
+   * the polling clients already fall back on instead of failing the mutation
+   * that has already committed.
+   */
+  const respondWithGoalTransition = async (
+    res: Response,
+    previous: GoalRow | undefined,
+    updated: GoalRow,
+  ): Promise<void> => {
+    if (previous && goalActivityState(previous) === goalActivityState(updated)) {
+      // Input and model changes still refresh the projection without announcing
+      // a lifecycle transition that did not happen.
+      await getEventPublisher().publishGoalUpdate({ goalId: updated.goal_id, repository: updated.repository });
+    } else {
+      await publishGoalTransition({ previous, next: updated });
+    }
+    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated) });
+  };
 
   const uploadedFiles = (req: Request): MulterFile[] => Array.isArray(req.files)
     ? req.files as MulterFile[]
@@ -311,27 +359,81 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         objectiveMaxCharacters: capability.goalCapable ? nativeGoalObjectiveMaxLength(capability.agentType) : null,
       };
     });
-    res.json({ agents });
+    res.json({ agents, creation: GOAL_CREATION_CONTRACT });
   };
 
   const list = async (req: Request, res: Response) => {
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
-    const rows = await timeApiStage('sql.goals.list', () =>
-      deps.db<GoalRow>('goals').where({ owner_id: ownerId }).orderBy('updated_at', 'desc').limit(200)
-    );
+    const listQuery = parseGoalListQuery(req.query ?? {});
+    if ('error' in listQuery) return void res.status(400).json({ error: listQuery.error });
+    const { repository, state, offset, limit, paginated } = listQuery;
+    const rows = await timeApiStage('sql.goals.list', () => {
+      const query = deps.db<GoalRow>('goals').where({ owner_id: ownerId });
+      if (repository) query.where('repository', repository);
+      applyGoalLifecycleFilter(query, state);
+      // Explicit pages use the immutable creation order so a goal updated mid-walk is neither
+      // skipped nor repeated; the unpaginated dashboard read keeps its recency order.
+      if (paginated) query.orderBy('created_at', 'desc').orderBy('goal_id', 'desc');
+      else query.orderBy('updated_at', 'desc');
+      return query.offset(offset).limit(limit);
+    });
     const goals = await timeApiStage('goals.projection', () =>
       Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row, { includeInputs: false })))
     );
     const media = await (deps.previewReader ?? previewMediaReader).project(rows.map(goalPreviewSource), 3);
     res.json({ goals: goals.map((goal, index) => ({ ...goal,
       ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
-    })) });
+    })), offset, limit, nextOffset: rows.length === limit ? offset + limit : null });
   };
 
   const get = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (row) res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+  };
+
+  /** The goal projection plus the shared narration/progress/checkpoint/pending-input detail MCP `get_goal` reads. */
+  const detail = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    res.json({
+      goal: await serializeGoal(deps.db, deps.redisClient, row),
+      detail: await inspectGoalDetail({ db: deps.db, redisClient: deps.redisClient }, row),
+    });
+  };
+
+  /**
+   * Owned goals waiting on their operator, bounded and optionally filtered by repository, so a
+   * client never has to read every goal to find the ones that need it. Each entry carries the same
+   * attention projection as the goal itself.
+   */
+  const attention = async (req: Request, res: Response) => {
+    const ownerId = currentOwnerId(req);
+    if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
+    const repository = queryValue(req.query ?? {}, 'repository');
+    if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) {
+      return void res.status(400).json({ error: 'repository must be in owner/repo format' });
+    }
+    const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
+    if ('error' in page) return void res.status(400).json({ error: page.error });
+    const listed = await timeApiStage('sql.goals.attention', () => listGoalsNeedingAttention(deps.db, {
+      ownerId, repositories: repository ? [repository] : null, offset: page.offset, limit: page.limit,
+    }));
+    res.json({
+      goals: listed.entries.map(goalAttentionSummary),
+      offset: page.offset,
+      limit: page.limit,
+      nextOffset: listed.hasMore ? page.offset + page.limit : null,
+    });
+  };
+
+  /** Bounded, newest-first operator input history with persisted delivery state. */
+  const inputs = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const page = parsePage(req.query ?? {}, { defaultLimit: 20, maxLimit: 100 });
+    if ('error' in page) return void res.status(400).json({ error: page.error });
+    res.json({ ...await goalInputPage(deps.db, row, page), offset: page.offset, limit: page.limit });
   };
 
   const previews = async (req: Request, res: Response) => {
@@ -362,7 +464,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     try { body = requestBody(req); } catch (error) {
       return void res.status(400).json({ error: (error as Error).message });
     }
-    const validationError = validateCreateBody(body);
+    const validationError = validateGoalCreationOptions(body);
     if (validationError) return void res.status(400).json({ error: validationError });
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
@@ -490,6 +592,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         }
         throw error;
       }
+      const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
+      // Announce the durable creation even if queueing needs recovery.
+      await publishGoalActivity(inserted);
       const data: GoalJobData = {
         goalId, taskId, repoOwner, repoName, generation: 0, claimId,
         input: initialPrompt,
@@ -502,7 +607,6 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
           goalId,
         });
       }
-      const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
       res.status(201).json({ goal: await serializeGoal(deps.db, deps.redisClient, inserted) });
     } finally {
       if (!attachmentsPersisted) await deleteGoalAttachments(attachments);
@@ -570,7 +674,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   async function addGoalInput(options: {
@@ -691,7 +795,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const cancel = async (req: Request, res: Response) => {
@@ -754,7 +858,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const remove = async (req: Request, res: Response) => {
@@ -801,6 +905,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     await deleteGoalAttachmentDirectory(row.goal_id).catch(error => {
       logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal attachments');
     });
+    await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository, ownerId: row.owner_id });
     res.status(204).send();
   };
 
@@ -852,7 +957,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   // eslint-disable-next-line complexity -- input delivery branches by persisted lifecycle and provider resume capability
@@ -983,7 +1088,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       if (inputBoundary?.pause_confirmed_at) await beginPausedContinuation(inputBoundary);
     }
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
-    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+    await respondWithGoalTransition(res, row, updated!);
   };
 
   const input = async (req: Request, res: Response) => {
@@ -1020,7 +1125,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, get, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
+    capabilities, list, attention, get, detail, inputs, previews, create, pause, resume, cancel, remove, requestModel, input, attachment,
     requireGoalTaskOwnership,
   };
 }

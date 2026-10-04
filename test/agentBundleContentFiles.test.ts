@@ -9,10 +9,6 @@ import { computeContentHash, generateAgentBundleImageTag } from '../packages/cor
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function escapeRegex(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function buildScriptContentFiles(): string[] {
     const buildScript = fs.readFileSync(path.join(repoRoot, 'scripts/build-images.sh'), 'utf8');
     const match = buildScript.match(/AGENT_BUNDLE_CONTENT_FILES=\(\n(?<body>[\s\S]*?)\n\)/);
@@ -54,13 +50,14 @@ describe('agent bundle content files', () => {
         assert.equal(scriptTag, runtimeTag.split(':')[1]);
     });
 
-    test('app production image copies every agent bundle content file', () => {
+    test('app production runtime copies every agent bundle content file to its hash input path', () => {
         const dockerfile = fs.readFileSync(path.join(repoRoot, 'docker/Dockerfile.app.prod'), 'utf8');
+        const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf('\nFROM '));
+        const runtimeLines = runtimeStage.split('\n').map(line => line.trim());
         for (const file of AGENT_BUNDLE_CONTENT_FILES) {
-            assert.match(
-                dockerfile,
-                new RegExp(`^COPY ${escapeRegex(file)} `, 'm'),
-                `docker/Dockerfile.app.prod must copy ${file}`
+            assert.ok(
+                runtimeLines.includes(`COPY ${file} ./${file}`),
+                `docker/Dockerfile.app.prod runtime must copy ${file} to ./${file}`
             );
         }
     });

@@ -17,12 +17,12 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
-- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens, total cost, and task counts per model
+- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
 
-{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the toolbar with the repository filter, Needs attention, Happening now, Completed, and Historical stats. Run a handful of tasks first so every section has data. */}
+![Dashboard showing current activity, attention items and completed work](/img/screenshots/0.9.0/dashboard.png)
 
 ### Breakdowns the product provides
 
@@ -49,7 +49,7 @@ Check these on the dashboard each day:
 
 Every LLM execution is recorded in the SQLite `llm_logs` table and shown on the **LLM Log** page in the Web UI. Each entry records:
 
-- Execution type (implementation, task analysis, plan generation, PR review, and so on)
+- Execution type (implementation, plan generation, PR review, and so on)
 - Model name and agent alias
 - Work reference — the task, plan, PR, or repository the call belongs to
 - Input/output token counts and cache creation/read tokens
@@ -80,7 +80,7 @@ The API also aggregates run metrics in Redis, available at `GET /api/llm-metrics
 
 ## Cost Tracking
 
-ProPR estimates the cost of every LLM call from its token counts (input, output, cache creation, and cache read) and per-model pricing, then stores the estimate with the call. All cost figures in the UI come from these per-call records: the LLM Log shows cost per call, and the dashboard's Total Cost is their sum.
+ProPR estimates the cost of every LLM call from its token counts (input, output, cache creation, and cache read) and per-model pricing, then stores the estimate with the call. All cost figures in the UI come from these per-call records: the LLM Log shows cost per call, and the dashboard's Spend is the sum of recorded execution costs for the selected period.
 
 For directly supported Claude and OpenAI models, ProPR uses the providers' published standard API rates. Other models fall back to the OpenRouter model feed. Cache reads and cache creation are priced separately when the provider or feed publishes those rates; Claude cache creation uses the default 5-minute write rate. The token total shown beside each call includes ordinary input, output, cache creation, and cache reads, so it reconciles with the cost estimate. Provider options that change the rate but are not reported by the CLI, such as regional routing or fast mode, are not included.
 
@@ -97,7 +97,7 @@ A cost spike should lead to an action: smaller task scope, a different model, or
 
 ### Provider capacity (Agent Tank)
 
-Subscription plans meter capacity in session and rate-limit windows. To track those, ProPR integrates with [Agent Tank](https://agenttank.io), an optional local service that reports session and rate-limit usage for Claude, Codex, and Antigravity CLI tools. When enabled, the sidebar shows per-provider usage bars with reset countdowns, refreshed every 60 seconds, and each LLM log entry records the usage delta the call consumed. The integration is best-effort: if the service is unreachable, tasks proceed normally and the sidebar hides itself.
+Subscription plans meter capacity in session and rate-limit windows. To track those, ProPR integrates with [Agent Tank](https://agenttank.io), an optional local service that reports session and rate-limit usage for Claude, Codex, and Antigravity CLI tools. When enabled, the sidebar shows per-provider usage bars with reset countdowns, which the API samples every 30 seconds and pushes when they change, and each LLM log entry records the usage delta the call consumed. The integration is best-effort: if the service is unreachable, tasks proceed normally and the sidebar hides itself.
 
 See [Agent Tank Usage Tracking](./agent-tank.md) for how to run it, connect ProPR, and read the bars.
 
@@ -109,7 +109,7 @@ Review these signals weekly, and weight trends more heavily than one-off failure
 - **Per-repository health** — Repository Breakdown on `/analytics`; a repository with a below-average success rate needs attention before more work is routed to it
 - **Time to done** — the average processing time chart (`GET /api/stats/tasks`); individual task records show per-run duration
 - **Human steering effort** — average PR iterations and total follow-ups from the overview stats
-- **Cost** — Total Cost, the per-model and daily breakdowns from `GET /api/llm-metrics`, and the recent high-cost alerts
+- **Cost** — Spend on the dashboard, the per-model and daily breakdowns from `GET /api/llm-metrics`, and the recent high-cost alerts
 
 ### Failure analysis
 
@@ -141,7 +141,7 @@ Between reviews, the live dashboard flags incidents:
 - Sudden queue growth (waiting count in queue stats)
 - Repeated provider rate-limit failures
 - Authentication failures after credential changes (agent health in the header status)
-- Cost spikes (Total Cost and recent high-cost alerts)
+- Cost spikes (dashboard Spend and recent high-cost alerts)
 - A specific repository causing disproportionate failures (Repository Breakdown on `/analytics`)
 - Provider capacity pressure ([Agent Tank](./agent-tank.md) usage bars, when enabled)
 

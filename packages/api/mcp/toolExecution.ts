@@ -6,6 +6,7 @@ import { cancellationTarget } from './operationTracking.js';
 import { redact } from './adapter.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import type { Args, McpTool, ToolDeps } from './tools.js';
+import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
 
 async function authorizePlanContext(row: Args, principal: McpPrincipal, policy: McpPolicy): Promise<void> {
   const context = typeof row.context_config === 'string' ? JSON.parse(row.context_config || '{}') : row.context_config;
@@ -21,6 +22,13 @@ async function authorizePlanContext(row: Args, principal: McpPrincipal, policy: 
 
 async function authorizeTarget(tool: McpTool, args: Args, principal: McpPrincipal, deps: ToolDeps): Promise<void> {
   const target = tool.target!;
+  if (args[target.arg] === undefined) {
+    // Only a target declared optional may guard one arm of an exactly-one-of
+    // schema (for example task versus pull request), leaving the other arm to
+    // repository policy. Every other target fails closed on a missing argument.
+    if (target.optional) return;
+    throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
+  }
   const row = await deps.db(target.table).where({ [target.column]: args[target.arg] }).first();
   if (!row || row.repository !== args.repository || (target.owner && row[target.owner] !== principal.user.id)) throw new McpError('NOT_FOUND', 'Target not found in your authorized repository.', 404);
   if (target.table === 'task_drafts') await authorizePlanContext(row, principal, deps.policy);
@@ -57,14 +65,44 @@ function receiptFailure(data: Record<string, unknown>): RecordedFailure | undefi
 }
 
 /** Read the handle, the size and the outcome one result carries into the access row. */
-function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string, unknown>): void {
+function contentBytes(content: ContentBlock[] | undefined): number | undefined {
+  if (!content) return undefined;
+  const binary = content.filter(block => block.type === 'image' || block.type === 'audio');
+  if (!binary.length) return undefined;
+  return binary.reduce((bytes, block) => bytes + Buffer.byteLength(block.data), 0);
+}
+
+function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string, unknown>, content?: ContentBlock[]): void {
   access.operationId = operationHandle(data);
-  access.resultBytes = Buffer.byteLength(JSON.stringify(data));
+  access.resultBytes = contentBytes(content) ?? Buffer.byteLength(JSON.stringify(data));
   // A replayed receipt reports an earlier attempt instead of throwing, so its
   // outcome is read back off the projection.
   if (!tool.readOnly) access.failure ??= receiptFailure(data);
 }
 
+/**
+ * Document content is already redacted as one normalized page before its
+ * offsets are calculated. Preserve that exact slice while retaining the
+ * dispatch safeguard for every other result field: re-redacting a continuation
+ * that happens to start with JSON can otherwise parse and reshape the text.
+ */
+function redactToolResult(tool: McpTool, result: unknown): Record<string, unknown> {
+  const data = redact(result) as Record<string, unknown>;
+  if (tool.name === 'get_doc' && result && typeof result === 'object') {
+    const content = (result as Record<string, unknown>).content;
+    if (typeof content === 'string') data.content = content;
+  }
+  return data;
+}
+
+/** Preserve binary content while applying the result-redaction boundary to text overrides. */
+function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] | undefined {
+  return content?.map(block => block.type === 'text'
+    ? { ...block, text: redact(block.text) as string }
+    : block);
+}
+
+// eslint-disable-next-line complexity -- dispatch keeps authorization, durable mutation handling, content bounds and logging in one auditable path
 async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
   access.repository = args.repository;
@@ -90,17 +128,25 @@ async function runTool({ tool, raw, principal, deps, access }: ToolInvocation): 
       await cancellationTarget(deps, principal, source.repository, sourceResult.continuation || sourceResult);
     }
   }
+  let readContent: ContentBlock[] | undefined;
   const result = deletedReplay ?? cancellationReplay ?? (tool.readOnly
-    ? (await tool.run({ principal, args })).data
+    ? await tool.run({ principal, args }).then(operation => {
+      readContent = operation.content;
+      return operation.data;
+    })
     // The operation wrapper turns a failed callback into a durable receipt
     // instead of throwing, so the classification is captured here, before that
     // projection consumes it.
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository },
-      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error); throw error; })));
-  const data = redact(result) as Record<string, unknown>;
-  noteToolOutcome(tool, access, data);
-  if (access.resultBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
-  return { ...presentResult(tool, args, data, deps.policy.config), data };
+      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
+  const data = redactToolResult(tool, result);
+  const content = redactToolContent(readContent);
+  const jsonBytes = Buffer.byteLength(JSON.stringify(data));
+  // Binary content has its own tool-specific bound and is intentionally not
+  // subject to the JSON page limit below.
+  noteToolOutcome(tool, access, data, content);
+  if (jsonBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
+  return { ...presentResult(tool, args, data, deps.policy.config), data, ...(content ? { content } : {}) };
 }
 
 /**

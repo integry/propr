@@ -113,7 +113,7 @@ cleanup() {
   echo "▸ cleaning up"
   docker rm -f "$STACK-launcher" 2>/dev/null || true
   # The launcher traps SIGTERM and tears down its siblings, but belt-and-braces:
-  for c in api daemon worker analysis-worker indexing-worker ui docs redis; do
+  for c in api daemon worker indexing-worker ui docs redis; do
     docker rm -f "$STACK-$c" 2>/dev/null || true
   done
   docker network rm "${STACK}-net" 2>/dev/null || true
@@ -188,6 +188,16 @@ if [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   AGENT_TAG="$AGENT_TAG" \
     ANTIGRAVITY_CONFIG_PATH="$HOME/.gemini" \
     ./scripts/verify-antigravity-image.sh
+
+  # Bundled Agent Tank reads usage out of the same image, so prove it actually
+  # gets numbers back rather than only that the CLI is installed. Antigravity is
+  # the provider this runner is guaranteed to have authenticated.
+  echo ""
+  echo "▸ verifying bundled Agent Tank usage from the agent image"
+  AGENT_TAG="$AGENT_TAG" \
+    AGENT_TANK_PROVIDERS="agy" \
+    ANTIGRAVITY_CONFIG_PATH="$HOME/.gemini" \
+    ./scripts/verify-agent-tank-image.sh
 fi
 
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
@@ -242,7 +252,7 @@ echo "▸ configuring agents"
 ANTIGRAVITY_CFG="${HOME}/.gemini"
 VIBE_CFG="${HOME}/.vibe"
 VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5}"
-ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.8-flash-medium,antigravity-gemini-3.8-flash-high,antigravity-gemini-3.8-flash-low,antigravity-gemini-3.7-flash-medium,antigravity-gemini-3.7-flash-high,antigravity-gemini-3.7-flash-low,antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
+ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.8-flash,antigravity-gemini-3.1-pro,antigravity-claude-sonnet-5.5,antigravity-claude-opus-5.5,antigravity-gpt-oss-120b}"
 OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-big-pickle,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
 json_array_from_csv() {
   local csv="$1"

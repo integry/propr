@@ -1,6 +1,6 @@
 {
   "name": "@propr/local-setup",
-  "version": "0.8.15",
+  "version": "0.9.0",
   "description": "UI-agnostic local ProPR setup state machine",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,7 @@
     "test": "npx tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@propr/shared": "^0.8.15"
+    "@propr/shared": "^0.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

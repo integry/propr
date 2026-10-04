@@ -14,8 +14,10 @@ env:
   # this many shard summaries together ran every discovered test unit once.
   PROPR_TEST_SHARD_COUNT: '4'
 
-# Four workers, one matrix shard per worker. The opt-in is an activation gate,
-# not an access-control boundary; editable fork workflows require careful approval.
+# Four independent matrix shards, on hosted runners or the rootless pool as
+# PROPR_ROOTLESS_PR_CHECKS selects (see docs/ci-runners.md). The opt-in is an
+# activation gate, not an access-control boundary; editable fork workflows
+# require careful approval.
 #
 # Backend coverage is never narrowed: the four shards and their exactly-once
 # coverage verification run for every ready pull request and every dispatch,
@@ -52,15 +54,49 @@ jobs:
         id: classify
         uses: ./.github/actions/classify-changes
 
+  # Chooses hosted or rootless runners for this run when
+  # PROPR_ROOTLESS_PR_CHECKS=overflow and is skipped otherwise. Its outcome
+  # never blocks the checks: a skipped or failed route leaves them hosted.
+  # See docs/ci-runners.md.
+  route:
+    name: Select PR check runners
+    if: ${{ vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      overflow: ${{ steps.capacity.outputs.overflow }}
+    steps:
+      - name: Checkout capacity script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: scripts/ci-hosted-capacity.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check hosted runner capacity
+        id: capacity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Hosted jobs this workflow routes; they count against the limit.
+          PROPR_PLANNED_HOSTED_JOBS: '5'
+          PROPR_HOSTED_JOB_LIMIT: ${{ vars.PROPR_HOSTED_JOB_LIMIT }}
+        run: node scripts/ci-hosted-capacity.mjs
+
   # Not gated and not dependent on the classifier: every shard installs and
   # builds the workspace (`npm ci`, `npm run test:prepare`) and asserts the
   # built outputs, so test preparation is enforced here even when the docs job
   # below is skipped.
   shard:
     name: Full Test Suite Shard ${{ matrix.shard }}/4
-    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # `route` only picks the runner; `!cancelled()` runs the shards whether it
+    # succeeded, failed or was skipped.
+    needs: route
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -207,13 +243,28 @@ jobs:
         run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt"
 
       - name: Upload shard output
+        id: shard_upload
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
           path: shard-output/
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+      # A transient artifact-service timeout must not discard a passing
+      # shard's coverage proof. Retry once; if it still fails, fail this shard
+      # so "re-run failed jobs" regenerates its missing output as well.
+      - name: Retry shard output upload
+        if: always() && steps.shard_upload.outcome == 'failure'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+          path: shard-output/
+          # Finalization can fail after creating the first artifact. Replace
+          # any partial artifact rather than conflicting with its name.
+          overwrite: true
+          if-no-files-found: error
 
       - name: Fail Job
         if: steps.tests.outcome == 'failure'
@@ -243,7 +294,7 @@ jobs:
   # this job's prerequisites; the shards enforce them unconditionally.
   docs:
     name: Validate Docs Site
-    needs: classify
+    needs: [classify, route]
     # Only an explicit `false` skips. A failed or missing decision (dispatch
     # never classifies) leaves the output empty, which runs the job.
     # `!cancelled()` keeps superseded-run cancellation intact.
@@ -251,8 +302,8 @@ jobs:
       ${{ !cancelled() &&
           (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) &&
           needs.classify.outputs.docs != 'false' }}
-    # Rootless opt-in; approval-based trust, not strict admission control. See docs/ci-runners.md.
-    runs-on: ${{ fromJSON(vars.PROPR_ROOTLESS_PR_CHECKS == 'true' && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
+    # Rootless opt-in (always, or overflow when hosted runners are saturated); approval-based trust, not strict admission control. See docs/ci-runners.md.
+    runs-on: ${{ fromJSON((vars.PROPR_ROOTLESS_PR_CHECKS == 'true' || (vars.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs.route.outputs.overflow == 'true')) && github.actor != 'dependabot[bot]' && ((github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && '["self-hosted","Linux","X64","propr-rootless"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -347,8 +398,10 @@ jobs:
     # actual native assertions on hosted runners on either shard route.
     # Inputs: apps/desktop/scripts, packages/client/dist (built from
     # @propr/client and @propr/shared), the Electron binary from the lockfile and
-    # scripts/run-test-suite.mjs. The classifier's `desktop` surface covers every
-    # one of them; the lockfile and scripts/ select every surface.
+    # scripts/run-test-suite.mjs. The classifier's on-demand `desktop` surface
+    # covers the desktop-owned ones (and Electron changes in the lockfile); the
+    # shared runtime, the renderer and the runner are validated by the job of the
+    # same name in the Tier 3 nightly run (test-nightly.yml).
     name: Full Test Suite Native Electron (hosted)
     needs: classify
     # Only an explicit `false` skips; see the docs job above.
@@ -482,12 +535,27 @@ jobs:
             fi
             require "$1" "$2"
           }
+          # The desktop checks are on demand: a broad change leaves them to the
+          # nightly run, so their skip needs only a resolved pull-request
+          # classification that reported the surface as `false`, broad or not.
+          on_demand_gated() {
+            if [ "$2" = skipped ] \
+              && [ "${EVENT_NAME:-}" = pull_request ] \
+              && [ "${CLASSIFY_RESULT:-}" = success ] \
+              && [ "${CLASSIFY_STATUS:-}" = ok ] \
+              && [ "$3" = false ]; then
+              echo "::notice::$1 proved inapplicable to this change set; the nightly run validates it. See the classifier job summary for the reasons."
+              echo "$1: not applicable to this change set (validated nightly)." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              return
+            fi
+            require "$1" "$2"
+          }
           # A matrix result is success only when every shard succeeded. The
           # shards are never gated, so a skipped shard always fails.
           require "Full test suite shards" "$SHARD_RESULT"
           surface_gated "Docs site validation" "$DOCS_RESULT" "${DOCS_DECISION:-}"
           # Missing or unexplained skipped native assertions fail closed.
-          surface_gated "Hosted native Electron units" "$ELECTRON_RESULT" "${DESKTOP_DECISION:-}"
+          on_demand_gated "Hosted native Electron units" "$ELECTRON_RESULT" "${DESKTOP_DECISION:-}"
           if [ "$COVERAGE_RESULT" != success ]; then
             echo "::error::Shard coverage verification finished with result '$COVERAGE_RESULT'."
             status=1

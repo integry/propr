@@ -25,7 +25,7 @@ const mockOctokit = {
 };
 
 const mockStateManager = {
-    createTaskState: mock.fn(async () => {}),
+    createTaskStateIfAbsent: mock.fn(async () => {}),
     updateTaskState: mock.fn(async () => {}),
     getTaskState: mock.fn(async () => null),
     updateHistoryMetadata: mock.fn(async () => {}),
@@ -343,6 +343,22 @@ class MockPullRequestPublication {
     }
 }
 
+const ciSuspensionEvents: string[] = [];
+const mockSuspendValidation = mock.fn(async (_params: unknown, _deps: unknown) => {
+    ciSuspensionEvents.push('suspend');
+    return { suspended: true, reason: 'suspended', cancelledRunIds: [] };
+});
+const mockReleaseSuspensions = mock.fn(async (_params: unknown, _deps: unknown) => {
+    ciSuspensionEvents.push('release');
+    return [];
+});
+await mock.module('../src/jobs/followupCiSuspension.js', {
+    namedExports: {
+        suspendObsoleteValidationForImplementation: mockSuspendValidation,
+        releaseFollowupCiSuspensionsForTask: mockReleaseSuspensions,
+    },
+});
+
 await mock.module('../src/jobs/prPublication.js', {
     namedExports: { PullRequestPublication: MockPullRequestPublication },
 });
@@ -376,7 +392,7 @@ function createMockJob(overrides: Partial<{
 function resetAllMocks() {
     mockOctokit.request.mock.resetCalls();
     mockOctokit.auth.mock.resetCalls();
-    mockStateManager.createTaskState.mock.resetCalls();
+    mockStateManager.createTaskStateIfAbsent.mock.resetCalls();
     mockStateManager.updateTaskState.mock.resetCalls();
     mockMergeBaseIntoBranch.mock.resetCalls();
     mockCommitChanges.mock.resetCalls();
@@ -398,6 +414,9 @@ function resetAllMocks() {
     };
     mockRedisStore.clear();
     mockSettings = {};
+    mockSuspendValidation.mock.resetCalls();
+    mockReleaseSuspensions.mock.resetCalls();
+    ciSuspensionEvents.length = 0;
 }
 
 describe('processMergeConflictJob', () => {
@@ -446,6 +465,35 @@ describe('processMergeConflictJob', () => {
             (c: { arguments: [string, string] }) => c.arguments[1] === 'completed'
         );
         assert.ok(completedCalls.length >= 1, 'Expected task state to be set to COMPLETED');
+    });
+
+    test('suspends obsolete PR validation once the destination is prepared, and releases it after the merge', async () => {
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => { ciSuspensionEvents.push('merge'); return mockMergeResult; });
+        mockRedisClient.del.mock.mockImplementation(async (key: string) => { ciSuspensionEvents.push('unlock'); mockRedisStore.delete(key); });
+        try {
+            const result = await processMergeConflictJob(createMockJob());
+
+            assert.strictEqual(result.status, 'complete');
+            assert.strictEqual(mockSuspendValidation.mock.callCount(), 1);
+            const [params] = mockSuspendValidation.mock.calls[0].arguments as [Record<string, unknown>];
+            assert.deepStrictEqual(params.ref, { repoOwner: 'test-owner', repoName: 'test-repo', pullRequestNumber: 42 });
+            assert.strictEqual(params.taskId, 'test-job-123');
+            assert.strictEqual(mockReleaseSuspensions.mock.callCount(), 1);
+            assert.deepStrictEqual(mockReleaseSuspensions.mock.calls[0].arguments[0], { taskId: 'test-job-123' });
+            // The release restores CI before the PR lock lets the next job cancel it again.
+            assert.deepStrictEqual(ciSuspensionEvents, ['suspend', 'merge', 'release', 'unlock']);
+        } finally {
+            mockRedisClient.del.mock.mockImplementation(async (key: string) => { mockRedisStore.delete(key); });
+        }
+    });
+
+    test('releases the CI suspension when the merge fails', async () => {
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => { throw new Error('merge exploded'); });
+
+        await assert.rejects(() => processMergeConflictJob(createMockJob()), /merge exploded/);
+
+        assert.strictEqual(mockSuspendValidation.mock.callCount(), 1);
+        assert.strictEqual(mockReleaseSuspensions.mock.callCount(), 1);
     });
 
     test('conflict merge: invokes agent and pushes resolved conflicts', async () => {
@@ -555,7 +603,7 @@ describe('processMergeConflictJob', () => {
 
         await processMergeConflictJob(createMockJob());
 
-        const createCall = mockStateManager.createTaskState.mock.calls[0];
+        const createCall = mockStateManager.createTaskStateIfAbsent.mock.calls[0];
         assert.strictEqual(createCall.arguments[1].modelName, 'gpt-5.5');
         assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 1);
     });
@@ -660,7 +708,16 @@ describe('processMergeConflictJob', () => {
 
     test('cleans up worktree and releases lock in finally block', async () => {
         const job = createMockJob();
-        await processMergeConflictJob(job);
+        let lockHeldDuringCleanup: boolean | undefined;
+        mockCleanupWorktree.mock.mockImplementation(async () => { lockHeldDuringCleanup = mockRedisStore.has('lock:pr:test-owner:test-repo:42'); });
+        try {
+            await processMergeConflictJob(job);
+        } finally {
+            mockCleanupWorktree.mock.mockImplementation(async () => {});
+        }
+
+        // The worktree holds the PR branch; the next job may only get the lock once it is gone.
+        assert.strictEqual(lockHeldDuringCleanup, true);
 
         // Lock should be released
         assert.ok(!mockRedisStore.has('lock:pr:test-owner:test-repo:42'));

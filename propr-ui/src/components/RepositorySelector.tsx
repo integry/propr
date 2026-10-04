@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Star, ChevronDown, X, Github, Loader2 } from 'lucide-react';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { RepositoryIcon } from './RepositoryIcon';
+import { RepositoryGroups, RepositoryRow, repositoryListStyles, repositoryKey as repoKey, sortRepositories as sortRepos } from '@propr/shared/dist/repositoryPresentation.js';
 
 export interface RepoOption {
   name: string;
@@ -77,7 +78,7 @@ const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' 
     : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
 );
 
-const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count}</span>;
+const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count.toLocaleString('en-US')}</span>;
 
 const RepoItem: React.FC<{
   repo: RepoOption;
@@ -85,23 +86,14 @@ const RepoItem: React.FC<{
   onSelect: (repo: RepoOption) => void;
   labelLayout: 'inline' | 'stacked';
 }> = ({ repo, isSelected, onSelect, labelLayout }) => (
-  <button
-    type="button"
-    data-testid="repo-item"
-    className={`w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-gray-50 transition-colors ${
-      isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700'
-    }`}
-    onClick={() => onSelect(repo)}
-  >
-    <RepositoryIcon repository={repo.name} iconPath={repo.iconPath} revision={repo.iconRevision || repo.baseBranch} />
-    <span className={`flex-1 min-w-0 ${labelLayout === 'stacked' ? '' : 'truncate text-sm font-mono'}`}>
-      <RepoLabel repo={repo} labelLayout={labelLayout} />
-    </span>
-    {repo.count !== undefined && <RepoCountBadge count={repo.count} />}
-    {repo.starred && (
-      <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />
-    )}
-  </button>
+  <RepositoryRow
+    repo={repo}
+    selected={isSelected}
+    onSelect={() => onSelect(repo)}
+    icon={<RepositoryIcon repository={repo.name} iconPath={repo.iconPath} revision={repo.iconRevision || repo.baseBranch} className="propr-repo-icon" />}
+    label={labelLayout === 'stacked' ? <StackedRepoLabel repo={repo} /> : undefined}
+    trailing={repo.count !== undefined ? <RepoCountBadge count={repo.count} /> : undefined}
+  />
 );
 
 const FilterInput: React.FC<{
@@ -120,62 +112,6 @@ const FilterInput: React.FC<{
     </div>
   </div>
 );
-
-const repoKey = (repo: RepoOption): string =>
-  repo.baseBranch ? `${repo.name}:${repo.baseBranch}` : repo.name;
-
-const isSyntheticRepoOption = (repo: RepoOption): boolean => !repo.name.includes('/');
-
-const sortRepos = (repos: RepoOption[]): RepoOption[] => {
-  const syntheticRepos: RepoOption[] = [];
-  const normalRepos: RepoOption[] = [];
-
-  repos.forEach(repo => {
-    if (isSyntheticRepoOption(repo)) {
-      syntheticRepos.push(repo);
-      return;
-    }
-    normalRepos.push(repo);
-  });
-
-  normalRepos.sort((a, b) => {
-    const nameCompare = a.name.localeCompare(b.name);
-    if (nameCompare !== 0) return nameCompare;
-    return (a.baseBranch || '').localeCompare(b.baseBranch || '');
-  });
-
-  return [...syntheticRepos, ...normalRepos];
-};
-
-const RepoSectionHeader: React.FC<{ title: string }> = ({ title }) => (
-  <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 bg-slate-50">{title}</div>
-);
-
-const RepoList: React.FC<{
-  starredRepos: RepoOption[];
-  otherRepos: RepoOption[];
-  selectedRepoKey: string | null;
-  onSelect: (repo: RepoOption) => void;
-  labelLayout: 'inline' | 'stacked';
-}> = ({ starredRepos, otherRepos, selectedRepoKey, onSelect, labelLayout }) => {
-  if (starredRepos.length === 0 && otherRepos.length === 0) return <div className="px-3 py-4 text-sm text-gray-500 text-center">No repositories found</div>;
-  return (
-    <>
-      {starredRepos.length > 0 && (
-        <>
-          <RepoSectionHeader title="Starred" />
-          {starredRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} labelLayout={labelLayout} />)}
-        </>
-      )}
-      {otherRepos.length > 0 && (
-        <>
-          {starredRepos.length > 0 && <RepoSectionHeader title="All Repositories" />}
-          {otherRepos.map(repo => <RepoItem key={repoKey(repo)} repo={repo} isSelected={selectedRepoKey === repoKey(repo)} onSelect={onSelect} labelLayout={labelLayout} />)}
-        </>
-      )}
-    </>
-  );
-};
 
 const getBreadcrumbLabel = (
   selectedRepoData: RepoOption | undefined,
@@ -399,7 +335,10 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     <div className={`absolute top-full ${variant === 'breadcrumb' ? 'left-0 w-72' : size === 'compact' ? 'right-0 w-72' : 'left-0 right-0'} mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden`}>
       <FilterInput inputRef={inputRef} value={filter} onChange={setFilter} onKeyDown={handleKeyDown} />
       <div className="max-h-64 overflow-y-auto">
-        <RepoList starredRepos={starredRepos} otherRepos={otherRepos} selectedRepoKey={selectedRepoKeyValue} onSelect={handleSelect} labelLayout={labelLayout} />
+        <style>{repositoryListStyles}</style>
+        <RepositoryGroups starredRepos={starredRepos} otherRepos={otherRepos} renderRow={repo => (
+          <RepoItem repo={repo} isSelected={selectedRepoKeyValue === repoKey(repo)} onSelect={handleSelect} labelLayout={labelLayout} />
+        )} />
       </div>
     </div>
   );

@@ -83,3 +83,30 @@ export async function findExecutionStartTimestampForTask(
     return null;
   }
 }
+
+/**
+ * Start of the task's latest execution. Metadata-free (pre-deploy) live output
+ * has no execution counter, so its event IDs are scoped by this instead; HTTP
+ * reads and the watcher must resolve it identically.
+ */
+export async function findLatestExecutionStartForTask(
+  deps: TaskWatcherLookupDeps,
+  normalizedTaskId: string
+): Promise<string | null> {
+  try {
+    const stateData = await deps.redisClient.get(`worker:state:${normalizedTaskId}`);
+    const history = stateData ? (JSON.parse(stateData) as { history?: Array<{ state?: string; timestamp?: string }> }).history : null;
+    const entry = Array.isArray(history) ? history.findLast(h => h.timestamp && (h.state ?? '').endsWith('_execution')) : undefined;
+    if (entry?.timestamp) return entry.timestamp;
+  } catch { /* Fall back to persisted executions. */ }
+  try {
+    const llmExecution = await deps.db('llm_executions')
+      .where({ task_id: normalizedTaskId })
+      .orderBy('start_time', 'desc')
+      .first('start_time');
+    const startTime = llmExecution?.start_time;
+    return startTime ? new Date(startTime as string | Date).toISOString() : null;
+  } catch {
+    return null;
+  }
+}

@@ -25,6 +25,7 @@ propr agent list
 propr check agents
 propr task list
 propr task inspect
+propr goal list --state active
 ```
 
 Inspect the installed CLI's current `propr --help` and subcommand `--help` before using it; do not assume unstable flags.
@@ -75,6 +76,45 @@ Inspect the current PR help or completion-comment command reference before actin
 - `/ultrafix goal=8 max=10`: alternate review and blocker fixes until the score goal or maximum-cycle boundary is reached, then inspect and test the final head.
 - `/use <model>`: select the durable PR route for queued and future work and converge the PR to one managed model label. Use `/switch` only if current PR help still lists it as a supported alias.
 - `/merge`: merge the base branch into the PR branch and resolve conflicts. It does not merge the PR into the base branch.
+
+## Run long-running goals from the CLI
+
+A goal keeps one agent session working toward a continuing objective until it delivers a validated draft PR. Use it when the objective is broader than one issue; otherwise prefer the issue flow above. The `propr goal` commands use the normal CLI login and need no MCP connection:
+
+```text
+propr goal capabilities
+propr goal create -p OWNER/REPO -a AGENT -m MODEL --file objective.md --idempotency-key KEY --json
+propr goal inspect GOAL_ID --json
+propr goal input GOAL_ID --file correction.md
+propr goal inputs GOAL_ID
+propr goal pause GOAL_ID
+propr goal resume GOAL_ID
+propr goal model GOAL_ID MODEL
+propr goal cancel GOAL_ID
+```
+
+- `goal create` starts autonomous work immediately; only run it when starting work is authorized. Keep the returned goal ID.
+- Supply your own `--idempotency-key` for every mutation and reuse it when retrying the same request. On `outcome_uncertain`, re-run with the same key rather than creating another goal; `idempotency_conflict` means the key was used for a different request.
+- Inputs, pause, resume, cancel and model changes are accepted requests, not confirmations. Compare `lifecycle.requestedState` with `lifecycle.observedState` and `model.requested` with `model.effective`. A `delivered` input still does not prove the agent acted on it; check `goal inputs` before sending the same correction again.
+- `lifecycle.goalCompleted` is the goal result; `currentTask.taskCompleted` is not. Judge completion from the goal result and its final PR (`goal.finalPr`, `goal.pullRequests`), then review that PR like any other.
+
+## Receipts and errors
+
+Keep every mutation receipt and follow it with `get_operation`; use
+`list_operations` to recover recent handles when the exact ID is unavailable.
+An accepted or queued receipt confirms dispatch, not completion. Respect its
+polling hint and read the lifecycle state, timestamps, artifacts and progress.
+On failure, preserve `error.code`, `error.stage`, `error.retryable` and any
+`error.cause` in the report. `OUTCOME_UNKNOWN` means a mutation may have reached
+an external system, so inspect the named target before considering a new action.
+
+## Asking about ProPR
+
+For questions about ProPR behavior, configuration or operator procedures, use
+`search_docs` and then read the relevant result with `get_doc`. Use
+`find_setting` when the question is specifically where a setting lives or how
+it can be changed. Treat the bundled documentation as the product reference;
+do not infer current behavior from repository content or task narration alone.
 
 ## Keep the deterministic boundary
 

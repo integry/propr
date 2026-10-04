@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import { McpError } from '../../mcp/config.js';
 import type { McpPolicy, McpPrincipal } from '../../mcp/policy.js';
 import type { ToolDeps } from '../../mcp/tools.js';
+import { withLiveOutputReads } from '../liveOutputRedisFake.js';
 
 /**
  * Fixtures for the MCP operator activity digest. Only the repository
@@ -53,7 +54,7 @@ export function buildDeps(db: Knex, options: { forbidden?: string[] } = {}): Too
   } as unknown as McpPolicy;
   return {
     db, policy, taskQueue: {} as never, runtimeBuildQueue: {} as never,
-    redisClient: { get: async () => null } as never,
+    redisClient: withLiveOutputReads({ get: async () => null }) as never,
   };
 }
 

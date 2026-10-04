@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setApiBaseUrl, setAuthenticatedApiReadIdentity } from './apiClient';
 import {
+  getDashboardNarrative,
   getDashboardActive,
   getDashboardAttention,
   getDashboardOutcomes,
@@ -32,6 +33,8 @@ describe('dashboard reads', () => {
     // A fresh Response per call: a body can only be read once.
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => jsonResponse({}));
 
+    await getDashboardNarrative('integry/propr');
+    await getDashboardNarrative('integry/propr', true);
     await getDashboardSummary('integry/propr');
     await getDashboardAttention('integry/propr');
     await getDashboardActive('all');
@@ -40,6 +43,8 @@ describe('dashboard reads', () => {
     await getDashboardStats('integry/propr', '30d');
 
     expect(fetchSpy.mock.calls.map(requestedUrl)).toEqual([
+      '/api/dashboard/narrative?repository=integry%2Fpropr',
+      '/api/dashboard/narrative?repository=integry%2Fpropr&refresh=true',
       '/api/dashboard/summary?repository=integry%2Fpropr',
       '/api/dashboard/attention?repository=integry%2Fpropr',
       '/api/dashboard/active?repository=all',

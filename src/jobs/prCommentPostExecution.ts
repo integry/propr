@@ -27,6 +27,7 @@ import { buildCompletionComment } from './prCompletionComment.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
 import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
+import { selectedReviewFeedbackIds } from './reviewFindingSelector.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import {
@@ -196,6 +197,9 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         : '';
     const undoContext = context.publication.continuation || !state.worktreeInfo ? undefined : buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(comment => comment.id) : undefined;
+    // Reported from the records that were actually selected, so a retry that
+    // re-reads the discussion still names exactly the work this run did.
+    const addressedFeedback = selectedReviewFeedbackIds(unprocessedReviewComments);
     const completionBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
         changesSummary,
         commitMessage,
@@ -204,6 +208,7 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         undoContext,
         taskUrl,
         consumedReviewCommentIds,
+        addressedFeedback,
         visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined
     }, state.claudeResult);
     const prCommentTemplate = [context.publication.status, completionBody].filter(Boolean).join('\n\n');
@@ -268,6 +273,18 @@ function buildPostExecutionRecap(
         noChanges: !commitResult,
         partial,
     });
+}
+
+/**
+ * Findings and suggestions a run addressed, recorded on the work summary so the
+ * task history distinguishes required corrections from optional follow-ups.
+ */
+function buildAddressedFeedbackHistoryMeta(comments: AIReviewComment[]): Record<string, string[]> {
+    const addressed = selectedReviewFeedbackIds(comments);
+    return {
+        ...(addressed.findingIds.length > 0 && { addressedFindingIds: addressed.findingIds }),
+        ...(addressed.suggestionIds.length > 0 && { addressedSuggestionIds: addressed.suggestionIds }),
+    };
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
@@ -335,6 +352,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
+            ...(terminationReason === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {
@@ -343,6 +361,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
                 githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
                 notificationRecap: buildPostExecutionRecap(job.data, { commitResult, changesSummary }, partial),
                 ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+                ...buildAddressedFeedbackHistoryMeta(unprocessedReviewComments),
                 ...(partial && { incompleteExecution: { reason: terminationReason } }),
                 ...ultrafixHistoryMeta,
             }
@@ -351,10 +370,17 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
         return { commitHash: commitResult?.commitHash, partial };
     } finally {
-        try {
-            await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
-        } catch (cleanupError) {
-            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
-        }
+        await cleanupPostExecutionPreviews(preparedVisualPreview, correlatedLogger);
+    }
+}
+
+async function cleanupPostExecutionPreviews(
+    preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined,
+    correlatedLogger: PostExecutionParams['context']['correlatedLogger'],
+): Promise<void> {
+    try {
+        await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
+    } catch (cleanupError) {
+        correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
     }
 }

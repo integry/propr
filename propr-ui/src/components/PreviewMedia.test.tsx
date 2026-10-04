@@ -1,14 +1,16 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseISO8601Timestamp, type Notification } from '@propr/shared';
 import { PreviewThumbnails } from './PreviewMedia';
 import { downsampleToCanvas } from './previewDownsampling';
-import { ParentTaskRow, ChildTaskRow } from './TaskList/TaskRows';
-import { MobileTaskCard } from './TaskList/MobileTaskCard';
+import { TaskTableContent } from './TaskList/StateComponents';
 import { InboxCard } from '../pages/InboxPageComponents';
+import { AuthProvider } from '../contexts/AuthContext';
+import type { CurrentUser } from '../api/proprTypes';
 
 vi.mock('./Inbox/NotificationActions', () => ({ default: () => null }));
+afterEach(() => vi.restoreAllMocks());
 const media = Array.from({ length: 5 }, (_, i) => ({ title: `Published screen ${i}`, type: 'image' as const, url: `https://github.com/user-attachments/assets/screen-${i}` }));
 const task = { id: 'task-1', status: 'completed', title: 'Ship media', createdAt: '2026-09-13', previewMedia: media };
 const group = { key: 'one', repoOwner: 'acme', repoName: 'web', tasks: [task] };
@@ -37,13 +39,38 @@ describe('preview thumbnails', () => {
     expect(screen.getByRole('img', { name: /Video preview: Published screen 0/ })).toBeInTheDocument();
     expect(container.querySelector('video')).toBeNull();
   });
-  it.each([false, true])('renders 3 previews in parent and child rows (desktop=%s)', desktopLayout => {
-    render(<table><tbody><ParentTaskRow group={group} task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /><ChildTaskRow task={task} desktopLayout={desktopLayout} onRowClick={vi.fn()} /></tbody></table>);
-    for (const row of screen.getAllByRole('row')) expect(within(row).getAllByRole('img', { name: /Published screen/ })).toHaveLength(3);
+  it('loads application media with authenticated fetch and drops the old blob on account switch', async () => {
+    const protectedMedia = [{ ...media[0], url: '/api/preview-media/pulls/acme/web/49/private-asset' }];
+    const user = (id: string) => ({ id, username: id, permissions: [] }) as unknown as CurrentUser;
+    const responses: Array<(response: Response) => void> = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(resolve => responses.push(resolve)));
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValueOnce('blob:account-a').mockReturnValueOnce('blob:account-b');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const { rerender } = render(<AuthProvider user={user('account-a')}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => { responses[0]?.(new Response('image-a', { status: 200, headers: { 'Content-Type': 'image/png' } })); });
+    expect(await screen.findByAltText('Published screen 0')).toHaveAttribute('src', 'blob:account-a');
+
+    rerender(<AuthProvider user={user('account-b')}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByAltText('Published screen 0')).not.toBeInTheDocument();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:account-a');
+    await act(async () => { responses[1]?.(new Response('image-b', { status: 200, headers: { 'Content-Type': 'image/png' } })); });
+    expect(await screen.findByAltText('Published screen 0')).toHaveAttribute('src', 'blob:account-b');
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+    rerender(<AuthProvider user={null}><PreviewThumbnails media={protectedMedia} /></AuthProvider>);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(screen.queryByAltText('Published screen 0')).not.toBeInTheDocument();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:account-b');
   });
-  it('renders 3 previews in the mobile task layout', () => {
-    render(<MobileTaskCard group={group} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
-    expect(screen.getAllByRole('img', { name: /Published screen/ })).toHaveLength(3);
+  // A dense task ledger announces evidence instead of drawing thumbnails that load as empty boxes.
+  it('announces previews as a count in the task ledger instead of drawing thumbnails', () => {
+    render(<TaskTableContent groupedTasks={[group]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} />);
+    expect(screen.queryAllByRole('img', { name: /Published screen/ })).toHaveLength(0);
+    const badges = screen.getAllByTestId('preview-count');
+    // One in the desktop ledger, one in the mobile card.
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) expect(badge).toHaveTextContent('5 previews');
   });
   it.each([['task', 'success', 1], ['task', 'error', 0], ['task', 'warning', 0], ['review', 'success', 0], ['plan', 'success', 0]])('Inbox %s/%s shows %s previews', (kind, severity, count) => {
     const notification = { id: 'n-1', kind, severity, target: { type: kind, repository: 'acme/web', taskId: 'task-1' }, readAt: null,
@@ -71,7 +98,13 @@ describe('preview thumbnails', () => {
     render(<MemoryRouter><InboxCard notification={notification} onDismiss={vi.fn()} onOpen={onOpen} mutationsEnabled={false} /></MemoryRouter>);
     expect(screen.queryAllByRole('img', { name: /Published screen/ })).toHaveLength(count);
     const details = screen.getByRole('link', { name: /Implement repository media/ });
-    expect(details).toHaveAttribute('href', 'https://github.com/acme/web/pull/42');
+    expect(details).toHaveAttribute('href', completion ? '/tasks/implementation-1' : 'https://github.com/acme/web/pull/42');
+    if (completion) expect(details).not.toHaveAttribute('target');
+    else expect(details).toHaveAttribute('target', '_blank');
+    const pullRequest = screen.getByRole('link', { name: 'PR #42 on GitHub' });
+    expect(pullRequest).toHaveAttribute('href', 'https://github.com/acme/web/pull/42');
+    expect(pullRequest).toHaveAttribute('target', '_blank');
+    expect(pullRequest).toHaveAttribute('rel', 'noopener noreferrer');
     fireEvent.click(details);
     expect(onOpen).toHaveBeenCalledWith(notification.id);
   });

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- both MCP SDK eras share one end-to-end workflow fixture */
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -13,8 +14,9 @@ import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextp
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { McpPrincipal } from '../mcp/policy.js';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import type { CommentJobData, StopTaskExecutionOptions, UnprocessedComment } from '@propr/core';
 import type { ToolDeps } from '../mcp/tools.js';
+import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 test('both SDK eras drive persisted goal, TODO, notification, settings and guarded PR workflows', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'propr-mcp-workflows-'));
@@ -27,12 +29,24 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
   const queueStates = new Map<string, string>();
   const issueQueue = { getJobs: async () => [], getJob: async (id: string) => queueStates.has(id) ? { getState: async () => queueStates.get(id) } : undefined, add: async (name: string, data: Record<string, unknown>, options?: { jobId?: string }) => { if (queueFailure) throw new Error('Queue connection lost after write'); issueJobs.push({ name, data }); if (options?.jobId) queueStates.set(options.jobId, 'waiting'); return { id: options?.jobId || String(issueJobs.length) }; } };
   const cacheReads: string[] = [];
+  const cancellationRequests = new Map<string, { requestedBy: string; reason: unknown }>();
   let githubBoundary: unknown;
-  // Only outbound GitHub, Git transport and queue boundaries are fixtures. Catalog, handlers,
-  // label orchestration, authorization and persistence remain the real code.
+  // Only outbound GitHub, Git transport, queue and Redis boundaries are fixtures. Catalog, handlers,
+  // label orchestration, authorization and SQLite persistence remain the real code.
   const boundary = await mock.module('@propr/core', { namedExports: { ...core,
     getAuthenticatedOctokit: async () => githubBoundary,
     getIssueQueue: async () => issueQueue, getIndexingQueue: async () => issueQueue, issueQueue,
+    stopTaskExecution: (taskId: string, options: StopTaskExecutionOptions) => core.stopTaskExecution(taskId, {
+      ...options,
+      // The shared helper imports these dependencies internally, bypassing the barrel mock.
+      getQueue: async () => issueQueue,
+      markCancelled: async (id, requestedBy, metadata) => {
+        cancellationRequests.set(id, { requestedBy, reason: metadata.historyMetadata?.cancellationReason });
+        // Exercise the abort-signal fallback. The cancellation fixture supplies the
+        // worker's eventual terminal outcome, including completion/failure races.
+        throw new Error('Fixture cancellation state store unavailable');
+      },
+    }),
     ensureRepoCloned: async () => root, fetchLatestChanges: async () => ({ success: true }), publishIndexingStatus: async () => {},
     getStoredFileChanges: async (taskId: string) => { cacheReads.push(taskId); return { taskId, lastUpdated: new Date().toISOString(), files: [{ path: 'src/retry.ts', linesAdded: 1, linesRemoved: 0, status: 'modified', diff: '+Handle transient failures\n' }] }; },
   } });
@@ -102,7 +116,12 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     const jobs: Array<Record<string, unknown>> = [];
     const redisValues = new Map<string, string>();
     const pendingComments = new Map<string, string[]>();
-    const evalRedis = async (script: string, _keyCount: number, key: string) => {
+    const liveOutputRedis = withLiveOutputReads({ get: async (key: string) => redisValues.get(key) ?? null });
+    const evalRedis = async (script: string, options: number | { keys: string[]; arguments: string[] }, key = '') => {
+      // Live-output reads use node-redis options; pending-comment claims use ioredis arguments.
+      if (typeof options !== 'number' && options.keys[0].startsWith('agent:output:')) {
+        return liveOutputRedis.eval(script, options);
+      }
       if (script.includes('return comments')) {
         const claimed = pendingComments.get(key) ?? [];
         if (claimed.length > 0) pendingComments.delete(key);
@@ -114,14 +133,14 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     const { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } = await import('../../../src/jobs/prPendingComments.js');
     const { updateTaskTitleForPR } = await import('../../../src/jobs/prCommentJobHelpers.js');
     const correlatedLogger = core.logger.withCorrelation('mcp-pending-regression');
-    const stateManager = { updateIssueRef: async () => {} } as unknown as InstanceType<typeof core.WorkerStateManager>;
+    const stateManager = { updateIssueRef: async () => {}, getTaskState: async () => null } as unknown as InstanceType<typeof core.WorkerStateManager>;
     const deps: ToolDeps = { db, policy, taskQueue: { add: async (_name: string, data: Record<string, unknown>) => { jobs.push(data); return { id: String(jobs.length) }; }, getJobs: async () => [] } as never,
-      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async () => 'OK', eval: evalRedis } as never, runtimeBuildQueue: {} as never,
+      redisClient: { rPush: async () => 1, lPush: async () => 1, lTrim: async () => 'OK', sMembers: async () => [], get: async (key: string) => redisValues.get(key) || null, llen: async (key: string) => pendingComments.get(key)?.length || 0, lrange: async (key: string) => pendingComments.get(key) || [], del: async (key: string) => { pendingComments.delete(key); return 1; }, publish: async () => 1, set: async (key: string, value: string) => { redisValues.set(key, value); return 'OK'; }, eval: evalRedis } as never, runtimeBuildQueue: {} as never,
       goalServices: { generateTitle: async () => 'Fixture goal', loadVisualPreviewSettings: async () => ({ enabled: false, types: ['image'] }), getOctokit: async () => github as never,
         stopExecution: async () => ({ success: true, containerStopped: stopGoalImmediately, removedQueuedJobs: stopGoalImmediately ? 1 : 0 }) as never,
         getCapabilities: async () => [{ agentId: agent.config.id, agentAlias: 'claude', agentType: 'claude', goalCapable: true, lifecycle: { launch: 'goal-prompt', resume: 'whole-session', runningInput: 'safe-boundary-resume' }, controls: { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true } }] } };
     // Exercise the worker's Redis pickup, command normalization and durable title update.
-    // Only Redis/queue transport and the Redis issue-ref update are fixtures.
+    // Only Redis/queue transport and the Redis state-manager calls are fixtures.
     const persistCommentTask = async (taskId: string, jobData: CommentJobData, pending: UnprocessedComment[] = []) => {
       const key = core.getPendingPrCommentsKey(jobData.repoOwner, jobData.repoName, jobData.pullRequestNumber);
       pendingComments.set(key, pending.map(comment => JSON.stringify(comment)));
@@ -240,17 +259,34 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const created = await call('create_goal', { repository, objective: 'Improve reliability', agentId: agent.config.id, model: 'fixture-model', launchStrategy: 'direct' }, true);
         assert.equal(created.state, 'accepted', JSON.stringify(created));
         const goalId = created.result.continuation.goalId;
-        assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'running');
+        const createdGoal = await db('goals').where({ goal_id: goalId }).first();
+        assert.equal(createdGoal.desired_state, 'running');
         assert.ok(jobs.some(job => job.goalId === goalId));
+        await db('tasks').insert({ task_id: createdGoal.current_task_id, repository, task_type: 'goal' });
+        await db('task_history').insert({ task_id: createdGoal.current_task_id, state: 'processing' });
+        await db('task_history').insert({ task_id: createdGoal.current_task_id, state: 'completed', reason: 'Goal task completed successfully' });
+        const runningGoal = await call('get_operation', { operationId: created.operationId });
+        assert.equal(runningGoal.lifecycle.state, 'running');
+        assert.ok(runningGoal.lifecycle.startedAt);
+        const runningOperations = await call('list_operations', { lifecycle: 'running' });
+        assert.ok(runningOperations.operations.some((operation: { operationId: string }) => operation.operationId === created.operationId));
         const input = await call('send_goal_input', { repository, goalId, message: 'Add error handling' }, true); assert.equal(input.state, 'completed', JSON.stringify(input));
         assert.ok(await db('goal_inputs').where({ goal_id: goalId, message: 'Add error handling' }).first());
         await call('pause_goal', { repository, goalId }, true); assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'paused');
         const resume = await call('resume_goal', { repository, goalId }, true); assert.equal(resume.state, 'completed', JSON.stringify(resume));
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'running');
         await verifyCancellation({ call, client, principal, deps, agentId: agent.config.id, modern, root, taskId, issueNumber, redisValues, plannerSignals, setStopGoalImmediately: value => { stopGoalImmediately = value; } });
+        assert.equal(cancellationRequests.size, modern ? 3 : 6, 'each task stop attempts to record cancellation');
+        for (const [id, request] of cancellationRequests) {
+          assert.deepEqual(request, { requestedBy: 'fixture-user', reason: 'cancelled_by_user' });
+          const abort = JSON.parse(redisValues.get(`worker:abort:${id}`)!);
+          assert.equal(abort.requestedBy, request.requestedBy);
+          assert.equal(abort.reason, request.reason);
+        }
         const cancel = await call('cancel_goal', { repository, goalId }, true); assert.equal(cancel.state, 'accepted');
         assert.equal((await db('goals').where({ goal_id: goalId }).first()).desired_state, 'cancelled');
         assert.equal((await call('get_operation', { operationId: cancel.operationId })).result.cancellation, 'confirmed');
+        await verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId: agent.config.id, modern });
 
         const category = await call('create_todo_category', { repository, name: 'Reliability' }, true); assert.equal(category.state, 'completed', JSON.stringify(category));
         const todo = await call('create_todo', { repository, content: 'Handle transient errors' }, true); assert.equal(todo.state, 'completed', JSON.stringify(todo));
@@ -277,7 +313,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         assert.equal(reviewRequest.state, 'posted');
         const reviewTaskId = `review-task-${modern}`;
         await pendingTask(reviewTaskId, reviewRequest.result.commentId, 'review');
-        assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'running');
         await db('task_history').insert({ task_id: reviewTaskId, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: reviewRequest.operationId })).state, 'running');
         const { buildReviewComment } = await import('../../../src/jobs/reviewCommentFormatter.js');
@@ -298,36 +334,39 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         assert.equal(fix.state, 'posted'); assert.ok(comments.at(-1)!.startsWith('/fix F1'));
         const fixTaskId = `fix-task-${modern}`;
         await pendingTask(fixTaskId, fix.result.commentId, 'fix');
-        assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'running');
         await db('task_history').insert({ task_id: fixTaskId, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: fix.operationId })).state, 'running');
         head = 'c'.repeat(40);
         await db('task_history').insert({ task_id: fixTaskId, state: 'completed' });
         const fixed = await call('get_operation', { operationId: fix.operationId });
         assert.equal(fixed.state, 'completed'); assert.equal(fixed.result.currentHead, head); assert.equal(fixed.result.continuation.taskId, fixTaskId);
+        // A moved head no longer blocks the fix by default; a caller-pinned stale head still does.
+        const pinnedStale = await call('fix_review_findings', { ...pr, reviewCommentId, findingIds: ['F1'] }, true);
+        assert.equal(pinnedStale.state, 'failed'); assert.equal(pinnedStale.result.error.code, 'STALE_HEAD');
         pr.expectedHead = head;
-        assert.equal((await call('fix_review_findings', { ...pr, reviewCommentId, findingIds: ['F1'] }, true)).state, 'failed');
         const ultrafix = await call('run_ultrafix', pr, true); assert.equal(ultrafix.state, 'posted');
         const loopTask = `ultrafix-start-${modern}`, workEpoch = modern ? 1 : 2;
         await pendingTask(loopTask, ultrafix.result.commentId, modern ? 'review' : 'fix', workEpoch);
-        await db('task_history').insert({ task_id: loopTask, state: 'completed' });
+        await db('task_history').insert({ task_id: loopTask, state: 'completed', reason: 'Task completed successfully' });
         const loop = { active: true, workEpoch, cycleCount: 0, completionStatus: null as string | null, completionReason: null as string | null };
         redisValues.set('ultrafix:state:acme:repo:42', JSON.stringify(loop));
         assert.equal((await call('get_operation', { operationId: ultrafix.operationId })).state, 'running');
-        loop.active = false; loop.completionStatus = 'succeeded'; loop.completionReason = 'Goal reached';
+        loop.active = false; loop.completionStatus = modern ? 'succeeded' : 'failed';
+        loop.completionReason = modern ? 'Goal reached' : 'Maximum cycles reached without resolving the findings.';
         redisValues.set('ultrafix:state:acme:repo:42', JSON.stringify(loop));
         const completedLoop = await call('get_operation', { operationId: ultrafix.operationId });
-        assert.equal(completedLoop.state, 'completed');
-        assert.equal(completedLoop.result.loop.workEpoch, workEpoch);
-        assert.equal(completedLoop.result.loop.completionStatus, 'succeeded');
+        assert.equal(completedLoop.state, modern ? 'completed' : 'failed');
+        assert.equal(completedLoop.result.loop.workEpoch, workEpoch); assert.equal(completedLoop.result.loop.completionStatus, loop.completionStatus);
+        if (!modern) assert.equal(completedLoop.lifecycle.failure.message, loop.completionReason);
         assert.equal(completedLoop.result.continuation.sourceTaskId, loopTask);
         redisValues.set('ultrafix:state:acme:repo:42', JSON.stringify({ ...loop, workEpoch: workEpoch + 1, active: true, completionStatus: null }));
-        assert.equal((await call('get_operation', { operationId: ultrafix.operationId })).state, 'completed');
+        assert.equal((await call('get_operation', { operationId: ultrafix.operationId })).state, modern ? 'completed' : 'failed');
         const lostIntake = await call('review_pull_request', pr, true);
-        await db('mcp_operations').where({ id: lostIntake.operationId }).update({ created_at: Date.now() - 180000 });
+        await db('mcp_operations').where({ id: lostIntake.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
         assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'unknown');
         await pendingTask(`late-review-${modern}`, lostIntake.result.commentId, 'review');
-        assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'queued');
+        assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'running');
         await db('task_history').insert({ task_id: `late-review-${modern}`, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: lostIntake.operationId })).state, 'running');
         await db('task_history').insert({ task_id: `late-review-${modern}`, state: 'cancelled' });
@@ -340,7 +379,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           const execution = `review-${shape}-${modern}`;
           await persistCommentTask(execution, { ...baseJob, commandMode: 'review',
             ...(shape === 'direct' ? { commentId: comment.id, commentBody: comment.body, commentAuthor: comment.author } : { comments: [comment] }) });
-          assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'queued');
+          assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'running');
           await db('task_history').insert({ task_id: execution, state: 'processing' });
           assert.equal((await call('get_operation', { operationId: request.operationId })).state, 'running');
           await db('task_history').insert({ task_id: execution, state: 'completed', metadata: JSON.stringify({ reviewResults: [{ success: false }] }) });
@@ -360,7 +399,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           await db('task_history').insert({ task_id: execution, state: 'completed' });
           assert.equal((await call('get_operation', { operationId: selected.operationId })).state, 'completed');
           assert.equal((await call('get_operation', { operationId: superseded.operationId })).state, 'posted');
-          await db('mcp_operations').where({ id: superseded.operationId }).update({ created_at: Date.now() - 180000 });
+          await db('mcp_operations').where({ id: superseded.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
           assert.equal((await call('get_operation', { operationId: superseded.operationId })).state, 'unknown');
         }
         const unexecuted = await call('review_pull_request', pr, true);
@@ -376,15 +415,17 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
           await db('task_history').insert({ task_id: execution, state: 'completed' });
         }
         assert.equal((await call('get_operation', { operationId: unexecuted.operationId })).state, 'posted');
-        await db('mcp_operations').where({ id: unexecuted.operationId }).update({ created_at: Date.now() - 180000 });
+        await db('mcp_operations').where({ id: unexecuted.operationId }).update({ created_at: Date.now() - 11 * 60_000 });
         assert.equal((await call('get_operation', { operationId: unexecuted.operationId })).state, 'unknown');
         // A loop without a matching durable epoch cannot borrow a later loop's result.
         const staleLoop = await call('run_ultrafix', pr, true);
         await pendingTask(`stale-loop-${modern}`, staleLoop.result.commentId, 'review', workEpoch);
         assert.equal((await call('get_operation', { operationId: staleLoop.operationId })).state, 'unknown');
-        assert.ok(comments.some(comment => comment.startsWith('/ultrafix goal=9 max=3')));
-        checks = 'FAILURE'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_NOT_PASSED'); assert.equal(merged, false);
-        checks = 'SUCCESS'; mergeState = 'BLOCKED'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_NOT_PASSED'); assert.equal(merged, false);
+        // run_ultrafix without a goal posts the instance rating goal, not a literal of its own.
+        const instanceGoal = await core.loadUltrafixRatingGoal();
+        assert.ok(comments.some(comment => comment.startsWith(`/ultrafix goal=${instanceGoal} max=3`)));
+        checks = 'FAILURE'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'CHECKS_FAILING'); assert.equal(merged, false);
+        checks = 'SUCCESS'; mergeState = 'BLOCKED'; assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'BRANCH_PROTECTION_BLOCKED'); assert.equal(merged, false);
         mergeState = 'CLEAN'; await call('update_pull_request_branch', pr, true); assert.equal(merged, false);
         assert.equal((await call('merge_pull_request', pr, true)).result.error.code, 'STALE_HEAD');
         assert.equal((await call('merge_pull_request', { ...pr, expectedHead: head }, true)).state, 'completed'); assert.equal(merged, true);
@@ -395,6 +436,57 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     redisBoundary.restore(); boundary.restore();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
     await Promise.all(attachmentDirectories.map(directory => rm(directory, { recursive: true, force: true })));
-    await core.closeConnection(); await rm(root, { recursive: true, force: true });
+    await core.closeConnection(); await core.closeEventPublisher(); await rm(root, { recursive: true, force: true });
   }
 });
+
+type GoalOptionsFixture = {
+  client: { callTool: (request: { name: string; arguments: Record<string, unknown> }) => Promise<unknown> };
+  call: (name: string, args: Record<string, unknown>, mutation?: boolean) => Promise<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  db: import('knex').Knex; jobs: Array<Record<string, unknown>>; repository: string; agentId: string; modern: boolean;
+};
+
+/** MCP goal creation honors the shared API contract and persists the requested options. */
+async function verifyGoalCreationOptions({ client, call, db, jobs, repository, agentId, modern }: GoalOptionsFixture): Promise<void> {
+  const goalArgs = { repository, objective: `Ship with Ultrafix ${modern}`, agentId, model: 'fixture-model', launchStrategy: 'direct' };
+  const raw = async (args: Record<string, unknown>, idempotencyKey: string) => client.callTool({ name: 'create_goal', arguments: { ...goalArgs, ...args, idempotencyKey } }) as Promise<{ isError?: boolean; structuredContent?: { data?: Record<string, any> } }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (const maxParallelTasks of [0, 33]) {
+    const before = await db('goals').count({ count: '*' }).first();
+    const rejected = await raw({ maxParallelTasks }, `goal-parallel-${modern}-${maxParallelTasks}`);
+    assert.equal(rejected.isError, true, `maxParallelTasks ${maxParallelTasks}`);
+    assert.deepEqual(await db('goals').count({ count: '*' }).first(), before);
+  }
+  const orchestratedCadence = await raw({ launchStrategy: 'orchestrate', checkpointIntervalMinutes: 15 }, `goal-cadence-${modern}`);
+  assert.equal(orchestratedCadence.isError, true);
+
+  const enabledKey = `goal-ultrafix-${modern}`;
+  const enabled = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.notEqual(enabled.isError, true, JSON.stringify(enabled));
+  const enabledData = enabled.structuredContent!.data!;
+  assert.equal(enabledData.state, 'accepted');
+  const enabledGoal = await db('goals').where({ goal_id: enabledData.result.continuation.goalId }).first();
+  assert.equal(Boolean(enabledGoal.ultrafix), true);
+  assert.equal(enabledGoal.max_parallel_tasks, 32);
+  const context = await db('goal_inputs').where({ goal_id: enabledGoal.goal_id, kind: 'context' }).first();
+  assert.match(context.message, /Ultrafix policy: Enabled/);
+  assert.match(context.message, /Finish with validated implementation files; ProPR publishes and validates the final checkpoint on its draft PR/);
+  const jobCount = jobs.filter(job => job.goalId === enabledGoal.goal_id).length;
+  assert.equal(jobCount, 1);
+  const retry = await raw({ ultrafix: true, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(retry.structuredContent!.data!.operationId, enabledData.operationId);
+  const changed = await raw({ ultrafix: false, maxParallelTasks: 32 }, enabledKey);
+  assert.equal(changed.isError, true);
+  assert.match(JSON.stringify(changed), /IDEMPOTENCY_CONFLICT/);
+  assert.equal(jobs.filter(job => job.goalId === enabledGoal.goal_id).length, 1);
+  assert.equal(await db('goals').where({ repository, objective: goalArgs.objective }).count({ count: '*' }).first().then(row => Number(row?.count)), 1);
+
+  const disabled = await call('create_goal', { ...goalArgs, objective: 'Ship without Ultrafix', maxParallelTasks: 9 }, true);
+  const disabledGoal = await db('goals').where({ goal_id: disabled.result.continuation.goalId }).first();
+  assert.equal(Boolean(disabledGoal.ultrafix), false);
+  assert.equal(disabledGoal.max_parallel_tasks, 9);
+  assert.match((await db('goal_inputs').where({ goal_id: disabledGoal.goal_id, kind: 'context' }).first()).message, /Ultrafix policy: Disabled/);
+  const capabilities = await call('get_goal_capabilities', {});
+  assert.deepEqual(capabilities.creation.maxParallelTasks, { min: 1, max: 32 });
+  assert.equal(capabilities.creation.ultrafix.grantsMerge, false);
+  for (const goal of [enabledGoal, disabledGoal]) await db('goals').where({ goal_id: goal.goal_id }).update({ desired_state: 'cancelled', result_state: 'cancelled' });
+}

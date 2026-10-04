@@ -303,7 +303,7 @@ Choose one auth mode: by default the shared, hosted ProPR App via the token rela
   HOST_GH_PRIVATE_KEY=/srv/propr/app-private-key.pem
   ```
 
-- **Shared App via relay (default)** — pick **Token relay** in `propr setup`, which enrolls and writes the relay/routing credentials to `.env` for you. To enroll standalone:
+- **Shared App via relay (default)** — pick **ProPR Connect (default ProPR GitHub App)** in `propr setup`, which enrolls and writes the relay/routing credentials to `.env` for you. To enroll standalone:
 
   ```bash
   cd /srv/propr         # run from the stack directory so the token lands in its .env
@@ -315,10 +315,9 @@ Choose one auth mode: by default the shared, hosted ProPR App via the token rela
 
 *Run as: **you** (editing `/srv/propr/.env`).*
 
-This is the step that makes the firewall meaningful. Set the API and UI ports to
-bind to the loopback interface only, and set the public URLs explicitly (required
-whenever you change the port form, because the auto-derived URLs assume a plain
-port number).
+This is the step that makes the firewall meaningful. Keep the API and UI ports
+bound to the loopback interface only (the launcher default; setting them
+explicitly guards against later edits), and set the public URLs explicitly.
 
 In `/srv/propr/.env`:
 
@@ -382,10 +381,10 @@ App with its **Authorization callback URL** set to the
 :::
 
 :::note[Why explicit URLs are required here]
-The launcher derives `API_PUBLIC_URL`/`FRONTEND_URL` from the port value when you
-don't set them (`http://localhost:<port>`). With a `127.0.0.1:4000` port form
-that derivation would produce a malformed URL, so you must set the three public
-URLs above yourself. On a TLS server you would set them regardless.
+The launcher derives `API_PUBLIC_URL`/`FRONTEND_URL`/`GH_OAUTH_CALLBACK_URL` from
+the port values when you don't set them (`http://localhost:<port>`). Behind a
+reverse proxy those localhost URLs break sign-in redirects and links, so set the
+three public URLs above yourself.
 :::
 
 ## 9. Terminate TLS With A Reverse Proxy
@@ -539,9 +538,10 @@ propr remote-status  # backend health: daemon, workers, Redis, GitHub auth
 ```
 
 Open `https://propr.example.com`, sign in with GitHub, and confirm the dashboard
-loads. Note that `GITHUB_USER_WHITELIST` (step 10) gates only who can **trigger**
-work from GitHub comments. To restrict who can authenticate to or view the Web UI
-itself, put it
+loads. `GITHUB_USER_WHITELIST` (step 10) gates both who can **trigger** work from
+GitHub and who can sign in to the Web UI and API; an empty whitelist allows every
+GitHub user. To keep unauthenticated traffic from reaching the application at
+all, put it
 behind an SSO gate such as the Cloudflare Access layer in
 [Advanced VPS Hardening](./setup-vps-hardening.md). From a machine off the server,
 verify the raw ports are **not** reachable — these should both fail/time out:

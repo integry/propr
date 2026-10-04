@@ -9,6 +9,8 @@ import {
 import type { SystemSettings } from "../api/settings.js";
 
 const SETTINGS: SystemSettings = {
+  usage_tips_enabled: true,
+  usage_tips_dismissal_cooldown_days: 45,
   default_agent_alias: "codex",
   worker_concurrency: 2,
   github_user_whitelist: ["octocat"],
@@ -17,6 +19,7 @@ const SETTINGS: SystemSettings = {
   planner_generation_model: "generation-model",
   auto_followup_score_threshold: 7,
   auto_resolve_merge_conflicts: true,
+  dashboard_summary_enabled: true,
   model_reasoning_level: "",
   pr_review_model: "",
   pr_review_prompt: "",
@@ -27,6 +30,10 @@ const SETTINGS: SystemSettings = {
   ultrafix_rating_goal: 8,
   ultrafix_max_cycles: 3,
   ultrafix_pause_seconds: 5,
+  ultrafix_escalation_enabled: false,
+  ultrafix_escalation_models: [],
+  ultrafix_escalation_patience: 3,
+  ultrafix_escalation_max_reasoning_levels: 2,
 };
 
 test("getExtraConfigSetting reads only the requested extra config endpoint", async () => {
@@ -51,6 +58,7 @@ test("getAllDisplaySettings includes label and keyword config values", async () 
   const { settings: displaySettings, errors } = await getAllDisplaySettings(SETTINGS, async (endpoint) => responses[endpoint]);
 
   assert.equal(displaySettings.worker_concurrency, 2);
+  assert.ok(!('auto_followup_score_threshold' in displaySettings));
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["ai-primary-tag"], "ai");
   assert.deepEqual(displaySettings["primary-processing-labels"], ["propr", "ai"]);
@@ -71,6 +79,7 @@ test("getAllDisplaySettings keeps system settings when an extra config endpoint 
   });
 
   assert.equal(displaySettings.worker_concurrency, 2);
+  assert.ok(!('auto_followup_score_threshold' in displaySettings));
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["followup-keywords"], undefined);
   assert.deepEqual(errors, ["followup-keywords: backend unavailable"]);

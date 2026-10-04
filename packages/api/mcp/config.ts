@@ -1,3 +1,5 @@
+import { redactDetails, redactSecrets, type McpErrorEnvelope, type McpErrorStage } from './errorEnvelope.js';
+
 export const MCP_SCOPES = ['read', 'plan', 'publish', 'execute', 'review', 'merge', 'deploy', 'manage'] as const;
 export type McpScope = typeof MCP_SCOPES[number];
 
@@ -35,7 +37,33 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig |
 }
 
 export class McpError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status = 400) { super(message); }
+  readonly stage: McpErrorStage | null;
+  readonly retryable: boolean;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status = 400,
+    options: { stage?: McpErrorStage | null; retryable?: boolean; details?: Record<string, unknown> } = {},
+  ) {
+    super(message);
+    this.name = 'McpError';
+    this.stage = options.stage ?? null;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+
+  toEnvelope(): McpErrorEnvelope {
+    return {
+      code: this.code,
+      message: redactSecrets(this.message),
+      stage: this.stage,
+      retryable: this.retryable,
+      status: this.status,
+      ...(this.details ? { details: redactDetails(this.details) } : {}),
+    };
+  }
 }
 
 function loadConnectConfig(env: NodeJS.ProcessEnv, instanceId: string): McpConfig['connect'] {

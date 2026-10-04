@@ -5,6 +5,9 @@ export interface ServiceWorkerRegistrationEnvironment {
   serviceWorker?: Pick<ServiceWorkerContainer, 'getRegistration' | 'register'>;
 }
 
+const pendingRegistrations = new WeakMap<NonNullable<ServiceWorkerRegistrationEnvironment['serviceWorker']>,
+  Promise<ServiceWorkerRegistration | null>>();
+
 const browserEnvironment = (): ServiceWorkerRegistrationEnvironment => ({
   isProduction: import.meta.env.PROD,
   isSecureContext: typeof window !== 'undefined' && window.isSecureContext,
@@ -47,6 +50,8 @@ export async function getOrRegisterServiceWorker(
   environment: ServiceWorkerRegistrationEnvironment = browserEnvironment(),
 ): Promise<ServiceWorkerRegistration | null> {
   if (!canUseServiceWorkers(environment)) return null;
+  const pending = pendingRegistrations.get(environment.serviceWorker!);
+  if (pending) return pending;
   const existing = await environment.serviceWorker!.getRegistration('/');
   return existing ?? registerServiceWorker(environment);
 }
@@ -60,13 +65,16 @@ export async function registerServiceWorker(
 ): Promise<ServiceWorkerRegistration | null> {
   if (!canRegisterServiceWorker(environment)) return null;
 
-  try {
-    return await environment.serviceWorker!.register('/service-worker.js', {
-      scope: '/',
-      updateViaCache: 'none',
-    });
-  } catch (error) {
+  const serviceWorker = environment.serviceWorker!;
+  const pending = pendingRegistrations.get(serviceWorker);
+  if (pending) return pending;
+  const registration = serviceWorker.register('/service-worker.js', {
+    scope: '/',
+    updateViaCache: 'none',
+  }).catch(error => {
     console.warn('ProPR service worker registration failed', error);
     return null;
-  }
+  }).finally(() => pendingRegistrations.delete(serviceWorker));
+  pendingRegistrations.set(serviceWorker, registration);
+  return registration;
 }

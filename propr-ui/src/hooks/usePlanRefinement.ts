@@ -109,6 +109,10 @@ export interface RefinementProgress {
 interface UsePlanRefinementResult {
   plan: PlanTask[];
   updatePlan: (newPlan: PlanTask[], origin?: 'user' | 'ai') => void;
+  /** Shows a plan the server already holds, such as a restored revision, without saving it again. */
+  loadPlan: (newPlan: PlanTask[]) => void;
+  /** Saves a pending debounced edit now. */
+  flushPendingSave: () => Promise<void>;
   updateTask: (taskId: string, updates: Partial<PlanTask>) => void;
   addTask: (afterTaskId: string) => void;
   deleteTask: (taskId: string) => DeletedTask | null;
@@ -181,6 +185,19 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     setPointer(newHistory.length - 1);
     saveToServer(normalizedPlan);
   }, [history, pointer, currentPlan, saveToServer]);
+
+  const loadPlan = useCallback((newPlan: PlanTask[]) => {
+    saveRef.current?.cancel();
+    const newHistory = history.slice(0, pointer + 1);
+    newHistory.push(ensureTaskIds(newPlan));
+    setHistory(newHistory);
+    setPointer(newHistory.length - 1);
+    setSaveStatus('saved');
+  }, [history, pointer]);
+
+  const flushPendingSave = useCallback(async () => {
+    await saveRef.current?.flush();
+  }, []);
 
   const updateTask = useCallback((taskId: string, updates: Partial<PlanTask>) => {
     const newPlan = currentPlan.map(task => 
@@ -384,6 +401,8 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   return {
     plan: currentPlan,
     updatePlan,
+    loadPlan,
+    flushPendingSave,
     updateTask,
     addTask,
     deleteTask,

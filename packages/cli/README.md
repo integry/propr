@@ -237,7 +237,7 @@ The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>
 
 ### Tasks
 
-View and manage implementation tasks.
+View and manage implementation tasks. For a new instruction without an existing issue, use [New Task](../../docs/docs/features/launching-work.md) in the UI or MCP `create_task`; these create an ordinary issue implementation task.
 
 ```bash
 propr task list                          # List all tasks
@@ -302,6 +302,8 @@ propr repo add owner/repo -a "Alias" -b dev  # With alias and branch
 propr repo remove owner/repo                 # Remove a repository
 propr repo toggle owner/repo --enable        # Enable monitoring
 propr repo toggle owner/repo --disable       # Disable monitoring
+propr repo toggle owner/repo --no-notifications # Suppress repository Inbox/push
+propr repo toggle owner/repo --notifications  # Restore repository notifications
 propr repo index owner/repo                  # Trigger full indexing
 propr repo index owner/repo --incremental    # Incremental indexing
 propr repo index owner/repo -b feature       # Index specific branch
@@ -409,7 +411,7 @@ propr setting update worker_concurrency 4            # Update a setting
 propr setting update github_user_whitelist "a,b,c"   # Update whitelist
 ```
 
-**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`, `auto_followup_score_threshold`
+**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`
 
 ---
 

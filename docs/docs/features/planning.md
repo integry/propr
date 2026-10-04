@@ -21,11 +21,19 @@ Planner Studio moves a draft through three stages, shown in the stepper at the t
 
 1. **Define & Context** — enter the request, select the repository (and with it the configured base branch), choose the planning model, adjust the context level, and attach files. ProPR previews gathered context and an estimated issue count before generation.
 2. **Review Plan** — inspect the generated issues, edit or delete individual items, restore deleted ones, undo and redo edits, and send the plan back through refinement chat with follow-up instructions.
-3. **Execution** — after the plan is finalized into GitHub issues, track each issue's status (Pending, Processing, Under Review, Merged), pause or resume execution, and open the resulting pull requests.
+3. **Execution** — after the plan is finalized into GitHub issues, track each issue's status (Pending, Processing, Review, Merged), pause or resume execution, and open the resulting pull requests.
 
 A draft can be reset back to setup if the inputs were wrong, which makes planning useful for exploratory work as well as well-defined tickets.
 
-{/* SCREENSHOT PLACEHOLDER (P1 — same capture as the planner-studio tutorial's Review Plan shot; interim: the site's ui-plan-detail.png): Capture Planner Studio in the Review Plan stage: the stepper showing the three stages, a generated plan with several issues, and the refinement chat input visible. Use a draft generated against a real repository so issue titles look representative. */}
+A generated plan is saved only when every issue has a title, a body and an implementation section. If the planning model's JSON is malformed, the default coding agent repairs it in a scratch workspace, fixing syntax only, and a validator rejects any repair that drops, rewords or adds content. A response that holds only part of a plan, for example because the model stopped mid-plan, fails the generation with an error instead of being saved as a partial or empty plan; regenerate it, or choose a lower granularity for a shorter plan.
+
+## Revision history and refinement
+
+Open **Plan history** in the plan editor to inspect the plan saved before each generation, refinement, edit or rename. Each version is labeled with how it was created (**Generated**, **Refined**, **Manual edit**, **Restored** or **Renamed**; older versions show **Legacy**), and edits made within a few minutes of each other share one version. History keeps the latest 50 versions. Select a version to preview its tasks, then choose **Restore this version**. Restoring also saves the current plan in history. This persistent history is separate from the editor's immediate undo/redo controls and does not undo already-created GitHub issues or code changes.
+
+Refinement returns the complete plan, including unchanged tasks, so review the full result before finalizing. Generation uses a structured file output and rejects incomplete issues rather than silently accepting a partial plan. Setup prompts auto-save; returning to setup lets you change context before regenerating.
+
+![Plan history dialog showing a saved version, its two tasks and the Restore this version action](/img/screenshots/0.9.0/plan-history.png)
 
 ## Context Assembly
 
@@ -38,6 +46,10 @@ Planner Studio can include several kinds of context before generation:
 - Context statistics and an estimated issue count before generation
 
 The goal is not to flood the model with every file. The goal is to make the proposed work easy to inspect before it runs, so reviewers can tell whether the agent saw enough relevant context. Repository summaries and indexing improve this step; see [Repository Knowledge](./repository-knowledge.md).
+
+## How The Plan Is Written
+
+The planning agent writes the plan to files instead of returning it in its reply: one file per issue, checked by a validator it runs itself and fixes until the plan is complete. ProPR validates the files again before saving the plan. A plan too long for one model message therefore arrives whole, and a plan with an incomplete issue fails with a clear error instead of being saved. Set `PROPR_PLAN_GENERATION_MODE=response` to parse the plan from the reply instead (see the [configuration reference](../operations/configuration-reference.md)).
 
 ## Review Before Running
 

@@ -1,3 +1,4 @@
+import { setOutcomeActivityPublisher, type CompletionLoader } from '../services/dashboardReadService.js';
 /**
  * Dashboard read APIs.
  *
@@ -12,6 +13,7 @@
  * dismissal state: dismissing a notification must not resolve a blocker.
  */
 
+import { collectNarrativeFacts, createDashboardNarrative, type NarrativeModel } from './dashboardNarrative.js';
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
@@ -23,18 +25,17 @@ import {
   RECENT_COMPLETION_WINDOW_HOURS,
   type DashboardTaskRow,
 } from './dashboardQueries.js';
-import { loadDashboardWork } from './dashboardWorkQueries.js';
-import { loadCompletedRows, type CompletedRow } from './dashboardOutcomeQueries.js';
+import { loadDashboardWork, loadRunningDashboardGoals } from './dashboardWorkQueries.js';
+import { loadCompletedRows, loadOutcomeSummaries, loadOutcomeHistory, outcomeProjectionStatus, OutcomeProjectionError, type OutcomeUpdate, type OutcomeReadRow } from './dashboardOutcomeQueries.js';
 import {
   EMPTY_LIVE_ACTIVITY,
   EMPTY_LIVE_DETAILS,
+  MAX_LIVE_DETAIL_LOOKUPS,
   summariseLiveActivity,
   type LiveActivity,
   type LiveDetailsSnapshot,
 } from './dashboardLiveActivity.js';
 
-/** Running work we will pay for a live-details projection on in one request. */
-const MAX_LIVE_DETAIL_LOOKUPS = 20;
 /** Where `src/worker.ts` heartbeats its identity and the concurrency it runs at. */
 const WORKER_SET_KEY = 'system:status:workers';
 const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
@@ -44,6 +45,7 @@ const MAX_OUTCOME_SEARCH_LENGTH = 200;
 
 export interface DashboardRoutesDeps {
   db: Knex;
+  completedRows?: CompletionLoader;
   redisClient: RedisClientType;
   taskQueue: Pick<Queue, 'isPaused' | 'getActiveCount'>;
   /**
@@ -53,9 +55,12 @@ export interface DashboardRoutesDeps {
    */
   liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>;
   now?: () => Date;
+  narrativeModel?: NarrativeModel;
+  isSummaryEnabled?: () => Promise<boolean>;
 }
 
 export interface ActiveItem {
+  goalId?: string;
   id: string;
   taskId: string;
   repository: string;
@@ -80,8 +85,12 @@ export interface ActiveItem {
   updatedAt: string;
 }
 
-/** One successfully completed run. Failures are attention items, not outcomes. */
+/** The newest successful outcome for an entity, with its completed run count. */
 export interface OutcomeItem {
+  eventCount: number;
+  entityId?: string;
+  revision?: string;
+  earlierUpdates?: Array<Omit<OutcomeItem, 'eventCount' | 'earlierUpdates'>>;
   id: string;
   taskId: string;
   repository: string;
@@ -109,23 +118,28 @@ function readRepositoryFilter(req: Request, res: Response): string | null {
   return repository || 'all';
 }
 
-function toOutcomeItem(row: CompletedRow): OutcomeItem {
-  return {
-    id: `task:${row.taskId}:completed`,
-    taskId: row.taskId,
-    repository: row.repository,
-    issueNumber: row.issueNumber,
-    prNumber: row.prNumber,
-    taskType: row.taskType,
-    title: row.title,
-    detail: row.recap,
-    score: row.reviewScore,
-    occurredAt: row.stateTimestamp,
-  };
+export function toOutcomeUpdate(row: OutcomeUpdate) {
+  return { id: `task:${row.taskId}:completed:${row.completionId}`, taskId: row.taskId,
+    repository: row.repository, issueNumber: row.issueNumber, prNumber: row.prNumber,
+    taskType: row.taskType, title: row.title, detail: row.recap,
+    score: row.reviewScore, occurredAt: row.stateTimestamp };
+}
+
+export function toOutcomeItem(row: OutcomeReadRow): OutcomeItem {
+  return { ...toOutcomeUpdate(row), eventCount: row.eventCount,
+    ...(row.entityId ? { entityId: row.entityId, revision: row.revision } : {}),
+    ...(row.earlierUpdates ? { earlierUpdates: row.earlierUpdates.map(toOutcomeUpdate) } : {}) };
 }
 
 export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   const { db, redisClient, taskQueue } = deps;
+  const completedRows: CompletionLoader = deps.completedRows ?? ((repository, options) => loadCompletedRows(db, repository, options));
+  setOutcomeActivityPublisher(async repository => {
+    await redisClient.publish('propr:events:activity', JSON.stringify({
+      eventType: 'activity:update', domain: 'task', change: 'completed', repository: repository === '*' ? null : repository,
+      entityId: 'dashboard-outcomes', terminal: true, occurredAt: new Date().toISOString(),
+    }));
+  });
   const now = deps.now ?? (() => new Date());
   // Loaded lazily so a dashboard read only reaches the live-details module
   // (and its provider parsers) when there is running work to project. A read
@@ -211,12 +225,36 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
   }
 
+  const narrative = createDashboardNarrative(deps.narrativeModel ?? (async () => null));
+
+  async function getNarrative(req: Request, res: Response): Promise<void> {
+    const repository = readRepositoryFilter(req, res);
+    if (repository === null) return;
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      if (deps.isSummaryEnabled && !await deps.isSummaryEnabled()) {
+        res.json({ repository, enabled: false, summary: null });
+        return;
+      }
+      const snapshot = await collectNarrativeFacts(db, repository, now(), {
+        ownerId: req.user?.id ? String(req.user.id) : undefined,
+        liveActivity: liveActivityFor,
+        completedRows,
+      });
+      const summary = await narrative(snapshot, req.query.refresh === 'true');
+      res.json({ repository, enabled: true, summary });
+    } catch {
+      // A transient data/model failure is unavailable, never a dashboard failure.
+      res.json({ repository, enabled: true, summary: null });
+    }
+  }
+
   async function getSummary(req: Request, res: Response): Promise<void> {
     const repository = readRepositoryFilter(req, res);
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.summary', () =>
-        loadDashboardWork(db, repository, { now: now() }));
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }));
       res.json({
         repository,
         needsAttention: work.counts.needsAttention,
@@ -236,7 +274,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.attention', () =>
-        loadDashboardWork(db, repository, { now: now() }));
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }));
       const blocked = work.attention.filter(item => item.category === 'blocked').length;
       res.json({
         repository,
@@ -257,15 +295,22 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     const repository = readRepositoryFilter(req, res);
     if (repository === null) return;
     try {
-      const work = await timeApiStage('dashboard.active', () =>
-        loadDashboardWork(db, repository, { now: now() }));
+      const [work, goals] = await timeApiStage('dashboard.active', () => Promise.all([
+        loadDashboardWork(db, repository, { now: now(), ownerId: req.user?.id ? String(req.user.id) : null }),
+        loadRunningDashboardGoals(db, repository, req.user?.id ? String(req.user.id) : null),
+      ]));
+      const runningRows = [...work.running, ...goals]
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
       const liveActivity = new Map<string, LiveActivity>();
-      for (const row of work.running.slice(0, MAX_LIVE_DETAIL_LOOKUPS)) {
+      for (const row of runningRows.slice(0, MAX_LIVE_DETAIL_LOOKUPS)) {
         liveActivity.set(row.taskId, await liveActivityFor(row.taskId));
       }
 
-      const running = work.running.map(row => toActiveItem(row, liveActivity.get(row.taskId) ?? EMPTY_LIVE_ACTIVITY));
+      const running = runningRows.map(row => ({
+        ...toActiveItem(row, liveActivity.get(row.taskId) ?? EMPTY_LIVE_ACTIVITY),
+        ...('goalId' in row ? { id: `goal:${row.goalId}`, goalId: row.goalId } : {}),
+      }));
       // Queued work has no execution to project progress from.
       const queued = work.queued.map(row => toActiveItem(row, EMPTY_LIVE_ACTIVITY));
 
@@ -277,7 +322,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
           queuedCount: work.counts.queued,
           reason: await queueReason(work.counts.queued),
         },
-        counts: { running: work.counts.running, queued: work.counts.queued },
+        counts: { running: running.length, queued: work.counts.queued },
       });
     } catch (error) {
       console.error('Error in /api/dashboard/active:', error);
@@ -285,11 +330,27 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }
   }
 
+  async function getOutcomeHistory(req: Request, res: Response, options: { repository: string; limit: number }): Promise<void> {
+    const { repository, limit } = options;
+    const { entityId, revision, cursor } = req.query;
+    if (typeof entityId !== 'string' || entityId.length > 100 || typeof revision !== 'string' || revision.length > 100
+      || (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048))) {
+      res.status(400).json({ error: 'Invalid history reference' }); return;
+    }
+    const page = await timeApiStage('dashboard.outcomeHistory', () => loadOutcomeHistory(db, repository, entityId, revision,
+      { limit, cursor: cursor as string | undefined }));
+    res.json({ repository, entityId, revision, items: page.updates.map(toOutcomeUpdate), nextCursor: page.nextCursor });
+  }
+
   async function getOutcomes(req: Request, res: Response): Promise<void> {
     const repository = readRepositoryFilter(req, res);
     if (repository === null) return;
 
-    const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: MAX_OUTCOME_LIMIT });
+    res.setHeader('Cache-Control', 'no-store');
+    const vary = res.getHeader?.('Vary');
+    res.setHeader('Vary', vary ? `${vary}, Accept` : 'Accept');
+    const history = req.query.view === 'history';
+    const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: history ? 50 : MAX_OUTCOME_LIMIT });
     if (!limitValidation.valid) {
       res.status(400).json({ error: limitValidation.error });
       return;
@@ -304,14 +365,35 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
 
     try {
-      const rows = await timeApiStage('dashboard.outcomes', () =>
-        loadCompletedRows(db, repository, { limit, search }));
+      if (req.query.view === 'status') { res.json(await outcomeProjectionStatus(db)); return; }
+      if (history) {
+        await getOutcomeHistory(req, res, { repository, limit });
+        return;
+      }
+      const summaryRequested = req.query.view === 'summary'
+        || req.headers?.accept?.includes('application/vnd.propr.outcome-summaries+json');
+      const summary = summaryRequested && !['legacy', 'shadow'].includes(process.env.DASHBOARD_OUTCOME_PROJECTION ?? '');
+      const rows = await timeApiStage<OutcomeReadRow[]>('dashboard.outcomes', async () => {
+        if (summary) {
+          try {
+            return await (completedRows.summary ?? ((scope, options) => loadOutcomeSummaries(db, scope, options)))(repository, { limit, search });
+          } catch (error) {
+            if (!(error instanceof OutcomeProjectionError) || error.code !== 'OUTCOMES_NOT_READY') throw error;
+            // Startup and rebuilds must keep serving completed work until the
+            // projection is ready. Summary clients also accept embedded history.
+          }
+        }
+        return completedRows(repository, { limit, search });
+      });
       res.json({ repository, limit, search, items: rows.map(toOutcomeItem) });
     } catch (error) {
+      if (error instanceof OutcomeProjectionError) {
+        res.status(error.status).json({ error: error.code, code: error.code }); return;
+      }
       console.error('Error in /api/dashboard/outcomes:', error);
       res.status(500).json({ error: 'Failed to fetch completed work' });
     }
   }
 
-  return { getSummary, getAttention, getActive, getOutcomes };
+  return { getSummary, getAttention, getActive, getOutcomes, getNarrative };
 }

@@ -6,7 +6,7 @@ sidebar_position: 9
 
 Repository knowledge helps ProPR plan and run with better context. Not every task needs it, but it becomes important once you use ProPR across larger or less familiar codebases.
 
-The Repositories page in the Web UI is the home for this: each repository entry has a status indicator and reindex control, plus a workspace with four tabs — **Chat**, **Improve**, **Browse**, and **To-Dos**.
+The Repositories page in the Web UI is the home for this: each repository entry has an indexing status indicator, and selecting it opens a workspace with **Chat**, **Improve**, **Browse**, and **To-Dos** tabs, plus **Settings** (where **Reindex** lives) and, when visual previews are enabled, **Media**.
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-repositories.png): Capture the Repositories page with one indexed repository selected and its workspace open on the Browse tab, showing the tab row (Chat / Improve / Browse / To-Dos), the indexing status indicator, and the reindex button. Index the repository first so the status reads "Indexed". */}
 
@@ -16,7 +16,7 @@ ProPR indexes monitored repositories and maintains file and repository summaries
 
 Summarization runs through a configurable agent and model, with an optional **fallback model** and quota-aware retry: when the primary model hits a provider quota, ProPR records a cooldown and switches to the fallback so indexing keeps progressing instead of failing.
 
-A background indexing worker scans for repositories to index (every 5 minutes by default, `INDEXING_SCAN_INTERVAL_MS`) and refreshes existing indexes periodically (daily by default, `INDEXING_REINDEX_INTERVAL_MS`). You can also trigger reindexing manually with the reindex button on the repository entry, or with `propr repo index` from the CLI.
+A background indexing worker scans for repositories to index (every 5 minutes by default, `INDEXING_SCAN_INTERVAL_MS`) and refreshes existing indexes periodically (daily by default, `INDEXING_REINDEX_INTERVAL_MS`). You can also trigger reindexing manually with **Reindex** in the repository's **Settings** tab, or with `propr repo index` from the CLI.
 
 Summaries are useful when:
 
@@ -77,6 +77,6 @@ In those cases, reindex the repository, improve todos, add clearer workflow guid
 
 ## Reindexing And Recovery
 
-If repository knowledge looks stale, use the reindex button on the repository entry (or `propr repo index`). Reindex before high-stakes runs after major refactors, dependency changes, directory moves, or repository renames. For routine follow-up on a small PR, the PR diff and comments may be enough.
+If repository knowledge looks stale, use **Reindex** in the repository's **Settings** tab (or `propr repo index`). Reindex before high-stakes runs after major refactors, dependency changes, directory moves, or repository renames. For routine follow-up on a small PR, the PR diff and comments may be enough.
 
 Low-level indexing recovery details live in the operations docs; see [Maintenance And Troubleshooting](../operations/maintenance.md).

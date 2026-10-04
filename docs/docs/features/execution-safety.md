@@ -23,7 +23,7 @@ This makes concurrent work possible across issues, PR comments, and models witho
 Worker execution is split into three phases. The agent only participates in the middle one:
 
 1. **Pre-agent setup (ProPR)**: pull the job from the queue, update the base branch, create the isolated git worktree, create the task branch, and prepare the prompt and context.
-2. **Agent implementation (agent)**: run the selected agent inside its container against the worktree. The agent edits files; it does not push, create branches, or open pull requests.
+2. **Agent implementation (agent)**: run the selected agent inside its container against the worktree. The agent edits files. Read-only git metadata and a read-only GitHub token reserve commits, pushes, and GitHub mutations for ProPR.
 3. **Post-agent finalization (ProPR)**: inspect changed files, commit, push to GitHub, create or update the pull request with issue linking, and update labels and task state.
 
 Because the git and GitHub steps are deterministic code rather than agent decisions, branch mistakes are rare and failures are easier to attribute: a failure in phase 1 or 3 is a git/GitHub problem, a failure in phase 2 is an agent problem.
@@ -51,14 +51,63 @@ Branch names include the model identifier, so concurrent multi-model runs never 
 Each agent run starts a dedicated container from the unified `propr/agent` image. The container gets:
 
 - The task worktree mounted as its working directory
-- The agent credential directories mounted read-write from the host at their original paths (for example `~/.claude`, `~/.codex`, `~/.gemini`) so CLIs can refresh auth state; only the `.env` file is mounted read-only
+- The agent's credential directory (for example `~/.claude`, `~/.codex`, `~/.gemini`) mounted read-write into the container's home so the CLI can refresh auth state (Vibe's config is mounted read-only)
+- For all five agents, read-only git metadata and shared clones (`/tmp/git-processor`). The task worktree is writable, but its `.git` entry is mounted read-only. Other repositories' working copies cannot be changed.
+- Implementation, follow-up, review-fix, direct-goal, and repository-associated analysis runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, and `metadata` reads, plus `checks`, `actions`, and `statuses` reads when the installation grants those optional permissions. `gh issue view`, `gh pr view`, `gh pr checks` (with the optional CI permissions), and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
+- Memory, CPU, and process limits (defaults `6g`, up to 4 CPUs, and 512 PIDs; override with `AGENT_CONTAINER_MEMORY_LIMIT`, `AGENT_CONTAINER_CPU_LIMIT`, `AGENT_CONTAINER_PIDS_LIMIT`) and the `no-new-privileges` security option
 - A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
+
+GitHub's permission names are not a blanket ban on every mutation: its
+[Create a commit comment endpoint](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment)
+accepts `contents: read`. Commit comments are therefore an exception to this
+boundary. Preventing every API mutation would require a host-side read broker
+instead of giving agents a GitHub token.
+
+ProPR's worker retains its full installation credential. Git authenticates through
+worker process environment variables, not token-bearing remote URLs in shared
+clone configuration. Existing token-bearing clone URLs are removed before agents
+can see them. User-configured GitHub credential environment variables cannot
+override the agent token.
+
+Orchestrated goals are the explicit exception: they retain write-capable tokens
+and git mounts so they can create issues and epic PRs. Their permissions are not
+narrowed further in this release.
+
+### Context repositories
+
+By default, agent tokens retain read access to every repository covered by the
+installation; no repository filter is sent when minting them. Administrators can
+set `contextRepositories` on a repository entry through the repository settings
+API (`POST /api/config/repos`, within `repos_to_monitor`):
+
+- `"all"` (or omitted): all installation repositories and local clones.
+- `"none"`: only the task repository.
+- `["owner/shared-library", "owner/sibling-service"]`: the task repository plus
+  the listed repositories. Only those local clones and the task's linked git metadata are mounted. GitHub access to
+  private repositories outside the list is refused; public data remains public.
+
+Analysis runs use the same repository policy for tokens and mounted clones. Analyses
+without a repository context receive no GitHub token or shared clone mounts.
+Repository inspection remains credential-free. Unresolvable configured repositories
+stop launch with an error naming the entry and settings to correct; aliases resolving
+to the same repository use one token repository ID.
+
+Restrictions also apply to orchestrated goals' repository reach. Multiple branch
+entries for the same repository use the intersection of their explicit lists.
+Older clients that omit the field preserve the stored restriction.
+
+The token relay must support `permissions` and `repository_ids` on its
+`/installation-token` request and return GitHub's minted `permissions` and
+`repositories` metadata. Unsupported or broader responses stop agent launch;
+there is no fallback to the worker token. Own-App deployments mint scoped tokens
+directly using GitHub's installation access-token endpoint. The App installation
+must grant the required read permissions; see [own-App prerequisites](../operations/github-auth.md#app-mode-own-github-app).
 
 The image-based install starts service and agent containers from published images. Source builds can use local images during development.
 
 ## Network Firewall (Optional, Off By Default)
 
-The unified agent image ships `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
+The unified agent image ships `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, outbound SSH, and HTTPS to `api.anthropic.com`, `api.github.com`, `github.com`, and `objects.githubusercontent.com`. Its allowlist has no entries for OpenAI, Google, OpenCode providers, or Mistral, so enabling it as shipped would block every agent except Claude Code.
 
 The script is **not executed by default**. Every agent entrypoint (`scripts/claude-entrypoint.sh`, `codex-entrypoint.sh`, `antigravity-entrypoint.sh`, `opencode-entrypoint.sh`, `vibe-entrypoint.sh`) currently skips it and logs:
 
@@ -79,3 +128,16 @@ Safe runs are also about what happens when something fails:
 - Revert operations run as signed system tasks: requests are authorized with `SYSTEM_TASK_SECRET`, so a revert cannot be injected through normal intake paths.
 
 For operational details, see [Observability And Control](./observability.md) and the architecture pages.
+
+## Goals and recovery
+
+[Direct goals](./goals.md) use a long-lived workspace and draft PR with coherent
+checkpoints. ProPR owns commits and pushes; checkpoint cadence is guidance, not a
+forced timer. Orchestrated goals let the agent decompose work and submit it through
+ProPR. Corrective input and pause/cancel acknowledgement follow the provider's
+capabilities and execution boundaries.
+
+Task reconciliation persists completion and recovery state. Follow-up cleanup
+finishes before releasing its worktree lock, and interrupted CI cancellation
+retains a restart obligation for a still-current PR head. See [CI cancellation](./pr-followup.md#cancelling-obsolete-checks-during-follow-up)
+for opt-in workflow selection and recovery behavior.

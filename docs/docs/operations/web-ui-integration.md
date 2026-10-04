@@ -38,7 +38,7 @@ The UI is not served by the API container. In both the launcher stack and the de
 
 - Browser sessions start at `GET /api/auth/github` and finish at `GET /api/auth/github/callback`. Relay-enrolled stacks use `PROPR_WEB_AUTH_MODE=connect` for local loopback URLs and hosted tunnels: Connect owns the shared GitHub OAuth client and hands the instance a short-lived one-use code. Custom deployments may use `PROPR_WEB_AUTH_MODE=github` with their own `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET`.
 - Sessions are stored in Redis (`propr:session:` prefix) and sent as cookies; all frontend fetches use `credentials: 'include'`.
-- All `/api/*` routes require authentication; CORS is configured from `FRONTEND_URL`.
+- Operational `/api/*` routes require authentication; only the login flow, `/api/compatibility`, the desktop discovery/pairing bootstrap, and MCP (which checks its own bearer tokens) sit outside the shared guard. CORS is configured from `FRONTEND_URL`.
 - Bearer token authentication (GitHub tokens validated against the GitHub API, cached briefly in Redis) is enabled by default for the CLI; disable it with `ENABLE_BEARER_AUTH=false`.
 - `PROPR_DEMO_MODE=true` allows read-only access without login and blocks mutating requests.
 
@@ -60,6 +60,99 @@ The frontend uses the dashboard API rather than a mock layer. Common integration
 - socket.io events for task updates and queue stats, so dashboard panels refresh without polling
 
 When you extend the UI, prefer adding or reusing API routes in `packages/api/` and keeping browser calls centralized in `propr-ui/src/api/`.
+
+## Realtime Updates: Push First, Poll Only As A Fallback
+
+While it is connected, the UI does **not** poll the API on a timer. The backend
+publishes an event whenever a relevant change is detected, and the UI refreshes
+because of that event.
+
+| Event | Published when | Consumed by |
+| --- | --- | --- |
+| `task:update` | a task's worker state changes | task detail, task list, header activity |
+| `draft:update` / `plan:step:update` | planner generation progresses or finishes | Plan Studio, Plans page |
+| `indexing:update` | repository indexing progresses | Repositories page |
+| `queue:stats:update` | queue depth or throughput changes | header activity monitor |
+| `notification:update` | a notification is created, read or dismissed | Inbox, unread badge |
+| `usage:update` | agent capacity or quota changes | usage sidebar, system status |
+| `activity:update` | derived from the lifecycle events above, plus the `system` domain when the instance's own status snapshot moves | header stats, shared system status (which ignores `change: 'progress'`) |
+
+`activity:update` is the general envelope (`domain`, `change`, `repository`,
+`subjectId`, `terminal`, `occurredAt`). It is derived in
+`packages/api/services/activityEvents.ts` from the events the backend already
+publishes, so a new consumer declares an interest by domain rather than matching
+worker state strings, and a new producer publishes its own domain event and lets
+the API derive the envelope.
+
+Some events carry the changed data; others — `usage:update` in particular — are
+deliberately triggers for the existing authenticated read, so the endpoint keeps
+owning its projection and its permission check. `notification:update` is
+published into the recipient's socket room only, and names the notification it
+concerns so the tab that made the change can recognise its own echo and leave
+its optimistic state alone.
+
+Every frame is validated before it reaches a browser. The relay decodes these
+events from Redis, so `packages/api/services/socketService.ts` checks each one
+against the contract of the format it claims — timestamp, domain, change,
+identifiers, repository scope and `terminal` agreeing with its own change —
+and drops and logs anything that does not satisfy it. Two published formats are
+accepted (`activity:update` with `entityId`, the shell surfaces' form with
+`subjectId`; `usage:update` with `source` or with `provider`), and a frame
+claiming one is held to that one: filling in a missing field on the way out is
+normalization, not validation, so a consumer never has to defend itself against
+a malformed publication.
+
+Three rules are non-negotiable for any surface that consumes these events. A
+plain read gets them from `propr-ui/src/hooks/useLiveResource.ts` (built on
+`useLiveRefreshScheduler`); surfaces that own more local state implement the
+same contract themselves — `useHeaderStats` for its four independently
+reconciled resources, and `useInboxRefreshTriggers` for the Inbox, whose
+optimistic dismissals must not be undone by a pushed refresh:
+
+1. **Reconnect reconciliation** — exactly one catch-up read per connect or
+   reconnect transition, so nothing is missed while the socket was down.
+2. **Fallback polling** — an interval read armed *only* while the websocket is
+   unavailable, so a client without a socket degrades instead of going stale.
+   A publication is best effort, so a connected surface also reconciles on a
+   deliberately slow safety cadence (`CONNECTED_RECONCILE_MS`, five minutes) to
+   recover a change whose event was lost while the socket stayed healthy. That
+   is the only interval a connected surface is allowed.
+3. **Page visibility** — a hidden or backgrounded tab issues no requests, and
+   reconciles once when it becomes visible again.
+
+Do not add a `setInterval` that fetches. If a surface needs to know about a
+change, publish an event for it.
+
+### Where The Producers Live
+
+A surface that stopped polling is only as fresh as its producer, so every event
+above has one:
+
+- `notification:update` is published by `packages/api/routes/notificationRoutes.ts`
+  for a read, dismissal or bulk clear, and — for the changes no request causes —
+  by `packages/api/services/notificationProjectionService.ts` (a notification the
+  projection creates, and the receipts its cleanup dismisses once a stalled or
+  failed activity resolves) and by `NotificationService` itself when a pull
+  request is merged or closed and its cards are cleared. Those producers run
+  outside the process that owns the websocket, so they publish through Redis
+  (`publishNotificationUpdateThroughRedis`) and the socket service relays the
+  event to the recipient's room.
+- `usage:update` is published when Agent Tank settings are saved, when a manual
+  re-probe succeeds, and by `packages/api/services/shellActivityBroadcaster.ts`.
+  Agent Tank cannot call us, so the broadcaster samples it for the whole
+  instance every 30 seconds — only while a client is subscribed — and publishes
+  only when the snapshot's fingerprint actually moved, alongside a
+  `shell:snapshot` frame carrying the snapshot to sockets permitted to read it.
+  One backend sample replaces the same poll in every open tab.
+- `activity:update` with `domain: 'system'` is published by the same
+  broadcaster. A worker, the daemon, Redis, GitHub authentication or a coding
+  agent can stop while the API and every client socket stay up, and no run
+  lifecycle event says so, so there is nothing to derive a health change from:
+  the broadcaster compares the same `/api/status` snapshot the clients read
+  (the route exposes it as `readStatusSnapshot`) by its health fingerprint and
+  publishes only when what the health surfaces show actually moved. The one
+  snapshot it watches replaces the `/api/status` poll that used to run in every
+  open tab.
 
 ## Running The UI In Development
 

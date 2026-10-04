@@ -9,7 +9,7 @@ import {
 } from './followupCiSuspensionPolicy.js';
 
 /** Runs in these statuses have not produced a result yet, so cancelling one only discards work a new commit would invalidate. */
-const CANCELABLE_RUN_STATUSES: ReadonlySet<string> = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+export const CANCELABLE_RUN_STATUSES: ReadonlySet<string> = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 /** A run that still occupies a runner, including one waiting for manual approval. */
 export const PENDING_RUN_STATUSES: ReadonlySet<string> = new Set([...CANCELABLE_RUN_STATUSES, 'action_required']);
 
@@ -26,6 +26,10 @@ export interface WorkflowRunSummary {
     /** Attempt number GitHub reports; a higher one proves a rerun was accepted. */
     run_attempt?: number;
     pull_requests?: Array<{ number: number }> | null;
+    /** Branch and repository the run was triggered from; GitHub stops associating runs with a pull request once it closes. */
+    head_branch?: string | null;
+    head_repository?: { full_name?: string | null } | null;
+    created_at?: string | null;
 }
 
 export interface CiSuspensionOctokit {

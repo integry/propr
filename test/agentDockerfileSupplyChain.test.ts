@@ -65,3 +65,36 @@ test('the image build script uses the same pinned Antigravity version', () => {
   assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_RELEASE_ID=\$ANTIGRAVITY_CLI_RELEASE_ID"/);
   assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_SHA512=\$ANTIGRAVITY_CLI_SHA512"/);
 });
+
+test('bundled Agent Tank is installed at a pinned version, never latest', () => {
+  assert.match(dockerfile, /ARG AGENT_TANK_CLI_VERSION=\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /npm install -g "agent-tank@\$\{AGENT_TANK_CLI_VERSION\}"/);
+  assert.doesNotMatch(dockerfile, /agent-tank@latest/);
+  assert.doesNotMatch(dockerfile, /npm install -g agent-tank(\s|$)/m);
+  // The final stage must actually verify the binary it ships.
+  assert.match(dockerfile, /&& agent-tank --version/);
+});
+
+test('the image build script uses the same pinned Agent Tank version', () => {
+  const dockerVersion = dockerfile.match(/ARG AGENT_TANK_CLI_VERSION=(\d+\.\d+\.\d+)/)?.[1];
+  const scriptVersion = buildScript.match(/AGENT_TANK_CLI_VERSION="\$\{AGENT_TANK_CLI_VERSION:-(\d+\.\d+\.\d+)\}"/)?.[1];
+  assert.ok(dockerVersion);
+  assert.equal(scriptVersion, dockerVersion);
+  assert.match(buildScript, /"--build-arg" "AGENT_TANK_CLI_VERSION=\$AGENT_TANK_CLI_VERSION"/);
+});
+
+test('every CLI the final stage verifies is linked into PATH in that same stage', () => {
+  const finalStage = dockerfile.slice(dockerfile.indexOf('FROM agent-base AS final'));
+  // Stages are independent: copying a package's node_modules tree does not bring
+  // along the npm bin symlink created where it was installed. A command that is
+  // verified but never linked here fails the build with "command not found".
+  const verified = [...finalStage.matchAll(/&& ([a-z][a-z-]*) --version/g)].map(match => match[1]);
+  assert.ok(verified.includes('agent-tank'), 'the final stage should verify bundled Agent Tank');
+  for (const command of verified) {
+    assert.match(
+      finalStage,
+      new RegExp(`link_npm_bin \\S+ ${command}\\b|ln -sf \\S+ /usr/local/bin/${command}\\b|COPY --from=\\S+ \\S+ /usr/local/bin/${command}\\b`),
+      `${command} is verified in the final stage but nothing links its executable there`
+    );
+  }
+});

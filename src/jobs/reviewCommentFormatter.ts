@@ -11,8 +11,9 @@
  */
 
 import { getModelName, type AnalysisResult } from '@propr/core';
+import { formatFixCommand } from '@propr/shared';
 import type { ReviewAssignment } from './prReviewRunner.js';
-import { parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
+import { FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -38,18 +39,27 @@ interface AuthoredReviewComment {
     user: { login: string };
 }
 
+/** First identifier of each kind a review run may publish on one pull request. */
+export interface ReviewRecordStartNumbers {
+    firstFindingNumber: number;
+    firstSuggestionNumber: number;
+}
+
 /**
- * Find the next PR-wide F# using only comments authored by the identity from
- * ProPR's authenticated GitHub response. Unsafe IDs cannot seed the allocator.
+ * Find the next PR-wide F# and S# using only comments authored by the identity
+ * from ProPR's authenticated GitHub response. Unsafe IDs cannot seed either
+ * allocator. The two sequences advance independently so a review that publishes
+ * no blocker still leaves the S# sequence where the previous review ended.
  */
-export function getNextAuthenticatedActionableFindingNumber(
+export function getNextAuthenticatedReviewRecordNumbers(
     comments: readonly AuthoredReviewComment[],
     authenticatedProprLogin: string | undefined,
-): number {
+): ReviewRecordStartNumbers {
     const normalizedProprLogin = authenticatedProprLogin?.trim().toLowerCase();
-    if (!normalizedProprLogin) return 1;
+    if (!normalizedProprLogin) return { firstFindingNumber: 1, firstSuggestionNumber: 1 };
 
-    let highest = 0;
+    let highestFinding = 0;
+    let highestSuggestion = 0;
     for (const comment of comments) {
         if (
             !comment.body
@@ -57,18 +67,11 @@ export function getNextAuthenticatedActionableFindingNumber(
             || !isReviewComment(comment.body)
         ) continue;
 
-        for (const finding of parseStructuredReview(comment.body).actionableFindings) {
-            const findingNumber = Number(finding.id.slice(1));
-            const nextFindingNumber = findingNumber + 1;
-            if (
-                !Number.isSafeInteger(findingNumber)
-                || findingNumber < 1
-                || !Number.isSafeInteger(nextFindingNumber)
-            ) continue;
-            highest = Math.max(highest, findingNumber);
-        }
+        const parsed = parseStructuredReview(comment.body);
+        highestFinding = Math.max(highestFinding, highestReviewRecordNumber(parsed.actionableFindings));
+        highestSuggestion = Math.max(highestSuggestion, highestReviewRecordNumber(parsed.suggestions));
     }
-    return highest + 1;
+    return { firstFindingNumber: highestFinding + 1, firstSuggestionNumber: highestSuggestion + 1 };
 }
 
 /**
@@ -112,6 +115,17 @@ function reviewExecutionMetadata(options: { reviewedHead?: string; taskId?: stri
     return head + task;
 }
 
+/** Read the public IDs after numbering and validation, including reserved ranges. */
+function buildFixCommandCopyBlock(publicResponse: string | null): string {
+    if (!publicResponse) return '';
+    const published = parseStructuredReview(publicResponse);
+    const fixCommand = formatFixCommand({
+        findingIds: published.actionableFindings.map(finding => finding.id),
+        suggestionIds: published.suggestions.map(suggestion => suggestion.id),
+    });
+    return fixCommand ? `\n${FIX_COMMAND_COPY_LABEL}\n\n\`\`\`text\n${fixCommand}\n\`\`\`` : '';
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
@@ -119,7 +133,7 @@ function reviewExecutionMetadata(options: { reviewedHead?: string; taskId?: stri
  *   1. Header with model label.
  *   2. The validated response rendered with public review sections and labels.
  *   3. Review Details metadata block (model, time, tokens).
- *   4. A short instruction telling the user about /fix.
+ *   4. A short instruction and copyable command telling the user about /fix.
  *   5. A hidden HTML marker for machine detection.
  */
 export function buildReviewComment(
@@ -141,6 +155,7 @@ export function buildReviewComment(
         costUsd?: number | null;
         hasCurrentCheckFailure?: boolean;
         firstFindingNumber?: number;
+        firstSuggestionNumber?: number;
         changedFilePaths?: readonly string[];
     } = {},
 ): string {
@@ -158,6 +173,7 @@ export function buildReviewComment(
         : undefined;
     const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap, {
         firstFindingNumber: options.firstFindingNumber,
+        firstSuggestionNumber: options.firstSuggestionNumber,
         changedFilePaths: options.changedFilePaths,
     });
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
@@ -193,8 +209,9 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` to address F# merge blockers only.\n`;
-    comment += `> F# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. Suggestions require a separate ordinary follow-up request.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address every F# merge blocker, \`/fix all\` for every pending blocker and suggestion, or name records explicitly, as in \`/fix F3 S5\`.\n`;
+    comment += `> F# and S# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. S# suggestions stay optional: they are implemented only when you name them or request \`/fix all\`, and they never relax a merge blocker.\n`;
+    comment += buildFixCommandCopyBlock(publicResponse);
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

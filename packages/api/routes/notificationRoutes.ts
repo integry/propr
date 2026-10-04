@@ -155,6 +155,7 @@ export function createNotificationRoutes(
     dependencies: NotificationRouteDependencies = {}
 ) {
     const service = dependencies.service ?? notificationService;
+    // NotificationService publishes the committed receipt changes.
     const getWebPushConfiguration = dependencies.getWebPushConfiguration
         ?? webPushConfigurationFromEnvironment;
     // The dispatcher owns the single process startup warning. Tests and other
@@ -249,9 +250,8 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            res.json(parseNotificationUnreadCountResponse(
-                await service.dismissAllNotifications(userId)
-            ));
+            const response = await service.dismissAllNotifications(userId);
+            res.json(parseNotificationUnreadCountResponse(response));
         } catch (error) {
             handleRouteError(res, error, 'dismiss all notifications');
         }

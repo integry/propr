@@ -20,6 +20,8 @@ import {
     logger,
     loadRepositoryVisualPreviewSettings,
     prepareVisualPreviewEvidence,
+    publishGoalActivity,
+    publishGoalTransition,
     recordLLMMetrics,
     runWithExecutionAbortSignal,
     type AgentExecutionResult,
@@ -32,6 +34,7 @@ import {
 import { createContainerIdCallback } from './issueJobCallbacks.js';
 import {
     claimGoalAttempt,
+    closeAttemptBlockers,
     createGoalExecutionControl,
     fencedGoal,
     fencedGoalUpdate,
@@ -189,13 +192,26 @@ async function finalizeGoal(
         run_claim: job.claimId,
         desired_state: 'running',
     }).whereNull('result_state');
-    return await query.update({
+    const finalized = await query.update({
         result_state: resultState,
         failure_reason: failureReason ?? null,
         active_turn_id: null,
         completed_at: db.fn.now(),
         updated_at: db.fn.now(),
     }) === 1;
+    // The single terminal write for a goal attempt, and fenced: publishing here
+    // announces the completion exactly once, after it is durable, instead of
+    // leaving the Goals console to poll for it.
+    if (finalized) {
+        await publishGoalActivity({
+            goal_id: job.goalId,
+            repository: `${job.repoOwner}/${job.repoName}`,
+            desired_state: 'running',
+            result_state: resultState,
+            current_task_id: job.taskId,
+        });
+    }
+    return finalized;
 }
 
 async function markGoalTaskReconciled(job: GoalJobData, resultState: string): Promise<void> {
@@ -315,7 +331,7 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     };
 }
 
-export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
     const { goal, agent, githubToken, worktree, pendingInput, checkpointFeedback } = prepared;
     const freshSession = !goal.session_id;
     // Native goal providers (Codex, Claude) steer the durable delivery context
@@ -390,6 +406,16 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
     );
 }
 
+export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+    try {
+        return await runPreparedGoal(data, prepared);
+    } finally {
+        // The provider process is gone, so no question or approval it raised is still waiting.
+        await closeAttemptBlockers(data).catch(error => logger.warn(
+            { goalId: data.goalId, error: (error as Error).message }, 'Could not close goal attempt blockers'));
+    }
+}
+
 async function acknowledgeWholeSessionInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
     const { pendingInput, goal } = prepared;
     if (!pendingInput || hasNativeGoalControl(goal.agent_type) || !goal.session_id) return;
@@ -457,12 +483,22 @@ async function handleStoppedGoal(
     if (latest.desired_state === 'cancelled') {
         const task = await getStateManager().markTaskCancelled(goal.current_task_id, 'user');
         if (task.state !== TaskStates.CANCELLED) throw new Error('Goal cancellation could not reconcile its backing task');
-        await fencedGoalUpdate(data, {
+        const cancelled = await fencedGoalUpdate(data, {
             result_state: 'cancelled',
             active_turn_id: null,
             completed_at: db.fn.now(),
             task_reconciled_at: db.fn.now(),
         });
+        // Normally silent: whoever requested the cancellation already announced
+        // it, and finalizing it changes nothing a consumer can act on. Routed
+        // through the transition rule anyway so a goal that somehow reaches this
+        // write without having been announced is still reported once.
+        if (cancelled) {
+            await publishGoalTransition({
+                previous: latest,
+                next: { ...latest, result_state: 'cancelled' },
+            });
+        }
         return { status: 'cancelled' };
     }
     if (latest.desired_state !== 'paused') return null;

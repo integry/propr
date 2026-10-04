@@ -1,6 +1,6 @@
 {
   "name": "@propr/client",
-  "version": "0.8.15",
+  "version": "0.9.0",
   "description": "Shared REST and Socket.IO client for ProPR instances",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@propr/shared": "^0.8.15",
+    "@propr/shared": "^0.9.0",
     "socket.io-client": "^4.7.5"
   },
   "devDependencies": {

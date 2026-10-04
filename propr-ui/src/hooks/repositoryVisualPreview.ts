@@ -3,10 +3,11 @@ import type { MonitoredRepo } from '../api/proprApi';
 
 export type VisualPreviewSettings = NonNullable<MonitoredRepo['visualPreview']>;
 
-export type ManagedRepo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'cancelCiDuringFollowup' | 'cancelCiDuringFollowupWorkflows' | 'visualPreview'> & {
+export type ManagedRepo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'cancelCiDuringFollowup' | 'cancelCiDuringFollowupWorkflows' | 'nonBlockingChecks' | 'visualPreview'> & {
   autoFollowupOnFailedCi: boolean;
   cancelCiDuringFollowup: boolean;
   cancelCiDuringFollowupWorkflows: string[];
+  nonBlockingChecks: string[];
   visualPreview: VisualPreviewSettings;
 };
 
@@ -70,6 +71,17 @@ export function resolveRepositoryNotificationsEnabled(
   return entries.length === 0 || entries.some(repo => repo.notificationsEnabled !== false);
 }
 
+/** Every branch entry of a repository shares one list of non-blocking checks. */
+export function updateRepositoryNonBlockingChecks(repos: ManagedRepo[], repoId: string, checks: string[]): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  const nonBlockingChecks = parseWorkflowSelection(checks);
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, nonBlockingChecks }
+    : repo);
+}
+
 /** Flip the resolved repository-wide value so every branch entry converges on one state. */
 export function toggleRepositoryNotifications(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
   const targetRepo = repos.find(repo => repo.id === repoId);
@@ -109,6 +121,7 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
   const autoCiFollowupByRepository = new Map<string, boolean>();
   const cancelCiByRepository = new Map<string, boolean>();
   const cancelCiWorkflowsByRepository = new Map<string, string[]>();
+  const nonBlockingChecksByRepository = new Map<string, string[]>();
   const visualPreviewByRepository = new Map<string, VisualPreviewSettings>();
   for (const repo of repos) {
     const key = getRepositoryConfigKey(repo.name);
@@ -121,6 +134,11 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
       ...(cancelCiWorkflowsByRepository.get(key) ?? []),
       ...(Array.isArray(repo.cancelCiDuringFollowupWorkflows) ? repo.cancelCiDuringFollowupWorkflows : [])
     ]));
+    // Automation honours the union of every branch entry's list, so show that.
+    nonBlockingChecksByRepository.set(key, parseWorkflowSelection([
+      ...(nonBlockingChecksByRepository.get(key) ?? []),
+      ...(Array.isArray(repo.nonBlockingChecks) ? repo.nonBlockingChecks : [])
+    ]));
     const previousPreview = visualPreviewByRepository.get(key);
     if (!previousPreview || (!previousPreview.enabled && repo.visualPreview.enabled)) {
       visualPreviewByRepository.set(key, repo.visualPreview);
@@ -132,6 +150,7 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
     autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
     cancelCiDuringFollowup: cancelCiByRepository.get(getRepositoryConfigKey(repo.name)) === true,
     cancelCiDuringFollowupWorkflows: cancelCiWorkflowsByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
+    nonBlockingChecks: nonBlockingChecksByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
     notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, getRepositoryConfigKey(repo.name)),
     visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
   }));

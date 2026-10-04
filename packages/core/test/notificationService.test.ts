@@ -1,9 +1,10 @@
+import { getEventPublisher } from '../src/utils/eventPublisher.js';
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, afterEach, beforeEach, describe, test } from 'node:test';
+import { after, afterEach, beforeEach, describe, test, mock } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { NOTIFICATION_PAYLOAD_LIMITS } from '@propr/shared';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
@@ -32,9 +33,12 @@ import {
 } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
 import { up as addSystemFailureState } from '../src/db/migrations/20260829000000_add_notification_system_failure_state.js';
 import { up as addPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
+import { closeEventPublisher } from '../src/utils/eventPublisher.js';
 
 let database: Knex;
 let service: NotificationService;
+/** Everything the service told recipients' open Inboxes, in order. */
+let published: Array<{ change: string; recipientId: string; eventId?: string }>;
 let clock = Date.parse('2026-08-02T10:00:00.000Z');
 
 function generatedP256dhKey(privateKeyValue: number): string {
@@ -92,6 +96,7 @@ async function createEvent(
 }
 
 beforeEach(async () => {
+    mock.method(getEventPublisher(), 'publishNotificationUpdate', async () => true);
     clock = Date.parse('2026-08-02T10:00:00.000Z');
     database = createDatabase();
     await up(database);
@@ -100,18 +105,62 @@ beforeEach(async () => {
     await addAdvertisedActions(database);
     await addSystemFailureState(database);
     await addPullRequestState(database);
+    published = [];
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
         generateId: () => 'generated-event',
-        allowInsecureLocalhost: false
+        allowInsecureLocalhost: false,
+        publishNotificationUpdate: payload => { published.push(payload); }
     });
 });
 
-afterEach(async () => database.destroy());
-after(async () => closeConnection());
+afterEach(async () => { await database.destroy(); mock.restoreAll(); });
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 describe('notification service', { concurrency: false }, () => {
+    test('does not publish a notification from a rolled-back transaction', async () => {
+        const frames: unknown[] = [];
+        mock.method(getEventPublisher(), 'publishNotificationUpdate', async payload => { frames.push(payload); return true; });
+        const internals = service as unknown as { assignRecipients: (...args: unknown[]) => Promise<void> };
+        const assign = internals.assignRecipients;
+        mock.method(internals, 'assignRecipients', async (...args: unknown[]) => {
+            await assign.apply(service, args);
+            throw new Error('abort after receipt assignment');
+        });
+        await assert.rejects(createEvent('rolled-back', '2026-08-02T09:00:00.000Z', ['user-a']), /abort after/);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(frames, []);
+        assert.equal(await service.getUnreadNotificationCount('user-a'), 0);
+    });
+
+    test('publishes committed recipient changes, including automatic receipt dismissal', async () => {
+        const frames: Array<{ change: string; recipientIds: string[] }> = [];
+        const snapshots: Promise<number>[] = [];
+        mock.method(getEventPublisher(), 'publishNotificationUpdate', async payload => {
+            frames.push(payload);
+            snapshots.push(service.getUnreadNotificationCount('user-a'));
+            return true;
+        });
+        await createEvent('live-event', '2026-08-02T09:00:00.000Z', ['user-a']);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(await Promise.all(snapshots.splice(0)), [1]);
+        await service.markNotificationRead('user-a', 'live-event');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(await Promise.all(snapshots.splice(0)), [0]);
+        await service.dismissNotificationReceipts('live-event');
+        await new Promise(resolve => setImmediate(resolve));
+        await Promise.all(snapshots);
+        assert.deepEqual(frames.map(frame => [frame.change, frame.recipientIds]), [
+            ['created', ['user-a']], ['read', ['user-a']], ['dismissed', ['user-a']],
+        ]);
+    });
+
     test('applies and rolls back badge preference validation on existing schemas', async () => {
         await removeBadgePreference(database);
         assert.equal(
@@ -388,6 +437,119 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('tells each recipient when a closed pull request clears their cards', async () => {
+        await service.createNotificationEvent({
+            eventId: 'pr-attention-event',
+            deduplicationKey: 'pr-attention-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+            title: 'Pull request needs attention',
+            body: 'PR needs attention.',
+            recipients: ['user-a', 'user-b']
+        });
+        published.length = 0;
+
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 2);
+
+        assert.deepEqual(
+            published.map(payload => ({ ...payload, occurredAt: undefined })).sort(
+                (a, b) => a.recipientId.localeCompare(b.recipientId)
+            ),
+            [
+                { change: 'dismissed', recipientId: 'user-a', eventId: 'pr-attention-event', occurredAt: undefined },
+                { change: 'dismissed', recipientId: 'user-b', eventId: 'pr-attention-event', occurredAt: undefined }
+            ]
+        );
+
+        // A second close finds nothing active, so it has nothing to announce.
+        published.length = 0;
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 0);
+        assert.deepEqual(published, []);
+    });
+
+    test('captures a closing pull request\'s receipts in the dismissal itself', async () => {
+        for (const eventId of ['pr-task-event', 'pr-attention-event']) {
+            await service.createNotificationEvent({
+                eventId,
+                deduplicationKey: `${eventId}-key`,
+                kind: 'pull_request',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'Pull request needs attention',
+                body: 'PR needs attention.',
+                recipients: ['user-a', 'user-b']
+            });
+        }
+        published.length = 0;
+        const statements: Array<{ sql: string; transactionId: unknown }> = [];
+        const record = (query: { sql: string; __knexTxId?: unknown }) => {
+            statements.push({ sql: query.sql, transactionId: query.__knexTxId });
+        };
+        database.on('query', record);
+
+        try {
+            assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 4);
+        } finally {
+            database.removeListener('query', record);
+        }
+
+        const receiptStatements = statements.filter(
+            statement => statement.sql.includes('notification_user_states')
+        );
+        const dismissal = receiptStatements.find(statement => statement.sql.startsWith('update'));
+        assert.ok(dismissal, 'the receipts are dismissed');
+        // The audience comes out of the dismissal itself. Reading the receipts
+        // in a separate statement first - even inside the same transaction -
+        // would miss a card a projection commits before the update runs: the
+        // update dismisses that receipt, and the Inbox holding it would never
+        // be told, so it would keep showing a card the server already cleaned up.
+        assert.match(dismissal.sql, /returning/i);
+        assert.deepEqual(
+            receiptStatements.filter(statement => statement.sql.startsWith('select')),
+            [],
+            'the announcement audience is the set of rows the update changed'
+        );
+        assert.notEqual(
+            dismissal.transactionId,
+            undefined,
+            'the dismissal runs in a transaction, so its receipts commit or roll back together'
+        );
+        assert.deepEqual(
+            published.map(payload => payload.recipientId).sort(),
+            ['user-a', 'user-b']
+        );
+    });
+
+    test('announces a merged pull request once per recipient, after it commits', async () => {
+        for (const eventId of ['pr-task-event', 'pr-attention-event']) {
+            await service.createNotificationEvent({
+                eventId,
+                deduplicationKey: `${eventId}-key`,
+                kind: 'pull_request',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'Pull request needs attention',
+                body: 'PR needs attention.',
+                recipients: ['user-a']
+            });
+        }
+        published.length = 0;
+
+        assert.equal(
+            await service.markPullRequestMergedAndDismissNotifications('integry/propr', 42),
+            2
+        );
+
+        // Two cards, one Inbox, one re-read - and no id to name because the
+        // recipient lost more than one card.
+        assert.equal(published.length, 1);
+        assert.equal(published[0].change, 'dismissed');
+        assert.equal(published[0].recipientId, 'user-a');
+        assert.equal(published[0].eventId, undefined);
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            []
+        );
+    });
+
     test('dismisses all PR-related receipts without deleting audit events', async () => {
         const recipients = ['user-a', 'user-b'];
         await service.createNotificationEvent({
@@ -564,6 +726,77 @@ describe('notification service', { concurrency: false }, () => {
                 { component: 'redis', failure_status: null },
                 { component: 'worker', failure_status: 'stopped' }
             ]
+        );
+    });
+
+    test('names the owners of the failure receipts a recovery dismisses', async () => {
+        await service.createNotificationEvent({
+            eventId: 'component-failure',
+            deduplicationKey: 'component-failure-key',
+            kind: 'system_failure',
+            severity: 'error',
+            target: { type: 'system_failure', component: 'redis' },
+            title: 'System component unhealthy',
+            body: 'redis is not reporting a healthy status.',
+            recipients: ['former-admin']
+        });
+
+        // The recipient's role can change while the failure persists, so the
+        // receipt owner - not whoever qualifies for the card now - is reported.
+        assert.deepEqual(
+            await service.dismissSystemFailureNotifications('redis'),
+            [{ userId: 'former-admin', eventId: 'component-failure' }]
+        );
+        assert.deepEqual(await service.dismissSystemFailureNotifications('redis'), []);
+    });
+
+    test('reports the receipts a system transition dismissed, with their owners', async () => {
+        const eventFor = (suffix: string) => (status: string, failureStartedAt: string) => ({
+            eventId: `${suffix}-failure-event`,
+            deduplicationKey: `redis:${status}:${failureStartedAt}`,
+            kind: 'system_failure' as const,
+            severity: 'error' as const,
+            target: { type: 'system_failure' as const, component: 'redis' },
+            title: 'System component unhealthy',
+            body: 'redis is not reporting a healthy status.',
+            occurredAt: failureStartedAt
+        });
+        const unhealthy = await service.reconcileSystemFailureTransition({
+            component: 'redis',
+            status: 'disconnected',
+            healthy: false,
+            snapshotAt: '2026-08-02T09:00:00.000Z',
+            eventFor: eventFor('first')
+        }, ['former-admin']);
+        assert.deepEqual(unhealthy.dismissedReceipts, []);
+        assert.equal(unhealthy.created, true);
+
+        const superseded = await service.reconcileSystemFailureTransition({
+            component: 'redis',
+            status: 'connection-error',
+            healthy: false,
+            snapshotAt: '2026-08-02T09:00:01.000Z',
+            eventFor: eventFor('second')
+        }, ['current-admin']);
+        assert.deepEqual(
+            superseded.dismissedReceipts,
+            [{ userId: 'former-admin', eventId: 'first-failure-event' }],
+            'the replaced card belongs to whoever received it, not to this snapshot'
+        );
+
+        const recovered = await service.reconcileSystemFailureTransition({
+            component: 'redis',
+            status: 'connected',
+            healthy: true,
+            snapshotAt: '2026-08-02T09:00:02.000Z',
+            // Still asked for the card it is replacing: recovery locates the
+            // receipts to dismiss through the outgoing failure's key.
+            eventFor: eventFor('second')
+        }, ['current-admin']);
+        assert.equal(recovered.event, null);
+        assert.deepEqual(
+            recovered.dismissedReceipts,
+            [{ userId: 'current-admin', eventId: 'second-failure-event' }]
         );
     });
 

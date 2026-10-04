@@ -9,6 +9,11 @@ on:
   push:
     tags:
       - 'desktop-v*'
+  # Pull requests run the unsigned validation only when they touch the desktop
+  # app. The `desktop-ci` label request and the Tier 3 nightly run call it as a
+  # reusable workflow; it is never dispatchable, so production releases can
+  # only come from a protected desktop tag. No secrets are passed to calls.
+  workflow_call:
 
 permissions:
   contents: read
@@ -92,7 +97,7 @@ jobs:
     name: Validate unsigned desktop package version
     needs: classify
     if: >-
-      ${{ !cancelled() && github.event_name == 'pull_request'
+      ${{ !cancelled() && github.event_name != 'push'
           && needs.classify.outputs.desktop != 'false' }}
     runs-on: ubuntu-latest
     outputs:
@@ -114,7 +119,7 @@ jobs:
     name: Prove stock Chromium existing-target axe boundary
     needs: classify
     if: >-
-      ${{ !cancelled() && github.event_name == 'pull_request'
+      ${{ !cancelled() && github.event_name != 'push'
           && needs.classify.outputs.desktop != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -129,10 +134,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Install locked dependencies and real Chromium
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
+      - name: Install locked dependencies
+        run: npm ci
+
+      # The hosted Ubuntu image already supplies Chromium's system libraries.
+      # Avoid an apt refresh here: a stalled mirror can exhaust this prerequisite's
+      # timeout and leave the unsigned packaging matrix skipped.
+      - name: Install real Chromium
+        run: npx playwright install chromium
 
       - name: Run focused stock Chromium existing-target axe regressions
         env:
@@ -145,7 +154,7 @@ jobs:
     # `!cancelled()` replaces the implicit success gate that `needs` alone
     # gives, so the prerequisites are required explicitly here.
     if: >-
-      ${{ !cancelled() && github.event_name == 'pull_request'
+      ${{ !cancelled() && github.event_name != 'push'
           && needs.classify.outputs.desktop != 'false'
           && needs.validation-version.result == 'success'
           && needs.renderer-axe-boundary.result == 'success' }}
@@ -358,19 +367,56 @@ jobs:
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
         shell: bash
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: |
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
-          keyring_root="$(mktemp -d)"
-          trap 'rm -rf -- "$keyring_root"' EXIT
-          dbus-run-session -- bash -euo pipefail -c '
-            export XDG_DATA_HOME="$1"
-            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
-            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
-            xvfb-run --auto-servernum npm run desktop:smoke
-          ' bash "$keyring_root"
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf -- "$smoke_root"' EXIT
+          for attempt in 1 2; do
+            keyring_root="$smoke_root/keyring-$attempt"
+            mkdir "$keyring_root"
+            smoke_log="$smoke_root/attempt-$attempt.log"
+            if dbus-run-session -- bash -euo pipefail -c '
+              export XDG_DATA_HOME="$1"
+              export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+              eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+              xvfb-run --auto-servernum npm run desktop:smoke
+            ' bash "$keyring_root" 2>&1 | tee "$smoke_log"; then
+              break
+            else
+              status=$?
+            fi
+            # ARM64 can segfault in native teardown after the transport proof and
+            # final quit. Retry the entire smoke once in a fresh session; never
+            # accept the crashed run as evidence or suppress a second failure.
+            if [ "$PACKAGE_ARCH" != arm64 ] || [ "$attempt" -eq 2 ]; then
+              exit "$status"
+            fi
+            if ! node --input-type=module - "$smoke_log" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const output = readFileSync(process.argv[2], 'utf8');
+          const records = output.split(/\r?\n/).flatMap(line => {
+            try { return [JSON.parse(line)]; } catch { return []; }
+          }).filter(record => record && typeof record === 'object');
+          const lastLaunch = records.findLastIndex(record => record.event === 'desktop.app.ready');
+          const launch = lastLaunch < 0 ? [] : records.slice(lastLaunch);
+          const last = launch.at(-1);
+          const retryable = output.includes('Error: Packaged desktop exited with code null (signal SIGSEGV)')
+            && launch.some(record => record.event === 'desktop.renderer.transport_smoke.ready')
+            && !launch.some(record => record.level === 'error')
+            && last?.event === 'desktop.app.shutdown_step' && last.step === 'final-quit';
+          process.exit(retryable ? 0 : 1);
+          NODE
+            then
+              exit "$status"
+            fi
+            echo '::warning::Packaged ARM64 smoke crashed after final quit; rerunning all four launches in a fresh session.'
+          done
 
       - name: Capture packaged Linux x64 visual and accessibility acceptance evidence
+        id: desktop-acceptance
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
         shell: bash
         env:
@@ -402,7 +448,7 @@ jobs:
           ' bash "$keyring_root"
 
       - name: Publish mandatory packaged desktop acceptance evidence
-        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
+        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64' && (steps.desktop-acceptance.outcome == 'success' || steps.desktop-acceptance.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-desktop-acceptance-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
@@ -472,9 +518,26 @@ jobs:
             ' bash "$keyring_root" "$PROPR_DESKTOP_VERSION" "${{ matrix.arch }}" \
               "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
           else
-            bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh \
-              "${{ matrix.arch }}" native-lifecycle "$PROPR_DESKTOP_VERSION" \
-              "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+            lifecycle_log="$(mktemp)"
+            for attempt in 1 2; do
+              if bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh \
+                "${{ matrix.arch }}" native-lifecycle "$PROPR_DESKTOP_VERSION" \
+                "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}" 2>&1 | tee "$lifecycle_log"; then
+                break
+              else
+                status=$?
+              fi
+              # Hosted macOS runners sometimes cannot answer the final
+              # LaunchServices query within its deadline. That result proves
+              # nothing either way (a stale registration reports
+              # STALE_REGISTRATION instead), so retry the whole lifecycle once;
+              # any other cleanup failure, or a second one, still fails the leg.
+              if [ "$attempt" -eq 2 ] \
+                || ! grep -qE '^(NativeLifecycleFailure|[[:space:]]*Error): Native lifecycle cleanup failed: launchservices-postcondition \[result:COMMAND_DEADLINE\]$' "$lifecycle_log"; then
+                exit "$status"
+              fi
+              echo '::warning::The macOS LaunchServices postcondition query hit its deadline; rerunning the native lifecycle once.'
+            done
           fi
 
       # Hosted runners occasionally lose name resolution to the artifact
@@ -531,7 +594,7 @@ jobs:
     # inapplicable and every desktop job was skipped for exactly that reason.
     # A failed, cancelled or unexpectedly skipped job still fails it.
     name: Finalize unsigned validation checksums
-    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name != 'push' }}
     needs: [classify, validation-version, package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -906,6 +969,7 @@ jobs:
           ' bash "$keyring_root"
 
       - name: Capture signed packaged Linux x64 visual and accessibility acceptance evidence
+        id: desktop-acceptance
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
         shell: bash
         env:
@@ -921,7 +985,7 @@ jobs:
           npm run desktop:acceptance:verify
 
       - name: Publish mandatory signed packaged desktop acceptance evidence
-        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
+        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64' && (steps.desktop-acceptance.outcome == 'success' || steps.desktop-acceptance.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-desktop-acceptance-signed-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}

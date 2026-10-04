@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { debounce } from 'lodash';
 import { usePlanRefinement } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft, PlanTask } from '../../api/proprApi';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft, PlanTask, restorePlanRevision } from '../../api/proprApi';
 import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { PlanEditorDesktopLayout } from './PlanEditorDesktopLayout';
 import { PlanEditorMobileLayout } from './PlanEditorMobileLayout';
 import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
+import PlanHistoryDialog from './PlanHistoryDialog';
 import { getDraftDisplayName } from './planDisplayName';
 import {
   describePlanPrBehavior,
@@ -62,6 +63,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
   const [isChatExpanded, setIsChatExpanded] = useState(false);
   const [focusComposerRequest, setFocusComposerRequest] = useState(0);
   const [showApproveIntentDialog, setShowApproveIntentDialog] = useState(false);
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const { addToast } = useToast();
   const { isDemoMode } = useDemoMode();
 
@@ -72,7 +74,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
   const initialPlan = parseInitialPlan(draft.plan_json);
 
   const {
-    plan, updateTask, deleteTask, restoreTask, reorderTasks,
+    plan, updateTask, deleteTask, restoreTask, reorderTasks, loadPlan, flushPendingSave,
     handleRefine, undo, redo, canUndo, canRedo, highlightedIds, refinementProgress
   } = usePlanRefinement(draft.draft_id, initialPlan);
 
@@ -164,27 +166,46 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
     onNotificationIntentConsumed?.();
   }, [notificationIntent, onNotificationIntentConsumed]);
 
-  const approvalDialog = (
-    <PlanIntentConfirmationDialog
-      isOpen={showApproveIntentDialog}
-      mode="approve"
-      repository={repository}
-      issueCount={plan.length}
-      agentModelSelection="Selected after issue creation (no agent starts yet)"
-      prBehavior={describePlanPrBehavior(
-        draft.context_config?.useEpic,
-        draft.context_config?.autoMerge,
-      )}
-      isLoading={isFinalizing}
-      confirmDisabled={plan.length === 0 || isFinalizing}
-      readOnly={isDemoMode}
-      unavailableReason={plan.length === 0 ? 'The plan must contain at least one issue before it can be approved.' : null}
-      onClose={() => { if (!isFinalizing) setShowApproveIntentDialog(false); }}
-      onConfirm={() => {
-        setShowApproveIntentDialog(false);
-        void handleFinalize();
-      }}
-    />
+  const handleRestoreRevision = useCallback(async (revisionId: number) => {
+    // Save a pending edit first so it is kept in the history instead of
+    // overwriting the restored plan a moment later.
+    await flushPendingSave();
+    const result = await restorePlanRevision(draft.draft_id, revisionId);
+    loadPlan(result.plan_json);
+    setShowHistoryDialog(false);
+    addToast({ type: 'success', message: 'Earlier plan version restored', duration: 3000 });
+  }, [addToast, draft.draft_id, flushPendingSave, loadPlan]);
+
+  const dialogs = (
+    <>
+      <PlanHistoryDialog
+        isOpen={showHistoryDialog}
+        draftId={draft.draft_id}
+        onClose={() => setShowHistoryDialog(false)}
+        onRestore={handleRestoreRevision}
+        isReadOnly={isDemoMode || refinementProgress.isRefining}
+      />
+      <PlanIntentConfirmationDialog
+        isOpen={showApproveIntentDialog}
+        mode="approve"
+        repository={repository}
+        issueCount={plan.length}
+        agentModelSelection="Selected after issue creation (no agent starts yet)"
+        prBehavior={describePlanPrBehavior(
+          draft.context_config?.useEpic,
+          draft.context_config?.autoMerge,
+        )}
+        isLoading={isFinalizing}
+        confirmDisabled={plan.length === 0 || isFinalizing}
+        readOnly={isDemoMode}
+        unavailableReason={plan.length === 0 ? 'The plan must contain at least one issue before it can be approved.' : null}
+        onClose={() => { if (!isFinalizing) setShowApproveIntentDialog(false); }}
+        onConfirm={() => {
+          setShowApproveIntentDialog(false);
+          void handleFinalize();
+        }}
+      />
+    </>
   );
 
   const handleBackToSetup = async () => {
@@ -213,6 +234,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
   const showDeletePlanDialog = () => { if (!isDemoMode) setShowDeleteDialog(true); };
   const showBackToSetup = () => { if (!isDemoMode) setShowBackToSetupDialog(true); };
   const dismissEnforcementNotice = () => setEnforcementNoticeDismissed(true);
+  const showHistory = () => setShowHistoryDialog(true);
 
   if (isMobile) {
     return (
@@ -243,6 +265,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
         onBackToSetup={showBackToSetup}
         onUndo={onEditableUndo}
         onRedo={onEditableRedo}
+        onShowHistory={showHistory}
         onSetEnforcementNoticeDismissed={setEnforcementNoticeDismissed}
         onTaskChange={onEditableTaskChange}
         onDeleteTask={handleDeleteTask}
@@ -259,7 +282,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
         onDeleteConfirm={handleDeletePlanConfirm}
         isReadOnly={isDemoMode}
         />
-        {approvalDialog}
+        {dialogs}
       </>
     );
   }
@@ -291,6 +314,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
       onBackToSetup={showBackToSetup}
       onUndo={onEditableUndo}
       onRedo={onEditableRedo}
+      onShowHistory={showHistory}
       onDismissEnforcementNotice={dismissEnforcementNotice}
       onTaskChange={onEditableTaskChange}
       onDeleteTask={handleDeleteTask}
@@ -306,7 +330,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
       onDeleteConfirm={handleDeletePlanConfirm}
       isReadOnly={isDemoMode}
       />
-      {approvalDialog}
+      {dialogs}
     </>
   );
 };

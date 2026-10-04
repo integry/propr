@@ -17,7 +17,7 @@ import {
     cleanupExistingBranch,
     createWorktreeFromExistingBranch,
 } from './worktreeCreation.js';
-import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
+import { configureGitRemoteAuthentication, configureGitAuthentication, setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
@@ -152,14 +152,16 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     // and git will use the remote's default branch automatically
     if (baseBranch && baseBranch !== 'HEAD') cloneOptions.push(`--branch=${baseBranch}`);
 
-    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+    const cloneGit = createHooklessGit();
+    configureGitAuthentication(cloneGit, authToken);
     try {
-        await createHooklessGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+        await cloneGit.clone(repoUrl, localRepoPath, cloneOptions);
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 
     const repoGit: SimpleGit = createHooklessGit(localRepoPath);
+    configureGitAuthentication(repoGit, authToken);
     await configureGcWorktreePrune(repoGit);
 
     // Treat 'HEAD' as unspecified - use default branch detection
@@ -275,6 +277,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
         try {
+            await configureGitRemoteAuthentication(git);
             await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
             logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
         } catch (fetchError) {

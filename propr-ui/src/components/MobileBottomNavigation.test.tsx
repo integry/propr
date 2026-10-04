@@ -10,6 +10,15 @@ vi.mock('../api/revertApi', () => ({
   getAgentTankUsage: vi.fn(),
   refreshAgentTank: vi.fn(),
 }));
+// The usage widget refreshes on `usage:update`; this suite never pushes one.
+vi.mock('../contexts/useSocket', () => ({
+  useSocket: () => ({
+    isConnected: true,
+    onActivityUpdate: () => () => undefined,
+    onNotificationUpdate: () => () => undefined,
+    onUsageUpdate: () => () => undefined,
+  }),
+}));
 
 const mockGetAgentTankUsage = vi.mocked(getAgentTankUsage);
 const mockRefreshAgentTank = vi.mocked(refreshAgentTank);
@@ -41,7 +50,7 @@ const systemHealth: HeaderStats['systemHealth'] = {
 
 const Location = () => {
   const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
 };
 
 function renderNavigation(
@@ -71,6 +80,48 @@ describe('MobileBottomNavigation', () => {
     mockGetAgentTankUsage.mockResolvedValue({ enabled: false });
     mockRefreshAgentTank.mockResolvedValue({ success: true });
   });
+
+  it.each([
+    ['/', 'New Task', '/tasks/new', ['New Plan', 'New Goal']],
+    ['/plans', 'New Plan', '/studio/new', ['New Task', 'New Goal']],
+    ['/studio/draft-1', 'New Plan', '/studio/new', ['New Task', 'New Goal']],
+    ['/goals', 'New Goal', '/goals?new=1', ['New Task', 'New Plan']],
+    ['/goals/goal-1', 'New Goal', '/goals?new=1', ['New Task', 'New Plan']],
+  ])('matches the primary action and More options to %s', (route, label, to, options) => {
+    renderNavigation(route);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    const more = screen.getByRole('navigation', { name: 'More navigation' });
+    expect(within(more).getAllByRole('link', { name: /^New / }).map(item => item.textContent)).toEqual(options);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(screen.getByTestId('location').textContent).toBe(to);
+  });
+
+  it('updates creation actions after navigating from the More sheet', () => {
+    renderNavigation('/plans');
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    fireEvent.click(screen.getByRole('link', { name: 'New Goal' }));
+    expect(screen.getByTestId('location').textContent).toBe('/goals?new=1');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New Goal' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    fireEvent.click(screen.getByRole('link', { name: 'New Task' }));
+    expect(screen.getByTestId('location').textContent).toBe('/tasks/new');
+    expect(screen.getByRole('button', { name: 'New Task' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it.each([['/', 'New Task'], ['/plans', 'New Plan'], ['/goals', 'New Goal']])(
+    'keeps all creation options inert in demo mode on %s', (route, label) => {
+      renderNavigation(route, vi.fn(), user, true);
+      expect(screen.getByRole('button', { name: `${label} unavailable in demo mode` })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'More' }));
+      for (const option of screen.getAllByRole('link', { name: /^New / })) {
+        expect(option).toHaveAttribute('aria-disabled', 'true');
+        fireEvent.click(option);
+        expect(screen.getByTestId('location').textContent).toBe(route);
+      }
+    },
+  );
 
   it('renders all five destinations in order with the unread count and route active state', () => {
     renderNavigation('/');

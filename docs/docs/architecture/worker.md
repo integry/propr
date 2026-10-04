@@ -77,13 +77,14 @@ If the agent made no changes, the worker records that result instead of creating
 
 The worker registers BullMQ processors for several job names:
 
-- `processGitHubIssue` — labeled GitHub issues and Planner Studio implementation tasks
+- `processGitHubIssue` — labeled GitHub issues and Planner Studio implementation tasks (a parent job fans out one child job per base branch × model)
 - `processPullRequestComment` — PR follow-up comments and AI review/fix commands
 - `processTaskImport` — task imports
 - `processSystemTask` — signed system tasks such as reverts and recovery actions
 - `processMergeConflict` — merge and conflict-resolution commands
+- `processGoal` — long-running [goal](../features/goals.md) sessions
 
-Separate `analysis-worker` and `indexing-worker` services handle repository analysis and indexing jobs so heavy implementation work does not block them.
+The separate `indexing-worker` service handles repository indexing jobs so heavy implementation work does not block them.
 
 The same worker structure applies across job types: prepare, run, finalize, record.
 
@@ -106,5 +107,47 @@ Workers update task state throughout the run so you can see:
 - Which agent and model are in use
 - Where a failure occurred
 - Which commit or PR resulted from the task
+
+### Cancellation and terminal reasons
+
+Closing an issue or removing a configured processing trigger (for example `AI`)
+cancels its queued implementation jobs and stops running implementations through
+the same path as `propr task stop` and the Web UI. Removing a model label such as
+`llm-codex-astra` does not cancel work. An already-opened PR stays open and retains
+its independent follow-up work.
+
+Webhook intake handles withdrawal immediately. In polling mode, each poll checks
+queued and running resources directly, including issues that disappeared from the
+open/labeled discovery query. Before dispatch or execution, workers fetch current
+GitHub state again; saved queue snapshots cannot authorize work on a closed issue
+or an issue missing its processing trigger. GitHub read failures prevent startup
+and are retried rather than treated as cancellation.
+
+Cancelled issue work loses its `<trigger>-processing` and `<trigger>-waiting`
+labels (and any stale `<trigger>-done` label) and gains `<trigger>-cancelled`. A `<trigger>-done` label stays, and no
+cancelled label is added, when a sibling attempt for that trigger already opened a PR. To request new work, restore the issue's
+open state and reapply the trigger label; reopening alone, or applying any other label, restarts nothing in
+either intake mode. Reapplying a trigger clears its stale
+processing and cancelled labels, including after failed withdrawal cleanup.
+Withdrawal and user cancellations are terminal and never automatically retried.
+Usage-limit retries retain the original task and correlation ID; queue handoffs
+recorded as requeued or rescheduled do not prevent resuming that task.
+Issue closure does not cancel a task that already has a PR result or whose own
+PR closed the issue.
+
+Task state and persisted history carry `terminalReason`, also shown in the task
+timeline, Inbox, and MCP `get_task`:
+
+| Reason | Meaning |
+| --- | --- |
+| `timed_out` | Execution reached the overall timeout (partial work may have been saved). |
+| `cancelled_issue_closed` | The source issue was closed. |
+| `cancelled_label_removed` | A processing trigger was removed. |
+| `cancelled_pr_closed` | The target PR was closed without merging. |
+| `cancelled_by_user` | An operator stopped the task. |
+
+Cancellation reasons remain stable if the worker later reports its container's
+exit. Timeout failures remain distinct from cancellations and use the existing
+failure retry policy. No inactivity timeout is introduced.
 
 See [Observability And Control](../features/observability.md) for the product-facing view and [Worker Runtime Reference](./worker-runtime.md) for operational details.

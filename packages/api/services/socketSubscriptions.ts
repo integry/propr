@@ -5,6 +5,8 @@ import { revalidateSocketAuthentication } from './socketAuthentication.js';
 import type { QueueDependencies } from './socketService.js';
 import type { TaskWatcherManager } from './taskWatcher.js';
 
+import { ACTIVITY_ROOM, activityUserRoom } from './activitySocketRooms.js';
+export { ACTIVITY_ROOM, activityUserRoom } from './activitySocketRooms.js';
 export const INSTANCE_OPERATIONAL_ROOM = 'instance:operational';
 const USER_ROOM_PREFIX = 'user:';
 const MAX_RESOURCE_ID_LENGTH = 512;
@@ -69,6 +71,7 @@ export class SocketSubscriptionManager {
     const principal = this.getPrincipal(socket);
     void socket.join(INSTANCE_OPERATIONAL_ROOM);
     void socket.join(userRoom(principal.user.id));
+    this.setupActivityHandlers(socket);
     this.setupTaskHandlers(socket);
     this.setupDraftHandlers(socket);
     this.setupIndexingHandlers(socket);
@@ -222,6 +225,37 @@ export class SocketSubscriptionManager {
     }
   }
 
+  private setupActivityHandlers(socket: Socket): void {
+    // Instance-wide activity is opt-in, so a socket opened only to watch one
+    // task's live output does not receive every frame on the instance. The
+    // envelope carries ids, a repository and a change - strictly less than the
+    // task payloads every authenticated socket already receives in the
+    // instance-operational room - so it needs no further permission. Anything
+    // narrower than the instance, notification and planner activity, is emitted
+    // to its owner's room instead.
+    //
+    // Serialize join/leave across awaited adapter operations. An unsubscribe
+    // during authentication or join must not leave a late membership behind.
+    let tail = Promise.resolve();
+    const rooms = [ACTIVITY_ROOM, activityUserRoom(this.getPrincipal(socket).user.id)];
+    socket.on('subscribe:activity', () => {
+      tail = tail.catch(() => undefined).then(async () => {
+        for (const room of rooms) {
+          if (!await this.join(socket, { event: 'subscribe:activity', room, authorize: () => true })) return;
+        }
+        if (socket.connected) socket.emit('activity:ready', { shellSnapshots: true });
+      });
+      return tail;
+    });
+    socket.on('unsubscribe:activity', () => {
+      for (const room of rooms) this.cancelPendingSubscription(socket, room);
+      tail = tail.catch(() => undefined).then(async () => {
+        for (const room of rooms) await socket.leave(room);
+      });
+      return tail;
+    });
+  }
+
   private setupTaskHandlers(socket: Socket): void {
     socket.on('subscribe:task', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
@@ -333,7 +367,7 @@ export class SocketSubscriptionManager {
         room: 'queue:stats',
         authorize: () => true,
       })) return;
-      await this.dependencies.getQueueBroadcaster()?.broadcastQueueStats(true);
+      await this.dependencies.getQueueBroadcaster()?.broadcastQueueStats(true, socket.id);
     });
     socket.on('unsubscribe:queue:stats', async () => {
       const room = 'queue:stats';

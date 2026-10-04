@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- end-to-end pull-request catalog coverage shares one stateful GitHub fixture */
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -7,6 +8,9 @@ import path from 'node:path';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
 import { leaseRedis, verifyPullRequestWrites } from './fixtures/mcpPullRequestWrites.js';
+import { verifyFixReanchor } from './fixtures/mcpFixReanchor.js';
+import { verifyFixRelocation } from './fixtures/mcpFixRelocation.js';
+import { verifyModelReviews } from './fixtures/mcpPullRequestModelReviews.js';
 import type { Args, CommentFixture, PullRequestFixture } from './fixtures/mcpPullRequestWrites.js';
 
 const NOW = Date.now();
@@ -84,6 +88,21 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
 
   const graphqlCalls: Args[] = [];
   const restCalls: Array<{ route: string; args: Args }> = [];
+  /** Files changed between two heads, keyed by `from...to`; an unknown range is a 404 as for an unreachable commit. */
+  const comparisons = new Map<string, Array<{ filename: string; status: string; previous_filename?: string }>>();
+  /** Every file path at a commit, keyed by its SHA; an unknown commit is a 404. */
+  const trees = new Map<string, string[]>();
+  /** The compare and recursive tree endpoints `fix_review_findings` reads to re-anchor a review. */
+  const gitHistory = (route: string, args: Args) => {
+    if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
+      const files = comparisons.get(String(args.basehead));
+      if (!files) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { files } };
+    }
+    const paths = trees.get(String(args.tree_sha));
+    if (!paths) throw Object.assign(new Error('Not Found'), { status: 404 });
+    return { data: { truncated: false, tree: paths.map(path => ({ path, type: 'blob' })) } };
+  };
   const denied = new Set(['acme/forbidden']);
   const findPullRequest = (repository: string, number: number) => {
     const pull = pullRequests.find(item => item.repository === repository && item.number === number);
@@ -167,6 +186,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         comments.push(comment);
         return { data: { id: comment.id, html_url: `https://github.com/${repository}/pull/${comment.pullRequest}#issuecomment-${comment.id}` } };
       }
+      if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}' || route === 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}') return gitHistory(route, args);
       if (route === 'GET /repos/{owner}/{repo}/labels') {
         const all = repositoryLabels.get(repository) ?? [];
         const perPage = Number(args.per_page ?? 30);
@@ -375,7 +395,11 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
     });
 
-    await verifyPullRequestWrites({ t, call, mutate, principal, findPullRequest, restCalls, comments, redis: deps.redisClient as never });
+    const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, trees, redis: deps.redisClient as never };
+    await verifyPullRequestWrites(writeFixture);
+    await verifyFixReanchor(writeFixture);
+    await verifyFixRelocation(writeFixture);
+    await verifyModelReviews(writeFixture);
 
     await t.test('a repository configured for several base branches is scanned and listed once', async () => {
       await core.saveMonitoredRepos([['acme/repo', 'main'], ['acme/repo', 'release'], ['ACME/Repo', 'hotfix'], ['acme/other', 'main']]
@@ -427,11 +451,22 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     await t.test('every new tool declares its scope, strict schema and write posture', async () => {
       assert.equal(tool('list_pull_requests').readOnly, true);
       assert.equal(tool('list_pull_requests').scope, 'read');
-      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'stop_ultrafix']) {
-        assert.equal(tool(name).scope, 'execute');
+      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix']) assert.equal(tool(name).scope, 'execute');
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request']) {
+        const appendOnly = tool(name);
+        assert.notEqual(appendOnly.readOnly, true);
+        assert.ok(appendOnly.schema.shape.idempotencyKey, `${name} must carry a mutation receipt key`);
+        assert.equal(appendOnly.schema.shape.expectedHead.isOptional(), true, `${name} must list expectedHead as optional`);
+        assert.ok(appendOnly.description.includes('expectedHead is optional; when omitted the current head at call time is used and returned as resolvedHead.'));
+      }
+      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'start_ultrafix', 'stop_ultrafix']) {
+        const guarded = tool(name);
+        assert.equal(guarded.schema.shape.expectedHead.isOptional(), false, `${name} must require expectedHead`);
+        assert.ok(guarded.description.includes('expectedHead is required'));
+        assert.equal(guarded.schema.safeParse({ repository: 'acme/repo', pullRequest: 42, idempotencyKey: 'missing-head-key' }).success, false);
+      }
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix']) {
         assert.notEqual(tool(name).readOnly, true);
-        assert.ok(tool(name).schema.shape.idempotencyKey, `${name} must carry a mutation receipt key`);
-        assert.ok(tool(name).schema.shape.expectedHead, `${name} must enforce a head precondition`);
         await assert.rejects(call(name, { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40), idempotencyKey: 'strict-extra-key', unexpected: true }));
       }
     });

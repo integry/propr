@@ -70,6 +70,8 @@ export interface Task {
   processedAt: string | null;
   /** Reason for failure (null if not failed) */
   failedReason: string | null;
+  /** Commit the run pushed (null when it pushed none or predates commit tracking) */
+  commitHash?: string | null;
   /** Progress percentage (0-100) */
   progress: number;
   /** Number of processing attempts */
@@ -82,8 +84,6 @@ export interface Task {
   llmProvider: string | null;
   /** Status of associated plan issue */
   planIssueStatus: PlanIssueStatus;
-  /** Implementation critique score (0-100 scale) */
-  critiqueScore: number | null;
 }
 
 /**
@@ -396,30 +396,6 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
     method: 'GET',
     credentials: 'include'
   });
-
-  await handleApiResponse(response);
-  return response.json();
-};
-
-/**
- * Fetches analysis report for a task.
- *
- * @param taskId - The unique identifier of the task
- * @returns Promise resolving to task analysis
- */
-export const getTaskAnalysis = async (taskId: string): Promise<{
-  analysis: unknown | null;
-  message?: string;
-}> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/analysis`, {
-    method: 'GET',
-    credentials: 'include'
-  });
-
-  // 202 indicates analysis is still pending
-  if (response.status === 202) {
-    return { analysis: null, message: 'Analysis pending...' };
-  }
 
   await handleApiResponse(response);
   return response.json();

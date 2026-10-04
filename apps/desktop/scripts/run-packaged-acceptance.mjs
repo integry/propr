@@ -532,6 +532,8 @@ const createFixture = async (mode, fixedOrigin) => {
     // Socket lifecycle evidence requires the same boolean consumed from the
     // production endpoint; the generic API fixture shape is not compatible.
     if (request.url === '/api/auth/demo-mode') return json(response, 200, { demoMode: false });
+    // The live notification badge validates this response on initial and reconnect reads.
+    if (requestUrl.pathname === '/api/notifications/unread-count') return json(response, 200, { unreadCount: 0 });
     if (request.url?.startsWith('/api/status')) return json(response, 200, { daemon: 'Running', redis: 'Connected', githubAuth: 'Authenticated', claudeAuth: 'Ready', agents: [], githubEventIntake: 'ProPR Connect', githubEventIntakeStatus: 'Connected' });
     if (request.url?.startsWith('/api/queue/stats')) return json(response, 200, { active: 0, waiting: 0, completed: 12, failed: 0, delayed: 0, paused: 0 });
     if (requestUrl.pathname === '/api/planner/drafts') return json(response, 200, { drafts: [], total: 0, page: 1, limit: 20, hasMore: false });

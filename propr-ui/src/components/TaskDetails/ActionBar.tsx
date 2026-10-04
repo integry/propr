@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef, useState, useId } from 'react';
 import { HistoryItem } from './types';
-import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus } from 'lucide-react';
+import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus, MoreHorizontal } from 'lucide-react';
 
 interface ActionBarProps {
   currentStatus: string;
@@ -82,10 +82,11 @@ const DeleteButton: React.FC<{
 
   return (
     <button
+      role="menuitem"
       onClick={onDeleteTask}
       disabled={isDisabled}
       title={getTitle()}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+      className={`flex items-center gap-1.5 w-full px-3 py-2 rounded text-xs font-medium transition-colors ${
         isDisabled
           ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
           : 'bg-white hover:bg-red-50 text-red-500 hover:text-red-600 border border-gray-200 hover:border-red-200'
@@ -98,6 +99,69 @@ const DeleteButton: React.FC<{
       )}
       <span>Delete</span>
     </button>
+  );
+};
+
+const TaskOverflowMenu: React.FC<React.ComponentProps<typeof DeleteButton>> = props => {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const menu = menuRef.current;
+    (menu?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? menu)?.focus();
+    const dismiss = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative ml-1 border-l border-slate-200 pl-2"
+      onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Escape' && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          triggerRef.current?.focus();
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="More task actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        className="flex items-center rounded p-1.5 text-slate-500 hover:bg-white hover:text-slate-900"
+        onClick={() => setOpen(value => !value)}
+        onKeyDown={event => {
+          if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); }
+        }}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div id={menuId} ref={menuRef} role="menu" aria-label="More task actions" tabIndex={-1}
+          className="absolute right-0 top-full z-50 mt-1 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
+          <DeleteButton {...props} onDeleteTask={() => {
+            setOpen(false);
+            triggerRef.current?.focus();
+            props.onDeleteTask();
+          }} />
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -116,7 +180,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
   onDeleteTask,
   onFollowUp
 }) => {
-  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
+  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
 
   return (
@@ -160,7 +224,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
       )}
 
       {/* Divider before destructive actions */}
-      {(isActive || onDeleteTask) && (
+      {isActive && (
         <div className="h-4 w-px bg-slate-300 mx-1" />
       )}
 
@@ -171,7 +235,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
       />
 
       {onDeleteTask && (
-        <DeleteButton
+        <TaskOverflowMenu
           isActive={isActive}
           stopFailed={stopFailed}
           deletingTask={deletingTask}

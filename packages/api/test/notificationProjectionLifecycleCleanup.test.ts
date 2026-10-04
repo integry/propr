@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Knex } from 'knex';
-import { closeConnection, NotificationService } from '@propr/core';
+import { closeConnection, closeEventPublisher, NotificationService } from '@propr/core';
 import { TASK_UPDATE } from '@propr/shared';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 import {
@@ -28,7 +28,12 @@ afterEach(async () => {
   await database.destroy();
 });
 
-after(async () => closeConnection());
+after(async () => {
+  await closeConnection();
+  // Notification writes now publish a push event; close the publisher's Redis
+  // client so a test process is not held open by best-effort telemetry.
+  await closeEventPublisher();
+});
 
 describe('notification lifecycle cleanup', { concurrency: false }, () => {
   test('uses the issue title instead of boilerplate completion text', async () => {

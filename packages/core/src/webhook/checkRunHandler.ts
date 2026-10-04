@@ -19,8 +19,11 @@ import {
     extractCheckRunFailure,
     extractStatusFailure,
     postCiFailureFollowup,
+    type CiFailureEvidence,
 } from './ciFailureFollowup.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
+import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -230,6 +233,17 @@ export async function reevaluatePRAutoMerge(
  * Successful check runs drive auto-merge/Ultrafix. Failed check runs can post an
  * automatic follow-up comment when that repository has opted in.
  */
+/**
+ * A failure from a check the repository marked non-blocking starts no
+ * follow-up; GitHub still shows it, and the check keeps its own history.
+ */
+async function unlessNonBlocking(failure: CiFailureEvidence | null, owner: string, repoName: string): Promise<CiFailureEvidence | null> {
+    if (!failure) return null;
+    if (!isNonBlockingCheck(failure.name, await getNonBlockingChecksForRepository(owner, repoName))) return failure;
+    logger.info({ owner, repoName, check: failure.name }, 'Failed check is non-blocking for this repository; no follow-up');
+    return null;
+}
+
 export async function handleCheckRunEvent(
     payload: CheckRunEvent,
     correlationId: string
@@ -255,7 +269,7 @@ export async function handleCheckRunEvent(
     }
 
     const conclusion = payload.check_run.conclusion;
-    const failure = extractCheckRunFailure(payload);
+    const failure = await unlessNonBlocking(extractCheckRunFailure(payload), owner, repoName);
     if (failure) {
         for (const pr of pullRequests) {
             try {
@@ -331,7 +345,7 @@ export async function handleStatusEvent(
 
     log.debug({ owner, repoName, state: payload.state, sha: payload.sha, context: payload.context }, 'status event received');
 
-    const failure = extractStatusFailure(payload);
+    const failure = await unlessNonBlocking(extractStatusFailure(payload), owner, repoName);
     if (!failure && payload.state !== 'success') return;
     if (!failure && !_ultrafixCheckRunHook) return;
 

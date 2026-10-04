@@ -45,14 +45,22 @@ export async function schedulePRCommentUsageLimitRetry(
     baseJobId: string,
     delay: number,
 ): Promise<string> {
+    // Queue IDs also identify terminal worker state. Deduplicate within the
+    // source attempt without inheriting cancellation from an earlier request or
+    // a removed retry in the same request (which shares its correlation ID).
+    const attempt = createHash('sha256')
+        .update(JSON.stringify({ correlationId: job.data.correlationId, sourceJobId: job.id }))
+        .digest('hex').slice(0, 16);
+    const attemptJobId = `${baseJobId}-${attempt}`;
     const retryJobData = { ...job.data };
     delete retryJobData.prProcessingLockToken;
+    delete retryJobData.prLockWaitAttempts;
     const retryData: CommentJobData = { ...retryJobData, comments };
     const initialRetry = await issueQueue.add(job.name, retryData, {
-        jobId: baseJobId,
+        jobId: attemptJobId,
         delay,
     }) as Job<CommentJobData>;
-    const initialRetryJobId = String(initialRetry.id ?? baseJobId);
+    const initialRetryJobId = String(initialRetry.id ?? attemptJobId);
     const persistedInitialRetry = await issueQueue.getJob(initialRetryJobId) as Job<CommentJobData> | undefined;
     if (await isDurableRetryOwner(persistedInitialRetry, job, comments)) {
         return initialRetryJobId;
@@ -60,14 +68,26 @@ export async function schedulePRCommentUsageLimitRetry(
 
     // A duplicate add may not persist the attempted payload. Give this claim a
     // distinct, stable owner rather than silently dropping data.
-    const fallbackJobId = buildRetryFallbackJobId(baseJobId, job, comments);
+    const fallbackJobId = buildRetryFallbackJobId(attemptJobId, job, comments);
     const fallbackRetry = await issueQueue.add(job.name, retryData, {
         jobId: fallbackJobId,
         delay,
     }) as Job<CommentJobData>;
     const persistedFallbackRetry = await issueQueue.getJob(String(fallbackRetry.id ?? fallbackJobId)) as Job<CommentJobData> | undefined;
-    if (!await isDurableRetryOwner(persistedFallbackRetry, job, comments)) {
-        throw new Error(`Unable to persist usage-limit retry comments in job ${fallbackJobId}`);
+    if (await isDurableRetryOwner(persistedFallbackRetry, job, comments)) {
+        return String(persistedFallbackRetry?.id ?? fallbackJobId);
     }
-    return String(persistedFallbackRetry?.id ?? fallbackJobId);
+    // A BullMQ-retried source can outlive both earlier owners. Replace only a
+    // verified terminal owner, while keeping live handoffs stable across attempts.
+    let previous = persistedFallbackRetry;
+    for (let generation = 0; generation <= (job.attemptsMade ?? 0); generation++) {
+        if (!previous || !['completed', 'failed'].includes(await previous.getState())) break;
+        const retryAttempt = createHash('sha256').update(JSON.stringify({ fallbackJobId, generation })).digest('hex').slice(0, 16);
+        const replacementId = `${attemptJobId}-${retryAttempt}`;
+        const replacement = await issueQueue.add(job.name, retryData, { jobId: replacementId, delay });
+        const persisted = await issueQueue.getJob(String(replacement.id ?? replacementId)) as Job<CommentJobData> | undefined;
+        if (await isDurableRetryOwner(persisted, job, comments)) return String(persisted?.id ?? replacementId);
+        previous = persisted;
+    }
+    throw new Error(`Unable to persist usage-limit retry comments in job ${fallbackJobId}`);
 }

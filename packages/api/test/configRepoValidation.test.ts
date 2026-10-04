@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { normalizeRepoConfig, preserveRepoCancelCiDuringFollowup, preserveRepoCancelCiWorkflows, withDefaultRepoOptions } from '../routes/configRepoValidation.js';
+import { normalizeRepoConfig, preserveRepoCancelCiDuringFollowup, preserveRepoCancelCiWorkflows, preserveRepoSettings, withDefaultRepoOptions } from '../routes/configRepoValidation.js';
 
 test('repository config defaults missing automatic failed-CI follow-up to false', () => {
   const normalized = normalizeRepoConfig({
@@ -238,4 +238,42 @@ test('an omitted validation workflow selection keeps the stored selection', () =
     [{ id: 'repo-1', name: 'integry/propr', enabled: true, cancelCiDuringFollowupWorkflows: [] }]
   );
   assert.deepEqual(cleared[0].cancelCiDuringFollowupWorkflows, []);
+});
+
+test('non-blocking checks are normalized, validated and kept by clients that do not know them', () => {
+  const normalized = normalizeRepoConfig({
+    id: 'repo-1', name: 'integry/propr', enabled: true,
+    nonBlockingChecks: ['  Validate unsigned * package ', '', 'validate unsigned * package', 'Packaged Connect*'],
+  });
+  assert.equal(normalized.ok, true);
+  if (normalized.ok) assert.deepEqual(normalized.value.nonBlockingChecks, ['Validate unsigned * package', 'Packaged Connect*']);
+
+  for (const nonBlockingChecks of ['Packaged Connect*', [42], ['*'], ['***'], ['a'.repeat(256)], Array.from({ length: 51 }, (_, index) => `check-${index}`)]) {
+    const rejected = normalizeRepoConfig({ id: 'repo-1', name: 'integry/propr', enabled: true, nonBlockingChecks });
+    assert.equal(rejected.ok, false, JSON.stringify(nonBlockingChecks).slice(0, 40));
+    if (!rejected.ok) assert.match(rejected.error, /nonBlockingChecks/);
+  }
+
+  assert.deepEqual(withDefaultRepoOptions({ id: 'repo-1', name: 'integry/propr', enabled: true }).nonBlockingChecks, []);
+  const previous = [{ id: 'repo-1', name: 'integry/propr', enabled: true, nonBlockingChecks: ['Packaged Connect*'] }];
+  const incoming = [{ id: 'repo-1', name: 'integry/propr', enabled: true }];
+  const saved = normalizeRepoConfig(incoming[0]);
+  assert.equal(saved.ok, true);
+  if (!saved.ok) return;
+  assert.deepEqual(preserveRepoSettings(previous, [saved.value], incoming)[0].nonBlockingChecks, ['Packaged Connect*']);
+  const cleared = [{ ...incoming[0], nonBlockingChecks: [] }];
+  const clearedValue = normalizeRepoConfig(cleared[0]);
+  if (clearedValue.ok) assert.deepEqual(preserveRepoSettings(previous, [clearedValue.value], cleared)[0].nonBlockingChecks, []);
+});
+
+
+test('context repository names use the launch identity limits', () => {
+  for (const name of [`${'a'.repeat(101)}/repo`, `owner/${'a'.repeat(101)}`, 'owner/.', 'owner/..', 'owner/repo/extra']) {
+    const result = normalizeRepoConfig({ name: 'owner/task', enabled: true, contextRepositories: [name] });
+    assert.equal(result.ok, false, name);
+  }
+  for (const name of [`${'a'.repeat(100)}/${'b'.repeat(100)}`, 'Owner_Name/repo.name-1']) {
+    const result = normalizeRepoConfig({ name: 'owner/task', enabled: true, contextRepositories: [name] });
+    assert.equal(result.ok, true, name);
+  }
 });
