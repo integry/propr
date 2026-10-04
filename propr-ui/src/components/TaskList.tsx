@@ -380,8 +380,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     );
   }
 
-  // Main Tasks page: anchored header, and the footer docked under the last row
-  // rather than pinned to the bottom of the viewport, so a short page leaves no gap.
+  // Main Tasks page: full-height flex layout with anchored header/footer
   return (
     <>
       {/* Anchored Header - compact on mobile */}
@@ -399,22 +398,22 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         ) : (
           <TaskTableContent {...tableContentProps} />
         )}
-
-        {/* Footer, directly under the last row */}
-        {visibleTasks.length > 0 && totalPages > 1 && (
-          <div className="mt-4 pb-8">
-            <Pagination
-              hideFilters={false}
-              totalTasks={totalTasks}
-              tasksPerPage={tasksPerPage}
-              currentPage={currentPage}
-              setCurrentPage={setCurrentPage}
-              groupCount={visibleGroupedTasks.length}
-              groupNoun={groupNoun}
-            />
-          </div>
-        )}
       </div>
+
+      {/* Anchored Footer, pinned to the bottom like the other sections */}
+      {visibleTasks.length > 0 && totalPages > 1 && (
+        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200" data-testid="task-list-footer">
+          <Pagination
+            hideFilters={false}
+            totalTasks={totalTasks}
+            tasksPerPage={tasksPerPage}
+            currentPage={currentPage}
+            setCurrentPage={setCurrentPage}
+            groupCount={visibleGroupedTasks.length}
+            groupNoun={groupNoun}
+          />
+        </div>
+      )}
     </>
   );
 };

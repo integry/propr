@@ -199,14 +199,13 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       expect(clamp.lines).toBe(width === 1920 ? 1 : 2);
       if (width === 1920) expect(clamp.clipped).toBe(false);
       await expect(longTitle).toHaveAttribute('title', 'Give implementation runs and direct goals a read-only GitHub token');
-      // The footer docks under the last row instead of the bottom of the viewport.
+      // The footer is pinned to the bottom of the list pane, like the other sections' footers.
       const footerGap = await page.evaluate(() => {
-        const rows = [...document.querySelectorAll('[role="table"] [data-testid="task-row"]')];
-        const footer = document.querySelector('[data-testid="pagination-summary"]')!;
-        return footer.getBoundingClientRect().top - rows[rows.length - 1].getBoundingClientRect().bottom;
+        const footer = document.querySelector('[data-testid="task-list-footer"]')!.getBoundingClientRect();
+        const pane = document.querySelector('[data-testid="task-split-list"]')!.getBoundingClientRect();
+        return Math.round(pane.bottom - footer.bottom);
       });
-      expect(footerGap).toBeGreaterThanOrEqual(0);
-      expect(footerGap).toBeLessThanOrEqual(32);
+      expect(footerGap).toBe(0);
       if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-${width}`);
 
       // The rollup opens in place, never navigates, and a mouse click leaves no focus frame behind.
