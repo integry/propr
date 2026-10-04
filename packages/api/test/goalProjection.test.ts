@@ -5,6 +5,7 @@ import type { RedisClientType } from 'redis';
 import { appendGoalAttachments, GOAL_ATTACHMENT_SECTION_HEADING } from '../services/goalAttachmentService.js';
 import { serializeGoal, type GoalProjectionRow } from '../services/goalProjection.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
+import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
 
 after(async () => {
   const { closeConnection } = await import('@propr/core');
@@ -22,7 +23,8 @@ test('goal projection redacts nested failure, checkpoint, and provider live-summ
       table.text('state');
       table.text('timestamp');
     });
-    await database.schema.createTable('goal_inputs', table => {
+    await createGoalBlockers(database);
+  await database.schema.createTable('goal_inputs', table => {
       table.increments('sequence');
       table.text('input_id');
       table.text('goal_id');
@@ -142,6 +144,7 @@ async function inputProjectionDatabase() {
     table.text('state');
     table.text('timestamp');
   });
+  await createGoalBlockers(database);
   await database.schema.createTable('goal_inputs', table => {
     table.increments('sequence');
     table.text('input_id');

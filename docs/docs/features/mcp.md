@@ -23,7 +23,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Current work and blockers | `get_current_activity` |
 | Tasks joined to their pull request's head, review, checks and ultrafix state | `get_work_overview` |
 | Finished work in a recent window | `get_recent_activity` (up to seven days) |
-| Goal progress and corrections | `get_goal`, `list_goal_inputs` |
+| Goal progress and corrections | `get_goal`, `list_goal_inputs`, `list_goal_attention` |
 | Tasks or goals by lifecycle | `list_tasks`, `list_goals` with `state` and optional `repository` |
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |

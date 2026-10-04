@@ -7,6 +7,7 @@ import type {
     GoalControlSnapshot,
 } from '../types.js';
 import { AppServerConnection, asRecord, type RpcMessage } from './codexAppServerConnection.js';
+import { CodexProviderRequests } from './codexAppServerBlockers.js';
 
 export const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -348,11 +349,13 @@ async function observeActiveTurnWithThread(
     let completed: RpcMessage | null = null;
     const summaryStart = connection.agentMessageCursor;
     const completion = connection.waitForTurn(turnId).then(message => { completed = message; });
+    const providerRequests = new CodexProviderRequests(connection, control);
     let interrupted = false;
     while (!completed) {
         await Promise.race([completion, new Promise(resolve => setTimeout(resolve, 400))]);
         if (completed) break;
         await control.heartbeat();
+        await providerRequests.sync();
         const snapshot = await control.load();
         if (snapshot.desiredState !== 'running') {
             if (!interrupted) {
@@ -364,6 +367,10 @@ async function observeActiveTurnWithThread(
             continue;
         }
         for (const input of snapshot.pendingInputs) {
+            // The turn can end while earlier inputs were delivered; its
+            // questions are gone, so leave the rest for the next turn.
+            if (completed) break;
+            if (await providerRequests.answer(input, turnId)) continue;
             await connection.request('turn/steer', {
                 threadId,
                 clientUserMessageId: input.id,
@@ -373,6 +380,8 @@ async function observeActiveTurnWithThread(
             await control.markInputDelivered(input.id, turnId);
         }
     }
+    await providerRequests.sync();
+    await providerRequests.closeTurn();
     const declaration = parseGoalCheckpointDeclaration(connection.agentMessagesAfter(summaryStart).join('\n'));
     const checkpointRejectionRequest: GoalCheckpointRejection | undefined = declaration && 'rejected' in declaration ? {
         kind: 'agent',

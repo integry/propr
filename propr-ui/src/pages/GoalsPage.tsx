@@ -37,6 +37,7 @@ import { getModelDisplayName } from '../utils/modelDisplay';
 import { GoalAttachmentInput } from '../components/Goals/GoalAttachmentInput';
 import { clipboardImageFiles } from '../components/Goals/goalAttachmentUtils';
 import { mergeGoalTimeline } from '../components/Goals/goalTimeline';
+import { GoalAttentionPanel, GoalNeedsYouBadge } from '../components/Goals/GoalAttentionPanel';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
 import { useDemoMode } from '../contexts/DemoModeContext';
 
@@ -583,6 +584,7 @@ function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ ty
       <div className="min-w-0">
         <span className={queueCellLabel}>Status</span>
         <GoalState goal={goal} />
+        <GoalNeedsYouBadge attention={goal.attention} />
         {/* One neutral sub-status line: the running task and its step count never push the row taller. */}
         {(activity || (unsettled && goal.liveSummary.todos.length > 0)) && <span className="mt-1 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
           <Activity aria-hidden="true" className="h-3 w-3 flex-none text-slate-400" />
@@ -782,6 +784,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
   const { isDemoMode } = useDemoMode();
   const [goal, setGoal] = useState<Goal | null>(null);
   const [message, setMessage] = useState('');
+  const correctionRef = useRef<HTMLTextAreaElement>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -954,6 +957,15 @@ function GoalDetails({ goalId }: { goalId: string }) {
       </div>
     </header>
 
+    {goal.attention?.waitingForOperator && <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
+      <GoalAttentionPanel attention={goal.attention} canAct={canMutate} busy={busy} handlers={{
+        answer: () => correctionRef.current?.focus(),
+        resume: () => void act(() => resumeGoal(goal.id)),
+        pause: () => void act(() => pauseGoal(goal.id)),
+        cancel: () => void act(() => cancelGoal(goal.id)),
+      }} />
+    </div>}
+
     {(error || goal.failureReason || cancelling) && <div className="mx-auto max-w-7xl space-y-2 px-4 pt-4 sm:px-6 lg:px-8">
       {error && <p role="alert" className="bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {goal.failureReason && <p role="alert" className="bg-red-50 p-3 text-sm text-red-700">{goal.failureReason}</p>}
@@ -1104,7 +1116,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
           </div>
           <div className="bg-white p-2 shadow-md ring-1 ring-slate-200/70">
             <h2 id="correction-heading" className="sr-only">Send a correction</h2>
-            <textarea aria-label="Correction or follow-up" value={message} onChange={event => setMessage(event.target.value)} onPaste={event => {
+            <textarea ref={correctionRef} aria-label="Correction or follow-up" value={message} onChange={event => setMessage(event.target.value)} onPaste={event => {
               const pasted = clipboardImageFiles(event);
               if (!pasted.length) return;
               event.preventDefault();

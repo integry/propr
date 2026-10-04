@@ -11,6 +11,7 @@ import { up as addGoalCheckpointDeclarations } from '../../core/src/db/migration
 import { up as addGoalTitles } from '../../core/src/db/migrations/20260907000000_add_goal_titles.js';
 import { up as addGoalAttachments } from '../../core/src/db/migrations/20260908000000_add_goal_attachments.js';
 import { up as addGoalInputDisplayBody } from '../../core/src/db/migrations/20260923000000_add_goal_input_display_body.js';
+import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
 import { GOAL_CREATION_CONTRACT } from '@propr/shared';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
@@ -54,6 +55,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await addGoalTitles(database);
         await addGoalAttachments(database);
         await addGoalInputDisplayBody(database);
+        await createGoalBlockers(database);
         await database.schema.createTable('task_history', table => {
             table.increments('id');
             table.string('task_id');

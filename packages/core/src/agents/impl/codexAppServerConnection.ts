@@ -17,7 +17,8 @@ export function boundedCodexJsonlTail(value: string, maximum = MAX_LIVE_OUTPUT_B
 
 interface RpcError { code?: number; message?: string }
 export interface RpcMessage {
-    id?: number;
+    /** Server-initiated requests may use string ids; client request ids are always numbers. */
+    id?: number | string;
     method?: string;
     result?: Record<string, unknown>;
     error?: RpcError;
@@ -51,6 +52,8 @@ export class AppServerConnection {
     private turnWaiters = new Map<string, (message: RpcMessage) => void>();
     private completedTurns = new Map<string, RpcMessage>();
     private startedTurns: Array<{ threadId: string; turnId: string }> = [];
+    private serverRequests: RpcMessage[] = [];
+    private resolvedServerRequests: Array<number | string> = [];
     private output: LiveAgentOutput;
     private stderr = '';
     private closedError: Error | null = null;
@@ -93,6 +96,13 @@ export class AppServerConnection {
         this.output.append(`${line}\n`);
         let message: RpcMessage;
         try { message = JSON.parse(line) as RpcMessage; } catch { return; }
+        // A server-initiated request carries a method and an id of the server's
+        // own numbering, which can collide with a pending client request id.
+        if (typeof message.method === 'string' && message.id !== undefined && message.id !== null) {
+            this.serverRequests.push(message);
+            if (this.serverRequests.length > MAX_SUMMARY_PARTS) this.serverRequests.shift();
+            return;
+        }
         if (typeof message.id === 'number' && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id)!;
             clearTimeout(pending.timer);
@@ -139,8 +149,15 @@ export class AppServerConnection {
                 if (this.summaryRecords.length > MAX_SUMMARY_PARTS) this.summaryRecords.shift();
             }
         }
+        if (message.method === 'serverRequest/resolved') this.observeResolvedServerRequest(params);
         if (message.method === 'thread/tokenUsage/updated') this.tokenUsage = extractTokenUsage(params) ?? this.tokenUsage;
         if (message.method === 'model/rerouted' && typeof params.toModel === 'string') this.effectiveModel = params.toModel;
+    }
+
+    private observeResolvedServerRequest(params: Record<string, unknown>): void {
+        if (typeof params.requestId !== 'number' && typeof params.requestId !== 'string') return;
+        this.resolvedServerRequests.push(params.requestId);
+        if (this.resolvedServerRequests.length > MAX_SUMMARY_PARTS) this.resolvedServerRequests.shift();
     }
 
     private appendGoalSnapshot(method: string, result: Record<string, unknown>): void {
@@ -176,6 +193,22 @@ export class AppServerConnection {
             this.pending.set(id, { method, resolve, reject, timer });
             this.child.stdin!.write(`${JSON.stringify({ method, id, params })}\n`);
         });
+    }
+
+    /** Server-initiated requests received since the last call, oldest first. */
+    takeServerRequests(): RpcMessage[] {
+        return this.serverRequests.splice(0);
+    }
+
+    /** Ids of server requests the server reported resolved since the last call. */
+    takeResolvedServerRequests(): Array<number | string> {
+        return this.resolvedServerRequests.splice(0);
+    }
+
+    /** Answer a server-initiated request. */
+    respond(id: number | string, result: Record<string, unknown>): void {
+        if (!this.child.stdin?.writable) throw this.closedError ?? new Error('Codex App Server stdin is closed');
+        this.child.stdin.write(`${JSON.stringify({ id, result })}\n`);
     }
 
     waitForTurn(turnId: string): Promise<RpcMessage> {

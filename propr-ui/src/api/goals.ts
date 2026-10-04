@@ -1,4 +1,4 @@
-import { trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
+import { trustedPreviewMedia, type GoalAttention, type PublishedVisualPreview } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface GoalCapability {
@@ -68,6 +68,8 @@ export interface Goal {
   resultState: 'completed' | 'failed' | 'cancelled' | null;
   failureReason: string | null;
   pausePending: boolean;
+  /** What the goal needs from its operator; the same projection MCP `get_goal` and the attention listing read. */
+  attention?: GoalAttention;
   control: { requestGeneration: number; acknowledgedGeneration: number; pending: boolean };
   taskId: string;
   sessionId: string | null;
