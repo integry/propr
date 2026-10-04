@@ -101,7 +101,7 @@ export async function createPullRequestRobust(params: CreatePullRequestRobustPar
         await ensureBranchAndPush(worktreePath, branchName, baseBranch, {
             repoUrl, authToken,
             tokenRefreshFn: async () => {
-                const auth = await (octokit as unknown as { auth: (opts: { type: string }) => Promise<{ token: string }> }).auth({ type: "installation" });
+                const auth = await (octokit as unknown as { auth: (opts: { type: string; refresh: boolean }) => Promise<{ token: string }> }).auth({ type: "installation", refresh: true });
                 return auth.token;
             },
             correlationId: params.correlationId || 'unknown'

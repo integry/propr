@@ -49,6 +49,7 @@ import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goa
 import { queryTaskSummaries } from './taskListing.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 import { resolveUltrafixGoal, ultrafixGoalSchema } from './ultrafix.js';
+import { addImprovementTools, expireStaleImprovements, type RepoImprovementsToolServices } from './toolsImprovements.js';
 
 export { applyTaskVisibility } from './taskListing.js';
 
@@ -92,7 +93,7 @@ export interface McpTool {
   target?: { table: string; column: string; arg: string; owner?: string; optional?: boolean };
   run: (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -182,6 +183,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addWorkOverviewTools(tools, deps, listScope);
   addDocsTools(tools, deps);
   addVisualPreviewTools(tools, deps);
+  addImprovementTools(tools, deps);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
@@ -327,8 +329,9 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     }
   };
   tools.push({ name: 'get_operation', description: 'Read a durable mutation receipt and honest lifecycle. "accepted" means the request was recorded and handed to the backend; "running" means execution was observed; the loop/receipt is only "completed" when the backend reached a terminal success state. Poll no faster than retryAfterSeconds.', scope: 'read', readOnly: true, schema: z.object({ operationId: z.uuid() }).strict(), run: async ({ principal, args }) => {
-    const row = await operations.get(principal, args.operationId);
+    let row = await operations.get(principal, args.operationId);
     await authorizeOperation(row, principal);
+    if (await expireStaleImprovements(operations, row)) row = await operations.get(principal, row.id);
     const receipt = operations.project(row);
     const result = operationResult(row);
     const continuation = result.continuation && typeof result.continuation === 'object' && !Array.isArray(result.continuation)
