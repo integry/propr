@@ -341,8 +341,10 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         await db('task_history').insert({ task_id: fixTaskId, state: 'completed' });
         const fixed = await call('get_operation', { operationId: fix.operationId });
         assert.equal(fixed.state, 'completed'); assert.equal(fixed.result.currentHead, head); assert.equal(fixed.result.continuation.taskId, fixTaskId);
+        // A moved head no longer blocks the fix by default; a caller-pinned stale head still does.
+        const pinnedStale = await call('fix_review_findings', { ...pr, reviewCommentId, findingIds: ['F1'] }, true);
+        assert.equal(pinnedStale.state, 'failed'); assert.equal(pinnedStale.result.error.code, 'STALE_HEAD');
         pr.expectedHead = head;
-        assert.equal((await call('fix_review_findings', { ...pr, reviewCommentId, findingIds: ['F1'] }, true)).state, 'failed');
         const ultrafix = await call('run_ultrafix', pr, true); assert.equal(ultrafix.state, 'posted');
         const loopTask = `ultrafix-start-${modern}`, workEpoch = modern ? 1 : 2;
         await pendingTask(loopTask, ultrafix.result.commentId, modern ? 'review' : 'fix', workEpoch);

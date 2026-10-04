@@ -24,7 +24,7 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Publish GitHub issues | `publish_plan`; publication does not start implementation. A recoverable partial publication stays inspectable and requires a fresh receipt with `resume: true`, which adopts marked issues before creating missing ones |
 | Selected issues, model, epic, bounded ultrafix and explicit auto-merge | `implement_plan`: epics default to sequential selected issues in publication order; `epicExecution: "parallel"` restores fan-out; `epicAdvanceOn: "merged"` (default) or `"terminal"` controls advancement. Sequential mode requires one model. |
 | Plan scheduling | `pause_plan` holds the next queued issue; `resume_plan` starts the held queue head. `get_plan.epicQueue` and `get_operation.targetState.epicQueue` expose issues, cursor, head, status, advanceOn and blockedReason; closed/failed heads block merged-only queues until fixed and merged. Receipts remain accepted until queue completion. |
-| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `list_goal_inputs`, `get_agent_activity`, `send_goal_input`; `list_goals` takes an optional `repository` and a `state` filter (`active`/`completed`/`failed`/`all`), `get_goal` adds newest narration, task progress, checkpoint state, `pendingInput` and the pull requests the goal produced, and `send_goal_input` takes a `kind` (`instruction` or `question`) that distinguishes the request without changing the single durable goal input this backend persists |
+| Native goal capabilities/start/read/input | `get_goal_capabilities`, `create_goal`, `list_goals`, `get_goal`, `list_goal_inputs`, `list_goal_attention`, `get_agent_activity`, `send_goal_input`; `list_goals` takes an optional `repository` and a `state` filter (`active`/`completed`/`failed`/`all`), `get_goal` adds newest narration, task progress, checkpoint state, `pendingInput`, the open blockers in `goal.attention` and the pull requests the goal produced, `list_goal_attention` lists only goals waiting on the operator (repository-filtered and bounded), and `send_goal_input` takes a `kind` (`instruction` or `question`) that distinguishes the request without changing the single durable goal input this backend persists |
 | Goal controls/model changes | `pause_goal`, `resume_goal`, `cancel_goal`, `set_goal_model` |
 | Start one-off work through a new GitHub issue | `create_task`, `get_task_submission`, `list_task_submissions`, `retry_task_submission`; ordinary issue execution without a plan or goal. Submission progress distinguishes issue creation, queueing, running and terminal task/PR state. `create_task` takes the same bounded `runUltrafix`/`ultrafixGoal`/`ultrafixMaxCycles` and `autoMerge` options as `implement_plan`, applied as the shared `ultrafix` and `auto-merge` issue labels |
 | Task progress, narrated agent activity, history and bounded execution logs | `list_tasks`, `get_task`, `get_agent_activity`, `get_task_events`, `get_task_logs`; `list_tasks` takes an optional `repository` and the same `state` filter, and `get_task` adds recent events, newest narration, execution timing, `changesSummary` counts and its linked pull request |
@@ -174,7 +174,8 @@ adopts it.
 `get_pull_request_discussion` pages GitHub issue comments (maximum 20 per page),
 returns 4096-character body chunks and parsed F# findings and S# suggestions
 (`currentFindingIds` and `currentSuggestionIds` honor the worker’s seven-day age
-limit, known head and consumption state), and supports exact
+limit, known head and consumption state; `selectableFindingIds` and
+`selectableSuggestionIds` drop the head condition, as `/fix` does), and supports exact
 comment/task lookup. A comment embedding GitHub user attachments lists them under
 `attachments` (`index`, `attachmentId`, `type`, untrusted `alt`, `fetchable`);
 `get_comment_attachment` returns the image itself. New reviews persist reviewed head and task identity in the
@@ -182,7 +183,13 @@ existing review marker; legacy reviews explicitly report an unknown head.
 `fix_review_findings` requires `reviewCommentId` and at least one identifier
 across `findingIds` (merge blockers) and `suggestionIds` (non-blocking
 follow-ups), which may be mixed freely; it rejects consumed, unknown, malformed
-or mismatched identifiers by name and rejects known stale heads. A suggestion is
+or mismatched identifiers by name. A review of an older head is re-anchored onto
+the current head rather than rejected: records whose cited files were all
+deleted since the review, with no surviving file gaining lines the code could
+have moved into, are reported in `skipped` and left out, the rest are
+posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
+report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
+on a mismatch. A suggestion is
 in fix scope only because it was named, and naming one never relaxes a merge
 blocker. Comment content remains untrusted data.
 

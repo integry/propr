@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { GoalAttention } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
 import { ApiError, NetworkError, TimeoutError } from "./errors.js";
 
@@ -93,6 +94,27 @@ export interface Goal {
   pausedMs: number;
   activeMs: number;
   inputs?: GoalInput[];
+  /** Open blockers from the shared projection; absent on servers that predate it. */
+  attention?: GoalAttention;
+}
+
+/** Goals waiting on their operator, from the shared attention projection. */
+export interface GoalAttentionEntry {
+  goalId: string;
+  repository: string;
+  title: string | null;
+  taskId: string | null;
+  desiredState: string | null;
+  waitingForOperator: boolean;
+  reason: GoalAttention["reason"];
+  blockers: GoalAttention["blockers"];
+}
+
+export interface GoalAttentionPage {
+  goals: GoalAttentionEntry[];
+  offset: number;
+  limit: number;
+  nextOffset: number | null;
 }
 
 /** Shared detail projection (also returned by MCP `get_goal`). */
@@ -327,6 +349,24 @@ export async function listGoals(
     offset: response.data.offset ?? offset,
     limit: response.data.limit ?? limit,
     // Servers predating pagination ignore offset/limit; never loop on them.
+    nextOffset: response.data.nextOffset ?? null,
+  };
+}
+
+export async function listGoalAttention(
+  query: { repository?: string; offset?: number; limit?: number } = {},
+  options: GoalApiOptions = {},
+): Promise<GoalAttentionPage> {
+  const client = await resolveClient(options);
+  const offset = query.offset ?? 0;
+  const limit = query.limit ?? 20;
+  const response = await client.get<Partial<GoalAttentionPage>>("/api/goals/attention", {
+    params: { repository: query.repository, offset, limit },
+  });
+  return {
+    goals: response.data.goals ?? [],
+    offset: response.data.offset ?? offset,
+    limit: response.data.limit ?? limit,
     nextOffset: response.data.nextOffset ?? null,
   };
 }

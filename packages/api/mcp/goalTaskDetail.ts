@@ -1,6 +1,8 @@
 import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
+import { isGoalPausedAwaitingOperator, type GoalAttention } from '@propr/shared';
 import { stripGoalAttachmentSection } from '../services/goalAttachmentService.js';
+import { goalAttention, whereGoalPausedAwaitingOperator } from '../services/goalAttention.js';
 import { orderByNewest } from './activityDigest.js';
 import { getAgentActivity } from './agentActivity.js';
 import { compactText, summarizeTask } from './listSummaries.js';
@@ -37,13 +39,17 @@ export interface GoalDetailRow {
   last_checkpoint_commit_sha: string | null;
   checkpoint_count: number | null;
   checkpoint_error: string | null;
+  agent_type?: string | null;
+  run_generation?: number | null;
+  run_claim?: string | null;
+  session_id?: string | null;
 }
 
 export const GOAL_DETAIL_COLUMNS = [
   'goal_id', 'owner_id', 'repository', 'current_task_id', 'desired_state', 'result_state',
   'pause_confirmed_at', 'resume_requested', 'final_pr_number', 'started_at', 'created_at', 'completed_at',
   'checkpoint_interval_minutes', 'last_checkpoint_at', 'last_checkpoint_commit_sha', 'checkpoint_count',
-  'checkpoint_error',
+  'checkpoint_error', 'agent_type', 'run_generation', 'run_claim', 'session_id',
 ];
 
 function timestampMs(value: unknown): number | null {
@@ -151,34 +157,33 @@ function goalCheckpoint(goal: GoalDetailRow): JsonObject | null {
 }
 
 /**
- * A confirmed pause without a queued resume is the only durable "your turn" signal. `get_goal` and
- * the activity digest both decide it here, so they cannot disagree about a goal that is resuming.
+ * A confirmed pause without a queued resume. It remains one supported attention reason; provider
+ * questions and approvals are the others, and `projectGoalAttention` decides all of them.
  */
 export function isAwaitingOperator(goal: Pick<GoalDetailRow, 'result_state' | 'desired_state' | 'pause_confirmed_at' | 'resume_requested'>): boolean {
-  return !goal.result_state && goal.desired_state === 'paused' && Boolean(goal.pause_confirmed_at) && !goal.resume_requested;
+  return isGoalPausedAwaitingOperator(goal);
 }
 
 /** `isAwaitingOperator` as a query predicate over the `goals` table. */
 export function whereAwaitingOperator(builder: Knex.QueryBuilder): Knex.QueryBuilder {
-  return builder.whereNull('result_state').where('desired_state', 'paused').whereNotNull('pause_confirmed_at')
-    .where(resume => resume.whereNull('resume_requested').orWhere('resume_requested', false));
+  return whereGoalPausedAwaitingOperator(builder);
 }
 
 /**
  * Whether the goal is persisted as blocked on the operator, and what it is blocked on. Queued but
- * undelivered operator corrections are reported alongside it so a second correction is not sent blindly.
+ * undelivered operator corrections are reported alongside it so a second correction is not sent
+ * blindly. `waitingForOperator` and `reason` come from the same projection as `goal.attention`.
  */
-async function pendingInput(db: Knex, goal: GoalDetailRow): Promise<JsonObject> {
+async function pendingInput(db: Knex, goal: GoalDetailRow, attention: GoalAttention): Promise<JsonObject> {
   const [undelivered] = await db('goal_inputs')
     .where({ goal_id: goal.goal_id, owner_id: goal.owner_id, kind: 'input', state: 'pending' })
     .count({ count: '*' });
   const latest = await db('goal_inputs')
     .where({ goal_id: goal.goal_id, owner_id: goal.owner_id, kind: 'input' })
     .orderBy('sequence', 'desc').first('created_at', 'delivered_at');
-  const waiting = isAwaitingOperator(goal);
   return {
-    waitingForOperator: waiting,
-    reason: waiting ? 'paused_awaiting_resume_or_input' : null,
+    waitingForOperator: attention.waitingForOperator,
+    reason: attention.reason,
     undeliveredInputs: Number(undelivered?.count ?? 0),
     lastInputAt: latest?.created_at ?? null,
     lastInputDeliveredAt: latest?.delivered_at ?? null,
@@ -213,6 +218,7 @@ export async function goalDetail(
     taskCounts(deps.db, goal), recentTerminalTransitions(deps.db, goal)]);
   const pullRequests = pullRequestReferences(goal, rows);
   await markMerged(goal.repository, pullRequests, { number: 'number', state: 'state' });
+  const attention = await goalAttention(deps.db, goal.owner_id, goal);
   return {
     currentActivity: await currentActivity(deps, { repository: goal.repository, goalId: goal.goal_id }, goal.owner_id),
     progress: {
@@ -222,7 +228,9 @@ export async function goalDetail(
       elapsedSeconds: elapsedSeconds(goal.started_at ?? goal.created_at, goal.completed_at, now),
       checkpoint: goalCheckpoint(goal),
     },
-    pendingInput: await pendingInput(deps.db, goal),
+    // The blockers themselves ride on the goal projection (`goal.attention`); this summary is
+    // derived from the same projection so the two cannot disagree.
+    pendingInput: await pendingInput(deps.db, goal, attention),
     pullRequests,
   };
 }

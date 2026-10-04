@@ -15,10 +15,11 @@ const notificationPreferences = Object.fromEntries([
 
 const catalogAgents = [
   { id: 'claude', kind: 'direct' as const, alias: 'claude', enabled: true, supportedModels: ['claude-opus-5-5', 'claude-sonnet-5-5'] },
-  { id: 'codex', kind: 'direct' as const, alias: 'codex', enabled: true, supportedModels: ['gpt-5-codex'] },
+  { id: 'codex', kind: 'direct' as const, alias: 'codex', enabled: true, supportedModels: ['gpt-5-codex', 'gpt-6-astra'] },
 ];
 
 async function installSettingsFixture(page: Page): Promise<void> {
+  let savedSettings: Record<string, unknown> = {};
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const pathname = new URL(route.request().url()).pathname;
@@ -77,6 +78,13 @@ async function installSettingsFixture(page: Page): Promise<void> {
         badgeEnabled: true,
       },
     };
+    if (pathname === '/api/config/settings') {
+      if (route.request().method() === 'POST') {
+        savedSettings = { ...savedSettings, ...route.request().postDataJSON().settings };
+        return route.fulfill({ json: { success: true, settings: savedSettings } });
+      }
+      return route.fulfill({ json: { ...(responses[pathname] as Record<string, unknown>), ...savedSettings } });
+    }
     if (pathname in responses) return route.fulfill({ json: responses[pathname] });
     return route.fulfill({ status: 503, json: { error: 'Unavailable in settings layout fixture' } });
   });
@@ -187,4 +195,93 @@ test('fast analysis model describes the review context scout', async ({ page }) 
   }
   await page.getByRole('tab', { name: 'Automation' }).click();
   await expect(page.getByLabel('Auto-Followup Score Threshold')).toHaveCount(0);
+});
+
+test('ultrafix escalation controls retain ordered models and support direct handoff', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=automation');
+  const section = page.getByRole('region', { name: 'Ultrafix', exact: true });
+  await expect(section.getByLabel('Automatic Escalation')).not.toBeChecked();
+  for (const label of ['Add escalation model', 'Escalation Patience', 'Max Reasoning Levels per Model']) {
+    await expect(section.getByLabel(label)).toHaveCount(0);
+  }
+  const pause = section.getByLabel('Pause Between Cycles');
+  const toggle = section.getByLabel('Automatic Escalation');
+  expect(await pause.evaluate((element, nextId) => Boolean(
+    element.compareDocumentPosition(document.getElementById(nextId)!) & Node.DOCUMENT_POSITION_FOLLOWING
+  ), 'ultrafix_escalation_enabled')).toBe(true);
+  await toggle.check();
+  const models = section.getByLabel('Escalation model 1', { exact: true });
+  await section.getByLabel('Add escalation model').selectOption('codex:gpt-6-astra');
+  await section.getByLabel('Add escalation model').selectOption('claude:claude-opus-5-5');
+  await models.selectOption('codex:gpt-5-codex');
+  await expect(models).toHaveValue('codex:gpt-5-codex');
+  await models.selectOption('codex:gpt-6-astra');
+  await section.getByLabel('Add escalation model').selectOption('claude:claude-sonnet-5-5');
+  await section.getByRole('button', { name: 'Remove escalation model 3' }).click();
+  await expect(section.getByLabel('Escalation model 3', { exact: true })).toHaveCount(0);
+  await section.getByLabel('Escalation Patience').fill('4');
+  await section.getByLabel('Max Reasoning Levels per Model').fill('0');
+  await expect(models).toHaveValue('codex:gpt-6-astra');
+  await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
+  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  const saved = page.waitForResponse(response => {
+    const request = response.request();
+    return new URL(response.url()).pathname === '/api/config/settings'
+      && request.method() === 'POST'
+      && request.postDataJSON().settings.ultrafix_escalation_max_reasoning_levels === 0;
+  });
+  await section.getByLabel('Max Reasoning Levels per Model').blur();
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON().settings).toMatchObject({
+    ultrafix_escalation_enabled: true,
+    ultrafix_escalation_models: ['codex:gpt-6-astra', 'claude:claude-opus-5-5'],
+    ultrafix_escalation_patience: 4,
+    ultrafix_escalation_max_reasoning_levels: 0,
+  });
+  await expect(page.getByRole('status').filter({ hasText: 'Settings auto-saved' })).toBeVisible();
+  await page.reload();
+  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(models).toHaveValue('codex:gpt-6-astra');
+  await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
+  await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
+  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const boxes = await Promise.all([
+      models.boundingBox(),
+      section.getByLabel('Escalation model 2', { exact: true }).boundingBox(),
+      section.getByLabel('Add escalation model').boundingBox(),
+    ]);
+    for (const box of boxes) {
+      expect(box).not.toBeNull();
+      expect(Math.abs(box!.x - boxes[0]!.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(box!.width - boxes[0]!.width)).toBeLessThanOrEqual(1);
+    }
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth - document.scrollingElement!.clientWidth))
+      .toBeLessThanOrEqual(1);
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await mkdir(path.resolve('../.propr/previews'), { recursive: true });
+      if (width === 1280) await page.setViewportSize({ width, height: 1400 });
+      const preview = width === 390
+        ? section.locator('label').filter({ hasText: 'Escalation Models (in order)' }).locator('..')
+        : section;
+      await preview.screenshot({ path: `../.propr/previews/ultrafix-escalation-${width}.png`, animations: 'disabled' });
+    }
+  }
+  await toggle.uncheck();
+  for (const label of ['Escalation model 1', 'Add escalation model', 'Escalation Patience', 'Max Reasoning Levels per Model']) {
+    await expect(section.getByLabel(label, { exact: true })).toHaveCount(0);
+  }
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await section.screenshot({ path: '../.propr/previews/ultrafix-escalation-disabled.png', animations: 'disabled' });
+  }
+  await toggle.check();
+  await expect(models).toHaveValue('codex:gpt-6-astra');
+  await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
+  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
 });

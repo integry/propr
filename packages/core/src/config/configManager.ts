@@ -353,6 +353,8 @@ export async function hasValidTriggerLabel(labels: Array<{ name: string } | stri
 export {
     loadPrReviewModel,
     savePrReviewModel,
+    loadUltrafixEscalationSettings,
+    type UltrafixEscalationSettings,
     loadUltrafixRatingGoal,
     saveUltrafixRatingGoal,
     loadUltrafixMaxCycles,

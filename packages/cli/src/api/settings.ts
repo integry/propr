@@ -113,6 +113,10 @@ export interface SystemSettings {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled: boolean;
+  ultrafix_escalation_models: string[];
+  ultrafix_escalation_patience: number;
+  ultrafix_escalation_max_reasoning_levels: number;
   ultrafix_rating_goal: number;
 
   /**
@@ -240,6 +244,10 @@ export interface UpdateSettingsOptions {
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
+  ultrafix_escalation_enabled?: boolean;
+  ultrafix_escalation_models?: string[];
+  ultrafix_escalation_patience?: number;
+  ultrafix_escalation_max_reasoning_levels?: number;
   ultrafix_rating_goal?: number;
 
   /**
@@ -299,6 +307,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "pr_review_context_model",
   "pr_review_max_context_tokens",
   "pr_review_context_budget_percent",
+  "ultrafix_escalation_enabled",
+  "ultrafix_escalation_models",
+  "ultrafix_escalation_patience",
+  "ultrafix_escalation_max_reasoning_levels",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -352,6 +364,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_patience":
     case "ultrafix_max_cycles": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);
@@ -362,6 +375,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_max_reasoning_levels":
     case "ultrafix_pause_seconds": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);
@@ -386,6 +400,14 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "ultrafix_escalation_models": {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed) || parsed.some(m => typeof m !== 'string' || !m.trim())) {
+        throw new Error('Escalation models must be a JSON array of nonempty model names');
+      }
+      return parsed.map(m => m.trim());
+    }
+    case "ultrafix_escalation_enabled":
     case "usage_tips_enabled":
     case "dashboard_summary_enabled":
     case "auto_resolve_merge_conflicts":
