@@ -232,6 +232,7 @@ const modules: Record<string, Record<string, unknown>> = {
     repositoryWorkflow: {
         prepareRepositoryWorkflow: noOp,
         withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+        reconcileRepositoryWorkflowAdmission: async (workflow: unknown) => workflow,
         deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
         RepositoryWorkflowCapacityError: class extends Error {},
         resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
