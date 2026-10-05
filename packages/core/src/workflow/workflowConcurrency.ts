@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 import { getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../claude/docker/dockerExecutionOwnership.js';
 
 // One shared admission decision across workers, branches, issues and PR follow-ups.
+// Admission returns 2 when a cap governs the repository and 1 when none does.
 // Every active run participates, including repositories without a workflow file.
 // A refused caller may join the repository's waiting list (KEYS[3], scored by its
 // first refusal) so a released slot wakes the longest-waiting jobs first instead
@@ -39,6 +40,7 @@ redis.call('ZADD', KEYS[1], now + 120, ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 redis.call('EXPIRE', KEYS[1], 180)
 redis.call('EXPIRE', KEYS[2], 180)
+if limit > 0 then return 2 end
 return 1
 `;
 
@@ -83,13 +85,30 @@ export async function forgetRepositoryWorkflowWaiter(redis: Redis, repository: s
 const CONFIRMED_LEASE_MS = 119_000;
 const STOP_MARGIN_MS = 30_000;
 
+// Renews a slot, returning 2 when a cap is active, 1 when none is, and 0 when
+// ownership is lost. ARGV[2] is the run's own cap. A run whose member vanished
+// (eviction, a Redis restart without persistence) takes it again only when no
+// cap is active: with no cap there is nothing another run could have exceeded.
 export const RENEW_WORKFLOW_SLOT = `
 local now = tonumber(redis.call('TIME')[1])
+local own = tonumber(ARGV[2] or '0') or 0
 local deadline = tonumber(redis.call('ZSCORE', KEYS[1], ARGV[1]))
-if not deadline or deadline <= now then return 0 end
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now)
+for _, member in ipairs(expired) do redis.call('HDEL', KEYS[2], member) end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+local limit = own
+for _, value in ipairs(redis.call('HVALS', KEYS[2])) do
+    local other = tonumber(value)
+    if other > 0 and (limit == 0 or other < limit) then limit = other end
+end
+if not deadline or deadline <= now then
+    if limit > 0 then return 0 end
+    redis.call('HSET', KEYS[2], ARGV[1], own)
+end
 redis.call('ZADD', KEYS[1], now + 120, ARGV[1])
 redis.call('EXPIRE', KEYS[1], 180)
 redis.call('EXPIRE', KEYS[2], 180)
+if limit > 0 then return 2 end
 return 1
 `;
 
@@ -141,22 +160,28 @@ export async function withRepositoryWorkflowSlot<T>(options: {
     await options.checkCancelled();
     signal.throwIfAborted();
     const requestedAt = performance.now();
-    const acquired = await options.redis.eval(ACQUIRE_WORKFLOW_SLOT, 4, ...keys, token, options.limit ?? 0, options.waiter ?? '');
-    if (acquired !== 1) {
+    const ownLimit = options.limit ?? 0;
+    const acquired = await options.redis.eval(ACQUIRE_WORKFLOW_SLOT, 4, ...keys, token, ownLimit, options.waiter ?? '');
+    if (acquired !== 1 && acquired !== 2) {
         signal.throwIfAborted();
         await options.checkCancelled();
         signal.throwIfAborted();
         throw new RepositoryWorkflowCapacityError();
     }
     confirmedDeadline = requestedAt + CONFIRMED_LEASE_MS;
+    // Lease deadlines protect an active cap. While none is active, a Redis stall
+    // or lost key must not stop an expensive run that no policy limits; the next
+    // successful renewal re-arms them if another run has since added a cap.
+    let capped = ownLimit > 0 || acquired === 2;
     const loseOwnership = () => controller.abort(new RepositoryWorkflowLeaseLostError());
     const checkOwnership = () => {
-        if (performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();
+        if (capped && performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();
         signal.throwIfAborted();
     };
     let watchdog: ReturnType<typeof setTimeout>;
     const armWatchdog = () => {
         clearTimeout(watchdog);
+        if (!capped) return;
         // Independent of Redis: a hung renewal must still stop the container,
         // leaving time for teardown before another worker can reclaim its slot.
         watchdog = setTimeout(loseOwnership, Math.max(0, confirmedDeadline - STOP_MARGIN_MS - performance.now()));
@@ -171,11 +196,12 @@ export async function withRepositoryWorkflowSlot<T>(options: {
         void (async () => {
             checkOwnership();
             const requestedAt = performance.now();
-            const renewed = await options.redis.eval(RENEW_WORKFLOW_SLOT, 2, key, limitsKey, token);
+            const renewed = await options.redis.eval(RENEW_WORKFLOW_SLOT, 2, key, limitsKey, token, ownLimit);
             if (finished || signal.aborted) return;
             // A late reply cannot revive ownership after our stop deadline.
             checkOwnership();
-            if (renewed !== 1) { loseOwnership(); return; }
+            if (renewed !== 1 && renewed !== 2) { loseOwnership(); return; }
+            capped = ownLimit > 0 || renewed === 2;
             confirmedDeadline = requestedAt + CONFIRMED_LEASE_MS;
             armWatchdog();
         })().catch(options.onLeaseError).finally(() => { renewing = false; });
@@ -194,7 +220,7 @@ export async function withRepositoryWorkflowSlot<T>(options: {
     })();
     const releaseAfterExecution = async () => {
         // Ownership must still have covered the execution that just ended.
-        if (!released && performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();
+        if (!released && capped && performance.now() >= confirmedDeadline - STOP_MARGIN_MS) loseOwnership();
         await release();
         signal.throwIfAborted();
     };

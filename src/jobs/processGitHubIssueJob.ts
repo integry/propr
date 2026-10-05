@@ -23,7 +23,7 @@ import type { GitHubToken, CurrentIssueData, JobContext } from './issueJob/index
 
 import {
   prepareRepositoryWorkflow, resolveRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
-  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError,
+  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError, nonRetryableRepositoryWorkflowError,
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 
@@ -122,6 +122,13 @@ async function cleanupUserStoppedIssue(
   }
 }
 
+function prepareIssueRepositoryWorkflow(octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>, issueRef: IssueJobData) {
+  return prepareRepositoryWorkflow({
+    octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch: issueRef.baseBranch, correlationId: issueRef.correlationId,
+    defaultBranch: typeof issueRef.repoPayload?.defaultBranch === 'string' ? issueRef.repoPayload.defaultBranch : undefined,
+  });
+}
+
 export function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   return deferRepositoryWorkflowJob(job, () => processAdmittedIssueJob(job));
 }
@@ -144,19 +151,20 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
   }
   const { octokit } = prepared;
 
+  let policyReadThisAttempt = false;
   try {
-    context.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, issueRef.baseBranch, () => prepareRepositoryWorkflow({
-      octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch: issueRef.baseBranch,
-      defaultBranch: typeof issueRef.repoPayload?.defaultBranch === 'string' ? issueRef.repoPayload.defaultBranch : undefined,
-    }));
+    context.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, issueRef.baseBranch, () => {
+      policyReadThisAttempt = true;
+      return prepareIssueRepositoryWorkflow(octokit, issueRef);
+    });
   } catch (error) {
     await handleGenericError(error as Error, job, issueRef, {
       octokit, claudeResult: null, worktreeInfo: undefined, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG,
     });
-    throw error;
+    throw nonRetryableRepositoryWorkflowError(error);
   }
   try {
-    return await processIssueWithAdmission(job, context, octokit);
+    return await processIssueWithAdmission(job, context, octokit, !policyReadThisAttempt);
   } catch (error) {
     if (error instanceof RepositoryWorkflowCapacityError) {
       await persistRepositoryWorkflowDeferral({
@@ -204,11 +212,15 @@ async function handleIssueProcessingError(error: unknown, progress: {
     if (isUserCancelled) {
       return { status: 'cancelled', reason: 'user_request' };
     }
-    throw error;
+    throw nonRetryableRepositoryWorkflowError(error);
   }
 }
 
-async function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>): Promise<JobResult> {
+async function processIssueWithAdmission(
+  job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>,
+  /** The policy is a snapshot from an earlier attempt, not read from the base branch by this one. */
+  reusedWorkflowSnapshot: boolean,
+): Promise<JobResult> {
   const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
   // A withdrawn or skipped issue ends before admission, so it never holds
   // repository capacity; deferred attempts repeat these checks on re-entry.
@@ -234,6 +246,7 @@ async function processIssueWithAdmission(job: Job<IssueJobData>, context: JobCon
   }, async (): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
+    const refreshWorkflow = !!job.data.repositoryWorkflowDeferred && reusedWorkflowSnapshot;
     if (job.data.repositoryWorkflowDeferred) {
       await job.updateData({ ...job.data, repositoryWorkflowDeferred: false, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
     }
@@ -262,6 +275,9 @@ async function processIssueWithAdmission(job: Job<IssueJobData>, context: JobCon
     let commitResult: CommitResult | null = null;
 
     try {
+      // The snapshot that requested admission can be many deferrals old. Run hooks,
+      // instructions and validation from the base head the worktree now starts from.
+      if (refreshWorkflow) context.repositoryWorkflow = await prepareIssueRepositoryWorkflow(octokit, issueRef);
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
       });

@@ -4,9 +4,15 @@ import { getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOw
 import type { AgentExecutionResult } from '../agents/types.js';
 import type { ResolvedRepositoryWorkflow } from './repositoryWorkflow.js';
 import { redactSecrets } from '../utils/secretRedaction.js';
+import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
+import logger from '../utils/logger.js';
 
-/** Hook exit codes, and validation exit codes or `skipped` when the execution time budget ran out first. */
-export interface WorkflowObservation { hooks: Map<string, string>; validation: Map<number, string> }
+/**
+ * Hook exit codes, and validation exit codes, `timeout`, or `skipped` when the execution
+ * time budget ran out first. `unverified` when the wrapper could not run as root, so the
+ * agent shared its uid and could have written reports itself.
+ */
+export interface WorkflowObservation { hooks: Map<string, string>; validation: Map<number, string>; unverified?: boolean }
 
 /**
  * Collects genuine wrapper reports from raw transport stderr as it streams, so
@@ -23,7 +29,7 @@ export class WorkflowMarkerCollector {
     private readonly maxLineLength: number;
 
     constructor(marker: string, private readonly validationCount: number) {
-        this.pattern = new RegExp(`^${marker}:(?:hook:(after_create|before_run|after_run|before_remove|setup):([0-9]+)|validation:([0-9]+):([0-9]+|skipped))$`);
+        this.pattern = new RegExp(`^${marker}:(?:hook:(after_create|before_run|after_run|before_remove|setup):([0-9]+)|validation:([0-9]+):([0-9]+|skipped|timeout)|(unverified))$`);
         this.maxLineLength = marker.length + 64;
     }
 
@@ -51,7 +57,9 @@ export class WorkflowMarkerCollector {
 
     private finishLine(): void {
         const match = this.afterLineFeed && !this.overflow ? this.pattern.exec(this.line) : null;
-        if (match?.[1]) this.observation.hooks.set(match[1], match[2]);
+        // A downgrade only: no line can make an unverified observation trusted again.
+        if (match?.[5]) this.observation.unverified = true;
+        else if (match?.[1]) this.observation.hooks.set(match[1], match[2]);
         else if (match && Number(match[3]) < this.validationCount) this.observation.validation.set(Number(match[3]), match[4]);
         this.line = '';
         this.overflow = false;
@@ -59,8 +67,12 @@ export class WorkflowMarkerCollector {
     }
 }
 
-/** Scoped to one execution, including synthetic-provider retries; never process-global policy. */
-export interface RepositoryWorkflowExecutionContext { workflow: ResolvedRepositoryWorkflow; marker: string; observed?: WorkflowObservation }
+/**
+ * Scoped to one execution, including synthetic-provider retries; never process-global policy.
+ * `wrapped` records that a hook-running wrapper was built, so a transport that never
+ * captured its reports is reported as unobserved rather than as commands that did not run.
+ */
+export interface RepositoryWorkflowExecutionContext { workflow: ResolvedRepositoryWorkflow; marker: string; observed?: WorkflowObservation; wrapped?: boolean }
 export const repositoryWorkflowExecution = new AsyncLocalStorage<RepositoryWorkflowExecutionContext>();
 
 /** Read-only analysis containers `exec` the agent without hooks or validation. */
@@ -73,8 +85,17 @@ function runsWorkflowWrapper(context: RepositoryWorkflowExecutionContext | undef
     return !!context && args.some(arg => arg.includes(context.marker)) && !isReadOnlyTransport(args);
 }
 
+/** Called with the docker arguments built for this execution's wrapper. */
+export function markWorkflowWrapperBuilt(args: string[]): void {
+    const context = repositoryWorkflowExecution.getStore();
+    if (runsWorkflowWrapper(context, args)) context.wrapped = true;
+}
+
 /**
- * Collect reports only for the transport running this execution's wrapper. A
+ * Collect reports only for the transport running this execution's wrapper.
+ * Contract: every agent transport that runs a wrapper inside an execution must
+ * feed its raw container stderr here (the Docker executor does), independent of
+ * whether the agent keeps stderr in its own result logs. A
  * read-only container in the same execution never reports, so it must not
  * replace the observation of the run that actually executed hooks and validation.
  */
@@ -100,6 +121,8 @@ export async function executeWithRepositoryWorkflow(
     // Only reports collected from the transport's raw stderr are authoritative.
     // Agent result logs may include decoded JSON strings that bypass filtering.
     const observed = context.observed ?? { hooks: new Map<string, string>(), validation: new Map<number, string>() };
+    const unobserved = !!context.wrapped && !context.observed;
+    if (unobserved) logger.warn({ baseBranch: workflow.baseBranch }, 'No transport captured the repository workflow wrapper reports');
     const fatalHook = (['after_create', 'before_run'] as const).find(name => /^[1-9][0-9]*$/.test(observed.hooks.get(name) ?? ''));
     if (fatalHook) {
         result.success = false;
@@ -108,10 +131,13 @@ export async function executeWithRepositoryWorkflow(
     }
     const validation = workflow.config.validation ?? [];
     if (validation.length) {
+        const unverified = observed.unverified ? ' (unverified: container wrapper was not running as root)' : '';
         result.repositoryValidation = buildRepositoryValidationReport(validation.map((command, index) => {
             const code = observed.validation.get(index);
-            return { command, status: code === undefined ? 'Not run (execution ended before validation)' : code === 'skipped' ? 'Not run (execution time limit reached)'
-                : code === '0' ? 'Passed' : code === '124' || code === '137' ? 'Timed out' : `Failed (exit ${code})` };
+            const status = unobserved ? 'Not observed (agent transport did not capture container output)'
+                : code === undefined ? 'Not run (execution ended before validation)' : code === 'skipped' ? 'Not run (execution time limit reached)'
+                : code === '0' ? 'Passed' : code === 'timeout' ? 'Timed out' : code === '137' ? 'Killed (exit 137)' : `Failed (exit ${code})`;
+            return { command, status: `${status}${unverified}` };
         }));
     }
     return result;
@@ -153,6 +179,9 @@ export const WORKFLOW_COMMAND_OUTPUT_PREFIX = 'ProPR command output: ';
 export function stripWorkflowAgentStderrPrefix(line: string): string {
     return line.startsWith(WORKFLOW_AGENT_STDERR_PREFIX) ? line.slice(WORKFLOW_AGENT_STDERR_PREFIX.length) : line;
 }
+
+// Labelled segments plus their prefix and LF stay below the 4096-byte PIPE_BUF.
+const LABELLED_SEGMENT_BYTES = 4000;
 
 // Container startup and teardown happen inside the execution timeout too.
 const VALIDATION_DEADLINE_MARGIN_S = 30;
@@ -218,16 +247,33 @@ if [ "$current_uid" = "0" ] && ! privilege_drop_available; then
     echo "Cannot run repository workflow: unprivileged node user and su-exec are required" >&2
     exit 126
 fi
+# A non-root wrapper shares its uid with the agent, which could then write its
+# own reports to this shell's stderr; say so before the agent can run.
+if [ "$current_uid" != "0" ]; then printf '\\n%s\\n' "${marker}:unverified" >&2; fi
+# Untrusted output is labelled in segments that each fit one atomic pipe write
+# (PIPE_BUF is at least 4096 bytes). A longer write can be split by a concurrent
+# report, which would otherwise start a fresh line with unlabelled child bytes.
+label_output() {
+    LC_ALL=C /bin/sed -u -e 's/.\\{${LABELLED_SEGMENT_BYTES}\\}/&\\n/g' -e 's/\\n$//' -e "s/^/$1/" -e "s/\\n/&$1/g" \\
+        -e ':a' -e '/\\n/{' -e 'P' -e 's/^[^\\n]*\\n//' -e 'ba' -e '}'
+}
+# Commands run in the background so a stop signal is handled while they run,
+# instead of after the command ends or times out.
 run_command() {
     if [ "$current_uid" = "0" ]; then
-        su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2 &
     else
-        timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
+        timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2 &
     fi
+    command_pid=$!
+    wait "$command_pid"
+    command_exit=$?
+    command_pid=
+    return "$command_exit"
 # Child output is untrusted, even when it knows the marker from /proc.
 # Prefix every line so fragments from concurrent children cannot form a report.
 # This also covers output from surviving background children.
-} > >(/bin/sed -u 's/^/${WORKFLOW_COMMAND_OUTPUT_PREFIX}/' >&2) 2>&1
+} > >(label_output '${WORKFLOW_COMMAND_OUTPUT_PREFIX}' >&2) 2>&1
 run_hook() {
     echo "Running ProPR workflow hook: $1" >&2
     run_command "$2"
@@ -247,8 +293,15 @@ run_validation() {
         fi
         if [ "$remaining" -lt ${Math.ceil(hookTimeoutS)} ]; then limit=$remaining; fi
     fi
+    started=$SECONDS
     run_command "$2" $limit
-    printf '\\n%s\\n' "${marker}:validation:$1:$?" >&2
+    validation_exit=$?
+    # 124 and 137 are timeout(1)'s TERM and KILL results, but a command can also
+    # exit 124 itself or be killed (OOM, external KILL) before its limit.
+    case "$validation_exit" in
+        124|137) if [ $(( SECONDS - started )) -ge "\${limit:-${Math.floor(hookTimeoutS)}}" ]; then validation_exit=timeout; fi ;;
+    esac
+    printf '\\n%s\\n' "${marker}:validation:$1:$validation_exit" >&2
 }
 finish() {
     final_exit=$?
@@ -257,9 +310,15 @@ finish() {
     ${hook('before_remove')}
     exit "$final_exit"
 }
-# Bash defers traps until a foreground child exits, so the agent runs in the
-# background: a stop reaches it, and cleanup hooks run once it has exited.
+# Bash defers traps until a foreground child exits, so the agent and repository
+# commands run in the background: a stop reaches them, and cleanup hooks run once
+# they have exited. A stop during a cleanup hook ends that hook and the wrapper.
 stop_agent() {
+    if [ -n "\${command_pid:-}" ]; then
+        kill -TERM "$command_pid" 2>/dev/null
+        wait "$command_pid" 2>/dev/null
+        command_pid=
+    fi
     if [ -n "\${agent_pid:-}" ]; then
         kill -"$1" "$agent_pid" 2>/dev/null
         wait "$agent_pid" 2>/dev/null
@@ -274,7 +333,7 @@ ${hook('before_run')} || exit $?
 # Preserve the agent's stdin (an asynchronous command otherwise reads /dev/null);
 # repository commands never consume its prompt.
 agent_started=1
-"$entrypoint" "$@" <&0 2> >(/bin/sed -u 's/^/${WORKFLOW_AGENT_STDERR_PREFIX}/' >&2) &
+"$entrypoint" "$@" <&0 2> >(label_output '${WORKFLOW_AGENT_STDERR_PREFIX}' >&2) &
 agent_pid=$!
 wait "$agent_pid"
 agent_exit=$?
@@ -283,7 +342,7 @@ ${(workflow.config.validation ?? []).map((command, index) => `run_validation ${i
 exit "$agent_exit"
 `.trim();
     if (Buffer.byteLength(script, 'utf8') > WORKFLOW_WRAPPER_MAX_BYTES) {
-        throw new Error('Invalid .propr/workflow.yml: expanded hooks and validation wrapper exceeds 120 KiB; move long commands into repository scripts and invoke those scripts from the workflow');
+        throw new RepositoryWorkflowPolicyError('Invalid .propr/workflow.yml: expanded hooks and validation wrapper exceeds 120 KiB; move long commands into repository scripts and invoke those scripts from the workflow');
     }
     return script;
 }

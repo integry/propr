@@ -1,6 +1,6 @@
 import { formatTaskTerminalReason } from '@propr/shared';
-import { prepareRepositoryWorkflow, resolveRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
-    withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError } from './repositoryWorkflow.js';
+import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata,
+    withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -193,7 +193,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
     const octokit = state.octokit, baseBranch = state.repositoryWorkflowBaseBranch = prData!.data.base.ref;
-    const repositoryWorkflow = state.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, baseBranch, () => prepareRepositoryWorkflow({ octokit, repoOwner, repoName, baseBranch }));
+    const policy = await resolveAttemptRepositoryWorkflow(job.data, baseBranch, () => prepareRepositoryWorkflow({ octokit, repoOwner, repoName, baseBranch, correlationId }));
     const taskUrl = `${getWebUiUrl()}/tasks/${encodeURIComponent(taskId)}`;
     // A fix request with nothing selected ends before admission, so it never holds repository capacity.
     const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
@@ -213,10 +213,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
     }
     return withRepositoryWorkflowAdmission({
-        workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger, job,
+        workflow: state.repositoryWorkflow = policy.workflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger, job,
     }, async (): Promise<JobResult> => {
-        // Admission ends the wait; ordinary retries reload the base branch policy.
-        if (job.data.repositoryWorkflowDeferrals) await job.updateData({ ...job.data, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
+        // Admission ends the wait and runs the current base policy, not a snapshot that waited.
+        const repositoryWorkflow = state.repositoryWorkflow = job.data.repositoryWorkflowDeferrals ? await policy.admitted(job) : policy.workflow;
         const publication = state.publication ??= new PullRequestPublication(octokit, context, prData!.data);
         const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
         state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
@@ -457,7 +457,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         if (isUserCancelled) {
             return { status: 'cancelled', reason: 'cancelled_by_user' };
         }
-        if (!(error instanceof UsageLimitError)) throw error;
+        if (!(error instanceof UsageLimitError)) throw nonRetryableRepositoryWorkflowError(error);
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();

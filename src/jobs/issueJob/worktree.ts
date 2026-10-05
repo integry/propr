@@ -12,7 +12,11 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
   const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
   const { issueRef, agentAlias, modelName, taskId, correlatedLogger, stateManager, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
-  const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
+  const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, {
+    baseBranch: issueRef.baseBranch || null, octokit, modelName,
+    // Hooks and validation come from the policy commit, so the agent starts from that same commit.
+    startRevision: context.repositoryWorkflow ? { branch: context.repositoryWorkflow.baseBranch, revision: context.repositoryWorkflow.revision } : null,
+  });
   await materializeSubmissionAttachments(issueRef, worktreeInfo.worktreePath);
   await job.updateProgress(75);
 

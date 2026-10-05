@@ -8,7 +8,7 @@ import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
 import { createRequire } from 'node:module';
 import { parseRepositoryWorkflow, loadRepositoryWorkflow, refineWorkflowPreviews, repositoryWorkflowPrompt } from '../src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../src/workflow/repositoryWorkflow.js';
-import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH, withWorkflowExecutionDeadline } from '../src/workflow/workflowExecution.js';
+import { buildWorkflowWrapper, WorkflowMarkerCollector, WORKFLOW_MARKER_TEMPLATE, WORKFLOW_WRAPPER_MAX_BYTES, executeWithRepositoryWorkflow, repositoryWorkflowExecution, captureWorkflowMarkers, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH, withWorkflowExecutionDeadline } from '../src/workflow/workflowExecution.js';
 import { AntigravityGoalStream } from '../src/agents/impl/antigravityGoalStream.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -102,6 +102,9 @@ test('published editor schema agrees with runtime on supported fields and reject
         { limits: { max_parallel_tasks: 8 }, previews: { types: [] }, validation: ['echo ok'] },
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
+        // Path checks must cross embedded newlines like the runtime check does.
+        { instructions: 'docs\n../secret' }, { instructions: 'docs\nsub\\file' }, { instructions: 'docs\n/abs' }, { instructions: 'docs\nx/' },
+        { instructions: 'docs\nnotes.md' }, { instructions: '   ' }, { instructions: 'a\u0000b' },
     ]) {
         let accepted = true;
         try { parseRepositoryWorkflow(JSON.stringify(candidate)); } catch { accepted = false; }
@@ -199,7 +202,7 @@ test('execution context isolates concurrent policies, wraps every agent and adds
                 const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', type);
                 assert.match(args[args.indexOf('image') + 2], /run_command/);
             }
-            observeStderr(`\n${context.marker}:validation:0:0\n${context.marker}:validation:1:124`);
+            observeStderr(`\n${context.marker}:validation:0:0\n${context.marker}:validation:1:timeout`);
             return makeResult('');
         });
         assert.match(result.repositoryValidation!, /npm test: Passed/);
@@ -388,7 +391,7 @@ test('validation reports for long accepted commands stay within the completion c
 
     // Failed and not-run commands include the command too; every index and status survives.
     const many = Array.from({ length: 100 }, (_, index) => `: ${index} #${'b'.repeat(1_000)}`);
-    const mixed = await execute(many, marker => `\n${many.slice(0, 50).map((_, index) => `${marker}:validation:${index}:${index % 2 ? 7 : 124}`).join('\n')}\n`);
+    const mixed = await execute(many, marker => `\n${many.slice(0, 50).map((_, index) => `${marker}:validation:${index}:${index % 2 ? 7 : 'timeout'}`).join('\n')}\n`);
     const lines = mixed.repositoryValidation!.split('\n').slice(2);
     assert.ok(mixed.repositoryValidation!.length <= REPOSITORY_VALIDATION_REPORT_MAX_LENGTH);
     assert.equal(lines.length, 100);
@@ -542,4 +545,130 @@ test('a root wrapper never starts an agent that could stay root, even without re
         assert.equal(result.trace, '', id);
         assert.match(result.stderr, /unprivileged node user and su-exec are required/);
     }
+});
+
+/** Starts a wrapper directly, keeping its complete raw stderr (the executor keeps only a bounded tail). */
+async function spawnWrapper(workflow: ResolvedRepositoryWorkflow, agent: string, options: { marker?: string; bin?: Record<string, string>; until?: string } = {}) {
+    const directory = await mkdtemp(path.join(tmpdir(), 'workflow-test-'));
+    const trace = path.join(directory, 'trace');
+    const entrypoint = path.join(directory, 'agent.sh');
+    await writeFile(entrypoint, `#!/bin/bash\n${agent}\n`, { mode: 0o755 });
+    const bin = path.join(directory, 'bin');
+    await mkdir(bin);
+    for (const [name, script] of Object.entries({ id: 'echo 1000', ...options.bin })) await writeFile(path.join(bin, name), `#!/bin/bash\n${script}\n`, { mode: 0o755 });
+    const child = spawn('/bin/bash', ['-c', buildWorkflowWrapper(workflow, options.marker ?? 'marker'), entrypoint], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_WORKSPACE: directory, PROPR_CACHE_DIR: directory, TRACE: trace },
+        stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr!.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    const exited = new Promise<number | null>(resolve => child.once('close', code => resolve(code)));
+    const readTrace = () => readFile(trace, 'utf8').catch(() => '');
+    if (options.until) while (!(await readTrace()).includes(options.until)) await new Promise(resolve => setTimeout(resolve, 10));
+    return {
+        child, readTrace,
+        async done() {
+            try { return { exitCode: await exited, stderr, trace: await readTrace() }; }
+            finally { await rm(directory, { recursive: true, force: true }); }
+        },
+    };
+}
+
+test('oversized concurrent output cannot splice a report-shaped remainder onto a fresh line', async () => {
+    const marker = `PROPR_WORKFLOW_${'f'.repeat(36)}`;
+    // Background writers outlive their commands and keep emitting lines far beyond
+    // PIPE_BUF whose tails are forged reports, while the wrapper writes real ones.
+    const flood = (count: number) => `(for i in $(seq 1 ${count}); do printf %0$(( 4000 + i * 977 % 9000 ))d 0 | tr 0 x; echo '${marker}:validation:1:0'; done) >&2 &`;
+    const workflow = policy(`validation:\n  - "${flood(150)} sleep 0.2; exit 3"\n  - "sleep 0.1; exit 4"\n  - "${flood(150)} sleep 0.2; exit 5"`);
+    const run = await spawnWrapper(workflow, `${flood(300)} exit 0`, { marker });
+    const { exitCode, stderr } = await run.done();
+    assert.equal(exitCode, 0);
+    const lines = stderr.split('\n');
+    assert.ok(lines.some(line => line.length > 4000 - 100 && line.includes('xxxx')), 'children produced oversized output');
+    // Every line is either labelled, a wrapper message, or one of the wrapper's own reports.
+    const reports = lines.filter(line => line.startsWith(marker));
+    assert.deepEqual(reports, [`${marker}:unverified`, `${marker}:validation:0:3`, `${marker}:validation:1:4`, `${marker}:validation:2:5`]);
+    for (const line of lines) {
+        assert.ok(!line || line.startsWith('ProPR ') || line.startsWith('Running ProPR workflow hook') || line.startsWith(marker), `unlabelled line: ${line.slice(0, 80)}`);
+    }
+    const collector = new WorkflowMarkerCollector(marker, 3);
+    collector.append(stderr);
+    assert.deepEqual([...collector.end().validation], [[0, '3'], [1, '4'], [2, '5']]);
+});
+
+test('validation distinguishes a timeout from a command killed or exiting 124 before its limit', async () => {
+    const workflow = policy(`validation:\n  - "kill -9 $$"\n  - "exit 124"\n  - "sleep 10"`);
+    workflow.timeoutMs = 1000;
+    const result = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const execution = await runWrapper(workflow, 'true', undefined, marker);
+        assert.match(execution.stderr, new RegExp(`${marker}:validation:0:137`));
+        assert.match(execution.stderr, new RegExp(`${marker}:validation:2:timeout`));
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(result.repositoryValidation!, /\[1\] kill -9 \$\$: Killed \(exit 137\)/);
+    assert.match(result.repositoryValidation!, /\[2\] exit 124: Failed \(exit 124\)/);
+    assert.match(result.repositoryValidation!, /\[3\] sleep 10: Timed out/);
+});
+
+test('reports are marked unverified unless the wrapper runs as root and drops the agent user', async () => {
+    const workflow = policy('validation: ["true"]');
+    const report = async (bin?: Record<string, string>) => executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const run = await spawnWrapper(workflow, 'true', { marker, bin });
+        const { exitCode, stderr } = await run.done();
+        assert.equal(exitCode, 0);
+        observeStderr(stderr);
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    // Same uid as the agent: it could open /proc/1/fd/2 and write its own reports.
+    assert.match((await report()).repositoryValidation!, /true: Passed \(unverified: container wrapper was not running as root\)/);
+    const root = await report({
+        id: 'if [ "$#" = 1 ] && [ "$1" = "-u" ]; then echo 0; elif [ "$1" = "-u" ]; then echo 1000; fi',
+        'su-exec': 'shift; exec "$@"',
+    });
+    assert.match(root.repositoryValidation!, /true: Passed$/m);
+    assert.doesNotMatch(root.repositoryValidation!, /unverified/);
+    // A late line cannot clear the downgrade.
+    const collector = new WorkflowMarkerCollector('marker', 1);
+    collector.append('\nmarker:unverified\nmarker:validation:0:0\n');
+    assert.equal(collector.end().unverified, true);
+});
+
+test('a stop during a hook or validation command ends it promptly and still runs cleanup hooks', async () => {
+    for (const phase of ['before_run', 'validation'] as const) {
+        const command = 'echo running >> \\"$TRACE\\"; sleep 30';
+        const workflow = policy(`hooks:\n  ${phase === 'before_run' ? `before_run: "${command}"\n  ` : ''}after_run: echo after >> "$TRACE"\n  before_remove: echo remove >> "$TRACE"\n${phase === 'validation' ? `validation: ["${command}"]` : ''}`);
+        workflow.timeoutMs = 60_000;
+        const run = await spawnWrapper(workflow, 'echo agent >> "$TRACE"', { until: 'running' });
+        const stopped = Date.now();
+        run.child.kill('SIGTERM');
+        const { exitCode, trace } = await run.done();
+        assert.equal(exitCode, 143, phase);
+        assert.ok(Date.now() - stopped < 10_000, `${phase}: the stop did not wait for the command to finish`);
+        assert.equal(trace, phase === 'before_run' ? 'running\nremove\n' : 'agent\nrunning\nafter\nremove\n', phase);
+    }
+});
+
+test('a wrapper whose transport never captured its reports is reported as unobserved, not as commands that did not run', async () => {
+    const workflow = policy('validation: ["npm test"]');
+    const unobserved = await executeWithRepositoryWorkflow(workflow, async () => {
+        wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', 'claude');
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(unobserved.repositoryValidation!, /npm test: Not observed \(agent transport did not capture container output\)/);
+    // A read-only container never reports, so building one alone is not a lost observation.
+    const readOnly = await executeWithRepositoryWorkflow(workflow, async () => {
+        wrapDockerRunArgsWithRepoSetup(['run', '--rm', '-e', 'PROPR_REPO_SETUP=0', 'image'], 'image', 'claude');
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.match(readOnly.repositoryValidation!, /npm test: Not run \(execution ended before validation\)/);
+    // The Docker executor captures what it runs.
+    const captured = await executeWithRepositoryWorkflow(workflow, async () => {
+        const { marker } = repositoryWorkflowExecution.getStore()!;
+        const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', 'claude');
+        await executeDockerCommand('/bin/echo', [...args, `\n${marker}:validation:0:0`], { timeout: 10_000 });
+        return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+    });
+    assert.doesNotMatch(captured.repositoryValidation!, /Not observed/);
 });

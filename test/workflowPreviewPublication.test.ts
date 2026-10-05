@@ -39,7 +39,7 @@ await mock.module('@propr/core', {
         loadRepositoryVisualPreviewSettings: settingsLoads,
         // Stop each run once previews are prepared and before anything is published.
         commitChanges: async () => { throw stopAfterPreviews; },
-        createWorktreeForIssue: async () => worktreeInfo,
+        createWorktreeForIssue: async (_path: string, _issue: unknown, options: unknown) => { worktreeOptions.push(options); return worktreeInfo; },
         materializeSubmissionAttachments: noOp,
         updateFileChangesFromWorktree: async () => [],
         pushBranch: noOp,
@@ -94,6 +94,7 @@ const { executeWorktreeOperations } = await import('../src/jobs/issueJob/worktre
 const { handlePostExecution } = await import('../src/jobs/prCommentPostExecution.js');
 
 let worktreeInfo: { worktreePath: string; branchName: string };
+const worktreeOptions: unknown[] = [];
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -150,6 +151,9 @@ test('an issue run publishes no preview evidence when its workflow disables ever
     assert.deepEqual(prepared[0].evidence.assets, []);
     assert.equal(settingsLoads.mock.callCount(), 1, 'post-processing must not reload unrestricted Settings');
     assert.equal((agentPreviewSettings[0] as { enabled: boolean }).enabled, false);
+    // Hooks and validation come from the policy commit; the agent starts from that same commit.
+    assert.deepEqual((worktreeOptions.at(-1) as { startRevision: unknown }).startRevision,
+        { branch: workflowWithoutPreviews.baseBranch, revision: workflowWithoutPreviews.revision });
 });
 
 test('an issue run without a workflow restriction still prepares the same preview artifact', async () => {
@@ -157,6 +161,7 @@ test('an issue run without a workflow restriction still prepares the same previe
 
     assert.deepEqual(prepared[0].evidence.assets.map(asset => asset.title), ['Desktop']);
     assert.equal((agentPreviewSettings[0] as { enabled: boolean }).enabled, true);
+    assert.equal((worktreeOptions.at(-1) as { startRevision: unknown }).startRevision, null, 'without a policy the branch head is used');
 });
 
 async function runPullRequestPostExecution(visualPreviewSettings?: ReturnType<typeof refineWorkflowPreviews>) {

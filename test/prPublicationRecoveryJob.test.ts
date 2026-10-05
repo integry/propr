@@ -235,6 +235,8 @@ const modules: Record<string, Record<string, unknown>> = {
         deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
         RepositoryWorkflowCapacityError: class extends Error {},
         resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
+        resolveAttemptRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => ({ workflow: await prepare(), admitted: prepare }),
+        nonRetryableRepositoryWorkflowError: (error: unknown) => error,
         repositoryWorkflowDeferralData: () => ({}), repositoryWorkflowHistoryMetadata: () => ({}), CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: {},
         persistRepositoryWorkflowDeferral: noOp,
     },

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
 import { forgetRepositoryWorkflowWaiter, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { beforeEach, mock, test } from 'node:test';
+import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js';
 
 let events: string[] = [];
 let refuseCapacity = false;
@@ -42,6 +43,10 @@ const stateManager = {
         events.push(`state:${taskId}:${state}${metadata?.isRetry ? ':retry' : ''}`);
     },
     updateHistoryMetadata: async () => undefined,
+    createTaskStateIfAbsent: async (taskId: string) => {
+        events.push(`create-task:${taskId}`);
+        if (!taskStates.has(taskId)) taskStates.set(taskId, 'pending');
+    },
     getTaskState: async (taskId: string) => {
         const current = taskStates.has(taskId) ? { state: taskStates.get(taskId) } : null;
         onTaskStateRead?.(taskId);
@@ -60,7 +65,18 @@ const octokit = {
     },
 };
 const noOp = async () => {};
-await mock.module('ioredis', { namedExports: { Redis: class {} } });
+// Pending PR comments live in this list; only the claim and restore scripts are emulated.
+const pendingCommentLists = new Map<string, string[]>();
+await mock.module('ioredis', { namedExports: { Redis: class {
+    async lrange(key: string) { return [...pendingCommentLists.get(key) ?? []]; }
+    async del(key: string) { pendingCommentLists.delete(key); return 1; }
+    async eval(script: string, _keys: number, key: string, _ttl?: string, ...comments: string[]) {
+        const current = pendingCommentLists.get(key) ?? [];
+        if (!script.includes('lpush')) { pendingCommentLists.delete(key); return current; }
+        pendingCommentLists.set(key, [...comments, ...current]);
+        return pendingCommentLists.get(key)!.length;
+    }
+} } });
 await mock.module('@propr/core', { namedExports: {
     preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
@@ -72,9 +88,18 @@ await mock.module('@propr/core', { namedExports: {
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'],
     loadRepositoryVisualPreviewSettings: async () => ({ enabled: true, types: ['image'] }),
     refineWorkflowPreviews, repositoryWorkflowPrompt,
-    loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
+    loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError,
     executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError: class extends Error {},
+    // Used by the real recovery and pending-comment helpers: no agent container is running.
+    inspectTaskContainerLivenessForTask: async () => ({ liveness: 'not_found', container: null }),
+    inspectLegacyDockerContainerLivenessForTask: async () => 'not_found',
+    issueQueue: {}, getPendingPrCommentsKey,
 } });
+// Real helpers for re-entry tests; the rest of the suite keeps their fakes.
+const realRecovery = await import('../src/jobs/prCommentCollisionRecovery.js');
+const realPending = await import('../src/jobs/prPendingComments.js');
+let realReentryHelpers = false;
+const combinedComments: unknown[][] = [];
 // Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 const modules: Record<string, Record<string, unknown>> = {
@@ -97,7 +122,7 @@ const modules: Record<string, Record<string, unknown>> = {
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
 
     prCommentJobUtils: {
-        buildCombinedComment: () => ({ combinedCommentBody: 'Implement', commentAuthors: ['contributor'] }),
+        buildCombinedComment: (comments: unknown[]) => { combinedComments.push(comments); return { combinedCommentBody: 'Implement', commentAuthors: ['contributor'] }; },
         extractModelFromLabels: () => 'model', fetchAllComments: async () => [], buildPrompt: () => '',
         handleJobError: async (_error: Error, _job: unknown, context: { startingWorkComment: unknown; taskId: string }) => {
             handledStartingComment = context.startingWorkComment;
@@ -107,9 +132,10 @@ const modules: Record<string, Record<string, unknown>> = {
         cleanupJob: async (options: { skipPendingCommentFollowup?: boolean; worktreeInfo?: unknown }) => { events.push(options.skipPendingCommentFollowup ? 'cleanup-capacity' : 'cleanup'); if (options.worktreeInfo) events.push('cleanup-worktree'); events.push('release:lock:pr:upstream:project:42'); }, toClaudeResult: noOp, buildStartingWorkCommentBody: () => 'Starting work',
     },
     prPendingComments: {
-        restorePendingComments: async () => { events.push('restore'); },
-        pickUpPendingCommentsWithClaim: async (comments: unknown) => ({ commentsToProcess: comments, pickedUpComments: [] }),
-        applyPendingCommentCommandContext: noOp,
+        restorePendingComments: async (...args: Parameters<typeof realPending.restorePendingComments>) => { events.push('restore'); if (realReentryHelpers) await realPending.restorePendingComments(...args); },
+        pickUpPendingCommentsWithClaim: async (...args: Parameters<typeof realPending.pickUpPendingCommentsWithClaim>) => realReentryHelpers
+            ? realPending.pickUpPendingCommentsWithClaim(...args) : { commentsToProcess: args[0], pickedUpComments: [] },
+        applyPendingCommentCommandContext: (...args: Parameters<typeof realPending.applyPendingCommentCommandContext>) => { if (realReentryHelpers) realPending.applyPendingCommentCommandContext(...args); },
     },
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
     prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
@@ -133,7 +159,11 @@ const modules: Record<string, Record<string, unknown>> = {
         ensurePRProcessingLockToken: async () => 'token', releasePRProcessingLock: async (_redis: unknown, key: string) => { events.push(`release:${key}`); },
         startPRProcessingLockHeartbeat: () => async () => { events.push('stop-heartbeat'); },
     },
-    prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: noOp, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }) },
+    prCommentCollisionRecovery: {
+        createPRCommentTaskStateIfMissing: async (params: Parameters<typeof realRecovery.createPRCommentTaskStateIfMissing>[0]) => { if (realReentryHelpers) await realRecovery.createPRCommentTaskStateIfMissing(params); },
+        evaluatePRCommentPreExecutionRecovery: async (params: Parameters<typeof realRecovery.evaluatePRCommentPreExecutionRecovery>[0]) => realReentryHelpers ? realRecovery.evaluatePRCommentPreExecutionRecovery(params) : {},
+        handlePRCommentLockContention: async () => ({ status: 'deferred' }),
+    },
     prPublication: { PullRequestPublication: class {
         status = '';
         continuation: typeof continuation;
@@ -173,6 +203,7 @@ beforeEach(() => {
     cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
+    realReentryHelpers = false; pendingCommentLists.clear(); combinedComments.length = 0;
 });
 
 for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'cancelled_pr_closed']] as const) {
@@ -377,18 +408,44 @@ test('PR follow-ups record the workflow revision on PROCESSING and reuse it acro
     for (let refusal = 0; refusal < 3; refusal++) await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
     assert.equal(policyLoads, 1, 'policy is fetched once across refusals');
     assert.equal((waiting.data as { repositoryWorkflowDeferrals?: number }).repositoryWorkflowDeferrals, 3);
-    resolvedWorkflow = undefined;
+    // The base branch advanced while the follow-up waited.
+    resolvedWorkflow = { revision: 'advanced-sha', baseBranch: 'main', fileRevision: 'blob-2', config: {}, timeoutMs: 1000, maxParallelTasks: 1 };
     refuseCapacity = false;
     // Stop at the agent: the timeline and deferral state are settled before it starts.
     agentError = new Error('agent stopped by test');
     await assert.rejects(processPullRequestCommentJob(waiting as never), /agent stopped by test/);
     assert.ok(events.includes('agent'));
-    assert.equal(policyLoads, 1, 'the admitted run uses the policy it waited with');
+    assert.equal(policyLoads, 2, 'admission after a wait reads the current base policy once');
     assert.deepEqual(processingMetadata.at(-1)?.repositoryWorkflow, {
-        path: '.propr/workflow.yml', baseBranch: 'main', revision: 'base-sha', fileRevision: 'blob-sha', maxParallelTasks: 1, timeoutMs: 1000,
+        path: '.propr/workflow.yml', baseBranch: 'main', revision: 'advanced-sha', fileRevision: 'blob-2', maxParallelTasks: 1, timeoutMs: 1000,
     });
     assert.equal((waiting.data as { repositoryWorkflow?: unknown }).repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
     assert.equal((waiting.data as { repositoryWorkflowDeferrals?: unknown }).repositoryWorkflowDeferrals, undefined);
+});
+
+test('a deferred single-comment follow-up resumes with its picked-up comments under the real recovery helpers', async () => {
+    realReentryHelpers = true;
+    const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
+    pendingCommentLists.set(pendingKey, [JSON.stringify({ id: 7, body: 'Also cover the empty case', author: 'reviewer', type: 'issue' })]);
+    const waiting = job();
+    waiting.updateData = async (data: Record<string, unknown>) => { events.push('persist-comments'); waiting.data = JSON.parse(JSON.stringify(data)); };
+    refuseCapacity = true;
+    await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.deepEqual((waiting.data as { comments?: Array<{ id: number }> }).comments?.map(comment => comment.id), [5, 7],
+        'the original comment and the claimed pending comment are stored with the deferral');
+    assert.equal(pendingCommentLists.has(pendingKey), false, 'the claim stays with the deferred job');
+    assert.ok(!events.includes('restore'));
+    assert.equal(taskStates.get('task-1'), 'pending');
+
+    // Re-entry finds the task state left by the refused attempt.
+    events = [];
+    refuseCapacity = false;
+    agentError = new Error('agent stopped by test');
+    await assert.rejects(processPullRequestCommentJob(waiting as never), /agent stopped by test/);
+    assert.ok(events.includes('agent'), 'the deferred attempt is neither a crashed nor a duplicate attempt');
+    assert.ok(!events.includes('create-task:task-1'), 'the existing task state is kept');
+    assert.ok(!events.includes('restore'));
+    assert.deepEqual((combinedComments.at(-1) as Array<{ id: number }>).map(comment => comment.id), [5, 7], 'the picked-up comment reaches the agent prompt');
 });
 
 test('a follow-up refused on a base without a workflow loads the new base policy after the PR is retargeted', async () => {

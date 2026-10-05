@@ -37,13 +37,18 @@ const processingHistory: Array<{ state: string; metadata: Record<string, unknown
 const deferralHistory: unknown[][] = [];
 // When set, preparation uses the real policy loader against this fake GitHub API.
 let githubRequests: string[] | undefined;
+let baseSha = 'base-sha';
+let emptyRepository = false;
 const workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
 const fakeGitHubRequest = async (route: string, params: { path?: string; body?: string }) => {
   if (route.endsWith('/comments')) { githubComments.push(params.body!); return { data: liveIssue }; }
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: liveIssue };
   githubRequests!.push(route);
   if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: 'main' } };
-  if (route === 'GET /repos/{owner}/{repo}/commits/{ref}') return { data: { sha: 'base-sha' } };
+  if (route === 'GET /repos/{owner}/{repo}/commits/{ref}') {
+    if (emptyRepository) throw Object.assign(new Error('Git Repository is empty.'), { status: 409, response: { data: { message: 'Git Repository is empty.' } } });
+    return { data: { sha: baseSha } };
+  }
   if (route === 'GET /repos/{owner}/{repo}/contents/{path}' && params.path === '.propr/workflow.yml') {
     return { data: { type: 'file', encoding: 'base64', size: workflowYaml.length, sha: 'blob-sha', content: Buffer.from(workflowYaml).toString('base64') } };
   }
@@ -309,13 +314,42 @@ test('capacity re-entries reuse the resolved policy, back off, and reload it aft
     // Jittered exponential backoff: each ceiling doubles from 10 s.
     delays.forEach((delay, index) => assert.ok(delay >= 5_000 * 2 ** index - 50 && delay <= 10_000 * 2 ** index + 50, `delay ${index}: ${delay}`));
     capacityFull = false;
+    // The base branch advanced while the task waited.
+    baseSha = 'advanced-sha';
     assert.equal((await processGitHubIssueJob(job as never)).status, 'processed');
-    assert.equal(githubRequests.length, 2, 'admitted re-entry reuses the policy that was waiting');
-    assert.equal((processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata.repositoryWorkflow as { revision: string }).revision, 'base-sha');
+    assert.equal(githubRequests.length, 4, 'admission after a wait reads the current base policy once');
+    assert.equal((processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata.repositoryWorkflow as { revision: string }).revision, 'advanced-sha',
+      'hooks and validation come from the base head the worktree starts from, not the snapshot that waited');
     assert.equal(job.data.repositoryWorkflowDeferred, false);
     assert.equal(job.data.repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
     assert.equal(job.data.repositoryWorkflowDeferrals, undefined);
-  } finally { githubRequests = undefined; capacityFull = false; }
+  } finally { githubRequests = undefined; capacityFull = false; baseSha = 'base-sha'; }
+});
+
+test('an implementation task against a repository without commits reaches repository initialization', async () => {
+  githubRequests = []; emptyRepository = true; events.length = 0; terminal.length = 0; processingHistory.length = 0; outcome = 'completed';
+  try {
+    const result = await processGitHubIssueJob({
+      id: 'empty-repository-job', name: 'processGitHubIssue', data: issueJobData(),
+      updateData: async () => undefined, updateProgress: async () => undefined,
+    } as never);
+    assert.equal(result.status, 'processed');
+    assert.ok(events.includes('clone'), 'ensureRepoCloned, which seeds empty repositories, still runs');
+    assert.deepEqual(terminal.map(entry => entry.result.status).filter(status => status === 'failed'), []);
+    assert.deepEqual(processingHistory.find(entry => entry.state === core.TaskStates.PROCESSING)?.metadata, {}, 'no workflow governed the run');
+  } finally { githubRequests = undefined; emptyRepository = false; }
+});
+
+test('an invalid workflow file is reported once and the job is not retried', async () => {
+  workflowError = new core.RepositoryWorkflowPolicyError('Invalid .propr/workflow.yml: unknown field workflow.hook');
+  terminal.length = 0;
+  try {
+    await assert.rejects(processGitHubIssueJob({
+      id: 'invalid-workflow', name: 'processGitHubIssue',
+      data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, agentAlias: 'issue-agent', modelName: 'model', correlationId: 'correlation' },
+    } as never), (error: Error) => error.name === 'UnrecoverableError' && /unknown field workflow\.hook/.test(error.message));
+    assert.deepEqual(terminal.map(entry => entry.result.status), ['failed'], 'the normal failure report still runs');
+  } finally { workflowError = undefined; }
 });
 
 test('issue withdrawal detected after admission persists readable history and retains its result code', async () => {

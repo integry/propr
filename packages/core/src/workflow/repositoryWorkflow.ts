@@ -1,6 +1,9 @@
 import { isScalar, parseDocument } from 'yaml';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
+import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
+
+export { RepositoryWorkflowPolicyError };
 
 export const WORKFLOW_PATH = '.propr/workflow.yml';
 export const WORKFLOW_MAX_BYTES = 128 * 1024;
@@ -24,7 +27,7 @@ export interface ResolvedRepositoryWorkflow {
 }
 
 function invalid(message: string): never {
-    throw new Error(`Invalid ${WORKFLOW_PATH}: ${message}`);
+    throw new RepositoryWorkflowPolicyError(`Invalid ${WORKFLOW_PATH}: ${message}`);
 }
 function object(value: unknown, keys: string[], field: string): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(`${field} must be a mapping`);
@@ -99,6 +102,10 @@ export async function loadRepositoryWorkflow(source: WorkflowSource, baseBranch:
     maxParallelTasks: number;
     timeoutMs?: number;
 }): Promise<ResolvedRepositoryWorkflow | undefined> {
+    // Instance settings are not repository policy; never attribute them to the workflow file.
+    for (const [value, field] of [[defaults.maxParallelTasks, 'worker_concurrency'], [defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS, 'hook timeout']] as const) {
+        if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid instance setting: ${field} must be a positive integer`);
+    }
     const revision = await source.resolveRevision(baseBranch);
     const file = await source.readFile(WORKFLOW_PATH, revision);
     if (!file) return undefined;
@@ -106,8 +113,6 @@ export async function loadRepositoryWorkflow(source: WorkflowSource, baseBranch:
     const instructions = config.instructions ? await source.readFile(config.instructions, revision) : undefined;
     if (config.instructions && !instructions) invalid(`instructions file '${config.instructions}' does not exist on ${baseBranch}`);
     if (instructions && Buffer.byteLength(instructions.content) > WORKFLOW_MAX_BYTES) invalid('instructions file exceeds 128 KiB');
-    positiveInteger(defaults.maxParallelTasks, 'instance worker_concurrency');
-    positiveInteger(defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS, 'instance hook timeout');
     const workflow = {
         revision, baseBranch, fileRevision: file.sha, config, instructionText: instructions?.content,
         timeoutMs: Math.min(config.hooks?.timeout_ms ?? WORKFLOW_TIMEOUT_MS, defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS),

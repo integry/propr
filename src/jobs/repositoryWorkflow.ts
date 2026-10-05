@@ -1,7 +1,8 @@
-import { DelayedError, Job, Queue } from 'bullmq';
+import { DelayedError, Job, Queue, UnrecoverableError } from 'bullmq';
 import {
     loadRepositoryWorkflow, loadSettings, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
+    RepositoryWorkflowPolicyError, withRetry, retryConfigs,
 } from '@propr/core';
 import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateManager, AgentExecutionResult, IssueJobData } from '@propr/core';
 import type { Redis } from 'ioredis';
@@ -37,25 +38,51 @@ export function clearAbsentRepositoryWorkflowCache(): void {
     absentWorkflowRevisions.clear();
 }
 
+/** GitHub reports a repository without any commit as 409 "Git Repository is empty." */
+function isEmptyRepositoryError(error: unknown): boolean {
+    const { status, message, response } = (error ?? {}) as { status?: number; message?: string; response?: { data?: { message?: string } } };
+    return status === 409 && /repository is empty/i.test(`${response?.data?.message ?? ''} ${message ?? ''}`);
+}
+
+/** Instance `worker_concurrency`, falling back like the worker does when the setting is unusable. */
+function instanceWorkerConcurrency(setting: unknown): number {
+    for (const value of [setting, process.env.WORKER_CONCURRENCY]) {
+        const parsed = typeof value === 'string' && value.trim() ? Number(value) : value;
+        if (Number.isSafeInteger(parsed) && (parsed as number) > 0) return parsed as number;
+    }
+    return 5;
+}
+
 export async function prepareRepositoryWorkflow(options: {
     octokit: Octokit; repoOwner: string; repoName: string; baseBranch?: string | null;
     /** Known default branch (e.g. from the dispatched repository payload) to avoid a repository lookup. */
     defaultBranch?: string | null;
+    correlationId?: string;
 }): Promise<ResolvedRepositoryWorkflow | undefined> {
-    const { octokit, repoOwner: owner, repoName: repo } = options;
-    const defaultBranch = async () => options.defaultBranch || (await octokit.request('GET /repos/{owner}/{repo}', { owner, repo })).data.default_branch;
-    const resolveRevision = async (ref: string) => (await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}', { owner, repo, ref })).data.sha;
+    const { octokit, repoOwner: owner, repoName: repo, correlationId } = options;
+    // Transient GitHub failures must not fail runs that, without a workflow, never needed these reads.
+    const request = <T>(context: string, fn: () => Promise<T>) => withRetry(fn, { ...retryConfigs.githubApi, correlationId }, context);
+    const defaultBranch = async () => options.defaultBranch
+        || (await request('get_repository_default_branch', () => octokit.request('GET /repos/{owner}/{repo}', { owner, repo }))).data.default_branch;
+    const resolveRevision = async (ref: string) => (await request('resolve_workflow_base_revision', () => octokit.request('GET /repos/{owner}/{repo}/commits/{ref}', { owner, repo, ref }))).data.sha;
     let baseBranch = options.baseBranch || await defaultBranch();
     let revision: string;
     try {
-        revision = await resolveRevision(baseBranch);
+        try {
+            revision = await resolveRevision(baseBranch);
+        } catch (error) {
+            // Worktree creation falls back to the default branch when the requested base
+            // does not exist yet (e.g. an epic branch created when its first child PR is
+            // opened). Read the policy from the same commit the task will start from.
+            if (!options.baseBranch || (error as { status?: number }).status !== 404) throw error;
+            baseBranch = await defaultBranch();
+            revision = await resolveRevision(baseBranch);
+        }
     } catch (error) {
-        // Worktree creation falls back to the default branch when the requested base
-        // does not exist yet (e.g. an epic branch created when its first child PR is
-        // opened). Read the policy from the same commit the task will start from.
-        if (!options.baseBranch || (error as { status?: number }).status !== 404) throw error;
-        baseBranch = await defaultBranch();
-        revision = await resolveRevision(baseBranch);
+        // A repository without commits has no workflow file; repository cloning
+        // creates its initial contents, so the task proceeds without a policy.
+        if (isEmptyRepositoryError(error)) return undefined;
+        throw error;
     }
     const absentKey = absentWorkflowKey(owner, repo, revision);
     if (isKnownAbsentWorkflow(absentKey)) return undefined;
@@ -65,25 +92,25 @@ export async function prepareRepositoryWorkflow(options: {
         readFile: async (path, ref) => {
             let response;
             try {
-                response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path, ref });
+                response = await request('read_repository_workflow_file', () => octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path, ref }));
             } catch (error) {
                 if ((error as { status?: number }).status === 404) return null;
                 throw error;
             }
             const file = response.data;
             if (Array.isArray(file) || file.type !== 'file' || !('content' in file) || file.encoding !== 'base64' || file.size > WORKFLOW_MAX_BYTES) {
-                throw new Error(`Invalid .propr/workflow.yml: ${path} must be a regular UTF-8 file of at most 128 KiB`);
+                throw new RepositoryWorkflowPolicyError(`Invalid .propr/workflow.yml: ${path} must be a regular UTF-8 file of at most 128 KiB`);
             }
             const bytes = Buffer.from(file.content, 'base64');
             try {
                 const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
                 return { content, sha: file.sha };
             } catch {
-                throw new Error(`Invalid .propr/workflow.yml: ${path} must contain valid UTF-8 text`);
+                throw new RepositoryWorkflowPolicyError(`Invalid .propr/workflow.yml: ${path} must contain valid UTF-8 text`);
             }
         },
     }, baseBranch, {
-        maxParallelTasks: Number(settings?.worker_concurrency ?? process.env.WORKER_CONCURRENCY ?? 5),
+        maxParallelTasks: instanceWorkerConcurrency(settings?.worker_concurrency),
     });
     if (!workflow) rememberAbsentWorkflow(absentKey);
     return workflow;
@@ -110,6 +137,25 @@ export async function resolveRepositoryWorkflow(
     // An absent policy is only known for the branch it was read from; a snapshot without one predates retarget tracking.
     if (cached === null && data.repositoryWorkflowBaseBranch !== undefined && data.repositoryWorkflowBaseBranch === (baseBranch ?? null)) return undefined;
     return prepare();
+}
+
+/**
+ * Resolves this attempt's policy. `admitted` ends a capacity wait (ordinary retries
+ * then read the base policy again) and returns the policy to run: a snapshot reused
+ * from an earlier refusal can be many deferrals old, so it is read again.
+ */
+export async function resolveAttemptRepositoryWorkflow<T extends RepositoryWorkflowDeferralData>(
+    data: T, baseBranch: string | null | undefined, prepare: () => Promise<ResolvedRepositoryWorkflow | undefined>,
+): Promise<{ workflow?: ResolvedRepositoryWorkflow; admitted(job: { data: T; updateData(data: T): Promise<unknown> }): Promise<ResolvedRepositoryWorkflow | undefined> }> {
+    let readThisAttempt = false;
+    const workflow = await resolveRepositoryWorkflow(data, baseBranch, () => { readThisAttempt = true; return prepare(); });
+    return {
+        workflow,
+        async admitted(job) {
+            await job.updateData({ ...job.data, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
+            return readThisAttempt ? workflow : prepare();
+        },
+    };
 }
 
 type RepositoryWorkflowDeferral = RepositoryWorkflowDeferralData & { repositoryWorkflowDeferrals: number; repositoryWorkflowRetryAt: number };
@@ -147,15 +193,20 @@ export async function recordRepositoryWorkflowDeferral(options: {
         const current = await stateManager.getTaskState(taskId);
         if (!current || ([TaskStates.CANCELLED, TaskStates.FAILED, TaskStates.COMPLETED] as string[]).includes(current.state)) return;
         const limit = workflow?.maxParallelTasks ? ` (limit ${workflow.maxParallelTasks})` : '';
+        const historyMetadata = {
+            repositoryWorkflowDeferrals: deferral.repositoryWorkflowDeferrals,
+            repositoryWorkflowRetryAt: new Date(deferral.repositoryWorkflowRetryAt).toISOString(),
+        };
+        // One waiting row per wait: a later refusal updates its count and retry time
+        // instead of appending another row for every backoff cycle.
+        const latest = current.history?.at(-1);
+        if (latest?.state === current.state && latest.metadata?.repositoryWorkflowDeferrals) {
+            await stateManager.updateHistoryMetadata(taskId, current.state, historyMetadata);
+            return;
+        }
         await stateManager.updateTaskStateIfCurrent(taskId, {
             state: current.state, createdAt: current.createdAt, updatedAt: current.updatedAt, correlationId: current.correlationId, version: current.version,
-        }, current.state, {
-            reason: `Waiting for repository workflow capacity${limit}`,
-            historyMetadata: {
-                repositoryWorkflowDeferrals: deferral.repositoryWorkflowDeferrals,
-                repositoryWorkflowRetryAt: new Date(deferral.repositoryWorkflowRetryAt).toISOString(),
-            },
-        });
+        }, current.state, { reason: `Waiting for repository workflow capacity${limit}`, historyMetadata });
     } catch (error) {
         correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Failed to record repository workflow capacity wait');
     }
@@ -246,6 +297,14 @@ export async function withRepositoryWorkflowAdmission<T>(options: {
 }
 
 export { RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError };
+
+/**
+ * An unusable workflow file fails identically on every retry of the same base
+ * commit, so the job fails once instead of re-reporting the same error per attempt.
+ */
+export function nonRetryableRepositoryWorkflowError(error: unknown): unknown {
+    return error instanceof RepositoryWorkflowPolicyError ? new UnrecoverableError(error.message) : error;
+}
 
 /**
  * A lost capacity lease stops the container through the same ownership signal as a

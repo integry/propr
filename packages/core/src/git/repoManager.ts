@@ -215,6 +215,12 @@ interface CreateWorktreeOptions {
     baseBranch?: string | null;
     octokit?: InstanceType<typeof Octokit> | null;
     modelName?: string | null;
+    /**
+     * Start from this already-resolved commit of `branch` (for example, the commit the
+     * repository workflow policy was read from) instead of the branch's latest head.
+     * Ignored when the worktree resolves to another branch or the commit is not on it.
+     */
+    startRevision?: { branch: string; revision: string } | null;
 }
 
 export interface WorktreeResult {
@@ -226,7 +232,7 @@ export type WorktreeInfo = WorktreeResult;
 
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
-    const { baseBranch = null, octokit = null, modelName = null } = options;
+    const { baseBranch = null, octokit = null, modelName = null, startRevision = null } = options;
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
@@ -291,11 +297,22 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
+        let startPoint = `origin/${resolvedBaseBranch}`;
+        if (startRevision && startRevision.branch === resolvedBaseBranch && /^[0-9a-f]{40,64}$/i.test(startRevision.revision)) {
+            try {
+                await git.raw(['merge-base', '--is-ancestor', startRevision.revision, startPoint]);
+                startPoint = startRevision.revision;
+            } catch (error) {
+                logger.warn({ baseBranch: resolvedBaseBranch, startRevision: startRevision.revision, error: (error as Error).message },
+                    'Requested start revision is not on the fetched base branch; using the branch head');
+            }
+        }
+
         await addWorktreeWithoutTracking(
             git,
             worktreePath,
             branchName,
-            { startPoint: `origin/${resolvedBaseBranch}` },
+            { startPoint },
         );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });
