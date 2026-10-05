@@ -11,7 +11,7 @@ import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
 import { ScoreBadge } from './ScoreBadge';
 import {
-  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -230,7 +230,10 @@ export const TitleLinePreviews: React.FC<{ row: TaskRowView }> = ({ row }) => (
 
 /**
  * The rolled-up runs of one row as a self-contained timeline hanging off the
- * toggle's caret: `when · what it did · summary`. Each run reads as one cluster.
+ * toggle's caret: `when · what it did · summary · [ ■ 6 ]`. Each run reads as one cluster.
+ * A review ends on its bracketed score, so the tree tells the review-and-fix
+ * story (a `REVIEW [ ▲ 4 ]`, the fixes it asked for, a `REVIEW [ ■ 6 ]`) as
+ * the task pane's timeline does. A fix scores nothing of its own and shows none.
  * Runs share the parent's repository and agent, so they borrow none of its cells.
  */
 export const EarlierRunsList: React.FC<{
@@ -244,6 +247,7 @@ export const EarlierRunsList: React.FC<{
       const status = getDisplayStatus(run.task);
       const created = new Date(run.task.createdAt).toLocaleString();
       const selected = run.task.id === selectedTaskId;
+      const score = runScore(run);
       return (
         <li key={run.task.id}>
           <button
@@ -261,6 +265,7 @@ export const EarlierRunsList: React.FC<{
               <span className={`task-run-summary min-w-0 truncate ${run.summarized ? 'text-slate-700' : 'text-slate-500'}`} title={run.delta}>{run.delta}</span>
               {!QUIET_RUN_STATUSES.has(status) && <span className="flex-none">{getStatusPill(status)}</span>}
               <PreviewCountBadge count={run.previewCount} />
+              {score != null && <span data-testid="run-score" className="ml-auto flex-none"><ScoreBadge score={score} bracketed className="!w-auto !min-w-0 !max-w-none !text-xs" label="Review score" /></span>}
             </span>
           </button>
         </li>

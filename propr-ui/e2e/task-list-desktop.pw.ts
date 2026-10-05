@@ -213,11 +213,12 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
-  // The card shows the newest four runs and counts the rest: [+4] ●─●─●─⟳, on a pill so it reads as a track, the count a badge of its own.
+  // The card shows the newest four runs and counts the rest: [+4] ●─■─■─⟳, on a pill so it reads as a track, the count a badge of its own.
+  // Runs 6 and 7 left the code at 6/10 and 5/10, so they are amber squares, though neither is a review that prints its score.
   const track = selectedCard.getByTestId('run-count');
   await expect(track).toHaveAttribute('aria-label', '8 runs');
   await expect(track.getByTestId('run-track-overflow')).toHaveText('+4');
-  expect(await track.locator('[data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome')))).toEqual(['passed', 'passed', 'passed', 'active']);
+  expect(await track.locator('[data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome')))).toEqual(['passed', 'findings', 'findings', 'active']);
   // Every run line leads with its type after the chip, including a follow-up whose summary names no action.
   const runLines = list.locator('[data-testid="task-card"]').filter({ has: page.getByTestId('run-count') });
   for (const card of await runLines.all()) await expect(card.getByTestId('work-type-badge')).toBeVisible();

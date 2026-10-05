@@ -259,8 +259,15 @@ export const isReviewRun = (type: string | null | undefined): boolean => type?.t
 export const runScore = (run: Pick<TaskRunEntry, 'task' | 'type'>): number | null =>
   isReviewRun(run.type) ? run.task.score ?? null : null;
 
-export function runOutcomeOf(task: Task, type: string | null = null): RunOutcome {
-  const score = runScore({ task, type });
+/**
+ * Where a run left the code. The score is never printed on a fix, but the
+ * one recorded against it (the ultrafix loop reviews the code after each fix)
+ * still marks how healthy the code was when it finished, so the run track
+ * shows a fix that left findings as an amber square, the same as a review.
+ * The track is a health trajectory, not a list of who graded what.
+ */
+export function runOutcomeOf(task: Task): RunOutcome {
+  const score = task.score ?? null;
   switch (getDisplayStatus(task)) {
     case 'failed': return 'failed';
     case 'cancelled': return 'stopped';
@@ -292,7 +299,7 @@ export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
     { task: row.task, type: row.type, summary: row.detail ?? runOutcome(row.task) },
     ...row.earlierRuns.map(run => ({ task: run.task, type: run.type, summary: run.delta })),
   ];
-  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task, run.type) }));
+  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task) }));
 }
 
 /** The task's quality score: its newest review's, or null when no run on this page was a scored review. */

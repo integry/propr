@@ -108,7 +108,7 @@ describe('task ledger rows', () => {
     const review = 'Review PR #2664: Stop work when intent is withdrawn';
     const outcomes: Array<Partial<Task>> = [
       { status: 'processing' }, { status: 'completed', score: 6, title: review }, { status: 'completed', score: 5, title: review },
-      // A fix's score belongs to the loop that reviewed it, not to the fix: it passed.
+      // A fix prints no score of its own, but the low one the loop recorded after it still marks the track: the code it left had findings.
       { status: 'completed', planIssueStatus: 'merged', score: 3 }, { status: 'failed' }, { status: 'completed', score: 9 },
       { status: 'completed', score: 4 }, { status: 'cancelled' },
     ];
@@ -116,10 +116,33 @@ describe('task ledger rows', () => {
     render(<TaskTableContent groupedTasks={[busy]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
     const chip = within(screen.getByRole('table', { name: 'Tasks' })).getByRole('img', { name: '8 runs' });
     expect(within(chip).getByTestId('run-track-overflow')).toHaveTextContent(/^\+4$/);
-    // Oldest of the four first, the run in flight last: ●──■──■──⟳.
+    // Oldest of the four first, the run in flight last: ■──■──■──⟳.
     expect([...chip.querySelectorAll('[data-outcome]')].map(node => node.getAttribute('data-outcome')))
-      .toEqual(['passed', 'findings', 'findings', 'active']);
-    expect(chip).toHaveAttribute('title', '8 runs: Run 5 passed, Run 6 left findings (5/10), Run 7 left findings (6/10), Run 8 running');
+      .toEqual(['findings', 'findings', 'findings', 'active']);
+    // Only a review's score is quoted.
+    expect(chip).toHaveAttribute('title', '8 runs: Run 5 left findings, Run 6 left findings (5/10), Run 7 left findings (6/10), Run 8 running');
+  });
+
+  it('ends each review in the inline run tree on its score, and gives a fix none', () => {
+    const review = 'Review PR #2664: Stop work when intent is withdrawn';
+    const runs: Array<Partial<Task>> = [
+      { status: 'processing' }, { title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test', score: 5 },
+      { title: review, subtitle: 'Found 2 issues', score: 6 }, { title: review, subtitle: 'Initial review', score: 4 },
+    ];
+    const reviewed: TaskGroup = { ...group, tasks: runs.map((run, index) => ({ ...group.tasks[index], ...run })) };
+    render(<Fixture groups={[reviewed]} />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    fireEvent.click(within(table).getByRole('button', { name: '4 runs' }));
+    const items = within(within(table).getByRole('list', { name: 'Earlier runs' })).getAllByRole('listitem');
+    expect(items.map(item => [item.textContent?.match(/Review|Fix/)?.[0], within(item).queryByTestId('run-score')?.textContent ?? null]))
+      .toEqual([['Fix', null], ['Review', '[6]'], ['Review', '[4]']]);
+  });
+
+  it('draws no drill-in chevron on a card: the title is the link and the run track is the only toggle', () => {
+    const { container } = render(<Fixture />);
+    const card = container.querySelector('[data-testid="task-card"]')!;
+    expect(card.querySelector('svg.lucide-chevron-right')).toBeNull();
+    expect(within(card as HTMLElement).getByRole('button', { name: '6 runs' })).toBeInTheDocument();
   });
 
   it('marks a queued newest run as waiting, never as a run in flight', () => {
