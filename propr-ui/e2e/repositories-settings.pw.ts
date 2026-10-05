@@ -292,15 +292,26 @@ for (const width of [320, 390]) {
     await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
     const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
     await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toBeVisible();
-    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Settings']) {
+    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Media', 'Settings']) {
       const tab = page.getByRole('button', { name, exact: true });
       await expect(tab).toBeInViewport({ ratio: 1 });
       const bounds = (await tab.boundingBox())!;
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(bounds.height).toBeGreaterThanOrEqual(40);
+      // The full label must fit inside the tab's padding, not merely its border box.
+      expect(await tab.evaluate(button => {
+        const style = getComputedStyle(button);
+        const contentWidth = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        return button.querySelector('span')!.getBoundingClientRect().width <= contentWidth;
+      })).toBe(true);
     }
     const tabStrip = page.getByRole('button', { name: 'Settings', exact: true }).locator('../..');
     expect(await tabStrip.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    if (process.env.PROPR_CAPTURE_PREVIEWS) {
+      await mkdir('../.propr/previews', { recursive: true });
+      await page.screenshot({ animations: 'disabled', path: `../.propr/previews/repository-tabs-${width}.png`, clip: { x: 0, y: 0, width, height: 260 } });
+    }
     await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture the mobile navigation.');
     await settings.getByText('Auto CI follow-up', { exact: true }).click();
     await expect.poll(() => api.writes.at(-1)?.[0].autoFollowupOnFailedCi).toBe(true);
