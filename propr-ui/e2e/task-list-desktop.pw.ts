@@ -33,11 +33,22 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
 
-      // A single run with no summary is one line: the type leads the title and nothing hangs under it.
+      // Every row is the same two lines. A single run with no summary keeps line 1 to the chip and
+      // the title (cut with `…`, never wrapped), and line 2 to its type and why it failed.
       const singleRun = rows.filter({ hasText: 'a-very-long-unbroken' });
-      const titleLine = singleRun.getByRole('link', { name: /^Support configuration/ }).locator('xpath=..');
-      await expect(titleLine.getByTestId('work-type-badge')).toHaveText('Implement');
-      expect(await titleLine.evaluate(line => line.nextElementSibling)).toBeNull();
+      const singleTitle = singleRun.getByRole('link', { name: /^Support configuration/ });
+      const titleLine = singleTitle.locator('xpath=..');
+      await expect(titleLine.getByTestId('work-type-badge')).toHaveCount(0);
+      const detailLine = titleLine.locator('xpath=following-sibling::div[1]');
+      await expect(detailLine.getByTestId('work-type-badge')).toHaveText('Implement');
+      await expect(detailLine).toContainText('Typecheck failed during test execution');
+      expect(await singleTitle.locator('span').evaluate(node => Math.round(node.clientHeight))).toBe(20);
+      // Nothing comes between a row's chip and its title: every title starts one gap after its chip.
+      const titleGaps = await table.evaluate(element => [...element.querySelectorAll('[data-testid="task-row"] .task-title')]
+        .map(title => Math.round(title.getBoundingClientRect().left - title.previousElementSibling!.getBoundingClientRect().right)));
+      expect(new Set(titleGaps)).toEqual(new Set([8]));
+      const rowHeights = await table.evaluate(element => [...element.querySelectorAll('[data-testid="task-row"] > [role="row"]')].map(row => Math.round(row.getBoundingClientRect().height)));
+      expect(new Set(rowHeights).size).toBe(1);
       // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
       const repo = singleRun.getByTestId('task-repository');
       await expect(repo).toHaveText('desktop-workspaces');
@@ -79,12 +90,12 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         return Math.round(chip.left - element.getBoundingClientRect().left);
       });
       expect(inset).toBe(32);
-      // Titles wrap rather than being cut mid-word. The title column absorbs all the width the fixed
-      // metadata columns leave, so a laptop-width list clamps a long title at two lines (the full
-      // title stays in the tooltip); on a wide screen it fits on one line.
+      // Titles hold to one line. The title column absorbs all the width the fixed metadata columns
+      // leave, so a wide screen fits a long title whole; a laptop-width list ends it in `…` (the full
+      // title stays in the tooltip).
       const longTitle = table.getByRole('link', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
-      const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
-      expect(clamp.lines).toBe(width === 1920 ? 1 : 2);
+      const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollWidth > node.clientWidth + 1, lines: Math.round(node.clientHeight / 20) }));
+      expect(clamp.lines).toBe(1);
       if (width === 1920) expect(clamp.clipped).toBe(false);
       await expect(longTitle).toHaveAttribute('title', 'Give implementation runs and direct goals a read-only GitHub token');
       // The footer is pinned to the bottom of the list pane, like the other sections' footers.

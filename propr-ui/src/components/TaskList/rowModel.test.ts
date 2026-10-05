@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskRow, hasRollupLine, runOutcome, runOutcomeOf, sanitizeTaskTitle } from './rowModel';
+import { buildTaskRow, runOutcome, runOutcomeOf, sanitizeTaskTitle } from './rowModel';
 import type { Task, TaskGroup } from './types';
 
 const base: Task = { id: 'task-1', status: 'completed', createdAt: '2026-09-15T10:00:00Z' };
@@ -119,22 +119,15 @@ describe('buildTaskRow', () => {
       { title: 'Review PR #2654: Retry webhooks' },
     ]));
     expect(summarized).toMatchObject({ detail: 'Back off exponentially', outcome: null });
-    // A single run stays one line: no outcome is invented to give it a second.
-    const single = buildTaskRow(group([{ title: 'New Issue: Add retries' }]));
-    expect(single.outcome).toBeNull();
-    expect(hasRollupLine(single)).toBe(false);
+    // A single run states its outcome too, so its line under the title is never empty.
+    const failed = buildTaskRow(group([{ title: 'New Issue: Add retries', status: 'failed', failedReason: 'Typecheck failed during test execution' }]));
+    expect(failed).toMatchObject({ type: 'Implement', detail: null, outcome: 'Typecheck failed during test execution' });
   });
 
   it('shows the repository by name, keeping the owner for the tooltip', () => {
     const row = buildTaskRow({ ...group([{ title: 'New Issue: Add retries' }]), repoName: 'desktop-workspaces' });
     expect(row.repository).toBe('integry/desktop-workspaces');
     expect(row.repositoryName).toBe('desktop-workspaces');
-  });
-
-  it('needs a line under the title only for earlier runs or a summary', () => {
-    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries' }])))).toBe(false);
-    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries', subtitle: 'Retry the upload' }])))).toBe(true);
-    expect(hasRollupLine(buildTaskRow(group([{ title: 'New Issue: Add retries' }, { title: 'New Issue: Add retries' }])))).toBe(true);
   });
 
   it('counts only trusted previews', () => {

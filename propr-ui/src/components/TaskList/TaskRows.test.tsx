@@ -159,11 +159,11 @@ describe('task ledger rows', () => {
     expect(chip.getAttribute('title')).toMatch(/Run 3 waiting to start$/);
   });
 
-  it('keeps a single run without a summary on one line, its type in front of the title', () => {
+  it('gives a single run without a summary the same two lines as every row: title over type and outcome', () => {
     const single: TaskGroup = {
       key: 'integry/desktop-workspaces-issue-86', repoOwner: 'integry', repoName: 'desktop-workspaces', prNumber: null,
       tasks: [{
-        id: 'issue-86', title: 'New Issue: [86 by Claude] Support configuration paths', status: 'failed',
+        id: 'issue-86', title: 'New Issue: [86 by Claude] Support configuration paths', status: 'failed', failedReason: 'Typecheck failed during test execution\n  at tsc',
         createdAt: '2026-09-10T12:00:00Z', issueNumber: 86, previewMedia: [{ type: 'image', title: 'Desktop', url: 'https://github.com/user-attachments/assets/c' }],
       }],
     };
@@ -171,9 +171,10 @@ describe('task ledger rows', () => {
     const table = screen.getByRole('table', { name: 'Tasks' });
     const title = within(table).getByRole('link', { name: 'Support configuration paths' });
     const titleLine = title.parentElement!;
-    // Chip, type, title, previews: all on the title line, and nothing under it.
-    expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Implement', 'Support configuration paths', '1 preview']);
-    expect(titleLine.nextElementSibling).toBeNull();
+    // Line 1 is the chip and the title alone, held to one line; line 2 is the type, why the run failed, and its previews.
+    expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Support configuration paths']);
+    expect(title.firstElementChild).toHaveClass('truncate');
+    expect([...titleLine.nextElementSibling!.children].map(child => child.textContent)).toEqual(['Implement', 'Typecheck failed during test execution', '1 preview']);
     // The owner is the same on every row, so the repository cell shows the name; the tooltip keeps both.
     const repo = within(table).getByTestId('task-repository');
     expect(repo).toHaveTextContent(/^desktop-workspaces$/);

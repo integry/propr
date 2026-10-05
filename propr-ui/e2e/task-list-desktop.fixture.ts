@@ -72,7 +72,7 @@ export const tasks = [
   {
     id: 'long-title', repository: 'integry/desktop-workspaces', repositoryOwner: 'integry', repositoryName: 'desktop-workspaces', issueNumber: 86,
     title: `New Issue: ${tag(86)} Support configuration/desktop/workspaces/a-very-long-unbroken-configuration-filename.json in the task history`,
-    status: 'failed', createdAt: ago(300), processedAt: ago(300), completedAt: ago(262),
+    status: 'failed', failedReason: 'Typecheck failed during test execution', createdAt: ago(300), processedAt: ago(300), completedAt: ago(262),
     llmProvider: 'claude', model: 'a-long-model-identifier-for-desktop-layout-verification', critiqueScore: 4,
   },
 ];

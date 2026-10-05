@@ -10,7 +10,7 @@ import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
 import { ScoreBadge } from './ScoreBadge';
 import {
-  buildTaskRuns, describeRun, hasRollupLine, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -88,7 +88,7 @@ export const TaskAgent: React.FC<{ task: Task }> = ({ task }) => {
 };
 
 /**
- * Long titles wrap to a second line instead of being cut off mid-word. An
+ * Unless held to one line, long titles wrap to a second line instead of being cut off mid-word. An
  * unbroken run of characters (a file path, a URL) breaks wherever it has to,
  * so it wraps inside the title column rather than pressing on the columns
  * beside it.
@@ -203,11 +203,10 @@ export const RunCountChip: React.FC<{
  * The line under a title, held to one line: `[+3] ●──■──■──⟳  REVIEW what the newest
  * run did · 2 previews`. The type belongs to the newest run, not the task, so
  * it travels with that run's summary rather than taking room from the title.
- * A newest run with no summary states its outcome in the same place, as the
- * run timeline does, so no line ends on a bare type.
- * A single run with no summary has nothing to put here: its type and previews
- * ride on the title line instead (`TitleLineType`, `TitleLinePreviews`), and this line is not
- * drawn at all.
+ * A newest run with no summary states its outcome in the same place (why it
+ * failed, the commit it pushed), as the run timeline does, so no line ends on
+ * a bare type. Every row draws it, single run or not, so every row is the
+ * same two lines: `[chip] title` over `[type] what happened`.
  */
 export const RollupLine: React.FC<{
   row: TaskRowView;
@@ -216,11 +215,10 @@ export const RollupLine: React.FC<{
   onToggle: (groupKey: string, e: React.MouseEvent) => void;
   selectsInPlace?: boolean;
 }> = ({ row, expanded, runsId, onToggle, selectsInPlace = false }) => {
-  if (!hasRollupLine(row)) return null;
   const hasRuns = row.earlierRuns.length > 0;
   const summary = row.detail ?? row.outcome;
   return (
-    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
+    <div className="mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
       {hasRuns && <RunCountChip row={row} toggle={selectsInPlace ? undefined : { expanded, runsId, onToggle }} />}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
       {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
@@ -228,19 +226,6 @@ export const RollupLine: React.FC<{
     </div>
   );
 };
-
-/**
- * What a one-line row carries on its title line: the type in front of the
- * title (`[Issue #86]  ✦ IMPLEMENT  Support configuration…`) and the preview
- * count after it. Rows with a rollup line keep both there.
- */
-export const TitleLineType: React.FC<{ row: TaskRowView }> = ({ row }) => (
-  !hasRollupLine(row) && row.type ? <span className="flex-none"><WorkTypeBadge type={row.type} /></span> : null
-);
-
-export const TitleLinePreviews: React.FC<{ row: TaskRowView }> = ({ row }) => (
-  hasRollupLine(row) ? null : <PreviewCountBadge count={row.previewCount} />
-);
 
 /**
  * The rolled-up runs of one row as a self-contained timeline hanging off the
@@ -315,9 +300,8 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="min-w-0">
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
-            <TitleLineType row={row} />
-            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} />
-            <TitleLinePreviews row={row} />
+            {/* One line, ending in `…`: a long title never wraps, so every title starts at the chip and every row is two lines. */}
+            <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} singleLine />
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />
         </div>
