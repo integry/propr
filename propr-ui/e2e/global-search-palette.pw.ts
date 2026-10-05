@@ -1,14 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { captureTarget, fixture, minutesAgo } from './dashboard-sections.fixture';
 
-const plans = [
+const plans = ([
   ['Sequential MCP Epic Execution and Observability', 'merged', 2 * 24 * 60],
   ['Expose the repository retrieval through the MCP connector', 'review', 2 * 24 * 60],
   ['MCP Observability Lifecycle and Checkpoint Waits', 'merged', 5 * 24 * 60],
   ['Improve MCP observability: submission and goal lifecycle events', 'failed', 8 * 24 * 60],
-].map(([name, status, minutes], index) => ({
+] as Array<[string, string, number]>).map(([name, status, minutes], index) => ({
   draft_id: `plan-${index}`, repository: 'example/workspace', name, initial_prompt: `Plan ${name}`,
-  status, created_at: minutesAgo(minutes as number), updated_at: minutesAgo(minutes as number),
+  status, created_at: minutesAgo(minutes), updated_at: minutesAgo(minutes),
   issue_summary: { total: 6, pending: 1, processing: 1, merged: 4, closed: 0 },
 }));
 
