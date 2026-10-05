@@ -78,16 +78,23 @@ const Description: React.FC<{ text: string | null }> = ({ text }) => text ? (
   <p data-testid="global-search-description" className="line-clamp-4 border-t border-slate-200 pt-2 text-xs leading-5 text-slate-500">{text}</p>
 ) : null;
 
-function itemMeta(item: SearchItem): string {
-  switch (item.kind) {
-    case 'repository':
-      return 'Repository';
-    case 'plan':
-      return `${getRepoName(item.plan.repository)} · ${formatTimeAgo(item.plan.updated_at || item.plan.created_at)}`;
-    case 'task':
-      return `${item.task.repository ? getRepoName(item.task.repository) : 'unknown'} · ${formatTimeAgo(item.task.createdAt)}`;
+/**
+ * Right-hand row metadata. The repository name is capped and truncates (full slug in the tooltip) so a
+ * long name can never squeeze the title; the age stays whole.
+ */
+const ResultMeta: React.FC<{ item: SearchItem }> = ({ item }) => {
+  if (item.kind === 'repository') {
+    return <span className="mt-0.5 flex-shrink-0 whitespace-nowrap text-[11px] text-slate-400">Repository</span>;
   }
-}
+  const repository = item.kind === 'plan' ? item.plan.repository : item.task.repository;
+  const age = formatTimeAgo(item.kind === 'plan' ? item.plan.updated_at || item.plan.created_at : item.task.createdAt);
+  return (
+    <span data-testid="global-search-result-meta" className="mt-0.5 flex min-w-0 max-w-[40%] whitespace-nowrap text-[11px] text-slate-400">
+      <span className="truncate" title={repository || undefined}>{repository ? getRepoName(repository) : 'unknown'}</span>
+      <span className="flex-shrink-0">&nbsp;· {age}</span>
+    </span>
+  );
+};
 
 interface ResultListProps {
   items: SearchItem[];
@@ -124,7 +131,7 @@ export const SearchResultList: React.FC<ResultListProps> = ({ items, activeIndex
             <span className="min-w-0 flex-1 break-words text-sm font-medium leading-5 text-slate-900">
               {getItemTitle(item)}
             </span>
-            <span className="mt-0.5 flex-shrink-0 whitespace-nowrap text-[11px] text-slate-400">{itemMeta(item)}</span>
+            <ResultMeta item={item} />
           </li>
         </React.Fragment>
       );

@@ -111,6 +111,31 @@ describe('GlobalSearch palette', () => {
     expect(within(preview).getByText('Review')).toHaveClass('rounded-full');
   });
 
+  it('caps and truncates a long repository name in the result row, keeping the full slug in a tooltip', async () => {
+    const longRepo = `integry/${'A'.repeat(90)}`;
+    vi.mocked(getTasks).mockResolvedValue({
+      tasks: [{ id: 'task-3', repository: longRepo, title: 'Long repo task', status: 'completed', createdAt: new Date().toISOString() }],
+      total: 1,
+    } as never);
+    vi.mocked(getDrafts).mockResolvedValue({
+      drafts: [{
+        draft_id: 'plan-3', repository: longRepo, name: 'Long repo plan', initial_prompt: '', status: 'review',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }],
+      total: 1, page: 1, limit: 5, hasMore: false,
+    });
+    await renderWithResults();
+    const metas = within(screen.getByRole('listbox')).getAllByTestId('global-search-result-meta');
+    expect(metas).toHaveLength(2);
+    for (const meta of metas) {
+      expect(meta).toHaveClass('min-w-0', 'max-w-[40%]');
+      expect(meta).not.toHaveClass('flex-shrink-0');
+      const name = within(meta).getByText('A'.repeat(90));
+      expect(name).toHaveClass('truncate');
+      expect(name).toHaveAttribute('title', longRepo);
+    }
+  });
+
   it('shows a failure reason as a finding with the file path as code', async () => {
     vi.mocked(getTasks).mockResolvedValue({
       tasks: [{

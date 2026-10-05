@@ -69,3 +69,29 @@ test('global search opens a master-preview palette with category scopes', async 
   await input.press('Shift+Enter');
   await expect(page).toHaveURL(/\/tasks\?search=mcp$/);
 });
+
+test('a long repository name truncates instead of collapsing the result title', async ({ page }) => {
+  const repository = `example/${'A'.repeat(90)}`;
+  const title = 'Expose the repository retrieval through the MCP connector';
+  await fixture(page, { width: 1440, height: 900 }, [], []);
+  await page.route('**/api/planner/drafts?**', route => route.fulfill({ json: { drafts: [], total: 0, page: 1, limit: 5, hasMore: false } }));
+  await page.route('**/api/tasks?**', route => route.fulfill({ json: { tasks: [{ ...tasks[0], title, repository }], total: 1 } }));
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: { agents: [], repositories: [] } }));
+  await page.goto('/');
+
+  await page.getByRole('combobox', { name: 'Search' }).fill('mcp');
+  const list = page.getByRole('listbox', { name: 'Search results' });
+  const row = list.getByRole('option');
+  await expect(row).toHaveCount(1);
+  const listBox = (await list.boundingBox())!;
+  const titleBox = (await row.getByText(title, { exact: true }).boundingBox())!;
+  const meta = row.getByTestId('global-search-result-meta');
+  const metaBox = (await meta.boundingBox())!;
+  // The title keeps most of the row and nothing spills past the list's right edge.
+  expect(titleBox.width).toBeGreaterThan(listBox.width * 0.45);
+  expect(metaBox.width).toBeLessThanOrEqual(listBox.width * 0.4 + 1);
+  expect(metaBox.x + metaBox.width).toBeLessThanOrEqual(listBox.x + listBox.width);
+  expect(await list.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(meta.getByTitle(repository)).toBeVisible();
+  await captureTarget(page.locator('body'), 'global-search-palette-long-repo');
+});
