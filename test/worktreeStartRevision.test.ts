@@ -22,6 +22,7 @@ const remote = path.join(root, 'remote.git');
 const clone = path.join(root, 'clones', 'owner', 'repo');
 let policyCommit: string;
 let headCommit: string;
+let rewrittenCommit: string;
 
 before(async () => {
     await simpleGit().raw(['init', '--bare', '--initial-branch=main', remote]);
@@ -42,22 +43,55 @@ before(async () => {
     await git.add('.').commit('advanced commit');
     headCommit = (await git.revparse(['HEAD'])).trim();
     await git.push('origin', 'main');
+    // A branch rewritten to history that no longer contains the policy commit (force-push).
+    await git.checkout(['--orphan', 'rewritten']);
+    await writeFile(path.join(seed, 'state.txt'), 'rewritten');
+    await git.add('.').commit('unrelated commit');
+    rewrittenCommit = (await git.revparse(['HEAD'])).trim();
+    await git.push('origin', 'rewritten');
+    // An epic branch created after its policy fell back to the default branch.
+    await git.checkout(['-b', 'epic', 'main']).push('origin', 'epic');
+    // Cloning or refreshing the repository makes the new branch visible to worktree creation.
+    await simpleGit(clone).fetch(['origin']);
 });
 
 after(() => rm(root, { recursive: true, force: true }));
 
-const create = (startRevision: { branch: string; revision: string } | null) => createWorktreeForIssue(clone,
-    { issueId: 42, issueTitle: 'Fix', owner: 'owner', repoName: 'repo' }, { baseBranch: 'main', startRevision });
+const create = (startRevision: { branch: string; revision: string } | null, baseBranch = 'main') => createWorktreeForIssue(clone,
+    { issueId: 42, issueTitle: 'Fix', owner: 'owner', repoName: 'repo' }, { baseBranch, startRevision });
+
+const head = async (worktreePath: string) => (await simpleGit(worktreePath).revparse(['HEAD'])).trim();
 
 test('an issue worktree starts from the commit its workflow policy was read from', async () => {
     const { worktreePath } = await create({ branch: 'main', revision: policyCommit });
-    assert.equal((await simpleGit(worktreePath).revparse(['HEAD'])).trim(), policyCommit);
+    assert.equal(await head(worktreePath), policyCommit);
     assert.equal(await readFile(path.join(worktreePath, 'state.txt'), 'utf8'), 'policy');
 });
 
-test('without a usable policy commit the worktree starts from the fetched branch head', async () => {
-    for (const startRevision of [null, { branch: 'release', revision: policyCommit }, { branch: 'main', revision: 'f'.repeat(40) }]) {
-        const { worktreePath } = await create(startRevision);
-        assert.equal((await simpleGit(worktreePath).revparse(['HEAD'])).trim(), headCommit, JSON.stringify(startRevision));
+test('without a workflow policy the worktree starts from the fetched branch head', async () => {
+    const { worktreePath } = await create(null);
+    assert.equal(await head(worktreePath), headCommit);
+});
+
+test('a policy read from the default branch for a missing base starts from its commit on the default branch', async () => {
+    const { worktreePath } = await create({ branch: 'main', revision: policyCommit }, 'missing-epic');
+    assert.equal(await head(worktreePath), policyCommit);
+});
+
+test('a base that moved away from the policy commit stops preparation instead of checking out other code', async (t) => {
+    const cases: Array<[string, { branch: string; revision: string }, string]> = [
+        ['force-pushed base', { branch: 'rewritten', revision: policyCommit }, 'rewritten'],
+        ['base appeared after the policy fell back to the default branch', { branch: 'main', revision: policyCommit }, 'epic'],
+        ['policy read from another branch', { branch: 'release', revision: policyCommit }, 'main'],
+        ['unknown policy commit', { branch: 'main', revision: 'f'.repeat(40) }, 'main'],
+        ['malformed policy commit', { branch: 'main', revision: 'main' }, 'main'],
+    ];
+    for (const [name, startRevision, baseBranch] of cases) {
+        await t.test(name, async () => {
+            await assert.rejects(create(startRevision, baseBranch), /repository workflow revision/);
+        });
     }
+    // Sanity: each rejected base exists and could have been checked out without a policy.
+    assert.equal(await head((await create(null, 'rewritten')).worktreePath), rewrittenCommit);
+    assert.equal(await head((await create(null, 'epic')).worktreePath), headCommit);
 });
