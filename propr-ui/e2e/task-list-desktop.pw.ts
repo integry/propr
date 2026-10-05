@@ -223,7 +223,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
-  // The card shows the newest four runs and counts the rest: +4 ●─●─●─⟳, on a pill so it reads as a track.
+  // The card shows the newest four runs and counts the rest: [+4] ●─●─●─⟳, on a pill so it reads as a track, the count a badge of its own.
   const track = selectedCard.getByTestId('run-count');
   await expect(track).toHaveAttribute('aria-label', '8 runs');
   await expect(track.getByTestId('run-track-overflow')).toHaveText('+4');
@@ -259,7 +259,12 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   const header = details.getByTestId('task-header-tiers');
   await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
   await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
+  // Tier 1 reads `integry/propr • #2664 ↗ • ● Implementing`: bullets only, and no empty icon between them.
+  await expect(header.getByTestId('task-header-identity').getByRole('group', { name: 'Git context' })).toHaveText('integry/propr•#2664');
+  await expect(header.getByTestId('task-status-badge').locator('svg')).toHaveCount(0);
   await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago) · Found 2 issues');
+  // The run line keeps to one separator, the middle dot.
+  expect(await header.locator('h2 + div').innerText()).not.toContain('•');
   await expect(header.getByRole('group', { name: 'Execution runtime' })).toHaveText(/gpt-6-astra.*3m 0?0s/);
   await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText(/420k in · 12k out.*0\.1% weekly quota/);
   await expect(header).not.toContainText('3.9M');
@@ -268,13 +273,17 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   expect((await header.boundingBox())!.height).toBeLessThanOrEqual(120);
   // The pane's controls are icons in the header's first row, not a row of their own.
   await expect(header.getByTestId('task-header-identity').getByRole('button', { name: 'Close task details' })).toBeVisible();
-  // The inspected run is named in the panels it changed, with the way back to the live run beside it.
+  // The inspected run is named in the panels it changed; the way back to the live run sits at the right of the timeline's header, where the run was opened.
   const inspected = details.getByTestId('inspected-run-context').filter({ visible: true });
   await expect(inspected).toHaveText(/Run 3 of 8 · Completed/);
+  await expect(inspected.getByRole('button')).toHaveCount(0);
   await expect(details.getByRole('heading', { name: 'FILES CHANGED (Run 3)' })).toBeVisible();
   await expect(details.locator('#execution-event-log-section')).toContainText(/(EXECUTION LOG|TERMINAL OUTPUT) \(Run 3 · /);
-  const backToNewest = inspected.getByRole('button', { name: 'Return to live Run 8' });
+  const timelineHeader = details.getByText('TIMELINE', { exact: true }).filter({ visible: true }).locator('..');
+  const backToNewest = timelineHeader.getByRole('button', { name: 'Return to live Run 8' });
   await expect(backToNewest).toBeVisible();
+  const [headerBox, backBox] = [await timelineHeader.boundingBox(), await backToNewest.boundingBox()];
+  expect(Math.round(headerBox!.x + headerBox!.width - (backBox!.x + backBox!.width))).toBeLessThanOrEqual(16);
   // The way out reads as a button, not metadata: a slate-300 border around dark slate-800 text.
   await expect(backToNewest).toHaveCSS('border-top-color', 'rgb(203, 213, 225)');
   await expect(backToNewest).toHaveCSS('color', 'rgb(30, 41, 59)');

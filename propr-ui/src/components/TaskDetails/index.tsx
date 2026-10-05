@@ -10,7 +10,7 @@ import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
 import ContextStrip from './ContextStrip';
 import ActionBar from './ActionBar';
-import TaskHeader from './TaskHeader';
+import TaskHeader, { ReturnToRunButton } from './TaskHeader';
 import ProgressBar from './ProgressBar';
 import LeftPaneBody from './LeftPaneBody';
 import SectionLabelHeader from './SectionLabelHeader';
@@ -206,7 +206,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
-  // Opening an earlier run is local to the panels below: they name it, the task's header does not change.
+  // Opening an earlier run is local to the panels below: they name it, the timeline's header has the way back, and the header's run line follows it.
   const inspectionContext = inspection && onSelectRun ? {
     runNumber: inspection.run.number,
     runCount: inspection.head.number,
@@ -264,10 +264,11 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
       <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden">
         {/* Header Row - TIMELINE and section label */}
         <div className={`flex-shrink-0 flex border-b border-slate-200 sm:hidden${wideOnly(embedded, 'lg:flex')}`}>
-          <div className={`w-full flex-shrink-0 px-4 flex items-center${wideOnly(embedded, 'lg:w-[30%]')}`}>
+          <div className={`w-full flex-shrink-0 px-4 flex items-center justify-between gap-3${wideOnly(embedded, 'lg:w-[30%]')}`}>
             <div className={`py-2${wideOnly(embedded, 'lg:py-2.5')} text-xs font-bold uppercase tracking-widest text-slate-500`}>
               TIMELINE
             </div>
+            {inspectionContext && <ReturnToRunButton {...inspectionContext} />}
           </div>
           <SectionLabelHeader
             commandMode={taskData.taskInfo?.commandMode}
@@ -289,10 +290,12 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             aria-label="Task timeline"
             className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200 scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r')}`}
           >
-            <div className={`sticky top-0 z-[1] hidden items-center border-b border-slate-200 bg-white px-4 sm:flex${wideOnly(embedded, 'lg:hidden')}`}>
+            <div className={`sticky top-0 z-[1] hidden items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:flex${wideOnly(embedded, 'lg:hidden')}`}>
               <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
                 TIMELINE
               </div>
+              {/* The way back from an earlier run sits where the run was opened. */}
+              {inspectionContext && <ReturnToRunButton {...inspectionContext} />}
             </div>
             <LeftPaneBody
               history={taskData.history}

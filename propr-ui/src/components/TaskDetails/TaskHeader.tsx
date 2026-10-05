@@ -142,12 +142,20 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   );
 };
 
-/** The task's state as one pill, for the compact desktop header's first row. */
+/** Statuses whose agent is still at work: their dot pulses, as on the list's pills. */
+const WORKING_STATUSES = new Set(['PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'POST_PROCESSING']);
+
+/**
+ * The task's state as one pill, for the compact desktop header's first row:
+ * `● Implementing`, led by a solid dot like the list's pills. An outlined
+ * icon at this size read as an empty placeholder beside the separators.
+ */
 export const TaskStatusBadge: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
+  const working = WORKING_STATUSES.has(currentStatus?.toUpperCase() ?? '');
   return (
     <span data-testid="task-status-badge" className={`inline-flex flex-none items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>
-      {statusInfo.icon}
+      <span aria-hidden="true" className={`h-1.5 w-1.5 flex-none rounded-full bg-current${working ? ' animate-pulse' : ''}`} />
       {statusInfo.label}
     </span>
   );
@@ -168,30 +176,33 @@ export interface RunInspection {
 /**
  * Says, in the header of a panel below, that the panel shows an earlier run
  * and how it ended. Inspecting a run is local to those panels: the task's
- * header above keeps describing the task and its newest run.
+ * header above keeps describing the task and its newest run. The way back
+ * sits in the timeline's header, where the run was opened.
  */
-export const InspectedRunContext: React.FC<RunInspection> = ({ runNumber, runCount, status, commandMode, headActive, onBack }) => (
+export const InspectedRunContext: React.FC<RunInspection> = ({ runNumber, runCount, status, commandMode }) => (
   <span
     role="status"
     data-testid="inspected-run-context"
-    className="flex min-w-0 flex-1 items-center justify-between gap-3 text-xs normal-case tracking-normal"
+    className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs normal-case tracking-normal text-slate-500"
   >
-    <span className="inline-flex min-w-0 items-center gap-1.5 text-slate-500">
-      <History aria-hidden="true" className="h-3.5 w-3.5 flex-none text-slate-400" />
-      <span className="truncate">
-        <span className="font-semibold text-slate-800">Run {runNumber} of {runCount}</span>
-        {' · '}{getStatusInfo(status, commandMode).label}
-      </span>
+    <History aria-hidden="true" className="h-3.5 w-3.5 flex-none text-slate-400" />
+    <span className="truncate">
+      <span className="font-semibold text-slate-800">Run {runNumber} of {runCount}</span>
+      {' · '}{getStatusInfo(status, commandMode).label}
     </span>
-    <button
-      type="button"
-      onClick={onBack}
-      className="inline-flex flex-none items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium text-slate-800 shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-    >
-      {headActive ? `Return to live Run ${runCount}` : `Back to Run ${runCount}`}
-      <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 text-teal-600" />
-    </button>
   </span>
+);
+
+/** The way back from an earlier run to the newest, called live while it still works. */
+export const ReturnToRunButton: React.FC<Pick<RunInspection, 'runCount' | 'headActive' | 'onBack'>> = ({ runCount, headActive, onBack }) => (
+  <button
+    type="button"
+    onClick={onBack}
+    className="inline-flex flex-none items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium leading-4 text-slate-800 shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+  >
+    {headActive ? `Return to live Run ${runCount}` : `Back to Run ${runCount}`}
+    <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 text-teal-600" />
+  </button>
 );
 
 /** The run on screen's state: `Active`, or how it ended and when, e.g. `Completed 39 mins ago`. */

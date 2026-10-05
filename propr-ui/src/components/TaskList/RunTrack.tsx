@@ -36,7 +36,7 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
 };
 
 /**
- * The trend of a task's runs on its list card: `+4 ●─■─■─⟳`. Never more than
+ * The trend of a task's runs on its list card: `[+4] ●─■─■─⟳`. Never more than
  * the newest four, joined by a 1px rail and set on a quiet slate pill, so a
  * row of identical dots reads as a track rather than a masked password. The
  * older runs are counted inside the pill; the task pane's timeline carries
@@ -46,10 +46,10 @@ export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
   const shown = runs.slice(-RUN_TRACK_LIMIT);
   const hidden = runs.length - shown.length;
   return (
-    // The count prefixes the nodes it stands for: set tight against them and centred on the rail, so the gap never reads as a separator.
-    <span data-testid="run-track" className="inline-flex flex-none items-center gap-1 rounded-sm bg-slate-100/70 px-1.5 py-0.5">
+    // The count is a badge of its own, set against the nodes it stands for, so it reads as their quantity, never as a number set off by a separator.
+    <span data-testid="run-track" className="inline-flex flex-none items-center rounded-sm bg-slate-100/70 px-1.5 py-0.5">
       {hidden > 0 && (
-        <span data-testid="run-track-overflow" className="font-mono text-[10px] leading-none text-slate-500 translate-y-px">
+        <span data-testid="run-track-overflow" className="mr-1 rounded-sm bg-slate-200 px-1 font-mono text-[10px] font-medium leading-3 text-slate-600">
           +{hidden}
         </span>
       )}

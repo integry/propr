@@ -42,22 +42,28 @@ const formatTokenCount = (count: number | null | undefined): string => {
   return count.toString();
 };
 
-// Separator dot between items
-const Dot: React.FC = () => (
-  <span aria-hidden="true" className="text-gray-300 mx-1.5">·</span>
+/**
+ * The line's one separator. Metadata is set off by middle dots throughout;
+ * the desktop header's first tier, where the task lives, uses bullets.
+ */
+type Separator = '·' | '•';
+
+// Separator between items
+const Dot: React.FC<{ glyph?: Separator }> = ({ glyph = '·' }) => (
+  <span aria-hidden="true" className="text-gray-300 mx-1.5">{glyph}</span>
 );
 
 // Keep each domain identifiable even when the header wraps at narrow widths.
-const ContextGroup: React.FC<{ label: string; divided?: boolean; children: React.ReactNode }> = ({ label, divided, children }) => {
+const ContextGroup: React.FC<{ label: string; divided?: boolean; separator?: Separator; children: React.ReactNode }> = ({ label, divided, separator = '·', children }) => {
   const items = React.Children.toArray(children);
   if (!items.length) return null;
   return (
     <div role="group" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-y-1">
-      {/* Groups continue the same line with a bullet, not a bordered pipe that reads as a stray character. */}
-      {divided && <span aria-hidden="true" className="mr-3 text-gray-300">•</span>}
+      {/* Groups continue the same line with its own separator, not a bordered pipe that reads as a stray character. */}
+      {divided && <span aria-hidden="true" className="mr-1.5 text-gray-300">{separator}</span>}
       {items.map((item, index) => (
         <React.Fragment key={index}>
-          {index > 0 && <Dot />}
+          {index > 0 && <Dot glyph={separator} />}
           {item}
         </React.Fragment>
       ))}
@@ -343,14 +349,15 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   const showGit = part !== 'telemetry';
   const showTelemetry = part !== 'git';
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
+    <div className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
       {showGit && (
-        <ContextGroup label="Git context">
+        <ContextGroup label="Git context" separator={part === 'git' ? '•' : '·'}>
+          {/* Only chips with something to show, so no separator stands beside an empty one. */}
           {!mobileMetadataOnly && taskInfo && <RepoLink taskInfo={taskInfo} />}
           {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
-          {taskInfo?.number && <IssuePRChip taskInfo={taskInfo} />}
-          {taskInfo?.type === 'pr-comment' && taskInfo.issueNumber && <LinkedIssueChip taskInfo={taskInfo} />}
-          {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
+          {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}
+          {taskInfo?.type === 'pr-comment' && Boolean(taskInfo.issueNumber) && <LinkedIssueChip taskInfo={taskInfo} />}
+          {commitInfo?.shortHash && commitInfo.url && <CommitInfoChip commitInfo={commitInfo} />}
         </ContextGroup>
       )}
       {showTelemetry && (

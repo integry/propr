@@ -102,6 +102,12 @@ describe('TaskDetails embedded beside the task list', () => {
   const run = (id: string, number: number, outcome: TaskRunEntry['outcome'] = 'passed'): TaskRunEntry => ({
     task: { id, status: outcome === 'active' ? 'claude_execution' : 'completed', createdAt: '2026-10-01T12:00:00Z' }, number, type: 'Review', summary: 'Found 2 issues', outcome,
   });
+  // The pane's TIMELINE header; the other is for phones and the route page's wide layout.
+  const timelineHeader = () => {
+    const shown = screen.getAllByText('TIMELINE').filter(node => !node.closest('.sm\\:hidden'));
+    expect(shown).toHaveLength(1);
+    return shown[0].parentElement!;
+  };
   const renderInspecting = (head: TaskRunEntry, onSelectRun = vi.fn()) => {
     render(
       <MemoryRouter initialEntries={['/tasks?task=run-1']}>
@@ -117,7 +123,7 @@ describe('TaskDetails embedded beside the task list', () => {
     return shown[0];
   };
 
-  it('keeps the header about the task and names an earlier run in the panel below, with a way back', () => {
+  it('keeps the header about the task, names an earlier run in the panel below, and puts the way back in the timeline header', () => {
     const onSelectRun = vi.fn();
     const context = renderInspecting(run('run-2', 2), onSelectRun);
     expect(context).toHaveTextContent('Run 1 of 2 · Completed');
@@ -127,12 +133,14 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(screen.getByTestId('header-run-label')).toHaveTextContent(/^Run 1\/2 \(Completed .+\)$/);
     expect(header).not.toHaveTextContent('Run 2/2');
     expect(screen.getByTestId('task-header-identity')).toContainElement(screen.getByRole('button', { name: 'Close pane' }));
-    fireEvent.click(within(context).getByRole('button', { name: 'Back to Run 2' }));
+    // The way back sits where the run was opened, in the timeline's header, not in the panel below.
+    expect(within(context).queryByRole('button')).toBeNull();
+    fireEvent.click(within(timelineHeader()).getByRole('button', { name: 'Back to Run 2' }));
     expect(onSelectRun).toHaveBeenCalledWith('run-2');
   });
 
   it('offers to return to the newest run as live while it is still working', () => {
-    const context = renderInspecting(run('run-2', 2, 'active'));
-    expect(within(context).getByRole('button', { name: 'Return to live Run 2' })).toBeInTheDocument();
+    renderInspecting(run('run-2', 2, 'active'));
+    expect(within(timelineHeader()).getByRole('button', { name: 'Return to live Run 2' })).toBeInTheDocument();
   });
 });
