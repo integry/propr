@@ -28,19 +28,12 @@
 
 <br />
 
-<!--
-  Hero video. GitHub only renders an inline player for videos uploaded through its web editor.
-  Upload github-orchestration-loop.mp4, then replace the linked poster below with:
-  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
--->
-<p align="center">
-  <a href="https://propr.dev/assets/videos/github-orchestration-loop.mp4">
-    <img src="media/readme-demo-poster.jpg" alt="Watch the 68-second demo: a GitHub issue gets the AI label, ProPR opens a pull request, a review comment becomes a follow-up commit, and a human merges." width="720" />
-  </a>
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/c544edf0-bf9b-4479-9f75-9cad0c87a3be" width="720" controls></video>
+</div>
 
 <p align="center">
-  <em>▶ Watch the 68-second demo — from a labeled GitHub issue to a reviewed, merged pull request.</em>
+  <em>From a labeled GitHub issue to a reviewed, merged pull request in 68 seconds.</em>
 </p>
 
 <p align="center">
@@ -178,11 +171,11 @@ Since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across i
 
 <p align="center"><em>Every run posts a summary to the pull request. The full prompts and logs stay in the ProPR Web UI.</em></p>
 
-<p align="center">
-  <img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" />
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/2fbe8f30-de69-45cc-a951-927289193f9f" width="720" controls></video>
+</div>
 
-<p align="center"><em>Planner Studio — shape the plan before any code is written.</em></p>
+<p align="center"><em>Planner Studio — shape the plan, create the issues, and follow them through to a merged PR (75 seconds).</em></p>
 
 <p align="center">
   <img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="ProPR dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" />
@@ -203,17 +196,11 @@ propr setup
 
 `propr setup` verifies the host, authorizes your agents, connects GitHub and starts the stack. Then open **http://localhost:5173** and add a repository.
 
-<!--
-  CLI setup video. Upload propr-cli-setup.mp4 through the GitHub web editor, then replace the linked poster below with:
-  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
--->
-<p align="center">
-  <a href="https://propr.dev/assets/videos/propr-cli-setup.mp4">
-    <img src="media/readme-cli-setup-poster.jpg" alt="Watch the setup walkthrough: installing propr-cli and running propr setup through to the Web UI." width="720" />
-  </a>
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/524a728b-c6e3-4f25-b2cd-73323746c07a" width="720" controls></video>
+</div>
 
-<p align="center"><em>▶ Watch the setup walkthrough (69 seconds).</em></p>
+<p align="center"><em>The setup walkthrough, from install to the Web UI (69 seconds).</em></p>
 
 **You need:** a Linux `amd64` host with Docker, **Node.js 22 or 24**, GitHub access, and an account with at least one coding-agent provider. Allow 2 vCPU, 4 GB RAM and 20 GB of disk for a single-task evaluation; 8 GB RAM or more for regular use. See the full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
 
