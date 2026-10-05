@@ -162,3 +162,14 @@ function getDefaultErrorMessage(status: number): string {
       return `Request failed with status ${status}.`;
   }
 }
+
+/**
+ * The caller cancelled the request (for example Ctrl-C). Nothing about the
+ * server-side outcome is implied.
+ */
+export class RequestCancelledError extends Error {
+  constructor(message: string = "Request cancelled.") {
+    super(message);
+    this.name = "RequestCancelledError";
+  }
+}

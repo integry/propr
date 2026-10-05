@@ -509,3 +509,231 @@ test("goal capabilities lists support and actionable reasons", async () => {
   const json = await run(["capabilities", "--json"], () => ({ body: { agents: [] } }));
   assert.deepEqual(JSON.parse(json.stdout), { version: 1, kind: "goal-capabilities", agents: [] });
 });
+
+function waitFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    outcome: "timed_out",
+    condition: "terminal",
+    cursor: "gwc1.first",
+    event: null,
+    matchedImmediately: false,
+    goal: {
+      id: "goal-1", repository: "acme/repo", title: "Ship reliable delivery", lifecycleState: "running",
+      requestedState: "running", resultState: null, terminal: false, goalCompleted: false, pauseConfirmed: false,
+      currentTaskId: "goal-task-1", checkpoint: { count: 0, lastAt: null }, finalPr: null, failureReason: null,
+      updatedAt: "2026-10-04T10:00:00.000Z", completedAt: null,
+    },
+    waitedMs: 30_000,
+    timeoutSeconds: 30,
+    ...overrides,
+  };
+}
+
+test("goal wait chains bounded requests with the returned cursor until the condition matches", async () => {
+  const completed = waitFixture({
+    outcome: "matched", cursor: "gwc1.second",
+    event: { cursor: "gwc1.second", sequence: 7, kind: "lifecycle", state: "completed", previousState: "running", checkpoint: null, occurredAt: "2026-10-04T10:01:00.000Z" },
+    goal: { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "completed", resultState: "completed", terminal: true, goalCompleted: true },
+  });
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--timeout", "120", "--json"],
+    (_request, attempt) => ({ body: attempt === 1 ? waitFixture() : completed }));
+  assert.equal(result.exitCode, undefined);
+  assert.equal(result.requests.length, 2);
+  assert.equal(result.requests[0].url.pathname, "/api/goals/goal-1/wait");
+  assert.equal(result.requests[0].url.searchParams.get("until"), "terminal");
+  assert.equal(result.requests[0].url.searchParams.get("afterCursor"), null, "the first request may match a state that already holds");
+  assert.ok(Number(result.requests[0].url.searchParams.get("timeoutSeconds")) <= 30, "each request is bounded");
+  assert.equal(result.requests[1].url.searchParams.get("afterCursor"), "gwc1.first", "the cursor carries across requests");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.version, 1);
+  assert.equal(output.kind, "goal-wait");
+  assert.equal(output.outcome, "matched");
+  assert.equal(output.cursor, "gwc1.second");
+  assert.equal(output.goal.goalCompleted, true);
+  assert.equal(output.requests, 2);
+  assert.equal(output.exitCode, 0);
+
+  const human = await run(["wait", "goal-1", "--until", "terminal"], () => ({ body: completed }));
+  assert.match(human.stdout, /Matched terminal: completed/);
+  assert.match(human.stdout, /Cursor: gwc1\.second/);
+});
+
+test("goal wait reports timeout and unreachable outcomes with documented nonzero exits", async () => {
+  const timedOut = await run(["wait", "goal-1", "--until", "completed", "--after-cursor", "gwc1.start", "--timeout", "0", "--json"],
+    () => ({ body: waitFixture({ condition: "completed", timeoutSeconds: 0 }) }));
+  assert.equal(timedOut.exitCode, 2);
+  assert.equal(timedOut.requests.length, 1, "a zero deadline makes exactly one immediate check");
+  assert.equal(timedOut.requests[0].url.searchParams.get("timeoutSeconds"), "0");
+  assert.equal(timedOut.requests[0].url.searchParams.get("afterCursor"), "gwc1.start");
+  assert.equal(JSON.parse(timedOut.stdout).outcome, "timed_out");
+
+  const human = await run(["wait", "goal-1", "--timeout", "0"], () => ({ body: waitFixture({ condition: null }) }));
+  assert.equal(human.exitCode, 2);
+  assert.match(human.stdout, /Timed out waiting for a new event\. The timeout itself is not a goal failure\. The goal is currently running\./);
+
+  // The projection may be newer than the examined events: a goal that failed just after the
+  // last read is reported as failed, and the timeout line must not deny it.
+  const failedGoal = { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "failed", resultState: "failed", terminal: true, failureReason: "Provider quota exhausted" };
+  const failed = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "0"],
+    () => ({ body: waitFixture({ condition: "checkpoint", goal: failedGoal }) }));
+  assert.equal(failed.exitCode, 2, "the outcome is still a timeout of the examined events");
+  assert.match(failed.stdout, /Timed out waiting for checkpoint\. The timeout itself is not a goal failure\. The goal is currently failed\./);
+  assert.doesNotMatch(failed.stdout, /not failed|has not failed|did not fail/);
+  assert.match(failed.stdout, /State:  failed \(result: failed\)/);
+  assert.match(failed.stdout, /Failure: Provider quota exhausted/);
+
+  const unreachable = await run(["wait", "goal-1", "--until", "paused", "--json"], () => ({
+    body: waitFixture({ outcome: "unreachable", condition: "paused",
+      goal: { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "failed", resultState: "failed", terminal: true } }),
+  }));
+  assert.equal(unreachable.exitCode, 3);
+  assert.equal(JSON.parse(unreachable.stdout).exitCode, 3);
+});
+
+test("goal wait rejects bad arguments locally and surfaces cursor errors with recovery", async () => {
+  for (const args of [["wait", "goal-1", "--until", "done", "--json"], ["wait", "goal-1", "--timeout", "forever", "--json"], ["wait", "goal-1", "--timeout", "100000", "--json"]]) {
+    const result = await run(args, () => ({ body: waitFixture() }));
+    assert.equal(result.exitCode, 1, args.join(" "));
+    assert.equal(result.requests.length, 0);
+    assert.equal(JSON.parse(result.stdout).error.code, "invalid_arguments");
+  }
+  const invalid = await run(["wait", "goal-1", "--after-cursor", "gwc1.other", "--json"], () => ({
+    status: 400, body: { error: "afterCursor was issued for a different goal.", code: "CURSOR_WRONG_GOAL", recovery: "Use a cursor returned by a wait on this goal." },
+  }));
+  assert.equal(invalid.exitCode, 1);
+  const error = JSON.parse(invalid.stdout).error;
+  assert.equal(error.code, "invalid_cursor");
+  assert.match(error.recovery, /without --after-cursor/);
+  const expired = await run(["wait", "goal-1", "--after-cursor", "gwc1.old", "--json"], () => ({
+    status: 410, body: { error: "afterCursor refers to goal history that is no longer available.", code: "CURSOR_EXPIRED", recovery: "Read the goal." },
+  }));
+  assert.equal(JSON.parse(expired.stdout).error.code, "cursor_expired");
+});
+
+test("goal wait reports the concurrent wait limit with its own code and the server's recovery", async () => {
+  const limited = () => ({
+    status: 429, body: { error: "At most 16 goal waits may be open at once per owner on this server; 16 are open across propr goal wait and MCP wait_goal.",
+      code: "WAIT_LIMIT", recovery: "Let an existing wait finish or cancel it before starting another." },
+  });
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.keep", "--json"], limited);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.requests.length, 1, "the limit is reported, not retried");
+  const error = JSON.parse(result.stdout).error;
+  assert.equal(error.code, "wait_limit");
+  assert.equal(error.status, 429);
+  assert.match(error.message, /16 are open/);
+  assert.match(error.recovery, /Let an existing wait finish or cancel it/);
+  assert.match(error.recovery, /re-run the same 'propr goal wait' command/);
+
+  // A 429 without the wait-limit code keeps the generic classification.
+  const generic = await run(["wait", "goal-1", "--after-cursor", "gwc1.keep", "--json"], () => ({ status: 429, body: { error: "Too many requests" } }));
+  assert.notEqual(JSON.parse(generic.stdout).error.code, "wait_limit");
+});
+
+test("goal wait fails with boundary_not_established when the first cursorless reply is lost", async () => {
+  // A second cursorless request would be answered with a later boundary, hiding anything published in between.
+  const lostThenLater = (_request: unknown, attempt: number) =>
+    attempt === 1 ? new TypeError("socket hang up") : { body: waitFixture({ condition: "checkpoint", cursor: "gwc1.later" }) };
+  const json = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "60", "--json"], lostThenLater);
+  assert.equal(json.exitCode, 1);
+  assert.equal(json.requests.length, 1, "the cursorless request is not retried");
+  const error = JSON.parse(json.stdout).error;
+  assert.equal(error.code, "boundary_not_established");
+  assert.equal(error.goalId, "goal-1");
+  assert.match(error.recovery, /propr goal inspect goal-1/);
+  assert.match(error.recovery, /--after-cursor/);
+
+  const human = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "60"], lostThenLater);
+  assert.equal(human.exitCode, 1);
+  assert.match(human.stderr, /Could not establish where this wait starts/);
+  assert.match(human.stderr, /propr goal inspect goal-1/);
+  assert.doesNotMatch(human.stdout, /gwc1\.later/);
+});
+
+test("goal wait stops at once when the terminal event is already behind the cursor", async () => {
+  const consumed = waitFixture({
+    outcome: "unreachable", condition: "terminal", cursor: "gwc1.done", waitedMs: 0,
+    goal: { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "completed", resultState: "completed", terminal: true, goalCompleted: true },
+  });
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.done", "--timeout", "3600", "--json"], () => ({ body: consumed }));
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.requests.length, 1, "no further bounded requests are chained toward the deadline");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.outcome, "unreachable");
+  assert.equal(output.cursor, "gwc1.done");
+  assert.equal(output.goal.goalCompleted, true);
+
+  const human = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.done"], () => ({ body: consumed }));
+  assert.match(human.stdout, /Cannot match terminal: the goal is completed and records no further events after this cursor\./);
+});
+
+test("goal wait retries a transient failure with the same cursor", async () => {
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.keep", "--timeout", "60", "--json"], (_request, attempt) =>
+    attempt === 1 ? { status: 503, body: { error: "Service unavailable" } }
+      : { body: waitFixture({ outcome: "matched", cursor: "gwc1.next", event: { cursor: "gwc1.next", sequence: 2, kind: "lifecycle", state: "failed", previousState: "running", checkpoint: null, occurredAt: "now" } }) });
+  assert.equal(result.exitCode, undefined);
+  assert.deepEqual(result.requests.map((request) => request.url.searchParams.get("afterCursor")), ["gwc1.keep", "gwc1.keep"]);
+});
+
+test("Ctrl-C stops waiting, releases the request and prints a resumable cursor", async () => {
+  const stderr: string[] = [];
+  let exitCode: number | undefined;
+  let attempts = 0;
+  let aborted = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    attempts++;
+    if (attempts === 1) {
+      return new Response(JSON.stringify(waitFixture({ cursor: "gwc1.progress" })), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); });
+      setTimeout(() => process.emit("SIGINT"), 10);
+    });
+  }) as typeof fetch;
+  console.log = () => {};
+  console.error = (...values: unknown[]) => { stderr.push(values.map(String).join(" ")); };
+  process.exit = ((code?: string | number | null) => {
+    exitCode = Number(code ?? 0);
+    throw new CommandExit(exitCode);
+  }) as typeof process.exit;
+  const sigintListeners = process.listenerCount("SIGINT");
+  try {
+    await createGoalCommand().parseAsync(["wait", "goal-1", "--until", "completed", "--timeout", "600"], { from: "user" });
+  } catch (error) {
+    if (!(error instanceof CommandExit)) throw error;
+  }
+  assert.equal(exitCode, 130);
+  assert.equal(aborted, true, "the in-flight request is aborted");
+  assert.equal(attempts, 2, "an interrupted request is never retried");
+  assert.match(stderr.join("\n"), /Stopped waiting\. The goal is unaffected\./);
+  assert.match(stderr.join("\n"), /--until completed --after-cursor gwc1\.progress/);
+  assert.equal(process.listenerCount("SIGINT"), sigintListeners, "the SIGINT handler is removed");
+});
+
+test("goal wait exits as timed out at its deadline when the server never answers", async () => {
+  const stdout: string[] = [];
+  let exitCode: number | undefined;
+  let aborted = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => await new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => { aborted = true; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); });
+  })) as typeof fetch;
+  console.log = (...values: unknown[]) => { stdout.push(values.map(String).join(" ")); };
+  process.exit = ((code?: string | number | null) => {
+    exitCode = Number(code ?? 0);
+    throw new CommandExit(exitCode);
+  }) as typeof process.exit;
+  const started = Date.now();
+  try {
+    await createGoalCommand().parseAsync(["wait", "goal-1", "--until", "checkpoint", "--timeout", "0", "--json"], { from: "user" });
+  } catch (error) {
+    if (!(error instanceof CommandExit)) throw error;
+  }
+  assert.ok(Date.now() - started < 5_000, "the reply grace bounds the wait, not the HTTP timeout");
+  assert.equal(aborted, true);
+  assert.equal(exitCode, 2);
+  const output = JSON.parse(stdout.join("\n"));
+  assert.equal(output.outcome, "timed_out");
+  assert.equal(output.goal, null);
+  assert.equal(output.cursor, null, "no request completed and no cursor was supplied");
+  assert.equal(output.exitCode, 2);
+});
