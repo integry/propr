@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactNode } from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import TasksPage from './TasksPage';
 import { getRepositoryStats, getTasks } from '../api/proprApi';
@@ -242,6 +242,36 @@ describe('TasksPage split workspace', () => {
     await waitFor(() => expect(screen.getByTestId('task-details')).toHaveAttribute('data-runs', 'c-earlier:completed,c:completed'));
     expect(screen.getByTestId('task-details')).toHaveTextContent('details for route');
     expect(vi.mocked(getTasks)).toHaveBeenCalledWith({ groupBy: 'task', task: 'c', limit: 1, offset: 0 });
+  });
+
+  it('reads the full task page\'s runs again after the first read fails, until the page is left', async () => {
+    mockViewport(false);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(getTasks).mockRejectedValueOnce(new Error('Service unavailable'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const view = renderAt('/tasks/c');
+      await waitFor(() => expect(vi.mocked(getTasks)).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId('task-details')).toHaveAttribute('data-runs', '');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      await waitFor(() => expect(screen.getByTestId('task-details')).toHaveAttribute('data-runs', 'c-earlier:completed,c:completed'));
+      expect(vi.mocked(getTasks)).toHaveBeenCalledTimes(2);
+      // Every run has finished: nothing is read again.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(vi.mocked(getTasks)).toHaveBeenCalledTimes(2);
+
+      // A page whose read keeps failing stops trying once it is left.
+      vi.mocked(getTasks).mockRejectedValue(new Error('Service unavailable'));
+      view.unmount();
+      renderAt('/tasks/b');
+      await waitFor(() => expect(vi.mocked(getTasks)).toHaveBeenCalledTimes(3));
+      cleanup();
+      await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+      expect(vi.mocked(getTasks)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('navigates to the task page below the split breakpoint', async () => {

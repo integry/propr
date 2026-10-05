@@ -15,13 +15,17 @@ import type { TaskGroup } from '../components/TaskList/types';
  */
 const TASKS_PER_PAGE = 25;
 
-/** How often the task page reads its runs again while one of them is queued or running. */
-const LIVE_RUNS_REFRESH_MS = 15_000;
+/**
+ * How often the task page reads its runs again while one of them is queued or
+ * running, or while they have not been read yet (the first read failed).
+ */
+const ROUTE_RUNS_REFRESH_MS = 15_000;
 
 /**
  * Every run of the task a route page shows, oldest first, so the full page has
  * the same timeline of runs as the pane beside the list. The task page has no
- * list to refresh it, so it reads the runs again while one is still in flight.
+ * list to refresh it, so it reads the runs again while one is still in flight,
+ * and keeps trying until a first read succeeds.
  */
 function useRouteTaskRuns(taskId: string | null) {
   // A new array is what tells the hook to read the task again, as a list refresh does.
@@ -29,11 +33,12 @@ function useRouteTaskRuns(taskId: string | null) {
   const group = useOpenTaskGroup(taskId, refresh);
   const runs = useMemo(() => (group ? buildTaskRuns(buildTaskRow(group)) : undefined), [group]);
   const live = Boolean(runs?.some(run => run.outcome === 'active' || run.outcome === 'waiting'));
+  const polling = Boolean(taskId) && (!runs || live);
   useEffect(() => {
-    if (!live) return;
-    const timer = setInterval(() => setRefresh([]), LIVE_RUNS_REFRESH_MS);
+    if (!polling) return;
+    const timer = setInterval(() => setRefresh([]), ROUTE_RUNS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [live]);
+  }, [taskId, polling]);
   return runs;
 }
 

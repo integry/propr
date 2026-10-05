@@ -22,10 +22,13 @@ interface DesktopTaskHeaderProps {
   breadcrumb?: boolean;
 }
 
+/** Task types recorded for a pull request: `pr` for the PR itself, `pr-comment` for a follow-up on it. */
+const PR_TASK_TYPES = new Set<string | undefined>(['pr', 'pr-comment']);
+
 /** What the breadcrumb calls the task: its pull request or issue, else just the task. */
 const crumbLabel = (taskInfo: DesktopTaskHeaderProps['headerProps']['taskInfo']) => {
   if (!taskInfo?.number) return 'Task';
-  return `${taskInfo.type === 'pr-comment' ? 'PR' : 'Issue'} #${taskInfo.number}`;
+  return `${PR_TASK_TYPES.has(taskInfo.type) ? 'PR' : 'Issue'} #${taskInfo.number}`;
 };
 
 /** `← Tasks / PR #2720`: the full page has no list beside it, so it links back to one. */
