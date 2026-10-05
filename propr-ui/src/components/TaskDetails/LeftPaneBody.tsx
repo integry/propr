@@ -139,6 +139,10 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
     />
   );
   const timeline = runs && runs.length > 1 && taskId && onSelectRun;
+  // An earlier run's files are named as that run's, so they never read as the live run's.
+  const inspectedRun = timeline && runs[runs.length - 1].task.id !== taskId
+    ? runs.find(run => run.task.id === taskId)?.number
+    : undefined;
 
   return (
     <div className="p-3 lg:p-4 space-y-2">
@@ -164,6 +168,7 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
         <LiveFileChips
           taskId={taskId}
           isActive={isTaskActive}
+          runNumber={inspectedRun}
         />
       )}
     </div>

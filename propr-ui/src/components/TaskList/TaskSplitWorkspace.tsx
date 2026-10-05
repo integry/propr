@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { ExternalLink, GripVertical, X } from 'lucide-react';
+import { GripVertical, Maximize2, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import TaskDetails from '../TaskDetails';
 import { buildTaskRow, buildTaskRuns, taskPath } from './rowModel';
@@ -20,8 +20,8 @@ interface TaskSplitWorkspaceProps {
   onDeleted: (taskId: string) => void;
 }
 
-/** Ghost buttons: a bordered hit area that tints on hover, not bare text links. */
-const PANE_ACTION_CLASSES = 'inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
+/** Window controls: compact icon buttons docked in the pane's header, not a row of their own. */
+const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
 
 /** A dialog or a field handles its own Escape. */
 const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>
@@ -70,25 +70,6 @@ const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedT
 
           <Panel id="task-split-details" order={2} defaultSize={55} minSize={35}>
             <section aria-label="Task details" className="flex h-full min-h-0 min-w-0 flex-col bg-white" data-testid="task-split-details">
-              <div className="flex flex-none items-center justify-end gap-2 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
-                <Link
-                  to={taskPath(selectedTaskId)}
-                  className={PANE_ACTION_CLASSES}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  Open full page
-                </Link>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  aria-label="Close task details"
-                  title="Close (Esc)"
-                  className={PANE_ACTION_CLASSES}
-                >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  Close
-                </button>
-              </div>
               <div className="min-h-0 flex-1 overflow-hidden">
                 {/* Keyed by task, so switching tasks drops the old task's live subscriptions and state. */}
                 <TaskDetails
@@ -99,6 +80,27 @@ const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedT
                   onDeleted={onDeleted}
                   runs={runs}
                   onSelectRun={onSelectRun}
+                  paneControls={(
+                    <>
+                      <Link
+                        to={taskPath(selectedTaskId)}
+                        aria-label="Open full page"
+                        title="Open full page"
+                        className={PANE_ACTION_CLASSES}
+                      >
+                        <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        aria-label="Close task details"
+                        title="Close (Esc)"
+                        className={PANE_ACTION_CLASSES}
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </>
+                  )}
                 />
               </div>
             </section>

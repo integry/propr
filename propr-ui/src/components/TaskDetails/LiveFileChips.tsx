@@ -11,6 +11,8 @@ import { getDesktopSocketConfigurationKey } from '../../api/apiClient';
 interface LiveFileChipsProps {
   taskId: string;
   isActive: boolean;
+  /** Names the run the files belong to when it is not the task's newest. */
+  runNumber?: number;
 }
 
 // A file-tree icon that also carries the change: added, deleted or renamed files are tinted.
@@ -28,7 +30,7 @@ const getFileIcon = (status: FileChange['status']) => {
   }
 };
 
-const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
+const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumber }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -152,6 +154,9 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2 mt-4">
         <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
+          {runNumber !== undefined && (
+            <span className="font-medium normal-case tracking-normal text-slate-500">(Run {runNumber})</span>
+          )}
           {isActive && (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>

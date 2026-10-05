@@ -30,6 +30,8 @@ interface ExecutionEventLogProps {
   omittedEventCount?: number;
   /** Earlier output was discarded by the server, so `omittedEventCount` is not the whole history. */
   historyTruncated?: boolean;
+  /** Names the run the log belongs to when it is not the task's newest. */
+  runNumber?: number;
 }
 
 // Separate component for thought content rendering
@@ -301,6 +303,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   taskInfo,
   omittedEventCount = 0,
   historyTruncated = false,
+  runNumber,
 }) => {
   // Note: isTaskActive is still passed for potential future use
   void _isTaskActive;
@@ -336,7 +339,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         <div className="flex items-center gap-2.5 flex-shrink-0">
           <span className="font-mono text-sm font-bold text-zinc-400">{'>_'}</span>
           <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-300">
-            {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({formatEventCount(events.length + omittedEventCount, historyTruncated)})
+            {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({runNumber !== undefined && `Run ${runNumber} · `}{formatEventCount(events.length + omittedEventCount, historyTruncated)})
           </span>
         </div>
         <div className="flex items-center gap-3 justify-end min-w-0 flex-1 pl-4">

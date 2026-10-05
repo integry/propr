@@ -253,10 +253,22 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
   await expect(details.getByRole('region', { name: 'Changed files' })).toHaveText(/^(?!.*withdrawalLabels).*withdrawalHandlers\.ts/s);
   await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
-  // The header still describes the task, which is working on Run 8; the banner names the run inspected.
-  await expect(details.locator('header:visible h2').locator('..')).toHaveText(/^Implementing.*Ultrafix cycle 3 \(linting\)$/);
-  await expect(details.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
-  const backToNewest = details.getByTestId('inspected-run-banner').filter({ hasText: 'Inspecting historical Run 3 of 8 (Completed)' }).getByRole('button', { name: 'Back to Run 8' });
+  // The header stays about the task, which is working on Run 8, in two tiers with no banner above them.
+  const header = details.getByTestId('task-header-tiers');
+  await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
+  await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
+  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 8/8 · Ultrafix cycle 3 (linting)');
+  await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
+  await expect(header).not.toContainText('Run 3');
+  expect((await header.boundingBox())!.height).toBeLessThanOrEqual(120);
+  // The pane's controls are icons in the header's first row, not a row of their own.
+  await expect(header.getByTestId('task-header-identity').getByRole('button', { name: 'Close task details' })).toBeVisible();
+  // The inspected run is named in the panels it changed, with the way back to the live run beside it.
+  const inspected = details.getByTestId('inspected-run-context').filter({ visible: true });
+  await expect(inspected).toHaveText(/Run 3 of 8 · Completed/);
+  await expect(details.getByRole('heading', { name: 'FILES CHANGED (Run 3)' })).toBeVisible();
+  await expect(details.locator('#execution-event-log-section')).toContainText(/(EXECUTION LOG|TERMINAL OUTPUT) \(Run 3 · /);
+  const backToNewest = inspected.getByRole('button', { name: 'Return to live Run 8' });
   await expect(backToNewest).toBeVisible();
   // The way out reads as a button, not metadata: a slate-300 border around dark slate-800 text.
   await expect(backToNewest).toHaveCSS('border-top-color', 'rgb(203, 213, 225)');

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import TasksPage from './TasksPage';
@@ -38,8 +38,9 @@ const FollowupDialog = () => {
 
 // The details view has its own suites; here it only has to say which task it shows and how.
 vi.mock('../components/TaskDetails', () => ({
-  default: ({ taskId, embedded, onDeleted, runs }: {
+  default: ({ taskId, embedded, onDeleted, runs, paneControls }: {
     taskId?: string; embedded?: boolean; onDeleted?: (taskId: string) => void; runs?: Array<{ task: { id: string; status: string } }>;
+    paneControls?: ReactNode;
   }) => {
     // Like the real view, a delete reports to the callback it had when it started, even after unmounting.
     const deleteTask = () => {
@@ -50,6 +51,7 @@ vi.mock('../components/TaskDetails', () => ({
     return (
       <div data-testid="task-details" data-embedded={String(Boolean(embedded))} data-runs={runs?.map(run => `${run.task.id}:${run.task.status}`).join(',') ?? ''}>
         details for {taskId ?? 'route'}
+        {paneControls}
         {embedded && <button type="button" onClick={deleteTask}>Delete task</button>}
         {embedded && <FollowupDialog />}
       </div>

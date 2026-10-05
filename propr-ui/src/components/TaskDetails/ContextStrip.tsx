@@ -252,6 +252,39 @@ const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = 
   );
 };
 
+/** How the run went: what leads the line, then the model and runtime, then consumption. */
+const TelemetryGroups: React.FC<{
+  modelName: string;
+  duration?: number | null;
+  synthetic?: boolean;
+  tokenUsage?: TokenUsage;
+  usageMetricRecords?: UsageMetricRecord[];
+  lead?: React.ReactNode;
+  divided: boolean;
+}> = ({ modelName, duration, synthetic, tokenUsage, usageMetricRecords, lead, divided }) => {
+  const hasTokens = tokenUsage && Object.values(tokenUsage).some(value => (value ?? 0) > 0);
+  const hasQuota = usageMetricRecords?.some(record => record.metricValue > 0 &&
+    ['session', 'Session', 'weeklyAll', 'weekly', 'Weekly'].includes(record.metricKey));
+  return (
+    <>
+      {lead && (
+        <ContextGroup label="Run">
+          <span className="min-w-0 text-gray-700">{lead}</span>
+        </ContextGroup>
+      )}
+      <ContextGroup label="Execution runtime" divided={divided}>
+        <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
+      </ContextGroup>
+      {(hasTokens || hasQuota) && (
+        <ContextGroup label="Consumption" divided>
+          {hasTokens && <TokenUsageChip tokenUsage={tokenUsage} />}
+          {hasQuota && <UsageMetricsChip usageMetricRecords={usageMetricRecords!} />}
+        </ContextGroup>
+      )}
+    </>
+  );
+};
+
 interface ContextStripProps {
   taskInfo: TaskInfo | null;
   modelName: string;
@@ -265,6 +298,13 @@ interface ContextStripProps {
   mobileRepoOnly?: boolean;
   /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
   mobileMetadataOnly?: boolean;
+  /**
+   * One half of the strip: `git` is where the task lives (repo, PR, issue,
+   * commit), `telemetry` is how its run went (model, duration, consumption).
+   */
+  part?: 'git' | 'telemetry';
+  /** Telemetry only: what leads the line, e.g. which run it describes. */
+  lead?: React.ReactNode;
 }
 
 const ContextStrip: React.FC<ContextStripProps> = ({
@@ -278,6 +318,8 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   synthetic,
   mobileRepoOnly,
   mobileMetadataOnly,
+  part,
+  lead,
 }) => {
   // Mobile: Show only repo name
   if (mobileRepoOnly) {
@@ -298,27 +340,29 @@ const ContextStrip: React.FC<ContextStripProps> = ({
     );
   }
 
-  const hasTokens = tokenUsage && Object.values(tokenUsage).some(value => (value ?? 0) > 0);
-  const hasQuota = usageMetricRecords?.some(record => record.metricValue > 0 &&
-    ['session', 'Session', 'weeklyAll', 'weekly', 'Weekly'].includes(record.metricKey));
-
+  const showGit = part !== 'telemetry';
+  const showTelemetry = part !== 'git';
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-600">
-      <ContextGroup label="Git context">
-        {!mobileMetadataOnly && taskInfo && <RepoLink taskInfo={taskInfo} />}
-        {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
-        {taskInfo?.number && <IssuePRChip taskInfo={taskInfo} />}
-        {taskInfo?.type === 'pr-comment' && taskInfo.issueNumber && <LinkedIssueChip taskInfo={taskInfo} />}
-        {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
-      </ContextGroup>
-      <ContextGroup label="Execution runtime" divided>
-        <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
-      </ContextGroup>
-      {(hasTokens || hasQuota) && (
-        <ContextGroup label="Consumption" divided>
-          {hasTokens && <TokenUsageChip tokenUsage={tokenUsage} />}
-          {hasQuota && <UsageMetricsChip usageMetricRecords={usageMetricRecords!} />}
+    <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
+      {showGit && (
+        <ContextGroup label="Git context">
+          {!mobileMetadataOnly && taskInfo && <RepoLink taskInfo={taskInfo} />}
+          {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
+          {taskInfo?.number && <IssuePRChip taskInfo={taskInfo} />}
+          {taskInfo?.type === 'pr-comment' && taskInfo.issueNumber && <LinkedIssueChip taskInfo={taskInfo} />}
+          {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
         </ContextGroup>
+      )}
+      {showTelemetry && (
+        <TelemetryGroups
+          modelName={modelName}
+          duration={duration}
+          synthetic={synthetic}
+          tokenUsage={tokenUsage}
+          usageMetricRecords={usageMetricRecords}
+          lead={lead}
+          divided={showGit || Boolean(lead)}
+        />
       )}
     </div>
   );

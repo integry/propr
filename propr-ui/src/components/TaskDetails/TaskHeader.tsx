@@ -1,30 +1,12 @@
 import React from 'react';
 import { TaskInfo } from './types';
-import { sanitizeTaskTitle } from '../TaskList/rowModel';
+import { getDisplayTitle, getSubtitle } from './taskHeaderText';
 import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight } from 'lucide-react';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
   currentStatus: string;
 }
-
-const getSubtitle = (taskInfo: TaskInfo): string => {
-  if (taskInfo.subtitle) return taskInfo.subtitle;
-  if (taskInfo.type === 'pr-comment') {
-    return `Follow-up changes for PR #${taskInfo.number}`;
-  }
-  return `Initial implementation for Issue #${taskInfo.number}`;
-};
-
-/**
- * The heading reads like the task list's row: the same sanitizer drops the
- * workflow verb (shown as a badge), the `PR #2664:` the context strip already
- * links, and the `[2659 by GPT-6 Astra]` model tag.
- */
-const getDisplayTitle = (title: string | undefined) => {
-  const { title: clean, fullTitle } = sanitizeTaskTitle(title);
-  return { text: clean ?? title, tooltip: fullTitle ?? title };
-};
 
 const getStatusInfo = (status: string, commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
   const normalizedStatus = status?.toUpperCase() || '';
@@ -159,30 +141,45 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   );
 };
 
-/**
- * Says that the run below the header is an earlier one, and how it ended. The
- * header above keeps describing the task (its newest run), so an old run's
- * `Completed` never reads as the state of a task that is still working.
- */
-export const InspectedRunBanner: React.FC<{
+/** The task's state as one pill, for the compact desktop header's first row. */
+export const TaskStatusBadge: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
+  const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
+  return (
+    <span data-testid="task-status-badge" className={`inline-flex flex-none items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>
+      {statusInfo.icon}
+      {statusInfo.label}
+    </span>
+  );
+};
+
+export interface RunInspection {
   runNumber: number;
   runCount: number;
   /** The inspected run's last recorded state. */
   status: string;
   commandMode?: string;
+  /** Whether the newest run is still working. */
+  headActive: boolean;
   /** Opens the newest run again. */
   onBack: () => void;
-}> = ({ runNumber, runCount, status, commandMode, onBack }) => (
-  <div
+}
+
+/**
+ * Says, in the header of a panel below, that the panel shows an earlier run
+ * and how it ended. Inspecting a run is local to those panels: the task's
+ * header above keeps describing the task and its newest run.
+ */
+export const InspectedRunContext: React.FC<RunInspection> = ({ runNumber, runCount, status, commandMode, headActive, onBack }) => (
+  <span
     role="status"
-    data-testid="inspected-run-banner"
-    className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-100 px-6 py-1.5 text-xs text-slate-700"
+    data-testid="inspected-run-context"
+    className="flex min-w-0 flex-1 items-center justify-between gap-3 text-xs normal-case tracking-normal"
   >
-    <span className="inline-flex min-w-0 items-center gap-1.5">
-      <History aria-hidden="true" className="h-3.5 w-3.5 flex-none text-slate-500" />
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-slate-500">
+      <History aria-hidden="true" className="h-3.5 w-3.5 flex-none text-slate-400" />
       <span className="truncate">
-        Inspecting historical <span className="font-semibold text-slate-900">Run {runNumber} of {runCount}</span>
-        {' '}({getStatusInfo(status, commandMode).label})
+        <span className="font-semibold text-slate-800">Run {runNumber} of {runCount}</span>
+        {' · '}{getStatusInfo(status, commandMode).label}
       </span>
     </span>
     <button
@@ -190,10 +187,10 @@ export const InspectedRunBanner: React.FC<{
       onClick={onBack}
       className="inline-flex flex-none items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium text-slate-800 shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
     >
-      Back to Run {runCount}
+      {headActive ? `Return to live Run ${runCount}` : `Back to Run ${runCount}`}
       <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 text-teal-600" />
     </button>
-  </div>
+  </span>
 );
 
 export default TaskHeader;

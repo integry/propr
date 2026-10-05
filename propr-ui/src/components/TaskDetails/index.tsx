@@ -24,7 +24,7 @@ import { postTaskFollowup } from '../../api/proprApi';
 import { useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
 import { sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
-import { InspectedRunBanner } from './TaskHeader';
+import DesktopTaskHeader from './DesktopTaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
 import { useLiveRunStop } from './useLiveRunStop';
 
@@ -118,12 +118,14 @@ interface TaskDetailsProps {
   runs?: TaskRunEntry[];
   /** Opens another run of this task in its place. */
   onSelectRun?: (taskId: string) => void;
+  /** The pane's own controls, docked at the right of the header's first row. */
+  paneControls?: React.ReactNode;
 }
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
 
-const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, onSelectRun }) => {
+const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, onSelectRun, paneControls }) => {
   const params = useParams();
   const taskId = taskIdProp ?? params.taskId;
   const navigate = useNavigate();
@@ -192,20 +194,27 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   );
 
   if (statusView) {
-    return statusView;
+    // The pane's controls live in the task's header; until there is one, they sit above the status.
+    if (!paneControls) return statusView;
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-white">
+        <div className="flex flex-none justify-end gap-0.5 px-3 py-1.5">{paneControls}</div>
+        <div className="min-h-0 flex-1">{statusView}</div>
+      </div>
+    );
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
-  const inspectionBanner = inspection && onSelectRun ? (
-    <InspectedRunBanner
-      runNumber={inspection.run.number}
-      runCount={inspection.head.number}
-      status={derivedData.currentStatus}
-      commandMode={taskData.taskInfo?.commandMode}
-      onBack={() => onSelectRun(inspection.head.task.id)}
-    />
-  ) : null;
+  // Opening an earlier run is local to the panels below: they name it, the task's header does not change.
+  const inspectionContext = inspection && onSelectRun ? {
+    runNumber: inspection.run.number,
+    runCount: inspection.head.number,
+    status: derivedData.currentStatus,
+    commandMode: taskData.taskInfo?.commandMode,
+    headActive: inspection.headActive,
+    onBack: () => onSelectRun(inspection.head.task.id),
+  } : null;
   const actionBarProps = {
     currentStatus: derivedData.currentStatus,
     historyItemWithPaths: derivedData.historyItemWithPaths,
@@ -231,22 +240,16 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
       {/* Desktop sticky header shell; keep below global navigation overlays. */}
       <header className="hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white">
-        <div className="px-6 py-3 border-b border-slate-100">
-          <TaskHeader {...headerProps} />
-        </div>
-
-        <div className="px-6 py-2 bg-slate-50 border-b border-slate-200">
-          <div className="flex items-center justify-between gap-4">
-            <ContextStrip {...contextStripProps} />
-            <ActionBar {...actionBarProps} />
-          </div>
-        </div>
+        <DesktopTaskHeader
+          headerProps={headerProps}
+          contextStripProps={contextStripProps}
+          actionBarProps={actionBarProps}
+          runCount={runs && runs.length > 1 ? runs[runs.length - 1].number : undefined}
+          paneControls={paneControls}
+        />
 
         <ProgressBar todos={taskData.liveDetails.todos} />
       </header>
-
-      {/* Outside both headers, so an earlier run is marked at every width. */}
-      {inspectionBanner && <div className="flex-shrink-0">{inspectionBanner}</div>}
 
       <MobileStickySummary
         title={mobileSummaryTitle}
@@ -267,6 +270,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           <SectionLabelHeader
             commandMode={taskData.taskInfo?.commandMode}
             ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
+            inspection={inspectionContext}
             className={`hidden flex-1 px-4 items-center gap-3${wideOnly(embedded, 'lg:flex')}`}
           />
         </div>
@@ -309,6 +313,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             <SectionLabelHeader
               commandMode={taskData.taskInfo?.commandMode}
               ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
+              inspection={inspectionContext}
               className={`flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white${wideOnly(embedded, 'lg:hidden')}`}
             />
             {/* Scrollable Content Area - Summary + Thinking Log in same scroll flow */}
@@ -351,6 +356,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           lastThought={thinkingLog.lastThought}
           isTaskActive={derivedData.isTaskActive}
           taskInfo={taskData.taskInfo}
+          runNumber={inspectionContext?.runNumber}
         />
       </div>
 
