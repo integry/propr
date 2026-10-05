@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { after, test as nodeTest } from 'node:test';
+import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,11 @@ function observeStderr(stderr: string, chunks = [stderr]): void {
     for (const chunk of chunks.slice(0, -1)) capture.append(chunk);
     capture.finish(chunks.at(-1)!);
 }
+
+// Many tests spawn real Bash wrappers. A per-test bound names a stuck test
+// instead of letting the whole file run into the suite's per-file timeout.
+const TEST_TIMEOUT_MS = 60_000;
+const test = (name: string, fn: () => unknown) => nodeTest(name, { timeout: TEST_TIMEOUT_MS }, fn);
 
 // logFiles loads the SQLite connection, which otherwise keeps the test process alive.
 after(async () => {
@@ -125,7 +131,8 @@ async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo ag
             `PATH=${isolated ? bin : `${bin}:${process.env.PATH}`}`,
             `PROPR_WORKSPACE=${directory}`, `PROPR_CACHE_DIR=${directory}`, `TRACE=${trace}`, ...env,
             '/bin/bash', '-c', buildWorkflowWrapper(workflow, marker), entrypoint,
-        ], { stdinData: 'the prompt', timeout: 5000 });
+        // Generous: this only ends a hung wrapper; tests bound their own commands.
+        ], { stdinData: 'the prompt', timeout: 30_000 });
         return { ...result, trace: await readFile(trace, 'utf8').catch(() => '') };
     } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -344,8 +351,10 @@ test('reports split across chunks keep the line-boundary and prefix checks', asy
 });
 
 test('a real wrapper keeps the first validation result after a later command floods stderr', async () => {
-    const workflow = policy(`validation: ["exit 5", "head -c ${MAX_PROVIDER_OUTPUT_BYTES * 2} /dev/zero | tr '\\\\0' x | fold -w 1000"]`);
-    workflow.timeoutMs = 4000;
+    // Just past the diagnostic tail is enough; `yes` keeps slow runners well inside the hook timeout.
+    const flood = `yes $(printf %0999d 0) | head -c ${MAX_PROVIDER_OUTPUT_BYTES + 64 * 1024}`;
+    const workflow = policy(`validation: ["exit 5", "${flood}"]`);
+    workflow.timeoutMs = 20_000;
     const result = await executeWithRepositoryWorkflow(workflow, async () => {
         const { marker } = repositoryWorkflowExecution.getStore()!;
         const execution = await runWrapper(workflow, 'cat', undefined, marker);
@@ -482,4 +491,55 @@ test('only the wrapper can report a skipped validation command; hooks cannot be 
     });
     assert.equal(result.success, true);
     assert.match(result.repositoryValidation!, /a: Not run \(execution time limit reached\)/);
+});
+
+test('a stop reaches the running agent and cleanup hooks still run before the wrapper exits', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'workflow-test-'));
+    const trace = path.join(directory, 'trace');
+    const entrypoint = path.join(directory, 'agent.sh');
+    await writeFile(entrypoint, `#!/bin/bash
+sleep 30 & sleeper=$!
+trap 'kill "$sleeper"; echo agent-stopped >> "$TRACE"; exit 0' TERM
+echo started >> "$TRACE"
+wait
+`, { mode: 0o755 });
+    const bin = path.join(directory, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'id'), '#!/bin/bash\necho 1000\n', { mode: 0o755 });
+    try {
+        const workflow = policy('hooks:\n  after_run: echo after >> "$TRACE"\n  before_remove: echo remove >> "$TRACE"');
+        const child = spawn('/bin/bash', ['-c', buildWorkflowWrapper(workflow, 'marker'), entrypoint], {
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_WORKSPACE: directory, PROPR_CACHE_DIR: directory, TRACE: trace },
+            stdio: ['pipe', 'ignore', 'ignore'],
+        });
+        const exited = new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
+        while (!(await readFile(trace, 'utf8').catch(() => '')).includes('started')) await new Promise(resolve => setTimeout(resolve, 10));
+        // Docker forwards a stop to the wrapper (PID 1); a foreground agent would defer it for 30 s.
+        child.kill('SIGTERM');
+        assert.equal(await exited, 143);
+        assert.equal(await readFile(trace, 'utf8'), 'started\nagent-stopped\nafter\nremove\n');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('validation reserves a modest share for cleanup hooks unless their timeout is explicit', () => {
+    const reserve = (source: string, timeoutMs = 600_000) => Number(
+        /PROPR_EXECUTION_TIMEOUT_MS \/ 1000 - ([0-9]+) \)\)/.exec(buildWorkflowWrapper({ ...policy(source), timeoutMs }, 'marker'))![1]);
+    const cleanup = 'validation: [npm test]\nhooks: { after_run: "true", before_remove: "true"';
+    assert.equal(reserve('validation: [npm test]'), 30);
+    // A 20-30 minute execution limit keeps most of its budget for validation by default.
+    assert.equal(reserve(`${cleanup} }`), 30 + 2 * (60 + 5));
+    assert.equal(reserve(`${cleanup} }`, 4000), 30 + 2 * (4 + 5));
+    assert.equal(reserve(`${cleanup}, timeout_ms: 600000 }`), 30 + 2 * (600 + 5));
+    assert.equal(reserve(`${cleanup}, timeout_ms: 600000 }`, 120_000), 30 + 2 * (120 + 5));
+});
+
+test('a root wrapper never starts an agent that could stay root, even without repository commands', async () => {
+    for (const id of ['echo 0', 'if [ "$1" = "-u" ] && [ "$#" = 1 ]; then echo 0; else exit 1; fi']) {
+        const result = await runWrapper(policy('validation: ["echo validate >> \\"$TRACE\\""]'), 'echo agent >> "$TRACE"', undefined, 'marker', {
+            id, 'su-exec': 'echo unsafe-su-exec >> "$TRACE"; exit 0',
+        });
+        assert.equal(result.exitCode, 126, id);
+        assert.equal(result.trace, '', id);
+        assert.match(result.stderr, /unprivileged node user and su-exec are required/);
+    }
 });

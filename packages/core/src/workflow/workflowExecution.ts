@@ -158,6 +158,8 @@ export function stripWorkflowAgentStderrPrefix(line: string): string {
 const VALIDATION_DEADLINE_MARGIN_S = 30;
 // timeout(1) sends KILL five seconds after TERM.
 const KILL_GRACE_S = 5;
+// Share of the execution limit kept per cleanup hook when hooks.timeout_ms is not set.
+const DEFAULT_CLEANUP_HOOK_RESERVE_S = 60;
 
 /**
  * Tells this execution's wrapper the transport's time limit, so post-agent
@@ -179,9 +181,12 @@ export function buildWorkflowWrapper(workflow: ResolvedRepositoryWorkflow, marke
         return command ? `run_hook ${name} ${quote(command)}` : ':';
     };
     const hookTimeoutS = workflow.timeoutMs / 1000;
-    // Validation must leave room for the hooks that still follow it.
+    // Validation must leave room for the hooks that still follow it. Without an
+    // explicit hooks.timeout_ms, the default ceiling would claim most of a typical
+    // execution limit, so cleanup hooks are expected to need only a modest share.
+    const cleanupHookReserveS = hooks.timeout_ms === undefined ? Math.min(Math.ceil(hookTimeoutS), DEFAULT_CLEANUP_HOOK_RESERVE_S) : Math.ceil(hookTimeoutS);
     const reserveS = VALIDATION_DEADLINE_MARGIN_S
-        + (['after_run', 'before_remove'] as const).filter(name => hooks[name]).length * (Math.ceil(hookTimeoutS) + KILL_GRACE_S);
+        + (['after_run', 'before_remove'] as const).filter(name => hooks[name]).length * (cleanupHookReserveS + KILL_GRACE_S);
     const implicitSetup = `if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$PROPR_WORKSPACE/.propr/setup.sh" ]; then
     run_hook setup '/bin/bash .propr/setup.sh'
     setup_exit=$?
@@ -202,13 +207,19 @@ if [ "\${PROPR_REPO_SETUP:-1}" = "0" ]; then exec "$entrypoint" "$@"; fi
 mkdir -p "$PROPR_CACHE_DIR" 2>/dev/null || true
 chown node:node "$PROPR_CACHE_DIR" 2>/dev/null || true
 cd "$PROPR_WORKSPACE" || exit 1
+# As root, repository commands and the agent must run as the unprivileged node user.
+privilege_drop_available() {
+    command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1 && [ "$(id -u node)" != "0" ]
+}
+# Reports are trusted only because the agent cannot write to this shell's stderr.
+# A root agent could open /proc/1/fd/2, so never start one under this wrapper.
+current_uid=$(id -u) || exit 126
+if [ "$current_uid" = "0" ] && ! privilege_drop_available; then
+    echo "Cannot run repository workflow: unprivileged node user and su-exec are required" >&2
+    exit 126
+fi
 run_command() {
-    current_uid=$(id -u) || return 126
     if [ "$current_uid" = "0" ]; then
-        if ! command -v su-exec >/dev/null 2>&1 || ! id node >/dev/null 2>&1 || [ "$(id -u node)" = "0" ]; then
-            echo "Cannot run repository workflow command: unprivileged node user and su-exec are required" >&2
-            return 126
-        fi
         su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
     else
         timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2
@@ -246,15 +257,28 @@ finish() {
     ${hook('before_remove')}
     exit "$final_exit"
 }
+# Bash defers traps until a foreground child exits, so the agent runs in the
+# background: a stop reaches it, and cleanup hooks run once it has exited.
+stop_agent() {
+    if [ -n "\${agent_pid:-}" ]; then
+        kill -"$1" "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+    fi
+    exit "$2"
+}
 trap finish EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
+trap 'stop_agent TERM 143' TERM
+trap 'stop_agent INT 130' INT
 ${hooks.after_create ? `${hook('after_create')} || exit $?` : implicitSetup}
 ${hook('before_run')} || exit $?
-# Preserve the agent's stdin; repository commands never consume its prompt.
+# Preserve the agent's stdin (an asynchronous command otherwise reads /dev/null);
+# repository commands never consume its prompt.
 agent_started=1
-"$entrypoint" "$@" 2> >(/bin/sed -u 's/^/${WORKFLOW_AGENT_STDERR_PREFIX}/' >&2)
+"$entrypoint" "$@" <&0 2> >(/bin/sed -u 's/^/${WORKFLOW_AGENT_STDERR_PREFIX}/' >&2) &
+agent_pid=$!
+wait "$agent_pid"
 agent_exit=$?
+agent_pid=
 ${(workflow.config.validation ?? []).map((command, index) => `run_validation ${index} ${quote(command)}`).join('\n')}
 exit "$agent_exit"
 `.trim();

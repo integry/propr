@@ -1,7 +1,7 @@
-import { DelayedError, type Job } from 'bullmq';
+import { DelayedError, Job, Queue } from 'bullmq';
 import {
     loadRepositoryWorkflow, loadSettings, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
-    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
 } from '@propr/core';
 import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateManager, AgentExecutionResult, IssueJobData } from '@propr/core';
 import type { Redis } from 'ioredis';
@@ -199,14 +199,49 @@ async function checkWorkflowTaskActive(options: { taskId: string; stateManager: 
     }
 }
 
+const waiterQueues = new Map<string, Queue>();
+
+/**
+ * Wake up to `free` capacity waiters, oldest first, by promoting their delayed
+ * jobs, so a released slot goes to the longest-waiting task rather than to
+ * whichever job re-enters first. Best effort: a waiter that is not delayed right
+ * now is re-entering anyway, and one whose job no longer exists leaves the list
+ * without using up the wakeup.
+ */
+export async function wakeRepositoryWorkflowWaiters(
+    redisClient: Redis, repository: string, released: { waiters: string[]; free: number }, correlatedLogger: Logger,
+): Promise<void> {
+    let woken = 0;
+    for (const waiter of released.waiters) {
+        if (woken >= released.free) return;
+        try {
+            const [queueName, jobId] = JSON.parse(waiter) as [string, string];
+            let queue = waiterQueues.get(queueName);
+            if (!queue) waiterQueues.set(queueName, queue = new Queue(queueName, { connection: redisClient }));
+            const job = await Job.fromId(queue, jobId);
+            if (!job) { await forgetRepositoryWorkflowWaiter(redisClient, repository, waiter); continue; }
+            woken++;
+            if (await job.isDelayed()) await job.promote();
+        } catch (error) {
+            correlatedLogger.debug({ waiter, error: (error as Error).message }, 'Could not wake repository workflow capacity waiter');
+        }
+    }
+}
+
 export async function withRepositoryWorkflowAdmission<T>(options: {
     workflow?: ResolvedRepositoryWorkflow; repoOwner: string; repoName: string;
     redisClient: Redis; taskId: string; stateManager: WorkerStateManager; correlatedLogger: Logger;
+    /** The queue job that is delayed when refused, so a released slot can wake it. */
+    job?: Pick<Job, 'queueName' | 'id'>;
 }, execute: () => Promise<T>): Promise<T> {
+    const repository = `${options.repoOwner}/${options.repoName}`;
+    const { job } = options;
     return withRepositoryWorkflowSlot({
-        redis: options.redisClient, repository: `${options.repoOwner}/${options.repoName}`, limit: options.workflow?.maxParallelTasks,
+        redis: options.redisClient, repository, limit: options.workflow?.maxParallelTasks,
         checkCancelled: () => checkWorkflowTaskActive(options),
         onLeaseError: error => options.correlatedLogger.error({ error }, 'Repository workflow capacity lease failed'),
+        waiter: job?.queueName && job.id ? JSON.stringify([job.queueName, job.id]) : undefined,
+        onReleased: (waiters, free) => void wakeRepositoryWorkflowWaiters(options.redisClient, repository, { waiters, free }, options.correlatedLogger),
     }, execute);
 }
 
@@ -241,6 +276,18 @@ export async function runRepositoryWorkflow(options: {
 }, execute: () => Promise<AgentExecutionResult>): Promise<AgentExecutionResult> {
     // Preparation awaits GitHub and worktree operations after admission. Keep the
     // final cancellation check immediately before starting the implementation agent.
-    await checkWorkflowTaskActive(options);
-    return executeWithRepositoryWorkflow(options.workflow, execute);
+    let result: AgentExecutionResult;
+    try {
+        await checkWorkflowTaskActive(options);
+        result = await executeWithRepositoryWorkflow(options.workflow, execute);
+    } catch (error) {
+        await releaseRepositoryWorkflowSlot().catch(() => undefined);
+        throw error;
+    }
+    // The container has exited. Capacity covers only that execution, so a lease
+    // lost later, during commit, PR creation or completion comments, can no
+    // longer fail work that has already finished. A lease lost while the
+    // container ran still fails the attempt here, before anything is published.
+    await releaseRepositoryWorkflowSlot();
+    return result;
 }

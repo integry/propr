@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
-import { withRepositoryWorkflowSlot } from '../packages/core/src/workflow/workflowConcurrency.js';
+import { forgetRepositoryWorkflowWaiter, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { beforeEach, mock, test } from 'node:test';
 
 let events: string[] = [];
 let refuseCapacity = false;
+let nothingSelected = false;
 let persistError: Error | undefined;
 class RepositoryWorkflowCapacityError extends Error {}
 let continuation: { source_pr: number; continuation_pr: number; branch_name: string; publication_bundle?: string; publication_completion?: string } | undefined;
@@ -72,7 +73,7 @@ await mock.module('@propr/core', { namedExports: {
     loadRepositoryVisualPreviewSettings: async () => ({ enabled: true, types: ['image'] }),
     refineWorkflowPreviews, repositoryWorkflowPrompt,
     loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
-    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError: class extends Error {},
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError: class extends Error {},
 } });
 // Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
@@ -113,7 +114,10 @@ const modules: Record<string, Record<string, unknown>> = {
     prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
     prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
-    reviewFindingSelector: { hasAuthorizedFixFeedback: () => true, prepareFixReviewFeedback: async () => ({ isFixMode: false, selectedReviewComments: [] }), selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
+    reviewFindingSelector: {
+        hasAuthorizedFixFeedback: () => !nothingSelected, selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }),
+        prepareFixReviewFeedback: async () => ({ isFixMode: nothingSelected, selectedReviewComments: [], resolution: { unresolved: {}, malformedIds: [] } }),
+    },
     // Escalation policy is exercised separately; publication keeps the resolved execution unchanged.
     ultrafixEscalation: {
         resolveUltrafixFixExecution: async ({ model, effort }: { model: string | null | undefined; effort?: string }) => ({ model, effort }),
@@ -121,7 +125,7 @@ const modules: Record<string, Record<string, unknown>> = {
     ultrafixOrchestrationService: { retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); } },
     ultrafixJobHelpers: { handleUltrafixContinuation: noOp, markSelectedUltrafixFindings: noOp, restorePendingCommentsIfUltrafixJobSuperseded: async () => false },
     ultrafixReviewExecutionGate: { shouldDeferUltrafixReview: async () => { events.push('check-gate'); return false; } },
-    prCommentNoAuthorizedFindings: { handleNoAuthorizedFindings: noOp },
+    prCommentNoAuthorizedFindings: { handleNoAuthorizedFindings: async () => { events.push('no-authorized-findings'); } },
     prCommentPostExecution: { handlePostExecution: async (params: typeof postExecutionParams) => { postExecutionParams = params; throw new Error('post-execution stopped by test'); } },
     prTaskTitleHelpers: Object.fromEntries(['buildDeterministicPrTaskSubtitle', 'buildPrTaskTitle', 'buildPrTaskTitleContext', 'buildPrTaskTitleContextHistoryMetadata', 'getPrTaskWorkflowLabel', 'resolvePrTaskWorkflow'].map(name => [name, noOp])),
     prProcessingLock: {
@@ -164,7 +168,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
+    refuseCapacity = false; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
@@ -341,6 +345,16 @@ test('a persisted PR capacity refusal explains the wait on the task timeline wit
     assert.deepEqual(deferralHistory[0].metadata.historyMetadata, { repositoryWorkflowDeferrals: 1, repositoryWorkflowRetryAt: new Date(retryAt).toISOString() });
     assert.ok(events.indexOf('persist-comments') < events.indexOf('deferral-history:task-1:pending'), 'the timeline never announces an unpersisted wait');
     assert.equal(taskStates.get('task-1'), 'pending');
+});
+
+test('a fix request with nothing selected is skipped before repository admission', async () => {
+    refuseCapacity = true;
+    nothingSelected = true;
+    const result = await processPullRequestCommentJob(job('fix') as never) as { status: string; reason?: string };
+    assert.deepEqual([result.status, result.reason], ['skipped', 'no_authorized_review_findings']);
+    assert.ok(events.includes('no-authorized-findings'));
+    assert.ok(!events.includes('cleanup-capacity'), 'no capacity was requested, so nothing is deferred');
+    assert.ok(!events.includes('agent'));
 });
 
 test('capacity deferral cleans a worktree retained by publication recovery before releasing the PR lock', async () => {

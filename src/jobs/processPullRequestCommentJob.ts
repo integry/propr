@@ -194,8 +194,26 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     llm = resolvedLlm;
     const octokit = state.octokit, baseBranch = state.repositoryWorkflowBaseBranch = prData!.data.base.ref;
     const repositoryWorkflow = state.repositoryWorkflow = await resolveRepositoryWorkflow(job.data, baseBranch, () => prepareRepositoryWorkflow({ octokit, repoOwner, repoName, baseBranch }));
+    const taskUrl = `${getWebUiUrl()}/tasks/${encodeURIComponent(taskId)}`;
+    // A fix request with nothing selected ends before admission, so it never holds repository capacity.
+    const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
+    const { isFixMode, fixSelection, resolution, selectedReviewComments, reviewCommentsSection } = await prepareFixReviewFeedback({
+        job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
+    });
+
+    if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
+        correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
+            'Skipping fix processing because no review findings or suggestions were selected');
+        await handleNoAuthorizedFindings({
+            job, taskId, taskUrl, stateManager, octokit, unprocessedComments: state.unprocessedComments,
+            redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
+            // Naming the identifiers is what makes the posted explanation actionable.
+            unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
+        });
+        return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
+    }
     return withRepositoryWorkflowAdmission({
-        workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
+        workflow: repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger, job,
     }, async (): Promise<JobResult> => {
         // Admission ends the wait; ordinary retries reload the base branch policy.
         if (job.data.repositoryWorkflowDeferrals) await job.updateData({ ...job.data, ...CLEARED_REPOSITORY_WORKFLOW_DEFERRAL });
@@ -203,9 +221,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
         state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
-        const taskUrl = `${getWebUiUrl()}/tasks/${encodeURIComponent(taskId)}`;
-
-        const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
         const commentsByTime = allComments
             .filter(comment => !comment.body || !isReviewComment(comment.body))
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -215,22 +230,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         if (!job.data.ultrafixMeta) {
             commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
             commentHistory += await loadOriginalContributionDiscussion(octokit, context);
-        }
-
-        const { isFixMode, fixSelection, resolution, selectedReviewComments, reviewCommentsSection } = await prepareFixReviewFeedback({
-            job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
-        });
-
-        if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
-            correlatedLogger.info({ pullRequestNumber, unresolved: resolution.unresolved, malformedIds: resolution.malformedIds },
-                'Skipping fix processing because no review findings or suggestions were selected');
-            await handleNoAuthorizedFindings({
-                job, taskId, taskUrl, stateManager, octokit, unprocessedComments: state.unprocessedComments,
-                redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId,
-                // Naming the identifiers is what makes the posted explanation actionable.
-                unresolved: resolution.unresolved, malformedIds: resolution.malformedIds,
-            });
-            return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
         }
 
         await markSelectedUltrafixFindings(

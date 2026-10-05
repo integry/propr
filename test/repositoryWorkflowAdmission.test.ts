@@ -7,13 +7,13 @@ import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { Queue, Worker, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from '../packages/core/src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, repositoryWorkflowSlotKeys, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { runWithExecutionAbortSignal, ExecutionAbortedError } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
 
 await mock.module('@propr/core', { namedExports: {
-    withRepositoryWorkflowSlot, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
+    withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, loadSettings: async () => ({}),
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
 } });
@@ -260,6 +260,28 @@ test('agent execution rechecks cancellation and lease ownership after preparatio
     }, async () => assert.fail('lease lost during cancellation check'))), /lease lost during task-state read/);
 });
 
+test('the capacity slot ends when the agent container exits, not when publication finishes', async () => {
+    const calls: string[] = [];
+    const redisClient = { eval: async (script: string) => { calls.push(script === ACQUIRE_WORKFLOW_SLOT ? 'acquire' : 'release'); return 1; } };
+    const options = { repoOwner: 'owner', repoName: 'repo', taskId: 'task', correlatedLogger: log as never, redisClient: redisClient as never,
+        stateManager: { getTaskState: async () => ({ state: 'processing' }) } as never };
+    for (const agentFails of [false, true]) {
+        calls.length = 0;
+        const outcome = await withRepositoryWorkflowAdmission(options, async () => {
+            const agent = runRepositoryWorkflow(options, async () => {
+                calls.push('agent');
+                if (agentFails) throw new Error('agent failed');
+                return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 1 };
+            });
+            const result = await agent.then(() => 'published', () => 'failure reported');
+            calls.push(result);
+            return result;
+        });
+        assert.equal(outcome, agentFails ? 'failure reported' : 'published');
+        assert.deepEqual(calls, ['acquire', 'agent', 'release', outcome], 'released once, before post-processing');
+    }
+});
+
 const binary = process.env.PROPR_TEST_REDIS_SERVER || 'redis-server';
 const available = spawnSync(binary, ['--version']).status === 0;
 test('saturated repository jobs release shared BullMQ processors so another repository runs', {
@@ -292,7 +314,7 @@ test('saturated repository jobs release shared BullMQ processors so another repo
             { name: 'followup', data: { repo: 'B', id: 'B1' } },
         ]);
         worker = new Worker('workflow-capacity', job => deferRepositoryWorkflowJob(job, () => withRepositoryWorkflowAdmission({
-            repoOwner: 'owner', repoName: job.data.repo, taskId: job.id!, redisClient: redis,
+            repoOwner: 'owner', repoName: job.data.repo, taskId: job.id!, redisClient: redis, job,
             workflow: { maxParallelTasks: 1 } as never,
             stateManager: { getTaskState: async () => ({ state: 'pending' }) } as never,
             correlatedLogger: log as never,
@@ -307,6 +329,18 @@ test('saturated repository jobs release shared BullMQ processors so another repo
         assert.deepEqual(started, ['A1', 'B1']);
         assert.equal(await queue.getDelayedCount(), 2);
         for (const job of await queue.getDelayed()) assert.equal(job.attemptsMade, 0, 'capacity does not consume failure retries');
+        // Releasing A's slot wakes the longest-waiting job well before its 5-10 s backoff,
+        // even when an older waiter's job has since been removed from the queue.
+        const [, , waitersKey, waitingKey] = repositoryWorkflowSlotKeys('owner/A');
+        const removed = JSON.stringify(['workflow-capacity', 'removed-job']);
+        await redis.zadd(waitersKey, 0, removed);
+        await redis.zadd(waitingKey, Math.floor(Date.now() / 1000) + 300, removed);
+        const released = Date.now();
+        finishA();
+        while (started.length < 4 && Date.now() - released < 4000) await new Promise(resolve => setTimeout(resolve, 25));
+        assert.deepEqual(started, ['A1', 'B1', 'A2', 'A3'], 'waiters are admitted oldest first');
+        assert.ok(Date.now() - released < 4000);
+        assert.equal(await redis.zscore(waitersKey, removed), null, 'a removed job leaves the waiting list');
     } finally {
         clearTimeout(timeout);
         finishA();

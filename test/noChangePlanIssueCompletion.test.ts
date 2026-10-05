@@ -25,7 +25,8 @@ await mock.module('@propr/core', {
         getEpicExecutionQueue: mock.fn(async () => null),
         findIssueSubmission: mock.fn(async () => undefined),
         findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
-        generateCompletionComment: mock.fn(async () => 'Completed.'),
+        // Mirrors the real renderer: observed repository validation follows the summary.
+        generateCompletionComment: mock.fn(async (result: { repositoryValidation?: string }) => ['Completed.', result?.repositoryValidation].filter(Boolean).join('\n\n')),
         getAuthenticatedOctokit: mock.fn(async () => octokit),
         getPrimaryProcessingLabels: mock.fn(() => ['AI']),
         linkPRToPlanIssue: mock.fn(async () => undefined),
@@ -78,4 +79,20 @@ test('no-change completion without auto-merge leaves plan status to other observ
     await completeWithoutChanges(['AI']);
     assert.deepEqual(statusWrites, []);
     assert.deepEqual(requests.filter(request => request.route.endsWith('/labels')), []);
+});
+
+test('a no-change issue completion keeps the observed repository validation report', async () => {
+    const repositoryValidation = '### Repository validation\n\n- [1] npm test: Passed\n- [2] npm run lint: Not run (execution time limit reached)';
+    await handleNoCodeChanges({
+        octokit: octokit as never,
+        issueRef: { repoOwner: 'acme', repoName: 'repo', number: 10 } as never,
+        claudeResult: { success: true, repositoryValidation } as never,
+        currentIssueData: { data: { labels: [{ name: 'AI' }] } },
+        AI_PROCESSING_TAG: 'AI-processing',
+        AI_DONE_TAG: 'AI-done',
+        correlatedLogger: logger,
+    });
+    const [comment] = requests.filter(request => request.route.endsWith('/comments'));
+    assert.match(String(comment.body.body), /No code changes needed/);
+    assert.ok(String(comment.body.body).includes(repositoryValidation));
 });

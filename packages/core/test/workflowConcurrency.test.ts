@@ -6,7 +6,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, RELEASE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
 
 import { getExecutionAbortError, getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
 
@@ -29,7 +29,7 @@ test('shared admission respects active branch caps, legacy runs, expiry, release
         }
         await redis.connect();
         const key = 'slots';
-        const claim = (token: string, limit: number) => redis.eval(ACQUIRE_WORKFLOW_SLOT, 2, key, 'limits', token, limit);
+        const claim = (token: string, limit: number, waiter = '') => redis.eval(ACQUIRE_WORKFLOW_SLOT, 4, key, 'limits', 'waiters', 'waiting', token, limit, waiter);
         assert.equal(await claim('legacy', 0), 1);
         const admissions = await Promise.all(Array.from({ length: 12 }, (_, index) => claim(`run-${index}`, 3)));
         assert.equal(admissions.filter(value => value === 1).length, 2, 'legacy run counts toward a workflow cap across workers');
@@ -49,6 +49,27 @@ test('shared admission respects active branch caps, legacy runs, expiry, release
         assert.equal(counts, 1);
         assert.equal(await redis.zcard('propr:workflow:slots:{example/workflow}'), 0);
         await assert.rejects(withRepositoryWorkflowSlot({ ...options, checkCancelled: async () => { throw new Error('cancelled'); } }, async () => assert.fail('cancelled task must never run')), /cancelled/);
+
+        // Refused callers join the waiting list once, keeping their first refusal time;
+        // a release names the longest-waiting callers that fit, and admission leaves the list.
+        await redis.del(key, 'limits');
+        const release = (token: string) => redis.eval(RELEASE_WORKFLOW_SLOT, 4, key, 'limits', 'waiters', 'waiting', token);
+        assert.equal(await claim('running', 1), 1);
+        assert.equal(await claim('newer-attempt', 1, 'newer'), 0);
+        assert.equal(await claim('older-attempt', 1, 'older'), 0);
+        await redis.zadd('waiters', 'XX', 1, 'older');
+        assert.equal(await claim('older-again', 1, 'older'), 0);
+        assert.equal(await redis.zscore('waiters', 'older'), '1', 'a repeated refusal keeps the original place');
+        assert.equal(await claim('anonymous', 1), 0);
+        assert.equal(await redis.zcard('waiters'), 2, 'only callers with an identity wait in the list');
+        assert.deepEqual(await release('running'), [1, 'older', 'newer'], 'one free slot, oldest candidate first, with spares');
+        assert.equal(await claim('older-admitted', 1, 'older'), 1);
+        assert.equal(await redis.zscore('waiters', 'older'), null);
+        assert.equal(await redis.zscore('waiting', 'older'), null);
+        assert.deepEqual(await release('older-admitted'), [1, 'newer']);
+        await redis.zadd('waiting', 'XX', 1, 'newer');
+        assert.deepEqual(await release('none'), [], 'a waiter that stopped re-entering lapses');
+        assert.equal(await redis.zcard('waiters'), 0);
     } finally {
         redis.disconnect();
         server.kill('SIGTERM');
@@ -73,7 +94,8 @@ function leaseHarness(t: TestContext) {
     let releaseFails = false;
     let releases = 0;
     let renewals = 0;
-    const redis = { eval: async (script: string, _keys: number, _key: string, _limits: string, token: string) => {
+    const redis = { eval: async (script: string, keyCount: number, ...rest: string[]) => {
+        const token = rest[keyCount];
         if (script === ACQUIRE_WORKFLOW_SLOT) {
             for (const [member, deadline] of slots) if (deadline <= now) slots.delete(member);
             if (slots.size) return 0;
@@ -90,7 +112,7 @@ function leaseHarness(t: TestContext) {
         releases++;
         if (releaseFails) throw new Error('Redis unavailable');
         slots.delete(token);
-        return 1;
+        return [];
     } } as unknown as Redis;
     return {
         options: { redis, repository: 'example/workflow', limit: 1, checkCancelled: async () => {}, onLeaseError: (error: unknown) => { errors.push(error); } },
@@ -148,6 +170,36 @@ for (const failure of ['rejected', 'hung'] as const) {
         if (failure === 'hung') assert.equal(h.renewals, 1, 'hung requests do not accumulate overlapping renewals');
     });
 }
+
+test('releasing after the agent exits frees capacity, and a later lease deadline cannot fail finished work', async t => {
+    const h = leaseHarness(t);
+    h.setRenew(() => new Promise(() => {}));
+    const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        await releaseRepositoryWorkflowSlot();
+        assert.equal(h.slots.size, 0, 'the next task can be admitted during post-processing');
+        // Commit, PR creation and completion comments outlive an unrenewable lease.
+        await h.tick(200_000);
+        assert.equal(getExecutionOwnershipContext()!.signal.aborted, false);
+        await releaseRepositoryWorkflowSlot();
+        return 'published';
+    });
+    assert.equal(await execution, 'published');
+    assert.equal(h.releases, 1);
+    assert.equal(h.renewals, 0, 'a released slot is never renewed');
+    await releaseRepositoryWorkflowSlot();
+});
+
+test('a lease lost while the container ran still fails the attempt at release, after releasing', async t => {
+    const h = leaseHarness(t);
+    const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        // The stop deadline passed without the watchdog having run yet.
+        h.jump(89_000);
+        await assert.rejects(releaseRepositoryWorkflowSlot(), RepositoryWorkflowLeaseLostError);
+        assert.equal(h.slots.size, 0);
+    });
+    await assert.rejects(execution, /capacity lease lost/);
+    assert.equal(h.releases, 1);
+});
 
 test('missing heartbeat ownership aborts immediately and waits for execution teardown', async t => {
     const h = leaseHarness(t);

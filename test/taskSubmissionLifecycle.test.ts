@@ -8,6 +8,7 @@ const core = await import('@propr/core');
 const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
 let capacityFull = false;
+let admissionAttempts = 0;
 let workflowError: Error | undefined;
 let taskState = 'pending';
 const events: string[] = [];
@@ -108,7 +109,7 @@ await mock.module('../src/jobs/issueJob/index.js', { namedExports: {
     stateManager, agentAlias: 'issue-agent', modelName: 'model', taskId: 'ordinary-task', AI_PROCESSING_TAG: 'AI-processing', AI_DONE_TAG: 'AI-done', AI_PRIMARY_TAG: 'AI',
   }),
   getAuthenticatedClient: async () => ({ auth: async () => ({ token: 'fixture' }), request: fakeGitHubRequest }),
-  checkLabelConditions: () => ({ skip: false }),
+  checkLabelConditions: (labels: string[]) => labels.includes('skip-fixture') ? { skip: true, reason: 'Already done' } : { skip: false },
   ensureProcessingLabel: async () => undefined,
   executeWorktreeOperations: async () => {
     if (outcome === 'rate-limited') {
@@ -136,7 +137,7 @@ await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: {
   },
 } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
-  redisClient: { eval: async () => capacityFull ? 0 : 1 },
+  redisClient: { eval: async () => { admissionAttempts++; return capacityFull ? 0 : 1; } },
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
@@ -179,11 +180,30 @@ test('issue capacity refusal delays before cloning, preserves task identity, and
     assert.deepEqual(events, ['persist-identity', 'create-if-absent', 'persist-deferral', 'delay']);
     assert.equal(job.data.correlationId, 'correlation');
     assert.equal(terminal.length, 0, 'capacity refusal is not a task failure');
-    taskState = 'cancelled'; events.length = 0;
-    await assert.rejects(processGitHubIssueJob(job as never), /Task ended/);
+    taskState = 'cancelled'; events.length = 0; admissionAttempts = 0;
+    // A withdrawn task ends before admission and never takes repository capacity.
+    assert.equal((await processGitHubIssueJob(job as never)).status, 'cancelled');
+    assert.equal(admissionAttempts, 0);
     assert.deepEqual(events, ['create-if-absent']);
     assert.equal(terminal.length, 0, 're-entry does not overwrite cancellation');
   } finally { capacityFull = false; taskState = 'pending'; }
+});
+
+test('an issue that no longer qualifies is skipped before admission even while capacity is full', async () => {
+  capacityFull = true; admissionAttempts = 0; events.length = 0; terminal.length = 0;
+  const original = liveIssue;
+  liveIssue = { ...liveIssue, labels: [{ name: 'AI' }, { name: 'skip-fixture' }] };
+  const job = {
+    id: 'skipped-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, correlationId: 'c', agentAlias: 'a', modelName: 'm' } as IssueJobData,
+    updateData: async (data: IssueJobData) => { assert.ok(!data.repositoryWorkflowDeferred, 'a skipped issue records no capacity deferral'); job.data = data; },
+    moveToDelayed: async () => assert.fail('a skipped issue is not delayed for capacity'),
+  };
+  try {
+    const result = await processGitHubIssueJob(job as never);
+    assert.equal(result.status, 'skipped');
+    assert.equal(admissionAttempts, 0, 'no repository capacity was claimed');
+  } finally { capacityFull = false; liveIssue = original; }
 });
 
 test('an issue capacity wait is explained on the timeline after the deferral is persisted', async () => {

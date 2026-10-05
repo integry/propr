@@ -173,11 +173,64 @@ async function processAdmittedIssueJob(job: Job<IssueJobData>): Promise<JobResul
   }
 }
 
-function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>): Promise<JobResult> {
+async function handleIssueProcessingError(error: unknown, progress: {
+  job: Job<IssueJobData>; context: JobContext; octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>;
+  claudeResult: ClaudeCodeResponse | null; worktreeInfo?: WorktreeInfo;
+}): Promise<JobResult> {
+  const { job, context, octokit, claudeResult, worktreeInfo } = progress;
+  const { issueRef, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = context;
+  const latest = await stateManager.getTaskState(taskId);
+  if (isStoppedTask(latest)) {
+    if (latest.terminalReason === 'cancelled_by_user') {
+      await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+    }
+    if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
+      // Another cleanup failure keeps a closure obligation for reconciliation.
+      await excludeWithdrawnIssue({ ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG }, latest.terminalReason);
+    }
+    return { status: 'cancelled', reason: latest.terminalReason };
+  }
+  if (error instanceof UsageLimitError) {
+    await handleUsageLimitError(error, job, issueRef, {
+      octokit, correlatedLogger, stateManager, taskId,
+      AI_PROCESSING_TAG, AI_WAITING_TAG
+    });
+    const afterRetry = await stateManager.getTaskState(taskId);
+    if (isStoppedTask(afterRetry)) return { status: 'cancelled', reason: afterRetry.terminalReason };
+    return { status: 'requeued', reason: 'rate_limit' };
+  } else {
+    await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+    const isUserCancelled = isUserCancellationError(error);
+    if (isUserCancelled) {
+      return { status: 'cancelled', reason: 'user_request' };
+    }
+    throw error;
+  }
+}
+
+async function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>): Promise<JobResult> {
   const { jobId, issueRef, correlationId, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
+  // A withdrawn or skipped issue ends before admission, so it never holds
+  // repository capacity; deferred attempts repeat these checks on re-entry.
+  let currentIssueData: CurrentIssueData;
+  let currentLabels: string[];
+  try {
+    currentIssueData = await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+      owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+      mediaType: { format: 'full' }
+    }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
+
+    const cancellation = await checkIssueCancellation(context, currentIssueData);
+    if (cancellation) return cancellation;
+    currentLabels = currentIssueData.data.labels.map(label => label.name);
+    const labelCheck = checkLabelConditions(currentLabels, context);
+    if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+  } catch (error) {
+    return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
+  }
   return withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
-    redisClient, taskId, stateManager, correlatedLogger,
+    redisClient, taskId, stateManager, correlatedLogger, job,
   }, async (): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
@@ -196,6 +249,7 @@ function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, 
           { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
           AI_PROCESSING_TAG
         );
+        currentLabels = [...currentLabels.filter(label => label !== AI_WAITING_TAG), AI_PROCESSING_TAG];
       } catch (labelError) {
         correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to swap labels on rate limit retry');
       }
@@ -211,18 +265,6 @@ function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, 
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
       });
-
-      const currentIssueData: CurrentIssueData =
-        await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-          owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-          mediaType: { format: 'full' }
-        }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
-
-      const cancellation = await checkIssueCancellation(context, currentIssueData);
-      if (cancellation) return cancellation;
-      const currentLabels = currentIssueData.data.labels.map(label => label.name);
-      const labelCheck = checkLabelConditions(currentLabels, context);
-      if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
 
       await ensureProcessingLabel(currentLabels, context, octokit);
 
@@ -265,33 +307,7 @@ function processIssueWithAdmission(job: Job<IssueJobData>, context: JobContext, 
       return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
     } catch (error) {
-      const latest = await stateManager.getTaskState(taskId);
-      if (isStoppedTask(latest)) {
-        if (latest.terminalReason === 'cancelled_by_user') {
-          await postCancellationNotice(issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-        }
-        if (['cancelled_issue_closed', 'cancelled_label_removed'].some(reason => reason === latest.terminalReason)) {
-          // Another cleanup failure keeps a closure obligation for reconciliation.
-          await excludeWithdrawnIssue({ ...issueRef, kind: 'issue', triggeringLabel: context.AI_PRIMARY_TAG }, latest.terminalReason);
-        }
-        return { status: 'cancelled', reason: latest.terminalReason };
-      }
-      if (error instanceof UsageLimitError) {
-        await handleUsageLimitError(error, job, issueRef, {
-          octokit, correlatedLogger, stateManager, taskId,
-          AI_PROCESSING_TAG, AI_WAITING_TAG
-        });
-        const afterRetry = await stateManager.getTaskState(taskId);
-        if (isStoppedTask(afterRetry)) return { status: 'cancelled', reason: afterRetry.terminalReason };
-        return { status: 'requeued', reason: 'rate_limit' };
-      } else {
-        await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-        const isUserCancelled = isUserCancellationError(error);
-        if (isUserCancelled) {
-          return { status: 'cancelled', reason: 'user_request' };
-        }
-        throw error;
-      }
+      return handleIssueProcessingError(error, { job, context, octokit, claudeResult, worktreeInfo });
     }
   });
 }
