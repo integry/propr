@@ -101,6 +101,7 @@ export type {
   TaskInfo,
   TaskStatusResponse,
   TaskStatus,
+  TaskPushFailure,
 } from "./implement.js";
 
 // Tasks API

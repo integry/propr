@@ -12,7 +12,7 @@ import { UsageLimitError, AgentRegistry } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
 import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
-import { cleanupWorktree } from '@propr/core';
+import { cleanupWorktree, formatPushFailureMarkdown, getPushFailure } from '@propr/core';
 import {
     fetchMergeTaskPRInfo,
     updateMergeTaskWithKnownPRInfo,
@@ -97,15 +97,17 @@ async function handleMergeJobError(error: Error, options: {
     const errorMessage = error.message || 'Unknown error';
     correlatedLogger.error({ pullRequestNumber, error: errorMessage }, 'Merge conflict resolution job failed');
 
+    const pushFailure = getPushFailure(error);
     await stateManager.updateTaskState(taskId, TaskStates.FAILED, {
-        reason: 'Merge conflict resolution failed', error: { message: errorMessage },
+        reason: pushFailure ? `Merge conflict resolution failed: ${errorMessage}` : 'Merge conflict resolution failed', error: { message: errorMessage },
+        ...(pushFailure ? { historyMetadata: { pushFailure } } : {}),
     });
 
     if (octokit && startingCommentId) {
         try {
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingCommentId,
-                body: `❌ **Failed to resolve merge conflicts** from \`${baseBranch}\` into \`${headBranch}\`\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\n---\n_System-triggered merge conflict resolution_`,
+                body: `❌ **Failed to resolve merge conflicts** from \`${baseBranch}\` into \`${headBranch}\`\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `\`\`\`\n${errorMessage}\n\`\`\``}\n\n---\n_System-triggered merge conflict resolution_`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');

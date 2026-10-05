@@ -95,6 +95,16 @@ export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
+export { classifyPushError, classifyPushRejectionText, extractUnblockUrls, formatPushRejectionClass, type PushRejectionClass, type PushRejectionDiagnosis } from './git/pushRejection.js';
+export {
+    salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, pushFailureHistoryMetadata,
+    formatPushFailureMessage, formatPushFailureMarkdown, buildRecoveryInstruction, writeSalvageRetentionMarker, isSalvageRetainedWorktree,
+    SALVAGE_RETENTION_REASON, type PushSalvageRung, type PushSalvageEvent, type PushFailureRecord, type PushSalvageOperations, type PushSalvageAttempt,
+} from './git/pushSalvage.js';
+export {
+    RESCUE_REF_PREFIX, rescueRefName, isRescueRef, sanitizeRescueId, getRescueRetentionDays, getRescueBundleDirectory, rescueBundlePath,
+    pruneRescueRefs, pruneRescueBundles, createGitRescueRefPruneDependencies, type RescueRefPruneDependencies, type RemoteRescueRef,
+} from './git/rescueRefs.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
 export { assertCommitIsAncestor, mergeBaseIntoBranch } from './git/mergeOperations.js';

@@ -24,7 +24,7 @@ export {
     type UsageLimitError,
     type GenericErrorOptions
 } from './errorHandlers.js';
-import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, PushFailureRecord } from '@propr/core';
 import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestVisualPreviews,
@@ -47,6 +47,8 @@ export interface PostProcessingResult {
     } | null;
     updatedLabels: string[];
     error?: string;
+    /** Set when the final push failed; names the salvage rung and the recovery. */
+    pushFailure?: PushFailureRecord;
 }
 
 type Octokit = {

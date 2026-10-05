@@ -422,6 +422,21 @@ describe('mergeConflictDetector - push events', () => {
         assert.strictEqual(results.length, 0);
     });
 
+    test('ignores push salvage rescue refs as branch discovery input', async () => {
+        mockLoadAutoResolve.mock.mockImplementation(async () => true);
+        const redis = createMockRedis();
+        mockOctokit.request.mock.mockImplementation(async () => {
+            throw new Error('rescue refs must not be looked up as branches');
+        });
+
+        for (const ref of ['refs/propr/rescue/task-1', 'refs/heads/propr/rescue/task-1']) {
+            const results = await handlePushConflictDetection(createMockPushEvent({ ref }), redis as never, 'corr-rescue');
+            assert.strictEqual(results.length, 0);
+        }
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('skips when no open PRs target the pushed branch', async () => {
         mockLoadAutoResolve.mock.mockImplementation(async () => true);
         const redis = createMockRedis();

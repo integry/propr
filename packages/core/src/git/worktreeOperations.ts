@@ -6,6 +6,7 @@ import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
+import { isSalvageRetainedWorktree } from './pushSalvage.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -45,6 +46,13 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         retentionStrategy,
         retentionHours
     }, 'Cleaning up Git worktree...');
+
+    // The push salvage ladder kept this worktree because it holds the only copy of
+    // commits a rejected push could not deliver; it overrides the retention strategy.
+    if (await isSalvageRetainedWorktree(worktreePath)) {
+        logger.warn({ worktreePath, branchName }, 'Keeping worktree retained by push salvage');
+        return;
+    }
 
     if (!success && retentionStrategy === 'keep_on_failure') {
         logger.info({ worktreePath, branchName, retentionStrategy }, 'Keeping worktree due to failure and retention strategy');
