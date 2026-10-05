@@ -4,6 +4,7 @@ import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { ScoreBadge } from '../TaskList/ScoreBadge';
 import { formatDuration, formatRelativeTime } from '../TaskList/utils.tsx';
 import { describeRun, isReviewRun, runScore, type TaskRunEntry } from '../TaskList/rowModel';
+import { RUN_DURATION_COLUMN, RUN_NUMBER_COLUMN, RUN_RESULT_COLUMN, RUN_TAG_COLUMN } from './runTimelineColumns';
 
 interface RunTimelineProps {
   /** Every run of the task, oldest first. */
@@ -80,8 +81,8 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
               onClick={() => (selected ? setExpanded(value => !value) : onSelectRun(run.task.id))}
               className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
             >
-              {/* A plain node on the rail; white behind it breaks the line around it. */}
-              <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center bg-white">
+              {/* A plain node on the rail, on the row's own background. */}
+              <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center">
                 <span
                   aria-hidden="true"
                   data-testid="run-timeline-node"
@@ -93,11 +94,13 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
                 className={`h-3 w-3 flex-none text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
                 strokeWidth={2.5}
               />
-              <span className={`flex-none whitespace-nowrap ${selected ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
-                Run {run.number}
+              {/* A fixed tag column, so every summary, and its steps' labels, start on one line. */}
+              <span className={`flex ${RUN_TAG_COLUMN} flex-none items-center gap-2`}>
+                <span className={`${RUN_NUMBER_COLUMN} flex-none whitespace-nowrap ${selected ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
+                  Run {run.number}
+                </span>
+                {run.type && <WorkTypeBadge type={run.type} compact />}
               </span>
-              <span aria-hidden="true" className="flex-none text-slate-300">·</span>
-              {run.type && <span className="flex-none"><WorkTypeBadge type={run.type} compact /></span>}
               <span className={`min-w-0 flex-1 truncate ${selected ? 'text-slate-800' : 'text-slate-600'}`} title={run.summary}>{run.summary}</span>
               <time
                 dateTime={run.task.createdAt}
@@ -106,11 +109,11 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
               >
                 {formatRelativeTime(run.task.createdAt)}
               </time>
-              <span className={`w-16 flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+              <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
                 {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
               </span>
               {/* A fixed slot, so results line up whether or not every run has one. */}
-              <span className="flex w-16 flex-none justify-end">
+              <span className={`flex ${RUN_RESULT_COLUMN} flex-none justify-end`}>
                 <RunResult run={run} />
               </span>
             </button>

@@ -178,7 +178,7 @@ export const RunCountChip: React.FC<{
 };
 
 /**
- * The line under a title, held to one line: `[+3] ●──■──■──⟳ · REVIEW what the newest
+ * The line under a title, held to one line: `[+3] ●──■──■──⟳  REVIEW what the newest
  * run did · 2 previews`. The type belongs to the newest run, not the task, so
  * it travels with that run's summary rather than taking room from the title.
  * A newest run with no summary states its outcome in the same place, as the
@@ -197,11 +197,9 @@ export const RollupLine: React.FC<{
   if (!hasRollupLine(row)) return null;
   const hasRuns = row.earlierRuns.length > 0;
   const summary = row.detail ?? row.outcome;
-  const hasSummary = Boolean(row.type || summary);
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
       {hasRuns && <RunCountChip row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />}
-      {hasRuns && hasSummary && <span aria-hidden="true" className="flex-none">·</span>}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
       {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
       <PreviewCountBadge count={row.previewCount} />

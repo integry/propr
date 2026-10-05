@@ -32,10 +32,10 @@ describe('RunTimeline', () => {
     );
     const rows = within(screen.getByRole('list', { name: 'Runs' })).getAllByTestId('run-timeline-run');
     expect(rows.map(row => row.querySelector('button')!.textContent)).toEqual([
-      expect.stringMatching(/^Run 1·ReviewInitial review.*\[4\]$/),
-      expect.stringMatching(/^Run 2·FixFixed seedCommit test.*9f3c21e$/),
-      expect.stringMatching(/^Run 3·ReviewFound 2 issues.*3m 30s\[6\]$/),
-      expect.stringMatching(/^Run 4·UltrafixUltrafix cycle 3 \(linting\).*Running…Active$/),
+      expect.stringMatching(/^Run 1ReviewInitial review.*\[4\]$/),
+      expect.stringMatching(/^Run 2FixFixed seedCommit test.*9f3c21e$/),
+      expect.stringMatching(/^Run 3ReviewFound 2 issues.*3m 30s\[6\]$/),
+      expect.stringMatching(/^Run 4UltrafixUltrafix cycle 3 \(linting\).*Running…Active$/),
     ]);
     expect(rows.map(row => row.querySelector('button')!.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false', 'true']);
     // Plain nodes on the rail: the type and the result slot say how each run went, not a coloured marker.

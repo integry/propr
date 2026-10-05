@@ -253,6 +253,19 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(historical.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
+  // Steps keep to their run's columns: times under `Run 3`, labels under its summary, durations ending on its duration.
+  const stepColumns = await historical.nth(2).evaluate(run => {
+    const [, , tag, summary, , duration] = Array.from(run.querySelector('button')!.children) as HTMLElement[];
+    const step = run.querySelector('[aria-label="Run steps"] li')!;
+    const [, time, label, stepDuration] = Array.from(step.children) as HTMLElement[];
+    const box = (node: HTMLElement) => node.getBoundingClientRect();
+    return {
+      time: box(time).left - box(tag).left,
+      label: box(label).left - box(summary).left,
+      duration: box(stepDuration).right - box(duration).right,
+    };
+  });
+  expect(stepColumns).toEqual({ time: 0, label: 0, duration: 0 });
   await expect(details.getByRole('region', { name: 'Changed files' })).toHaveText(/^(?!.*withdrawalLabels).*withdrawalHandlers\.ts/s);
   await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
   // The first tier stays on the task, which is working on Run 8; the run line follows Run 3, with Run 3's own spend.

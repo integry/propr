@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
+import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_RESULT_COLUMN, RUN_TAG_COLUMN } from './runTimelineColumns';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
 
 interface TaskStatusTableProps {
@@ -267,8 +268,9 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
 
 /**
  * One run's steps hanging off the run rail (2px at 7px in): each step branches
- * off it with a short tic. The right edge clears the run row's score slot, so
- * a step's duration sits under the run's.
+ * off it with a tic under the run's caret, and keeps to the run row's columns:
+ * its time in the tag column, its label under the run's summary, its duration
+ * under the run's, with the result slot left empty.
  */
 const BranchSteps: React.FC<{
   items: Array<HistoryItem & { duration: number | null }>;
@@ -282,9 +284,9 @@ const BranchSteps: React.FC<{
       const isRunning = isLast && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
       const isFailure = stateUpper === 'FAILED';
       return (
-        <li key={`${item.state}-${item.timestamp}-${index}`} className="relative flex min-w-0 items-start gap-2 py-0.5 pl-6 pr-[3.75rem] text-xs leading-5">
-          <span aria-hidden="true" className="absolute left-[9px] top-[10px] h-px w-3 bg-slate-300" />
-          <span className="w-14 flex-none font-mono text-[11px] tabular-nums text-slate-400">
+        <li key={`${item.state}-${item.timestamp}-${index}`} className={`relative flex min-w-0 items-start gap-2 py-0.5 ${RUN_LEAD_INSET} pr-1 text-xs leading-5`}>
+          <span aria-hidden="true" className="absolute left-[9px] top-[10px] h-px w-6 bg-slate-300" />
+          <span className={`${RUN_TAG_COLUMN} flex-none font-mono text-[11px] tabular-nums text-slate-400`}>
             {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--'}
           </span>
           <span className="min-w-0 flex-1">
@@ -297,9 +299,10 @@ const BranchSteps: React.FC<{
               </span>
             )}
           </span>
-          <span className={`w-16 flex-none text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+          <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
             {isRunning ? 'Running…' : item.duration !== null ? formatRelativeTime(item.duration) : ''}
           </span>
+          <span aria-hidden="true" className={`${RUN_RESULT_COLUMN} flex-none`} />
         </li>
       );
     })}
