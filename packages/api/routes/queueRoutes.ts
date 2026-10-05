@@ -21,15 +21,13 @@ interface QueueRoutesDeps {
 export function createQueueRoutes(deps: QueueRoutesDeps) {
   const { redisClient, taskQueue } = deps;
 
-  async function collectQueueStats(): Promise<Record<string, number>> {
-    const [waiting, active, completed, failed, delayed] = await Promise.all([
+  // Fleet health and drain decisions consume only waiting and active counts.
+  async function collectQueueStats(): Promise<{ waiting: number; active: number }> {
+    const [waiting, active] = await Promise.all([
       taskQueue.getWaitingCount(),
-      taskQueue.getActiveCount(),
-      taskQueue.getCompletedCount(),
-      taskQueue.getFailedCount(),
-      taskQueue.getDelayedCount()
+      taskQueue.getActiveCount()
     ]);
-    return { waiting, active, completed, failed, delayed, total: waiting + active + completed + failed + delayed };
+    return { waiting, active };
   }
 
   async function getQueueStats(_req: Request, res: Response): Promise<void> {

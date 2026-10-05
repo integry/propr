@@ -45,6 +45,10 @@ function safeEqual(left: string, right: string): boolean {
     return timingSafeEqual(leftDigest, rightDigest);
 }
 
+// GitHub user IDs are handled as canonical decimal strings, not JavaScript
+// numbers: the durable instance_members.github_user_id column is text and this
+// lookup never converts to Number, so IDs beyond Number.MAX_SAFE_INTEGER are
+// accepted intact. Only digit count (MAX_GITHUB_USER_ID_DIGITS) bounds input.
 function canonicalizeGithubUserId(value: string | undefined): string | undefined {
     const trimmed = value?.trim();
     if (!trimmed || trimmed.length > MAX_GITHUB_USER_ID_DIGITS || !/^\d+$/.test(trimmed)) return undefined;
@@ -207,7 +211,22 @@ export function registerHostedFleetRoutes(
     deps: HostedFleetRoutesDeps = {}
 ): boolean {
     const fleetSecret = deps.fleetSecret ?? process.env.PROPR_FLEET_CONTROL_SECRET;
-    if (!isHostedFleetControlEnabled(fleetSecret)) return false;
+    // Startup notices name variables only; configured values are never logged.
+    if (!isHostedFleetControlEnabled(fleetSecret)) {
+        if (fleetSecret) {
+            console.warn('Hosted Fleet routes disabled: PROPR_FLEET_CONTROL_SECRET is set but shorter than 32 characters.');
+        }
+        return false;
+    }
+    if (fleetSecret !== fleetSecret.trim()) {
+        // HTTP header values are trimmed in transit, so such a secret can never match.
+        console.warn('PROPR_FLEET_CONTROL_SECRET has leading or trailing whitespace; Fleet authentication will fail.');
+    }
+    const initialAdminGithubUserId = deps.initialAdminGithubUserId
+        ?? process.env.PROPR_HOSTED_INITIAL_ADMIN_GITHUB_USER_ID;
+    if (!canonicalizeGithubUserId(initialAdminGithubUserId)) {
+        console.warn('PROPR_HOSTED_INITIAL_ADMIN_GITHUB_USER_ID is unset or invalid; hosted bootstrap status will report 409.');
+    }
 
     const routes = createHostedFleetRoutes({ ...deps, fleetSecret });
     app.get('/api/internal/hosted/bootstrap', routes.getBootstrapStatus);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import express from 'express';
 import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
@@ -131,9 +132,10 @@ function wiredApp(secret: string, rateLimitMax = 600) {
         taskQueue: {
             getWaitingCount: async () => 2,
             getActiveCount: async () => 1,
-            getCompletedCount: async () => 20,
-            getFailedCount: async () => 3,
-            getDelayedCount: async () => 4,
+            // Fleet consumes only waiting/active; other counts must not be read.
+            getCompletedCount: async () => { throw new Error('completed count not needed'); },
+            getFailedCount: async () => { throw new Error('failed count not needed'); },
+            getDelayedCount: async () => { throw new Error('delayed count not needed'); },
         } as never,
     });
     app.use((req, _res, next) => {
@@ -147,7 +149,7 @@ function wiredApp(secret: string, rateLimitMax = 600) {
         initialAdminGithubLogin: 'owner',
         githubUserWhitelist: 'owner',
         bootstrapAdminUsernames: ['owner'],
-        operationalStatus: statusRoutes.collectStatus,
+        operationalStatus: statusRoutes.readStatusSnapshot,
         queueStatus: queueRoutes.collectQueueStats,
     });
     app.use('/api', ensureAuthenticated, resolveAuthorization);
@@ -398,6 +400,60 @@ describe('hosted fleet Express wiring', () => {
                     error: 'Too many requests. Please try again later.',
                 });
             }
+        }
+    });
+
+    test('server mounts the general /api limiter before setupRoutes registers hosted routes', () => {
+        const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
+        const limiter = source.indexOf("app.use('/api', createApiRequestRateLimiter());");
+        const setupRoutesBody = source.indexOf('function setupRoutes(): void {');
+        const hostedRegistration = source.indexOf('registerHostedFleetRoutes(app, {', setupRoutesBody);
+        const setupRoutesCall = source.indexOf('    setupRoutes();');
+        assert.ok(limiter >= 0 && setupRoutesBody >= 0 && hostedRegistration > setupRoutesBody);
+        assert.ok(limiter < setupRoutesCall, 'general /api limiter must be installed before setupRoutes() runs');
+    });
+
+    test('warns at startup without logging values when Fleet control is misconfigured', () => {
+        const warnings: string[] = [];
+        const allWarnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+            const message = args.map(String).join(' ');
+            warnings.push(message);
+            allWarnings.push(message);
+        };
+        const register = (deps: HostedFleetRoutesDeps) => {
+            warnings.length = 0;
+            return registerHostedFleetRoutes({ get: () => undefined } as never, { database, ...deps });
+        };
+        try {
+            assert.equal(register({ fleetSecret: '', initialAdminGithubUserId: '100' }), false);
+            assert.deepEqual(warnings, []);
+
+            const shortSecret = 'short-secret-value';
+            assert.equal(register({ fleetSecret: shortSecret, initialAdminGithubUserId: '100' }), false);
+            assert.equal(warnings.length, 1);
+            assert.match(warnings[0], /PROPR_FLEET_CONTROL_SECRET .*shorter than 32/);
+
+            const paddedSecret = ` ${fleetSecret}\n`;
+            assert.equal(register({ fleetSecret: paddedSecret, initialAdminGithubUserId: '100' }), true);
+            assert.equal(warnings.length, 1);
+            assert.match(warnings[0], /PROPR_FLEET_CONTROL_SECRET has leading or trailing whitespace/);
+
+            for (const initialAdminGithubUserId of ['', 'not-a-github-id', '0']) {
+                assert.equal(register({ fleetSecret, initialAdminGithubUserId }), true);
+                assert.equal(warnings.length, 1, initialAdminGithubUserId);
+                assert.match(warnings[0], /PROPR_HOSTED_INITIAL_ADMIN_GITHUB_USER_ID is unset or invalid/);
+            }
+
+            assert.equal(register({ fleetSecret, initialAdminGithubUserId: '0100' }), true);
+            assert.deepEqual(warnings, []);
+
+            for (const value of [shortSecret, fleetSecret, 'not-a-github-id']) {
+                assert.ok(allWarnings.every(warning => !warning.includes(value)));
+            }
+        } finally {
+            console.warn = originalWarn;
         }
     });
 

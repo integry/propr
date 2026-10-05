@@ -337,9 +337,11 @@ function setupRoutes(): void {
   // Machine-to-machine bootstrap verification has its own narrow service
   // credential and deliberately does not depend on a customer's OAuth session.
   // Register before registerDesktopApiBoundary installs the shared API guard;
-  // registration is a no-op unless Fleet control was enabled at startup.
+  // registration is a no-op unless Fleet control was enabled at startup. The
+  // general /api request limiter is mounted at module load, before setupRoutes
+  // runs, so these handlers are rate-limited like every other /api route.
   registerHostedFleetRoutes(app, {
-    operationalStatus: statusRoutes.collectStatus,
+    operationalStatus: statusRoutes.readStatusSnapshot,
     queueStatus: queueRoutes.collectQueueStats
   });
   // MCP authenticates its own bearer tokens before the shared API guard.

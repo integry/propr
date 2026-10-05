@@ -365,7 +365,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     try {
       const status = await readStatusSnapshot();
       res.json(status);
-      if (!isDemoMode() && projectSystemSnapshot) {
+      if (projectSystemSnapshot) {
         const additionalAdministratorIds = req.user
           && req.authorization?.permissions.includes('instance.manage_settings')
           ? [req.user.id]
@@ -384,7 +384,6 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   }
 
   return {
-    collectStatus: readStatusSnapshot,
     getCompatibility,
     getDesktopDiscovery,
     getStatus,
