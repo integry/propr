@@ -7,7 +7,7 @@ import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { Queue, Worker, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, repositoryWorkflowSlotKeys, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from '../packages/core/src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, repositoryWorkflowSlotKeys, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { withRetry } from '../packages/core/src/utils/retryHandler.js';
 import { runWithExecutionAbortSignal, ExecutionAbortedError } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
@@ -15,7 +15,7 @@ import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/wor
 
 let settings: Record<string, unknown> = {};
 await mock.module('@propr/core', { namedExports: {
-    withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
+    withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
     executeWithRepositoryWorkflow, loadSettings: async () => settings, RepositoryWorkflowPolicyError, withRetry,
     retryConfigs: { githubApi: { maxAttempts: 3, baseDelay: 1, maxDelay: 1, exponentialBase: 1, retryableErrors: [] } },
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },

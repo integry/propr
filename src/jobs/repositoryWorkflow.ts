@@ -1,7 +1,7 @@
 import { DelayedError, Job, Queue, UnrecoverableError } from 'bullmq';
 import {
     loadRepositoryWorkflow, loadSettings, WORKFLOW_MAX_BYTES, WORKFLOW_PATH,
-    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
+    executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, TaskStates,
     RepositoryWorkflowPolicyError, withRetry, retryConfigs,
 } from '@propr/core';
 import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateManager, AgentExecutionResult, IssueJobData } from '@propr/core';
@@ -297,6 +297,18 @@ export async function withRepositoryWorkflowAdmission<T>(options: {
 }
 
 export { RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError };
+
+/**
+ * Admission used the policy saved when the task was refused. Once the admitted
+ * execution has read its current policy again, that policy's cap must admit it as
+ * well; otherwise the reservation is given up and RepositoryWorkflowCapacityError
+ * defers the task with the refreshed policy, which callers must already have saved.
+ * Returns that policy once admitted.
+ */
+export async function reconcileRepositoryWorkflowAdmission(workflow: ResolvedRepositoryWorkflow | undefined): Promise<ResolvedRepositoryWorkflow | undefined> {
+    await reconcileRepositoryWorkflowSlot(workflow?.maxParallelTasks);
+    return workflow;
+}
 
 /**
  * An unusable workflow file fails identically on every retry of the same base

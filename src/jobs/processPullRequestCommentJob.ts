@@ -1,6 +1,6 @@
 import { formatTaskTerminalReason } from '@propr/shared';
 import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata,
-    withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
+    withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -215,8 +215,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     return withRepositoryWorkflowAdmission({
         workflow: state.repositoryWorkflow = policy.workflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger, job,
     }, async (): Promise<JobResult> => {
-        // Admission ends the wait and runs the current base policy, not a snapshot that waited.
-        const repositoryWorkflow = state.repositoryWorkflow = job.data.repositoryWorkflowDeferrals ? await policy.admitted(job) : policy.workflow;
+        // Admission ends the wait and runs the current base policy, whose cap must admit it too, or it defers with that policy.
+        const repositoryWorkflow = job.data.repositoryWorkflowDeferrals ? await reconcileRepositoryWorkflowAdmission(state.repositoryWorkflow = await policy.admitted(job)) : policy.workflow;
         const publication = state.publication ??= new PullRequestPublication(octokit, context, prData!.data);
         const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
         state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');

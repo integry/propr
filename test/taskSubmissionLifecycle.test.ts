@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
 import { DelayedError, type Job } from 'bullmq';
 import type { IssueJobData } from '@propr/core';
+import { ACQUIRE_WORKFLOW_SLOT, RECONCILE_WORKFLOW_SLOT } from '../packages/core/src/workflow/workflowConcurrency.js';
 
 process.env.PROPR_DEMO_MODE = 'true';
 const core = await import('@propr/core');
@@ -9,6 +10,9 @@ const log = { info() {}, debug() {}, warn() {}, error() {} };
 let submitted = false;
 let capacityFull = false;
 let admissionAttempts = 0;
+// Other runs holding repository slots; a cap compares against them like the Lua scripts do.
+let otherRuns = 0;
+const reconciledLimits: number[] = [];
 let workflowError: Error | undefined;
 let taskState = 'pending';
 const events: string[] = [];
@@ -39,7 +43,7 @@ const deferralHistory: unknown[][] = [];
 let githubRequests: string[] | undefined;
 let baseSha = 'base-sha';
 let emptyRepository = false;
-const workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
+let workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
 const fakeGitHubRequest = async (route: string, params: { path?: string; body?: string }) => {
   if (route.endsWith('/comments')) { githubComments.push(params.body!); return { data: liveIssue }; }
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: liveIssue };
@@ -142,7 +146,12 @@ await mock.module('../src/jobs/repositoryWorkflow.js', { namedExports: {
   },
 } });
 await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
-  redisClient: { eval: async () => { admissionAttempts++; return capacityFull ? 0 : 1; } },
+  redisClient: { eval: async (script: string, ...args: unknown[]) => {
+    const limit = Number(args[6] ?? 0);
+    if (script === RECONCILE_WORKFLOW_SLOT) { reconciledLimits.push(limit); return limit > 0 && otherRuns + 1 > limit ? 0 : 1; }
+    if (script === ACQUIRE_WORKFLOW_SLOT) { admissionAttempts++; return capacityFull || (limit > 0 && otherRuns >= limit) ? 0 : 1; }
+    return 1;
+  } },
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
@@ -324,6 +333,45 @@ test('capacity re-entries reuse the resolved policy, back off, and reload it aft
     assert.equal(job.data.repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
     assert.equal(job.data.repositoryWorkflowDeferrals, undefined);
   } finally { githubRequests = undefined; capacityFull = false; baseSha = 'base-sha'; }
+});
+
+test('a cap lowered while an issue waited is enforced after admission, and the task defers with the refreshed policy', async () => {
+  githubRequests = []; processingHistory.length = 0; outcome = 'completed'; events.length = 0; reconciledLimits.length = 0;
+  workflowYaml = 'limits: { max_parallel_tasks: 3 }\nvalidation: [npm test]';
+  otherRuns = 3;
+  const job = {
+    id: 'lowered-cap-job', name: 'processGitHubIssue', token: 'lock-token', data: issueJobData(),
+    updateData: async (data: IssueJobData) => { job.data = JSON.parse(JSON.stringify(data)); },
+    updateProgress: async () => undefined,
+    moveToDelayed: async () => { events.push('delay'); },
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.equal(job.data.repositoryWorkflow?.maxParallelTasks, 3);
+    // A maintainer lowers the cap to one; one of the three runs finishes.
+    workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
+    baseSha = 'lowered-sha';
+    otherRuns = 2;
+    events.length = 0;
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError, 'the saved cap of three admits, the refreshed cap of one does not');
+    assert.deepEqual(reconciledLimits, [1], 'admission is reconciled with the refreshed cap');
+    assert.ok(!events.includes('clone'), 'the refused task never starts');
+    assert.equal(processingHistory.filter(entry => entry.state === core.TaskStates.PROCESSING).length, 0);
+    assert.equal(job.data.repositoryWorkflowDeferred, true);
+    assert.equal(job.data.repositoryWorkflow?.maxParallelTasks, 1, 'the deferral saves the refreshed policy');
+    assert.equal(job.data.repositoryWorkflow?.revision, 'lowered-sha');
+    assert.deepEqual(events, ['create-if-absent', 'delay']);
+    // The refreshed snapshot now governs admission itself.
+    otherRuns = 1; reconciledLimits.length = 0;
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.deepEqual(reconciledLimits, [], 'the refreshed cap refuses before admission');
+    otherRuns = 0;
+    assert.equal((await processGitHubIssueJob(job as never)).status, 'processed');
+    assert.deepEqual(reconciledLimits, [1]);
+  } finally {
+    githubRequests = undefined; otherRuns = 0; baseSha = 'base-sha';
+    workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
+  }
 });
 
 test('an implementation task against a repository without commits reaches repository initialization', async () => {

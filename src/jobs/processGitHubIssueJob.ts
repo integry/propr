@@ -23,7 +23,7 @@ import type { GitHubToken, CurrentIssueData, JobContext } from './issueJob/index
 
 import {
   prepareRepositoryWorkflow, resolveRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata, CLEARED_REPOSITORY_WORKFLOW_DEFERRAL,
-  withRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError, nonRetryableRepositoryWorkflowError,
+  withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError, nonRetryableRepositoryWorkflowError,
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
 
@@ -277,7 +277,11 @@ async function processIssueWithAdmission(
     try {
       // The snapshot that requested admission can be many deferrals old. Run hooks,
       // instructions and validation from the base head the worktree now starts from.
-      if (refreshWorkflow) context.repositoryWorkflow = await prepareIssueRepositoryWorkflow(octokit, issueRef);
+      if (refreshWorkflow) {
+        context.repositoryWorkflow = await prepareIssueRepositoryWorkflow(octokit, issueRef);
+        // A refusal here defers with the refreshed policy saved in context.repositoryWorkflow.
+        await reconcileRepositoryWorkflowAdmission(context.repositoryWorkflow);
+      }
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
       });
@@ -323,6 +327,7 @@ async function processIssueWithAdmission(
       return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
     } catch (error) {
+      if (error instanceof RepositoryWorkflowCapacityError) throw error;
       return handleIssueProcessingError(error, { job, context, octokit, claudeResult, worktreeInfo });
     }
   });

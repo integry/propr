@@ -8,6 +8,9 @@ import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js
 
 let events: string[] = [];
 let refuseCapacity = false;
+// Other runs holding repository slots; admission and reconciliation compare caps against them.
+let otherRuns = 0;
+const reconciledLimits: Array<number | undefined> = [];
 let nothingSelected = false;
 let persistError: Error | undefined;
 class RepositoryWorkflowCapacityError extends Error {}
@@ -90,6 +93,10 @@ await mock.module('@propr/core', { namedExports: {
     refineWorkflowPreviews, repositoryWorkflowPrompt,
     loadRepositoryWorkflow, loadSettings: async () => ({}), WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError,
     executeWithRepositoryWorkflow, withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError: class extends Error {},
+    reconcileRepositoryWorkflowSlot: async (limit: number | undefined) => {
+        reconciledLimits.push(limit);
+        if (limit && otherRuns + 1 > limit) throw new RepositoryWorkflowCapacityError();
+    },
     // Used by the real recovery and pending-comment helpers: no agent container is running.
     inspectTaskContainerLivenessForTask: async () => ({ liveness: 'not_found', container: null }),
     inspectLegacyDockerContainerLivenessForTask: async () => 'not_found',
@@ -107,7 +114,11 @@ const modules: Record<string, Record<string, unknown>> = {
     repositoryWorkflow: {
         ...workflowJobs,
         prepareRepositoryWorkflow: async () => { policyLoads++; return resolvedWorkflow; },
-        withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => { if (refuseCapacity) throw new RepositoryWorkflowCapacityError(); return execute(); },
+        withRepositoryWorkflowAdmission: async (options: { workflow?: ResolvedRepositoryWorkflow }, execute: () => Promise<unknown>) => {
+            const limit = options.workflow?.maxParallelTasks;
+            if (refuseCapacity || (limit && otherRuns >= limit)) throw new RepositoryWorkflowCapacityError();
+            return execute();
+        },
         deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
         RepositoryWorkflowCapacityError,
     },
@@ -198,7 +209,7 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
+    refuseCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
@@ -421,6 +432,39 @@ test('PR follow-ups record the workflow revision on PROCESSING and reuse it acro
     });
     assert.equal((waiting.data as { repositoryWorkflow?: unknown }).repositoryWorkflow, undefined, 'ordinary retries reload base branch policy');
     assert.equal((waiting.data as { repositoryWorkflowDeferrals?: unknown }).repositoryWorkflowDeferrals, undefined);
+});
+
+test('a cap lowered while a follow-up waited is enforced after admission, and it defers with the refreshed policy', async () => {
+    resolvedWorkflow = { revision: 'base-sha', baseBranch: 'main', fileRevision: 'blob-sha', config: {}, timeoutMs: 1000, maxParallelTasks: 3 };
+    const waiting = job();
+    waiting.updateData = async (data: Record<string, unknown>) => { events.push('persist-comments'); waiting.data = JSON.parse(JSON.stringify(data)); };
+    otherRuns = 3;
+    await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.deepEqual(reconciledLimits, [], 'a policy read by this attempt already governed its admission');
+    // A maintainer lowers the cap to one; one of the three runs finishes.
+    resolvedWorkflow = { revision: 'lowered-sha', baseBranch: 'main', fileRevision: 'blob-2', config: {}, timeoutMs: 1000, maxParallelTasks: 1 };
+    otherRuns = 2;
+    events = [];
+    await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError,
+        'the saved cap of three admits, the refreshed cap of one does not');
+    assert.deepEqual(reconciledLimits, [1], 'admission is reconciled with the refreshed cap');
+    assert.ok(!events.includes('agent'));
+    assert.ok(!events.includes('comment:42'), 'no starting comment for a run that does not start');
+    assert.equal(processingMetadata.length, 0);
+    assert.ok(events.includes('cleanup-capacity'));
+    const saved = waiting.data as { repositoryWorkflow?: ResolvedRepositoryWorkflow; repositoryWorkflowDeferrals?: number };
+    assert.equal(saved.repositoryWorkflow?.maxParallelTasks, 1, 'the deferral saves the refreshed policy');
+    assert.equal(saved.repositoryWorkflow?.revision, 'lowered-sha');
+    assert.equal(saved.repositoryWorkflowDeferrals, 1);
+    // The refreshed snapshot now governs admission itself.
+    otherRuns = 1; reconciledLimits.length = 0;
+    await assert.rejects(processPullRequestCommentJob(waiting as never), RepositoryWorkflowCapacityError);
+    assert.deepEqual(reconciledLimits, [], 'the refreshed cap refuses before admission');
+    otherRuns = 0;
+    agentError = new Error('agent stopped by test');
+    await assert.rejects(processPullRequestCommentJob(waiting as never), /agent stopped by test/);
+    assert.deepEqual(reconciledLimits, [1]);
+    assert.ok(events.includes('agent'));
 });
 
 test('a deferred single-comment follow-up resumes with its picked-up comments under the real recovery helpers', async () => {

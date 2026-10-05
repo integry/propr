@@ -6,7 +6,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Redis } from 'ioredis';
-import { ACQUIRE_WORKFLOW_SLOT, RELEASE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
+import { ACQUIRE_WORKFLOW_SLOT, RECONCILE_WORKFLOW_SLOT, RELEASE_WORKFLOW_SLOT, RENEW_WORKFLOW_SLOT, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError, reconcileRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../src/workflow/workflowConcurrency.js';
 
 import { getExecutionAbortError, getExecutionOwnershipContext, runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
 
@@ -87,6 +87,28 @@ test('shared admission respects active branch caps, legacy runs, expiry, release
         await redis.zadd('waiting', 'XX', 1, 'newer');
         assert.deepEqual(await release('none'), [], 'a waiter that stopped re-entering lapses');
         assert.equal(await redis.zcard('waiters'), 0);
+
+        // An admitted run re-reads its policy: a lowered cap that no longer admits it
+        // removes its member atomically and joins the waiting list; a cap that still
+        // admits it replaces the cap it was admitted under.
+        await redis.del(key, 'limits', 'waiters', 'waiting');
+        const reconcile = (token: string, limit: number, waiter = '') => redis.eval(RECONCILE_WORKFLOW_SLOT, 4, key, 'limits', 'waiters', 'waiting', token, limit, waiter);
+        for (const token of ['first', 'second', 'deferred']) assert.equal(await claim(token, 3), 2);
+        assert.equal(await reconcile('deferred', 2, 'deferred-job'), 0, 'three runs exceed a refreshed cap of two');
+        assert.equal(await redis.zscore(key, 'deferred'), null);
+        assert.equal(await redis.hget('limits', 'deferred'), null);
+        assert.notEqual(await redis.zscore('waiters', 'deferred-job'), null, 'the refused run waits like any refusal');
+        assert.equal(await reconcile('second', 2), 2, 'removing the refused run leaves room for the next reconciliation');
+        assert.equal(await redis.hget('limits', 'second'), '2', 'the refreshed cap replaces the admitted one');
+        assert.equal(await claim('third', 3), 0, 'later admissions honour the refreshed cap');
+        assert.equal(await reconcile('second', 5), 2, 'a run\'s own former cap does not count against it');
+        assert.equal(await redis.hget('limits', 'second'), '5');
+        assert.equal(await reconcile('second', 0), 2, 'another run\'s cap still applies to a refreshed run without one');
+        await redis.del('limits');
+        assert.equal(await reconcile('second', 0), 1);
+        assert.equal(await reconcile('gone', 2), -1, 'a reservation that is no longer held cannot be reconciled');
+        await redis.zadd(key, 1, 'first');
+        assert.equal(await reconcile('first', 2), -1, 'an expired reservation cannot be reconciled');
     } finally {
         redis.disconnect();
         server.kill('SIGTERM');
@@ -111,6 +133,9 @@ function leaseHarness(t: TestContext) {
     let releaseFails = false;
     let releases = 0;
     let renewals = 0;
+    let reconcileRefuses = false;
+    const reconciled: unknown[] = [];
+    const renewedLimits: unknown[] = [];
     const redis = { eval: async (script: string, keyCount: number, ...rest: string[]) => {
         const token = rest[keyCount];
         if (script === ACQUIRE_WORKFLOW_SLOT) {
@@ -119,7 +144,14 @@ function leaseHarness(t: TestContext) {
             slots.set(token, now + 120_000);
             return 1;
         }
+        if (script === RECONCILE_WORKFLOW_SLOT) {
+            reconciled.push(rest[keyCount + 1]);
+            if (!slots.has(token) || slots.get(token)! <= now) return -1;
+            if (reconcileRefuses) { slots.delete(token); return 0; }
+            return 2;
+        }
         if (script === RENEW_WORKFLOW_SLOT) {
+            renewedLimits.push(rest[keyCount + 1]);
             renewals++;
             if (renew) return renew();
             if (!slots.has(token) || slots.get(token)! <= now) return 0;
@@ -133,7 +165,8 @@ function leaseHarness(t: TestContext) {
     } } as unknown as Redis;
     return {
         options: { redis, repository: 'example/workflow', limit: 1, checkCancelled: async () => {}, onLeaseError: (error: unknown) => { errors.push(error); } },
-        slots, errors,
+        slots, errors, reconciled, renewedLimits,
+        refuseReconcile: () => { reconcileRefuses = true; },
         setRenew: (operation: () => Promise<number>) => { renew = operation; },
         failRelease: () => { releaseFails = true; },
         get releases() { return releases; },
@@ -144,23 +177,24 @@ function leaseHarness(t: TestContext) {
 }
 
 for (const failure of ['rejected', 'hung'] as const) {
-    test(`an uncapped run survives renewal that is ${failure} past its lease`, async t => {
+    test(`an uncapped run whose renewal is ${failure} stops before its reservation can be reclaimed`, async t => {
         const h = leaseHarness(t);
         h.options.limit = 0;
         h.setRenew(() => failure === 'hung' ? new Promise(() => {}) : Promise.reject(new Error('Redis unavailable')));
         let signal!: AbortSignal;
-        const finish = deferred<void>();
-        const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        const execution = withRepositoryWorkflowSlot(h.options, () => new Promise<void>(resolve => {
             signal = getExecutionOwnershipContext()!.signal;
-            await finish.promise;
-            await releaseRepositoryWorkflowSlot();
-            return 'finished';
-        });
+            signal.addEventListener('abort', () => resolve(), { once: true });
+        }));
+        const rejected = assert.rejects(execution, RepositoryWorkflowLeaseLostError);
         await setImmediate();
-        for (let elapsed = 0; elapsed < 300_000; elapsed += 30_000) await h.tick(30_000);
-        assert.equal(signal.aborted, false, 'no active cap means a Redis stall must not stop the run');
-        finish.resolve();
-        assert.equal(await execution, 'finished');
+        await h.tick(30_000);
+        await h.tick(30_000);
+        await h.tick(28_999);
+        assert.equal(signal.aborted, false);
+        await h.tick(1);
+        assert.equal(signal.aborted, true, 'a worker cut off from Redis cannot learn about a later cap, so it stops anyway');
+        await rejected;
     });
 }
 
@@ -391,7 +425,7 @@ test('refused admission settles without polling or releasing another execution r
     await Promise.all([active, rejection]);
 });
 
-test('a capped run whose renewals fail past its lease stops before another worker is admitted to its slot', { skip: !available && 'redis-server is needed for the Lua integration test' }, async t => {
+for (const limitOfA of [1, 0]) test(`a ${limitOfA ? 'capped' : 'uncapped'} run whose renewals fail past its lease stops before another worker is admitted to its slot`, { skip: !available && 'redis-server is needed for the Lua integration test' }, async t => {
     const directory = await mkdtemp(path.join(tmpdir(), 'workflow-redis-'));
     const socket = path.join(directory, 'redis.sock');
     const server = spawn(binary, ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' });
@@ -413,18 +447,19 @@ test('a capped run whose renewals fail past its lease stops before another worke
             ? Promise.reject(new Error('Connection is closed.')) : redis.eval(script, ...args as [number, ...string[]]) } as unknown as Redis;
         const errors: unknown[] = [];
         const options = { repository, limit: 1, checkCancelled: async () => {}, onLeaseError: (error: unknown) => { errors.push(error); } };
+        // Worker B requests capped admission; A may have been admitted without any cap.
         let now = 0;
         t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
         t.mock.method(performance, 'now', () => now);
         const tick = async (ms: number) => { now += ms; t.mock.timers.tick(ms); await setImmediate(); };
         let aRunning = false;
-        const a = withRepositoryWorkflowSlot({ ...options, redis: workerA }, () => new Promise<void>(resolve => {
+        const a = withRepositoryWorkflowSlot({ ...options, limit: limitOfA, redis: workerA }, () => new Promise<void>(resolve => {
             aRunning = true;
             getExecutionOwnershipContext()!.signal.addEventListener('abort', () => { aRunning = false; resolve(); }, { once: true });
         }));
         const aFailed = assert.rejects(a, RepositoryWorkflowLeaseLostError);
         while (!aRunning) await setImmediate();
-        await assert.rejects(withRepositoryWorkflowSlot({ ...options, redis }, async () => assert.fail('the cap is held')), RepositoryWorkflowCapacityError);
+        await assert.rejects(withRepositoryWorkflowSlot({ ...options, redis }, async () => assert.fail('A still counts')), RepositoryWorkflowCapacityError);
         for (let elapsed = 0; elapsed < 90_000; elapsed += 30_000) await tick(30_000);
         await aFailed;
         assert.equal(aRunning, false, 'the watchdog stopped A without Redis');
@@ -432,7 +467,7 @@ test('a capped run whose renewals fail past its lease stops before another worke
         // A's release also reached Redis here; simulate the release being lost
         // and its member expiring 120 s after its last confirmed renewal instead.
         await redis.zadd(key, 1, 'stale-member-of-a');
-        await redis.hset(`${key}:limits`, 'stale-member-of-a', 1);
+        await redis.hset(`${key}:limits`, 'stale-member-of-a', limitOfA);
         let bRan = false;
         await withRepositoryWorkflowSlot({ ...options, redis }, async () => { bRan = true; assert.equal(aRunning, false); });
         assert.equal(bRan, true, 'B is admitted once the stopped run\'s lease expires');
@@ -442,4 +477,51 @@ test('a capped run whose renewals fail past its lease stops before another worke
         await new Promise<void>(resolve => server.once('exit', () => resolve()));
         await rm(directory, { recursive: true, force: true });
     }
+});
+
+test('a refreshed cap that no longer admits the run gives up its reservation before execution starts', async t => {
+    const h = leaseHarness(t);
+    h.options.limit = 3;
+    h.refuseReconcile();
+    let started = false;
+    const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        await reconcileRepositoryWorkflowSlot(1);
+        started = true;
+    });
+    await assert.rejects(execution, RepositoryWorkflowCapacityError);
+    assert.equal(started, false);
+    assert.deepEqual(h.reconciled, [1]);
+    assert.equal(h.slots.size, 0);
+    assert.equal(h.releases, 0, 'the reconciliation already removed the member; nothing else is released');
+    await h.tick(120_000);
+    assert.equal(h.renewals, 0, 'a refused slot is never renewed');
+});
+
+test('a refreshed cap that still admits the run is the cap its renewals advertise', async t => {
+    const h = leaseHarness(t);
+    h.options.limit = 3;
+    const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        await reconcileRepositoryWorkflowSlot(2);
+        await h.tick(30_000);
+        await releaseRepositoryWorkflowSlot();
+        return 'ran';
+    });
+    assert.equal(await execution, 'ran');
+    assert.deepEqual(h.reconciled, [2]);
+    assert.deepEqual(h.renewedLimits, [2]);
+});
+
+test('a reservation lost before reconciliation stops the run', async t => {
+    const h = leaseHarness(t);
+    const execution = withRepositoryWorkflowSlot(h.options, async () => {
+        h.slots.clear();
+        await reconcileRepositoryWorkflowSlot(1);
+        assert.fail('must not start');
+    });
+    await assert.rejects(execution, RepositoryWorkflowLeaseLostError);
+    assert.equal(h.releases, 1);
+});
+
+test('reconciling outside a slot is a no-op', async () => {
+    await reconcileRepositoryWorkflowSlot(1);
 });
