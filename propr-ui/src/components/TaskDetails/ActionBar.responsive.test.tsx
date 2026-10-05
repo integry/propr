@@ -115,3 +115,41 @@ describe('Task action overflow', () => {
   });
 });
 
+
+describe('TaskDetails collapsed mobile header', () => {
+  test('folds Follow Up, Prompt and Logs into the overflow menu', () => {
+    const onFollowUp = vi.fn();
+    render(<ActionBar {...commonProps} onFollowUp={onFollowUp} currentStatus="COMPLETED" compact />);
+
+    expect(screen.queryByRole('button', { name: 'Follow Up' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Prompt' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Follow Up', 'Prompt', 'Logs', 'Delete']);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Follow Up' }));
+    expect(onFollowUp).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  test('keeps Stop out of the menu while the task works', () => {
+    render(<ActionBar {...commonProps} currentStatus="PROCESSING" compact />);
+
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
+    expect(screen.queryByRole('menuitem', { name: 'Follow Up' })).toBeNull();
+  });
+
+  test('reads as the pull request then the repository on one line', () => {
+    const { container } = render(
+      <ContextStrip
+        taskInfo={{ repoOwner: 'acme', repoName: 'web', number: 41, type: 'issue' }}
+        modelName="gpt-6-astra"
+        prInfo={{ url: 'https://github.com/acme/web/pull/42', number: 42 }}
+        mobileCompact
+      />,
+    );
+
+    expect(container.textContent).toBe('PR #42acme/web');
+    expect(screen.getByText('acme/web')).toHaveClass('truncate');
+    expect(screen.queryByText('gpt-6-astra')).toBeNull();
+  });
+});

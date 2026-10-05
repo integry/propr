@@ -273,6 +273,35 @@ const TelemetryGroups: React.FC<{
   );
 };
 
+/** The collapsed mobile header's one line: the pull request, then the repository, truncated. */
+const CompactRepoLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number } }> = ({ taskInfo, prInfo }) => {
+  const pr = prInfo?.url
+    ? { url: prInfo.url, number: prInfo.number }
+    : taskInfo?.type === 'pr-comment' && taskInfo.number
+      ? { url: `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/pull/${taskInfo.number}`, number: taskInfo.number }
+      : null;
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+      {pr && (
+        <a
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex flex-none items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 font-mono text-xs text-green-700 transition-colors hover:bg-green-100"
+        >
+          <GitPullRequest size={12} aria-hidden="true" />
+          PR #{pr.number}
+        </a>
+      )}
+      {taskInfo && (
+        <span className="min-w-0 truncate font-medium text-gray-700" title={`${taskInfo.repoOwner}/${taskInfo.repoName}`}>
+          {taskInfo.repoOwner}/{taskInfo.repoName}
+        </span>
+      )}
+    </div>
+  );
+};
+
 interface ContextStripProps {
   taskInfo: TaskInfo | null;
   modelName: string;
@@ -286,6 +315,8 @@ interface ContextStripProps {
   mobileRepoOnly?: boolean;
   /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
   mobileMetadataOnly?: boolean;
+  /** Mobile only: the collapsed header's one line, the pull request then the repository, truncated. */
+  mobileCompact?: boolean;
   /**
    * One half of the strip: `git` is where the task lives (repo, PR, issue,
    * commit), `telemetry` is how its run went (model, duration, consumption).
@@ -306,9 +337,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   synthetic,
   mobileRepoOnly,
   mobileMetadataOnly,
+  mobileCompact,
   part,
   lead,
 }) => {
+  if (mobileCompact) return <CompactRepoLine taskInfo={taskInfo} prInfo={prInfo} />;
+
   // Mobile: Show only repo name
   if (mobileRepoOnly) {
     return (

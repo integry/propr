@@ -89,6 +89,59 @@ for (const width of [320, 390, 1024, 1440, 2560]) {
   });
 }
 
+test('collapses the scrolled mobile header into one line and keeps Files Changed named', async ({ page }) => {
+  await fixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/tasks/${taskId}`);
+  const details = page.getByTestId('task-details');
+  const bar = page.getByTestId('task-mobile-compact-bar');
+  const alert = details.getByRole('alert').filter({ hasText: 'Couldn’t load the changed files.' });
+  await expect(alert).toBeVisible();
+  await expect(bar).toBeHidden();
+
+  // Scroll until the alert sits just under where the header used to be.
+  await details.evaluate((element, target) => {
+    const alertTop = element.querySelector(target)!.getBoundingClientRect().top;
+    element.scrollTop += alertTop - element.getBoundingClientRect().top - 90;
+  }, '[role="alert"]');
+  await expect(bar).toBeVisible();
+
+  const detailsBox = (await details.boundingBox())!;
+  const barBox = (await bar.boundingBox())!;
+  expect(Math.abs(barBox.y - detailsBox.y)).toBeLessThanOrEqual(1);
+  expect(barBox.height).toBeLessThanOrEqual(45);
+  await expect(bar).toHaveText('PR #42acme/web');
+  await expect(bar.getByRole('button', { name: 'More task actions' })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Follow Up' })).toHaveCount(0);
+  // The title block's status badge has scrolled behind the bar, not through it.
+  const badge = details.getByText('Completed', { exact: true }).first();
+  const badgeBox = await badge.boundingBox();
+  if (badgeBox) expect(badgeBox.y + badgeBox.height).toBeLessThanOrEqual(barBox.y);
+
+  const heading = details.getByRole('heading', { name: 'FILES CHANGED' });
+  await expect(heading).toBeVisible();
+  const headingBox = (await heading.boundingBox())!;
+  expect(headingBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1);
+  expect(headingBox.y + headingBox.height).toBeLessThanOrEqual((await alert.boundingBox())!.y);
+  await capture(page, 'task-mobile-collapsed-header-390');
+
+  // Scrolled further, the header stays pinned under the bar while any of its alert is still on screen.
+  // The fixture is short, so pad the page to give it room to scroll.
+  await details.evaluate(element => {
+    element.append(Object.assign(document.createElement('div'), { style: 'height: 800px; flex: none' }));
+    element.scrollTop += 40;
+  });
+  const pinned = (await heading.locator('..').boundingBox())!;
+  const alertBox = (await alert.boundingBox())!;
+  expect(Math.abs(pinned.y - (barBox.y + barBox.height))).toBeLessThanOrEqual(2);
+  expect(pinned.y + pinned.height).toBeLessThan(alertBox.y + alertBox.height);
+
+  await bar.getByRole('button', { name: 'More task actions' }).click();
+  await expect(bar.getByRole('menuitem', { name: 'Follow Up' })).toBeVisible();
+  await capture(page, 'task-mobile-collapsed-header-menu-390');
+  expect(await noHorizontalOverflow(page)).toBe(true);
+});
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
   test(`opens a screen-capped, zoomable lightbox at ${viewport.width}px`, async ({ page, context }) => {
     await fixture(page);

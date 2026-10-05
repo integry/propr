@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useId } from 'react';
 import { RefreshCw, AlertTriangle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
@@ -35,6 +35,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
   const currentUser = useCurrentUser();
   const { onTaskUpdate, isConnected } = useSocket();
   const activeTaskIdRef = useRef(taskId);
@@ -155,10 +156,11 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
   }
 
   return (
-    <div className="relative border-t border-gray-100 pt-2">
-      {/* Header - Utility Header style */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-2 mt-4">
-        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
+    // The section owns its header and whatever loads under it, so an alert never reads without the header naming it.
+    <section aria-labelledby={headingId} className="relative border-t border-gray-100 pt-2">
+      {/* Pinned below the bar or pane header above it for as long as its section is on screen. */}
+      <div className="sticky top-11 z-[1] flex flex-wrap items-center justify-between gap-2 mb-1 mt-3 bg-white py-1">
+        <h4 id={headingId} className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
           {runNumber !== undefined && (
             <span className="font-medium normal-case tracking-normal text-slate-500">(Run {runNumber})</span>
@@ -272,7 +274,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 };
 

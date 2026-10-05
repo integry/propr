@@ -38,13 +38,6 @@ body {
   min-height: 0;
 }
 
-/* A wrapped task summary must never grow into the fixed mobile navigation. */
-.task-mobile-sticky-summary {
-  max-height: 100%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
 @media (max-width: 767.98px) {
   /* Keep mobile action docks comfortable around home indicators when they are
      reused outside the standard app shell. The containing Studio viewport

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { renderMarkdown } from './renderMarkdown';
@@ -34,14 +34,15 @@ const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }>
   </div>
 );
 
-const MobileStickySummary: React.FC<{
+type MobileHeaderProps = {
   contextStripProps: React.ComponentProps<typeof ContextStrip>;
   actionBarProps: React.ComponentProps<typeof ActionBar>;
   todos: React.ComponentProps<typeof ProgressBar>['todos'];
-}> = ({ contextStripProps, actionBarProps, todos }) => (
-  // Page-local sticky UI should sit below the global header dropdown stacking
-  // context while remaining sticky within the task details route.
-  <div className="task-mobile-sticky-summary sm:hidden sticky top-0 z-10 flex-shrink-0 bg-white">
+};
+
+/** The full mobile summary scrolls away with the title; the compact bar stands in for it once it's gone. */
+const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ contextStripProps, actionBarProps, todos }, ref) => (
+  <div ref={ref} className="sm:hidden flex-shrink-0 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       {/* The title block above already names the task; repeating it here stacked the title twice. */}
       <div className="flex flex-col gap-2">
@@ -54,7 +55,55 @@ const MobileStickySummary: React.FC<{
     </div>
     <ProgressBar todos={todos} />
   </div>
+));
+MobileSummary.displayName = 'MobileSummary';
+
+/** Height of the compact bar; sections pin their own headers just below it. */
+const MOBILE_COMPACT_BAR_HEIGHT = 44;
+
+/**
+ * One fixed-height line: the pull request and repository on the left, the
+ * overflow menu (and Stop, while the task works) on the right. The sticky
+ * wrapper takes no height, so showing the bar never reflows the page under it.
+ */
+const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ contextStripProps, actionBarProps, todos, visible }) => (
+  // Page-local sticky UI should sit below the global header dropdown stacking
+  // context while remaining sticky within the task details route.
+  <div className="sm:hidden sticky top-0 z-20 h-0">
+    <div
+      data-testid="task-mobile-compact-bar"
+      aria-hidden={!visible}
+      inert={!visible}
+      className={`absolute inset-x-0 top-0 border-b border-slate-200 bg-white shadow-sm transition-opacity duration-150 ${visible ? 'opacity-100' : 'invisible opacity-0'}`}
+    >
+      <div className="flex items-center justify-between gap-2 px-3" style={{ height: MOBILE_COMPACT_BAR_HEIGHT - 1 }}>
+        {/* Only the left side clips: the overflow menu has to drop out of the bar. */}
+        <div className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
+          <ContextStrip {...contextStripProps} mobileCompact={true} />
+        </div>
+        <ActionBar {...actionBarProps} compact={true} />
+      </div>
+      <ProgressBar todos={todos} />
+    </div>
+  </div>
 );
+
+/** Whether the full mobile summary has scrolled up under the compact bar. */
+const useMobileHeaderCollapsed = () => {
+  const [summary, setSummary] = useState<HTMLDivElement | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    const root = summary?.closest<HTMLElement>('[data-testid="task-details"]');
+    if (!summary || !root || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => {
+      const top = entry.rootBounds?.top ?? 0;
+      setCollapsed(!entry.isIntersecting && entry.boundingClientRect.bottom <= top + 1);
+    }, { root, rootMargin: `-${MOBILE_COMPACT_BAR_HEIGHT}px 0px 0px 0px` });
+    observer.observe(summary);
+    return () => observer.disconnect();
+  }, [summary]);
+  return { summaryRef: setSummary, collapsed };
+};
 
 const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId?: string) => {
   if (taskInfo?.title) {
@@ -185,6 +234,8 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     setFollowupModalOpen(true);
   }, []);
 
+  const mobileHeader = useMobileHeaderCollapsed();
+
   const executionLogRef = useClickOutsideCollapse(
     thinkingLog.eventsCollapsed,
     thinkingLog.collapseEvents,
@@ -244,6 +295,13 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
   return (
     <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0">
+      <MobileCompactBar
+        contextStripProps={contextStripProps}
+        actionBarProps={actionBarProps}
+        todos={taskData.liveDetails.todos}
+        visible={mobileHeader.collapsed}
+      />
+
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
@@ -266,7 +324,8 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
         <ProgressBar todos={taskData.liveDetails.todos} />
       </header>
 
-      <MobileStickySummary
+      <MobileSummary
+        ref={mobileHeader.summaryRef}
         contextStripProps={contextStripProps}
         actionBarProps={actionBarProps}
         todos={taskData.liveDetails.todos}
