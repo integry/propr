@@ -139,6 +139,8 @@ describe('TasksPage split workspace', () => {
     mockViewport(true);
     renderAt('/tasks?task=a');
     await screen.findByRole('table', { name: 'Tasks' });
+    // The key listener is attached in an effect after the table renders; let it run first.
+    await act(async () => {});
     fireEvent.keyDown(window, { key: 'j' });
     expect(location().searchParams.get('task')).toBe('b');
     fireEvent.keyDown(window, { key: 'ArrowDown' });
