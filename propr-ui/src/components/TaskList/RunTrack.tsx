@@ -49,8 +49,9 @@ export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
     // The count is a badge of its own, set against the nodes it stands for, so it reads as their quantity, never as a number set off by a separator.
     <span data-testid="run-track" className="inline-flex flex-none items-center rounded-sm bg-slate-100/70 px-1.5 py-0.5">
       {hidden > 0 && (
-        <span data-testid="run-track-overflow" className="mr-1 rounded-sm bg-slate-200 px-1 font-mono text-[10px] font-medium leading-3 text-slate-600">
-          +{hidden}
+        // Trimmed to the digits' cap height and centred, so the count sits mid-badge instead of riding above the font's empty descender space.
+        <span data-testid="run-track-overflow" className="mr-1 inline-flex h-3 items-center rounded-sm bg-slate-200 px-1 font-mono text-[10px] font-medium leading-none text-slate-600">
+          <span className="block [text-box:trim-both_cap_alphabetic]">+{hidden}</span>
         </span>
       )}
       <span className="inline-flex items-center">
