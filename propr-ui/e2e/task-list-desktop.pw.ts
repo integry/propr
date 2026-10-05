@@ -39,10 +39,10 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(titleLine.getByTestId('work-type-badge')).toHaveText('Implement');
       expect(await titleLine.evaluate(line => line.nextElementSibling)).toBeNull();
       // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
-      const repoChip = singleRun.getByTestId('repository-chip');
-      await expect(repoChip).toHaveText('desktop-workspaces');
-      await expect(repoChip).toHaveAttribute('title', 'integry/desktop-workspaces');
-      expect(await repoChip.locator('.truncate').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      const repo = singleRun.getByTestId('task-repository');
+      await expect(repo).toHaveText('desktop-workspaces');
+      await expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+      expect(await repo.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
 
       const layout = await table.evaluate(element => ({
         fits: element.getBoundingClientRect().right <= window.innerWidth,
@@ -272,7 +272,10 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(details.getByRole('heading', { name: 'REVIEW FINDINGS' }).filter({ visible: true })).toHaveCount(1);
   await expect(details.getByRole('region', { name: 'Task implementation log' })).not.toContainText(/"content"|local preview omitted|IMPLEMENTATION/);
   await expect(details.locator('#execution-event-log-section')).toContainText(/(EXECUTION LOG|TERMINAL OUTPUT) \(Run 3 · /);
-  const timelineHeader = details.getByText('TIMELINE', { exact: true }).filter({ visible: true }).locator('..');
+  // The label counts the task's runs: `TIMELINE (8 runs)`.
+  const timelineLabel = details.getByText(/^TIMELINE \(\d+ runs\)$/).filter({ visible: true });
+  await expect(timelineLabel).toHaveText('TIMELINE (8 runs)');
+  const timelineHeader = timelineLabel.locator('..');
   const backToNewest = timelineHeader.getByRole('button', { name: 'Return to live Run 8' });
   await expect(backToNewest).toBeVisible();
   const [headerBox, backBox] = [await timelineHeader.boundingBox(), await backToNewest.boundingBox()];

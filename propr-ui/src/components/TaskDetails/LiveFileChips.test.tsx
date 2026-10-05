@@ -65,7 +65,8 @@ describe('LiveFileChips live refreshes', () => {
     render(<LiveFileChips taskId="task-1" isActive={false} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const list = screen.getByRole('region', { name: 'Changed files' });
-    expect(list).toHaveClass('max-h-48', 'overflow-y-auto');
+    // Every file is listed in full: the list scrolls with the timeline, never in a box of its own.
+    expect(list.className).not.toMatch(/max-h-|overflow-y-/);
     const buttons = within(list).getAllByRole('button');
     expect(buttons).toHaveLength(32);
     expect(buttons[0]).toHaveAccessibleName(`View diff for ${files[31].path}`);

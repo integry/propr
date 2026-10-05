@@ -348,6 +348,10 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             <div className={`z-[1] flex ${PANE_HEADER_HEIGHT} items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}>
               <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
                 TIMELINE
+                {runs && runs.length > 1 && ' '}
+                {runs && runs.length > 1 && (
+                  <span data-testid="timeline-run-count" className="ml-1.5 font-mono font-normal normal-case tracking-normal">({runs.length} runs)</span>
+                )}
               </div>
               {/* The way back from an earlier run sits where the run was opened. */}
               {inspectionContext && <ReturnToRunButton {...inspectionContext} />}

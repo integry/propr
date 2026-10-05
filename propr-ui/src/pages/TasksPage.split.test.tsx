@@ -236,6 +236,14 @@ describe('TasksPage split workspace', () => {
     expect(vi.mocked(getTasks)).toHaveBeenCalledWith({ groupBy: 'task', task: 'c-earlier', limit: 1, offset: 0 });
   });
 
+  it('gives the full task page every run of the task, as the pane has', async () => {
+    mockViewport(false);
+    renderAt('/tasks/c');
+    await waitFor(() => expect(screen.getByTestId('task-details')).toHaveAttribute('data-runs', 'c-earlier:completed,c:completed'));
+    expect(screen.getByTestId('task-details')).toHaveTextContent('details for route');
+    expect(vi.mocked(getTasks)).toHaveBeenCalledWith({ groupBy: 'task', task: 'c', limit: 1, offset: 0 });
+  });
+
   it('navigates to the task page below the split breakpoint', async () => {
     mockViewport(false);
     renderAt('/tasks?task=a');

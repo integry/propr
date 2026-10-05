@@ -23,19 +23,19 @@ describe('sanitizeTaskTitle', () => {
     expect(sanitizeTaskTitle('Stop work [2659 by GPT-6 Astra] on withdrawal').title).toBe('Stop work on withdrawal');
   });
 
-  it('marks a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping all of its text', () => {
+  it('ends a legacy title that may be hard-cut at 100 characters on a whole word, keeping all of its text in the tooltip', () => {
     const hardCut = 'Followup: Expose task changes, logs and events through the MCP server so that an MCP client can actu';
     expect(hardCut).toHaveLength(100);
     const sanitized = sanitizeTaskTitle(hardCut);
-    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu…');
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can…');
     expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu');
   });
 
-  it('keeps the last word of a complete 100-character title that ends on a letter', () => {
+  it('never shows half a word, even when the last word of a 100-character title may be whole', () => {
     const complete = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
     expect(complete).toHaveLength(100);
     const sanitized = sanitizeTaskTitle(complete);
-    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act…');
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can…');
     expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act');
   });
 

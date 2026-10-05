@@ -4,7 +4,6 @@ import { ChevronDown, Images } from 'lucide-react';
 import type { Task } from './types';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { RepositoryChip } from '../ui/RepositoryChip';
 import { ReferenceChip } from './ReferenceChips';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
@@ -124,6 +123,17 @@ export const TaskTitleLink: React.FC<{
   >
     <span className={singleLine ? 'block truncate' : 'line-clamp-2 [overflow-wrap:anywhere]'}>{title}</span>
   </Link>
+);
+
+/**
+ * The ledger's REPO cell: the name as plain monospace text. The column is the
+ * container, so a chip around it only stacks identical bubbles down the list;
+ * chips are for entities named inline among other text.
+ */
+export const TaskRepository: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  <span data-testid="task-repository" title={row.repository} className="block truncate font-mono text-xs text-slate-600 transition-colors hover:text-slate-900">
+    {row.repositoryName}
+  </span>
 );
 
 /** The ledger's SCORE cell: the task's newest review score, or a dash when no review scored it. */
@@ -311,9 +321,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
           </div>
           <RollupLine row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />
         </div>
-        <div role="cell" className="min-w-0">
-          <RepositoryChip repository={row.repository} label={row.repositoryName} />
-        </div>
+        <div role="cell" className="min-w-0"><TaskRepository row={row} /></div>
         <div role="cell" className="min-w-0">{getStatusPill(getDisplayStatus(task))}</div>
         <div role="cell" className="min-w-0"><TaskAgent task={task} /></div>
         <div role="cell" className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>

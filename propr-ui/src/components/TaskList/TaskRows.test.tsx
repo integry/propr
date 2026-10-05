@@ -175,9 +175,12 @@ describe('task ledger rows', () => {
     expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Implement', 'Support configuration paths', '1 preview']);
     expect(titleLine.nextElementSibling).toBeNull();
     // The owner is the same on every row, so the repository cell shows the name; the tooltip keeps both.
-    const repo = within(table).getByTestId('repository-chip');
+    const repo = within(table).getByTestId('task-repository');
     expect(repo).toHaveTextContent(/^desktop-workspaces$/);
     expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+    // The column is the container: plain monospace text, no chip border or fill.
+    expect(repo).toHaveClass('font-mono');
+    expect(repo.className).not.toMatch(/\b(?:border|bg-|rounded)/);
   });
 
   it('ignores historical critique scores in rows and earlier runs', () => {
@@ -264,7 +267,7 @@ describe('task ledger rows', () => {
     expect(row()).toHaveAttribute('aria-selected', 'false');
   });
 
-  it('ends a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping its last word, in rows, cards and earlier runs', () => {
+  it('ends a legacy title that may be hard-cut at 100 characters on a whole word with an ellipsis, in rows, cards and earlier runs', () => {
     const hardCut = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
     expect(hardCut).toHaveLength(100);
     const runCut = 'Followup: Expose the implementation log and the terminal output through MCP so that a client can rea';
@@ -277,7 +280,7 @@ describe('task ledger rows', () => {
       ],
     };
     render(<Fixture groups={[cut]} />);
-    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can act…';
+    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can…';
     const table = screen.getByRole('table');
     const title = within(table).getByRole('link', { name: shown });
     expect(title).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
@@ -285,6 +288,6 @@ describe('task ledger rows', () => {
     expect(within(cards[0]).getByRole('link', { name: shown })).toBeInTheDocument();
     fireEvent.click(within(table).getByRole('button', { name: '2 runs' }));
     const runs = within(table).getByRole('list', { name: 'Earlier runs' });
-    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can rea…');
+    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can…');
   });
 });

@@ -52,76 +52,88 @@ const RunResult: React.FC<{ run: TaskRunEntry }> = ({ run }) => {
  * the execution log below follow it: the timeline is how the pane moves
  * through the task's history.
  */
+/** Room left above the open run when the list scrolls to it, so the run before it stays in sight. */
+const SCROLL_CONTEXT_PX = 40;
+
 const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelectRun, children }) => {
   const [expanded, setExpanded] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
 
-  // A task with many runs opens on the one shown, not on its first run.
+  // A task with many runs opens on the one shown, not on its first run. Only
+  // the list scrolls: the page around it stays where it is.
   useEffect(() => {
-    selectedRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, []);
+    const list = scrollRef.current;
+    const run = selectedRef.current;
+    if (!list || !run) return;
+    const offset = run.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    list.scrollTop = Math.max(0, list.scrollTop + offset - SCROLL_CONTEXT_PX);
+  }, [selectedTaskId]);
 
+  // Bounded, so 50 runs scroll inside the timeline instead of pushing the files changed off the screen.
   return (
-    <ol aria-label="Runs" className="relative m-0 list-none p-0" data-testid="run-timeline">
-      {/* The trunk paints above the rows, so an open run's tinted row and its steps never cut it. */}
-      <span aria-hidden="true" data-testid="run-timeline-trunk" className="pointer-events-none absolute bottom-3 left-[7px] top-3 z-[1] w-0.5 bg-slate-300" />
-      {runs.map(run => {
-        const selected = run.task.id === selectedTaskId;
-        const open = selected && expanded;
-        const active = run.outcome === 'active';
-        // A queued run has not started, so it has no runtime to count yet.
-        const waiting = run.outcome === 'waiting';
-        return (
-          <li key={run.task.id} ref={selected ? selectedRef : undefined} className="relative" data-testid="run-timeline-run">
-            <button
-              type="button"
-              aria-current={selected || undefined}
-              aria-expanded={open}
-              title={describeRun(run)}
-              onClick={() => (selected ? setExpanded(value => !value) : onSelectRun(run.task.id))}
-              className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
-            >
-              {/* A plain node on the rail, on the row's own background. */}
-              <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center">
-                <span
-                  aria-hidden="true"
-                  data-testid="run-timeline-node"
-                  className={`h-2 w-2 rounded-full border-2 ${selected ? 'border-slate-500 bg-slate-500' : 'border-slate-300 bg-white'}`}
-                />
-              </span>
-              <ChevronRight
-                aria-hidden="true"
-                className={`h-3 w-3 flex-none text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
-                strokeWidth={2.5}
-              />
-              {/* A fixed tag column, so every summary, and its steps' labels, start on one line. */}
-              <span className={`flex ${RUN_TAG_COLUMN} flex-none items-center gap-2`}>
-                <span className={`${RUN_NUMBER_COLUMN} flex-none whitespace-nowrap ${selected ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
-                  Run {run.number}
-                </span>
-                {run.type && <WorkTypeBadge type={run.type} compact />}
-              </span>
-              <span className={`min-w-0 flex-1 truncate ${selected ? 'text-slate-800' : 'text-slate-600'}`} title={run.summary}>{run.summary}</span>
-              <time
-                dateTime={run.task.createdAt}
-                title={new Date(run.task.createdAt).toLocaleString()}
-                className="flex-none whitespace-nowrap tabular-nums text-slate-400"
+    <div ref={scrollRef} data-testid="run-timeline-scroll" className="scrollbar-stealth max-h-[420px] overflow-y-auto overscroll-contain pr-1">
+      <ol aria-label="Runs" className="relative m-0 list-none p-0" data-testid="run-timeline">
+        {/* The trunk paints above the rows, so an open run's tinted row and its steps never cut it. */}
+        <span aria-hidden="true" data-testid="run-timeline-trunk" className="pointer-events-none absolute bottom-3 left-[7px] top-3 z-[1] w-0.5 bg-slate-300" />
+        {runs.map(run => {
+          const selected = run.task.id === selectedTaskId;
+          const open = selected && expanded;
+          const active = run.outcome === 'active';
+          // A queued run has not started, so it has no runtime to count yet.
+          const waiting = run.outcome === 'waiting';
+          return (
+            <li key={run.task.id} ref={selected ? selectedRef : undefined} className="relative" data-testid="run-timeline-run">
+              <button
+                type="button"
+                aria-current={selected || undefined}
+                aria-expanded={open}
+                title={describeRun(run)}
+                onClick={() => (selected ? setExpanded(value => !value) : onSelectRun(run.task.id))}
+                className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
               >
-                {formatRelativeTime(run.task.createdAt)}
-              </time>
-              <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
-                {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
-              </span>
-              {/* A fixed slot, so results line up whether or not every run has one. */}
-              <span className={`flex ${RUN_RESULT_COLUMN} flex-none justify-end`}>
-                <RunResult run={run} />
-              </span>
-            </button>
-            {open && <div className="pb-1" data-testid="run-timeline-steps">{children}</div>}
-          </li>
-        );
-      })}
-    </ol>
+                {/* A plain node on the rail, on the row's own background. */}
+                <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center">
+                  <span
+                    aria-hidden="true"
+                    data-testid="run-timeline-node"
+                    className={`h-2 w-2 rounded-full border-2 ${selected ? 'border-slate-500 bg-slate-500' : 'border-slate-300 bg-white'}`}
+                  />
+                </span>
+                <ChevronRight
+                  aria-hidden="true"
+                  className={`h-3 w-3 flex-none text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
+                  strokeWidth={2.5}
+                />
+                {/* A fixed tag column, so every summary, and its steps' labels, start on one line. */}
+                <span className={`flex ${RUN_TAG_COLUMN} flex-none items-center gap-2`}>
+                  <span className={`${RUN_NUMBER_COLUMN} flex-none whitespace-nowrap ${selected ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
+                    Run {run.number}
+                  </span>
+                  {run.type && <WorkTypeBadge type={run.type} compact />}
+                </span>
+                <span className={`min-w-0 flex-1 truncate ${selected ? 'text-slate-800' : 'text-slate-600'}`} title={run.summary}>{run.summary}</span>
+                <time
+                  dateTime={run.task.createdAt}
+                  title={new Date(run.task.createdAt).toLocaleString()}
+                  className="flex-none whitespace-nowrap tabular-nums text-slate-400"
+                >
+                  {formatRelativeTime(run.task.createdAt)}
+                </time>
+                <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+                  {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
+                </span>
+                {/* A fixed slot, so results line up whether or not every run has one. */}
+                <span className={`flex ${RUN_RESULT_COLUMN} flex-none justify-end`}>
+                  <RunResult run={run} />
+                </span>
+              </button>
+              {open && <div className="pb-1" data-testid="run-timeline-steps">{children}</div>}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 };
 
