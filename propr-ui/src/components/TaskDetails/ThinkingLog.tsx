@@ -15,13 +15,32 @@ import {
   type PreparedThinkingLogEvent,
 } from './checkpointLog';
 
-// Simple thought type detection based on content
-const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
+// Simple thought type detection based on content. A summary is never guessed from wording: mid-run
+// notes such as "Worker side is done" read like one, so only a finished run's closing message is a summary.
+const detectThoughtType = (content: string): 'analysis' | 'action' | 'search' => {
   const lower = content.toLowerCase();
   if (lower.includes('search') || lower.includes('find') || lower.includes('look for')) return 'search';
   if (lower.includes('create') || lower.includes('update') || lower.includes('modify') || lower.includes('implement')) return 'action';
-  if (lower.includes('summary') || lower.includes('complete') || lower.includes('done') || lower.includes('finished')) return 'summary';
   return 'analysis';
+};
+
+/** A log step, marked when it is the closing message of a run that has finished. */
+type LogEvent = PreparedThinkingLogEvent & { final?: boolean };
+
+const isAgentStep = (event: PreparedThinkingLogEvent): boolean => event.type !== 'user_input' && !event.checkpoint;
+
+/** Marks the last agent step as the run's summary once the run has stopped streaming. */
+const markFinalStep = (events: PreparedThinkingLogEvent[], streaming: boolean): LogEvent[] => {
+  if (streaming) return events;
+  let finalIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (isAgentStep(events[index])) {
+      finalIndex = index;
+      break;
+    }
+  }
+  if (finalIndex < 0) return events;
+  return events.map((event, index) => (index === finalIndex ? { ...event, final: true } : event));
 };
 
 interface ThinkingLogEvent extends LiveEvent {
@@ -131,7 +150,7 @@ const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
 );
 
 interface TerminalLogEntryProps {
-  event: PreparedThinkingLogEvent;
+  event: LogEvent;
   todoContext?: string;
   isHighlighted?: boolean;
 }
@@ -147,7 +166,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
   }
 
   const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
-  const thoughtType = detectThoughtType(displayContent || '');
+  const thoughtType = event.final ? 'summary' : detectThoughtType(displayContent || '');
   const categoryInfo = getCategoryInfo(thoughtType);
   const { Icon } = categoryInfo;
 
@@ -196,15 +215,15 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 };
 
 /** Reasoning entries; actions, findings, checkpoints and operator messages stay in the main flow. */
-const isAnalysisEntry = (event: PreparedThinkingLogEvent): boolean => {
-  if (event.type === 'user_input' || event.checkpoint) return false;
+const isAnalysisEntry = (event: LogEvent): boolean => {
+  if (!isAgentStep(event) || event.final) return false;
   const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
   return detectThoughtType(displayContent || '') === 'analysis';
 };
 
 type LogSegment =
-  | { kind: 'entry'; start: number; event: PreparedThinkingLogEvent }
-  | { kind: 'thoughts'; start: number; events: PreparedThinkingLogEvent[]; durationMs: number | null };
+  | { kind: 'entry'; start: number; event: LogEvent }
+  | { kind: 'thoughts'; start: number; events: LogEvent[]; durationMs: number | null };
 
 const timeOf = (event?: PreparedThinkingLogEvent): number | null => {
   const time = event?.timestamp ? Date.parse(event.timestamp) : NaN;
@@ -212,7 +231,7 @@ const timeOf = (event?: PreparedThinkingLogEvent): number | null => {
 };
 
 /** Folds each run of consecutive reasoning entries into one segment, timed until the step that followed it. */
-const segmentEvents = (events: PreparedThinkingLogEvent[]): LogSegment[] => {
+const segmentEvents = (events: LogEvent[]): LogSegment[] => {
   const segments: LogSegment[] = [];
   events.forEach((event, index) => {
     const previous = segments[segments.length - 1];
@@ -266,7 +285,7 @@ const ThoughtDisclosure: React.FC<{ events: PreparedThinkingLogEvent[]; duration
 interface ThoughtGroupProps {
   /** A todo's name; the untitled group is the whole log and needs no heading. */
   title?: string;
-  events: PreparedThinkingLogEvent[];
+  events: LogEvent[];
   isCompleted: boolean;
   todoId?: string;
   isHighlighted?: boolean;
@@ -318,8 +337,8 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
   emptyMessage,
 }) => {
   const preparedEvents = useMemo(() => {
-    return prepareCheckpointEvents(readableThoughts(events), checkpointOutcome);
-  }, [checkpointOutcome, events]);
+    return markFinalStep(prepareCheckpointEvents(readableThoughts(events), checkpointOutcome), streaming);
+  }, [checkpointOutcome, events, streaming]);
 
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
