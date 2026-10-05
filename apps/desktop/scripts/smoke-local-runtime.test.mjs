@@ -18,9 +18,14 @@ const unsupported = process.platform === 'win32';
 // Root bypasses the permission bits used to emulate a container-owned subtree.
 const hostCannotRemovePrivateSubtree = !unsupported && process.getuid?.() !== 0;
 
-function run(command, args, env) {
+// Every bash invocation uses a fixed script; paths derived from the temporary
+// directory or this checkout reach it only through the environment, never as
+// shell-interpreted arguments.
+function bash(script, args, env) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('bash', ['-c', script, 'bash', ...args], {
+      env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -98,8 +103,8 @@ describe('desktop source runtime smoke cleanup', { skip: unsupported }, () => {
     const otherRun = join(workspace.tmp, 'propr-desktop-runtime-smoke.Other1');
     mkdirSync(join(otherRun, 'data'), { recursive: true, mode: 0o700 });
     writeFileSync(join(otherRun, 'data', 'keep.txt'), 'other run');
-    const result = await run('bash', [smokeScript, revision, compatibility], {
-      PATH: `${workspace.bin}:${process.env.PATH}`, TMPDIR: workspace.tmp,
+    const result = await bash('exec bash "$SMOKE_TEST_SCRIPT" "$@"', [revision, compatibility], {
+      SMOKE_TEST_SCRIPT: smokeScript, PATH: `${workspace.bin}:${process.env.PATH}`, TMPDIR: workspace.tmp,
       FAKE_DOCKER_STATE: workspace.state, FAKE_API_PORT: String(port), ...env,
     });
     assert.equal(readFileSync(join(otherRun, 'data', 'keep.txt'), 'utf8'), 'other run');
@@ -153,14 +158,21 @@ describe('desktop source runtime smoke cleanup', { skip: unsupported }, () => {
 
 describe('desktop source runtime smoke root boundary', { skip: unsupported }, () => {
   async function removeRoot(workspace, root, identity) {
-    return run('bash', ['-c', 'set -euo pipefail; source "$1"; shift; remove_smoke_root "$@"', 'remove', cleanupHelper,
-      root, workspace.tmp, identity, 'propr-desktop-local/app:test', 'dev.propr.desktop-runtime-smoke', 'stack'], {
-      PATH: `${workspace.bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: workspace.state,
-    });
+    return bash(
+      'set -euo pipefail; source "$SMOKE_TEST_HELPER"; '
+        + 'remove_smoke_root "$SMOKE_TEST_ROOT" "$SMOKE_TEST_BASE" "$SMOKE_TEST_IDENTITY" "$@"',
+      ['propr-desktop-local/app:test', 'dev.propr.desktop-runtime-smoke', 'stack'],
+      {
+        SMOKE_TEST_HELPER: cleanupHelper, SMOKE_TEST_ROOT: root, SMOKE_TEST_BASE: workspace.tmp, SMOKE_TEST_IDENTITY: identity,
+        PATH: `${workspace.bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: workspace.state,
+      },
+    );
   }
 
   async function identityOf(workspace, path) {
-    const result = await run('bash', ['-c', 'source "$1"; smoke_root_identity "$2"', 'identity', cleanupHelper, path], {});
+    const result = await bash('source "$SMOKE_TEST_HELPER"; smoke_root_identity "$SMOKE_TEST_ROOT"', [], {
+      SMOKE_TEST_HELPER: cleanupHelper, SMOKE_TEST_ROOT: path,
+    });
     assert.equal(result.code, 0, result.stderr);
     return result.stdout.trim();
   }
