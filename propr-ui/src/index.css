@@ -103,6 +103,32 @@ body {
   background: #9ca3af;
 }
 
+/* Subtle scrollbar - thin slate thumb, no track and no stepper buttons */
+.scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-track,
+.scrollbar-subtle::-webkit-scrollbar-button {
+  display: none;
+  background: transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 /* Stealth scrollbar - invisible until hovered */
 .scrollbar-stealth {
   scrollbar-width: thin;

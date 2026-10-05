@@ -164,7 +164,7 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(within(toolbar).queryByRole('button', { name: '1 Task' })).not.toBeInTheDocument();
 
     // Search is the primary input, so it leads the bar from the left.
-    expect(within(left).getByRole('textbox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
+    expect(within(left).getByRole('combobox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
     expect(within(left).getByText('\u2318K')).toBeInTheDocument();
 
     // The menu toggle stays available as the drawer trigger below `lg`.

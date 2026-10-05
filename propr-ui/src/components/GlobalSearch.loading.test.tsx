@@ -31,7 +31,7 @@ describe('GlobalSearch loading states', () => {
     vi.mocked(getTasks).mockReturnValue(tasks.promise);
 
     render(<MemoryRouter><GlobalSearch /></MemoryRouter>);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'missing' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Search' }), { target: { value: 'missing' } });
 
     expect(screen.getByText('Searching...')).toBeInTheDocument();
     expect(screen.queryByText(/No results found/)).not.toBeInTheDocument();
@@ -50,7 +50,7 @@ describe('GlobalSearch loading states', () => {
     vi.mocked(getTasks).mockResolvedValue({ tasks: [], total: 0 });
 
     render(<MemoryRouter><GlobalSearch /></MemoryRouter>);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'broken' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Search' }), { target: { value: 'broken' } });
     await waitFor(() => expect(getTasks).toHaveBeenCalledTimes(1));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Search unavailable');
