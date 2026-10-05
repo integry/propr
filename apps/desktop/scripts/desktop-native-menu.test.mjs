@@ -81,7 +81,7 @@ it('Linux/macOS menu dispatch reaches actual search, sidebar, task creation, con
       await expect(page.getByRole('dialog', { name: 'Manage instances' })).toBeVisible();
       await click('Search / Go To…');
       await expect(page.getByRole('dialog', { name: 'Manage instances' })).toHaveCount(0);
-      await expect(page.getByRole('textbox', { name: 'Search', exact: true })).toBeFocused();
+      await expect(page.getByRole('combobox', { name: 'Search', exact: true })).toBeFocused();
       await click('Connect Instance…');
       await expect(page.getByRole('heading', { name: 'Connect to an instance' })).toBeVisible();
       await capture('connect', page.getByRole('dialog', { name: 'Manage instances' }), 'File → Connect Instance opens the connection editor');
