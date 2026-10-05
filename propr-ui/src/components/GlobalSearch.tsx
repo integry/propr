@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, X, Loader2 } from 'lucide-react';
 import { useGlobalSearch } from '../hooks/useGlobalSearch';
@@ -31,6 +31,34 @@ function getSearchResultState(
   if (!isLoading && error) return 'error';
   if (!isLoading && query.trim() && !hasResults) return 'empty';
   return hasResults ? 'results' : 'idle';
+}
+
+/** Where the palette hangs: flush under the toolbar, centred on it. */
+interface PaletteAnchor {
+  top: number;
+  centerX: number;
+}
+
+function measureAnchor(container: HTMLElement | null): PaletteAnchor {
+  const bar = (container?.closest('header') ?? container)?.getBoundingClientRect();
+  if (!bar) return { top: 0, centerX: window.innerWidth / 2 };
+  return { top: bar.bottom, centerX: bar.left + bar.width / 2 };
+}
+
+/**
+ * The palette is centred under the toolbar rather than hung off the narrow
+ * input, so track the toolbar's edge while it is open.
+ */
+function usePaletteAnchor(containerRef: React.RefObject<HTMLElement | null>, open: boolean): PaletteAnchor {
+  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, centerX: 0 });
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => setAnchor(measureAnchor(containerRef.current));
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [containerRef, open]);
+  return anchor;
 }
 
 const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -121,6 +149,8 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
   };
 
   const showDropdown = Boolean(isOpen && (hasResults || isLoading || query.trim()));
+  const anchor = usePaletteAnchor(containerRef, showDropdown);
+
   const resultState = getSearchResultState(isLoading, error, query, hasResults);
   const navigable = showDropdown && items.length > 0;
 
@@ -197,11 +227,23 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
         )}
       </div>
 
-      {/* Results palette: the Studio mega-dropdown (640px wide, up to 70vh tall). */}
+      {/* Results palette: the Studio mega-dropdown (640px wide, up to 70vh tall),
+          snapped flush to the toolbar's bottom edge and centred on it, over a
+          dimmed backdrop. Clicking the backdrop closes it. */}
+      {showDropdown && (
+        <div
+          data-testid="global-search-backdrop"
+          aria-hidden="true"
+          onMouseDown={() => setIsOpen(false)}
+          className="fixed inset-x-0 bottom-0 z-40 bg-black/40 backdrop-blur-sm"
+          style={{ top: anchor.top }}
+        />
+      )}
       {showDropdown && (
         <div
           data-testid="global-search-palette"
-          className="desktop-toolbar-popover absolute left-0 top-full z-50 mt-1 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-4rem)] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
+          className="desktop-toolbar-popover fixed z-50 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col overflow-hidden rounded-b-md border border-t-0 border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
+          style={{ top: anchor.top, left: anchor.centerX }}
         >
           {resultState === 'loading' && (
             <div className="px-4 py-8 text-center">

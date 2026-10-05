@@ -119,27 +119,60 @@ export const getRepoName = (repository: string): string => {
 };
 
 /**
- * Status text styling per the Studio colour logic: active work is teal, a human
- * bottleneck is an amber outline, failure is red, and finished work is quiet gray.
+ * The body text a preview shows under its metadata: a plan's objective, a
+ * task's subtitle. Null when there is none, or when it only restates the title
+ * (`Plan <title>`), so the preview never prints the same words twice.
  */
-export const getSearchStatusStyle = (status: string): string => {
-  switch (status) {
-    case 'failed':
-    case 'error':
-      return 'border border-red-200 text-red-600';
-    case 'running':
-    case 'processing':
-    case 'generating':
-    case 'refining':
-    case 'executing':
-      return 'border border-primary-500/40 text-primary-700';
-    case 'review':
-    case 'pending':
-    case 'queued':
-    case 'draft':
-    case 'pr_created':
-      return 'border border-amber-300 text-amber-700';
-    default:
-      return 'border border-transparent text-slate-500';
-  }
+export function getItemDescription(item: SearchItem): string | null {
+  const description = item.kind === 'plan' ? item.plan.initial_prompt : item.kind === 'task' ? item.task.subtitle : null;
+  if (!description?.trim()) return null;
+  const words = (text: string) => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const title = words(getItemTitle(item)).join(' ');
+  const remainder = words(description).join(' ').replace(title, ' ').trim();
+  return title && remainder.split(/\s+/).filter(Boolean).length <= 1 ? null : description.trim();
+}
+
+/** Splits a failure reason into prose and file paths, so paths can render as code. */
+export function splitFailureReason(reason: string): Array<{ text: string; path: boolean }> {
+  const pattern = /((?:[\w@.-]+\/)+[\w@-]+\.[A-Za-z0-9]+|\b[\w-]+\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|py|go|rs|rb|java|css|md)\b)/g;
+  // A capturing split alternates prose (even indexes) and matched paths (odd indexes).
+  return reason
+    .split(pattern)
+    .map((text, index) => ({ text, path: index % 2 === 1 }))
+    .filter(part => part.text);
+}
+
+export type SearchStatusTone = 'failed' | 'active' | 'review' | 'pending' | 'merged' | 'cancelled' | 'done';
+
+const STATUS_TONES: Record<string, SearchStatusTone> = {
+  failed: 'failed',
+  error: 'failed',
+  running: 'active',
+  processing: 'active',
+  post_processing: 'active',
+  claude_execution: 'active',
+  implementing: 'active',
+  generating: 'active',
+  refining: 'active',
+  executing: 'active',
+  review: 'review',
+  pr_created: 'review',
+  pending: 'pending',
+  queued: 'pending',
+  waiting: 'pending',
+  draft: 'pending',
+  paused: 'pending',
+  merged: 'merged',
+  cancelled: 'cancelled',
 };
+
+/**
+ * The standard status pill for a task or plan status: a dot plus a capitalised
+ * label, coloured by the Studio logic (active work teal, a human bottleneck
+ * amber, failure red, merged violet, finished work quiet gray).
+ */
+export function getSearchStatus(status: string): { label: string; tone: SearchStatusTone } {
+  const words = status.replace(/_/g, ' ');
+  const label = status === 'pr_created' ? 'PR created' : words.charAt(0).toUpperCase() + words.slice(1);
+  return { label, tone: STATUS_TONES[status] ?? 'done' };
+}

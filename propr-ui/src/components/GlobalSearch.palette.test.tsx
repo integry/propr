@@ -96,4 +96,37 @@ describe('GlobalSearch palette', () => {
     expect(open).toHaveBeenCalledWith('https://github.com/integry/propr/pull/2480', '_blank', 'noopener,noreferrer');
     open.mockRestore();
   });
+
+  it('previews a plan with its objective, the owner-stripped repo, and a status pill', async () => {
+    const input = await renderWithResults();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    const preview = screen.getByTestId('global-search-preview');
+    expect(within(preview).getByTestId('global-search-description')).toHaveTextContent('Run epics in order');
+    expect(within(preview).getByTestId('repository-chip')).toHaveTextContent(/^propr$/);
+    expect(within(preview).getByText('Review')).toHaveClass('rounded-full');
+  });
+
+  it('shows a failure reason as a finding with the file path as code', async () => {
+    vi.mocked(getTasks).mockResolvedValue({
+      tasks: [{
+        id: 'task-2', repository: 'integry/propr', title: 'Expose Live Agent Activity over MCP', status: 'failed',
+        createdAt: new Date().toISOString(), failedReason: 'Lint failed on src/mcp/activity.ts',
+        subtitle: 'Expose Live Agent Activity over MCP',
+      }],
+      total: 1,
+    } as never);
+    const input = await renderWithResults();
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    const preview = screen.getByTestId('global-search-preview');
+    expect(within(preview).getByText('Failed', { selector: 'span.rounded-full' })).toBeInTheDocument();
+    expect(within(within(preview).getByTestId('global-search-failure')).getByText('src/mcp/activity.ts').tagName).toBe('CODE');
+    // A subtitle that only restates the title is not printed again.
+    expect(within(preview).queryByTestId('global-search-description')).not.toBeInTheDocument();
+  });
+
+  it('closes when the backdrop is clicked', async () => {
+    await renderWithResults();
+    fireEvent.mouseDown(screen.getByTestId('global-search-backdrop'));
+    expect(screen.queryByTestId('global-search-palette')).not.toBeInTheDocument();
+  });
 });
