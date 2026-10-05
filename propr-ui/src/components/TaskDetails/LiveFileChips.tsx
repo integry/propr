@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { RefreshCw, AlertCircle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
+import { RefreshCw, AlertTriangle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
 import { useSocket } from '../../contexts/useSocket';
@@ -119,6 +119,12 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
     );
   }, [fileChanges]);
 
+  const handleRetry = () => {
+    setIsLoading(true);
+    setError(null);
+    void scheduleFileChangesRefresh.refreshNow();
+  };
+
   // Handle file selection
   const handleSelectFile = (filePath: string) => {
     setSelectedFilePath(filePath === selectedFilePath ? null : filePath);
@@ -188,9 +194,19 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
           <span>Loading...</span>
         </div>
       ) : error ? (
-        <div className="flex items-center gap-2 text-red-600 py-2 text-sm">
-          <AlertCircle className="h-4 w-4" />
-          <span>{error}</span>
+        <div role="alert" className="flex items-start gap-2.5 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <AlertTriangle className="mt-px h-4 w-4 flex-none text-amber-500" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="m-0 font-medium text-slate-700">Couldn’t load the changed files.</p>
+            <p className="m-0 mt-0.5 break-words">{error}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="flex-none rounded px-2 py-0.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          >
+            Retry
+          </button>
         </div>
       ) : (
         /*

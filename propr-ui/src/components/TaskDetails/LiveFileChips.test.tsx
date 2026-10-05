@@ -80,4 +80,18 @@ describe('LiveFileChips live refreshes', () => {
     expect(screen.queryByTitle('Close diff view')).not.toBeInTheDocument();
   });
 
+  it('shows a failed load as a quiet alert with a retry instead of raw red text', async () => {
+    fileChangesMocks.getFileChanges
+      .mockRejectedValueOnce(new Error('The server ran into a problem (HTTP 503). Please try again in a moment.'))
+      .mockResolvedValueOnce({ files: [{ path: 'src/a.ts', status: 'modified', linesAdded: 1, linesRemoved: 0, diff: '+a' }] });
+    render(<LiveFileChips taskId="task-1" isActive={false} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveClass('bg-slate-50', 'border-slate-200', 'text-slate-600');
+    expect(alert).toHaveTextContent('HTTP 503');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'View diff for src/a.ts' })).toBeInTheDocument();
+  });
 });

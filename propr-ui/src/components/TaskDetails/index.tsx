@@ -23,7 +23,7 @@ import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/proprApi';
 import { useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
-import { isReviewRun, sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
+import { isReviewRun, type TaskRunEntry } from '../TaskList/rowModel';
 import DesktopTaskHeader from './DesktopTaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
 import { useLiveRunStop } from './useLiveRunStop';
@@ -35,17 +35,16 @@ const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }>
 );
 
 const MobileStickySummary: React.FC<{
-  title: string;
   contextStripProps: React.ComponentProps<typeof ContextStrip>;
   actionBarProps: React.ComponentProps<typeof ActionBar>;
   todos: React.ComponentProps<typeof ProgressBar>['todos'];
-}> = ({ title, contextStripProps, actionBarProps, todos }) => (
+}> = ({ contextStripProps, actionBarProps, todos }) => (
   // Page-local sticky UI should sit below the global header dropdown stacking
   // context while remaining sticky within the task details route.
   <div className="task-mobile-sticky-summary sm:hidden sticky top-0 z-10 flex-shrink-0 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
+      {/* The title block above already names the task; repeating it here stacked the title twice. */}
       <div className="flex flex-col gap-2">
-        <div className="truncate text-xs font-semibold text-slate-700">{title}</div>
         <div className="flex min-w-0 items-center gap-2">
           <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
         </div>
@@ -86,18 +85,6 @@ const renderTaskDetailsStatus = (
   return null;
 };
 
-const getMobileSummaryTitle = (title: string | undefined, taskId?: string) => {
-  const firstLine = title?.split('\n')[0]?.trim();
-  // The same sanitizer as the task list and the desktop heading.
-  const firstLineTitle = sanitizeTaskTitle(firstLine).title ?? firstLine;
-
-  if (firstLineTitle) {
-    return firstLineTitle;
-  }
-
-  return taskId ? `Task #${taskId}` : '';
-};
-
 interface TaskDetailsProps {
   /** Wins over the `:taskId` route param, so the task list can show a task beside itself. */
   taskId?: string;
@@ -126,6 +113,17 @@ interface TaskDetailsProps {
 const getLogCommandMode = (commandMode: string | undefined, runs: TaskRunEntry[] | undefined, taskId: string | undefined) => {
   if (commandMode === 'review' || isReviewRun(runs?.find(run => run.task.id === taskId)?.type)) return 'review';
   return commandMode;
+};
+
+/** The timeline's and the trace's headers share a height, so their rules line up side by side. */
+const PANE_HEADER_HEIGHT = 'min-h-[2.75rem]';
+
+/** What the trace says when a run recorded no steps, rather than leaving the column blank. */
+const getEmptyTraceMessage = (isActive: boolean, status: string) => {
+  if (isActive) return 'Waiting for the agent’s first step…';
+  return status?.toUpperCase() === 'COMPLETED'
+    ? 'No execution logs recorded — task completed directly.'
+    : 'No execution logs recorded for this run.';
 };
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
@@ -212,7 +210,6 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
-  const mobileSummaryTitle = getMobileSummaryTitle(taskData.taskInfo?.title, taskId);
   // Opening an earlier run is local to the panels below: they name it, the timeline's header has the way back, and the header's run line follows it.
   const inspectionContext = inspection && onSelectRun ? {
     runNumber: inspection.run.number,
@@ -246,7 +243,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   };
 
   return (
-    <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
+    <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
@@ -270,7 +267,6 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
       </header>
 
       <MobileStickySummary
-        title={mobileSummaryTitle}
         contextStripProps={contextStripProps}
         actionBarProps={actionBarProps}
         todos={taskData.liveDetails.todos}
@@ -278,21 +274,6 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
       {/* Main Content Area - 30/70 Split */}
       <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden">
-        {/* Header Row - TIMELINE and section label */}
-        <div className={`flex-shrink-0 flex border-b border-slate-200 sm:hidden${wideOnly(embedded, 'lg:flex')}`}>
-          <div className={`w-full flex-shrink-0 px-4 flex items-center justify-between gap-3${wideOnly(embedded, 'lg:w-[30%]')}`}>
-            <div className={`py-2${wideOnly(embedded, 'lg:py-2.5')} text-xs font-bold uppercase tracking-widest text-slate-500`}>
-              TIMELINE
-            </div>
-            {inspectionContext && <ReturnToRunButton {...inspectionContext} />}
-          </div>
-          <SectionLabelHeader
-            {...logHeaderProps}
-            className={`hidden flex-1 px-4 items-center gap-3${wideOnly(embedded, 'lg:flex')}`}
-          />
-        </div>
-
-        {/* Content Area */}
         <div
           data-testid="task-workspace-scroll"
           className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain${wideOnly(embedded, 'lg:flex-row lg:overflow-hidden')}`}
@@ -304,7 +285,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             aria-label="Task timeline"
             className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200 scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r')}`}
           >
-            <div className={`sticky top-0 z-[1] hidden items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:flex${wideOnly(embedded, 'lg:hidden')}`}>
+            <div className={`z-[1] flex ${PANE_HEADER_HEIGHT} items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}>
               <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
                 TIMELINE
               </div>
@@ -326,34 +307,32 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             />
           </div>
 
-          {/* RIGHT PANE (70%) */}
+          {/* RIGHT PANE (70%): the run's deliverables first, then the trace of how it got there. */}
           <div className={`flex flex-col min-w-0${wideOnly(embedded, 'lg:flex-1 lg:min-h-0 lg:overflow-hidden')}`}>
-            {/* Mobile section header */}
-            <SectionLabelHeader
-              {...logHeaderProps}
-              className={`flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white${wideOnly(embedded, 'lg:hidden')}`}
-            />
-            {/* Scrollable Content Area - Summary + Thinking Log in same scroll flow */}
-            {/* Remains visible when Execution Log is expanded so both logs can share vertical space */}
-            <div className={`flex flex-col min-w-0${wideOnly(embedded, 'lg:flex-1 lg:min-h-0 lg:overflow-hidden')}`}>
-              <div
-                data-testid="task-output-scroll"
-                role="region"
-                aria-label="Task implementation log"
-                className={`min-w-0 overflow-x-hidden scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain')}`}
-              >
-                <TaskVisualPreviews previews={taskData.previewMedia} />
-                <ResultOverview extractedSummary={thinkingLog.extractedSummary} renderMarkdown={renderMarkdown} />
+            <div
+              data-testid="task-output-scroll"
+              role="region"
+              aria-label="Task implementation log"
+              className={`min-w-0 overflow-x-clip scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain')}`}
+            >
+              {/* Visual evidence is an outcome with its own header; its bottom rule divides it from the trace. */}
+              <TaskVisualPreviews previews={taskData.previewMedia} />
+              {/* The trace's header stays with its logs, so its view switch sits above what it controls. */}
+              <SectionLabelHeader
+                {...logHeaderProps}
+                className={`z-[1] flex ${PANE_HEADER_HEIGHT} flex-shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}
+              />
+              <ResultOverview extractedSummary={thinkingLog.extractedSummary} renderMarkdown={renderMarkdown} />
 
-                <div className={`p-3 min-w-0 overflow-hidden${wideOnly(embedded, 'lg:p-4')}`}>
-                  <ThinkingLog
-                    events={thinkingLog.thinkingLogWithTimestamps}
-                    todos={taskData.liveDetails.todos}
-                    highlightedTodoId={highlightedTodoId}
-                    streaming={derivedData.isTaskActive}
-                    historyTruncated={taskData.liveDetails.historyTruncated}
-                  />
-                </div>
+              <div className={`p-3 min-w-0 overflow-hidden${wideOnly(embedded, 'lg:p-4')}`}>
+                <ThinkingLog
+                  events={thinkingLog.thinkingLogWithTimestamps}
+                  todos={taskData.liveDetails.todos}
+                  highlightedTodoId={highlightedTodoId}
+                  streaming={derivedData.isTaskActive}
+                  historyTruncated={taskData.liveDetails.historyTruncated}
+                  emptyMessage={getEmptyTraceMessage(derivedData.isTaskActive, derivedData.currentStatus)}
+                />
               </div>
             </div>
           </div>

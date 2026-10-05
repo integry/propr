@@ -43,6 +43,8 @@ interface ThinkingLogProps {
   historyTruncated?: boolean;
   /** Durable worker state for the newest agent checkpoint declaration, when the payload matches. */
   checkpointOutcome?: CheckpointOutcome | null;
+  /** Shown when the run recorded no steps; without it, an empty log renders nothing. */
+  emptyMessage?: string;
 }
 
 // Get category display info for gutter-style output
@@ -313,6 +315,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
   streaming = false,
   historyTruncated = false,
   checkpointOutcome,
+  emptyMessage,
 }) => {
   const preparedEvents = useMemo(() => {
     return prepareCheckpointEvents(readableThoughts(events), checkpointOutcome);
@@ -384,7 +387,12 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
   }, [preparedEvents, todos]);
 
   if (preparedEvents.length === 0) {
-    return null;
+    if (!emptyMessage) return null;
+    return (
+      <p data-testid="thinking-log-empty" className="m-0 py-2 text-xs italic text-slate-400">
+        {emptyMessage}
+      </p>
+    );
   }
 
   return (
