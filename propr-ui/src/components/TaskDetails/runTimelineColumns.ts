@@ -12,6 +12,12 @@ export const RUN_LEAD_INSET = 'pl-12';
 /** `Run N` (3rem) + gap + the compact type badge (5rem). */
 export const RUN_TAG_COLUMN = 'w-[8.5rem]';
 export const RUN_NUMBER_COLUMN = 'w-12';
+/**
+ * The least a run's summary keeps before the result, time and duration wrap
+ * under it. Small enough that a wide pane keeps every run on one line, even an
+ * open fix with its commit; a phone wraps them, leaving the summary the row.
+ */
+export const RUN_SUMMARY_MIN_WIDTH = 'min-w-[5rem]';
 /** The run's start, right-aligned before its duration, so the results before it line up. */
 export const RUN_TIME_COLUMN = 'w-[4.75rem]';
 /** The duration, right-aligned at the row's end. */

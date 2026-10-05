@@ -4,7 +4,7 @@ import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { ScoreBadge } from '../TaskList/ScoreBadge';
 import { formatDuration, formatRelativeTime } from '../TaskList/utils.tsx';
 import { describeRun, isReviewRun, runScore, type TaskRunEntry } from '../TaskList/rowModel';
-import { RUN_DURATION_COLUMN, RUN_NUMBER_COLUMN, RUN_TAG_COLUMN, RUN_TIME_COLUMN } from './runTimelineColumns';
+import { RUN_DURATION_COLUMN, RUN_NUMBER_COLUMN, RUN_SUMMARY_MIN_WIDTH, RUN_TAG_COLUMN, RUN_TIME_COLUMN } from './runTimelineColumns';
 
 interface RunTimelineProps {
   /** Every run of the task, oldest first. */
@@ -95,7 +95,7 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
                 aria-expanded={open}
                 title={describeRun(run)}
                 onClick={() => (selected ? setExpanded(value => !value) : onSelectRun(run.task.id))}
-                className={`group flex w-full min-w-0 items-center gap-2 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
+                className={`group flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-sm py-1.5 pr-1 text-left text-xs leading-5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-slate-100/80' : 'hover:bg-slate-50'}`}
               >
                 {/* A plain node on the rail, on the row's own background. */}
                 <span className="relative z-[2] mr-1 flex h-4 w-4 flex-none items-center justify-center">
@@ -117,19 +117,24 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
                   </span>
                   {run.type && <WorkTypeBadge type={run.type} compact />}
                 </span>
-                <span className={`min-w-0 flex-1 truncate ${selected ? 'text-slate-800' : 'text-slate-600'}`} title={run.summary}>{run.summary}</span>
-                {/* Sized to what it holds: a closed fix shows nothing here, so its summary runs on to the time. */}
-                <RunResult run={run} open={open} />
-                {/* Fixed and right-aligned, so the results before it line up down the list. */}
-                <time
-                  dateTime={run.task.createdAt}
-                  title={new Date(run.task.createdAt).toLocaleString()}
-                  className={`${RUN_TIME_COLUMN} flex-none whitespace-nowrap text-right tabular-nums text-slate-400`}
-                >
-                  {formatRelativeTime(run.task.createdAt)}
-                </time>
-                <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
-                  {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
+                {/* Keeps a readable width: when the row cannot also fit what follows, that wraps under it instead. */}
+                <span className={`${RUN_SUMMARY_MIN_WIDTH} flex-1 truncate ${selected ? 'text-slate-800' : 'text-slate-600'}`} title={run.summary}>{run.summary}</span>
+                {/* One unit, so on a narrow pane (a phone, or the 30% pane on a small desktop) the result, time and
+                    duration move together to a second line, still ending on the row's right edge over the steps' durations. */}
+                <span data-testid="run-timeline-meta" className="ml-auto flex flex-none items-center gap-2">
+                  {/* Sized to what it holds: a closed fix shows nothing here, so its summary runs on to the time. */}
+                  <RunResult run={run} open={open} />
+                  {/* Fixed and right-aligned, so the results before it line up down the list. */}
+                  <time
+                    dateTime={run.task.createdAt}
+                    title={new Date(run.task.createdAt).toLocaleString()}
+                    className={`${RUN_TIME_COLUMN} flex-none whitespace-nowrap text-right tabular-nums text-slate-400`}
+                  >
+                    {formatRelativeTime(run.task.createdAt)}
+                  </time>
+                  <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${active ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+                    {active ? 'Running…' : waiting ? 'Queued' : formatDuration(run.task.processedAt || run.task.createdAt, run.task.completedAt)}
+                  </span>
                 </span>
               </button>
               {open && <div className="pb-1" data-testid="run-timeline-steps">{children}</div>}
