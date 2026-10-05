@@ -234,7 +234,7 @@ describe('TaskList', () => {
 
     expect(await screen.findByText('task table')).toBeInTheDocument();
     expect(screen.queryByText(/No tasks found/)).not.toBeInTheDocument();
-    expect(mockGetTasks).toHaveBeenCalledWith('active', 10, 0, 'all', '');
+    expect(mockGetTasks).toHaveBeenCalledWith({ status: 'active', limit: 10, offset: 0, repository: 'all', search: '', groupBy: 'task' });
   });
 
   it('requests active tasks when Active is selected in the filter dropdown', async () => {
@@ -248,11 +248,11 @@ describe('TaskList', () => {
     );
 
     expect(await screen.findByText('task table')).toBeInTheDocument();
-    expect(mockGetTasks).toHaveBeenLastCalledWith('all', 10, 0, 'all', '');
+    expect(mockGetTasks).toHaveBeenLastCalledWith({ status: 'all', limit: 10, offset: 0, repository: 'all', search: '', groupBy: 'task' });
 
     fireEvent.change(screen.getByTestId('status-filter'), { target: { value: 'active' } });
 
-    await waitFor(() => expect(mockGetTasks).toHaveBeenLastCalledWith('active', 10, 0, 'all', ''));
+    await waitFor(() => expect(mockGetTasks).toHaveBeenLastCalledWith({ status: 'active', limit: 10, offset: 0, repository: 'all', search: '', groupBy: 'task' }));
     expect(await screen.findByText('task table')).toBeInTheDocument();
   });
 

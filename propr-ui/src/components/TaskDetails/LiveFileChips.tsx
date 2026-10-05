@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { RefreshCw, AlertCircle, Plus, Minus, Trash2, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useId } from 'react';
+import { RefreshCw, AlertTriangle, Plus, Minus, File, FilePlus, FileSymlink, FileX } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
 import { useSocket } from '../../contexts/useSocket';
@@ -11,27 +11,35 @@ import { getDesktopSocketConfigurationKey } from '../../api/apiClient';
 interface LiveFileChipsProps {
   taskId: string;
   isActive: boolean;
+  /** Names the run the files belong to when it is not the task's newest. */
+  runNumber?: number;
 }
 
-// Get status indicator for file change
-const getStatusIndicator = (status: FileChange['status']) => {
+// A file-tree icon that also carries the change: added, deleted or renamed files are tinted.
+const getFileIcon = (status: FileChange['status']) => {
+  const className = 'h-3.5 w-3.5 flex-shrink-0';
   switch (status) {
     case 'added':
-      return <Plus className="h-3 w-3 text-green-500 flex-shrink-0" />;
+      return <FilePlus className={`${className} text-green-600`} aria-label="Added" />;
     case 'deleted':
-      return <Trash2 className="h-3 w-3 text-red-500 flex-shrink-0" />;
+      return <FileX className={`${className} text-red-500`} aria-label="Deleted" />;
     case 'renamed':
-      return <ArrowRight className="h-3 w-3 text-yellow-500 flex-shrink-0" />;
+      return <FileSymlink className={`${className} text-amber-600`} aria-label="Renamed" />;
     default:
-      return null;
+      return <File className={`${className} text-slate-400`} aria-hidden="true" />;
   }
 };
 
-const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
+// A file list pins its heading; a loading or error state scrolls with it so the alert is never half-covered.
+const fileHeadingClass = (error: string | null, fileCount: number) =>
+  `${!error && fileCount > 0 ? 'sticky top-11 z-[1] ' : ''}flex flex-wrap items-center justify-between gap-2 mb-1 mt-3 bg-white py-1`;
+
+const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumber }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
   const currentUser = useCurrentUser();
   const { onTaskUpdate, isConnected } = useSocket();
   const activeTaskIdRef = useRef(taskId);
@@ -116,6 +124,12 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
     );
   }, [fileChanges]);
 
+  const handleRetry = () => {
+    setIsLoading(true);
+    setError(null);
+    void scheduleFileChangesRefresh.refreshNow();
+  };
+
   // Handle file selection
   const handleSelectFile = (filePath: string) => {
     setSelectedFilePath(filePath === selectedFilePath ? null : filePath);
@@ -146,11 +160,15 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   }
 
   return (
-    <div className="relative border-t border-gray-100 pt-2">
-      {/* Header - Utility Header style */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-2 mt-4">
-        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
+    // The section owns its header and whatever loads under it, so an alert never reads without the header naming it.
+    <section aria-labelledby={headingId} className="relative border-t border-gray-100 pt-2">
+      {/* Over a file list, pinned below the bar or pane header above it for as long as its section is on screen. */}
+      <div className={fileHeadingClass(error, fileChanges.length)}>
+        <h4 id={headingId} className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
+          {runNumber !== undefined && (
+            <span className="font-medium normal-case tracking-normal text-slate-500">(Run {runNumber})</span>
+          )}
           {isActive && (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
@@ -182,46 +200,61 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
           <span>Loading...</span>
         </div>
       ) : error ? (
-        <div className="flex items-center gap-2 text-red-600 py-2 text-sm">
-          <AlertCircle className="h-4 w-4" />
-          <span>{error}</span>
+        <div role="alert" className="flex items-start gap-2.5 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <AlertTriangle className="mt-px h-4 w-4 flex-none text-amber-500" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="m-0 font-medium text-slate-700">Couldn’t load the changed files.</p>
+            <p className="m-0 mt-0.5 break-words">{error}</p>
+          </div>
+          {/* A bordered button, not loose text; the invisible ring around it widens the tap target to 44px. */}
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="relative flex-none rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors after:absolute after:-inset-x-1 after:-inset-y-[9px] after:content-[''] hover:bg-slate-50 active:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          >
+            Retry
+          </button>
         </div>
       ) : (
-        /* A bounded list keeps large changesets from taking over the timeline. */
-        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded border border-slate-200">
+        /*
+         * A file tree, not a form field: the shared folder as a quiet label and
+         * the files beneath it as plain rows. A bounded list keeps large
+         * changesets from taking over the timeline.
+         */
+        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
           {commonDirectory && (
-            <div className="sticky top-0 border-b border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px] text-slate-500 break-all" title={commonDirectory}>
+            <div className="sticky top-0 bg-white px-2 py-0.5 font-mono text-xs text-slate-400 break-all" title={commonDirectory}>
               {directoryLabel}
             </div>
           )}
-          {sortedFiles.map(file => {
-            const isSelected = selectedFilePath === file.path;
-            const relativePath = file.path.slice(commonDirectory.length);
-            const parentDirectory = relativePath.split('/').slice(-2, -1).map(part => `${part}/`).join('');
-            return (
-              <button
-                key={file.path}
-                onClick={() => handleSelectFile(file.path)}
-                aria-label={`View diff for ${file.path}`}
-                className={`flex w-full min-w-0 items-start gap-2 border-b border-slate-100 px-2 py-2 text-left font-mono text-xs transition-colors last:border-b-0 ${isSelected ? 'bg-primary-50' : 'hover:bg-slate-50'}`}
-                title={file.path}
-              >
-                {getStatusIndicator(file.status)}
-                <span className="min-w-0 flex-1 break-all">
-                  <span className="block text-slate-700">{file.path.split('/').pop()}</span>
-                  {parentDirectory && (
-                    <span className="mt-0.5 block text-[10px] text-slate-400">{parentDirectory}</span>
-                  )}
-                </span>
-                {(file.linesAdded > 0 || file.linesRemoved > 0) && (
-                  <span className="flex flex-shrink-0 items-center gap-1 text-[10px]">
-                    {file.linesAdded > 0 && <span className="text-green-600">+{file.linesAdded}</span>}
-                    {file.linesRemoved > 0 && <span className="text-red-500">-{file.linesRemoved}</span>}
+          <div className={commonDirectory ? 'pl-2' : ''}>
+            {sortedFiles.map(file => {
+              const isSelected = selectedFilePath === file.path;
+              const relativePath = file.path.slice(commonDirectory.length);
+              const parentDirectory = relativePath.split('/').slice(0, -1).map(part => `${part}/`).join('');
+              return (
+                <button
+                  key={file.path}
+                  onClick={() => handleSelectFile(file.path)}
+                  aria-label={`View diff for ${file.path}`}
+                  className={`flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                  title={file.path}
+                >
+                  {getFileIcon(file.status)}
+                  <span className="min-w-0 flex-1 break-all">
+                    {parentDirectory && <span className="text-slate-400">{parentDirectory}</span>}
+                    <span className="text-slate-700">{file.path.split('/').pop()}</span>
                   </span>
-                )}
-              </button>
-            );
-          })}
+                  {(file.linesAdded > 0 || file.linesRemoved > 0) && (
+                    <span className="flex flex-shrink-0 items-center gap-1 text-[11px] tabular-nums">
+                      {file.linesAdded > 0 && <span className="text-green-600">+{file.linesAdded}</span>}
+                      {file.linesRemoved > 0 && <span className="text-red-500">-{file.linesRemoved}</span>}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -246,7 +279,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 };
 

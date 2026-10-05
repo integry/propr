@@ -46,6 +46,10 @@ interface TaskTableContentProps {
   expandedGroups: Set<string>;
   onRowClick: (taskId: string) => void;
   onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
+  /** The task open beside the list; its row is marked selected. */
+  selectedTaskId?: string | null;
+  /** A row click opens the task beside the list instead of navigating to it. */
+  selectsInPlace?: boolean;
 }
 
 const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
@@ -59,21 +63,29 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
   expandedGroups,
   onRowClick,
   onToggleGroup,
+  selectedTaskId,
+  selectsInPlace = false,
 }) => {
   const rows = useMemo(() => groupedTasks.map(group => ({ group, row: buildTaskRow(group) })), [groupedTasks]);
 
   return (
     <div className="task-ledger">
       {/* Card View (phones and narrow panes) */}
-      <div className="task-queue task-ledger-cards">
+      <div className="task-queue task-ledger-cards pt-1">
+        {/*
+          The cards have no header row to scroll under, so a card leaving the top would be sliced
+          against the toolbar's border. This fade, pinned to the top of the scroll area, lets it go
+          out of view softly instead. It takes no space, so the first card starts where it did.
+        */}
+        <div aria-hidden="true" data-testid="task-cards-top-fade" className="pointer-events-none sticky top-0 z-10 -mb-2 h-2 bg-gradient-to-b from-white to-transparent" />
         {rows.map(({ group, row }) => (
           <MobileTaskCard
             key={group.key}
             row={row}
             prNumber={group.prNumber}
-            expanded={expandedGroups.has(group.key)}
             onRowClick={onRowClick}
-            onToggleGroup={onToggleGroup}
+            selectedTaskId={selectedTaskId}
+            selectsInPlace={selectsInPlace}
           />
         ))}
       </div>
@@ -96,6 +108,8 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
               expanded={expandedGroups.has(group.key)}
               onRowClick={onRowClick}
               onToggle={onToggleGroup}
+              selectedTaskId={selectedTaskId}
+              selectsInPlace={selectsInPlace}
             />
           ))}
         </div>

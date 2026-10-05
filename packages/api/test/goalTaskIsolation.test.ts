@@ -58,7 +58,7 @@ test('generic task lists exclude native goal backing tasks', async () => {
     });
     assert.equal(result.total, 2);
     assert.deepEqual(new Set((result.tasks as Array<{ id: string }>).map(task => task.id)), new Set(['ordinary-task', 'legacy-task']));
-    assert.equal(taskListSql.length, 5);
+    assert.equal(taskListSql.length, 6);
     assert.match(taskListSql[0], /count\(\*\)/i);
     assert.doesNotMatch(taskListSql[0], /processing_start_timestamp|completion_timestamp|critique_score/i);
     assert.doesNotMatch(taskListSql[1], /processing_start_timestamp|completion_timestamp|critique_score/i);

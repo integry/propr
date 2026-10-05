@@ -46,6 +46,8 @@ interface RepositorySelectorProps {
   appearance?: 'field' | 'title';
   className?: string;
   labelLayout?: 'inline' | 'stacked';
+  /** Drops the selected repository's count from the trigger below `sm`; the open list still shows every count. */
+  hideCountOnMobile?: boolean;
 }
 
 const FormatRepoName: React.FC<{ name: string }> = ({ name }) => {
@@ -182,7 +184,8 @@ const DefaultTrigger: React.FC<{
   labelLayout: 'inline' | 'stacked';
   size: 'default' | 'compact';
   appearance: 'field' | 'title';
-}> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout, size, appearance }) => {
+  hideCountOnMobile: boolean;
+}> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isLoading, isOpen, onClick, labelLayout, size, appearance, hideCountOnMobile }) => {
   const { iconClassName, padding, textSize, labelFlow, chrome } = defaultTriggerStyles(size, appearance, labelLayout);
   return (
     <button type="button" onClick={onClick} disabled={disabled || isLoading || reposCount === 0} className={`w-full min-w-0 ${padding} bg-white text-gray-900 ${chrome} rounded-md flex items-center disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500`}>
@@ -195,7 +198,7 @@ const DefaultTrigger: React.FC<{
           {selectedRepoData.count !== undefined && (
             <RepoCountBadge
               count={selectedRepoData.count}
-              className={labelLayout === 'stacked' ? 'hidden sm:inline-flex' : ''}
+              className={labelLayout === 'stacked' || hideCountOnMobile ? 'hidden sm:inline-flex' : ''}
             />
           )}
           {selectedRepoData.starred && <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
@@ -224,7 +227,8 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   size = 'default',
   appearance = 'field',
   className = '',
-  labelLayout = 'inline'
+  labelLayout = 'inline',
+  hideCountOnMobile = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -354,7 +358,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   return (
     <div ref={containerRef} className={`relative min-w-0 ${className}`}>
-      <DefaultTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} size={size} appearance={appearance} />
+      <DefaultTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isLoading={effectiveLoading} isOpen={isOpen} onClick={handleToggle} labelLayout={labelLayout} size={size} appearance={appearance} hideCountOnMobile={hideCountOnMobile} />
       {dropdownContent}
     </div>
   );

@@ -1,7 +1,7 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED
+   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
 
-   The schema is locked: every width that shows the table shows all six
+   The schema is locked: every width that shows the table shows all seven
    columns, so nothing is added or dropped as the window or a pane resizes.
    REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
    REPO shows the repository name without its owner (the repo filter already
@@ -33,16 +33,28 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 5rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 5rem;
     column-gap: .5rem;
   }
+}
+
+/* A task row's metadata lines up with the first line of its title, so a title
+   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT and
+   the times floating in the middle of a taller row. Each metadata cell is a
+   box one title line tall (25px: the lead chip on the title's baseline), centred in that box. */
+.task-queue-row { align-items: start; }
+.task-queue-row > [role="cell"]:not(:first-child) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  min-height: 1.5625rem;
 }
 
 /* Earlier runs are one timeline block spanning TASK / PR through STATUS:
@@ -50,8 +62,8 @@
 .task-runs-cell { grid-column: 1 / span 3; }
 .task-run { grid-template-columns: 5rem minmax(0, 1fr); column-gap: .75rem; }
 
-/* The tree rail. It drops from the toggle's caret (a fixed .75rem box at the
-   start of the rollup line, so its centre is .375rem in) into the runs, and
+/* The tree rail. It drops from the run chip's caret (a fixed .75rem box after
+   the chip's 1px border and .375rem padding, so its centre is .75rem + 1px in) into the runs, and
    each run branches off it with a short tick; the rail ends at the last run.
    --rail-stem bridges the gap from just under the caret to the list: the
    row's bottom padding (.5rem) plus the part of the 1.25rem rollup line below
@@ -60,7 +72,7 @@
   --rail: #cbd5e1;
   --rail-stem: 1rem;
   position: relative;
-  margin-left: calc(.375rem - 1px);
+  margin-left: .75rem;
 }
 .task-earlier-runs::before {
   content: '';
@@ -91,6 +103,8 @@
 
 .task-title { border-radius: .125rem; line-height: 1.25rem; }
 .task-title:hover { color: #0f766e; text-decoration: underline; }
+/* The open task's title is already marked by its row, so it never reads as a link. */
+.task-title[aria-current]:hover { color: #0f172a; text-decoration: none; }
 .task-title:focus { outline: none; }
 .task-title:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 

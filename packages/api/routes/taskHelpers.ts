@@ -2,7 +2,9 @@ import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '..
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
+import { recordedRunScore } from './runScore.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
+import { narrowToTaskPage, type TaskSelection } from './taskGrouping.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -14,6 +16,26 @@ export interface TaskQuery {
   search?: string;
   forReview?: boolean;
   excludeMerged?: boolean;
+  /**
+   * Page by task (the pull request or issue every run of it belongs to)
+   * rather than by run. `limit` and `offset` then count tasks, `total` is the
+   * number of tasks, and a page returns every matching run of its tasks.
+   */
+  groupByTask?: boolean;
+  /**
+   * With `groupByTask`: list only the task this run belongs to, with all of its
+   * runs, whatever the status and search filters would list.
+   */
+  containsTask?: string;
+}
+
+export interface TaskPage {
+  tasks: unknown[];
+  total: number;
+  offset: number;
+  limit: number;
+  /** With `groupByTask`: the matching runs across all tasks. */
+  totalRuns?: number;
 }
 
 // The UI labels in-progress work "Active"/"Implementing" and queued work
@@ -50,10 +72,83 @@ function resolveStatusStates(status: string): string[] | null {
   }
 }
 
-export async function getTasksFromDb(
-  query: TaskQuery
-): Promise<{ tasks: unknown[]; total: number; offset: number; limit: number }> {
-  const { db, status, repository, limit, offset, search, forReview, excludeMerged } = query;
+interface SelectionFilters {
+  attentionTaskIds: string[] | null;
+  /** The latest states the status filter asks for. */
+  states: string[] | null;
+  reviewStates: string[] | null;
+  search: string;
+}
+
+/** Without grouping, each filter picks runs. */
+function applyRunSelection(db: Knex, query: Knex.QueryBuilder, filters: SelectionFilters): void {
+  if (filters.attentionTaskIds) query.whereIn('t.task_id', filters.attentionTaskIds);
+  if (filters.states) query.whereIn('h.state', filters.states);
+  if (filters.search) {
+    const searchTerm = `%${filters.search}%`;
+    query.where(function() {
+      this.where('t.repository', 'like', searchTerm)
+        .orWhere(db.raw('CAST(t.issue_number AS TEXT)'), 'like', searchTerm)
+        .orWhere('t.initial_job_data', 'like', searchTerm);
+    });
+  }
+  if (filters.reviewStates) query.whereIn('h.state', filters.reviewStates);
+}
+
+/**
+ * With grouping, the filters pick tasks: a task's state is its newest run's,
+ * and the page carries every run of the tasks it lists, so selection runs
+ * over whole tasks rather than filtering the runs the page returns.
+ */
+function taskSelection({ attentionTaskIds, states, reviewStates, search }: SelectionFilters): TaskSelection {
+  return {
+    ...(states || reviewStates ? {
+      newestRunState: (state: string) => (!states || states.includes(state)) && (!reviewStates || reviewStates.includes(state)),
+    } : {}),
+    ...(attentionTaskIds ? { anyRunIn: new Set(attentionTaskIds) } : {}),
+    ...(search ? { search } : {}),
+  };
+}
+
+/** A task asked for by one of its runs is found whatever the list's filters are. */
+function listFilters(query: TaskQuery): Pick<TaskQuery, 'containsTask' | 'status' | 'search' | 'forReview'> {
+  const { groupByTask, containsTask, status, search, forReview } = query;
+  if (groupByTask && containsTask) return { containsTask, status: 'all', search: '', forReview: false };
+  return { status, search, forReview };
+}
+
+const taskContaining = (runId: string): TaskSelection => ({ anyRunIn: new Set([runId]) });
+
+/** The run-paged slice: the filtered runs, a LIMIT/OFFSET page of them and their count. */
+async function narrowToRunPage(
+  db: Knex,
+  pageQuery: Knex.QueryBuilder,
+  filters: SelectionFilters,
+  { limit, offset }: { limit: number; offset: number },
+): Promise<number> {
+  applyRunSelection(db, pageQuery, filters);
+  // Count only the filtered task identity/state set. Processing timestamps,
+  // completion timestamps and critique JSON are presentation enrichments and
+  // previously made the count repeat all three full-history joins.
+  const countQuery = pageQuery.clone();
+  if (!filters.states && !filters.reviewStates && !filters.attentionTaskIds) {
+    // Without a state filter the latest history row is irrelevant to the
+    // count. Preserve exclusion of tasks without history with an index-only
+    // existence check instead of fetching a full history row for every task.
+    countQuery.clear('join').whereExists(
+      db('task_history as count_h').select(db.raw('1')).whereRaw('count_h.task_id = t.task_id')
+    );
+  }
+  const totalResult = await timeApiStage('sql.tasks.count', () =>
+    countQuery.count('* as total').first()
+  );
+  pageQuery.limit(limit).offset(offset);
+  return parseInt(String(totalResult?.total || 0), 10);
+}
+
+export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
+  const { db, repository, limit, offset, excludeMerged, groupByTask } = query;
+  const { containsTask, status, search, forReview } = listFilters(query);
   // Resolve one history row per task with an indexed lookup. The former global
   // ROW_NUMBER window materialized and sorted all task_history rows for every
   // count and page request. timestamp remains the sole ordering key so equal
@@ -72,35 +167,8 @@ export async function getTasksFromDb(
       )
     `);
 
-  if (normalizeStatus(status) === ATTENTION_STATUS) {
-    // Exactly the work the dashboard's attention count describes, including
-    // plan reviews awaiting a decision and the runs behind decisions that
-    // recorded no task link, and excluding failures under recovery.
-    const attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
-      loadAttentionTaskIds(db, repository));
-    if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit };
-    baseQuery.whereIn('t.task_id', attentionTaskIds);
-  } else if (status && status !== 'all') {
-    const lifecycleStates = resolveStatusStates(status);
-    if (lifecycleStates) {
-      baseQuery.whereIn('h.state', lifecycleStates);
-    } else {
-      baseQuery.where('h.state', status);
-    }
-  }
   if (repository && repository !== 'all') {
     baseQuery.where('t.repository', repository);
-  }
-  if (search && search.trim() !== '') {
-    const searchTerm = `%${search.trim()}%`;
-    baseQuery.where(function() {
-      this.where('t.repository', 'like', searchTerm)
-        .orWhere(db.raw('CAST(t.issue_number AS TEXT)'), 'like', searchTerm)
-        .orWhere('t.initial_job_data', 'like', searchTerm);
-    });
-  }
-  if (forReview) {
-    baseQuery.whereIn('h.state', ['completed', 'failed']);
   }
   if (excludeMerged) {
     // A task was included by the previous left join whenever it had no linked
@@ -120,35 +188,43 @@ export async function getTasksFromDb(
     });
   }
 
-  // Count only the filtered task identity/state set. Processing timestamps,
-  // completion timestamps and critique JSON are presentation enrichments and
-  // previously made the count repeat all three full-history joins.
-  const countQuery = baseQuery.clone();
-  if ((!status || status === 'all') && !forReview) {
-    // Without a state filter the latest history row is irrelevant to the
-    // count. Preserve exclusion of tasks without history with an index-only
-    // existence check instead of fetching a full history row for every task.
-    countQuery.clear('join').whereExists(
-      db('task_history as count_h').select(db.raw('1')).whereRaw('count_h.task_id = t.task_id')
-    );
+  // Selection: which runs, or with grouping which tasks, the page lists.
+  let attentionTaskIds: string[] | null = null;
+  if (normalizeStatus(status) === ATTENTION_STATUS) {
+    // Exactly the work the dashboard's attention count describes, including
+    // plan reviews awaiting a decision and the runs behind decisions that
+    // recorded no task link, and excluding failures under recovery.
+    attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
+      loadAttentionTaskIds(db, repository));
+    if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) };
   }
-  const totalResult = await timeApiStage('sql.tasks.count', () =>
-    countQuery.count('* as total').first()
-  );
-  const total = parseInt(String(totalResult?.total || 0), 10);
+  const filters: SelectionFilters = {
+    attentionTaskIds,
+    states: attentionTaskIds || !status || status === 'all' ? null : resolveStatusStates(status) ?? [status],
+    reviewStates: forReview ? ['completed', 'failed'] : null,
+    search: search?.trim() || '',
+  };
+
+  let page: Omit<TaskPage, 'tasks'>;
+  if (groupByTask) {
+    const selection = containsTask ? taskContaining(containsTask) : taskSelection(filters);
+    const { empty, ...counts } = await narrowToTaskPage(db, baseQuery.clone(), baseQuery, { selection, limit, offset });
+    page = { ...counts, offset, limit };
+    if (empty) return { tasks: [], ...page };
+  } else {
+    page = { total: await narrowToRunPage(db, baseQuery, filters, { limit, offset }), offset, limit };
+  }
 
   // Apply ordering and pagination before presentation enrichment. This bounds
   // aggregate and JSON work by the requested page rather than database size.
   const pageTasks = await timeApiStage('sql.tasks.page', () => baseQuery
     .select('t.*', 'h.state', 'h.timestamp as state_timestamp', 'h.reason as failedReason')
-    .orderBy('t.created_at', 'desc')
-    .limit(limit)
-    .offset(offset));
+    .orderBy('t.created_at', 'desc'));
 
-  if (pageTasks.length === 0) return { tasks: [], total, offset, limit };
+  if (pageTasks.length === 0) return { tasks: [], ...page };
 
   const taskIds = pageTasks.map((row: Record<string, unknown>) => String(row.task_id));
-  const { historyByTask, planStatusByTask, commentMetadataByTask } = await timeApiStage(
+  const { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask } = await timeApiStage(
     'sql.tasks.enrichment',
     async () => enrichTaskPage(db, taskIds, Boolean(excludeMerged))
   );
@@ -162,15 +238,50 @@ export async function getTasksFromDb(
       ...historyByTask.get(String(row.task_id)),
       plan_issue_status: planStatusByTask.get(String(row.task_id)) ?? null,
     }),
+    score: scoreByTask.get(String(row.task_id)) ?? null,
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
-  return { tasks, total, offset, limit };
+  return { tasks, ...page };
 }
 
 interface TaskPageEnrichment {
   historyByTask: Map<string, Record<string, unknown>>;
   planStatusByTask: Map<string, unknown>;
   commentMetadataByTask: Map<string, unknown>;
+  /** The score the task's latest run recorded when it completed (a review's `Score 6/10`). */
+  scoreByTask: Map<string, number>;
+}
+
+/** States that open a run: a task followed up runs again under the same id. */
+const RUN_START_STATES: readonly string[] = [...QUEUED_TASK_STATES, ...RUNNING_TASK_STATES];
+
+/**
+ * The score of each task's latest run. Only the completions at the end of the
+ * task's history count: once a task is started again, an earlier run's score
+ * no longer describes it, and a run still in flight has none.
+ */
+async function loadRunScores(db: Knex, taskIds: string[]): Promise<Map<string, number>> {
+  const rows = await db('task_history')
+    .whereIn('task_id', taskIds)
+    .whereIn('state', ['completed', ...RUN_START_STATES])
+    .select('task_id', 'state', 'metadata')
+    .orderBy([{ column: 'timestamp', order: 'desc' }, { column: 'history_id', order: 'desc' }]) as Array<Record<string, unknown>>;
+  const scores = new Map<string, number>();
+  const settled = new Set<string>();
+  for (const row of rows) {
+    const taskId = String(row.task_id);
+    if (settled.has(taskId)) continue;
+    if (row.state !== 'completed') {
+      settled.add(taskId);
+      continue;
+    }
+    const score = recordedRunScore(row.metadata);
+    if (score !== null) {
+      scores.set(taskId, score);
+      settled.add(taskId);
+    }
+  }
+  return scores;
 }
 
 async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolean): Promise<TaskPageEnrichment> {
@@ -220,7 +331,9 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
     if (!planStatusByTask.has(taskId)) planStatusByTask.set(taskId, row.status);
   }
 
-  return { historyByTask, planStatusByTask, commentMetadataByTask };
+  const scoreByTask = await loadRunScores(db, taskIds);
+
+  return { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask };
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {

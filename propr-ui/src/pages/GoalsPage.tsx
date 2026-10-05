@@ -1044,7 +1044,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
           </header>
           {outputMode === 'readable'
             ? <div className="min-h-32 py-4">{readableTimeline.length > 0
-              ? <ThinkingLog events={readableTimeline} todos={live.todos} showHeader={false} historyTruncated={live.historyTruncated} checkpointOutcome={goal.checkpoint?.latest} />
+              ? <ThinkingLog events={readableTimeline} todos={live.todos} streaming={mutable && goal.desiredState === 'running'} historyTruncated={live.historyTruncated} checkpointOutcome={goal.checkpoint?.latest} />
               : <p className="text-sm text-slate-500">No human-readable output yet.</p>}</div>
             : <div className="mt-4 min-h-32 bg-slate-950 p-4 text-slate-100">{terminalTimeline.length > 0
               ? <ExecutionEventLog events={terminalTimeline} omittedEventCount={live.omittedEventCount} historyTruncated={live.historyTruncated} collapsed={false} onToggleCollapse={() => undefined} lastThought={thinkingLog.lastThought} isTaskActive={mutable && goal.desiredState === 'running'} taskInfo={null} />

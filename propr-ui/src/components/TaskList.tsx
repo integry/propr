@@ -22,6 +22,7 @@ import {
   selectValue,
 } from './TaskList/utils';
 import { useDebouncedCallback } from './TaskList/hooks';
+import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
 
@@ -72,7 +73,40 @@ const TaskBlockingState: React.FC<{
   return dashboard ? <DashboardErrorState error={state.message} /> : <FullPageErrorState error={state.message} />;
 };
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
+const NEXT_ROW_KEYS = new Set(['j', 'ArrowDown']);
+const PREVIOUS_ROW_KEYS = new Set(['k', 'ArrowUp']);
+
+/**
+ * j/ArrowDown and k/ArrowUp move the selection to the next or previous row of
+ * the page. Only primary rows (each group's newest run) are stops: an earlier
+ * run can be opened by clicking it, but stepping skips it.
+ */
+function useRowKeyboardNavigation(
+  groups: TaskGroup[],
+  selectedTaskId: string | null | undefined,
+  onSelectTask: ((taskId: string) => void) | undefined,
+) {
+  useEffect(() => {
+    if (!onSelectTask || !selectedTaskId || groups.length === 0) return;
+    const primaryTaskIds = groups.map(group => group.tasks[0].id);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target) || isDialogOpen()) return;
+      const step = NEXT_ROW_KEYS.has(event.key) ? 1 : PREVIOUS_ROW_KEYS.has(event.key) ? -1 : 0;
+      if (!step) return;
+      // An earlier run steps from its own row; a task not on this page starts at the top or bottom.
+      const index = groups.findIndex(group => group.tasks.some(task => task.id === selectedTaskId));
+      const next = index === -1
+        ? (step > 0 ? 0 : primaryTaskIds.length - 1)
+        : Math.min(Math.max(index + step, 0), primaryTaskIds.length - 1);
+      event.preventDefault();
+      if (primaryTaskIds[next] !== selectedTaskId) onSelectTask(primaryTaskIds[next]);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [groups, selectedTaskId, onSelectTask]);
+}
+
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, selectedTaskId = null, onSelectTask, refreshKey = 0, onGroupsChange }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
@@ -206,10 +240,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     try {
       setError(current => current?.scope === queryScope ? null : current);
       const offset = currentPage * tasksPerPage;
-      // A page is exactly the tasks the footer counts. Runs of the same PR are
-      // rolled up into one row client-side, so reading ahead would only repeat
-      // tasks that belong to the next page.
-      const data = await getTasks(filter, tasksPerPage, offset, repoFilter, debouncedSearch);
+      // A page is whole tasks, each with all of its runs, so the footer counts
+      // the rows on screen and a task's runs never split across two pages.
+      const data = await getTasks({
+        status: filter, limit: tasksPerPage, offset, repository: repoFilter, search: debouncedSearch, groupBy: 'task',
+      });
       if (requestId !== tasksRequestId.current) return;
       setTasks(data.tasks || []);
       setTotalTasks(data.total || 0);
@@ -226,6 +261,14 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   useEffect(() => {
     fetchTasks();
   }, [fetchTasks]);
+
+  const lastRefreshKey = useRef(refreshKey);
+  useEffect(() => {
+    if (lastRefreshKey.current === refreshKey) return;
+    lastRefreshKey.current = refreshKey;
+    fetchTasks();
+    refreshRepositoryStats(false);
+  }, [refreshKey, fetchTasks, refreshRepositoryStats]);
 
   useEffect(() => {
     if (hideFilters || hasLoadedRepoStats.current) return;
@@ -263,11 +306,18 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 
+  useEffect(() => {
+    onGroupsChange?.(groupedTasks);
+  }, [groupedTasks, onGroupsChange]);
+
   const toggleGroup = useMemo(() => createToggleGroupHandler(setExpandedGroups), []);
 
   const handleRowClick = useCallback((taskId: string) => {
-    navigate(`/tasks/${encodeURIComponent(taskId)}`);
-  }, [navigate]);
+    if (onSelectTask) onSelectTask(taskId);
+    else navigate(`/tasks/${encodeURIComponent(taskId)}`);
+  }, [navigate, onSelectTask]);
+
+  useRowKeyboardNavigation(groupedTasks, selectedTaskId, onSelectTask);
 
   const scopeState = resolveTaskScopeState(loadedScope, queryScope, tasks, groupedTasks, error);
 
@@ -280,7 +330,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const { tasks: visibleTasks, groups: visibleGroupedTasks, refreshError: currentError } = scopeState;
 
-  const totalPages = Math.ceil(totalTasks / tasksPerPage);
 
   // Shared filter props
   const filterProps = {
@@ -302,6 +351,9 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     expandedGroups,
     onRowClick: handleRowClick,
     onToggleGroup: toggleGroup,
+    selectedTaskId,
+    // Rows open beside the list rather than navigating away, so cards draw no drill-in chevron.
+    selectsInPlace: Boolean(onSelectTask),
   };
 
   // Dashboard integration: simpler layout without anchored header/footer
@@ -340,8 +392,12 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         <Filters {...filterProps} />
       </div>
 
-      {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto">
+      {/*
+        Scrollable Content Area, bounded by the header and footer. Its bottom
+        padding is the list's run-out: scrolled to the end, the last row stops
+        2rem above the footer's border instead of sitting on it.
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-8" data-testid="task-list-scroll">
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
@@ -352,18 +408,18 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         )}
       </div>
 
-      {/* Anchored Footer */}
-      {visibleTasks.length > 0 && totalPages > 1 && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
-          <Pagination
-            hideFilters={false}
-            totalTasks={totalTasks}
-            tasksPerPage={tasksPerPage}
-            currentPage={currentPage}
-            setCurrentPage={setCurrentPage}
-          />
-        </div>
-      )}
+      {/* Anchored Footer, pinned to the bottom like the other sections, however few tasks there are */}
+      <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200" data-testid="task-list-footer">
+        <Pagination
+          hideFilters={false}
+          pinned
+          totalTasks={totalTasks}
+          tasksPerPage={tasksPerPage}
+          currentPage={currentPage}
+          setCurrentPage={setCurrentPage}
+          returnedCount={visibleGroupedTasks.length}
+        />
+      </div>
     </>
   );
 };

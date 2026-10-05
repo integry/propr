@@ -23,8 +23,11 @@ describe('Task details telemetry', () => {
     expect(runtime).toHaveTextContent('gpt-6-astra');
     expect(runtime).toHaveTextContent('10m 32s');
     const consumption = within(screen.getByRole('group', { name: 'Consumption' }));
-    expect(consumption.getByText('3.9M in · 30k out')).toBeInTheDocument();
-    expect(consumption.getByText('1.0% weekly quota')).toHaveClass('text-slate-500');
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('↑3.9M↓30k(1.0% quota)');
+    expect(consumption.getByLabelText('3.9M input tokens')).toBeInTheDocument();
+    expect(consumption.getByText('1.0% quota')).toHaveClass('text-slate-500');
+    // Chips and clusters are set apart by space and a hairline rule, never dots.
+    expect(document.body).not.toHaveTextContent(/[·•]/);
     expect(runtime).not.toHaveTextContent('5c7cd9e');
   });
 
@@ -33,8 +36,8 @@ describe('Task details telemetry', () => {
       { agent: 'claude', metricKey: 'Session', metricValue: 26 },
       { agent: 'claude', metricKey: 'Weekly', metricValue: 5.1 },
     ]} />);
-    expect(screen.getByText('26.0% session quota')).toHaveClass('text-amber-600', 'font-medium');
-    expect(screen.getByText('5.1% weekly quota')).toHaveClass('text-slate-500');
+    expect(screen.getByText('26.0% session')).toHaveClass('text-amber-600', 'font-medium');
+    expect(screen.getByText('5.1% weekly')).toHaveClass('text-slate-500');
   });
 
   it('omits consumption when there are no tokens or quota deltas', () => {

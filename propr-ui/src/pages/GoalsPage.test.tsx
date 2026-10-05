@@ -7,6 +7,13 @@ import * as goalsApi from '../api/goals';
 import { getInstanceCatalog, getTaskLiveDetails } from '../api/proprApi';
 import ThinkingLog from '../components/TaskDetails/ThinkingLog';
 
+/** Reasoning folds into one-line `Thought …` disclosures; open them all to read it. */
+const expandThoughts = async () => {
+  for (const toggle of await screen.findAllByRole('button', { name: /^Thought/ })) {
+    if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+  }
+};
+
 const resizeImage = vi.hoisted(() => vi.fn());
 
 vi.mock('../api/goals', () => ({
@@ -1111,6 +1118,7 @@ describe('GoalsPage', () => {
 
     render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
 
+    await expandThoughts();
     await screen.findByText('Applying the correction now.');
     const delivered = screen.getByText('Use the existing design tokens');
     const log = document.getElementById('thinking-log-section')!;
@@ -1330,6 +1338,7 @@ describe('GoalsPage', () => {
       taskId: 'goal-task-1', events: [{ id: 'next', type: 'thought', content: 'Incremental update' }],
       todos: [], currentTask: 'Testing', tokenUsage: null,
     } as never));
+    await expandThoughts();
     expect(await screen.findByText('Initial native output')).toBeInTheDocument();
     expect(await screen.findByText('Incremental update')).toBeInTheDocument();
 

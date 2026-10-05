@@ -545,3 +545,6 @@ export * from './goalCreation.js';
 export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility } from './antigravityCompatibility.js';
 export * from './goalBlockers.js';
 export * from './goalWait.js';
+
+// Word-boundary truncation for titles that must fit a fixed length.
+export * from './text.js';

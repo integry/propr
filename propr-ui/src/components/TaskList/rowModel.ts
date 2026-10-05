@@ -4,8 +4,10 @@
  * The task list used to unroll every run of a pull request as its own nested
  * row under the newest one, so a single busy PR filled the screen and the page
  * boundary in the footer stopped meaning anything. A group is now one row: the
- * newest run carries the status, agent and duration, and the runs before
- * it are rolled up behind `↳ N earlier runs`.
+ * newest run carries the status, agent and duration, and the row counts its
+ * runs in a track of their outcomes. A row is the task (the pull request or issue);
+ * its runs are the agent sessions that worked on it, and the task pane beside
+ * the list switches between them.
  *
  * Titles are written for GitHub, not for a ledger: `Ultrafix PR #2664: [2659 by
  * GPT-6 Astra] Stop work…` repeats the PR number that is already on the row as
@@ -16,10 +18,12 @@
 
 import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
+import { ellipsizeHardCutTitle } from './displayTitle';
+import { getDisplayStatus } from './utils.tsx';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
-export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated'] as const;
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
 
 /** Expanded runs span TASK / PR through STATUS, keeping each run summary beside its timestamp. */
 export const TASK_RUNS_COLUMN_SPAN = 3;
@@ -55,9 +59,17 @@ export interface TaskRowView {
   repositoryName: string;
   /** The entity the row is about: the PR or issue title, sanitized. */
   title: string;
+  /** The same title without the `…` a legacy hard-cut title is given, for the tooltip. */
+  fullTitle: string;
   type: string | null;
   /** The newest run's own summary, when it says more than the title. */
   detail: string | null;
+  /**
+   * What the newest run came to, when it recorded no summary but the row has
+   * earlier runs: the line under the title is drawn for them anyway, and every
+   * such line reads `[runs] · [type] what the newest run did`.
+   */
+  outcome: string | null;
   previewCount: number;
   earlierRuns: TaskRunView[];
 }
@@ -76,9 +88,13 @@ const PLACEHOLDER_SUBTITLE = /^Preparing a PR\b/i;
 
 /**
  * Workflow labels that say a run happened, not what it did. A follow-up is
- * named after its summary instead: `Fix the seed test` is a fix.
+ * named after its summary instead: `Fix the seed test` is a fix. A summary
+ * that leads with no action still gets a type, so the type column under the
+ * titles never skips a row: a follow-up or PR comment run makes the changes a
+ * reviewer asked for, which is a fix, and a continued run carries on
+ * implementing.
  */
-const GENERIC_TYPES = new Set(['follow-up', 'continue', 'pr comment']);
+const GENERIC_TYPES = new Map([['follow-up', 'Fix'], ['continue', 'Implement'], ['pr comment', 'Fix']]);
 
 /** Leading verbs of a run summary, and the action each one names. */
 const SUMMARY_ACTIONS: ReadonlyArray<[RegExp, string]> = [
@@ -88,25 +104,38 @@ const SUMMARY_ACTIONS: ReadonlyArray<[RegExp, string]> = [
   [/^(?:rebase|merge|merged)\b/i, 'Merge'],
 ];
 
-/** The action a run took: its workflow type when that is specific, else what its summary leads with. */
+/** The action a run took: its workflow type when that is specific, else what its summary leads with, else the workflow's usual action. */
 function runAction(type: string | null, summary: string | null): string | null {
-  if (type && !GENERIC_TYPES.has(type.toLowerCase())) return type;
-  if (!summary) return null;
-  return SUMMARY_ACTIONS.find(([pattern]) => pattern.test(summary))?.[1] ?? null;
+  const fallback = type ? GENERIC_TYPES.get(type.toLowerCase()) : null;
+  if (type && !fallback) return type;
+  const named = summary ? SUMMARY_ACTIONS.find(([pattern]) => pattern.test(summary))?.[1] : undefined;
+  return named ?? fallback ?? null;
 }
 
 const isMeaningful = (text: string | null | undefined): text is string =>
   Boolean(text) && !GENERIC_TITLE.test(text!.trim());
 
-/** Strips workflow prefixes, duplicate entity references and model tags from a title. */
-export function sanitizeTaskTitle(raw: string | null | undefined): { type: string | null; title: string | null } {
+interface SanitizedTitle {
+  type: string | null;
+  /** The title as shown: a legacy title cut mid-word ends in `…`. */
+  title: string | null;
+  /** The title before that `…` was added. */
+  fullTitle: string | null;
+}
+
+/**
+ * Strips workflow prefixes, duplicate entity references and model tags from a
+ * title, and marks a title the backend cut mid-word with `…`.
+ */
+export function sanitizeTaskTitle(raw: string | null | undefined): SanitizedTitle {
   const work = splitWorkTitle(raw);
   const title = (work.title ?? '')
     .replace(MODEL_TAG, ' ')
     .replace(LEADING_REFERENCE, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return { type: work.type, title: title || null };
+  if (!title) return { type: work.type, title: null, fullTitle: null };
+  return { type: work.type, title: ellipsizeHardCutTitle(title, raw?.trim()), fullTitle: title };
 }
 
 function cleanSubtitle(subtitle: string | null | undefined): string | null {
@@ -124,16 +153,16 @@ export function previewCount(task: Task): number {
  * is titled `Followup: Update 3`, so the group falls back to an older run (the
  * one that opened the issue or PR) and then to a run summary before giving up.
  */
-function entityTitle(tasks: Task[]): string {
+function entityTitle(tasks: Task[]): { title: string; fullTitle: string } {
   for (const task of tasks) {
-    const { title } = sanitizeTaskTitle(task.title);
-    if (isMeaningful(title)) return title;
+    const { title, fullTitle } = sanitizeTaskTitle(task.title);
+    if (isMeaningful(title)) return { title, fullTitle: fullTitle ?? title };
   }
   for (const task of tasks) {
     const subtitle = cleanSubtitle(task.subtitle);
-    if (subtitle) return subtitle;
+    if (subtitle) return { title: subtitle, fullTitle: sanitizeTaskTitle(task.subtitle).fullTitle ?? subtitle };
   }
-  return 'Untitled task';
+  return { title: 'Untitled task', fullTitle: 'Untitled task' };
 }
 
 /** What a run changed and the action that names it, or null when it recorded nothing more specific. */
@@ -165,6 +194,10 @@ export function runOutcome(task: Task): string {
       return firstLine(task.failedReason) ?? 'Stopped before reporting a result';
     case 'cancelled':
       return task.commitHash ? `Stopped after commit ${task.commitHash.slice(0, 7)}` : 'Stopped before committing changes';
+    case 'waiting':
+    case 'pending':
+    case 'queued':
+      return 'Waiting to start';
     default:
       return 'No result yet';
   }
@@ -172,7 +205,7 @@ export function runOutcome(task: Task): string {
 
 export function buildTaskRow(group: TaskGroup): TaskRowView {
   const [task, ...earlier] = group.tasks;
-  const title = entityTitle(group.tasks);
+  const { title, fullTitle } = entityTitle(group.tasks);
   const newest = runDelta(task, title);
   return {
     key: group.key,
@@ -180,8 +213,10 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     repository: `${group.repoOwner}/${group.repoName}`,
     repositoryName: group.repoName,
     title,
+    fullTitle,
     type: newest.type,
     detail: newest.delta,
+    outcome: earlier.length > 0 && !newest.delta ? runOutcome(task) : null,
     previewCount: previewCount(task),
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);
@@ -203,4 +238,104 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
  */
 export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
 
+/**
+ * What came of a run, as the list's run track and the task pane's timeline
+ * mark it: a failure, a review that left findings to fix, a pass, a run still
+ * in flight, one queued that has not started, or one that was stopped.
+ */
+export type RunOutcome = 'failed' | 'findings' | 'passed' | 'active' | 'waiting' | 'stopped';
+
+/** A score at or below this left findings to fix. */
+export const LOW_SCORE = 6;
+
+/**
+ * Whether a run is a review. Only a review scores the code: a fix writes
+ * commits, so a score recorded against it (the ultrafix loop's) is not its own
+ * and is never shown on it.
+ */
+export const isReviewRun = (type: string | null | undefined): boolean => type?.toLowerCase() === 'review';
+
+/** The run's own score: a review's, or null for any other run. */
+export const runScore = (run: Pick<TaskRunEntry, 'task' | 'type'>): number | null =>
+  isReviewRun(run.type) ? run.task.score ?? null : null;
+
+/**
+ * Where a run left the code. The score is never printed on a fix, but the
+ * one recorded against it (the ultrafix loop reviews the code after each fix)
+ * still marks how healthy the code was when it finished, so the run track
+ * shows a fix that left findings as an amber square, the same as a review.
+ * The track is a health trajectory, not a list of who graded what.
+ */
+export function runOutcomeOf(task: Task): RunOutcome {
+  const score = task.score ?? null;
+  switch (getDisplayStatus(task)) {
+    case 'failed': return 'failed';
+    case 'cancelled': return 'stopped';
+    case 'completed':
+    case 'merged':
+      return score != null && score <= LOW_SCORE ? 'findings' : 'passed';
+    // Queued work has not started: it is neither running nor timed.
+    case 'waiting':
+    case 'pending':
+    case 'queued':
+      return 'waiting';
+    default: return 'active';
+  }
+}
+
+export interface TaskRunEntry {
+  task: Task;
+  /** 1 for the oldest run of the task on this page, counting up to the newest. */
+  number: number;
+  type: string | null;
+  /** What the run changed, or its outcome when it recorded no summary. */
+  summary: string;
+  outcome: RunOutcome;
+}
+
+/** The task's runs, oldest first and numbered from it, so `Run 8` stays `Run 8` as new runs arrive. */
+export function buildTaskRuns(row: TaskRowView): TaskRunEntry[] {
+  const newestFirst = [
+    { task: row.task, type: row.type, summary: row.detail ?? runOutcome(row.task) },
+    ...row.earlierRuns.map(run => ({ task: run.task, type: run.type, summary: run.delta })),
+  ];
+  return newestFirst.reverse().map((run, index) => ({ ...run, number: index + 1, outcome: runOutcomeOf(run.task) }));
+}
+
+/** The task's quality score: its newest review's, or null when no run on this page was a scored review. */
+export function rowScore(row: TaskRowView): number | null {
+  const runs = [{ task: row.task, type: row.type }, ...row.earlierRuns];
+  for (const run of runs) {
+    const score = runScore(run);
+    if (score != null) return score;
+  }
+  return null;
+}
+
+/** The list card shows at most this many runs, the newest; a `+N` chip counts the rest. */
+export const RUN_TRACK_LIMIT = 4;
+
+const OUTCOME_WORDS: Record<RunOutcome, string> = {
+  failed: 'failed', findings: 'left findings', passed: 'passed', active: 'running', waiting: 'waiting to start', stopped: 'stopped',
+};
+
+/** One run in words, for tooltips and screen readers: `Run 3 left findings (6/10)`. */
+export const describeRun = (run: TaskRunEntry): string => {
+  const score = runScore(run);
+  return `Run ${run.number} ${OUTCOME_WORDS[run.outcome]}${score != null ? ` (${score}/10)` : ''}`;
+};
+
 export const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/**
+ * The selected row: a quiet slate fill and a 4px teal rail on its leading edge,
+ * as in a mail or issue list. The rail is an inset shadow rather than a border,
+ * so selecting a row does not shift its content.
+ */
+export const SELECTED_ROW_CLASSES = 'bg-slate-100/80 shadow-[inset_4px_0_0_0_#0d9488]';
+
+export const taskPath = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
+
+/** Whether the task open beside the list is one of this row's runs. */
+export const rowContainsTask = (row: TaskRowView, taskId: string | null | undefined): boolean =>
+  Boolean(taskId) && (row.task.id === taskId || row.earlierRuns.some(run => run.task.id === taskId));

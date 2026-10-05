@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Filter, Search, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 
@@ -28,13 +28,30 @@ const normalizeFilterValue = (filter: string): string => {
   }
 };
 
+/**
+ * Every repository on this instance shares an owner, so the trigger shows
+ * `propr` rather than `integry/propr`; the full name stays in the row tooltip
+ * and the search. A name two owners share keeps its owner.
+ */
+const withShortNames = (repos: RepoOption[]): RepoOption[] => {
+  const shortName = (name: string) => name.split('/')[1] ?? name;
+  const seen = new Map<string, number>();
+  for (const repo of repos) seen.set(shortName(repo.name), (seen.get(shortName(repo.name)) ?? 0) + 1);
+  return repos.map(repo => (
+    repo.displayName || !repo.name.includes('/') || seen.get(shortName(repo.name))! > 1
+      ? repo
+      : { ...repo, displayName: shortName(repo.name) }
+  ));
+};
+
 const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | 'availableRepos' | 'reposLoading'>> = ({
   repoFilter,
   setRepoFilter,
   availableRepos,
   reposLoading
 }) => {
-  const repos = useDecoratedRepoOptions(availableRepos);
+  const decorated = useDecoratedRepoOptions(availableRepos);
+  const repos = useMemo(() => withShortNames(decorated), [decorated]);
   return (
   <RepositorySelector
     repos={repos}
@@ -42,8 +59,8 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     onRepoChange={setRepoFilter}
     isLoading={reposLoading}
     variant="default"
-    labelLayout="stacked"
-    className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
+    hideCountOnMobile
+    className="flex-1 min-w-0 sm:flex-initial sm:max-w-[13rem]"
   />
   );
 };
@@ -70,6 +87,11 @@ export const Filters: React.FC<FiltersProps> = ({
   // option values to keep the select bound instead of falling back to "all".
   const selectedFilter = normalizeFilterValue(filter);
 
+  const showRepoFilter = reposLoading || availableRepos.length > 1;
+
+  // A phone fits the title and both dropdowns on one line once the repository
+  // picker drops its task count there (the open list still shows it). The
+  // picker takes whatever the title and status filter leave.
   return (
     <div className="flex items-center justify-between gap-2 sm:gap-4">
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
@@ -77,14 +99,15 @@ export const Filters: React.FC<FiltersProps> = ({
         {!hideFilters && (
           <>
             {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
+            {/* Takes the room the filters leave, so it stays usable in a list pane beside an open task. */}
+            <div className="relative hidden sm:block min-w-[8rem] flex-1 max-w-xs">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search tasks..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="pl-9 pr-8 py-2 w-full border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               />
               {searchQuery && (
                 <button
@@ -96,24 +119,25 @@ export const Filters: React.FC<FiltersProps> = ({
                 </button>
               )}
             </div>
-            {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2 min-w-0">
-              <Filter size={16} className="text-gray-500 hidden sm:block" />
-              <select
-                value={selectedFilter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-              >
-                <option value="all">All Tasks</option>
-                <option value="attention">Needs attention</option>
-                <option value="active">Active</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-                <option value="waiting">Waiting</option>
-              </select>
+            <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
+              <div data-testid="task-status-filter" className="flex-none">
+                <select
+                  value={selectedFilter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  aria-label="Task status"
+                  className="w-[120px] sm:w-auto px-2 sm:px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                >
+                  <option value="all">All Tasks</option>
+                  <option value="attention">Needs attention</option>
+                  <option value="active">Active</option>
+                  <option value="completed">Completed</option>
+                  <option value="failed">Failed</option>
+                  <option value="waiting">Waiting</option>
+                </select>
+              </div>
 
               {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
-              {(reposLoading || availableRepos.length > 1) && (
+              {showRepoFilter && (
                 <RepoFilter repoFilter={repoFilter} setRepoFilter={setRepoFilter} availableRepos={availableRepos} reposLoading={reposLoading} />
               )}
             </div>

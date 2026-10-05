@@ -58,7 +58,8 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
-export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
+/** With `groupBy: 'task'`, `total`, `limit` and `offset` count tasks and `totalRuns` counts their runs. */
+export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; totalRuns?: number; }
 
 const normalizeGetTasksOptions = (
   statusOrOptions: string | GetTasksOptions = 'all',
@@ -81,6 +82,8 @@ const getTasksRequest = async (
   if (options.search) params.append('search', options.search);
   if (options.forReview) params.append('forReview', 'true');
   if (options.excludeMerged) params.append('excludeMerged', 'true');
+  if (options.groupBy) params.append('groupBy', options.groupBy);
+  if (options.task) params.append('task', options.task);
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include',
     ...(signal ? { signal } : {}),

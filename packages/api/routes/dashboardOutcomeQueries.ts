@@ -64,7 +64,7 @@ const GENERIC_RECAPS = new Set([
 /** `Score 8/10` or `Scores 8/10, 6/10`, as written by the review recap. */
 const REVIEW_SCORE_PART = /^Scores?\s+(.+)$/i;
 
-function parseJsonObject(value: unknown): Record<string, unknown> {
+export function parseJsonObject(value: unknown): Record<string, unknown> {
   if (!value) return {};
   try {
     const parsed = typeof value === 'string' ? JSON.parse(value) : value;
@@ -74,7 +74,7 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
-function recapFrom(metadata: Record<string, unknown>): string | null {
+export function recapFrom(metadata: Record<string, unknown>): string | null {
   const direct = metadata.notificationRecap;
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
   const prResult = parseJsonObject(metadata.prResult).notificationRecap;
@@ -150,7 +150,7 @@ function isReviewRun(row: Pick<DashboardTaskRow, 'taskType' | 'title'>, commandM
  * the one that decides whether the pull request is ready — and what remains is
  * the detail line.
  */
-function splitReviewRecap(recap: string | null): { score: number | null; detail: string | null } {
+export function splitReviewRecap(recap: string | null): { score: number | null; detail: string | null } {
   if (!recap) return { score: null, detail: null };
   let score: number | null = null;
   const rest: string[] = [];

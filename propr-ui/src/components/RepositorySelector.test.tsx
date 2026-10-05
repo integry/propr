@@ -332,6 +332,15 @@ describe('RepositorySelector', () => {
     expect(countBadge).toHaveClass('hidden', 'sm:inline-flex');
   });
 
+  it('hides the collapsed count badge on mobile when asked', () => {
+    const repos: RepoOption[] = [
+      { name: 'all', enabled: true, displayName: 'All Repos', count: 14769 },
+    ];
+    render(<RepositorySelector repos={repos} selectedRepo="all" onRepoChange={vi.fn()} hideCountOnMobile />);
+
+    expect(screen.getByRole('button').querySelector('.bg-gray-100')).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
   it('filters by repo name even when displayName differs', () => {
     const repos: RepoOption[] = [
       { name: 'org/repo-alpha', enabled: true, displayName: 'All Repos', count: 10 },

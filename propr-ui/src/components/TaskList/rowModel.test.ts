@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskRow, hasRollupLine, runOutcome, sanitizeTaskTitle } from './rowModel';
+import { buildTaskRow, hasRollupLine, runOutcome, runOutcomeOf, sanitizeTaskTitle } from './rowModel';
 import type { Task, TaskGroup } from './types';
 
 const base: Task = { id: 'task-1', status: 'completed', createdAt: '2026-09-15T10:00:00Z' };
@@ -12,15 +12,39 @@ const image = (index: number) => ({ type: 'image', title: `Preview ${index}`, ur
 describe('sanitizeTaskTitle', () => {
   it('drops the workflow prefix, the repeated PR number and the model tag', () => {
     expect(sanitizeTaskTitle('Ultrafix PR #2664: [2659 by GPT-6 Astra] Stop work when an issue or PR withdraws intent'))
-      .toEqual({ type: 'Ultrafix', title: 'Stop work when an issue or PR withdraws intent' });
+      .toMatchObject({ type: 'Ultrafix', title: 'Stop work when an issue or PR withdraws intent' });
     expect(sanitizeTaskTitle('Followup: [870 by Claude Opus 4.6] Update checkout'))
-      .toEqual({ type: 'Follow-up', title: 'Update checkout' });
-    expect(sanitizeTaskTitle('New Issue: Add retries')).toEqual({ type: 'Implement', title: 'Add retries' });
+      .toMatchObject({ type: 'Follow-up', title: 'Update checkout' });
+    expect(sanitizeTaskTitle('New Issue: Add retries')).toMatchObject({ type: 'Implement', title: 'Add retries' });
   });
 
   it('removes bare entity prefixes and model tags that are not at the start', () => {
     expect(sanitizeTaskTitle('PR #2664: Stop work').title).toBe('Stop work');
     expect(sanitizeTaskTitle('Stop work [2659 by GPT-6 Astra] on withdrawal').title).toBe('Stop work on withdrawal');
+  });
+
+  it('marks a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping all of its text', () => {
+    const hardCut = 'Followup: Expose task changes, logs and events through the MCP server so that an MCP client can actu';
+    expect(hardCut).toHaveLength(100);
+    const sanitized = sanitizeTaskTitle(hardCut);
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu…');
+    expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can actu');
+  });
+
+  it('keeps the last word of a complete 100-character title that ends on a letter', () => {
+    const complete = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
+    expect(complete).toHaveLength(100);
+    const sanitized = sanitizeTaskTitle(complete);
+    expect(sanitized.title).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act…');
+    expect(sanitized.fullTitle).toBe('Expose task changes, logs and events through the MCP server so that an MCP client can act');
+  });
+
+  it('leaves titles of any other length, or ending in punctuation, alone', () => {
+    const short = 'Expose task changes through the MCP server so an MCP client can actu';
+    expect(sanitizeTaskTitle(short).title).toBe(short);
+    const complete = `${'Finish the work. '.repeat(6).slice(0, 99)}.`;
+    expect(complete).toHaveLength(100);
+    expect(sanitizeTaskTitle(complete).title).toBe(complete);
   });
 
   it('keeps ordinary bracketed titles', () => {
@@ -40,7 +64,8 @@ describe('buildTaskRow', () => {
     expect(row.type).toBe('Ultrafix');
     expect(row.detail).toBe('Ultrafix cycle 3 (linting)');
     expect(row.earlierRuns.map(run => [run.type, run.delta, run.summarized])).toEqual([
-      [null, 'Pushed commit 9f3c21e', false],
+      // A follow-up makes the changes asked for, so it is a fix even when its summary names no action.
+      ['Fix', 'Pushed commit 9f3c21e', false],
       ['Fix', 'Restrict withdrawal labels', true],
       ['Review', 'No code changes: finished without a commit', false],
     ]);
@@ -56,7 +81,7 @@ describe('buildTaskRow', () => {
       { title, subtitle: 'Review the token scope' },
       { title, subtitle: 'Update repoBranching.ts for read-only tokens' },
     ]));
-    expect(row.earlierRuns.map(run => run.type)).toEqual(['Fix', 'Fix', 'Test', 'Review', null]);
+    expect(row.earlierRuns.map(run => run.type)).toEqual(['Fix', 'Fix', 'Test', 'Review', 'Fix']);
     expect(row.earlierRuns.map(run => run.type)).not.toContain('Follow-up');
   });
 
@@ -78,8 +103,26 @@ describe('buildTaskRow', () => {
     expect(run({ status: 'failed' })).toBe('Stopped before reporting a result');
     expect(run({ status: 'cancelled' })).toBe('Stopped before committing changes');
     expect(run({ status: 'processing' })).toBe('No result yet');
+    expect(run({ status: 'queued' })).toBe('Waiting to start');
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A' }, { title: 'Follow-up PR #1: A' }, { title: 'Followup: Update 2' }]));
     expect(row.earlierRuns.map(earlier => earlier.delta)).not.toContain('Follow-up run');
+  });
+
+  it('gives a rollup line whose newest run has no summary that run\'s outcome, never a bare type', () => {
+    const queued = buildTaskRow(group([
+      { title: 'Review PR #2656: Show provider rate-limit resets', status: 'queued' },
+      { title: 'Fix PR #2656: Show provider rate-limit resets', subtitle: 'Format reset times' },
+    ]));
+    expect(queued).toMatchObject({ type: 'Review', detail: null, outcome: 'Waiting to start' });
+    const summarized = buildTaskRow(group([
+      { title: 'Follow-up PR #2654: Retry webhooks', subtitle: 'Back off exponentially' },
+      { title: 'Review PR #2654: Retry webhooks' },
+    ]));
+    expect(summarized).toMatchObject({ detail: 'Back off exponentially', outcome: null });
+    // A single run stays one line: no outcome is invented to give it a second.
+    const single = buildTaskRow(group([{ title: 'New Issue: Add retries' }]));
+    expect(single.outcome).toBeNull();
+    expect(hasRollupLine(single)).toBe(false);
   });
 
   it('shows the repository by name, keeping the owner for the tooltip', () => {
@@ -97,5 +140,12 @@ describe('buildTaskRow', () => {
   it('counts only trusted previews', () => {
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A', previewMedia: [image(1), image(2), { type: 'image', url: 'javascript:alert(1)', title: 'x' }] as Task['previewMedia'] }]));
     expect(row.previewCount).toBe(2);
+  });
+});
+
+describe('runOutcomeOf', () => {
+  it('keeps queued work apart from work in flight', () => {
+    for (const status of ['queued', 'pending', 'waiting']) expect(runOutcomeOf({ ...base, status })).toBe('waiting');
+    for (const status of ['processing', 'claude_execution', 'post_processing']) expect(runOutcomeOf({ ...base, status })).toBe('active');
   });
 });

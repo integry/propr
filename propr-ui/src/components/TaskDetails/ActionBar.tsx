@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState, useId } from 'react';
 import { HistoryItem } from './types';
+import TaskActionSheet from './TaskActionSheet';
+import { getDeleteState, type DeletionProps, type OverflowMenuItem } from './taskActions';
 import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus, MoreHorizontal } from 'lucide-react';
 
 interface ActionBarProps {
@@ -13,7 +15,27 @@ interface ActionBarProps {
   onViewLogs: (logsPath: string) => void;
   onDeleteTask?: () => void;
   onFollowUp?: () => void;
+  /**
+   * The task's newest run when the pane shows an earlier one. While it works,
+   * its Stop stays in the header, so the agent can be stopped from any run.
+   */
+  liveRun?: LiveRunControl;
+  /**
+   * The one-line bar the mobile header collapses into: Stop stays out while the
+   * task works, and everything else moves into the overflow menu.
+   */
+  compact?: boolean;
+  /** Mobile: the overflow opens as a bottom action sheet rather than a popover. */
+  sheet?: boolean;
 }
+
+export interface LiveRunControl {
+  number: number;
+  stopping: boolean;
+  onStop: () => void;
+}
+
+const ACTIVE_STATUSES = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'];
 
 // Cancelled badge component
 const CancelledBadge: React.FC<{ isCancelled: boolean }> = ({ isCancelled }) => {
@@ -34,13 +56,14 @@ const StopExecutionButton: React.FC<{
   isActive: boolean;
   stoppingExecution: boolean;
   onStopExecution: () => void;
-}> = ({ isActive, stoppingExecution, onStopExecution }) => {
+  title?: string;
+}> = ({ isActive, stoppingExecution, onStopExecution, title = 'Stop Execution' }) => {
   if (!isActive) return null;
   return (
     <button
       onClick={onStopExecution}
       disabled={stoppingExecution}
-      title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
+      title={stoppingExecution ? 'Stopping execution...' : title}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
         stoppingExecution
           ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
@@ -62,30 +85,41 @@ const StopExecutionButton: React.FC<{
   );
 };
 
-// Delete button component
-const DeleteButton: React.FC<{
+/** The task's Stop, and the newest run's when the pane shows an earlier one that is done. */
+const StopButtons: React.FC<{
   isActive: boolean;
-  stopFailed: boolean;
-  deletingTask: boolean;
-  onDeleteTask: () => void;
-}> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
-  // Enable delete if task is not active, or if stop failed
-  const canDelete = !isActive || stopFailed;
-  const isDisabled = !canDelete || deletingTask;
+  stopsLiveRun: boolean;
+  stoppingExecution: boolean;
+  onStopExecution: () => void;
+  liveRun?: LiveRunControl;
+}> = ({ isActive, stopsLiveRun, stoppingExecution, onStopExecution, liveRun }) => (
+  <>
+    <StopExecutionButton
+      isActive={isActive}
+      stoppingExecution={stoppingExecution}
+      onStopExecution={onStopExecution}
+    />
+    {liveRun && (
+      <StopExecutionButton
+        isActive={stopsLiveRun}
+        stoppingExecution={liveRun.stopping}
+        onStopExecution={liveRun.onStop}
+        title={`Stop Run ${liveRun.number}, which is still running`}
+      />
+    )}
+  </>
+);
 
-  const getTitle = () => {
-    if (deletingTask) return 'Deleting...';
-    if (stopFailed) return 'Delete task (stop failed, task may have already stopped)';
-    if (isActive) return 'Stop the task before deleting';
-    return 'Delete task';
-  };
+// Delete button component
+const DeleteButton: React.FC<DeletionProps> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
+  const { isDisabled, title } = getDeleteState(isActive, stopFailed, deletingTask);
 
   return (
     <button
       role="menuitem"
       onClick={onDeleteTask}
       disabled={isDisabled}
-      title={getTitle()}
+      title={title}
       className={`flex items-center gap-1.5 w-full px-3 py-2 rounded text-xs font-medium transition-colors ${
         isDisabled
           ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
@@ -102,7 +136,9 @@ const DeleteButton: React.FC<{
   );
 };
 
-const TaskOverflowMenu: React.FC<React.ComponentProps<typeof DeleteButton>> = props => {
+const TaskOverflowMenu: React.FC<{
+  deletion: DeletionProps;
+}> = ({ deletion }) => {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -143,7 +179,7 @@ const TaskOverflowMenu: React.FC<React.ComponentProps<typeof DeleteButton>> = pr
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        className="flex items-center rounded p-1.5 text-slate-500 hover:bg-white hover:text-slate-900"
+        className="flex h-7 w-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         onClick={() => setOpen(value => !value)}
         onKeyDown={event => {
           if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); }
@@ -154,16 +190,44 @@ const TaskOverflowMenu: React.FC<React.ComponentProps<typeof DeleteButton>> = pr
       {open && (
         <div id={menuId} ref={menuRef} role="menu" aria-label="More task actions" tabIndex={-1}
           className="absolute right-0 top-full z-50 mt-1 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
-          <DeleteButton {...props} onDeleteTask={() => {
+          <DeleteButton {...deletion} onDeleteTask={() => {
             setOpen(false);
             triggerRef.current?.focus();
-            props.onDeleteTask();
+            deletion.onDeleteTask();
           }} />
         </div>
       )}
     </div>
   );
 };
+
+/** The collapsed header's actions: Stop while the task works, everything else in the action sheet. */
+const CompactActions: React.FC<{
+  stopButtons: React.ReactNode;
+  deletion?: DeletionProps;
+  onFollowUp?: () => void;
+  historyItemWithPaths?: HistoryItem;
+  onViewPrompt: (promptPath: string) => void;
+  onViewLogs: (logsPath: string) => void;
+}> = ({ stopButtons, deletion, onFollowUp, historyItemWithPaths, onViewPrompt, onViewLogs }) => {
+  const { promptPath, logsPath } = historyItemWithPaths ?? {};
+  const items: OverflowMenuItem[] = [];
+  if (onFollowUp) items.push({ label: 'Follow Up', title: 'Follow Up - Post a follow-up comment', icon: <MessageSquarePlus size={18} />, onSelect: onFollowUp });
+  if (promptPath) items.push({ label: 'Prompt', title: 'View Prompt', icon: <FileText size={18} />, onSelect: () => onViewPrompt(promptPath) });
+  if (logsPath) items.push({ label: 'Logs', title: 'View Logs', icon: <Terminal size={18} />, onSelect: () => onViewLogs(logsPath) });
+  // Stop is a safety control, so it never folds into the sheet.
+  return (
+    <div className="flex flex-none items-center gap-1.5">
+      {stopButtons}
+      {(items.length > 0 || deletion) && <TaskActionSheet items={items} deletion={deletion} />}
+    </div>
+  );
+};
+
+/** The full header's overflow holds only Delete: a popover on desktop, the bottom sheet on mobile. */
+const DeleteOverflow: React.FC<{ deletion: DeletionProps; sheet?: boolean }> = ({ deletion, sheet }) => (
+  sheet ? <TaskActionSheet items={[]} deletion={deletion} /> : <TaskOverflowMenu deletion={deletion} />
+);
 
 // Ghost button style for action buttons - small with icon + text
 const ghostButtonClass = "flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-white/80 border border-transparent hover:border-slate-200 transition-colors";
@@ -178,10 +242,33 @@ const ActionBar: React.FC<ActionBarProps> = ({
   onViewPrompt,
   onViewLogs,
   onDeleteTask,
-  onFollowUp
+  onFollowUp,
+  liveRun,
+  compact,
+  sheet,
 }) => {
-  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXECUTION_STARTED', 'CLAUDE_EXECUTION_COMPLETED', 'POST_PROCESSING'].includes(currentStatus);
+  const isActive = ACTIVE_STATUSES.includes(currentStatus);
+  // The run on screen is done, but a newer one is still working: its Stop takes this run's place.
+  const stopsLiveRun = !isActive && Boolean(liveRun);
+  const taskBusy = isActive || stopsLiveRun;
   const isCancelled = currentStatus === 'CANCELLED';
+  const deletion = onDeleteTask && { isActive, stopFailed, deletingTask, onDeleteTask };
+  const stopButtons = (
+    <StopButtons isActive={isActive} stopsLiveRun={stopsLiveRun} stoppingExecution={stoppingExecution} onStopExecution={onStopExecution} liveRun={liveRun} />
+  );
+
+  if (compact) {
+    return (
+      <CompactActions
+        stopButtons={stopButtons}
+        deletion={deletion}
+        onFollowUp={taskBusy ? undefined : onFollowUp}
+        historyItemWithPaths={historyItemWithPaths}
+        onViewPrompt={onViewPrompt}
+        onViewLogs={onViewLogs}
+      />
+    );
+  }
 
   return (
     <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:flex-shrink-0">
@@ -212,7 +299,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
       )}
 
       {/* Follow Up Button - Ghost style */}
-      {onFollowUp && !isActive && (
+      {onFollowUp && !taskBusy && (
         <button
           onClick={onFollowUp}
           title="Follow Up - Post a follow-up comment"
@@ -223,25 +310,14 @@ const ActionBar: React.FC<ActionBarProps> = ({
         </button>
       )}
 
-      {/* Divider before destructive actions */}
-      {isActive && (
-        <div className="h-4 w-px bg-slate-300 mx-1" />
+      {/* Divider before destructive actions, only when it divides them from something */}
+      {taskBusy && (historyItemWithPaths?.promptPath || historyItemWithPaths?.logsPath) && (
+        <div aria-hidden="true" className="h-4 w-px bg-slate-200 mx-1" />
       )}
 
-      <StopExecutionButton
-        isActive={isActive}
-        stoppingExecution={stoppingExecution}
-        onStopExecution={onStopExecution}
-      />
+      {stopButtons}
 
-      {onDeleteTask && (
-        <TaskOverflowMenu
-          isActive={isActive}
-          stopFailed={stopFailed}
-          deletingTask={deletingTask}
-          onDeleteTask={onDeleteTask}
-        />
-      )}
+      {deletion && <DeleteOverflow deletion={deletion} sheet={sheet} />}
     </div>
   );
 };

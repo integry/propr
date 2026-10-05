@@ -3,6 +3,8 @@ import { mkdir } from 'node:fs/promises';
 
 const taskId = 'task-details-cleanup';
 const title = 'New Issue: When starting a new task it should remember the last used settings (repo and agent) and preselect them for the next task';
+// The heading drops the workflow verb the badge already shows, as the task list row does.
+const heading = title.replace(/^New Issue: /, '');
 const at = (seconds: number) => new Date(Date.UTC(2026, 9, 1, 0, 50, seconds)).toISOString();
 const files = Array.from({ length: 32 }, (_, index) => ({
   path: index === 31 ? 'packages/core/src/agents/impl/utils/agentWorkerCredentialValidation.test.ts'
@@ -68,14 +70,14 @@ for (const width of [390, 1440]) {
       await page.goto(`/tasks/${taskId}`);
       const task = page.getByTestId('task-details');
       await expect(task).toBeVisible();
-      const heading = page.getByRole('heading', { name: title });
-      await expect(heading).toHaveAttribute('title', title);
-      expect(await heading.evaluate(node => getComputedStyle(node).webkitLineClamp)).toBe('2');
+      const header = page.getByRole('heading', { name: heading, exact: true });
+      await expect(header).toHaveAttribute('title', heading);
+      expect(await header.evaluate(node => getComputedStyle(node).webkitLineClamp)).toBe('2');
       await expect(task.getByRole('group', { name: 'Git context' })).toBeVisible();
       await expect(task.getByRole('group', { name: 'Execution runtime' })).toBeVisible();
       const consumption = task.getByRole('group', { name: 'Consumption' });
-      await expect(consumption).toContainText('3.9M in · 30k out');
-      await expect(consumption).toContainText(`${completed ? '1.0' : '0.4'}% weekly quota`);
+      await expect(consumption).toContainText('↑3.9M↓30k');
+      await expect(consumption).toContainText(`(${completed ? '1.0' : '0.4'}% quota)`);
       await expect(task.getByText('Analyzing Request', { exact: true })).toHaveCount(1);
       await expect(task.getByText('8s', { exact: true })).toBeVisible();
       for (const label of ['Task Queued', 'Analyzing Request', 'Implementing Changes', ...(completed ? ['Task Completed'] : [])]) {
@@ -107,12 +109,13 @@ for (const width of [390, 1440]) {
       await expect(task.getByRole('region', { name: 'Changed files' }).getByRole('button')).toHaveCount(32);
       const more = task.getByRole('button', { name: 'More task actions' });
       await more.click();
-      const deletion = task.getByRole('menuitem', { name: 'Delete' });
+      // On mobile the overflow is a bottom sheet laid over the whole page, outside the task pane.
+      const deletion = page.getByRole('menuitem', { name: 'Delete' });
       if (completed) await expect(deletion).toBeEnabled();
       else await expect(deletion).toBeDisabled();
       await page.keyboard.press('Escape');
       await expect(more).toBeFocused();
-      await expect(task.getByRole('menu')).toHaveCount(0);
+      await expect(page.getByRole('menu')).toHaveCount(0);
       await capture(page, `task-details-${completed ? 'completed' : 'live'}-${width}`);
 
       const list = task.getByRole('region', { name: 'Changed files' });
