@@ -136,6 +136,7 @@ export class ApiClient {
       params,
       timeout = this.defaultTimeout,
       signal,
+      retry = true,
     } = options;
 
     // Build the full URL
@@ -164,7 +165,7 @@ export class ApiClient {
       fetchOptions.body = JSON.stringify(body);
     }
 
-    const maxAttempts = method === "GET" ? GET_REQUEST_ATTEMPTS : 1;
+    const maxAttempts = method === "GET" && retry ? GET_REQUEST_ATTEMPTS : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (signal?.aborted) throw new RequestCancelledError();

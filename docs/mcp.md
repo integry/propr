@@ -538,7 +538,8 @@ The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
 pull request) and the current `goal` projection (`lifecycleState`,
 `requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
 count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
-the returned cursor. `unreachable` means the goal ended and no event after the
+the returned cursor. The `goal` projection is current, so on a timeout it can
+already show a state such as `failed` whose event the next call reports. `unreachable` means the goal ended and no event after the
 cursor can ever match, so retrying with that cursor is futile. That covers a
 condition the final state can never satisfy, such as `paused` on a completed
 goal, and a terminal event that is already at or behind `afterCursor`, such as

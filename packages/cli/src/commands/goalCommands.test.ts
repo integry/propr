@@ -569,7 +569,18 @@ test("goal wait reports timeout and unreachable outcomes with documented nonzero
 
   const human = await run(["wait", "goal-1", "--timeout", "0"], () => ({ body: waitFixture({ condition: null }) }));
   assert.equal(human.exitCode, 2);
-  assert.match(human.stdout, /Timed out waiting for a new event\. The goal is running; it has not failed\./);
+  assert.match(human.stdout, /Timed out waiting for a new event\. The timeout itself is not a goal failure\. The goal is currently running\./);
+
+  // The projection may be newer than the examined events: a goal that failed just after the
+  // last read is reported as failed, and the timeout line must not deny it.
+  const failedGoal = { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "failed", resultState: "failed", terminal: true, failureReason: "Provider quota exhausted" };
+  const failed = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "0"],
+    () => ({ body: waitFixture({ condition: "checkpoint", goal: failedGoal }) }));
+  assert.equal(failed.exitCode, 2, "the outcome is still a timeout of the examined events");
+  assert.match(failed.stdout, /Timed out waiting for checkpoint\. The timeout itself is not a goal failure\. The goal is currently failed\./);
+  assert.doesNotMatch(failed.stdout, /not failed|has not failed|did not fail/);
+  assert.match(failed.stdout, /State:  failed \(result: failed\)/);
+  assert.match(failed.stdout, /Failure: Provider quota exhausted/);
 
   const unreachable = await run(["wait", "goal-1", "--until", "paused", "--json"], () => ({
     body: waitFixture({ outcome: "unreachable", condition: "paused",
@@ -617,6 +628,26 @@ test("goal wait reports the concurrent wait limit with its own code and the serv
   // A 429 without the wait-limit code keeps the generic classification.
   const generic = await run(["wait", "goal-1", "--after-cursor", "gwc1.keep", "--json"], () => ({ status: 429, body: { error: "Too many requests" } }));
   assert.notEqual(JSON.parse(generic.stdout).error.code, "wait_limit");
+});
+
+test("goal wait fails with boundary_not_established when the first cursorless reply is lost", async () => {
+  // A second cursorless request would be answered with a later boundary, hiding anything published in between.
+  const lostThenLater = (_request: unknown, attempt: number) =>
+    attempt === 1 ? new TypeError("socket hang up") : { body: waitFixture({ condition: "checkpoint", cursor: "gwc1.later" }) };
+  const json = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "60", "--json"], lostThenLater);
+  assert.equal(json.exitCode, 1);
+  assert.equal(json.requests.length, 1, "the cursorless request is not retried");
+  const error = JSON.parse(json.stdout).error;
+  assert.equal(error.code, "boundary_not_established");
+  assert.equal(error.goalId, "goal-1");
+  assert.match(error.recovery, /propr goal inspect goal-1/);
+  assert.match(error.recovery, /--after-cursor/);
+
+  const human = await run(["wait", "goal-1", "--until", "checkpoint", "--timeout", "60"], lostThenLater);
+  assert.equal(human.exitCode, 1);
+  assert.match(human.stderr, /Could not establish where this wait starts/);
+  assert.match(human.stderr, /propr goal inspect goal-1/);
+  assert.doesNotMatch(human.stdout, /gwc1\.later/);
 });
 
 test("goal wait stops at once when the terminal event is already behind the cursor", async () => {

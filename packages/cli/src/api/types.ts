@@ -43,6 +43,13 @@ export interface RequestOptions {
    * a `RequestCancelledError`.
    */
   signal?: AbortSignal;
+
+  /**
+   * Set to `false` to send a GET exactly once. Use it for reads whose answer
+   * depends on when the server handles them, so a repeat is not equivalent.
+   * Defaults to retrying transient transport failures.
+   */
+  retry?: boolean;
 }
 
 /**

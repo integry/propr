@@ -17,6 +17,7 @@ import {
   GOAL_LAUNCH_STRATEGIES,
   GOAL_LIST_STATES,
   GoalMutationUncertainError,
+  GoalWaitBoundaryError,
   cancelGoal,
   createGoal,
   getGoalCapabilities,
@@ -66,6 +67,7 @@ export type GoalFailureCode =
   | "invalid_cursor"
   | "cursor_expired"
   | "wait_limit"
+  | "boundary_not_established"
   | "server_error"
   | "network_error"
   | "request_failed";
@@ -361,6 +363,7 @@ interface FailureContext {
 function failureCode(error: unknown, command: string): { code: GoalFailureCode; status?: number } {
   if (error instanceof GoalUsageError || error instanceof ProjectResolutionError) return { code: "invalid_arguments" };
   if (error instanceof GoalMutationUncertainError) return { code: "outcome_uncertain" };
+  if (error instanceof GoalWaitBoundaryError) return { code: "boundary_not_established" };
   const classification = classifyApiError(error);
   const status = classification.status;
   const serverCode = error instanceof ApiError ? (error.response as { code?: unknown } | undefined)?.code : undefined;
@@ -395,6 +398,9 @@ function recoveryHint(error: unknown, context: FailureContext, code: GoalFailure
   if (code === "invalid_cursor" || code === "cursor_expired") {
     const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
     return `${typeof recovery === "string" ? `${recovery} ` : ""}Re-run 'propr goal wait' without --after-cursor and check 'propr goal inspect'.`;
+  }
+  if (code === "boundary_not_established") {
+    return `No starting cursor was received, so events published since this command started may not be reported by a new wait. Check 'propr goal inspect${context.goalId ? ` ${context.goalId}` : ""}' for the current state and checkpoints, then re-run 'propr goal wait'; pass --after-cursor from an earlier wait to resume from a known boundary.`;
   }
   if (code === "wait_limit") {
     const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
@@ -550,7 +556,8 @@ function printGoalWait(goalId: string, result: GoalWaitChainResult): void {
   } else if (!result.goal) {
     console.log(`Timed out waiting for ${condition} before the server answered. This says nothing about the goal's state.`);
   } else {
-    console.log(`Timed out waiting for ${condition}. The goal is ${result.goal.lifecycleState}; it has not failed.`);
+    // The projection can be newer than the events this wait examined, so it may already be terminal.
+    console.log(`Timed out waiting for ${condition}. The timeout itself is not a goal failure. The goal is currently ${result.goal.lifecycleState}.`);
   }
   if (!result.goal) {
     console.log(`Goal:   ${goalId}`);
@@ -1128,9 +1135,11 @@ task or an idle agent never counts as goal completion.
 
 The wait chains bounded server requests (${GOAL_WAIT_MAX_TIMEOUT_SECONDS}s each) until --timeout. Without
 --after-cursor, a first non-blocking request establishes the cursor, so
-retries never move the starting boundary. Transient network failures are
-retried with the same cursor, so re-running a wait with the last printed
-cursor is always safe. At --timeout (plus ${GOAL_WAIT_REPLY_GRACE_MS / 1000}s for a reply already in
+retries never move the starting boundary. That first request is never
+retried: if it fails before a cursor arrives, the wait fails with the error
+code boundary_not_established rather than start from a later boundary. Later
+transient network failures are retried with the same cursor, so re-running a
+wait with the last printed cursor is always safe. At --timeout (plus ${GOAL_WAIT_REPLY_GRACE_MS / 1000}s for a reply already in
 flight) the wait stops even if the server has not answered, and exits ${GOAL_WAIT_EXIT_CODES.timed_out}
 with the last cursor. Ctrl-C only stops waiting; the goal keeps running.
 
@@ -1140,7 +1149,7 @@ wait_limit; it is temporary, so re-run the command once another wait ends.
 
 Exit codes:
   ${GOAL_WAIT_EXIT_CODES.matched}    matched
-  ${GOAL_WAIT_EXIT_CODES.timed_out}    timed out (the goal did not fail; retry with the printed cursor)
+  ${GOAL_WAIT_EXIT_CODES.timed_out}    timed out (not a goal failure; check the reported state and retry with the printed cursor)
   ${GOAL_WAIT_EXIT_CODES.unreachable}    unreachable (the goal ended and no event after the cursor can match)
   ${GOAL_WAIT_EXIT_CODES.interrupted}  interrupted (Ctrl-C)
   1    error

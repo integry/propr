@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   GoalMutationUncertainError,
+  GoalWaitBoundaryError,
   createGoal,
   listGoalInputs,
   listGoals,
@@ -354,6 +355,46 @@ test("without a cursor, a non-blocking baseline request fixes the boundary every
       "every blocking attempt, including HTTP and wait-chain retries, keeps the baseline cursor");
     assert.ok(requests.slice(1).every((url) => Number(url.searchParams.get("timeoutSeconds")) > 0));
     assert.deepEqual(cursors, ["gwc1.base", "gwc1.checkpoint"]);
+  } finally {
+    restore();
+  }
+});
+
+test("a lost baseline reply is never retried, so a checkpoint published meanwhile cannot be skipped", async () => {
+  // The server fixed boundary A, but its reply was lost. A checkpoint is then
+  // published, so any second cursorless request would be answered with a later
+  // boundary that already hides it. Neither retry layer may send that request.
+  for (const lost of [new TypeError("socket hang up"), { status: 504, body: {} }]) {
+    const { client, requests, restore } = waitClient((_url, attempt) =>
+      attempt === 1 ? lost : { body: waitResponse({ cursor: "gwc1.after-checkpoint" }) });
+    const cursors: string[] = [];
+    try {
+      await assert.rejects(
+        waitGoalUntil("goal-1", { until: "checkpoint", deadline: Date.now() + 60_000 },
+          { client, retryDelayMs: 1, onCursor: (cursor) => cursors.push(cursor) }),
+        (error: unknown) => {
+          assert.ok(error instanceof GoalWaitBoundaryError);
+          assert.match(error.message, /Could not establish where this wait starts/);
+          assert.ok(error.cause instanceof ApiError, "the transport failure is kept as the cause");
+          return true;
+        },
+      );
+      assert.equal(requests.length, 1, "the cursorless request is sent exactly once across both retry layers");
+      assert.equal(requests[0].searchParams.get("afterCursor"), null);
+      assert.deepEqual(cursors, [], "no later boundary is adopted");
+    } finally {
+      restore();
+    }
+  }
+});
+
+test("a cursorless wait abandoned at the deadline still reports a timeout without a cursor", async () => {
+  const { client, requests, restore } = waitClient(() => "hang");
+  try {
+    const result = await waitGoalUntil("goal-1", { until: "checkpoint", deadline: Date.now() + 50 }, { client, replyGraceMs: 20 });
+    assert.equal(result.outcome, "timed_out");
+    assert.equal(result.cursor, null, "no boundary is claimed");
+    assert.equal(requests.length, 1);
   } finally {
     restore();
   }

@@ -499,7 +499,27 @@ export interface GoalWaitResponse {
 /** Extra time the HTTP request may take beyond the server-side wait. */
 const GOAL_WAIT_REQUEST_GRACE_MS = 15_000;
 
-/** One bounded wait request (at most {@link GOAL_WAIT_MAX_TIMEOUT_SECONDS} seconds). */
+/**
+ * A wait without a cursor failed before the server's answer arrived, so the
+ * boundary the server may have established is unknown. Sending the request
+ * again would establish a later boundary and silently skip every event
+ * published in between, so the wait stops here instead of retrying.
+ */
+export class GoalWaitBoundaryError extends Error {
+  constructor(readonly cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Could not establish where this wait starts: the first request failed before a cursor was received (${detail}).`);
+    this.name = "GoalWaitBoundaryError";
+  }
+}
+
+/**
+ * One bounded wait request (at most {@link GOAL_WAIT_MAX_TIMEOUT_SECONDS} seconds).
+ *
+ * A request without `afterCursor` asks the server to establish a new boundary,
+ * so it is sent exactly once: a repeat would be answered with a later boundary.
+ * A request with a cursor is replayable and keeps the client's GET retries.
+ */
 export async function waitGoalOnce(
   goalId: string,
   request: { until?: GoalWaitCondition; afterCursor?: string; timeoutSeconds: number },
@@ -511,6 +531,7 @@ export async function waitGoalOnce(
     params: { until: request.until, afterCursor: request.afterCursor, timeoutSeconds },
     timeout: timeoutSeconds * 1000 + GOAL_WAIT_REQUEST_GRACE_MS,
     signal: options.signal,
+    retry: request.afterCursor !== undefined,
   });
   return response.data;
 }
@@ -554,6 +575,11 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * of one, keeps the original observation boundary. Transient transport
  * failures are retried with the same cursor until the deadline; one still
  * failing at the deadline resolves as `timed_out`.
+ *
+ * The baseline request itself is never retried, here or in the HTTP client:
+ * its reply may be lost after the server fixed a boundary, and a repeat would
+ * fix a later one, hiding any event published in between. A transient failure
+ * before the first cursor arrives rejects with {@link GoalWaitBoundaryError}.
  *
  * The deadline aborts in-flight requests and retry delays (after
  * {@link GOAL_WAIT_REPLY_GRACE_MS}) and resolves as `timed_out` with the last
@@ -600,7 +626,7 @@ export async function waitGoalUntil(
         requests++;
         last = await waitGoalOnce(goalId, {
           until: request.until, afterCursor: cursor,
-          // The baseline request never blocks, so losing its reply cannot hide an event published while it waited.
+          // The baseline request never blocks, which keeps the window for losing its reply short.
           timeoutSeconds: cursor === undefined ? 0 : Math.min(remainingSeconds, GOAL_WAIT_MAX_TIMEOUT_SECONDS),
         }, { ...options, signal });
       } catch (error) {
@@ -608,6 +634,8 @@ export async function waitGoalUntil(
         if (!isTransientFailure(error) && !expired.signal.aborted) throw error;
         // A deadline reached while a request or its transient retries were pending is a timeout, not an error.
         if (expired.signal.aborted || request.deadline - now() <= 0) return timedOut();
+        // Only a request carrying a cursor is replayable; repeating the baseline would move the boundary.
+        if (cursor === undefined) throw new GoalWaitBoundaryError(error);
         await abortableSleep(Math.min(options.retryDelayMs ?? GOAL_MUTATION_RETRY_DELAY_MS, Math.max(0, request.deadline - now())), signal);
         continue;
       }
