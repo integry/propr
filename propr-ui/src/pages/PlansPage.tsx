@@ -3,9 +3,11 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
-import { Filter, Search, X } from 'lucide-react';
+import { Filter } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
+import { useIsMobile } from '../hooks/useIsMobile';
+import { ListSearchInput } from '../components/ListSearchInput';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
@@ -17,6 +19,7 @@ const DEFAULT_PAGE_SIZE = 50;
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
   const { onDraftUpdate, isConnected } = useSocket();
 
@@ -364,26 +367,16 @@ const PlansPage: React.FC = () => {
         <div className="flex items-center justify-between gap-2 sm:gap-4">
           <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
           <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-            {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
+            {!isMobile && (
+              <ListSearchInput
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search plans..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                onChange={setSearchQuery}
+                onClear={handleSearchClear}
+                label="Search plans"
+                className="hidden sm:block"
+                inputClassName="w-64"
               />
-              {searchQuery && (
-                <button
-                  onClick={handleSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  title="Clear search"
-                >
-                  <X size={16} />
-                </button>
-              )}
-            </div>
+            )}
             {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
@@ -414,6 +407,17 @@ const PlansPage: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* A phone has no room for search beside the filters, so it takes its own row. */}
+        {isMobile && (
+          <ListSearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            onClear={handleSearchClear}
+            label="Search plans"
+            className="mt-2 sm:hidden"
+            touch
+          />
+        )}
       </div>
 
       {/* Scrollable Content Area */}
