@@ -131,12 +131,10 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
     await expect(page.locator('body')).not.toContainText('by GPT-6 Astra]');
     await expect(page.getByTestId('preview-count').first()).toHaveText('2 previews');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    // A click leaves the list here, so the run chip is what opens a task's earlier runs.
-    const rollup = page.getByRole('button', { name: '7 runs' });
-    await rollup.click();
-    await expect(rollup).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByRole('list', { name: 'Earlier runs' }).getByRole('listitem')).toHaveCount(6);
-    expect(new URL(page.url()).pathname).toBe('/tasks');
+    // Cards stay flat: the run track shows the trend, and the task's own timeline lists its runs.
+    await expect(page.getByRole('img', { name: '7 runs' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '7 runs' })).toHaveCount(0);
+    await expect(page.getByRole('list', { name: 'Earlier runs' })).toHaveCount(0);
     if (platform !== 'linux') await capture(page, `tasks-ledger-${platform ?? 'web'}-880`);
   });
 }

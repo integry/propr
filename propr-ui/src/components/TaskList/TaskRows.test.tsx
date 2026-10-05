@@ -138,11 +138,15 @@ describe('task ledger rows', () => {
       .toEqual([['Fix', null], ['Review', '[6]'], ['Review', '[4]']]);
   });
 
-  it('draws no drill-in chevron on a card: the title is the link and the run track is the only toggle', () => {
-    const { container } = render(<Fixture />);
-    const card = container.querySelector('[data-testid="task-card"]')!;
-    expect(card.querySelector('svg.lucide-chevron-right')).toBeNull();
-    expect(within(card as HTMLElement).getByRole('button', { name: '6 runs' })).toBeInTheDocument();
+  it('draws no chevron on a card: the title is the link and the run track shows the trend without opening runs in place', () => {
+    const onRowClick = vi.fn();
+    const { container } = render(<Fixture onRowClick={onRowClick} />);
+    const card = container.querySelector('[data-testid="task-card"]') as HTMLElement;
+    expect(card.querySelector('svg.lucide-chevron-right, svg.lucide-chevron-down')).toBeNull();
+    expect(within(card).queryByRole('button')).toBeNull();
+    fireEvent.click(within(card).getByRole('img', { name: '6 runs' }));
+    expect(within(card).queryByRole('list', { name: 'Earlier runs' })).toBeNull();
+    expect(onRowClick).toHaveBeenCalledWith(group.tasks[0].id);
   });
 
   it('marks a queued newest run as waiting, never as a run in flight', () => {

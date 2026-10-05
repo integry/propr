@@ -144,27 +144,31 @@ const RUN_CHIP_CLASSES = 'inline-flex flex-none items-center gap-1 whitespace-no
  * The task's runs as a bounded trend: `[+4] ●──■──■──⟳`, the newest four runs
  * marked by outcome. The row is the task, so its runs are summarized rather
  * than listed under it. Where the task opens beside the list, the pane's
- * timeline moves between them and the track only shows the trend. Where a
- * click leaves the list instead, the track is the one way to reach an earlier
- * run, so it opens them in place.
+ * timeline moves between them and the track only shows the trend, as it does
+ * on a card, which never opens its runs in place. Where a ledger row's click
+ * leaves the list instead, the track is the one way to reach an earlier run,
+ * so it opens them in place.
  */
 export const RunCountChip: React.FC<{
   row: TaskRowView;
-  expanded: boolean;
-  runsId: string;
-  onToggle: (groupKey: string, e: React.MouseEvent) => void;
-  selectsInPlace: boolean;
-}> = ({ row, expanded, runsId, onToggle, selectsInPlace }) => {
+  /** Given, the track is a toggle that opens the runs under the row; omitted, it only shows the trend. */
+  toggle?: {
+    expanded: boolean;
+    runsId: string;
+    onToggle: (groupKey: string, e: React.MouseEvent) => void;
+  };
+}> = ({ row, toggle }) => {
   const runs = buildTaskRuns(row);
   const label = pluralize(runs.length, 'run');
   const description = `${label}: ${runs.slice(-RUN_TRACK_LIMIT).map(describeRun).join(', ')}`;
-  if (selectsInPlace) {
+  if (!toggle) {
     return (
       <span data-testid="run-count" role="img" aria-label={label} title={description} className="inline-flex flex-none items-center">
         <RunTrack runs={runs} />
       </span>
     );
   }
+  const { expanded, runsId, onToggle } = toggle;
   return (
     <button
       type="button"
@@ -207,7 +211,7 @@ export const RollupLine: React.FC<{
   const summary = row.detail ?? row.outcome;
   return (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
-      {hasRuns && <RunCountChip row={row} expanded={expanded} runsId={runsId} onToggle={onToggle} selectsInPlace={selectsInPlace} />}
+      {hasRuns && <RunCountChip row={row} toggle={selectsInPlace ? undefined : { expanded, runsId, onToggle }} />}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
       {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
       <PreviewCountBadge count={row.previewCount} />

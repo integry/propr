@@ -14,7 +14,7 @@ test('1920px the list beside an open task is three-line cards that scroll inside
     const preview = card.querySelector('[data-testid="preview-count"]')?.getBoundingClientRect();
     return { height: card.getBoundingClientRect().height, previewOnChipLine: preview ? Math.abs(preview.top - chip.top) < 4 : null };
   }));
-  for (const shape of shapes) expect(shape.height).toBeLessThanOrEqual(74);
+  for (const shape of shapes) expect(shape.height).toBeLessThanOrEqual(97);
   expect(shapes.filter(shape => shape.previewOnChipLine !== null).map(shape => shape.previewOnChipLine)).toEqual([true]);
   await expect(cards.getByTestId('preview-count')).toHaveText('2 previews');
   // At 1080px every card fits; a short window gives the list something to scroll.

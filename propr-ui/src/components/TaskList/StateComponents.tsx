@@ -83,9 +83,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
             key={group.key}
             row={row}
             prNumber={group.prNumber}
-            expanded={expandedGroups.has(group.key)}
             onRowClick={onRowClick}
-            onToggleGroup={onToggleGroup}
             selectedTaskId={selectedTaskId}
             selectsInPlace={selectsInPlace}
           />

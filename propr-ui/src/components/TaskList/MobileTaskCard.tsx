@@ -1,6 +1,6 @@
 import React from 'react';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
-import { EarlierRunsList, PreviewCountBadge, RunCountChip, TaskAgent, TaskPrimaryChip, TaskTitleLink } from './TaskRows';
+import { PreviewCountBadge, RunCountChip, TaskAgent, TaskPrimaryChip, TaskTitleLink } from './TaskRows';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import type { Task } from './types';
 import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
@@ -8,14 +8,12 @@ import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowMo
 interface MobileTaskCardProps {
   row: TaskRowView;
   prNumber?: number | null;
-  expanded: boolean;
   onRowClick: (taskId: string) => void;
-  onToggleGroup: (groupKey: string, e: React.MouseEvent) => void;
   selectedTaskId?: string | null;
   /**
-   * The card selects its task in place, beside the list. Its runs are then
-   * reached through the pane's timeline, so the card shows their trend and
-   * lists none.
+   * The card selects its task in place, beside the list, where the list is
+   * for scanning and the title holds to one line. Anywhere else the title may
+   * take two lines, since a phone cuts most titles short of telling tasks apart.
    */
   selectsInPlace?: boolean;
 }
@@ -46,13 +44,21 @@ const taskDuration = (task: Task) => formatDuration(task.processedAt || task.cre
  * (about 7rem): with less, it wraps onto a second line that the one-line box
  * clips, rather than ending in a letter or two and `…`.
  *
- * There is no trailing drill-in chevron: the title is the link to the task,
- * and the only chevron on the card is the run track's, which opens its runs
- * in place.
+ * The lines sit 6px apart, so the bold title is not pressed against the
+ * chips above it or the run track below it.
+ *
+ * The card never opens its runs in place. Seven runs listed under one card
+ * would take most of a phone's screen, and a caret is too small to tap
+ * safely. The run track only shows the trend; tapping the card opens the
+ * task, whose timeline holds every run.
+ *
+ * There is no trailing drill-in chevron: the title is the link to the task.
+ *
+ * The divider between cards is light and inset to the content's edges, so
+ * the list does not read as a stack of ruled bars.
  */
-export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, expanded, onRowClick, onToggleGroup, selectedTaskId, selectsInPlace = false }) => {
+export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, onRowClick, selectedTaskId, selectsInPlace = false }) => {
   const { task } = row;
-  const runsId = `task-runs-mobile-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const selected = rowContainsTask(row, selectedTaskId);
   const summary = row.detail ?? row.outcome;
   const hasAgent = Boolean(task.llmProvider || task.model || task.modelName);
@@ -60,16 +66,14 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
     <div
       data-testid="task-card"
       aria-current={selected || undefined}
-      className={`border-b border-slate-200 px-4 py-1.5${selected ? ` ${SELECTED_ROW_CLASSES}` : ''}`}
+      onClick={event => {
+        if ((event.target as Element).closest('a, button')) return;
+        onRowClick(task.id);
+      }}
+      className={`cursor-pointer px-4 ${selected ? SELECTED_ROW_CLASSES : 'active:bg-slate-50'}`}
     >
-      <div
-        onClick={event => {
-          if ((event.target as Element).closest('a, button')) return;
-          onRowClick(task.id);
-        }}
-        className="flex cursor-pointer items-center gap-2 active:bg-slate-50"
-      >
-        <div className="min-w-0 flex-1">
+      <div data-testid="task-card-body" className="border-b border-slate-100 py-3">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex h-5 min-w-0 items-center gap-2 text-xs text-slate-500">
             <span className="flex-none"><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
             <PreviewCountBadge count={row.previewCount} compact />
@@ -80,20 +84,15 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, e
               <span className="ml-1 font-mono text-[11px] text-slate-400 max-sm:hidden" title="Run time">({taskDuration(task)})</span>
             </span>
           </div>
-          <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} singleLine className="min-w-0" />
+          <TaskTitleLink title={row.title} tooltip={row.fullTitle} taskId={task.id} onRowClick={onRowClick} selected={selected} singleLine={selectsInPlace} className="min-w-0" />
           <div data-testid="task-card-meta" className="flex h-5 min-w-0 flex-wrap content-start items-center gap-x-3 overflow-hidden text-xs leading-5 text-slate-500">
-            {row.earlierRuns.length > 0 && <RunCountChip row={row} expanded={expanded} runsId={runsId} onToggle={onToggleGroup} selectsInPlace={selectsInPlace} />}
+            {row.earlierRuns.length > 0 && <RunCountChip row={row} />}
             {hasAgent && <span className="flex min-w-0 max-w-[40%] flex-none"><TaskAgent task={task} /></span>}
             {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
             {summary && <span data-testid="task-card-summary" className="min-w-[7rem] flex-1 truncate max-sm:hidden" title={summary}>{summary}</span>}
           </div>
         </div>
       </div>
-      {!selectsInPlace && expanded && row.earlierRuns.length > 0 && (
-        <div className="mt-2">
-          <EarlierRunsList id={runsId} runs={row.earlierRuns} onRowClick={onRowClick} selectedTaskId={selectedTaskId} />
-        </div>
-      )}
     </div>
   );
 };

@@ -28,13 +28,30 @@ test('390px the header stacks its filters and card lines never cut a word to a l
     return name ? name.scrollWidth <= name.clientWidth : true;
   }));
   expect(repoNames.every(Boolean)).toBe(true);
-  // No trailing drill-in chevron: the title links to the task.
-  await expect(cards.locator('svg.lucide-chevron-right')).toHaveCount(0);
+  // No trailing drill-in chevron: the title links to the task. No caret either: a card never opens its runs in place.
+  await expect(cards.locator('svg.lucide-chevron-right, svg.lucide-chevron-down')).toHaveCount(0);
+  await expect(cards.getByTestId('run-count').locator('xpath=self::button')).toHaveCount(0);
+  // A long title takes a second line rather than ending a few words in.
+  const titleLines = await cards.locator('.task-title').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().height / 20)));
+  expect(Math.max(...titleLines)).toBe(2);
+  // The lines sit 6px apart, and the divider is a light rule inset to the content's edges.
+  const rhythm = await cards.first().evaluate(card => {
+    const body = card.querySelector('[data-testid="task-card-body"]') as HTMLElement;
+    const style = getComputedStyle(body);
+    const [chips, title, meta] = [...body.firstElementChild!.children].map(line => line.getBoundingClientRect());
+    return {
+      gaps: [Math.round(title.top - chips.bottom), Math.round(meta.top - title.bottom)],
+      padding: [style.paddingTop, style.paddingBottom],
+      border: style.borderBottomColor,
+      inset: [Math.round(body.getBoundingClientRect().left - card.getBoundingClientRect().left), Math.round(card.getBoundingClientRect().right - body.getBoundingClientRect().right)],
+    };
+  });
+  expect(rhythm).toEqual({ gaps: [6, 6], padding: ['12px', '12px'], border: 'rgb(241, 245, 249)', inset: [16, 16] });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await capture(page, 'tasks-cards-390');
 });
 
-test('768px cards open their runs inline as reviews and fixes, with review scores and a health track', async ({ page }) => {
+test('768px cards stay flat: the run track shows the trend and a tap opens the task, whose timeline lists the runs', async ({ page }) => {
   await fixture(page);
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.goto('/tasks');
@@ -44,14 +61,11 @@ test('768px cards open their runs inline as reviews and fixes, with review score
   await expect(card.locator('[data-testid="run-track"] [data-outcome]')).toHaveCount(4);
   expect(await card.locator('[data-testid="run-track"] [data-outcome]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-outcome'))))
     .toEqual(['passed', 'findings', 'findings', 'active']);
-  await expect(card.locator('svg.lucide-chevron-right')).toHaveCount(0);
+  // No caret to open the runs under the card, and no chevron at its end.
+  await expect(card.getByRole('button', { name: '8 runs' })).toHaveCount(0);
+  await expect(card.locator('svg.lucide-chevron-right, svg.lucide-chevron-down')).toHaveCount(0);
+  await capture(page, 'tasks-cards-768');
 
-  await card.getByRole('button', { name: '8 runs' }).click();
-  const runs = card.getByRole('list', { name: 'Earlier runs' });
-  await expect(runs.getByRole('listitem')).toHaveCount(7);
-  // Oldest last: Run 1, the initial review at 4/10, and Run 3, the review that found two issues at 6/10.
-  await expect(runs.getByTestId('work-type-badge').filter({ hasText: 'Review' })).toHaveCount(2);
-  await expect(runs.getByTestId('run-score')).toHaveText(['[6]', '[4]']);
-  await expect(runs.getByRole('listitem').filter({ hasText: 'Initial review' }).getByTestId('run-score')).toHaveText('[4]');
-  await capture(page, 'tasks-cards-768-runs');
+  await card.getByRole('img', { name: '8 runs' }).click();
+  await expect(page).toHaveURL(/pr-2664-run-0/);
 });
