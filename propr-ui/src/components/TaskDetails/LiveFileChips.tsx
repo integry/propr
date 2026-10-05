@@ -30,6 +30,10 @@ const getFileIcon = (status: FileChange['status']) => {
   }
 };
 
+// A file list pins its heading; a loading or error state scrolls with it so the alert is never half-covered.
+const fileHeadingClass = (error: string | null, fileCount: number) =>
+  `${!error && fileCount > 0 ? 'sticky top-11 z-[1] ' : ''}flex flex-wrap items-center justify-between gap-2 mb-1 mt-3 bg-white py-1`;
+
 const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumber }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -158,8 +162,8 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
   return (
     // The section owns its header and whatever loads under it, so an alert never reads without the header naming it.
     <section aria-labelledby={headingId} className="relative border-t border-gray-100 pt-2">
-      {/* Pinned below the bar or pane header above it for as long as its section is on screen. */}
-      <div className="sticky top-11 z-[1] flex flex-wrap items-center justify-between gap-2 mb-1 mt-3 bg-white py-1">
+      {/* Over a file list, pinned below the bar or pane header above it for as long as its section is on screen. */}
+      <div className={fileHeadingClass(error, fileChanges.length)}>
         <h4 id={headingId} className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
           {runNumber !== undefined && (

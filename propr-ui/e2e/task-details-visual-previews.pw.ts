@@ -160,16 +160,19 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   expect(retryHitHeight).toBeGreaterThanOrEqual(44);
   await capture(page, 'task-mobile-collapsed-header-390');
 
-  // Scrolled further, the header stays pinned under the bar while any of its alert is still on screen.
+  // Scrolled further, the heading and its alert move as one block: the heading never pins over the
+  // alert, so the warning icon, the title and Retry are never half-hidden under it.
   // The fixture is short, so pad the page to give it room to scroll.
+  const gapBefore = (await alert.boundingBox())!.y - (headingBox.y + headingBox.height);
   await details.evaluate(element => {
     element.append(Object.assign(document.createElement('div'), { style: 'height: 800px; flex: none' }));
     element.scrollTop += 40;
   });
-  const pinned = (await heading.locator('..').boundingBox())!;
+  const movedHeading = (await heading.boundingBox())!;
   const alertBox = (await alert.boundingBox())!;
-  expect(Math.abs(pinned.y - (barBox.y + barBox.height))).toBeLessThanOrEqual(2);
-  expect(pinned.y + pinned.height).toBeLessThan(alertBox.y + alertBox.height);
+  expect(movedHeading.y).toBeLessThan(headingBox.y - 30);
+  expect(Math.abs(alertBox.y - (movedHeading.y + movedHeading.height) - gapBefore)).toBeLessThanOrEqual(1);
+  await expect(heading.locator('..')).toHaveCSS('position', 'static');
 
   // The overflow rises as a bottom sheet of full-width rows, not a popover over the page.
   await more.click();
@@ -194,6 +197,8 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   const cancelBox = (await sheet.getByRole('button', { name: 'Cancel' }).boundingBox())!;
   expect(cancelBox.y - (deleteBox.y + deleteBox.height)).toBeGreaterThanOrEqual(8);
   expect(cancelBox.height).toBeGreaterThanOrEqual(48);
+  // Cancel floats at least 16px above the bottom edge, clear of the home indicator.
+  expect(844 - (cancelBox.y + cancelBox.height)).toBeGreaterThanOrEqual(16);
   await capture(page, 'task-mobile-collapsed-header-menu-390');
   await sheet.getByRole('button', { name: 'Cancel' }).click();
   await expect(sheet).toBeHidden();

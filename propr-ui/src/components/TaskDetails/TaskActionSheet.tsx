@@ -10,7 +10,8 @@ const SHEET_FOCUSABLE = 'button:not(:disabled)';
  * The collapsed mobile header's overflow: a sheet that rises from the bottom
  * of the screen instead of a popover over the page. Every row spans the width
  * and is at least 48px tall, Delete reads red, and Cancel closes it from a
- * separate card below the actions.
+ * separate card below the actions. The sheet keeps 16px plus the home
+ * indicator's safe area under Cancel so the OS gesture bar never covers it.
  */
 const TaskActionSheet: React.FC<{
   items: OverflowMenuItem[];
@@ -78,7 +79,7 @@ const TaskActionSheet: React.FC<{
             role="dialog"
             aria-modal="true"
             aria-label="Task actions"
-            className="absolute inset-x-0 bottom-0 flex flex-col gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] animate-sheet-up motion-reduce:animate-none"
+            className="absolute inset-x-0 bottom-0 flex flex-col gap-2 px-2 pb-[calc(1rem+env(safe-area-inset-bottom))] animate-sheet-up motion-reduce:animate-none"
           >
             <div id={menuId} role="menu" aria-label="More task actions" className="divide-y divide-slate-100 overflow-hidden rounded-2xl bg-white shadow-2xl">
               {items.map(item => (
