@@ -109,12 +109,13 @@ for (const width of [390, 1440]) {
       await expect(task.getByRole('region', { name: 'Changed files' }).getByRole('button')).toHaveCount(32);
       const more = task.getByRole('button', { name: 'More task actions' });
       await more.click();
-      const deletion = task.getByRole('menuitem', { name: 'Delete' });
+      // On mobile the overflow is a bottom sheet laid over the whole page, outside the task pane.
+      const deletion = page.getByRole('menuitem', { name: 'Delete' });
       if (completed) await expect(deletion).toBeEnabled();
       else await expect(deletion).toBeDisabled();
       await page.keyboard.press('Escape');
       await expect(more).toBeFocused();
-      await expect(task.getByRole('menu')).toHaveCount(0);
+      await expect(page.getByRole('menu')).toHaveCount(0);
       await capture(page, `task-details-${completed ? 'completed' : 'live'}-${width}`);
 
       const list = task.getByRole('region', { name: 'Changed files' });

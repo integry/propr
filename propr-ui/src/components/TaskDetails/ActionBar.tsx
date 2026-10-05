@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState, useId } from 'react';
 import { HistoryItem } from './types';
+import TaskActionSheet from './TaskActionSheet';
+import { getDeleteState, type DeletionProps, type OverflowMenuItem } from './taskActions';
 import { FileText, Terminal, Square, Loader2, Ban, Trash2, MessageSquarePlus, MoreHorizontal } from 'lucide-react';
 
 interface ActionBarProps {
@@ -23,6 +25,8 @@ interface ActionBarProps {
    * task works, and everything else moves into the overflow menu.
    */
   compact?: boolean;
+  /** Mobile: the overflow opens as a bottom action sheet rather than a popover. */
+  sheet?: boolean;
 }
 
 export interface LiveRunControl {
@@ -107,29 +111,15 @@ const StopButtons: React.FC<{
 );
 
 // Delete button component
-const DeleteButton: React.FC<{
-  isActive: boolean;
-  stopFailed: boolean;
-  deletingTask: boolean;
-  onDeleteTask: () => void;
-}> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
-  // Enable delete if task is not active, or if stop failed
-  const canDelete = !isActive || stopFailed;
-  const isDisabled = !canDelete || deletingTask;
-
-  const getTitle = () => {
-    if (deletingTask) return 'Deleting...';
-    if (stopFailed) return 'Delete task (stop failed, task may have already stopped)';
-    if (isActive) return 'Stop the task before deleting';
-    return 'Delete task';
-  };
+const DeleteButton: React.FC<DeletionProps> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
+  const { isDisabled, title } = getDeleteState(isActive, stopFailed, deletingTask);
 
   return (
     <button
       role="menuitem"
       onClick={onDeleteTask}
       disabled={isDisabled}
-      title={getTitle()}
+      title={title}
       className={`flex items-center gap-1.5 w-full px-3 py-2 rounded text-xs font-medium transition-colors ${
         isDisabled
           ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
@@ -146,20 +136,9 @@ const DeleteButton: React.FC<{
   );
 };
 
-interface OverflowMenuItem {
-  label: string;
-  title?: string;
-  icon: React.ReactNode;
-  onSelect: () => void;
-}
-
-const menuItemClass = 'flex items-center gap-1.5 w-full px-3 py-2 rounded text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors';
-
 const TaskOverflowMenu: React.FC<{
-  items?: OverflowMenuItem[];
-  deletion?: React.ComponentProps<typeof DeleteButton>;
-  divided?: boolean;
-}> = ({ items = [], deletion, divided = true }) => {
+  deletion: DeletionProps;
+}> = ({ deletion }) => {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -180,7 +159,7 @@ const TaskOverflowMenu: React.FC<{
   return (
     <div
       ref={containerRef}
-      className={`relative${divided ? ' ml-1 border-l border-slate-200 pl-2' : ''}`}
+      className="relative ml-1 border-l border-slate-200 pl-2"
       onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
       }}
@@ -211,33 +190,21 @@ const TaskOverflowMenu: React.FC<{
       {open && (
         <div id={menuId} ref={menuRef} role="menu" aria-label="More task actions" tabIndex={-1}
           className="absolute right-0 top-full z-50 mt-1 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
-          {items.map(item => (
-            <button key={item.label} type="button" role="menuitem" title={item.title} className={menuItemClass} onClick={() => {
-              setOpen(false);
-              triggerRef.current?.focus();
-              item.onSelect();
-            }}>
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-          {deletion && (
-            <DeleteButton {...deletion} onDeleteTask={() => {
-              setOpen(false);
-              triggerRef.current?.focus();
-              deletion.onDeleteTask();
-            }} />
-          )}
+          <DeleteButton {...deletion} onDeleteTask={() => {
+            setOpen(false);
+            triggerRef.current?.focus();
+            deletion.onDeleteTask();
+          }} />
         </div>
       )}
     </div>
   );
 };
 
-/** The collapsed header's actions: Stop while the task works, everything else in the overflow menu. */
+/** The collapsed header's actions: Stop while the task works, everything else in the action sheet. */
 const CompactActions: React.FC<{
   stopButtons: React.ReactNode;
-  deletion?: React.ComponentProps<typeof DeleteButton>;
+  deletion?: DeletionProps;
   onFollowUp?: () => void;
   historyItemWithPaths?: HistoryItem;
   onViewPrompt: (promptPath: string) => void;
@@ -245,17 +212,22 @@ const CompactActions: React.FC<{
 }> = ({ stopButtons, deletion, onFollowUp, historyItemWithPaths, onViewPrompt, onViewLogs }) => {
   const { promptPath, logsPath } = historyItemWithPaths ?? {};
   const items: OverflowMenuItem[] = [];
-  if (onFollowUp) items.push({ label: 'Follow Up', title: 'Follow Up - Post a follow-up comment', icon: <MessageSquarePlus size={14} />, onSelect: onFollowUp });
-  if (promptPath) items.push({ label: 'Prompt', title: 'View Prompt', icon: <FileText size={14} />, onSelect: () => onViewPrompt(promptPath) });
-  if (logsPath) items.push({ label: 'Logs', title: 'View Logs', icon: <Terminal size={14} />, onSelect: () => onViewLogs(logsPath) });
-  // Stop is a safety control, so it never folds into the menu.
+  if (onFollowUp) items.push({ label: 'Follow Up', title: 'Follow Up - Post a follow-up comment', icon: <MessageSquarePlus size={18} />, onSelect: onFollowUp });
+  if (promptPath) items.push({ label: 'Prompt', title: 'View Prompt', icon: <FileText size={18} />, onSelect: () => onViewPrompt(promptPath) });
+  if (logsPath) items.push({ label: 'Logs', title: 'View Logs', icon: <Terminal size={18} />, onSelect: () => onViewLogs(logsPath) });
+  // Stop is a safety control, so it never folds into the sheet.
   return (
     <div className="flex flex-none items-center gap-1.5">
       {stopButtons}
-      {(items.length > 0 || deletion) && <TaskOverflowMenu items={items} deletion={deletion} divided={false} />}
+      {(items.length > 0 || deletion) && <TaskActionSheet items={items} deletion={deletion} />}
     </div>
   );
 };
+
+/** The full header's overflow holds only Delete: a popover on desktop, the bottom sheet on mobile. */
+const DeleteOverflow: React.FC<{ deletion: DeletionProps; sheet?: boolean }> = ({ deletion, sheet }) => (
+  sheet ? <TaskActionSheet items={[]} deletion={deletion} /> : <TaskOverflowMenu deletion={deletion} />
+);
 
 // Ghost button style for action buttons - small with icon + text
 const ghostButtonClass = "flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-white/80 border border-transparent hover:border-slate-200 transition-colors";
@@ -273,6 +245,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
   onFollowUp,
   liveRun,
   compact,
+  sheet,
 }) => {
   const isActive = ACTIVE_STATUSES.includes(currentStatus);
   // The run on screen is done, but a newer one is still working: its Stop takes this run's place.
@@ -344,7 +317,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
 
       {stopButtons}
 
-      {deletion && <TaskOverflowMenu deletion={deletion} />}
+      {deletion && <DeleteOverflow deletion={deletion} sheet={sheet} />}
     </div>
   );
 };

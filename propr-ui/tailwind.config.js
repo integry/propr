@@ -27,7 +27,16 @@ export default {
         // Dashboard card styling
         'card-bg': '#FFFFFF',
         'card-border': '#E2E8F0',
-      }
+      },
+      // Mobile bottom sheets rise from the screen's edge over a fading scrim.
+      keyframes: {
+        'sheet-up': { from: { transform: 'translateY(100%)' }, to: { transform: 'translateY(0)' } },
+        'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
+      },
+      animation: {
+        'sheet-up': 'sheet-up 200ms ease-out',
+        'fade-in': 'fade-in 200ms ease-out',
+      },
     },
   },
   plugins: [],

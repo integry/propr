@@ -110,8 +110,12 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   const barBox = (await bar.boundingBox())!;
   expect(Math.abs(barBox.y - detailsBox.y)).toBeLessThanOrEqual(1);
   expect(barBox.height).toBeLessThanOrEqual(45);
-  await expect(bar).toHaveText('PR #42acme/web');
-  await expect(bar.getByRole('button', { name: 'More task actions' })).toBeVisible();
+  await expect(bar).toHaveText('#42:Render visual previews full width');
+  const more = bar.getByRole('button', { name: 'More task actions' });
+  await expect(more).toBeVisible();
+  const moreBox = (await more.boundingBox())!;
+  expect(moreBox.width).toBeGreaterThanOrEqual(44);
+  expect(moreBox.height).toBeGreaterThanOrEqual(44);
   await expect(bar.getByRole('button', { name: 'Follow Up' })).toHaveCount(0);
   // The title block's status badge has scrolled behind the bar, not through it.
   const badge = details.getByText('Completed', { exact: true }).first();
@@ -136,9 +140,28 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   expect(Math.abs(pinned.y - (barBox.y + barBox.height))).toBeLessThanOrEqual(2);
   expect(pinned.y + pinned.height).toBeLessThan(alertBox.y + alertBox.height);
 
-  await bar.getByRole('button', { name: 'More task actions' }).click();
-  await expect(bar.getByRole('menuitem', { name: 'Follow Up' })).toBeVisible();
+  // The overflow rises as a bottom sheet of full-width rows, not a popover over the page.
+  await more.click();
+  const sheet = page.getByRole('dialog', { name: 'Task actions' });
+  await expect(sheet).toBeVisible();
+  // It slides up from below the screen, then rests on its bottom edge.
+  await expect.poll(async () => {
+    const box = (await sheet.boundingBox())!;
+    return Math.round(box.y + box.height);
+  }).toBe(844);
+  const sheetBox = (await sheet.boundingBox())!;
+  expect(sheetBox.x).toBe(0);
+  expect(sheetBox.width).toBe(390);
+  await expect(sheet.getByRole('menuitem')).toHaveText(['Follow Up', 'Delete']);
+  for (const row of await sheet.getByRole('menuitem').all()) {
+    const rowBox = (await row.boundingBox())!;
+    expect(rowBox.width).toBe(390);
+    expect(rowBox.height).toBeGreaterThanOrEqual(48);
+  }
   await capture(page, 'task-mobile-collapsed-header-menu-390');
+  await sheet.getByRole('button', { name: 'Cancel' }).click();
+  await expect(sheet).toBeHidden();
+  await expect(more).toBeFocused();
   expect(await noHorizontalOverflow(page)).toBe(true);
 });
 

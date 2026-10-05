@@ -49,7 +49,7 @@ const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ con
         <div className="flex min-w-0 items-center gap-2">
           <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
         </div>
-        <ActionBar {...actionBarProps} />
+        <ActionBar {...actionBarProps} sheet={true} />
         <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
       </div>
     </div>
@@ -62,8 +62,9 @@ MobileSummary.displayName = 'MobileSummary';
 const MOBILE_COMPACT_BAR_HEIGHT = 44;
 
 /**
- * One fixed-height line: the pull request and repository on the left, the
- * overflow menu (and Stop, while the task works) on the right. The sticky
+ * One fixed-height line: the pull request and the task's title on the left,
+ * the overflow (and Stop, while the task works) on the right; the overflow
+ * opens as a bottom action sheet. The sticky
  * wrapper takes no height, so showing the bar never reflows the page under it.
  */
 const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ contextStripProps, actionBarProps, todos, visible }) => (
@@ -77,7 +78,7 @@ const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ 
       className={`absolute inset-x-0 top-0 border-b border-slate-200 bg-white shadow-sm transition-opacity duration-150 ${visible ? 'opacity-100' : 'invisible opacity-0'}`}
     >
       <div className="flex items-center justify-between gap-2 px-3" style={{ height: MOBILE_COMPACT_BAR_HEIGHT - 1 }}>
-        {/* Only the left side clips: the overflow menu has to drop out of the bar. */}
+        {/* Only the left side clips, so the 44px overflow button keeps its full touch target. */}
         <div className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
           <ContextStrip {...contextStripProps} mobileCompact={true} />
         </div>

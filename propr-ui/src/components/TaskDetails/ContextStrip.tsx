@@ -2,6 +2,7 @@ import React from 'react';
 import { TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
+import { getDisplayTitle } from './taskHeaderText';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
 // GitHub icon component
@@ -273,29 +274,40 @@ const TelemetryGroups: React.FC<{
   );
 };
 
-/** The collapsed mobile header's one line: the pull request, then the repository, truncated. */
-const CompactRepoLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number } }> = ({ taskInfo, prInfo }) => {
+/**
+ * The collapsed mobile header's one line: the pull request, then the task's
+ * title, truncated. Scrolled down a task, the title is what you lose track of;
+ * the repository is only the fallback for a task without one.
+ */
+const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number } }> = ({ taskInfo, prInfo }) => {
   const pr = prInfo?.url
     ? { url: prInfo.url, number: prInfo.number }
     : taskInfo?.type === 'pr-comment' && taskInfo.number
       ? { url: `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/pull/${taskInfo.number}`, number: taskInfo.number }
       : null;
+  const title = getDisplayTitle(taskInfo?.title);
+  const repo = taskInfo ? `${taskInfo.repoOwner}/${taskInfo.repoName}` : undefined;
+  const label = title.text || repo;
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+    <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
       {pr && (
-        <a
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex flex-none items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 font-mono text-xs text-green-700 transition-colors hover:bg-green-100"
-        >
-          <GitPullRequest size={12} aria-hidden="true" />
-          PR #{pr.number}
-        </a>
+        <span className="flex flex-none items-center font-mono text-xs text-green-700">
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`PR #${pr.number}`}
+            className="inline-flex items-center gap-1 rounded py-0.5 transition-colors hover:underline"
+          >
+            <GitPullRequest size={12} aria-hidden="true" />
+            #{pr.number}
+          </a>
+          {label && <span aria-hidden="true">:</span>}
+        </span>
       )}
-      {taskInfo && (
-        <span className="min-w-0 truncate font-medium text-gray-700" title={`${taskInfo.repoOwner}/${taskInfo.repoName}`}>
-          {taskInfo.repoOwner}/{taskInfo.repoName}
+      {label && (
+        <span className="min-w-0 truncate font-medium text-gray-900" title={title.text ? title.tooltip : repo}>
+          {label}
         </span>
       )}
     </div>
@@ -315,7 +327,7 @@ interface ContextStripProps {
   mobileRepoOnly?: boolean;
   /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
   mobileMetadataOnly?: boolean;
-  /** Mobile only: the collapsed header's one line, the pull request then the repository, truncated. */
+  /** Mobile only: the collapsed header's one line, the pull request then the task's title, truncated. */
   mobileCompact?: boolean;
   /**
    * One half of the strip: `git` is where the task lives (repo, PR, issue,
@@ -341,7 +353,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   part,
   lead,
 }) => {
-  if (mobileCompact) return <CompactRepoLine taskInfo={taskInfo} prInfo={prInfo} />;
+  if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} />;
 
   // Mobile: Show only repo name
   if (mobileRepoOnly) {

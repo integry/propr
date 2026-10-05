@@ -117,28 +117,86 @@ describe('Task action overflow', () => {
 
 
 describe('TaskDetails collapsed mobile header', () => {
-  test('folds Follow Up, Prompt and Logs into the overflow menu', () => {
+  test('folds Follow Up, Prompt, Logs and Delete into a bottom action sheet', () => {
     const onFollowUp = vi.fn();
     render(<ActionBar {...commonProps} onFollowUp={onFollowUp} currentStatus="COMPLETED" compact />);
 
     expect(screen.queryByRole('button', { name: 'Follow Up' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Prompt' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
+    const trigger = screen.getByRole('button', { name: 'More task actions' });
+    expect(trigger).toHaveClass('h-11', 'w-11', 'rounded-full');
+    fireEvent.click(trigger);
+
+    const sheet = screen.getByRole('dialog', { name: 'Task actions' });
+    expect(sheet).toHaveClass('bottom-0', 'inset-x-0');
+    expect(sheet.parentElement).toHaveClass('fixed', 'inset-0');
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Follow Up', 'Prompt', 'Logs', 'Delete']);
+    screen.getAllByRole('menuitem').forEach(item => expect(item).toHaveClass('min-h-12', 'w-full'));
+    expect(screen.getByRole('menuitem', { name: 'Follow Up' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toHaveClass('text-red-600');
+    expect(screen.getAllByRole('button').at(-1)).toHaveTextContent('Cancel');
+
     fireEvent.click(screen.getByRole('menuitem', { name: 'Follow Up' }));
     expect(onFollowUp).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(trigger).toHaveFocus();
   });
 
-  test('keeps Stop out of the menu while the task works', () => {
+  test('closes the sheet from Cancel, the scrim and Escape without acting', () => {
+    const onDeleteTask = vi.fn();
+    render(<ActionBar {...commonProps} onDeleteTask={onDeleteTask} currentStatus="COMPLETED" compact />);
+    const trigger = screen.getByRole('button', { name: 'More task actions' });
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId('task-action-sheet-scrim'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Delete' }), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(onDeleteTask).not.toHaveBeenCalled();
+  });
+
+  test('keeps Stop out of the sheet while the task works', () => {
     render(<ActionBar {...commonProps} currentStatus="PROCESSING" compact />);
 
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
     expect(screen.queryByRole('menuitem', { name: 'Follow Up' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeDisabled();
   });
 
-  test('reads as the pull request then the repository on one line', () => {
+  test('opens the full mobile summary\'s overflow as the same sheet', () => {
+    render(<ActionBar {...commonProps} currentStatus="COMPLETED" sheet />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
+    expect(screen.getByRole('dialog', { name: 'Task actions' })).toBeInTheDocument();
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Delete']);
+  });
+
+  test('reads as the pull request then the task title on one line', () => {
+    const { container } = render(
+      <ContextStrip
+        taskInfo={{ repoOwner: 'acme', repoName: 'web', number: 41, type: 'issue', title: 'Render visual previews full width' }}
+        modelName="gpt-6-astra"
+        prInfo={{ url: 'https://github.com/acme/web/pull/42', number: 42 }}
+        mobileCompact
+      />,
+    );
+
+    expect(container.textContent).toBe('#42:Render visual previews full width');
+    expect(screen.getByRole('link', { name: 'PR #42' })).toHaveAttribute('href', 'https://github.com/acme/web/pull/42');
+    expect(screen.getByText('Render visual previews full width')).toHaveClass('truncate');
+    expect(screen.queryByText('acme/web')).toBeNull();
+    expect(screen.queryByText('gpt-6-astra')).toBeNull();
+  });
+
+  test('falls back to the repository when the task has no title yet', () => {
     const { container } = render(
       <ContextStrip
         taskInfo={{ repoOwner: 'acme', repoName: 'web', number: 41, type: 'issue' }}
@@ -148,8 +206,6 @@ describe('TaskDetails collapsed mobile header', () => {
       />,
     );
 
-    expect(container.textContent).toBe('PR #42acme/web');
-    expect(screen.getByText('acme/web')).toHaveClass('truncate');
-    expect(screen.queryByText('gpt-6-astra')).toBeNull();
+    expect(container.textContent).toBe('#42:acme/web');
   });
 });
