@@ -135,6 +135,12 @@ describe('TaskDetails collapsed mobile header', () => {
     expect(screen.getByRole('menuitem', { name: 'Follow Up' })).toHaveFocus();
     expect(screen.getByRole('menuitem', { name: 'Delete' })).toHaveClass('text-red-600');
     expect(screen.getAllByRole('button').at(-1)).toHaveTextContent('Cancel');
+    // Cancel is a separate card below the actions, never a row right under Delete.
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(screen.getByRole('menu')).not.toContainElement(cancel);
+    expect(screen.getByRole('menu')).toHaveClass('rounded-2xl', 'bg-white');
+    expect(cancel).toHaveClass('rounded-2xl', 'bg-white');
+    expect(sheet).toHaveClass('gap-2');
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Follow Up' }));
     expect(onFollowUp).toHaveBeenCalledTimes(1);

@@ -202,10 +202,11 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
             <p className="m-0 font-medium text-slate-700">Couldn’t load the changed files.</p>
             <p className="m-0 mt-0.5 break-words">{error}</p>
           </div>
+          {/* A bordered button, not loose text; the invisible ring around it widens the tap target to 44px. */}
           <button
             type="button"
             onClick={handleRetry}
-            className="flex-none rounded px-2 py-0.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            className="relative flex-none rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors after:absolute after:-inset-x-1 after:-inset-y-[9px] after:content-[''] hover:bg-slate-50 active:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
           >
             Retry
           </button>

@@ -11,7 +11,7 @@ const previewMedia = [
   { type: 'image', title: 'Goal workspace', description: 'The goal workspace with published evidence.', url: privateAsset('goals') },
 ];
 
-async function fixture(page: Page) {
+async function fixture(page: Page, title = 'Render visual previews full width') {
   let image: Buffer | undefined;
   let showMedia = false;
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
@@ -29,7 +29,7 @@ async function fixture(page: Page) {
           { state: 'PENDING', timestamp, metadata: { model: 'gpt-6-astra' } },
           { state: 'COMPLETED', timestamp, metadata: { model: 'gpt-6-astra', pr: { url: 'https://github.com/acme/web/pull/42', number: 42 } } },
         ],
-        taskInfo: { title: 'Render visual previews full width', type: 'issue', number: 41, issueNumber: 41, repoOwner: 'acme', repoName: 'web', modelName: 'gpt-6-astra' },
+        taskInfo: { title, type: 'issue', number: 41, issueNumber: 41, repoOwner: 'acme', repoName: 'web', modelName: 'gpt-6-astra' },
         previewMedia: showMedia ? previewMedia : undefined,
         usageMetricRecords: [],
       },
@@ -89,6 +89,31 @@ for (const width of [320, 390, 1024, 1440, 2560]) {
   });
 }
 
+test('truncates a long title in the collapsed mobile header before the overflow button', async ({ page }) => {
+  const longTitle = 'Render visual previews full width across every task details pane and the lightbox';
+  expect(longTitle.length).toBeGreaterThanOrEqual(80);
+  await fixture(page, longTitle);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/tasks/${taskId}`);
+  const details = page.getByTestId('task-details');
+  const bar = page.getByTestId('task-mobile-compact-bar');
+  await expect(details.getByRole('alert').filter({ hasText: 'Couldn’t load the changed files.' })).toBeVisible();
+  await details.evaluate(element => {
+    element.append(Object.assign(document.createElement('div'), { style: 'height: 800px; flex: none' }));
+    element.scrollTop = 400;
+  });
+  await expect(bar).toBeVisible();
+
+  const title = bar.getByText(longTitle);
+  const titleBox = (await title.boundingBox())!;
+  const moreBox = (await bar.getByRole('button', { name: 'More task actions' }).boundingBox())!;
+  expect(titleBox.width).toBeLessThanOrEqual(280);
+  expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(moreBox.x);
+  expect(moreBox.x + moreBox.width).toBeLessThanOrEqual(390);
+  expect(await title.evaluate(element => element.scrollWidth > element.clientWidth && getComputedStyle(element).textOverflow === 'ellipsis')).toBe(true);
+  await capture(page, 'task-mobile-collapsed-long-title-390');
+});
+
 test('collapses the scrolled mobile header into one line and keeps Files Changed named', async ({ page }) => {
   await fixture(page);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -127,6 +152,12 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   const headingBox = (await heading.boundingBox())!;
   expect(headingBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1);
   expect(headingBox.y + headingBox.height).toBeLessThanOrEqual((await alert.boundingBox())!.y);
+  // Retry is a bordered button whose tap target reaches 44px.
+  const retryHitHeight = await alert.getByRole('button', { name: 'Retry' }).evaluate(button => {
+    const after = getComputedStyle(button, '::after');
+    return button.getBoundingClientRect().height - parseFloat(after.top) - parseFloat(after.bottom);
+  });
+  expect(retryHitHeight).toBeGreaterThanOrEqual(44);
   await capture(page, 'task-mobile-collapsed-header-390');
 
   // Scrolled further, the header stays pinned under the bar while any of its alert is still on screen.
@@ -155,9 +186,14 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   await expect(sheet.getByRole('menuitem')).toHaveText(['Follow Up', 'Delete']);
   for (const row of await sheet.getByRole('menuitem').all()) {
     const rowBox = (await row.boundingBox())!;
-    expect(rowBox.width).toBe(390);
+    expect(rowBox.width).toBe(374);
     expect(rowBox.height).toBeGreaterThanOrEqual(48);
   }
+  // Cancel is its own card with a visible gap above it, so a thumb aimed at it can't land on Delete.
+  const deleteBox = (await sheet.getByRole('menuitem', { name: 'Delete' }).boundingBox())!;
+  const cancelBox = (await sheet.getByRole('button', { name: 'Cancel' }).boundingBox())!;
+  expect(cancelBox.y - (deleteBox.y + deleteBox.height)).toBeGreaterThanOrEqual(8);
+  expect(cancelBox.height).toBeGreaterThanOrEqual(48);
   await capture(page, 'task-mobile-collapsed-header-menu-390');
   await sheet.getByRole('button', { name: 'Cancel' }).click();
   await expect(sheet).toBeHidden();

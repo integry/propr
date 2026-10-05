@@ -89,7 +89,10 @@ describe('LiveFileChips live refreshes', () => {
     const alert = screen.getByRole('alert');
     expect(alert).toHaveClass('bg-slate-50', 'border-slate-200', 'text-slate-600');
     expect(alert).toHaveTextContent('HTTP 503');
-    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    const retry = within(alert).getByRole('button', { name: 'Retry' });
+    // A bordered button with a hit area widened past its visible edge, not loose text.
+    expect(retry).toHaveClass('border', 'border-slate-300', 'bg-white', 'after:-inset-y-[9px]');
+    fireEvent.click(retry);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View diff for src/a.ts' })).toBeInTheDocument();

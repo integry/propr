@@ -9,7 +9,8 @@ const SHEET_FOCUSABLE = 'button:not(:disabled)';
 /**
  * The collapsed mobile header's overflow: a sheet that rises from the bottom
  * of the screen instead of a popover over the page. Every row spans the width
- * and is at least 48px tall, Delete reads red, and Cancel closes it.
+ * and is at least 48px tall, Delete reads red, and Cancel closes it from a
+ * separate card below the actions.
  */
 const TaskActionSheet: React.FC<{
   items: OverflowMenuItem[];
@@ -77,10 +78,9 @@ const TaskActionSheet: React.FC<{
             role="dialog"
             aria-modal="true"
             aria-label="Task actions"
-            className="absolute inset-x-0 bottom-0 rounded-t-2xl bg-white pb-[env(safe-area-inset-bottom)] shadow-2xl animate-sheet-up motion-reduce:animate-none"
+            className="absolute inset-x-0 bottom-0 flex flex-col gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] animate-sheet-up motion-reduce:animate-none"
           >
-            <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 rounded-full bg-slate-300" />
-            <div id={menuId} role="menu" aria-label="More task actions" className="divide-y divide-slate-100 py-1">
+            <div id={menuId} role="menu" aria-label="More task actions" className="divide-y divide-slate-100 overflow-hidden rounded-2xl bg-white shadow-2xl">
               {items.map(item => (
                 <button key={item.label} type="button" role="menuitem" title={item.title} className={`${sheetRowClass} text-slate-800 active:bg-slate-100`} onClick={select(item.onSelect)}>
                   <span className="text-slate-500">{item.icon}</span>
@@ -101,11 +101,14 @@ const TaskActionSheet: React.FC<{
                 </button>
               )}
             </div>
-            <div className="border-t-8 border-slate-100">
-              <button type="button" className={`${sheetRowClass} justify-center font-semibold text-slate-600 active:bg-slate-100`} onClick={close}>
-                Cancel
-              </button>
-            </div>
+            {/* Cancel is its own card, 8px below Delete, so a thumb reaching to dismiss can't land on Delete. */}
+            <button
+              type="button"
+              className={`${sheetRowClass} justify-center rounded-2xl bg-white font-semibold text-slate-700 shadow-2xl active:bg-slate-100`}
+              onClick={close}
+            >
+              Cancel
+            </button>
           </div>
         </div>,
         document.body,
