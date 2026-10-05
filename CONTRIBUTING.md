@@ -18,8 +18,12 @@ git clone https://github.com/integry/propr.git
 cd propr
 npm ci                 # install workspace dependencies
 cp .env.example .env   # then configure GitHub access
+# create agent credential directories before the first start, or Docker creates them root-owned
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts
 npm run compose:up     # build and run the full stack from source
 ```
+
+Before running agents, log in to each one you plan to use (for example `claude auth login` for Claude Code) so its credential directory holds real auth state.
 
 Open the Web UI at `http://localhost:5173`. The [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) covers host directories, agent logins, GitHub authentication and running services directly.
 

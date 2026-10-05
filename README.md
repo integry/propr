@@ -347,9 +347,12 @@ A source checkout is only needed to change ProPR itself.
 git clone https://github.com/integry/propr.git
 cd propr
 npm ci                 # install workspace dependencies
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts  # agent credential dirs, before first start
 npm run compose:up     # build and run the full stack from source
 npm test               # run the test suite
 ```
+
+Log in to each agent you plan to run before starting it, so its credential directory holds real auth state.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the project structure, workspace scripts and pull request checklist, and the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the full development flow.
 
