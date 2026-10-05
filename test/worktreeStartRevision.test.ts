@@ -10,6 +10,12 @@ const root = await mkdtemp(path.join(tmpdir(), 'propr-start-revision-'));
 process.env.GIT_CLONES_BASE_PATH = path.join(root, 'clones');
 process.env.GIT_WORKTREES_BASE_PATH = path.join(root, 'worktrees');
 process.env.HOME = root;
+// Worktree setup hands the checkout to UID 1000 through sudo, which CI runners
+// allow; the runner could then no longer delete the worktrees afterwards.
+const bin = path.join(root, 'bin');
+await mkdir(bin);
+await writeFile(path.join(bin, 'sudo'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
 const { createWorktreeForIssue } = await import('../packages/core/src/git/repoManager.js');
 
 const remote = path.join(root, 'remote.git');

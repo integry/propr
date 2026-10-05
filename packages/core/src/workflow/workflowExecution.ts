@@ -182,6 +182,11 @@ export function stripWorkflowAgentStderrPrefix(line: string): string {
 
 // Labelled segments plus their prefix and LF stay below the 4096-byte PIPE_BUF.
 const LABELLED_SEGMENT_BYTES = 4000;
+// sed's counted repetition slows down sharply with its count (a 4000-byte
+// interval costs seconds per megabyte), so lines are cut into quarter-segment
+// chunks first; every fourth cut is doubled, the single cuts are joined back
+// and the doubled ones end the segments.
+const LABELLED_CHUNK_BYTES = LABELLED_SEGMENT_BYTES / 4;
 
 // Container startup and teardown happen inside the execution timeout too.
 const VALIDATION_DEADLINE_MARGIN_S = 30;
@@ -254,7 +259,9 @@ if [ "$current_uid" != "0" ]; then printf '\\n%s\\n' "${marker}:unverified" >&2;
 # (PIPE_BUF is at least 4096 bytes). A longer write can be split by a concurrent
 # report, which would otherwise start a fresh line with unlabelled child bytes.
 label_output() {
-    LC_ALL=C /bin/sed -u -e 's/.\\{${LABELLED_SEGMENT_BYTES}\\}/&\\n/g' -e 's/\\n$//' -e "s/^/$1/" -e "s/\\n/&$1/g" \\
+    LC_ALL=C /bin/sed -u -e 's/.\\{${LABELLED_CHUNK_BYTES}\\}/&\\n/g' \\
+        -e 's/\\([^\\n]*\\n[^\\n]*\\n[^\\n]*\\n[^\\n]*\\n\\)/\\1\\n/g' -e 's/\\([^\\n]\\)\\n\\([^\\n]\\)/\\1\\2/g' -e 's/\\n\\n/\\n/g' \\
+        -e 's/\\n$//' -e "s/^/$1/" -e "s/\\n/&$1/g" \\
         -e ':a' -e '/\\n/{' -e 'P' -e 's/^[^\\n]*\\n//' -e 'ba' -e '}'
 }
 # Commands run in the background so a stop signal is handled while they run,
