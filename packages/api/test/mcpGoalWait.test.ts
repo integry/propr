@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, test, mock } from 'node:test';
 import { randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import knex from 'knex';
+import express from 'express';
 import type { RedisClientType } from 'redis';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { ToolDeps, McpTool } from '../mcp/tools.js';
@@ -144,6 +147,62 @@ test('wait_goal and GET /api/goals/:goalId/wait expose the bounded wait contract
     assert.equal(activeGoalWaiterCount(goalId), 0);
     assert.deepEqual(await db('goals').where({ goal_id: goalId }).first(), before);
 
+    // A real HTTP disconnect through serveMcpRequest releases the waiter too.
+    // The response-close listener and the SDK's per-request signal each abort
+    // the open wait on their own; the wait only stays open if both are lost.
+    const { serveMcpRequest } = await import('../mcp/server.js');
+    const app = express();
+    app.use(express.json());
+    let served = 0;
+    app.post('/api/mcp', async (req, res) => {
+      try { await serveMcpRequest({ principal, deps, catalog }, req, res); }
+      finally { served++; }
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const waitFor = async (condition: () => boolean, what: string) => {
+      for (let attempt = 0; attempt < 200 && !condition(); attempt++) await new Promise(resolve => setTimeout(resolve, 25));
+      assert.ok(condition(), what);
+    };
+    const post = (args: Record<string, unknown>) => {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'wait_goal', arguments: args } });
+      const outgoing = httpRequest({
+        host: '127.0.0.1', port: (server.address() as AddressInfo).port, path: '/api/mcp', method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'content-length': Buffer.byteLength(body) },
+      });
+      const response = new Promise<string>((resolve, reject) => {
+        outgoing.once('error', reject);
+        outgoing.once('response', incoming => {
+          let text = '';
+          incoming.setEncoding('utf8').on('data', chunk => { text += chunk; }).on('end', () => resolve(text)).on('error', reject);
+        });
+      });
+      outgoing.end(body);
+      return { outgoing, response };
+    };
+    try {
+      // The same transport answers a wait that is allowed to finish.
+      const answered = await post({ repository, goalId, until: 'completed', timeoutSeconds: 0 }).response;
+      assert.match(answered, /timed_out/);
+      await waitFor(() => served === 1, 'the answered request finished');
+      assert.equal(activeGoalWaiterCount(goalId), 0);
+
+      const open = post({ repository, goalId, until: 'completed', timeoutSeconds: 30 });
+      open.response.catch(() => { /* the client hangs up below */ });
+      await waitFor(() => activeGoalWaiterCount(goalId) === 1, 'the wait is open over HTTP');
+      const disconnectedAt = Date.now();
+      open.outgoing.destroy();
+      await waitFor(() => activeGoalWaiterCount(goalId) === 0, 'the disconnect released the waiter');
+      await waitFor(() => served === 2, 'the request handler returned after the disconnect');
+      assert.ok(Date.now() - disconnectedAt < 5_000, 'released by the disconnect, not by the 30 second timeout');
+      assert.deepEqual(await db('goals').where({ goal_id: goalId }).first(), before, 'a disconnect never changes the goal');
+      // The slot was returned: the owner can wait again immediately.
+      assert.equal((await call('wait_goal', { repository, goalId, until: 'completed', timeoutSeconds: 0 })).data.outcome, 'timed_out');
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+
     // Existing polling clients keep working unchanged.
     const polled = await call('get_goal', { repository, goalId });
     assert.equal(polled.data.goal.id, goalId);
@@ -172,6 +231,24 @@ test('wait_goal and GET /api/goals/:goalId/wait expose the bounded wait contract
     const completed = await respond(ownerId, { goalId }, { until: 'completed', afterCursor: rest.body.cursor, timeoutSeconds: '1' });
     assert.equal(completed.body.outcome, 'matched');
     assert.equal(completed.body.goal.goalCompleted, true);
+    assert.deepEqual([completed.body.goal.lifecycleState, completed.body.goal.resultState, completed.body.goal.terminal], ['completed', 'completed', true]);
+
+    // Resuming past the consumed completion returns unreachable at once on both
+    // surfaces, even though the terminal state itself satisfies the condition.
+    for (const until of ['completed', 'terminal']) {
+      const startedAt = Date.now();
+      const restAgain = await respond(ownerId, { goalId }, { until, afterCursor: completed.body.cursor, timeoutSeconds: '30' });
+      assert.equal(restAgain.status, 200);
+      assert.equal(restAgain.body.outcome, 'unreachable');
+      assert.equal(restAgain.body.cursor, completed.body.cursor);
+      const mcpAgain = await call('wait_goal', { repository, goalId, until, afterCursor: completed.body.cursor, timeoutSeconds: 30 });
+      assert.equal(mcpAgain.data.outcome, 'unreachable');
+      assert.equal(mcpAgain.data.goal.goalCompleted, true);
+      assert.match(mcpAgain.summary, /can no longer match: the goal is completed and records no further events/);
+      assert.ok(Date.now() - startedAt < 5_000, 'neither surface waited for the timeout');
+    }
+    // Without a cursor the completed state still matches immediately.
+    assert.equal((await call('wait_goal', { repository, goalId, until: 'terminal', timeoutSeconds: 30 })).data.matchedImmediately, true);
     assert.equal(activeGoalWaiterCount(), 0);
   } finally {
     boundary.restore();

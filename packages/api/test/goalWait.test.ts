@@ -3,57 +3,18 @@ import { after, before, beforeEach, test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import knex, { type Knex } from 'knex';
+import type { Knex } from 'knex';
 import {
   GoalWaitError,
   activeGoalWaiterCount,
   encodeGoalWaitCursor,
   notifyGoalWaiters,
   waitForGoal,
-  type GoalWaitOptions,
 } from '../services/goalWait.js';
-
-const migrations = fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url));
-const repository = 'acme/repo';
-const ownerId = '123';
-const goalId = '11111111-1111-4111-8111-111111111111';
-const otherGoalId = '22222222-2222-4222-8222-222222222222';
-
-const goalDefaults = {
-  owner_id: ownerId, owner_login: 'tester', repository, objective: 'Fixture objective', launch_strategy: 'direct',
-  initial_prompt: 'Fixture prompt', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex',
-  requested_model: 'fixture-model', desired_state: 'running', artifact_refs: '[]', artifact_stats: '{}',
-  run_generation: 1, run_claim: 'claim-1', paused_ms: 0, resume_requested: false,
-  control_generation: 0, control_ack_generation: 0, checkpoint_count: 0,
-};
+import { goalId, goalWaitHarness, insertGoal, openDatabase, otherGoalId, ownerId, repository } from './goalWaitHarness.js';
 
 let db: Knex;
-
-async function openDatabase(filename = ':memory:'): Promise<Knex> {
-  const database = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true });
-  await database.migrate.latest({ directory: migrations });
-  return database;
-}
-
-async function insertGoal(database: Knex, values: Record<string, unknown> = {}): Promise<void> {
-  const id = String(values.goal_id ?? goalId);
-  await database('goals').insert({ ...goalDefaults, goal_id: id, current_task_id: `goal-task-${id}`, ...values });
-}
-
-const update = (values: Record<string, unknown>, id = goalId) => db('goals').where({ goal_id: id }).update(values);
-
-async function insertCheckpoint(checkpointId: string, state: string): Promise<void> {
-  await db('goal_checkpoints').insert({
-    checkpoint_id: checkpointId, goal_id: goalId, owner_id: ownerId, idempotency_key: `checkpoint-${checkpointId}`,
-    operation: 'goal.checkpoint', payload_hash: 'hash', kind: 'agent', state, requested_generation: 1,
-    commit_sha: state === 'completed' ? 'abc123' : null,
-  });
-}
-
-function wait(options: Partial<GoalWaitOptions> = {}) {
-  return waitForGoal({ db, ownerId, goalId, repository, timeoutSeconds: 0.3, pollIntervalMs: 25, ...options });
-}
+const { update, insertCheckpoint, wait, journal } = goalWaitHarness(() => db);
 
 /**
  * A view of `db` that commits `write` immediately before the first journal
@@ -78,9 +39,6 @@ function interleaveBeforeQuery(pattern: RegExp, write: () => Promise<unknown>): 
     },
   });
 }
-
-const journal = async (id = goalId) =>
-  (await db('goal_events').where({ goal_id: id }).orderBy('sequence')).map(row => row.kind === 'checkpoint' ? `checkpoint:${row.checkpoint_id}` : row.state);
 
 before(async () => {
   db = await openDatabase();
@@ -293,8 +251,21 @@ test('invalid, wrong-goal, foreign and expired cursors fail with recovery instru
   const foreignSequence = Number(JSON.parse(Buffer.from(foreign.slice(5), 'base64url').toString()).s);
   await rejects(encodeGoalWaitCursor(goalId, foreignSequence), 'CURSOR_INVALID');
   await update({ desired_state: 'paused' });
-  await db('goal_events').where({ sequence }).delete();
+
+  // A position freed by deleting another goal was never issued for this goal,
+  // even when it falls inside this goal's sequence range: it is invalid, not expired.
+  await db('goals').where({ goal_id: otherGoalId }).delete();
+  assert.equal((await db('goal_events').where({ sequence: foreignSequence })).length, 0, 'the deletion cascaded');
+  const range = await db('goal_events').where({ goal_id: goalId }).min({ low: 'sequence' }).max({ high: 'sequence' }).first();
+  assert.ok(foreignSequence > Number(range!.low) && foreignSequence < Number(range!.high), 'the freed position lies inside this goal\'s range');
+  await rejects(encodeGoalWaitCursor(goalId, foreignSequence), 'CURSOR_INVALID');
+  await rejects(encodeGoalWaitCursor(goalId, Number(range!.low) - 1), 'CURSOR_INVALID');
+  assert.equal((await wait({ afterCursor: own, timeoutSeconds: 0 })).outcome, 'matched', 'this goal\'s own cursor still resumes');
+
+  // Only history trimmed from this goal's own journal expires a cursor.
+  await db('goal_events').where({ goal_id: goalId }).where('sequence', '<=', sequence).delete();
   await rejects(own, 'CURSOR_EXPIRED');
+  await rejects(encodeGoalWaitCursor(goalId, 9_999_999), 'CURSOR_INVALID');
 });
 
 test('a checkpoint and completion committed between journal reads are matched, not declared unreachable', async () => {

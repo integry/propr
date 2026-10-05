@@ -1,4 +1,4 @@
-import { McpServer, ResourceTemplate, createMcpHandler } from '@modelcontextprotocol/server';
+import { McpServer, ResourceTemplate, createMcpHandler, type ServerContext } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import express, { type Express, type RequestHandler } from 'express';
@@ -31,12 +31,20 @@ const prompts: Record<string, string> = {
 };
 
 /**
+ * The SDK's per-request abort signal. The parameter and return types make the
+ * compiler prove that the installed SDK passes tool handlers a `ServerContext`
+ * carrying `mcpReq.signal`; an SDK that moves the signal fails typecheck here
+ * instead of silently leaving only the connection-close signal in effect.
+ */
+const requestSignal = (ctx: ServerContext): AbortSignal => ctx.mcpReq.signal;
+
+/**
  * `connection` aborts when the HTTP request carrying this server closes. With
  * `legacy: 'stateless'` that disconnect is the effective cancel path for a
  * blocking read such as `wait_goal`: a `notifications/cancelled` message
  * arrives on a separate HTTP request with its own server instance and cannot
- * reach the open wait. `ctx.mcpReq.signal` is still combined in so a stateful
- * transport's in-request cancellation would release it too.
+ * reach the open wait. The per-request signal is still combined in so a
+ * stateful transport's in-request cancellation would release it too.
  */
 export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog: McpTool[], connection?: AbortSignal): McpServer {
   const server = new McpServer({ name: 'propr', version: packageInfo.version });
@@ -49,7 +57,7 @@ export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog:
     server.registerTool(tool.name, { title: tool.name.replaceAll('_', ' '), description: tool.description, inputSchema: tool.schema,
       annotations: { readOnlyHint: !!tool.readOnly, destructiveHint: !tool.readOnly, idempotentHint: true, openWorldHint: true } }, async (args, ctx) => {
       try {
-        const signals = [ctx?.mcpReq?.signal, connection].filter((signal): signal is AbortSignal => !!signal);
+        const signals = [requestSignal(ctx), connection].filter((signal): signal is AbortSignal => !!signal);
         const result = await call(tool.name, args, signals.length > 1 ? AbortSignal.any(signals) : signals[0]);
         const { content, ...structuredContent } = result;
         return { content: content ?? [{ type: 'text', text: presentResultText(result) }], structuredContent };

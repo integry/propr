@@ -15,12 +15,15 @@
  * the prefix never changes. Immediate matches, event matching and terminal
  * reachability are all evaluated within that prefix, so a transition committed
  * between two reads is never judged by one query and missed by another.
+ *
+ * The returned goal projection is different: it describes the goal now, so
+ * every one of its fields, including the lifecycle state, is derived from a
+ * single goal row read. It is never assembled from two reads.
  */
 import { EventEmitter } from 'node:events';
 import type { Knex } from 'knex';
 import {
   GOAL_WAIT_CURSOR_ERRORS,
-  goalWaitConditionReachable,
   goalWaitLifecycleState,
   goalWaitStateMatches,
   type GoalWaitCondition,
@@ -28,6 +31,7 @@ import {
   type GoalWaitEvent,
   type GoalWaitLifecycleState,
   type GoalWaitOutcome,
+  isTerminalGoalWaitState,
 } from '@propr/shared';
 
 /** Fallback re-read interval when no notification arrives. Not a busy poll. */
@@ -181,8 +185,16 @@ function eventView(row: GoalEventRow): GoalWaitEvent {
   };
 }
 
-/** Compact current projection; `get_goal` remains the detailed read. */
-export function goalWaitProjection(goal: GoalWaitGoalRow, lifecycleState: GoalWaitLifecycleState) {
+/**
+ * Compact current projection; `get_goal` remains the detailed read.
+ *
+ * Every field comes from the one goal row passed in. The lifecycle state is
+ * derived from that row with the same expression the journal triggers use,
+ * rather than from a separate journal read, so `lifecycleState`, `terminal`,
+ * `goalCompleted` and the result metadata can never describe different moments.
+ */
+export function goalWaitProjection(goal: GoalWaitGoalRow) {
+  const lifecycleState = goalWaitLifecycleState(goal);
   return {
     id: goal.goal_id,
     repository: goal.repository,
@@ -209,7 +221,10 @@ export interface GoalWaitResult {
   condition: GoalWaitCondition | null;
   /** Resume point: after the matched event, or after everything this wait examined. */
   cursor: string;
-  /** The event that satisfied the wait; null on timeout or when unreachable. */
+  /**
+   * The event that satisfied the wait; null on timeout or when unreachable.
+   * It is history: `goal` may already be past the state this event records.
+   */
   event: GoalWaitEvent | null;
   /** True when a state condition already held and no cursor was supplied. */
   matchedImmediately: boolean;
@@ -297,7 +312,8 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
     return await query.orderBy('goal_events.sequence', 'desc').first() as GoalEventRow | undefined;
   };
 
-  const latestLifecycleState = async (goal: GoalWaitGoalRow, bound?: number): Promise<GoalWaitLifecycleState> => {
+  /** Lifecycle state as of a snapshot bound, used only to judge the examined journal prefix. */
+  const lifecycleStateAt = async (goal: GoalWaitGoalRow, bound: number): Promise<GoalWaitLifecycleState> => {
     const latest = await lifecycleEvent(bound);
     return (latest?.state as GoalWaitLifecycleState | undefined) ?? goalWaitLifecycleState(goal);
   };
@@ -306,6 +322,7 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
     result: { outcome: GoalWaitOutcome; boundary: number; event?: GoalEventRow; matchedImmediately?: boolean },
   ): Promise<GoalWaitResult> => {
     // Re-read (and re-authorize) so the projection is never older than the event it reports.
+    // The projection is built from this one row alone, so its fields always agree.
     const goal = await loadAuthorizedGoal();
     return {
       outcome: result.outcome,
@@ -314,7 +331,7 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
       cursor: encodeGoalWaitCursor(goalId, result.event && !result.matchedImmediately ? Number(result.event.sequence) : result.boundary),
       event: result.event ? eventView(result.event) : null,
       matchedImmediately: result.matchedImmediately ?? false,
-      goal: goalWaitProjection(goal, await latestLifecycleState(goal)),
+      goal: goalWaitProjection(goal),
       waitedMs: Date.now() - startedAt,
       timeoutSeconds: options.timeoutSeconds,
     };
@@ -327,8 +344,15 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
       boundary = decodeGoalWaitCursor(options.afterCursor, goalId);
       const issued = await db('goal_events').where({ sequence: boundary }).first('goal_id');
       if (!issued || issued.goal_id !== goalId) {
-        // A position recorded for another goal was never issued for this one.
-        if (issued || boundary > await journalBound()) {
+        // Cursors are only issued at this goal's own journal positions. A
+        // position that is absent was therefore never issued for this goal
+        // unless this goal's own history was trimmed past it: a journal always
+        // starts with the goal's first lifecycle event, which has no previous
+        // state. A position freed by deleting another goal is not expired.
+        const oldest = issued ? undefined
+          : await db('goal_events').where({ goal_id: goalId }).orderBy('sequence', 'asc').first('sequence', 'kind', 'previous_state');
+        const historyTrimmed = !!oldest && !(oldest.kind === 'lifecycle' && oldest.previous_state === null);
+        if (!historyTrimmed || boundary > Number(oldest.sequence)) {
           throw cursorError('CURSOR_INVALID', 'afterCursor does not match this goal\'s history.');
         }
         throw cursorError('CURSOR_EXPIRED', 'afterCursor refers to goal history that is no longer available.', 410);
@@ -361,7 +385,10 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
       if (events.length === EVENT_PAGE) continue;
       // Every event through the bound has been examined and none qualified.
       boundary = Math.max(boundary, bound);
-      if (!goalWaitConditionReachable(until, await latestLifecycleState(goal, bound))) {
+      // A terminal goal journals nothing further. Its terminal event is either
+      // behind the caller's cursor or was examined above without qualifying, so
+      // no later event can match and waiting out the timeout would be pointless.
+      if (isTerminalGoalWaitState(await lifecycleStateAt(goal, bound))) {
         return await finish({ outcome: 'unreachable', boundary });
       }
       const remaining = deadline - Date.now();

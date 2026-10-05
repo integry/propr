@@ -42,7 +42,9 @@ export type GoalWaitCondition = typeof GOAL_WAIT_CONDITIONS[number];
 /**
  * - `matched`: the condition (or, without one, a new event) was observed.
  * - `timed_out`: nothing qualifying happened before the deadline; this is not a goal failure.
- * - `unreachable`: the goal reached a terminal state that can never satisfy the condition.
+ * - `unreachable`: no event after the cursor can ever match. The goal is
+ *   terminal, and its terminal event either does not satisfy the condition or
+ *   is already at or behind the cursor. Retrying with the same cursor is futile.
  */
 export const GOAL_WAIT_OUTCOMES = ['matched', 'timed_out', 'unreachable'] as const;
 export type GoalWaitOutcome = typeof GOAL_WAIT_OUTCOMES[number];
@@ -81,16 +83,6 @@ export function goalWaitStateMatches(condition: GoalWaitCondition, state: string
   if (!state || condition === 'checkpoint') return false;
   if (condition === 'terminal') return isTerminalGoalWaitState(state);
   return condition === state;
-}
-
-/**
- * Whether a goal in `state` can still produce an event that satisfies the
- * condition. Terminal goals never change again, so only the terminal state it
- * already holds can match.
- */
-export function goalWaitConditionReachable(condition: GoalWaitCondition | undefined, state: string | null | undefined): boolean {
-  if (!isTerminalGoalWaitState(state)) return true;
-  return condition !== undefined && goalWaitStateMatches(condition, state);
 }
 
 /** Clamp a requested timeout into the per-request bounds; rejects non-numbers. */

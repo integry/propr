@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opaque cursor lets a retry or reconnect resume without missing or repeating a
   transition. MCP requests block at most 30 seconds and return `timed_out` as an
   ordinary result; the CLI chains them until `--timeout` and exits `2` on
-  timeout. Cancelling a wait, a disconnect or Ctrl-C never affects the goal.
+  timeout. A wait resumed past a finished goal's final event returns
+  `unreachable` at once, and a wait over the per-user limit fails with
+  `wait_limit`. Cancelling a wait, a disconnect or Ctrl-C never affects the goal.
 - **Goal blockers**: goals that need you — a confirmed pause, or an explicit
   provider question or approval — now appear as durable, evidence-backed
   blockers in the goal console, the goal list, the dashboard's attention list,

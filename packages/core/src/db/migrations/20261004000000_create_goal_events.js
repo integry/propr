@@ -17,6 +17,14 @@
  * `pausing`/`cancelling`/`resuming` are requests; `paused` requires the
  * worker's pause confirmation with no queued resume, and `cancelled` requires
  * the cancelled result.
+ *
+ * The triggers belong to `goals` and `goal_checkpoints`. SQLite drops them with
+ * their table, and Knex rebuilds a table (create, copy, drop, rename) for
+ * several `alterTable` operations such as dropping or altering a column. A
+ * later migration that rebuilds either table must recreate these four
+ * triggers, and must not let the drop of `goals` cascade into `goal_events`.
+ * `test/goalMigration.test.ts` fails when a trigger is missing after
+ * `migrate.latest`.
  */
 
 /**
@@ -34,7 +42,9 @@ const lifecycleState = row => `CASE
   ELSE 'running'
 END`;
 
-const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+// Same UTC `YYYY-MM-DD HH:MM:SS` format SQLite writes for `goals` and
+// `goal_checkpoints` timestamps, so one wait result carries a single format.
+const now = 'CURRENT_TIMESTAMP';
 
 // A checkpoint is published work exactly once, even if its row is re-saved.
 const checkpointUnrecorded = "NOT EXISTS (SELECT 1 FROM goal_events WHERE kind = 'checkpoint' AND checkpoint_id = NEW.checkpoint_id)";

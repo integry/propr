@@ -599,6 +599,43 @@ test("goal wait rejects bad arguments locally and surfaces cursor errors with re
   assert.equal(JSON.parse(expired.stdout).error.code, "cursor_expired");
 });
 
+test("goal wait reports the concurrent wait limit with its own code and the server's recovery", async () => {
+  const limited = () => ({
+    status: 429, body: { error: "At most 16 goal waits may be open at once per owner on this server; 16 are open across propr goal wait and MCP wait_goal.",
+      code: "WAIT_LIMIT", recovery: "Let an existing wait finish or cancel it before starting another." },
+  });
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.keep", "--json"], limited);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.requests.length, 1, "the limit is reported, not retried");
+  const error = JSON.parse(result.stdout).error;
+  assert.equal(error.code, "wait_limit");
+  assert.equal(error.status, 429);
+  assert.match(error.message, /16 are open/);
+  assert.match(error.recovery, /Let an existing wait finish or cancel it/);
+  assert.match(error.recovery, /re-run the same 'propr goal wait' command/);
+
+  // A 429 without the wait-limit code keeps the generic classification.
+  const generic = await run(["wait", "goal-1", "--after-cursor", "gwc1.keep", "--json"], () => ({ status: 429, body: { error: "Too many requests" } }));
+  assert.notEqual(JSON.parse(generic.stdout).error.code, "wait_limit");
+});
+
+test("goal wait stops at once when the terminal event is already behind the cursor", async () => {
+  const consumed = waitFixture({
+    outcome: "unreachable", condition: "terminal", cursor: "gwc1.done", waitedMs: 0,
+    goal: { ...(waitFixture().goal as Record<string, unknown>), lifecycleState: "completed", resultState: "completed", terminal: true, goalCompleted: true },
+  });
+  const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.done", "--timeout", "3600", "--json"], () => ({ body: consumed }));
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.requests.length, 1, "no further bounded requests are chained toward the deadline");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.outcome, "unreachable");
+  assert.equal(output.cursor, "gwc1.done");
+  assert.equal(output.goal.goalCompleted, true);
+
+  const human = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.done"], () => ({ body: consumed }));
+  assert.match(human.stdout, /Cannot match terminal: the goal is completed and records no further events after this cursor\./);
+});
+
 test("goal wait retries a transient failure with the same cursor", async () => {
   const result = await run(["wait", "goal-1", "--until", "terminal", "--after-cursor", "gwc1.keep", "--timeout", "60", "--json"], (_request, attempt) =>
     attempt === 1 ? { status: 503, body: { error: "Service unavailable" } }

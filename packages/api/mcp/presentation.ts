@@ -83,7 +83,7 @@ function goalWaitSummary(result: Args): string {
   const condition = result.condition ? ` for ${result.condition}` : ' for a new event';
   const state = result.goal?.lifecycleState;
   if (result.outcome === 'matched') return `Goal wait${condition} matched: ${result.event?.kind === 'checkpoint' ? 'new checkpoint' : result.event?.state ?? state}. Resume with cursor ${result.cursor}.`;
-  if (result.outcome === 'unreachable') return `Goal wait${condition} can no longer match: the goal is ${state}.`;
+  if (result.outcome === 'unreachable') return `Goal wait${condition} can no longer match: the goal is ${state} and records no further events after cursor ${result.cursor}. Do not retry with this cursor.`;
   return `Goal wait${condition} timed out after ${result.timeoutSeconds}s; the goal is ${state}, not failed. Retry with cursor ${result.cursor}.`;
 }
 

@@ -65,6 +65,7 @@ export type GoalFailureCode =
   | "outcome_uncertain"
   | "invalid_cursor"
   | "cursor_expired"
+  | "wait_limit"
   | "server_error"
   | "network_error"
   | "request_failed";
@@ -365,6 +366,7 @@ function failureCode(error: unknown, command: string): { code: GoalFailureCode; 
   const serverCode = error instanceof ApiError ? (error.response as { code?: unknown } | undefined)?.code : undefined;
   if (serverCode === "CURSOR_INVALID" || serverCode === "CURSOR_WRONG_GOAL") return { code: "invalid_cursor", status };
   if (serverCode === "CURSOR_EXPIRED") return { code: "cursor_expired", status };
+  if (serverCode === "WAIT_LIMIT") return { code: "wait_limit", status };
   if (classification.kind === "unauthorized") return { code: "unauthorized", status };
   if (classification.kind === "forbidden") return { code: "forbidden", status };
   if (status === 400) return { code: "validation_failed", status };
@@ -393,6 +395,10 @@ function recoveryHint(error: unknown, context: FailureContext, code: GoalFailure
   if (code === "invalid_cursor" || code === "cursor_expired") {
     const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
     return `${typeof recovery === "string" ? `${recovery} ` : ""}Re-run 'propr goal wait' without --after-cursor and check 'propr goal inspect'.`;
+  }
+  if (code === "wait_limit") {
+    const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
+    return `${typeof recovery === "string" ? `${recovery} ` : ""}The limit is temporary: re-run the same 'propr goal wait' command once another wait has ended.`;
   }
   return null;
 }
@@ -540,7 +546,7 @@ function printGoalWait(goalId: string, result: GoalWaitChainResult): void {
       : result.event?.state ?? result.goal?.lifecycleState;
     console.log(`Matched ${condition}: ${what}${result.matchedImmediately ? " (already true)" : ""}.`);
   } else if (result.outcome === "unreachable") {
-    console.log(`Cannot match ${condition}: the goal is ${result.goal?.lifecycleState}.`);
+    console.log(`Cannot match ${condition}: the goal is ${result.goal?.lifecycleState} and records no further events after this cursor.`);
   } else if (!result.goal) {
     console.log(`Timed out waiting for ${condition} before the server answered. This says nothing about the goal's state.`);
   } else {
@@ -1129,12 +1135,13 @@ flight) the wait stops even if the server has not answered, and exits ${GOAL_WAI
 with the last cursor. Ctrl-C only stops waiting; the goal keeps running.
 
 The limit of concurrent waits per user is shared with MCP wait_goal and
-counted per API server.
+counted per API server. A wait over the limit fails with the error code
+wait_limit; it is temporary, so re-run the command once another wait ends.
 
 Exit codes:
   ${GOAL_WAIT_EXIT_CODES.matched}    matched
   ${GOAL_WAIT_EXIT_CODES.timed_out}    timed out (the goal did not fail; retry with the printed cursor)
-  ${GOAL_WAIT_EXIT_CODES.unreachable}    unreachable (the goal ended in a state that can never match)
+  ${GOAL_WAIT_EXIT_CODES.unreachable}    unreachable (the goal ended and no event after the cursor can match)
   ${GOAL_WAIT_EXIT_CODES.interrupted}  interrupted (Ctrl-C)
   1    error
 

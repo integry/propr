@@ -538,8 +538,18 @@ The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
 pull request) and the current `goal` projection (`lifecycleState`,
 `requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
 count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
-the returned cursor. `unreachable` means the goal ended in a state that can never
-satisfy the condition, such as `paused` on a completed goal.
+the returned cursor. `unreachable` means the goal ended and no event after the
+cursor can ever match, so retrying with that cursor is futile. That covers a
+condition the final state can never satisfy, such as `paused` on a completed
+goal, and a terminal event that is already at or behind `afterCursor`, such as
+`terminal` resumed from the cursor of the goal's completion event. It returns
+at once instead of waiting out the timeout.
+
+Every field of the `goal` projection is read from one goal row, so
+`lifecycleState`, `resultState`, `terminal` and `goalCompleted` always agree
+with each other. The `event` is history and may be older than the projection.
+`event.occurredAt` uses the same UTC `YYYY-MM-DD HH:MM:SS` format as the
+projection's `updatedAt` and `completedAt`.
 
 Events come from a durable, monotonic per-goal journal that the database appends
 in the same transaction as each goal or checkpoint write, so a finished child
@@ -548,8 +558,9 @@ Without `afterCursor`, a state condition that already holds matches immediately;
 otherwise only events after the current boundary count. With `afterCursor`, only
 newer events count and transitions that happened between calls are replayed in
 order, so retrying or reconnecting with the last cursor never misses or repeats a
-transition. A malformed cursor (`CURSOR_INVALID`), another goal's cursor
-(`CURSOR_WRONG_GOAL`) or one whose history is gone (`CURSOR_EXPIRED`) fails with
+transition. A malformed cursor or a position never issued for this goal
+(`CURSOR_INVALID`), another goal's cursor (`CURSOR_WRONG_GOAL`) or one whose
+history this goal's journal no longer holds (`CURSOR_EXPIRED`) fails with
 `details.recovery` instead of silently skipping history: omit `afterCursor` and
 read the goal with `get_goal`.
 
