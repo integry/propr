@@ -55,16 +55,19 @@ describe('RunTimeline', () => {
     );
     const rows = within(screen.getByRole('list', { name: 'Runs' })).getAllByTestId('run-timeline-run');
     expect(rows.map(row => row.querySelector('button')!.textContent)).toEqual([
-      expect.stringMatching(/^Run 1ReviewInitial review.*\[4\]$/),
-      expect.stringMatching(/^Run 2FixFixed seedCommit test.*9f3c21e$/),
-      expect.stringMatching(/^Run 3ReviewFound 2 issues.*3m 30s\[6\]$/),
-      expect.stringMatching(/^Run 4UltrafixUltrafix cycle 3 \(linting\).*Running…Active$/),
+      expect.stringMatching(/^Run 1ReviewInitial review\[4\]/),
+      expect.stringMatching(/^Run 2FixFixed seedCommit test9f3c21e/),
+      expect.stringMatching(/^Run 3ReviewFound 2 issues\[6\].*3m 30s$/),
+      expect.stringMatching(/^Run 4UltrafixUltrafix cycle 3 \(linting\)Active.*Running…$/),
     ]);
     expect(rows.map(row => row.querySelector('button')!.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false', 'true']);
     // Plain nodes on the rail: the type and the result slot say how each run went, not a coloured marker.
     expect(screen.queryAllByTestId('run-timeline-node')).toHaveLength(4);
     expect(screen.getByRole('list', { name: 'Runs' }).querySelector('[data-outcome]')).toBeNull();
+    // A closed fix keeps its commit out of the way, so its summary has the room; hovering the row shows it.
     expect(within(rows[1]).getByTestId('run-commit')).toHaveTextContent('9f3c21e');
+    expect(within(rows[1]).getByTestId('run-commit')).toHaveClass('hidden', 'group-hover:inline-flex');
+    expect(rows[1].querySelector('button')).toHaveClass('group');
     expect(within(rows[1]).queryByTitle(/score/i)).toBeNull();
     // Only the open run carries its steps, each a branch off the rail.
     const stepList = within(rows[3]).getByRole('list', { name: 'Run steps' });
@@ -81,7 +84,7 @@ describe('RunTimeline', () => {
       const queued = buildTaskRuns(buildTaskRow({ ...group, tasks: [{ ...group.tasks[0], status, processedAt: undefined }, ...group.tasks.slice(1)] }));
       const { unmount } = render(<RunTimeline runs={queued} selectedTaskId="run-3" onSelectRun={vi.fn()}>{null}</RunTimeline>);
       const newest = screen.getByRole('button', { name: /^Run 4/ });
-      expect(newest.textContent).toMatch(/QueuedWaiting$/);
+      expect(newest.textContent).toMatch(/Waiting.*Queued$/);
       expect(newest).not.toHaveTextContent(/Running…|Active/);
       expect(newest).toHaveAttribute('title', 'Run 4 waiting to start');
       unmount();
@@ -102,5 +105,12 @@ describe('RunTimeline', () => {
     expect(open).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('list', { name: 'Run steps' })).not.toBeInTheDocument();
     expect(onSelectRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a fix's commit once its run is open", () => {
+    render(<RunTimeline runs={runs} selectedTaskId="run-2" onSelectRun={vi.fn()}>{null}</RunTimeline>);
+    const commit = within(screen.getByRole('button', { name: /^Run 2/ })).getByTestId('run-commit');
+    expect(commit).toHaveClass('inline-flex');
+    expect(commit).not.toHaveClass('hidden');
   });
 });

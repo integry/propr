@@ -207,7 +207,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(runRows.nth(0).getByRole('button')).toContainText(/Run 1.*Initial review/);
   // Only reviews are scored, though runs 6 and 7 carry the loop's score in the data; a fix shows its commit.
   expect(await timeline.getByTitle(/^(Review score|Commit)\b/).evaluateAll(nodes => nodes.map(node => node.getAttribute('title')))).toEqual(['Review score: 4/10', 'Commit a81d3f56e0c2', 'Review score: 6/10', 'Commit 4be17c09d2f3']);
-  await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Running….*Active/);
+  await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Active.*Running…/);
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
@@ -231,7 +231,9 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
   // Steps keep to their run's columns: times under `Run 3`, labels under its summary, durations ending on its duration.
   const stepColumns = await historical.nth(2).evaluate(run => {
-    const [, , tag, summary, , duration] = Array.from(run.querySelector('button')!.children) as HTMLElement[];
+    const cells = Array.from(run.querySelector('button')!.children) as HTMLElement[];
+    const [, , tag, summary] = cells;
+    const duration = cells[cells.length - 1];
     const step = run.querySelector('[aria-label="Run steps"] li')!;
     const [, time, label, stepDuration] = Array.from(step.children) as HTMLElement[];
     const box = (node: HTMLElement) => node.getBoundingClientRect();

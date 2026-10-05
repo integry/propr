@@ -333,6 +333,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           actionBarProps={actionBarProps}
           run={headerRun}
           paneControls={paneControls}
+          breadcrumb={!embedded}
         />
 
         <ProgressBar todos={taskData.liveDetails.todos} />

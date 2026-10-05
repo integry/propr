@@ -74,6 +74,8 @@ describe('TaskDetails embedded beside the task list', () => {
     // A pane is never wide enough for the timeline/output split: no desktop-only column classes.
     expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('lg:flex-row');
     expect(screen.getByTestId('task-timeline-scroll').className).not.toContain('lg:w-[30%]');
+    // The list is beside the pane: no breadcrumb back to it.
+    expect(screen.queryByTestId('task-breadcrumb')).not.toBeInTheDocument();
 
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(handleDeleteTask).toHaveBeenCalled();
@@ -96,6 +98,22 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(document.title).toContain('ProPR');
     expect(screen.getByTestId('task-workspace-scroll').className).toContain('lg:flex-row');
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
+  });
+
+  it('leads the full page with a breadcrumb back to the task list', () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks/route-task']}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetails />} />
+          <Route path="/tasks" element={<p>task list</p>} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    const crumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(crumb).toHaveTextContent('Tasks/Task');
+    fireEvent.click(within(crumb).getByRole('link', { name: 'Tasks' }));
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
   });
 
