@@ -19,6 +19,11 @@ describe('TaskVisualPreviews', () => {
     expect(image).toHaveClass('h-full', 'w-full', 'object-cover', 'object-left-top');
     expect(within(canvas).getByText('Row keeps its full title')).toBeInTheDocument();
     expect(within(canvas).getByText('Desktop 1920px')).toBeInTheDocument();
+    // A light browser window frames the capture, sized like one, with no black bezel around it.
+    const frame = within(canvas).getByTestId('visual-evidence-window');
+    expect(frame).toHaveClass('border-slate-200', 'bg-white');
+    expect(within(frame).getByTestId('visual-evidence-window-size')).toHaveTextContent(/^1920px$/);
+    expect(canvas.innerHTML).not.toMatch(/bg-slate-950 p-|bg-slate-900 /);
     expect(screen.getByText('Click to inspect full resolution')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open original: Task list at Desktop 1920px' })).toHaveAttribute('href', asset('image'));
     // Only the selected capture is on screen: the video waits behind the switcher.

@@ -6,6 +6,8 @@ import type { TaskRunEntry } from '../TaskList/rowModel';
 
 const handleDeleteTask = vi.fn(async () => true);
 const loadedTaskIds: Array<string | undefined> = [];
+// What the task's own record says it is; a test can make it a numbered PR or issue.
+const loadedTaskInfo = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 
 vi.mock('./hooks', () => ({
   useTaskData: (taskId?: string) => {
@@ -13,7 +15,7 @@ vi.mock('./hooks', () => ({
     return {
       loading: false, error: null,
       history: [{ id: 1, status: 'completed', timestamp: '2026-10-01T12:00:00Z', metadata: {} }],
-      taskInfo: { title: 'Fix PR #12: Stop work', issueNumber: 12 },
+      taskInfo: { title: 'Fix PR #12: Stop work', issueNumber: 12, ...loadedTaskInfo.current },
       liveDetails: { todos: [], events: [] },
       usageMetricRecords: [], previewMedia: [],
       stoppingExecution: false, stopFailed: false, deletingTask: false,
@@ -56,6 +58,7 @@ const LocationProbe = () => <output data-testid="location">{useLocation().pathna
 afterEach(() => {
   vi.clearAllMocks();
   loadedTaskIds.length = 0;
+  loadedTaskInfo.current = {};
   document.title = '';
 });
 
@@ -74,6 +77,8 @@ describe('TaskDetails embedded beside the task list', () => {
     // A pane is never wide enough for the timeline/output split: no desktop-only column classes.
     expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('lg:flex-row');
     expect(screen.getByTestId('task-timeline-scroll').className).not.toContain('lg:w-[30%]');
+    // The list is beside the pane: no breadcrumb back to it.
+    expect(screen.queryByTestId('task-breadcrumb')).not.toBeInTheDocument();
 
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(handleDeleteTask).toHaveBeenCalled();
@@ -97,6 +102,36 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(screen.getByTestId('task-workspace-scroll').className).toContain('lg:flex-row');
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
+  });
+
+  it('leads the full page with a breadcrumb back to the task list', () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks/route-task']}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetails />} />
+          <Route path="/tasks" element={<p>task list</p>} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    const crumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(crumb).toHaveTextContent('Tasks/Task');
+    fireEvent.click(within(crumb).getByRole('link', { name: 'Tasks' }));
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
+  });
+
+  it.each([
+    ['pr', 'PR #2664'],
+    ['pr-comment', 'PR #2664'],
+    ['issue', 'Issue #2664'],
+  ])('names a numbered %s task in the breadcrumb as %s', (type, label) => {
+    loadedTaskInfo.current = { type, number: 2664 };
+    render(
+      <MemoryRouter initialEntries={['/tasks/route-task']}>
+        <Routes><Route path="/tasks/:taskId" element={<TaskDetails />} /></Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent(`Tasks/${label}`);
   });
 
   const run = (id: string, number: number, outcome: TaskRunEntry['outcome'] = 'passed'): TaskRunEntry => ({

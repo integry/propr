@@ -1,4 +1,6 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import ContextStrip from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { RunStateLabel, TaskStatusBadge } from './TaskHeader';
@@ -16,7 +18,33 @@ interface DesktopTaskHeaderProps {
   run?: { number: number; count: number };
   /** The pane's own controls (open full page, close), docked after the task's actions. */
   paneControls?: React.ReactNode;
+  /** The full page's way back to the list it was opened from, above the task. */
+  breadcrumb?: boolean;
 }
+
+/** Task types recorded for a pull request: `pr` for the PR itself, `pr-comment` for a follow-up on it. */
+const PR_TASK_TYPES = new Set<string | undefined>(['pr', 'pr-comment']);
+
+/** What the breadcrumb calls the task: its pull request or issue, else just the task. */
+const crumbLabel = (taskInfo: DesktopTaskHeaderProps['headerProps']['taskInfo']) => {
+  if (!taskInfo?.number) return 'Task';
+  return `${PR_TASK_TYPES.has(taskInfo.type) ? 'PR' : 'Issue'} #${taskInfo.number}`;
+};
+
+/** `← Tasks / PR #2720`: the full page has no list beside it, so it links back to one. */
+const TaskBreadcrumb: React.FC<{ label: string }> = ({ label }) => (
+  <nav aria-label="Breadcrumb" data-testid="task-breadcrumb" className="flex items-center gap-1.5 text-xs text-slate-500">
+    <Link
+      to="/tasks"
+      className="inline-flex items-center gap-1 rounded font-medium text-slate-600 transition-colors hover:text-slate-900 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+    >
+      <ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />
+      Tasks
+    </Link>
+    <span aria-hidden="true" className="text-slate-300">/</span>
+    <span aria-current="page" className="font-mono text-slate-500">{label}</span>
+  </nav>
+);
 
 /**
  * The task in two tiers. The first is the task: where it lives, what state it
@@ -26,7 +54,7 @@ interface DesktopTaskHeaderProps {
  * is and how it ended, its model, runtime and consumption, so every run's
  * spend can be read, and the run number says whose it is.
  */
-const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, contextStripProps, runStripProps, runState, actionBarProps, run, paneControls }) => {
+const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, contextStripProps, runStripProps, runState, actionBarProps, run, paneControls, breadcrumb }) => {
   const { taskInfo } = headerProps;
   const title = getDisplayTitle(taskInfo?.title);
   const runInfo = runStripProps.taskInfo;
@@ -47,6 +75,7 @@ const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, cont
 
   return (
     <div data-testid="task-header-tiers" className="flex flex-col gap-1 border-b border-slate-200 px-6 py-2">
+      {breadcrumb && <TaskBreadcrumb label={crumbLabel(taskInfo)} />}
       <div data-testid="task-header-identity" className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
           <ContextStrip {...contextStripProps} part="git" />
