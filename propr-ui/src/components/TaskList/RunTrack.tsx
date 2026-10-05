@@ -4,8 +4,8 @@ import { describeRun, RUN_TRACK_LIMIT, type RunOutcome, type TaskRunEntry } from
 /**
  * A run's outcome as a shape and a colour, so it reads without colour too:
  * a red triangle for a failure, an amber square for a review that left
- * findings (6/10 or lower), a slate dot for a pass or a merge, a pulsing teal
- * dot for a run in flight, a still dashed ring for a run waiting to start, and
+ * findings (6/10 or lower), a slate dot for a pass or a merge, a turning teal
+ * arc for a run in flight, a still dashed ring for a run waiting to start, and
  * a hollow ring for a run that was stopped.
  */
 export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md' }> = ({ outcome, size = 'sm' }) => {
@@ -20,11 +20,11 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
     case 'findings':
       return <span data-outcome={outcome} aria-hidden="true" className={`${box} flex-none rounded-[1px] bg-amber-500`} />;
     case 'active':
+      // An open arc that turns, so a run in flight never reads as a finished (solid) one.
       return (
-        <span data-outcome={outcome} aria-hidden="true" className={`relative flex ${box} flex-none`}>
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400 opacity-75" />
-          <span className={`relative inline-flex ${box} rounded-full bg-teal-500`} />
-        </span>
+        <svg data-outcome={outcome} viewBox="0 0 10 10" className={`${box} flex-none text-teal-600 motion-safe:animate-spin`} aria-hidden="true">
+          <path d="M5 1A4 4 0 1 1 1 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
       );
     case 'waiting':
       return <span data-outcome={outcome} aria-hidden="true" className={`${box} flex-none rounded-full border border-dashed border-slate-500 bg-white`} />;

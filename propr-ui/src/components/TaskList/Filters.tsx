@@ -59,6 +59,7 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     onRepoChange={setRepoFilter}
     isLoading={reposLoading}
     variant="default"
+    hideCountOnMobile
     className="flex-1 min-w-0 sm:flex-initial sm:max-w-[13rem]"
   />
   );
@@ -88,15 +89,13 @@ export const Filters: React.FC<FiltersProps> = ({
 
   const showRepoFilter = reposLoading || availableRepos.length > 1;
 
-  // A phone has no room for the title and both dropdowns on one line: the
-  // repository picker would be squeezed to `All …`. There the title shares the
-  // first line with the repository picker, which takes the rest of it, and the
-  // status filter drops to a line of its own. The wrappers dissolve
-  // (`display: contents`) so all three sit in the one wrapping row.
+  // A phone fits the title and both dropdowns on one line once the repository
+  // picker drops its task count there (the open list still shows it). The
+  // picker takes whatever the title and status filter leave.
   return (
-    <div className="flex items-center justify-between gap-2 sm:gap-4 max-sm:flex-wrap">
+    <div className="flex items-center justify-between gap-2 sm:gap-4">
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
-      <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end max-sm:contents">
+      <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
             {/* Search input - hidden on mobile, shown on desktop */}
@@ -120,13 +119,13 @@ export const Filters: React.FC<FiltersProps> = ({
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-2 min-w-0 max-sm:contents">
-              <div data-testid="task-status-filter" className={showRepoFilter ? 'max-sm:order-last max-sm:w-full' : ''}>
+            <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
+              <div data-testid="task-status-filter" className="flex-none">
                 <select
                   value={selectedFilter}
                   onChange={(e) => setFilter(e.target.value)}
                   aria-label="Task status"
-                  className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                  className="w-[120px] sm:w-auto px-2 sm:px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
                 >
                   <option value="all">All Tasks</option>
                   <option value="attention">Needs attention</option>
