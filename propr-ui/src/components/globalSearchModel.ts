@@ -96,6 +96,18 @@ export function getScopeAction(category: SearchCategory, query: string): { label
   }
 }
 
+/**
+ * The "All" scope's full search lands on tasks, so when plans matched it also offers the full
+ * plan search: the palette only holds the first few plans.
+ */
+export function getPlansAction(
+  category: SearchCategory,
+  counts: Record<SearchCategory, number>,
+  query: string,
+): { label: string; path: string } | null {
+  return category === 'all' && counts.plans > 0 ? getScopeAction('plans', query) : null;
+}
+
 /** GitHub page for an item, when it has one. */
 export function getItemGithubUrl(item: SearchItem): string | null {
   switch (item.kind) {
@@ -141,15 +153,18 @@ export const getRepoName = (repository: string): string => {
 /**
  * The body text a preview shows under its metadata: a plan's objective, a
  * task's subtitle. Null when there is none, or when it only restates the title
- * (`Plan <title>`), so the preview never prints the same words twice.
+ * (the title itself, or `Plan <title>`), so the preview never prints the same
+ * words twice. Any other description is kept, however short.
  */
 export function getItemDescription(item: SearchItem): string | null {
   const description = item.kind === 'plan' ? item.plan.initial_prompt : item.kind === 'task' ? item.task.subtitle : null;
   if (!description?.trim()) return null;
-  const words = (text: string) => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const title = words(getItemTitle(item)).join(' ');
-  const remainder = words(description).join(' ').replace(title, ' ').trim();
-  return title && remainder.split(/\s+/).filter(Boolean).length <= 1 ? null : description.trim();
+  const words = (text: string) => (text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(' ');
+  const title = words(getItemTitle(item));
+  const body = words(description);
+  const restatesTitle = description.trim() === getItemTitle(item).trim()
+    || (title !== '' && (body === title || body === `plan ${title}`));
+  return restatesTitle ? null : description.trim();
 }
 
 /** Splits a failure reason into prose and file paths, so paths can render as code. */

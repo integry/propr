@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DraftListItem } from '../api/plannerApi';
+import type { TaskSearchResult } from '../hooks/useGlobalSearch';
 import { getItemDescription, getSearchStatus, splitFailureReason } from './globalSearchModel';
 
 const plan = (name: string, initial_prompt: string) =>
@@ -12,6 +13,20 @@ describe('globalSearchModel', () => {
     expect(getItemDescription(plan('', 'Configure endpoint routes'))).toBeNull();
     expect(getItemDescription(plan('Expose retrieval over MCP', 'Configure endpoint routes and handlers.')))
       .toBe('Configure endpoint routes and handlers.');
+  });
+
+  it('keeps a short or non-ASCII description that does not restate the title', () => {
+    expect(getItemDescription(plan('Repair production deployment', 'Rollback'))).toBe('Rollback');
+    expect(getItemDescription(plan('Repair production deployment', 'Plan'))).toBe('Plan');
+    expect(getItemDescription(plan('Repair production deployment', 'Repair production deployment now')))
+      .toBe('Repair production deployment now');
+    expect(getItemDescription(plan('Réparer le déploiement', 'Plan: réparer le déploiement'))).toBeNull();
+    expect(getItemDescription(plan('Réparer le déploiement', 'Annuler'))).toBe('Annuler');
+    expect(getItemDescription(plan('Deploy', '部署回滚'))).toBe('部署回滚');
+    const task = (title: string, subtitle: string) =>
+      ({ kind: 'task' as const, key: 'task:1', task: { id: '1', status: 'done', createdAt: '', title, subtitle } as TaskSearchResult });
+    expect(getItemDescription(task('Fix login flow', 'Hotfix'))).toBe('Hotfix');
+    expect(getItemDescription(task('Fix login flow', 'Fix login flow'))).toBeNull();
   });
 
   it('splits file paths out of a failure reason', () => {

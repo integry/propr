@@ -42,6 +42,7 @@ test('global search opens a master-preview palette with category scopes', async 
   await expect(preview.getByTestId('repository-chip')).toHaveText('workspace');
   await expect(preview.getByTestId('repository-chip-icon')).toBeVisible();
   await expect(palette.getByRole('button', { name: 'View all results for "mcp" →' })).toBeVisible();
+  await expect(palette.getByRole('button', { name: 'Search all plans for "mcp" →' })).toBeVisible();
   await expect(preview.getByText('Review', { exact: true })).toBeVisible();
 
   // Left edge flush with the search input, 8px below it.
@@ -62,4 +63,8 @@ test('global search opens a master-preview palette with category scopes', async 
   await expect(preview.getByText('Failed', { exact: true })).toBeVisible();
   await expect(preview.getByTestId('global-search-failure').locator('code')).toHaveText('src/mcp/activity.ts');
   await captureTarget(page.locator('body'), 'global-search-palette-tasks');
+
+  // Shift+Enter runs the active scope's full search from the keyboard.
+  await input.press('Shift+Enter');
+  await expect(page).toHaveURL(/\/tasks\?search=mcp$/);
 });

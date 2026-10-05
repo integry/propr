@@ -145,6 +145,27 @@ describe('GlobalSearch palette', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks?search=mcp');
   });
 
+  it('keeps a full plan search reachable from the All scope', async () => {
+    await renderWithResults();
+    fireEvent.click(screen.getByRole('button', { name: 'Search all plans for "mcp" →' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/plans?search=mcp');
+  });
+
+  it('runs the active scope\'s full search with Shift+Enter', async () => {
+    const input = await renderWithResults();
+    expect(screen.getByRole('button', { name: 'View all results for "mcp" →' })).toHaveAttribute('aria-keyshortcuts', 'Shift+Enter');
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?search=mcp');
+  });
+
+  it('opens the full plan search with Shift+Enter in the Plans scope', async () => {
+    const input = await renderWithResults();
+    fireEvent.keyDown(input, { key: 'Tab' });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(screen.getByTestId('location')).toHaveTextContent('/plans?search=mcp');
+  });
+
   it('hangs the palette left-aligned under the search input', async () => {
     const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
       { left: 200, right: 648, top: 10, bottom: 46, width: 448, height: 36, x: 200, y: 10, toJSON: () => ({}) } as DOMRect,

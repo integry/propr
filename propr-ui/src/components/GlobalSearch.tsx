@@ -11,6 +11,7 @@ import {
   getCategoryCounts,
   getItemGithubUrl,
   getItemPath,
+  getPlansAction,
   getScopeAction,
   searchOptionId,
 } from './globalSearchModel';
@@ -155,10 +156,11 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
   }, [navigate, clearSearch, query]);
 
   const scopeAction = getScopeAction(category, query);
-  const handleScopeAction = useCallback(() => {
-    navigate(scopeAction.path);
+  const plansAction = getPlansAction(category, counts, query);
+  const followAction = useCallback((path: string) => {
+    navigate(path);
     clearSearch();
-  }, [navigate, clearSearch, scopeAction.path]);
+  }, [navigate, clearSearch]);
 
   const selectCategory = (next: SearchCategory) => {
     setCategory(next);
@@ -176,6 +178,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
     if (!navigable || !activeItem) return false;
     if (e.key === 'ArrowDown') setActiveIndex(index => (index + 1) % items.length);
     else if (e.key === 'ArrowUp') setActiveIndex(index => (index - 1 + items.length) % items.length);
+    else if (e.key === 'Enter' && e.shiftKey) followAction(scopeAction.path);
     else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) openOnGithub(activeItem);
     else if (e.key === 'Enter') openItem(activeItem);
     else return false;
@@ -335,14 +338,28 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                 <span><Kbd>↵</Kbd> open</span>
                 <span><Kbd>⌘↵</Kbd> GitHub</span>
                 <span><Kbd>Esc</Kbd> close</span>
-                <button
-                  type="button"
-                  onMouseDown={e => e.preventDefault()}
-                  onClick={handleScopeAction}
-                  className="ml-auto min-w-0 truncate text-primary-600 hover:text-primary-700"
-                >
-                  {scopeAction.label} →
-                </button>
+                <span className="ml-auto flex min-w-0 items-center gap-3">
+                  {plansAction && (
+                    <button
+                      type="button"
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => followAction(plansAction.path)}
+                      className="min-w-0 truncate text-primary-600 hover:text-primary-700"
+                    >
+                      {plansAction.label} →
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-keyshortcuts="Shift+Enter"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => followAction(scopeAction.path)}
+                    className="flex min-w-0 items-center gap-1 text-primary-600 hover:text-primary-700"
+                  >
+                    <span className="truncate">{scopeAction.label} →</span>
+                    <span aria-hidden="true"><Kbd>⇧↵</Kbd></span>
+                  </button>
+                </span>
               </div>
             </>
           )}
