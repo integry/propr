@@ -46,9 +46,10 @@ export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
   const shown = runs.slice(-RUN_TRACK_LIMIT);
   const hidden = runs.length - shown.length;
   return (
-    <span data-testid="run-track" className="inline-flex flex-none items-center gap-1.5 rounded-sm bg-slate-100/70 px-1.5 py-0.5">
+    // The count prefixes the nodes it stands for: set tight against them and centred on the rail, so the gap never reads as a separator.
+    <span data-testid="run-track" className="inline-flex flex-none items-center gap-1 rounded-sm bg-slate-100/70 px-1.5 py-0.5">
       {hidden > 0 && (
-        <span data-testid="run-track-overflow" className="font-mono text-[10px] leading-4 text-slate-500">
+        <span data-testid="run-track-overflow" className="font-mono text-[10px] leading-none text-slate-500 translate-y-px">
           +{hidden}
         </span>
       )}

@@ -98,7 +98,7 @@ export const historicalRun = 'pr-2664-run-5';
 export const historicalHistory = [
   { state: 'PENDING', timestamp: ago(39), metadata: { model: 'gpt-6-astra' } },
   { state: 'CLAUDE_EXECUTION', timestamp: ago(38.8), metadata: { model: 'gpt-6-astra', description: 'Review the withdrawal handlers' } },
-  { state: 'COMPLETED', timestamp: ago(36), metadata: { model: 'gpt-6-astra' } },
+  { state: 'COMPLETED', timestamp: ago(36), metadata: { model: 'gpt-6-astra', tokenUsage: { input_tokens: 420_000, output_tokens: 12_000 } } },
 ];
 export const historicalEvents = [
   { id: 'review-thought-1', type: 'thought', timestamp: ago(38), content: 'The label check also matches unrelated labels; flagging it as a finding.' },
@@ -154,7 +154,7 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
           title: `Review PR #2664: ${tag(2659)} Stop work when an issue or PR withdraws intent`, subtitle: 'Found 2 issues',
           type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
         },
-        usageMetricRecords: [],
+        usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.1 }],
       },
       [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
       [`/api/task/${historicalRun}/file-changes`]: {

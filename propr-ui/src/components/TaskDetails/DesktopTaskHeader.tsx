@@ -1,32 +1,45 @@
 import React from 'react';
 import ContextStrip from './ContextStrip';
 import ActionBar from './ActionBar';
-import TaskHeader, { TaskStatusBadge } from './TaskHeader';
+import TaskHeader, { RunStateLabel, TaskStatusBadge } from './TaskHeader';
 import { getDisplayTitle, getSubtitle } from './taskHeaderText';
 
 interface DesktopTaskHeaderProps {
   headerProps: React.ComponentProps<typeof TaskHeader>;
   contextStripProps: React.ComponentProps<typeof ContextStrip>;
+  /** The run on screen's own model, runtime and consumption. */
+  runStripProps: React.ComponentProps<typeof ContextStrip>;
+  /** How the run on screen ended, and when it last did anything. */
+  runState: { status: string; isActive: boolean; lastActivity?: string };
   actionBarProps: React.ComponentProps<typeof ActionBar>;
-  /** The newest run and how many there are, when the task has more than one. */
-  runCount?: number;
+  /** The run on screen, when the task has more than one. */
+  run?: { number: number; count: number };
   /** The pane's own controls (open full page, close), docked after the task's actions. */
   paneControls?: React.ReactNode;
 }
 
 /**
- * The task in two tiers. The first says where the task lives and what state
- * it is in, with its actions and the pane's controls on the right. The second
- * is its title, then how its newest run is going: which run, the model, the
- * runtime and the consumption. Both always describe the task, never a run the
- * timeline opened below.
+ * The task in two tiers. The first is the task: where it lives, what state it
+ * is in, with its actions (Stop included, while its newest run works) and the
+ * pane's controls on the right. It never changes when the timeline opens an
+ * earlier run. The second is the title, then the run on screen: which run it
+ * is and how it ended, its model, runtime and consumption, so every run's
+ * spend can be read, and the run number says whose it is.
  */
-const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, contextStripProps, actionBarProps, runCount, paneControls }) => {
+const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, contextStripProps, runStripProps, runState, actionBarProps, run, paneControls }) => {
   const { taskInfo } = headerProps;
   const title = getDisplayTitle(taskInfo?.title);
-  const subtitle = taskInfo ? getSubtitle(taskInfo) : undefined;
-  const lead = runCount
-    ? <><span className="font-medium text-slate-800">Run {runCount}/{runCount}</span>{subtitle && ` · ${subtitle}`}</>
+  const runInfo = runStripProps.taskInfo;
+  const subtitle = runInfo ? getSubtitle(runInfo) : undefined;
+  const lead = run
+    ? (
+      <>
+        <span data-testid="header-run-label" className="font-medium text-slate-800">
+          Run {run.number}/{run.count} <span className="font-normal text-slate-500">(<RunStateLabel {...runState} commandMode={runInfo?.commandMode} />)</span>
+        </span>
+        {subtitle && ` · ${subtitle}`}
+      </>
+    )
     : subtitle;
 
   return (
@@ -47,7 +60,7 @@ const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, cont
       <h2 className="text-base font-semibold leading-tight text-gray-900 break-words line-clamp-2" title={title.tooltip}>
         {title.text || 'Loading...'}
       </h2>
-      <ContextStrip {...contextStripProps} part="telemetry" lead={lead} />
+      <ContextStrip {...runStripProps} part="telemetry" lead={lead} />
     </div>
   );
 };

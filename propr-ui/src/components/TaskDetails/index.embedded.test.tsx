@@ -122,10 +122,10 @@ describe('TaskDetails embedded beside the task list', () => {
     const context = renderInspecting(run('run-2', 2), onSelectRun);
     expect(context).toHaveTextContent('Run 1 of 2 · Completed');
     expect(context.closest('header')).toBeNull();
-    // The header is two tiers about the task: its newest run, and the pane's controls in the first row.
+    // The first tier stays on the task, with the pane's controls; the run line names the run whose telemetry it shows.
     const header = screen.getByTestId('task-header-tiers');
-    expect(header).toHaveTextContent('Run 2/2');
-    expect(header).not.toHaveTextContent('Run 1');
+    expect(screen.getByTestId('header-run-label')).toHaveTextContent(/^Run 1\/2 \(Completed .+\)$/);
+    expect(header).not.toHaveTextContent('Run 2/2');
     expect(screen.getByTestId('task-header-identity')).toContainElement(screen.getByRole('button', { name: 'Close pane' }));
     fireEvent.click(within(context).getByRole('button', { name: 'Back to Run 2' }));
     expect(onSelectRun).toHaveBeenCalledWith('run-2');

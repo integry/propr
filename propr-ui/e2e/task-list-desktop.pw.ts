@@ -184,6 +184,8 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   const consumption = details.getByRole('group', { name: 'Consumption' });
   await expect(consumption).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
   await expect(consumption).toHaveCSS('border-left-width', '0px');
+  // The run line names the live run whose telemetry it shows.
+  await expect(details.getByTestId('task-header-tiers').getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 8/8 (Active) · Ultrafix cycle 3 (linting)');
   // Cards select in place, so none carries a drill-in chevron; purple is Merged's alone.
   await expect(list.locator('[data-testid="task-card"] svg.lucide-chevron-right')).toHaveCount(0);
   await expect(list.getByText('Pending', { exact: true }).first()).toHaveClass(/bg-slate-100/);
@@ -253,13 +255,16 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
   await expect(details.getByRole('region', { name: 'Changed files' })).toHaveText(/^(?!.*withdrawalLabels).*withdrawalHandlers\.ts/s);
   await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
-  // The header stays about the task, which is working on Run 8, in two tiers with no banner above them.
+  // The first tier stays on the task, which is working on Run 8; the run line follows Run 3, with Run 3's own spend.
   const header = details.getByTestId('task-header-tiers');
   await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
   await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
-  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 8/8 · Ultrafix cycle 3 (linting)');
-  await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
-  await expect(header).not.toContainText('Run 3');
+  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago) · Found 2 issues');
+  await expect(header.getByRole('group', { name: 'Execution runtime' })).toHaveText(/gpt-6-astra.*3m 0?0s/);
+  await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText(/420k in · 12k out.*0\.1% weekly quota/);
+  await expect(header).not.toContainText('3.9M');
+  // No divider floats in front of Stop when nothing stands before it.
+  await expect(header.getByTestId('task-header-identity').locator('.w-px')).toHaveCount(0);
   expect((await header.boundingBox())!.height).toBeLessThanOrEqual(120);
   // The pane's controls are icons in the header's first row, not a row of their own.
   await expect(header.getByTestId('task-header-identity').getByRole('button', { name: 'Close task details' })).toBeVisible();

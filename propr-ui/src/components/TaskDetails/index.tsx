@@ -163,7 +163,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     usageMetricRecords: taskData.usageMetricRecords,
     tokenUsage,
   }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage]);
-  const { headerProps, contextStripProps, inspection } = useTaskHeaderView(taskId, runs, ownSummary);
+  const { headerProps, contextStripProps, runStripProps, runState, inspection, headerRun } = useTaskHeaderView(taskId, runs, ownSummary);
   const liveRun = useLiveRunStop(inspection?.head, Boolean(inspection?.headActive));
 
   const handleFollowupSubmit = useCallback(async (body: string) => {
@@ -243,8 +243,10 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
         <DesktopTaskHeader
           headerProps={headerProps}
           contextStripProps={contextStripProps}
+          runStripProps={runStripProps}
+          runState={runState}
           actionBarProps={actionBarProps}
-          runCount={runs && runs.length > 1 ? runs[runs.length - 1].number : undefined}
+          run={headerRun}
           paneControls={paneControls}
         />
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import { TaskInfo } from './types';
 import { getDisplayTitle, getSubtitle } from './taskHeaderText';
+import { formatRelativeTime } from '../TaskList/utils.tsx';
 import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight } from 'lucide-react';
 
 interface TaskHeaderProps {
@@ -192,5 +193,13 @@ export const InspectedRunContext: React.FC<RunInspection> = ({ runNumber, runCou
     </button>
   </span>
 );
+
+/** The run on screen's state: `Active`, or how it ended and when, e.g. `Completed 39 mins ago`. */
+export const RunStateLabel: React.FC<{ status: string; isActive: boolean; lastActivity?: string; commandMode?: string }> = ({ status, isActive, lastActivity, commandMode }) => {
+  if (isActive) return <>Active</>;
+  const ago = formatRelativeTime(lastActivity);
+  const label = getStatusInfo(status, commandMode).label;
+  return <>{ago ? `${label} ${ago === 'Just now' ? 'just now' : ago}` : label}</>;
+};
 
 export default TaskHeader;

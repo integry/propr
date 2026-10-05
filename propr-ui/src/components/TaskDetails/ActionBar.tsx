@@ -241,8 +241,8 @@ const ActionBar: React.FC<ActionBarProps> = ({
         </button>
       )}
 
-      {/* Divider before destructive actions */}
-      {taskBusy && (
+      {/* Divider before destructive actions, only when it divides them from something */}
+      {taskBusy && (historyItemWithPaths?.promptPath || historyItemWithPaths?.logsPath) && (
         <div className="h-4 w-px bg-slate-300 mx-1" />
       )}
 
