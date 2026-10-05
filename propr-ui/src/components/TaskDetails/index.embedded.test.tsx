@@ -130,7 +130,7 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(context.closest('header')).toBeNull();
     // The first tier stays on the task, with the pane's controls; the run line names the run whose telemetry it shows.
     const header = screen.getByTestId('task-header-tiers');
-    expect(screen.getByTestId('header-run-label')).toHaveTextContent(/^Run 1\/2 \(Completed .+\)$/);
+    expect(screen.getByTestId('header-run-label')).toHaveTextContent(/^Run 1\/2 \(Completed .+\):?$/);
     expect(header).not.toHaveTextContent('Run 2/2');
     expect(screen.getByTestId('task-header-identity')).toContainElement(screen.getByRole('button', { name: 'Close pane' }));
     // The way back sits where the run was opened, in the timeline's header, not in the panel below.

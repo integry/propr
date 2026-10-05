@@ -43,30 +43,17 @@ const formatTokenCount = (count: number | null | undefined): string => {
 };
 
 /**
- * The line's one separator. Metadata is set off by middle dots throughout;
- * the desktop header's first tier, where the task lives, uses bullets.
+ * Each domain is a cluster of chips set apart by whitespace; a hairline rule
+ * stands between clusters. Chips carry their own boundaries, so no dot or
+ * bullet separates them.
  */
-type Separator = '·' | '•';
-
-// Separator between items
-const Dot: React.FC<{ glyph?: Separator }> = ({ glyph = '·' }) => (
-  <span aria-hidden="true" className="text-gray-300 mx-1.5">{glyph}</span>
-);
-
-// Keep each domain identifiable even when the header wraps at narrow widths.
-const ContextGroup: React.FC<{ label: string; divided?: boolean; separator?: Separator; children: React.ReactNode }> = ({ label, divided, separator = '·', children }) => {
+const ContextGroup: React.FC<{ label: string; divided?: boolean; children: React.ReactNode }> = ({ label, divided, children }) => {
   const items = React.Children.toArray(children);
   if (!items.length) return null;
   return (
-    <div role="group" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-y-1">
-      {/* Groups continue the same line with its own separator, not a bordered pipe that reads as a stray character. */}
-      {divided && <span aria-hidden="true" className="mr-1.5 text-gray-300">{separator}</span>}
-      {items.map((item, index) => (
-        <React.Fragment key={index}>
-          {index > 0 && <Dot glyph={separator} />}
-          {item}
-        </React.Fragment>
-      ))}
+    <div role="group" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+      {divided && <span aria-hidden="true" data-testid="context-divider" className="mr-1.5 h-3 w-px flex-none bg-slate-200" />}
+      {items}
     </div>
   );
 };
@@ -134,10 +121,7 @@ const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthet
       {getDisplayModelName(modelName)}
     </span>
     {duration !== null && duration !== undefined && (
-      <>
-        <Dot />
-        <span className="text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
-      </>
+      <span className="text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
     )}
   </>
 );
@@ -192,10 +176,11 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
 
   return (
     <span
-      className="inline-flex items-center gap-1 text-slate-500 px-1.5 py-0.5 rounded font-mono text-xs"
+      className="inline-flex items-center gap-1.5 text-slate-500 font-mono text-xs"
       title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
     >
-      {formatTokenCount(inputTokens)} in · {formatTokenCount(outputTokens)} out
+      <span aria-label={`${formatTokenCount(inputTokens)} input tokens`}>↑{formatTokenCount(inputTokens)}</span>
+      <span aria-label={`${formatTokenCount(outputTokens)} output tokens`}>↓{formatTokenCount(outputTokens)}</span>
     </span>
   );
 };
@@ -241,19 +226,16 @@ const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = 
   // Only show if there's actual usage
   if (sessionPct === 0 && weeklyPct === 0) return null;
 
+  // One quota reads `(0.4% quota)`, its kind in the tooltip; both name theirs.
+  const both = sessionPct > 0 && weeklyPct > 0;
+  const tone = (pct: number) => pct > 25 ? 'text-amber-600 font-medium' : 'text-slate-500';
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5 font-mono text-xs" title={`Usage consumed: ${tooltip}`}>
-      {sessionPct > 0 && (
-        <span className={sessionPct > 25 ? 'text-amber-600 font-medium' : 'text-slate-500'}>
-          {sessionPct.toFixed(1)}% session quota
-        </span>
-      )}
-      {sessionPct > 0 && weeklyPct > 0 && <Dot />}
-      {weeklyPct > 0 && (
-        <span className={weeklyPct > 25 ? 'text-amber-600 font-medium' : 'text-slate-500'}>
-          {weeklyPct.toFixed(1)}% weekly quota
-        </span>
-      )}
+    <span className="font-mono text-xs text-slate-500" title={`Usage consumed: ${tooltip}`}>
+      (
+      {sessionPct > 0 && <span className={tone(sessionPct)}>{sessionPct.toFixed(1)}% {both ? 'session' : 'quota'}</span>}
+      {both && ', '}
+      {weeklyPct > 0 && <span className={tone(weeklyPct)}>{weeklyPct.toFixed(1)}% {both ? 'weekly' : 'quota'}</span>}
+      )
     </span>
   );
 };
@@ -349,10 +331,9 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   const showGit = part !== 'telemetry';
   const showTelemetry = part !== 'git';
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
+    <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
       {showGit && (
-        <ContextGroup label="Git context" separator={part === 'git' ? '•' : '·'}>
-          {/* Only chips with something to show, so no separator stands beside an empty one. */}
+        <ContextGroup label="Git context">
           {!mobileMetadataOnly && taskInfo && <RepoLink taskInfo={taskInfo} />}
           {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
           {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}

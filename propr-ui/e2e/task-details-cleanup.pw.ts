@@ -76,8 +76,8 @@ for (const width of [390, 1440]) {
       await expect(task.getByRole('group', { name: 'Git context' })).toBeVisible();
       await expect(task.getByRole('group', { name: 'Execution runtime' })).toBeVisible();
       const consumption = task.getByRole('group', { name: 'Consumption' });
-      await expect(consumption).toContainText('3.9M in · 30k out');
-      await expect(consumption).toContainText(`${completed ? '1.0' : '0.4'}% weekly quota`);
+      await expect(consumption).toContainText('↑3.9M↓30k');
+      await expect(consumption).toContainText(`(${completed ? '1.0' : '0.4'}% quota)`);
       await expect(task.getByText('Analyzing Request', { exact: true })).toHaveCount(1);
       await expect(task.getByText('8s', { exact: true })).toBeVisible();
       for (const label of ['Task Queued', 'Analyzing Request', 'Implementing Changes', ...(completed ? ['Task Completed'] : [])]) {

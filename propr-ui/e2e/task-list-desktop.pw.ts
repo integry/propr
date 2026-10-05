@@ -180,12 +180,12 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   expect(topFade).toMatchObject({ offset: 0, height: 8 });
   // The details heading is sanitized the same way as the row: no workflow verb, PR number or model tag.
   await expect(details.locator('h2:visible')).toHaveText('Stop work when an issue or PR withdraws intent');
-  // Consumption stays on the context line after the runtime, set off by a bullet rather than a bordered pipe.
+  // Consumption stays on the context line after the runtime: arrows for tokens, the quota in parentheses, no dots.
   const consumption = details.getByRole('group', { name: 'Consumption' });
-  await expect(consumption).toHaveText(/3\.9M in · 30k out.*0\.4% weekly quota/);
+  await expect(consumption).toHaveText('↑3.9M↓30k(0.4% quota)');
   await expect(consumption).toHaveCSS('border-left-width', '0px');
-  // The run line names the live run whose telemetry it shows.
-  await expect(details.getByTestId('task-header-tiers').getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 8/8 (Active) · Ultrafix cycle 3 (linting)');
+  // The run line names the live run whose telemetry it shows; its state is the pill above, not repeated.
+  await expect(details.getByTestId('task-header-tiers').getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 8/8: Ultrafix cycle 3 (linting)');
   // Cards select in place, so none carries a drill-in chevron; purple is Merged's alone.
   await expect(list.locator('[data-testid="task-card"] svg.lucide-chevron-right')).toHaveCount(0);
   await expect(list.getByText('Pending', { exact: true }).first()).toHaveClass(/bg-slate-100/);
@@ -272,14 +272,15 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   const header = details.getByTestId('task-header-tiers');
   await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
   await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
-  // Tier 1 reads `integry/propr • #2664 ↗ • ● Implementing`: bullets only, and no empty icon between them.
-  await expect(header.getByTestId('task-header-identity').getByRole('group', { name: 'Git context' })).toHaveText('integry/propr•#2664');
+  // Tier 1 reads `integry/propr #2664 ↗  ● Implementing`: chips set apart by space, no bullets and no empty icon.
+  await expect(header.getByTestId('task-header-identity').getByRole('group', { name: 'Git context' })).toHaveText('integry/propr#2664');
   await expect(header.getByTestId('task-status-badge').locator('svg')).toHaveCount(0);
-  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago) · Found 2 issues');
-  // The run line keeps to one separator, the middle dot.
-  expect(await header.locator('h2 + div').innerText()).not.toContain('•');
+  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago): Found 2 issues');
+  // Neither tier separates with dots or bullets; hairline rules divide the run line's three clusters.
+  expect(await header.innerText()).not.toMatch(/[·•]/);
+  await expect(header.locator('h2 + div [data-testid="context-divider"]')).toHaveCount(2);
   await expect(header.getByRole('group', { name: 'Execution runtime' })).toHaveText(/gpt-6-astra.*3m 0?0s/);
-  await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText(/420k in · 12k out.*0\.1% weekly quota/);
+  await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText('↑420k↓12k(0.1% quota)');
   await expect(header).not.toContainText('3.9M');
   // No divider floats in front of Stop when nothing stands before it.
   await expect(header.getByTestId('task-header-identity').locator('.w-px')).toHaveCount(0);
